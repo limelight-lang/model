@@ -26,29 +26,25 @@ code*, verified separately.
 cargo bench
 ```
 
-**Honest methodology** (`docs/memory-manager.md`, Test Plan): every
-contender runs the *same* workload — 1000 allocations of 40 bytes **plus
-reclamation**. The arena pays its `reset`, bumpalo pays its `reset`,
-malloc pays its per-object frees. Nobody measures allocation while
-hiding the cleanup.
+**Honest methodology**: every contender runs the *same* workload — N
+allocations of 40 bytes, each **written to** (the header a real object
+pays), then **reclaimed**. The arena pays `reset`, bumpalo pays `reset`,
+malloc/mimalloc pay per-object frees. Nobody measures allocation over
+untouched memory, and nobody hides the cleanup.
 
-Per 1000 allocations of 40 bytes, with reclamation
-(Rust 1.87, x86_64-pc-windows-msvc, dev box — figures noisy, treat as
-orders of magnitude):
+Per allocation, with reclamation (dev box, noisy — read as ratios):
 
-| Contender | Time / 1000 | Per alloc |
+| Contender | Per alloc | vs arena |
 |---|---|---|
-| **arena + `reserve`** (compiler batch hint) | ~0.65 µs | ~0.65 ns |
-| **arena** (plain) | ~0.8 µs | ~0.8 ns |
-| bumpalo (best Rust bump allocator) | ~1.3 µs | ~1.3 ns |
-| system malloc (`Box`) | ~44 µs | ~44 ns |
+| **arena** | ~0.94 ns | 1.0× |
+| **arena + `reserve`** | ~0.98 ns | ~1.0× |
+| bumpalo (best Rust bump allocator) | ~1.58 ns | ~1.7× slower |
+| mimalloc (fast malloc) | ~6.6 ns | ~7× slower |
+| system malloc (OS default) | ~48 ns | ~50× slower |
 
-Reading: our arena beats `bumpalo` roughly 2× (the `reserve` hint hoists
-the limit check out of the loop), and both bump allocators are ~50–65×
-faster than a general-purpose allocator doing real per-object frees —
-which is the whole point of the request-arena design, not a trick of the
-benchmark. The malloc column is honest: its cost is the per-object free
-that the arena replaces with one `reset`.
+The arena is ~1.7× faster than bumpalo and ~7× faster than mimalloc —
+the honest fast-malloc rival. Full data, caveats, and what these numbers
+do and don't prove: [`benches/RESULTS.md`](benches/RESULTS.md).
 
 ## LLVM IR export
 

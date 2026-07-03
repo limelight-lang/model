@@ -13,6 +13,7 @@ crate-type = ["rlib", "staticlib"]
 [dev-dependencies]
 criterion = "0.5"
 bumpalo = "3"
+mimalloc = "0.1"
 
 [[bench]]
 name = "alloc"
