@@ -10,6 +10,14 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 
+[dev-dependencies]
+criterion = "0.5"
+bumpalo = "3"
+
+[[bench]]
+name = "alloc"
+harness = false
+
 [profile.release]
 # One codegen unit -> one clean LLVM module per crate for IR export
 codegen-units = 1

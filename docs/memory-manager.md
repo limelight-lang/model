@@ -261,7 +261,33 @@ all; the comparison does not transfer.
 ## Build Order
 
 1. `block_pool` — regions, carving, thread cache, global stack.
-2. `arena` — bump, reserve, destructor list, reset.
-3. `immortal` — trivial specialization of arena.
-4. Large-object runs.
-5. (later) remembered set + arena-reset modes; MMTK heap.
+2. `arena` — bump, reserve, destructor list, reset + `LLContext` ABI.
+3. `buffer` — first-class mutable buffers.
+4. `immortal` — trivial specialization of arena.
+5. Large-object runs.
+6. (later) remembered set + arena-reset modes; MMTK heap.
+
+## Test Plan
+
+**Correctness (unit tests, every stage):**
+- Block invariants: 32 KB size, 32 KB alignment, `ptr & !MASK` lands on
+  the header, payload starts at +256.
+- Arena: sequential allocation, size rounding to 8, slow path takes a
+  new block exactly at exhaustion, `reserve` prevents mid-loop refills,
+  `try_extend_in_place` succeeds only at the bump top.
+- Pool: get/put roundtrip reuses blocks (no new region carved);
+  cross-thread put (a dying thread's cache flushes to the global
+  stack, blocks are not lost).
+- Reset: destructor list is handed to the caller; blocks return to the
+  pool and are reused by the next arena.
+
+**Performance (criterion benches, honest methodology):**
+- Same workload for every contender: N allocations of 40 bytes *plus
+  reclamation* — arena pays its reset, malloc pays its frees. No
+  measuring allocation while hiding the cleanup.
+- Contenders: our arena, the system allocator (malloc via `Box`),
+  `bumpalo` (the best Rust bump allocator) as the direct rival.
+- Variants: tight loop; with `reserve` (compiler batch hint);
+  mixed sizes.
+- Results published in the README with the exact bench code linked —
+  reproducible by `cargo bench`.
