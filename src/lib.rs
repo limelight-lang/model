@@ -4,6 +4,6 @@
 //! This crate contains runtime *mechanics* only — no PHP standard library
 //! functions live here.
 
-pub mod rc;
+pub mod refcount;
 
-pub use rc::RcHeader;
+pub use refcount::RcHeader;

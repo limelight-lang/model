@@ -61,6 +61,10 @@ opt -O2 combined.bc -o final.bc
 
 ## Layout
 
-- `src/rc.rs` — common refcounted header (`RcHeader`), retain/release
-  fast paths, memory-category and flag bits
+- `src/refcount.rs` — common refcounted header (`RcHeader`),
+  retain/release fast paths, memory-category and flag bits
   (per `rfc/model/classes.md`, `rfc/model/values.md`).
+
+Module naming convention: **full, readable words** (`refcount`, not
+`rc`) — abbreviations only where they are the established term of the
+domain (`gc` is fine, everyone reads it as garbage collector).
