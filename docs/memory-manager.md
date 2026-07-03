@@ -122,6 +122,44 @@ impl Arena {
 // ll_arena_alloc, ll_arena_reserve
 ```
 
+## Validated Against jemalloc / mimalloc / snmalloc
+
+The scheme above was checked against the sources of the three
+state-of-the-art allocators (2026-07). Confirmed: pointer→block by mask
+(mimalloc does exactly this on segments; snmalloc pays shift+pagemap
+load), 2 MB OS regions (snmalloc superpages, jemalloc hugepages),
+per-thread cache over a global structure (all three), metadata embedded
+at the region start (mimalloc; jemalloc externalizes it for
+security/merging goals we don't have).
+
+Adjustments adopted from the study:
+
+1. **Block header cache-line layout.** 256 B = 4 cache lines. The first
+   line holds read-mostly fields only (kind, run length, pool link);
+   any future atomics (remembered set, line marks) get their own lines.
+   All three allocators fight false sharing this way (snmalloc keeps
+   queue front/back on separate lines; jemalloc separates read-only
+   bin_info citing exactly this).
+2. **Cache refill/flush constants.** Refill the thread cache in batches
+   from the global stack; on overflow flush **half**, not all
+   (jemalloc tcache pattern: fill ~2× slab, flush 1/2). Constants
+   tunable, start: cache 8, refill 4.
+3. **OS return policy** (was a hole): lazy, delay-based purge of fully
+   free regions — industry numbers are mimalloc ~100 ms purge delay,
+   jemalloc 10 s dirty decay. Start with ~1 s delay, full-region
+   granularity, MEM_DECOMMIT / MADV_DONTNEED.
+4. **Cross-thread frees (future, multi-threaded phase): MPSC queue per
+   owning thread** with per-destination batching at the sender —
+   snmalloc's scheme ("thousands of remote deallocations per atomic"),
+   not a single shared stack. The phase-1 single global block stack is
+   fine — pool traffic is one op per ~500 objects, three orders below
+   malloc free-list traffic — but the sharding path is this one.
+
+Note: mimalloc tried bump allocation inside its pages and measured no
+win — because its pages must keep the free-list path anyway, so bump
+added a test to the hot path. Our arena has no per-object free path at
+all; the comparison does not transfer.
+
 ## Invariants
 
 1. Every block is 32 KB and 32 KB-aligned; `ptr & !0x7FFF` always lands
