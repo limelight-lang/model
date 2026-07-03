@@ -17,11 +17,11 @@ pub const GC_STATE_SHIFT: u32 = 2;
 pub const GC_STATE_MASK: u32 = 0b11 << GC_STATE_SHIFT;
 
 /// Cycle-collector color (bits 4-5) + buffered bit (6).
-pub const CC_COLOR_SHIFT: u32 = 4;
-pub const CC_BUFFERED: u32 = 1 << 6;
+pub const CYCLE_COLLECTOR_COLOR_SHIFT: u32 = 4;
+pub const CYCLE_COLLECTOR_BUFFERED: u32 = 1 << 6;
 
 /// Entity has weak references (side table exists).
-pub const HAS_WEAK: u32 = 1 << 7;
+pub const HAS_WEAK_REFERENCES: u32 = 1 << 7;
 /// Entity has a destructor with side effects (arena must call it).
 pub const HAS_DESTRUCTOR: u32 = 1 << 8;
 /// Copy-on-write semantics: refcount is always maintained,
@@ -67,17 +67,17 @@ impl RcHeader {
 /// (`rfc/model/values.md`) — their category is checked only on release.
 ///
 /// # Safety
-/// `h` must point to a live heap entity beginning with `RcHeader`.
+/// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_retain(h: *mut RcHeader) {
-    let hdr = unsafe { &mut *h };
-    if hdr.flags & MEMORY_CATEGORY_MASK != 0 && hdr.flags & COW == 0 {
+pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
+    let header = unsafe { &mut *header };
+    if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
         return; // arena or immortal, not COW: not counted
     }
-    if hdr.flags & MEMORY_CATEGORY_MASK == MEMORY_CATEGORY_IMMORTAL {
+    if header.flags & MEMORY_CATEGORY_MASK == MEMORY_CATEGORY_IMMORTAL {
         return; // immortal COW entities are no-ops too
     }
-    hdr.refcount += 1;
+    header.refcount += 1;
 }
 
 /// Decrement the reference count. Returns `true` when the entity died
@@ -85,23 +85,23 @@ pub unsafe extern "C" fn ll_retain(h: *mut RcHeader) {
 /// caller must then run teardown (`ll_object_die` for objects).
 ///
 /// # Safety
-/// `h` must point to a live heap entity beginning with `RcHeader`.
+/// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_release(h: *mut RcHeader) -> bool {
-    let hdr = unsafe { &mut *h };
-    if hdr.flags & MEMORY_CATEGORY_MASK != 0 && hdr.flags & COW == 0 {
+pub unsafe extern "C" fn ll_release(header: *mut RcHeader) -> bool {
+    let header = unsafe { &mut *header };
+    if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
         return false;
     }
-    if hdr.flags & MEMORY_CATEGORY_MASK == MEMORY_CATEGORY_IMMORTAL {
+    if header.flags & MEMORY_CATEGORY_MASK == MEMORY_CATEGORY_IMMORTAL {
         return false;
     }
-    debug_assert!(hdr.refcount > 0, "release of dead entity");
-    hdr.refcount -= 1;
-    if hdr.refcount == 0 {
+    debug_assert!(header.refcount > 0, "release of dead entity");
+    header.refcount -= 1;
+    if header.refcount == 0 {
         // Lifetime reaction depends on category: GC heap frees, arenas
         // do nothing (arena reset reclaims). Cycle-root buffering for
         // non-zero decrements arrives with the cycle collector.
-        return hdr.memory_category() == MEMORY_CATEGORY_GC_HEAP;
+        return header.memory_category() == MEMORY_CATEGORY_GC_HEAP;
     }
     false
 }
@@ -110,55 +110,55 @@ pub unsafe extern "C" fn ll_release(h: *mut RcHeader) -> bool {
 mod tests {
     use super::*;
 
-    fn retain(h: &mut RcHeader) {
-        unsafe { ll_retain(h) }
+    fn retain(header: &mut RcHeader) {
+        unsafe { ll_retain(header) }
     }
-    fn release(h: &mut RcHeader) -> bool {
-        unsafe { ll_release(h) }
+    fn release(header: &mut RcHeader) -> bool {
+        unsafe { ll_release(header) }
     }
 
     #[test]
     fn heap_entity_counts_and_dies() {
-        let mut h = RcHeader::new(MEMORY_CATEGORY_GC_HEAP, 0);
-        retain(&mut h);
-        assert_eq!(h.refcount, 2);
-        assert!(!release(&mut h));
-        assert!(release(&mut h), "second release must report death");
+        let mut header = RcHeader::new(MEMORY_CATEGORY_GC_HEAP, 0);
+        retain(&mut header);
+        assert_eq!(header.refcount, 2);
+        assert!(!release(&mut header));
+        assert!(release(&mut header), "second release must report death");
     }
 
     #[test]
     fn arena_object_is_not_counted() {
-        let mut h = RcHeader::new(MEMORY_CATEGORY_REQUEST_ARENA, 0);
-        retain(&mut h);
-        assert_eq!(h.refcount, 1, "arena objects skip counting");
-        assert!(!release(&mut h));
-        assert_eq!(h.refcount, 1);
+        let mut header = RcHeader::new(MEMORY_CATEGORY_REQUEST_ARENA, 0);
+        retain(&mut header);
+        assert_eq!(header.refcount, 1, "arena objects skip counting");
+        assert!(!release(&mut header));
+        assert_eq!(header.refcount, 1);
     }
 
     #[test]
     fn immortal_is_never_touched() {
-        let mut h = RcHeader::new(MEMORY_CATEGORY_IMMORTAL, COW);
-        retain(&mut h);
-        assert!(!release(&mut h));
-        assert_eq!(h.refcount, 1);
+        let mut header = RcHeader::new(MEMORY_CATEGORY_IMMORTAL, COW);
+        retain(&mut header);
+        assert!(!release(&mut header));
+        assert_eq!(header.refcount, 1);
     }
 
     #[test]
     fn cow_in_arena_still_counts() {
         // rfc/model/values.md: refcount is part of COW value semantics,
         // maintained in every category; zero in an arena is not a death.
-        let mut h = RcHeader::new(MEMORY_CATEGORY_REQUEST_ARENA, COW);
-        retain(&mut h);
-        assert_eq!(h.refcount, 2, "COW entities count everywhere");
-        assert!(!release(&mut h));
-        assert!(!release(&mut h), "zero in arena: no free, reset reclaims");
-        assert_eq!(h.refcount, 0);
+        let mut header = RcHeader::new(MEMORY_CATEGORY_REQUEST_ARENA, COW);
+        retain(&mut header);
+        assert_eq!(header.refcount, 2, "COW entities count everywhere");
+        assert!(!release(&mut header));
+        assert!(!release(&mut header), "zero in arena: no free, reset reclaims");
+        assert_eq!(header.refcount, 0);
     }
 
     #[test]
     fn cow_on_heap_dies_at_zero() {
-        let mut h = RcHeader::new(MEMORY_CATEGORY_GC_HEAP, COW);
-        assert!(release(&mut h));
+        let mut header = RcHeader::new(MEMORY_CATEGORY_GC_HEAP, COW);
+        assert!(release(&mut header));
     }
 
     #[test]
