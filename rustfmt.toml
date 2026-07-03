@@ -1,0 +1,4 @@
+# Auto-formatting: run `cargo fmt`, check with `cargo fmt --check`.
+style_edition = "2024"
+max_width = 100
+newline_style = "Unix"

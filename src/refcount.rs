@@ -45,7 +45,10 @@ impl RcHeader {
     #[inline]
     pub fn new(category: u32, extra_flags: u32) -> Self {
         debug_assert_eq!(category & !MEMORY_CATEGORY_MASK, 0);
-        RcHeader { refcount: 1, flags: category | extra_flags }
+        RcHeader {
+            refcount: 1,
+            flags: category | extra_flags,
+        }
     }
 
     #[inline]
@@ -71,12 +74,15 @@ impl RcHeader {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
     let header = unsafe { &mut *header };
+
     if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
         return; // arena or immortal, not COW: not counted
     }
+
     if header.flags & MEMORY_CATEGORY_MASK == MEMORY_CATEGORY_IMMORTAL {
         return; // immortal COW entities are no-ops too
     }
+
     header.refcount += 1;
 }
 
@@ -89,14 +95,18 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_release(header: *mut RcHeader) -> bool {
     let header = unsafe { &mut *header };
+
     if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
         return false;
     }
+
     if header.flags & MEMORY_CATEGORY_MASK == MEMORY_CATEGORY_IMMORTAL {
         return false;
     }
+
     debug_assert!(header.refcount > 0, "release of dead entity");
     header.refcount -= 1;
+
     if header.refcount == 0 {
         // Lifetime reaction depends on category: GC heap frees, arenas
         // do nothing (arena reset reclaims). Cycle-root buffering for
@@ -151,7 +161,10 @@ mod tests {
         retain(&mut header);
         assert_eq!(header.refcount, 2, "COW entities count everywhere");
         assert!(!release(&mut header));
-        assert!(!release(&mut header), "zero in arena: no free, reset reclaims");
+        assert!(
+            !release(&mut header),
+            "zero in arena: no free, reset reclaims"
+        );
         assert_eq!(header.refcount, 0);
     }
 
