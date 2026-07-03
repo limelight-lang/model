@@ -1,0 +1,16 @@
+[package]
+name = "ll-model"
+version = "0.1.0"
+edition = "2024"
+description = "Limelight runtime data model: classes, memory manager, GC"
+
+[lib]
+# rlib for Rust consumers and tests, staticlib for the C++/LLVM layer
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+
+[profile.release]
+# One codegen unit -> one clean LLVM module per crate for IR export
+codegen-units = 1
+panic = "abort"
