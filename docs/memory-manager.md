@@ -99,7 +99,91 @@ Planned optimization once refcounts report deaths: per-class free lists
 
 ---
 
-## API Sketch (what `src/memory/` exposes)
+## ABI Surface (what generated code calls)
+
+Every function takes an **allocation context** as its first parameter.
+In generated code `ctx` lives in a dedicated register (pinned by the
+calling convention, Go-style) and is passed through for free.
+**`ctx == NULL` is legal**: the runtime falls back to the thread-local
+current context — this covers calls from the C++ layer, host code, FFI.
+
+```c
+/* hot — inlined into PHP code from bitcode */
+void*  ll_arena_alloc(LLContext* ctx, size_t size);
+void   ll_arena_reserve(LLContext* ctx, size_t bytes);   /* compiler batch hook */
+void*  ll_heap_alloc(LLContext* ctx, size_t size);
+void*  ll_immortal_alloc(LLContext* ctx, size_t size);
+
+/* mutable buffers — first-class citizens, see below */
+LLBuffer* ll_buffer_alloc(LLContext* ctx, size_t capacity);
+void*     ll_buffer_ensure(LLContext* ctx, LLBuffer* buf, size_t min_capacity);
+
+/* warm — real calls */
+void   ll_arena_track_destructor(LLContext* ctx, RcHeader* obj);
+void*  ll_large_alloc(LLContext* ctx, size_t size);
+
+/* cold — called by the host/server loop, not by PHP code */
+void   ll_arena_reset(LLContext* ctx);
+```
+
+Design points baked into this surface:
+
+- **Category is the choice of function, not a parameter** — the
+  compiler already decided arena/heap/immortal; no runtime branching.
+- **Arena internals are NOT ABI** — speed comes from bitcode inlining
+  (`opt -O2` inlines the bodies), so field layout stays private.
+- **`size` is usually a literal** — for `new Foo()` the compiler emits
+  `ll_arena_alloc(ctx, 40)`; after inlining, constants fold.
+
+### Analytics build
+
+Under a build flag (`--features alloc-trace`) every allocation function
+gains one trailing parameter — a pointer to a static, compiler-generated
+per-call-site record:
+
+```c
+typedef struct LLAllocSite {
+    const char* module;      /* all strings interned */
+    const char* class_name;
+    const char* function;
+    uint32_t    line;
+} LLAllocSite;
+```
+
+Different builds = different ABI, which is legal: runtime bitcode and
+the code generator are always built and versioned in lockstep (the
+single-LLVM-version rule extends to a single-ABI-version rule).
+
+## Mutable Buffers
+
+A first-class allocation kind at the API level: a growable region for
+in-place-mutable strings and byte buffers. May be optimized further
+later; the contract is fixed now.
+
+Growth collides with the non-moving invariant (entities never change
+address), so a buffer is **two parts**:
+
+```
+handle (address is eternal):            payload (may be replaced):
+RcHeader | len | capacity | data  ───→  [bytes.................]
+```
+
+References hold the handle. Growth algorithm in `ll_buffer_ensure`:
+
+1. `capacity` suffices → return `data`, zero work.
+2. Payload is the **top of its block's bump** → extend in place: move
+   the bump, grow `capacity`. No copy, no new memory — an arena-only
+   trick that malloc-based runtimes cannot do.
+3. Otherwise → new payload at 2× capacity, copy, swap `data`. The old
+   payload is arena garbage (dies at reset) or heap-freed.
+4. Payload beyond the large threshold → block runs; growth first tries
+   to extend the run with adjacent free blocks.
+
+The extra indirection through `data` is the honest price of mutability;
+immutable strings keep inline bytes and never pay it. Freezing a buffer
+into an immutable string (builder → string) is the string layer's job.
+
+## Rust API (internal, not ABI)
 
 ```rust
 // block_pool.rs
@@ -118,8 +202,12 @@ impl Arena {
     pub fn reset(&mut self);
 }
 
-// ABI surface for generated code (inlined from bitcode):
-// ll_arena_alloc, ll_arena_reserve
+// buffer.rs
+pub struct Buffer { /* handle: len, capacity, data */ }
+impl Buffer {
+    pub fn with_capacity(cap: usize) -> ...;
+    pub fn ensure(&mut self, min_capacity: usize) -> *mut u8;
+}
 ```
 
 ## Validated Against jemalloc / mimalloc / snmalloc
