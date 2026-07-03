@@ -50,6 +50,66 @@ Workload per iteration: 500 allocations of 40 bytes, **each written to**
   push (~1–2 ns) is charged to malloc/mimalloc and inflates their number
   slightly. Even subtracting it, the gap holds.
 
+## Server workload simulation
+
+Code: [`examples/server_sim.rs`](../examples/server_sim.rs). Run with
+`cargo run --release --example server_sim`. Emulates a long-lived server:
+each request gets its own arena, allocates a randomized batch (1000–4000
+objects, 16–256 bytes each, headers written), then the arena is dropped
+and its blocks return to the shared pool. A persistent cache arena
+accumulates 20 000 long-lived objects (never reset). Then a
+multi-threaded phase runs 8 workers against the one shared pool.
+
+**Single thread — 100 000 requests:**
+
+| Metric | Value |
+|---|---|
+| objects allocated | ~250 million |
+| bytes allocated | ~33 GiB (total churn) |
+| wall time | ~0.57 s |
+| throughput | ~176 000 req/s, ~440 M obj/s |
+| per object | ~2.3 ns |
+| **regions carved (OS memory)** | **1 region = 2 MiB** |
+| churn ratio | ~16 500× (bytes allocated / resident) |
+| plateau | 1 region at 10% done → 1 at 100% — **STABLE** |
+
+**Multi-thread — 8 workers × 25 000 requests, one shared pool:**
+
+| Metric | Value |
+|---|---|
+| objects allocated | ~500 million |
+| wall time | ~0.31 s |
+| throughput | ~640 000 req/s, ~1.6 B obj/s aggregate |
+| **regions carved** | **2 regions = 4 MiB** |
+
+### What the server sim shows
+
+- **Memory plateaus.** 33 GiB of allocation churned through **2 MiB** of
+  resident memory — a 16 500× churn ratio — and the region count is
+  identical at 10% and 100% of the run. This is the core design claim
+  proved: arenas borrow blocks and return them; the resident set is a
+  small working set, not a function of request count. A malloc-based
+  runtime that leaked even 100 bytes/request would be 10 MB heavier by
+  request 100 000; here the high-water mark never moves.
+
+- **Cross-thread block flow works.** 8 concurrent workers on one shared
+  pool held their entire working set in 2 regions (4 MiB). Blocks freed
+  by one worker's arena reset flow through the global stack to another
+  worker — no per-worker region explosion.
+
+### Honest caveats on these numbers
+
+- **~2.3 ns/object here vs ~0.94 ns in the micro-benchmark.** The higher
+  figure is the *realistic* one: it includes the simulation's own
+  per-object RNG and size computation (a modulo + branch), variable
+  request sizes, and real cache pressure over 33 GiB. The micro-bench is
+  the best-case floor; this is closer to real work. Neither is "the"
+  number — they bracket it.
+- The RNG/sizing cost is charged into per-object, so ~2.3 ns is an
+  *upper* bound on the allocator's own share.
+- Phase 1 never returns regions to the OS, so "regions carved" is the
+  high-water mark — exactly the number we want to show is bounded.
+
 ## What this does and does not prove
 
 Proves: for the allocate-many / free-together pattern that dominates a
