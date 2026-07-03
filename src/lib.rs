@@ -6,4 +6,4 @@
 
 pub mod refcount;
 
-pub use refcount::RcHeader;
+pub use refcount::{MemoryCategory, RcHeader};

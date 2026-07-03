@@ -4,13 +4,33 @@
 //! path per `rfc/model/lowering.md`. Phase 1: one thread per request, no
 //! atomics (as in Zend).
 
-/// Memory category, flags bits 0-1. Non-zero category => not counted
-/// (except COW types, which always count — see `rfc/model/values.md`).
+/// Mask of the memory-category *field* — flags bits 0-1.
 pub const MEMORY_CATEGORY_MASK: u32 = 0b11;
-pub const MEMORY_CATEGORY_GC_HEAP: u32 = 0b00;
-pub const MEMORY_CATEGORY_REQUEST_ARENA: u32 = 0b01;
-pub const MEMORY_CATEGORY_LONG_LIVED: u32 = 0b10;
-pub const MEMORY_CATEGORY_IMMORTAL: u32 = 0b11;
+
+/// Memory category: a 2-bit field value, **not** independent bit flags.
+/// The four variants are codes of one field — they must never be OR-ed
+/// together (that is why this is an enum and not constants). Extract
+/// with [`MemoryCategory::from_flags`], compare for equality.
+///
+/// Non-zero category => not lifetime-counted (except COW entities,
+/// which always count — see `rfc/model/values.md`).
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MemoryCategory {
+    GcHeap = 0b00,
+    RequestArena = 0b01,
+    LongLived = 0b10,
+    Immortal = 0b11,
+}
+
+impl MemoryCategory {
+    /// Extract the category field from a flags word.
+    #[inline]
+    pub fn from_flags(flags: u32) -> Self {
+        // Safety: masked to 2 bits; all four values are variants.
+        unsafe { core::mem::transmute(flags & MEMORY_CATEGORY_MASK) }
+    }
+}
 
 /// GC state for the CAS handoff (bits 2-3), `rfc/model/gc/heap-design.md`.
 pub const GC_STATE_SHIFT: u32 = 2;
@@ -43,23 +63,23 @@ impl RcHeader {
     /// (The off-by-one encoding trick is deferred until the GC lands;
     /// for now the count is stored literally.)
     #[inline]
-    pub fn new(category: u32, extra_flags: u32) -> Self {
-        debug_assert_eq!(category & !MEMORY_CATEGORY_MASK, 0);
+    pub fn new(category: MemoryCategory, extra_flags: u32) -> Self {
+        debug_assert_eq!(extra_flags & MEMORY_CATEGORY_MASK, 0);
         RcHeader {
             refcount: 1,
-            flags: category | extra_flags,
+            flags: category as u32 | extra_flags,
         }
     }
 
     #[inline]
-    pub fn memory_category(&self) -> u32 {
-        self.flags & MEMORY_CATEGORY_MASK
+    pub fn memory_category(&self) -> MemoryCategory {
+        MemoryCategory::from_flags(self.flags)
     }
 
     /// Is this entity refcounted for *lifetime* purposes?
     #[inline]
     pub fn lifetime_counted(&self) -> bool {
-        self.flags & MEMORY_CATEGORY_MASK == MEMORY_CATEGORY_GC_HEAP
+        self.memory_category() == MemoryCategory::GcHeap
     }
 }
 
@@ -79,7 +99,7 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
         return; // arena or immortal, not COW: not counted
     }
 
-    if header.flags & MEMORY_CATEGORY_MASK == MEMORY_CATEGORY_IMMORTAL {
+    if header.memory_category() == MemoryCategory::Immortal {
         return; // immortal COW entities are no-ops too
     }
 
@@ -100,7 +120,7 @@ pub unsafe extern "C" fn ll_release(header: *mut RcHeader) -> bool {
         return false;
     }
 
-    if header.flags & MEMORY_CATEGORY_MASK == MEMORY_CATEGORY_IMMORTAL {
+    if header.memory_category() == MemoryCategory::Immortal {
         return false;
     }
 
@@ -111,7 +131,7 @@ pub unsafe extern "C" fn ll_release(header: *mut RcHeader) -> bool {
         // Lifetime reaction depends on category: GC heap frees, arenas
         // do nothing (arena reset reclaims). Cycle-root buffering for
         // non-zero decrements arrives with the cycle collector.
-        return header.memory_category() == MEMORY_CATEGORY_GC_HEAP;
+        return header.memory_category() == MemoryCategory::GcHeap;
     }
     false
 }
@@ -129,7 +149,7 @@ mod tests {
 
     #[test]
     fn heap_entity_counts_and_dies() {
-        let mut header = RcHeader::new(MEMORY_CATEGORY_GC_HEAP, 0);
+        let mut header = RcHeader::new(MemoryCategory::GcHeap, 0);
         retain(&mut header);
         assert_eq!(header.refcount, 2);
         assert!(!release(&mut header));
@@ -138,7 +158,7 @@ mod tests {
 
     #[test]
     fn arena_object_is_not_counted() {
-        let mut header = RcHeader::new(MEMORY_CATEGORY_REQUEST_ARENA, 0);
+        let mut header = RcHeader::new(MemoryCategory::RequestArena, 0);
         retain(&mut header);
         assert_eq!(header.refcount, 1, "arena objects skip counting");
         assert!(!release(&mut header));
@@ -147,7 +167,7 @@ mod tests {
 
     #[test]
     fn immortal_is_never_touched() {
-        let mut header = RcHeader::new(MEMORY_CATEGORY_IMMORTAL, COW);
+        let mut header = RcHeader::new(MemoryCategory::Immortal, COW);
         retain(&mut header);
         assert!(!release(&mut header));
         assert_eq!(header.refcount, 1);
@@ -157,7 +177,7 @@ mod tests {
     fn cow_in_arena_still_counts() {
         // rfc/model/values.md: refcount is part of COW value semantics,
         // maintained in every category; zero in an arena is not a death.
-        let mut header = RcHeader::new(MEMORY_CATEGORY_REQUEST_ARENA, COW);
+        let mut header = RcHeader::new(MemoryCategory::RequestArena, COW);
         retain(&mut header);
         assert_eq!(header.refcount, 2, "COW entities count everywhere");
         assert!(!release(&mut header));
@@ -170,7 +190,7 @@ mod tests {
 
     #[test]
     fn cow_on_heap_dies_at_zero() {
-        let mut header = RcHeader::new(MEMORY_CATEGORY_GC_HEAP, COW);
+        let mut header = RcHeader::new(MemoryCategory::GcHeap, COW);
         assert!(release(&mut header));
     }
 
