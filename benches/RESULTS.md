@@ -110,6 +110,58 @@ multi-threaded phase runs 8 workers against the one shared pool.
 - Phase 1 never returns regions to the OS, so "regions carved" is the
   high-water mark — exactly the number we want to show is bounded.
 
+## Standard patterns: heap vs mimalloc vs system
+
+Code: [`benches/standard.rs`](standard.rs). Faithful single-thread
+reimplementations of the two canonical
+[mimalloc-bench](https://github.com/daanx/mimalloc-bench) synthetic
+patterns, every contender through the identical harness, every
+allocation written to, sizes ≤ 8 KB (our heap's envelope) for all.
+
+- **larson** (Larson & Krishnan server pattern): 5000 live slots, 20000
+  rounds of free-one + alloc-one at random sizes.
+- **rptest** (rpmalloc alloc-test pattern): 10000 blocks, 40 iterations
+  of scattered free/realloc of ~10% each.
+
+Time per iteration (lower is better), and per free+alloc round:
+
+| Pattern | our heap | mimalloc | system |
+|---|---|---|---|
+| larson (20k rounds) | **0.84 ms** (~42 ns/round) | 1.88 ms (~94 ns) | 2.50 ms (~125 ns) |
+| rptest (40k churn) | **1.85 ms** (~46 ns/round) | 4.40 ms (~110 ns) | 7.69 ms (~192 ns) |
+| vs our heap | 1.0× | ~2.2–2.4× slower | ~3–4× slower |
+
+**jemalloc omitted**: `jemalloc-sys` does not build on
+windows-msvc (autotools `configure` fails). mimalloc is the primary
+rival regardless.
+
+### Three caveats that flatter us — read before believing "2× faster than mimalloc"
+
+The gap is real *for what our heap currently is*, but the comparison is
+not apples-to-apples, and honesty requires saying why:
+
+1. **Our heap is not thread-safe yet.** mimalloc pays for atomic
+   operations and a thread-ownership check on *every* free even in
+   single-threaded use (that is how it routes local vs cross-thread
+   frees). Our phase-1 heap pays none of that. A large part of the gap
+   is thread-safety we simply haven't built. When cross-thread free
+   lands, expect this to narrow.
+2. **Inlined vs a call boundary.** Our Rust `Heap` inlines into the
+   benchmark loop; mimalloc is reached through a non-inlinable
+   `extern "C"` boundary (linked C static lib). This mirrors our real
+   design — `ll_heap_alloc` *does* inline into PHP code via bitcode LTO,
+   that is the whole point — but in this harness it is still an
+   asymmetry in our favour.
+3. **Specialised envelope.** Our heap handles only ≤ 8 KB, 8-byte
+   alignment, no large objects, one size-class scheme. mimalloc is a
+   complete general allocator. Narrower job = faster.
+
+Honest headline: *in its current single-threaded, small-object, inlined
+form, our heap beats mimalloc ~2×* — with a meaningful share of that
+coming from work we haven't done (thread safety), not pure superiority.
+The design is sound and the numbers are encouraging; they are not a
+victory lap over a production allocator.
+
 ## What this does and does not prove
 
 Proves: for the allocate-many / free-together pattern that dominates a

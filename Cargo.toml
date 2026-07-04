@@ -14,9 +14,16 @@ crate-type = ["rlib", "staticlib"]
 criterion = "0.5"
 bumpalo = "3"
 mimalloc = "0.1"
+# jemalloc (tikv-jemallocator) intentionally omitted: jemalloc-sys does
+# not build on the x86_64-pc-windows-msvc toolchain (autotools configure
+# fails). mimalloc is the primary rival regardless.
 
 [[bench]]
 name = "alloc"
+harness = false
+
+[[bench]]
+name = "standard"
 harness = false
 
 [profile.release]
