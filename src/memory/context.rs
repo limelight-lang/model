@@ -8,7 +8,7 @@
 use std::cell::Cell;
 
 use crate::memory::arena::Arena;
-use crate::memory::buffer::Buffer;
+use crate::memory::heap::with_thread_heap;
 use crate::refcount::RcHeader;
 
 /// The runtime context of the executing request. Grows over time
@@ -74,33 +74,25 @@ pub unsafe extern "C" fn ll_arena_reset(ctx: *mut LLContext) {
     })
 }
 
-/// Initialize a mutable buffer into caller-provided storage `buf` (a
-/// 3-word `Buffer` slot the caller owns — e.g. a field of a mutable
-/// string entity), allocating its initial payload in the arena.
+/// Allocate a small long-lived object on the thread heap (individually
+/// freeable, unlike arena objects). `ctx` is accepted for ABI uniformity
+/// but the heap is thread-persistent, not per-request.
 ///
 /// # Safety
-/// Same contract as [`ll_arena_alloc`]; `buf` must point to writable
-/// storage for one [`Buffer`].
+/// Callable from any thread with an initialized runtime.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_buffer_init(ctx: *mut LLContext, buf: *mut Buffer, capacity: usize) {
-    let b = Buffer::new_in(resolve(ctx), capacity);
-    unsafe { buf.write(b) };
+pub unsafe extern "C" fn ll_heap_alloc(_ctx: *mut LLContext, size: usize) -> *mut u8 {
+    with_thread_heap(|heap| heap.alloc(size))
 }
 
-/// Ensure a buffer has at least `min_capacity` bytes; returns the
-/// (possibly relocated) data pointer.
+/// Free a small object previously returned by [`ll_heap_alloc`].
 ///
 /// # Safety
-/// Same contract as [`ll_arena_alloc`]; `buf` must point to a live
-/// [`Buffer`] whose payload lives in this context's arena.
+/// `ptr` must have come from [`ll_heap_alloc`] on this thread and not
+/// been freed already.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_buffer_ensure(
-    ctx: *mut LLContext,
-    buf: *mut Buffer,
-    min_capacity: usize,
-) -> *mut u8 {
-    let arena = resolve(ctx);
-    unsafe { (*buf).ensure(arena, min_capacity) }
+pub unsafe extern "C" fn ll_heap_free(_ctx: *mut LLContext, ptr: *mut u8) {
+    with_thread_heap(|heap| unsafe { heap.free(ptr) })
 }
 
 #[cfg(test)]

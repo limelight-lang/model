@@ -82,20 +82,42 @@ A bump allocator that never frees and never resets. Class descriptors,
 interned strings, itables. Written only during class loading; no
 concurrency on the hot path (loading takes a lock, reading never does).
 
+## Small-Object Heap (individually freeable)
+
+For long-lived objects that die individually (not in a request cohort):
+the **mimalloc model**, chosen after studying jemalloc / mimalloc /
+snmalloc (best-benchmarked for small frequent allocations, and the best
+fit for what we already built). See `src/memory/heap.rs`.
+
+- **One 32 KB block per size class**, carved into fixed-size slots (the
+  block is mimalloc's "page"). Size classes: 16 → 8192 B, ~25% max
+  internal fragmentation. Above 8 KB → the large-object path.
+- **Pointer → block by mask** (`ptr & !0x7FFF`). No radix tree or
+  pagemap — jemalloc and snmalloc pay for those; our aligned blocks make
+  it one AND.
+- **Free-list split** (mimalloc's core trick): `alloc` pops from `free`,
+  `free` pushes to `local_free`; when `free` empties the slow path moves
+  `local_free → free`. A burst of frees never touches the alloc hot
+  path, and the periodic collect is a deterministic cadence to hang
+  deferred work on later (RC decrements, GC).
+- **A fully-free block returns to the global pool** — real individual
+  reclamation at block granularity.
+
+Phase 1 is single-threaded. Cross-thread free (mimalloc's atomic
+`xthread_free` per block, or snmalloc's MPSC-per-owner queue with better
+batching — decided then) arrives with the multi-threaded phase.
+
+This heap is the freeing allocator for the long-lived / GC-heap category.
+A tracing collector for cycles (MMTK Immix per the RFC) layers on top
+later; the heap itself handles acyclic individual reclamation now.
+
 ## Large Objects (> ~8 KB)
 
 Dedicated block runs: contiguous blocks straight from the pool (or the
 OS for very large), header marks the run length. Never mixed into
 bump blocks — a huge string must not pin an arena block's worth of
-small objects. Freed as a run.
-
-## GC Heap
-
-Future — arrives with the MMTK integration (Immix plan). Until then the
-"general heap" category is served by a plain arena that never resets
-(correct, leaky, temporary — enough for tests and the vertical slice).
-Planned optimization once refcounts report deaths: per-class free lists
-(slab-style) on top of line recycling.
+small objects. Freed as a run. (Not built yet — the heap returns null
+above its largest size class.)
 
 ---
 
@@ -111,12 +133,11 @@ current context — this covers calls from the C++ layer, host code, FFI.
 /* hot — inlined into PHP code from bitcode */
 void*  ll_arena_alloc(LLContext* ctx, size_t size);
 void   ll_arena_reserve(LLContext* ctx, size_t bytes);   /* compiler batch hook */
-void*  ll_heap_alloc(LLContext* ctx, size_t size);
 void*  ll_immortal_alloc(LLContext* ctx, size_t size);
 
-/* mutable buffers — low-level primitive, caller owns the 3-word slot */
-void   ll_buffer_init(LLContext* ctx, Buffer* buf, size_t capacity);
-void*  ll_buffer_ensure(LLContext* ctx, Buffer* buf, size_t min_capacity);
+/* small-object heap — individually freeable, for long-lived objects */
+void*  ll_heap_alloc(LLContext* ctx, size_t size);
+void   ll_heap_free(LLContext* ctx, void* ptr);
 
 /* warm — real calls */
 void   ll_arena_track_destructor(LLContext* ctx, RcHeader* obj);
@@ -204,11 +225,11 @@ impl Arena {
     pub fn reset(&mut self);
 }
 
-// buffer.rs
-pub struct Buffer { /* handle: len, capacity, data */ }
-impl Buffer {
-    pub fn with_capacity(cap: usize) -> ...;
-    pub fn ensure(&mut self, min_capacity: usize) -> *mut u8;
+// heap.rs — small-object freeing allocator (mimalloc model)
+pub struct Heap { /* per-size-class available block lists */ }
+impl Heap {
+    pub fn alloc(&mut self, size: usize) -> *mut u8;   // null if > 8 KB
+    pub unsafe fn free(&mut self, ptr: *mut u8);
 }
 ```
 
@@ -262,12 +283,14 @@ all; the comparison does not transfer.
 
 ## Build Order
 
-1. `block_pool` — regions, carving, thread cache, global stack.
-2. `arena` — bump, reserve, destructor list, reset + `LLContext` ABI.
-3. `buffer` — first-class mutable buffers.
+1. `block_pool` — regions, carving, thread cache, global stack. ✓
+2. `arena` — bump, reserve, destructor list, reset + `LLContext` ABI. ✓
+3. `heap` — small-object freeing allocator (mimalloc model). ✓
 4. `immortal` — trivial specialization of arena.
 5. Large-object runs.
-6. (later) remembered set + arena-reset modes; MMTK heap.
+6. Mutable buffers — built on the heap (growable, individually freed).
+7. (later) cross-thread heap free; remembered set + arena-reset modes;
+   MMTK tracing GC for cycles.
 
 ## Test Plan
 

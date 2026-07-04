@@ -29,6 +29,7 @@ const REFILL_BATCH: usize = 4;
 /// Block kinds stored in the header.
 pub const BLOCK_KIND_FREE: u32 = 0;
 pub const BLOCK_KIND_ARENA: u32 = 1;
+pub const BLOCK_KIND_HEAP: u32 = 2;
 
 /// Header in the first line of every block.
 ///
