@@ -144,8 +144,9 @@ not apples-to-apples, and honesty requires saying why:
    operations and a thread-ownership check on *every* free even in
    single-threaded use (that is how it routes local vs cross-thread
    frees). Our phase-1 heap pays none of that. A large part of the gap
-   is thread-safety we simply haven't built. When cross-thread free
-   lands, expect this to narrow.
+   is thread-safety we simply haven't built. *(Update: it has since
+   landed — see the multi-threaded rematch below, where the gap does
+   narrow to a tie locally and a ~15% deficit cross-thread.)*
 2. **Inlined vs a call boundary.** Our Rust `Heap` inlines into the
    benchmark loop; mimalloc is reached through a non-inlinable
    `extern "C"` boundary (linked C static lib). This mirrors our real
@@ -161,6 +162,52 @@ form, our heap beats mimalloc ~2×* — with a meaningful share of that
 coming from work we haven't done (thread safety), not pure superiority.
 The design is sound and the numbers are encouraging; they are not a
 victory lap over a production allocator.
+
+## Multi-threaded: heap vs mimalloc vs system (the fair rematch)
+
+Once the heap became thread-safe, the single-thread caveat (#1 above —
+mimalloc paying for thread-safety we hadn't built) no longer applies, so
+we can compare on multi-threaded workloads where that machinery is
+actually exercised. Code: [`examples/mt_bench.rs`](../examples/mt_bench.rs),
+`cargo run --release --example mt_bench`. 8 threads, Larson server
+pattern, sizes 16..8192, every allocation written.
+
+Two patterns:
+- **independent** — each thread runs larson entirely on its own (the
+  per-thread local path, no cross-thread traffic).
+- **bleeding** — threads in a ring; every object is freed by the *next*
+  thread (Larson's cross-thread "bleeding"): our `remote_free` stack vs
+  mimalloc's per-page `xthread_free`.
+
+Aggregate throughput, **6 samples on a dev laptop — high variance,
+read as medians and ranges, not precise figures**:
+
+| Pattern | our heap | mimalloc | system |
+|---|---|---|---|
+| independent | ~11.5 (11–13) | ~12.0 (9–12) | ~2.7 |
+| bleeding | ~19.6 (15–22) | ~23.1 (19–24) | ~8.3 (4–9) |
+
+### Honest read — this one does not flatter us
+
+- **Local path: essentially tied with mimalloc** (~11.5 vs ~12). The
+  ~2× single-thread lead above was mostly the inlining edge plus
+  mimalloc's per-free thread check and FFI boundary — advantages that
+  shrink under 8-thread scheduling/cache pressure. Tied with a
+  production allocator on the local path is a good v1 result, not a win.
+- **Cross-thread path: mimalloc is ~15% faster than us.** This is the
+  real weakness. We funnel *all* cross-thread frees for a heap through
+  **one** `remote_free` stack (one contended atomic per owner);
+  mimalloc shards them per page. That is exactly the deferred
+  optimization — snmalloc's per-destination batching or mimalloc's
+  per-page sharding — and the number quantifies what it would buy.
+- Both are 4–6× the system allocator on both patterns.
+
+- A first cold-start sample (our 8.2 vs mimalloc 3.2) was discarded as
+  an unwarmed-mimalloc outlier — recording it would have been dishonest.
+
+Bottom line: our v1 heap is **competitive with mimalloc, not superior** —
+tied locally, ~15% behind cross-thread — and clearly ahead of the system
+allocator. The cross-thread gap has a known, planned fix.
 
 ## What this does and does not prove
 
