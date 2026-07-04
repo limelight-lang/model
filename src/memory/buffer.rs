@@ -1,53 +1,46 @@
-//! Mutable buffers — a first-class allocation kind.
+//! Mutable buffers — a low-level growable-memory primitive.
 //!
-//! A growable region for in-place-mutable strings and byte buffers
-//! (`docs/memory-manager.md`, Mutable Buffers). Growth collides with the
-//! non-moving invariant (entities never change address), so a buffer is
-//! two parts:
+//! A `Buffer` is **not** a heap entity: it has no `RcHeader`, no class,
+//! no lifecycle. It is just three words — `{ data, len, capacity }` —
+//! describing a growable payload allocated in an arena. Higher-level
+//! types that *are* refcounted entities (a mutable string) embed a
+//! `Buffer` and put their own `RcHeader` in front of it.
 //!
 //! ```text
-//! handle (address is eternal):            payload (may be replaced):
-//! RcHeader | len | capacity | data  ───→  [bytes.................]
+//! Buffer (3 words, caller owns — stack or embedded):   payload (arena):
+//! { data, len, capacity }  ─────────────────────────→  [bytes.......]
 //! ```
 //!
-//! References hold the handle; only the payload moves. When the payload
-//! happens to sit at the arena's bump top (the classic `$s .= "x"`
-//! builder loop with nothing else allocating), growth extends in place
-//! with **zero copies** — an arena-only trick.
+//! Growth collides with the non-moving invariant, but a `Buffer` is not
+//! an entity anyone references by address — only its `data` payload
+//! moves, and the owner updates it. When the payload sits at the arena's
+//! bump top (the `$s .= "x"` builder loop with nothing else allocating),
+//! growth extends in place with **zero copies** — an arena-only trick.
 
 use crate::memory::arena::{Arena, round_up_8};
-use crate::refcount::{MemoryCategory, RcHeader};
 
-/// The eternal handle. `#[repr(C)]`, `RcHeader` at offset 0 like every
-/// heap entity. Buffers are mutable, so they are **not** COW.
+/// Low-level growable region. `#[repr(C)]` so a higher-level entity can
+/// embed it at a known offset. No `RcHeader` — this is a mechanism, not
+/// an object.
 #[repr(C)]
 pub struct Buffer {
-    pub rc: RcHeader,
+    pub data: *mut u8,
     pub len: usize,
     pub capacity: usize,
-    pub data: *mut u8,
 }
 
 impl Buffer {
-    /// Allocate a handle plus an initial payload in `arena`. The handle
-    /// is allocated first, then the payload, so the payload starts at
-    /// the bump top — the first growth can extend in place.
-    pub fn new_in(arena: &mut Arena, capacity: usize) -> *mut Buffer {
+    /// Create a buffer with an initial payload allocated in `arena`.
+    /// Returned by value — the caller owns the three words and stores
+    /// them wherever it likes (stack, or embedded in a larger entity).
+    pub fn new_in(arena: &mut Arena, capacity: usize) -> Buffer {
         let cap = round_up_8(capacity.max(8));
-
-        let handle = arena.alloc(size_of::<Buffer>()) as *mut Buffer;
         let data = arena.alloc(cap);
-
-        unsafe {
-            handle.write(Buffer {
-                // Phase 1: buffers live in the request arena.
-                rc: RcHeader::new(MemoryCategory::RequestArena, 0),
-                len: 0,
-                capacity: cap,
-                data,
-            });
+        Buffer {
+            data,
+            len: 0,
+            capacity: cap,
         }
-        handle
     }
 
     /// Ensure at least `min_capacity` bytes, returning the (possibly
@@ -100,7 +93,7 @@ mod tests {
     #[test]
     fn alloc_push_read_back() {
         let mut arena = Arena::new();
-        let buf = unsafe { &mut *Buffer::new_in(&mut arena, 4) };
+        let mut buf = Buffer::new_in(&mut arena, 4);
 
         buf.push_bytes(&mut arena, b"hello");
         assert_eq!(buf.as_slice(), b"hello");
@@ -110,7 +103,7 @@ mod tests {
     #[test]
     fn sufficient_capacity_is_a_noop() {
         let mut arena = Arena::new();
-        let buf = unsafe { &mut *Buffer::new_in(&mut arena, 64) };
+        let mut buf = Buffer::new_in(&mut arena, 64);
         let data0 = buf.data;
 
         let data1 = buf.ensure(&mut arena, 32);
@@ -121,7 +114,7 @@ mod tests {
     #[test]
     fn grows_in_place_at_bump_top() {
         let mut arena = Arena::new();
-        let buf = unsafe { &mut *Buffer::new_in(&mut arena, 8) };
+        let mut buf = Buffer::new_in(&mut arena, 8);
         let data0 = buf.data;
 
         // Nothing allocated after the payload: extend in place, same ptr.
@@ -133,7 +126,7 @@ mod tests {
     #[test]
     fn copies_when_not_at_bump_top() {
         let mut arena = Arena::new();
-        let buf = unsafe { &mut *Buffer::new_in(&mut arena, 8) };
+        let mut buf = Buffer::new_in(&mut arena, 8);
         buf.push_bytes(&mut arena, b"12345678");
         let data0 = buf.data;
 
@@ -151,7 +144,7 @@ mod tests {
         // allocating: the payload stays at the bump top the whole time,
         // so it never moves — O(1) amortized append with no copies.
         let mut arena = Arena::new();
-        let buf = unsafe { &mut *Buffer::new_in(&mut arena, 2) };
+        let mut buf = Buffer::new_in(&mut arena, 2);
         let initial_data = buf.data;
 
         for _ in 0..1000 {
@@ -165,11 +158,11 @@ mod tests {
     }
 
     #[test]
-    fn header_layout_matches_abi() {
-        // RcHeader at offset 0, then len, capacity, data.
-        assert_eq!(core::mem::offset_of!(Buffer, rc), 0);
+    fn is_three_words_no_header() {
+        // A buffer is a mechanism, not an entity: exactly data/len/cap.
+        assert_eq!(size_of::<Buffer>(), 3 * size_of::<usize>());
+        assert_eq!(core::mem::offset_of!(Buffer, data), 0);
         assert_eq!(core::mem::offset_of!(Buffer, len), 8);
         assert_eq!(core::mem::offset_of!(Buffer, capacity), 16);
-        assert_eq!(core::mem::offset_of!(Buffer, data), 24);
     }
 }

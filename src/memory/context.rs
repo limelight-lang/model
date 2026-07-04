@@ -74,13 +74,17 @@ pub unsafe extern "C" fn ll_arena_reset(ctx: *mut LLContext) {
     })
 }
 
-/// Allocate a mutable buffer (handle + initial payload).
+/// Initialize a mutable buffer into caller-provided storage `buf` (a
+/// 3-word `Buffer` slot the caller owns — e.g. a field of a mutable
+/// string entity), allocating its initial payload in the arena.
 ///
 /// # Safety
-/// Same contract as [`ll_arena_alloc`].
+/// Same contract as [`ll_arena_alloc`]; `buf` must point to writable
+/// storage for one [`Buffer`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_buffer_alloc(ctx: *mut LLContext, capacity: usize) -> *mut Buffer {
-    Buffer::new_in(resolve(ctx), capacity)
+pub unsafe extern "C" fn ll_buffer_init(ctx: *mut LLContext, buf: *mut Buffer, capacity: usize) {
+    let b = Buffer::new_in(resolve(ctx), capacity);
+    unsafe { buf.write(b) };
 }
 
 /// Ensure a buffer has at least `min_capacity` bytes; returns the
@@ -88,7 +92,7 @@ pub unsafe extern "C" fn ll_buffer_alloc(ctx: *mut LLContext, capacity: usize) -
 ///
 /// # Safety
 /// Same contract as [`ll_arena_alloc`]; `buf` must point to a live
-/// [`Buffer`] allocated in this context's arena.
+/// [`Buffer`] whose payload lives in this context's arena.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_buffer_ensure(
     ctx: *mut LLContext,

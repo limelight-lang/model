@@ -114,9 +114,9 @@ void   ll_arena_reserve(LLContext* ctx, size_t bytes);   /* compiler batch hook 
 void*  ll_heap_alloc(LLContext* ctx, size_t size);
 void*  ll_immortal_alloc(LLContext* ctx, size_t size);
 
-/* mutable buffers — first-class citizens, see below */
-LLBuffer* ll_buffer_alloc(LLContext* ctx, size_t capacity);
-void*     ll_buffer_ensure(LLContext* ctx, LLBuffer* buf, size_t min_capacity);
+/* mutable buffers — low-level primitive, caller owns the 3-word slot */
+void   ll_buffer_init(LLContext* ctx, Buffer* buf, size_t capacity);
+void*  ll_buffer_ensure(LLContext* ctx, Buffer* buf, size_t min_capacity);
 
 /* warm — real calls */
 void   ll_arena_track_destructor(LLContext* ctx, RcHeader* obj);
@@ -156,19 +156,21 @@ single-LLVM-version rule extends to a single-ABI-version rule).
 
 ## Mutable Buffers
 
-A first-class allocation kind at the API level: a growable region for
-in-place-mutable strings and byte buffers. May be optimized further
-later; the contract is fixed now.
-
-Growth collides with the non-moving invariant (entities never change
-address), so a buffer is **two parts**:
+A **low-level growable-memory primitive** — not a heap entity. A buffer
+has **no `RcHeader`**, no class, no lifecycle: it is exactly three words,
+`{ data, len, capacity }`. Whatever needs to be a refcounted entity (a
+mutable string) embeds a buffer and puts *its own* `RcHeader` in front.
+Keeping the buffer header-free is deliberate: it is a mechanism many
+things reuse, not an object.
 
 ```
-handle (address is eternal):            payload (may be replaced):
-RcHeader | len | capacity | data  ───→  [bytes.................]
+Buffer (3 words, caller owns — stack or embedded):   payload (arena):
+{ data, len, capacity }  ─────────────────────────→  [bytes.......]
 ```
 
-References hold the handle. Growth algorithm in `ll_buffer_ensure`:
+The buffer struct is not referenced by address the way entities are —
+only its `data` payload moves, and the owner updates the field. Growth
+algorithm in `ll_buffer_ensure`:
 
 1. `capacity` suffices → return `data`, zero work.
 2. Payload is the **top of its block's bump** → extend in place: move
