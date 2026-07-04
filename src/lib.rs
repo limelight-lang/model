@@ -7,5 +7,5 @@
 pub mod memory;
 pub mod refcount;
 
-pub use memory::{Arena, BlockPool, Heap, LLContext};
+pub use memory::{Arena, BlockPool, Heap, LLContext, LimelightAlloc};
 pub use refcount::{MemoryCategory, RcHeader};

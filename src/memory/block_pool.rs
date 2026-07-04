@@ -30,6 +30,10 @@ const REFILL_BATCH: usize = 4;
 pub const BLOCK_KIND_FREE: u32 = 0;
 pub const BLOCK_KIND_ARENA: u32 = 1;
 pub const BLOCK_KIND_HEAP: u32 = 2;
+/// A single pooled block holding one large object (8 KB..block payload).
+pub const BLOCK_KIND_LARGE: u32 = 3;
+/// An OS-direct, 32 KB-aligned run of blocks for a huge object.
+pub const BLOCK_KIND_LARGE_RUN: u32 = 4;
 
 /// Header in the first line of every block.
 ///

@@ -59,7 +59,10 @@ impl<G: GlobalAlloc> Alloc for Global<G> {
     }
     #[inline]
     unsafe fn f(&mut self, ptr: *mut u8, size: usize) {
-        unsafe { self.0.dealloc(ptr, Layout::from_size_align_unchecked(size, 8)) }
+        unsafe {
+            self.0
+                .dealloc(ptr, Layout::from_size_align_unchecked(size, 8))
+        }
     }
 }
 

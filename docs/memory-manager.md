@@ -286,11 +286,17 @@ all; the comparison does not transfer.
 1. `block_pool` — regions, carving, thread cache, global stack. ✓
 2. `arena` — bump, reserve, destructor list, reset + `LLContext` ABI. ✓
 3. `heap` — small-object freeing allocator (mimalloc model). ✓
-4. `immortal` — trivial specialization of arena.
-5. Large-object runs.
+4. `stdapi` — `GlobalAlloc` + C `malloc`/`free`/`calloc`/`realloc`
+   over the manager; size-less free via block-header dispatch;
+   large-single-block and OS-direct huge paths. ✓
+5. `immortal` — trivial specialization of arena.
 6. Mutable buffers — built on the heap (growable, individually freed).
 7. (later) cross-thread heap free; remembered set + arena-reset modes;
    MMTK tracing GC for cycles.
+
+Note: `stdapi` also completed the large-object paths (single pooled
+block for 8 KB..payload, OS-direct 32 KB-aligned run above), so the
+manager now serves any size through one standard surface.
 
 ## Test Plan
 
