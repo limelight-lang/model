@@ -20,13 +20,12 @@
 //! satisfied for free (covers malloc's 16-byte guarantee and
 //! `aligned_alloc` up to 256).
 //!
-//! **Thread-safety caveat (phase 1):** the large paths are thread-safe
-//! (pool and OS are), but the small path uses a *thread-local* heap, so
-//! an object allocated on one thread and freed on another is not yet
-//! supported (that is the deferred cross-thread-free work). Safe for
-//! single-threaded use and single-threaded benchmarks; do **not** install
-//! as the global allocator of a multi-threaded program until cross-thread
-//! free lands.
+//! **Thread-safety:** all paths are now multi-threaded. Large paths use
+//! the thread-safe pool/OS; the small path routes a cross-thread free to
+//! the owning heap's lock-free stack (see `heap`). The one remaining
+//! limit is thread-exit abandonment: blocks still holding objects when
+//! their owning thread exits are leaked rather than adopted. Fine for
+//! worker pools with long-lived threads.
 
 use std::alloc::{GlobalAlloc, Layout};
 
@@ -248,6 +247,7 @@ mod tests {
 
     #[test]
     fn small_roundtrip() {
+        let _g = crate::memory::block_pool::test_guard();
         unsafe {
             let p = ll_alloc(40, 16);
             assert!(!p.is_null());
@@ -259,6 +259,7 @@ mod tests {
 
     #[test]
     fn large_single_block_roundtrip() {
+        let _g = crate::memory::block_pool::test_guard();
         unsafe {
             let size = 20_000; // > 8 KB, < block payload
             let p = ll_alloc(size, 16);
@@ -273,6 +274,7 @@ mod tests {
 
     #[test]
     fn huge_os_direct_roundtrip() {
+        let _g = crate::memory::block_pool::test_guard();
         unsafe {
             let size = 200_000; // > block payload -> OS-direct run
             let p = ll_alloc(size, 16);
@@ -286,6 +288,7 @@ mod tests {
 
     #[test]
     fn realloc_grows_and_preserves() {
+        let _g = crate::memory::block_pool::test_guard();
         unsafe {
             let p = ll_alloc(16, 16);
             std::ptr::copy_nonoverlapping(b"hello".as_ptr(), p, 5);
@@ -297,6 +300,7 @@ mod tests {
 
     #[test]
     fn realloc_null_is_alloc() {
+        let _g = crate::memory::block_pool::test_guard();
         unsafe {
             let p = ll_realloc(std::ptr::null_mut(), 32, 16);
             assert!(!p.is_null());
@@ -306,6 +310,7 @@ mod tests {
 
     #[test]
     fn calloc_zeroes() {
+        let _g = crate::memory::block_pool::test_guard();
         unsafe {
             let p = ll_calloc(10, 8);
             assert!(!p.is_null());
@@ -318,6 +323,7 @@ mod tests {
 
     #[test]
     fn global_alloc_drives_a_vec() {
+        let _g = crate::memory::block_pool::test_guard();
         // Exercise the standard Rust interface end to end.
         let a = LimelightAlloc;
         unsafe {

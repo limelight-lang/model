@@ -101,6 +101,7 @@ mod tests {
 
     #[test]
     fn null_context_falls_back_to_thread_local() {
+        let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
         set_current_context(&mut ctx);
@@ -114,6 +115,7 @@ mod tests {
 
     #[test]
     fn explicit_context_wins() {
+        let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
 

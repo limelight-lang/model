@@ -236,12 +236,25 @@ impl BlockPool {
     }
 }
 
+/// Serializes memory tests that touch the process-global block pool.
+/// Tests share one global pool, so any test asserting on it (region
+/// counts, specific block reuse, the global free stack) must not run
+/// while another test carves or drains concurrently. Every memory unit
+/// test holds this for its duration. `into_inner` recovers a poisoned
+/// lock so one panicking test doesn't cascade.
+#[cfg(test)]
+pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn blocks_are_aligned_and_mask_finds_header() {
+        let _g = test_guard();
         let pool = BlockPool::global();
         let block = pool.get();
 
@@ -263,6 +276,7 @@ mod tests {
 
     #[test]
     fn put_then_get_reuses_without_new_region() {
+        let _g = test_guard();
         let pool = BlockPool::global();
         let block = pool.get();
         let regions_before = pool.regions_carved();
@@ -277,6 +291,7 @@ mod tests {
 
     #[test]
     fn dying_thread_returns_blocks_to_global_stack() {
+        let _g = test_guard();
         let pool = BlockPool::global();
 
         let block_addr = std::thread::spawn(|| {

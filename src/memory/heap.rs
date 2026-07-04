@@ -11,16 +11,33 @@
 //!   pagemap needed (jemalloc/snmalloc pay for those; our aligned blocks
 //!   give it for one AND).
 //! - **Free-list split** (mimalloc's core trick): `free` is where `alloc`
-//!   pops; `local_free` is where `free` pushes. When `free` empties, the
-//!   slow path moves `local_free → free`. A burst of frees never touches
-//!   the alloc hot path, and the periodic collect gives a deterministic
-//!   cadence to hang deferred work on later (RC decrements, GC).
+//!   pops; `local_free` is where a same-thread `free` pushes. When `free`
+//!   empties, the slow path moves `local_free → free`. A burst of local
+//!   frees never touches the alloc hot path.
 //! - **A fully-free block returns to the global pool** — real individual
 //!   reclamation, at block granularity.
 //!
-//! Phase 1 is single-threaded. Cross-thread free (mimalloc's atomic
-//! `xthread_free` per block, or snmalloc's MPSC-per-owner queue) arrives
-//! with the multi-threaded phase.
+//! ## Cross-thread free (multi-threaded)
+//!
+//! Each heap has a shared, thread-safe [`HeapShared`] holding a lock-free
+//! MPSC stack `remote_free`. A `free(ptr)` whose block is owned by
+//! *another* heap does one atomic push onto that owner's `remote_free`
+//! and touches nothing else — snmalloc's "message to the owner", one
+//! stack per owner (batching by destination is a later optimization).
+//! The owner drains `remote_free` on its slow path, returning slots to
+//! their blocks and reclaiming emptied blocks.
+//!
+//! `used` is therefore written **only by the owning thread** (on alloc,
+//! local free, and drain) — no atomics on it. A cross-thread free just
+//! parks the slot; the owner accounts for it at drain time.
+//!
+//! Not yet handled: **thread-exit abandonment**. If a thread with live
+//! heap blocks exits, blocks still holding objects (and any later
+//! cross-thread frees into them) are leaked rather than adopted by
+//! another thread (mimalloc adopts abandoned pages). Worker pools with
+//! long-lived threads are unaffected; documented as a known limit.
+
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::memory::block_pool::{
     BLOCK_KIND_HEAP, BLOCK_MASK, BLOCK_PAYLOAD, BlockHeader, BlockPool, LINE_SIZE,
@@ -29,7 +46,7 @@ use crate::memory::block_pool::{
 /// Size classes (bytes). Smallest class >= request is used. Chosen to
 /// keep internal fragmentation under ~25%: fine steps for small sizes,
 /// coarser as they grow. Requests above the last class go to the
-/// large-object path (not built yet).
+/// large-object path (see `stdapi`).
 pub const SIZE_CLASSES: &[usize] = &[
     16, 32, 48, 64, 80, 96, 112, 128, // step 16
     160, 192, 224, 256, // step 32
@@ -48,37 +65,45 @@ pub fn size_class_index(size: usize) -> Option<usize> {
     if size > MAX_SMALL {
         return None;
     }
-    // Linear scan is fine: the heap path is far cooler than the arena
-    // hot path. A lookup table can replace this if profiling asks.
     SIZE_CLASSES.iter().position(|&c| c >= size.max(1))
 }
 
-/// A free slot threads the per-block free list through its own first
-/// 8 bytes — zero metadata overhead.
+/// A free slot threads a free list through its own first 8 bytes — zero
+/// metadata overhead. Used for the per-block lists and the remote stack.
 #[repr(C)]
 struct FreeSlot {
     next: *mut FreeSlot,
 }
 
-/// Per-block header for a heap block. Overlays the block's first line;
-/// shares offset 0 (`kind`) with the pool's `BlockHeader`, so the two
-/// are a tagged union over the same memory.
+/// Shared, thread-safe part of a heap. Lives forever (leaked) so a
+/// block's `owner` pointer stays valid even after the owning thread
+/// exits. Its unique leaked address *is* the heap's identity (compared
+/// by pointer in `free`). There are only as many as there are heaps
+/// (roughly, threads).
+pub struct HeapShared {
+    /// Lock-free MPSC stack: any thread pushes a cross-thread-freed slot;
+    /// the owning thread drains the whole list at once.
+    remote_free: AtomicPtr<FreeSlot>,
+}
+
+/// Per-block header. Overlays the block's first line; shares offset 0
+/// (`kind`) with the pool's `BlockHeader` (tagged union over the memory).
 #[repr(C)]
 struct HeapBlockHeader {
     kind: u32,
     size_class: u32,
-    /// Live (allocated) slots. Block returns to the pool at zero.
+    /// Live slots (owner-written only). Block returns to the pool at 0.
     used: u32,
-    /// Total slots carved from this block.
     slots: u32,
-    /// `alloc` pops from here.
+    /// `alloc` pops from here (owner-only).
     free: *mut FreeSlot,
-    /// `free` pushes here; merged into `free` when `free` empties.
+    /// Same-thread `free` pushes here (owner-only).
     local_free: *mut FreeSlot,
-    /// Available-list links (blocks of this class that have room).
+    /// Owning heap — identifies local vs cross-thread free, and where a
+    /// cross-thread free posts.
+    owner: *const HeapShared,
     next: *mut HeapBlockHeader,
     prev: *mut HeapBlockHeader,
-    /// Is this block currently in its class's available list?
     linked: bool,
 }
 
@@ -89,10 +114,11 @@ impl HeapBlockHeader {
     }
 }
 
-/// Thread-local small-object heap. Holds, per size class, the head of a
-/// doubly-linked list of blocks that still have free slots.
+/// Thread-local small-object heap. Per size class it holds the head of a
+/// doubly-linked list of blocks that still have room.
 pub struct Heap {
     available: Vec<*mut HeapBlockHeader>,
+    shared: &'static HeapShared,
 }
 
 impl Default for Heap {
@@ -103,74 +129,141 @@ impl Default for Heap {
 
 impl Heap {
     pub fn new() -> Self {
+        let shared = Box::leak(Box::new(HeapShared {
+            remote_free: AtomicPtr::new(std::ptr::null_mut()),
+        }));
         Heap {
             available: vec![std::ptr::null_mut(); SIZE_CLASSES.len()],
+            shared,
         }
     }
 
-    /// Allocate at least `size` bytes. Returns null if `size` exceeds the
-    /// small-object range (large path not built yet).
+    /// Allocate at least `size` bytes, or null if `size` exceeds the
+    /// small-object range.
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         let ci = match size_class_index(size) {
             Some(ci) => ci,
             None => return std::ptr::null_mut(),
         };
 
-        let mut block = self.available[ci];
-        if block.is_null() {
-            block = self.refill(ci);
-        }
+        loop {
+            let block = self.available[ci];
 
-        unsafe {
-            let b = &mut *block;
+            if block.is_null() {
+                // Slow path: reclaim cross-thread frees before growing.
+                if !self.shared.remote_free.load(Ordering::Relaxed).is_null() {
+                    self.drain_remote();
+                    if !self.available[ci].is_null() {
+                        continue;
+                    }
+                }
+                self.refill(ci);
+                continue;
+            }
+
+            let b = unsafe { &mut *block };
 
             if b.free.is_null() {
-                // Slow path: collect this block's deferred frees.
+                // Collect this block's local frees.
                 b.free = b.local_free;
                 b.local_free = std::ptr::null_mut();
+
+                if b.free.is_null() {
+                    // Block genuinely full — unlink and try the next.
+                    self.unlink(ci, block);
+                    continue;
+                }
             }
 
             let slot = b.free;
-            b.free = (*slot).next;
+            b.free = unsafe { (*slot).next };
             b.used += 1;
-
-            // Block now full — drop it from the available list.
-            if b.free.is_null() && b.local_free.is_null() {
-                self.unlink(ci, block);
-            }
-
-            slot as *mut u8
+            return slot as *mut u8;
         }
     }
 
-    /// Free a slot previously returned by [`alloc`].
+    /// Free a slot from [`alloc`]. If this thread owns the block it is a
+    /// cheap local free; otherwise the slot is posted to the owner's
+    /// lock-free `remote_free` stack.
     ///
     /// # Safety
-    /// `ptr` must have come from this heap and not been freed already.
+    /// `ptr` must be a live allocation from some heap and not freed yet.
     pub unsafe fn free(&mut self, ptr: *mut u8) {
         let block = HeapBlockHeader::of_ptr(ptr);
+        let owner = unsafe { (*block).owner };
+
+        if std::ptr::eq(owner, self.shared) {
+            unsafe { self.free_local(block, ptr) };
+        } else {
+            // Cross-thread: one atomic push onto the owner's stack.
+            let slot = ptr as *mut FreeSlot;
+            let remote = unsafe { &(*owner).remote_free };
+            let mut head = remote.load(Ordering::Relaxed);
+            loop {
+                unsafe { (*slot).next = head };
+                match remote.compare_exchange_weak(head, slot, Ordering::Release, Ordering::Relaxed)
+                {
+                    Ok(_) => break,
+                    Err(h) => head = h,
+                }
+            }
+        }
+    }
+
+    /// Owner-side free of `ptr` into its block.
+    unsafe fn free_local(&mut self, block: *mut HeapBlockHeader, ptr: *mut u8) {
         let b = unsafe { &mut *block };
         let ci = b.size_class as usize;
 
-        // Push to the deferred list — never touches the alloc hot path.
         let slot = ptr as *mut FreeSlot;
         unsafe { (*slot).next = b.local_free };
         b.local_free = slot;
         b.used -= 1;
 
         if b.used == 0 {
-            // Fully free: reclaim the whole block to the global pool.
             if b.linked {
                 self.unlink(ci, block);
             }
-            b.kind = 0; // BLOCK_KIND_FREE, set again by pool.put
+            b.kind = 0;
             BlockPool::global().put(block as *mut BlockHeader);
             return;
         }
 
-        // Was full (unlinked) and now has a slot — put it back.
         if !b.linked {
             self.link(ci, block);
+        }
+    }
+
+    /// Drain the owner's `remote_free` stack: return each cross-thread
+    /// freed slot to its block, reclaiming emptied blocks. Owner thread
+    /// only.
+    fn drain_remote(&mut self) {
+        let mut slot = self
+            .shared
+            .remote_free
+            .swap(std::ptr::null_mut(), Ordering::Acquire);
+
+        while !slot.is_null() {
+            let next = unsafe { (*slot).next };
+            let block = HeapBlockHeader::of_ptr(slot as *mut u8);
+            let b = unsafe { &mut *block };
+            let ci = b.size_class as usize;
+
+            unsafe { (*slot).next = b.local_free };
+            b.local_free = slot;
+            b.used -= 1;
+
+            if b.used == 0 {
+                if b.linked {
+                    self.unlink(ci, block);
+                }
+                b.kind = 0;
+                BlockPool::global().put(block as *mut BlockHeader);
+            } else if !b.linked {
+                self.link(ci, block);
+            }
+
+            slot = next;
         }
     }
 
@@ -181,7 +274,6 @@ impl Heap {
         let block = BlockPool::global().get() as *mut HeapBlockHeader;
         let slots = (BLOCK_PAYLOAD / class_size) as u32;
 
-        // Thread a free list through every slot.
         let base = (block as *mut u8).wrapping_add(LINE_SIZE);
         let mut head: *mut FreeSlot = std::ptr::null_mut();
         for i in (0..slots as usize).rev() {
@@ -198,6 +290,7 @@ impl Heap {
                 slots,
                 free: head,
                 local_free: std::ptr::null_mut(),
+                owner: self.shared,
                 next: std::ptr::null_mut(),
                 prev: std::ptr::null_mut(),
                 linked: false,
@@ -207,7 +300,6 @@ impl Heap {
         block
     }
 
-    /// Insert `block` at the head of class `ci`'s available list.
     fn link(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         let head = self.available[ci];
         unsafe {
@@ -221,7 +313,6 @@ impl Heap {
         self.available[ci] = block;
     }
 
-    /// Remove `block` from class `ci`'s available list.
     fn unlink(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         unsafe {
             let prev = (*block).prev;
@@ -257,20 +348,20 @@ mod tests {
 
     #[test]
     fn size_class_selection() {
-        assert_eq!(size_class_index(1), Some(0)); // -> 16
+        assert_eq!(size_class_index(1), Some(0));
         assert_eq!(size_class_index(16), Some(0));
-        assert_eq!(size_class_index(17), Some(1)); // -> 32
+        assert_eq!(size_class_index(17), Some(1));
         assert_eq!(size_class_index(8192), Some(SIZE_CLASSES.len() - 1));
-        assert_eq!(size_class_index(8193), None); // large path
+        assert_eq!(size_class_index(8193), None);
     }
 
     #[test]
     fn alloc_is_aligned_and_sized() {
+        let _g = crate::memory::block_pool::test_guard();
         let mut heap = Heap::new();
         let a = heap.alloc(40);
         let b = heap.alloc(40);
         assert!(!a.is_null());
-        // Both in the 48-byte class, so 48 apart within the block.
         assert_eq!((b as usize).wrapping_sub(a as usize), 48);
         unsafe {
             heap.free(a);
@@ -280,6 +371,7 @@ mod tests {
 
     #[test]
     fn free_then_alloc_reuses_slot() {
+        let _g = crate::memory::block_pool::test_guard();
         let mut heap = Heap::new();
         let a = heap.alloc(64);
         unsafe { heap.free(a) };
@@ -290,15 +382,14 @@ mod tests {
 
     #[test]
     fn empty_block_returns_to_pool() {
+        let _g = crate::memory::block_pool::test_guard();
         let pool = BlockPool::global();
         let mut heap = Heap::new();
 
-        // Warm up so the pool has a region already carved.
         let warm = heap.alloc(64);
         unsafe { heap.free(warm) };
         let regions_before = pool.regions_carved();
 
-        // Fill exactly one block's worth of one class, then free all.
         let class = 64usize;
         let slots = BLOCK_PAYLOAD / class;
         let ptrs: Vec<_> = (0..slots).map(|_| heap.alloc(class)).collect();
@@ -306,28 +397,21 @@ mod tests {
             unsafe { heap.free(*p) };
         }
 
-        // The now-empty block went back; a fresh alloc must not carve a
-        // new region.
         let p = heap.alloc(64);
-        assert_eq!(
-            pool.regions_carved(),
-            regions_before,
-            "empty block should have returned to the pool for reuse"
-        );
+        assert_eq!(pool.regions_carved(), regions_before);
         unsafe { heap.free(p) };
     }
 
     #[test]
-    fn full_block_refills_from_pool_and_keeps_serving() {
+    fn full_block_refills_and_serves_distinct_slots() {
+        let _g = crate::memory::block_pool::test_guard();
         let mut heap = Heap::new();
         let class = 128usize;
         let slots = BLOCK_PAYLOAD / class;
 
-        // Allocate more than one block's worth — forces a refill.
         let ptrs: Vec<_> = (0..slots + 10).map(|_| heap.alloc(class)).collect();
         assert!(ptrs.iter().all(|p| !p.is_null()));
 
-        // All distinct.
         let mut sorted = ptrs.clone();
         sorted.sort();
         sorted.dedup();
@@ -339,26 +423,81 @@ mod tests {
     }
 
     #[test]
-    fn local_free_split_collects_on_slow_path() {
-        // Fill a class block, free everything (goes to local_free), then
-        // reallocate: alloc must collect local_free back into free.
+    fn too_large_returns_null() {
         let mut heap = Heap::new();
-        let n = 50;
-        let ptrs: Vec<_> = (0..n).map(|_| heap.alloc(32)).collect();
-        for p in &ptrs {
-            unsafe { heap.free(*p) };
-        }
-        // These allocs are served from collected local_free slots.
-        let again: Vec<_> = (0..n).map(|_| heap.alloc(32)).collect();
-        assert!(again.iter().all(|p| !p.is_null()));
-        for p in again {
-            unsafe { heap.free(p) };
-        }
+        assert!(heap.alloc(9000).is_null());
     }
 
     #[test]
-    fn too_large_returns_null() {
-        let mut heap = Heap::new();
-        assert!(heap.alloc(9000).is_null(), "large path not built yet");
+    fn cross_thread_free_is_correct() {
+        let _g = crate::memory::block_pool::test_guard();
+        use std::sync::mpsc;
+        use std::thread;
+
+        const N: u64 = 5000;
+        let (tx, rx) = mpsc::channel::<usize>();
+
+        // Producer: allocate on its own heap, stamp each with its index,
+        // hand the pointer to the consumer, and keep allocating (so its
+        // slow path drains the incoming cross-thread frees concurrently).
+        let producer = thread::spawn(move || {
+            with_thread_heap(|h| {
+                for i in 0..N {
+                    let p = h.alloc(24);
+                    unsafe { (p as *mut u64).write(i) };
+                    tx.send(p as usize).unwrap();
+                    // extra churn to exercise the drain path
+                    let t = h.alloc(24);
+                    unsafe { h.free(t) };
+                }
+            });
+        });
+
+        // Consumer (this thread): verify each value survived, then free
+        // cross-thread (posts to the producer's remote stack).
+        let mut count = 0u64;
+        for _ in 0..N {
+            let p = rx.recv().unwrap() as *mut u8;
+            let v = unsafe { *(p as *mut u64) };
+            assert!(v < N, "value corrupted across threads");
+            with_thread_heap(|h| unsafe { h.free(p) });
+            count += 1;
+        }
+        assert_eq!(count, N);
+        producer.join().unwrap();
+    }
+
+    #[test]
+    fn many_threads_alloc_free_no_corruption() {
+        let _g = crate::memory::block_pool::test_guard();
+        use std::thread;
+
+        let handles: Vec<_> = (0..8)
+            .map(|t| {
+                thread::spawn(move || {
+                    with_thread_heap(|h| {
+                        let mut live = Vec::new();
+                        for i in 0..2000usize {
+                            let size = 16 + (i * 8 + t) % 512;
+                            let p = h.alloc(size);
+                            assert!(!p.is_null());
+                            unsafe { (p as *mut u8).write((t as u8).wrapping_add(1)) };
+                            live.push(p);
+                            if live.len() > 100 {
+                                let victim = live.swap_remove(i % live.len());
+                                unsafe { h.free(victim) };
+                            }
+                        }
+                        for p in live {
+                            unsafe { h.free(p) };
+                        }
+                    });
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }

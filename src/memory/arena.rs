@@ -146,6 +146,7 @@ mod tests {
 
     #[test]
     fn allocations_are_sequential_and_rounded() {
+        let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
 
         let a = arena.alloc(40);
@@ -161,6 +162,7 @@ mod tests {
 
     #[test]
     fn slow_path_takes_new_block_exactly_at_exhaustion() {
+        let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
 
         let first = arena.alloc(8);
@@ -180,6 +182,7 @@ mod tests {
 
     #[test]
     fn reserve_prevents_mid_loop_refill() {
+        let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
         arena.reserve(100 * 40);
 
@@ -192,6 +195,7 @@ mod tests {
 
     #[test]
     fn extend_in_place_only_at_bump_top() {
+        let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
 
         let buf = arena.alloc(64);
@@ -206,6 +210,7 @@ mod tests {
 
     #[test]
     fn reset_hands_destructors_and_recycles_blocks() {
+        let _g = crate::memory::block_pool::test_guard();
         let pool = BlockPool::global();
         let mut arena = Arena::new();
 
