@@ -9,7 +9,7 @@ use crate::memory::block_pool::{BLOCK_KIND_ARENA, BLOCK_PAYLOAD, BlockHeader, Bl
 use crate::refcount::RcHeader;
 
 #[inline]
-fn round_up_8(size: usize) -> usize {
+pub(crate) fn round_up_8(size: usize) -> usize {
     (size + 7) & !7
 }
 

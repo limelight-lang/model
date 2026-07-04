@@ -8,6 +8,7 @@
 use std::cell::Cell;
 
 use crate::memory::arena::Arena;
+use crate::memory::buffer::Buffer;
 use crate::refcount::RcHeader;
 
 /// The runtime context of the executing request. Grows over time
@@ -71,6 +72,31 @@ pub unsafe extern "C" fn ll_arena_reset(ctx: *mut LLContext) {
     resolve(ctx).reset(|_obj| {
         // TODO(object-lifecycle): call the pre-destructor vtable slot.
     })
+}
+
+/// Allocate a mutable buffer (handle + initial payload).
+///
+/// # Safety
+/// Same contract as [`ll_arena_alloc`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_buffer_alloc(ctx: *mut LLContext, capacity: usize) -> *mut Buffer {
+    Buffer::new_in(resolve(ctx), capacity)
+}
+
+/// Ensure a buffer has at least `min_capacity` bytes; returns the
+/// (possibly relocated) data pointer.
+///
+/// # Safety
+/// Same contract as [`ll_arena_alloc`]; `buf` must point to a live
+/// [`Buffer`] allocated in this context's arena.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_buffer_ensure(
+    ctx: *mut LLContext,
+    buf: *mut Buffer,
+    min_capacity: usize,
+) -> *mut u8 {
+    let arena = resolve(ctx);
+    unsafe { (*buf).ensure(arena, min_capacity) }
 }
 
 #[cfg(test)]
