@@ -222,8 +222,9 @@ pub unsafe extern "C" fn ll_aligned_alloc(align: usize, size: usize) -> *mut u8 
 // --- Rust GlobalAlloc -----------------------------------------------------
 
 /// A `GlobalAlloc` over the Limelight memory manager. Install with
-/// `#[global_allocator] static A: LimelightAlloc = LimelightAlloc;` —
-/// **single-threaded programs only** until cross-thread free lands.
+/// `#[global_allocator] static A: LimelightAlloc = LimelightAlloc;`.
+/// Multi-threaded; the one limit is thread-exit abandonment (see the
+/// module doc).
 pub struct LimelightAlloc;
 
 unsafe impl GlobalAlloc for LimelightAlloc {
