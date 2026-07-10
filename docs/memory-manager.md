@@ -103,9 +103,9 @@ fit for what we already built). See `src/memory/heap.rs`.
 - **A fully-free block returns to the global pool** — real individual
   reclamation at block granularity.
 
-Phase 1 is single-threaded. Cross-thread free (mimalloc's atomic
-`xthread_free` per block, or snmalloc's MPSC-per-owner queue with better
-batching — decided then) arrives with the multi-threaded phase.
+Cross-thread free is implemented: snmalloc's MPSC-per-owner queue
+(`remote_free`), not a shared stack — see `src/memory/heap.rs`.
+Per-destination batching at the sender is a later optimization.
 
 This heap is the freeing allocator for the long-lived / GC-heap category.
 A tracing collector for cycles (MMTK Immix per the RFC) layers on top
@@ -285,14 +285,15 @@ all; the comparison does not transfer.
 
 1. `block_pool` — regions, carving, thread cache, global stack. ✓
 2. `arena` — bump, reserve, destructor list, reset + `LLContext` ABI. ✓
-3. `heap` — small-object freeing allocator (mimalloc model). ✓
+3. `heap` — small-object freeing allocator (mimalloc model), including
+   cross-thread free (`remote_free` MPSC-per-owner queue). ✓
 4. `stdapi` — `GlobalAlloc` + C `malloc`/`free`/`calloc`/`realloc`
    over the manager; size-less free via block-header dispatch;
    large-single-block and OS-direct huge paths. ✓
 5. `immortal` — trivial specialization of arena.
 6. Mutable buffers — built on the heap (growable, individually freed).
-7. (later) cross-thread heap free; remembered set + arena-reset modes;
-   MMTK tracing GC for cycles.
+7. (later) category barrier / write barrier + remembered set +
+   arena-reset promotion modes; MMTK tracing GC for cycles.
 
 Note: `stdapi` also completed the large-object paths (single pooled
 block for 8 KB..payload, OS-direct 32 KB-aligned run above), so the
