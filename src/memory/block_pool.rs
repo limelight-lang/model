@@ -34,6 +34,8 @@ pub const BLOCK_KIND_HEAP: u32 = 2;
 pub const BLOCK_KIND_LARGE: u32 = 3;
 /// An OS-direct, 32 KB-aligned run of blocks for a huge object.
 pub const BLOCK_KIND_LARGE_RUN: u32 = 4;
+/// Immortal-region block: bump-allocated, never returned to the pool.
+pub const BLOCK_KIND_IMMORTAL: u32 = 5;
 
 /// Header in the first line of every block.
 ///

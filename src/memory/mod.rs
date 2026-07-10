@@ -7,6 +7,7 @@ pub mod arena;
 pub mod block_pool;
 pub mod context;
 pub mod heap;
+pub mod immortal;
 pub mod stdapi;
 
 pub use arena::Arena;

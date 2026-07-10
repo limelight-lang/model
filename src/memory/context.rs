@@ -74,6 +74,17 @@ pub unsafe extern "C" fn ll_arena_reset(ctx: *mut LLContext) {
     })
 }
 
+/// Allocate immortal memory (never freed: class metadata, interned
+/// strings). `ctx` is accepted for ABI uniformity but ignored — the
+/// immortal region is process-global.
+///
+/// # Safety
+/// Callable from any thread with an initialized runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_immortal_alloc(_ctx: *mut LLContext, size: usize) -> *mut u8 {
+    crate::memory::immortal::immortal_alloc(size)
+}
+
 /// Allocate a small long-lived object on the thread heap (individually
 /// freeable, unlike arena objects). `ctx` is accepted for ABI uniformity
 /// but the heap is thread-persistent, not per-request.
