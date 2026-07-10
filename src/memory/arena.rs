@@ -4,6 +4,13 @@
 //! slow path takes a block from the global pool. Nothing is freed
 //! per-object: `reset` hands the destructor list to the caller and
 //! returns every block to the pool.
+//!
+//! **The arena is self-contained** (`rfc/model/memory/arenas.md`
+//! implementation note): its bookkeeping lives in memory it already
+//! owns, not in side `Vec`s. The block list threads through the block
+//! headers themselves; the destructor and large-payload logs are
+//! segment chains allocated from the arena's own bump. Everything dies
+//! together at reset, for free.
 
 use crate::memory::block_pool::{BLOCK_KIND_ARENA, BLOCK_PAYLOAD, BlockHeader, BlockPool};
 use crate::refcount::RcHeader;
@@ -15,14 +22,37 @@ pub(crate) fn round_up_8(size: usize) -> usize {
     size.saturating_add(7) & !7
 }
 
+/// Records per log segment: 16-byte header + 500 words = 4016 bytes,
+/// comfortably within a block payload. Segments chain newest-first;
+/// they are never copied (unlike a doubling buffer, a chain has no
+/// upper bound from the single-block alloc limit).
+const LOG_SEG_RECORDS: usize = 500;
+
+#[repr(C)]
+struct LogSegment {
+    next: *mut LogSegment,
+    count: usize,
+    records: [usize; LOG_SEG_RECORDS],
+}
+
+/// Which in-arena log a record goes to.
+#[derive(Clone, Copy)]
+enum Log {
+    Destructors,
+    Larges,
+}
+
 pub struct Arena {
     bump: *mut u8,
     limit: *mut u8,
-    blocks: Vec<*mut BlockHeader>,
-    destructors: Vec<*mut RcHeader>,
-    /// OS-direct payloads owned by this arena (buffers larger than a
-    /// block); freed at reset like everything else the arena owns.
-    larges: Vec<*mut u8>,
+    /// Newest-first chain of owned blocks, linked through the block
+    /// headers' own `next` field.
+    blocks: *mut BlockHeader,
+    /// Objects awaiting a pre-destructor at reset (in-arena log).
+    destructors: *mut LogSegment,
+    /// OS-direct payloads owned by this arena — buffers larger than a
+    /// block — freed at reset like everything else (in-arena log).
+    larges: *mut LogSegment,
 }
 
 impl Default for Arena {
@@ -36,9 +66,9 @@ impl Arena {
         Arena {
             bump: std::ptr::null_mut(),
             limit: std::ptr::null_mut(),
-            blocks: Vec::new(),
-            destructors: Vec::new(),
-            larges: Vec::new(),
+            blocks: std::ptr::null_mut(),
+            destructors: std::ptr::null_mut(),
+            larges: std::ptr::null_mut(),
         }
     }
 
@@ -121,7 +151,7 @@ impl Arena {
         assert!(size > BLOCK_PAYLOAD, "block-sized allocations use alloc");
         let p = unsafe { crate::memory::stdapi::ll_alloc(size, 16) };
         assert!(!p.is_null(), "OS refused a {size}-byte allocation");
-        self.larges.push(p);
+        self.log_push(Log::Larges, p as usize);
         p
     }
 
@@ -129,32 +159,99 @@ impl Arena {
     /// hands them back to the caller (the object-lifecycle layer owns
     /// the actual `__destruct` protocol).
     pub fn track_destructor(&mut self, obj: *mut RcHeader) {
-        self.destructors.push(obj);
+        self.log_push(Log::Destructors, obj as usize);
     }
 
     /// End of request: run pre-destructors via the callback, then
-    /// return every block to the pool. O(blocks), not O(objects).
+    /// return every block to the pool. O(blocks + log records), not
+    /// O(objects).
     pub fn reset(&mut self, mut run_destructor: impl FnMut(*mut RcHeader)) {
-        for obj in self.destructors.drain(..) {
-            run_destructor(obj);
+        // 1. Destructors. Taken in a loop: a destructor may track new
+        //    destructors (allocating into this arena is still legal
+        //    here), which start a fresh chain.
+        loop {
+            let head = self.destructors;
+            if head.is_null() {
+                break;
+            }
+            self.destructors = std::ptr::null_mut();
+            Self::drain_log(head, |rec| run_destructor(rec as *mut RcHeader));
         }
 
+        // 2. OS-direct payloads (their log lives in blocks that are
+        //    still alive at this point).
+        let larges = self.larges;
+        self.larges = std::ptr::null_mut();
+        Self::drain_log(larges, |rec| unsafe {
+            crate::memory::stdapi::ll_free(rec as *mut u8)
+        });
+
+        // 3. Blocks, the logs' own memory included. Read the chain link
+        //    before `put` — the pool reuses the same field.
         let pool = BlockPool::global();
-        for block in self.blocks.drain(..) {
+        let mut block = self.blocks;
+        self.blocks = std::ptr::null_mut();
+        while !block.is_null() {
+            let next = unsafe { (*block).next };
             pool.put(block);
-        }
-        for p in self.larges.drain(..) {
-            unsafe { crate::memory::stdapi::ll_free(p) };
+            block = next;
         }
 
         self.bump = std::ptr::null_mut();
         self.limit = std::ptr::null_mut();
     }
 
+    /// Append a record to an in-arena log, growing the segment chain
+    /// from the arena's own bump memory.
+    fn log_push(&mut self, which: Log, value: usize) {
+        let head = match which {
+            Log::Destructors => self.destructors,
+            Log::Larges => self.larges,
+        };
+
+        let head = if head.is_null() || unsafe { (*head).count } == LOG_SEG_RECORDS {
+            let seg = self.alloc(size_of::<LogSegment>()) as *mut LogSegment;
+            unsafe {
+                (*seg).next = head;
+                (*seg).count = 0;
+            }
+            seg
+        } else {
+            head
+        };
+
+        unsafe {
+            let c = (*head).count;
+            (*head).records.as_mut_ptr().add(c).write(value);
+            (*head).count = c + 1;
+        }
+
+        match which {
+            Log::Destructors => self.destructors = head,
+            Log::Larges => self.larges = head,
+        }
+    }
+
+    /// Visit every record of a segment chain (newest segment first).
+    fn drain_log(head: *mut LogSegment, mut f: impl FnMut(usize)) {
+        let mut seg = head;
+        while !seg.is_null() {
+            unsafe {
+                for i in 0..(*seg).count {
+                    f((*seg).records.as_ptr().add(i).read());
+                }
+                seg = (*seg).next;
+            }
+        }
+    }
+
     fn fresh_block(&mut self) {
         let block = BlockPool::global().get();
-        unsafe { (*block).kind = BLOCK_KIND_ARENA };
-        self.blocks.push(block);
+        unsafe {
+            (*block).kind = BLOCK_KIND_ARENA;
+            (*block).next = self.blocks;
+        }
+        self.blocks = block;
         self.bump = BlockHeader::payload_start(block);
         self.limit = BlockHeader::end(block);
     }
@@ -257,6 +354,31 @@ mod tests {
             !arena.try_extend_in_place(buf, 128, 256),
             "no longer the top - must refuse"
         );
+    }
+
+    #[test]
+    fn destructor_log_survives_segment_growth() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+
+        // Three segments' worth of tracked objects.
+        let n = LOG_SEG_RECORDS * 2 + 137;
+        let objs: Vec<*mut RcHeader> = (0..n)
+            .map(|_| {
+                let obj = arena.alloc(16) as *mut RcHeader;
+                unsafe { obj.write(RcHeader::new(MemoryCategory::RequestArena, 0)) };
+                arena.track_destructor(obj);
+                obj
+            })
+            .collect();
+
+        let mut ran = Vec::new();
+        arena.reset(|o| ran.push(o));
+
+        assert_eq!(ran.len(), n, "every tracked destructor must be delivered");
+        let expected: std::collections::HashSet<_> = objs.iter().map(|p| *p as usize).collect();
+        let got: std::collections::HashSet<_> = ran.iter().map(|p| *p as usize).collect();
+        assert_eq!(got, expected, "same set of objects, order unspecified");
     }
 
     #[test]

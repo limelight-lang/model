@@ -49,8 +49,10 @@ pub const BLOCK_KIND_BUFFER: u32 = 6;
 pub struct BlockHeader {
     pub kind: u32,
     reserved: u32,
-    /// Free-list link; meaningful only while the block sits in the pool.
-    next: *mut BlockHeader,
+    /// Free-list link while the block sits in the pool. While a block
+    /// is owned, the owner may reuse it as its own chain link (the
+    /// arena threads its block list through here — no side `Vec`).
+    pub(crate) next: *mut BlockHeader,
 }
 
 impl BlockHeader {
