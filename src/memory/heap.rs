@@ -481,7 +481,7 @@ mod tests {
                             let size = 16 + (i * 8 + t) % 512;
                             let p = h.alloc(size);
                             assert!(!p.is_null());
-                            unsafe { (p as *mut u8).write((t as u8).wrapping_add(1)) };
+                            unsafe { p.write((t as u8).wrapping_add(1)) };
                             live.push(p);
                             if live.len() > 100 {
                                 let victim = live.swap_remove(i % live.len());

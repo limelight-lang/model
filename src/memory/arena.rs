@@ -10,7 +10,9 @@ use crate::refcount::RcHeader;
 
 #[inline]
 pub(crate) fn round_up_8(size: usize) -> usize {
-    (size + 7) & !7
+    // Saturating: a near-usize::MAX size must stay huge (and fail the
+    // bump check) rather than wrap to a small number.
+    size.saturating_add(7) & !7
 }
 
 pub struct Arena {
@@ -42,11 +44,17 @@ impl Arena {
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         let size = round_up_8(size);
         let p = self.bump;
-        let next = p.wrapping_add(size);
 
-        if !p.is_null() && next <= self.limit {
-            self.bump = next;
-            return p;
+        // checked_add: `size` is caller-controlled ABI input; an
+        // overflowed `next` must reach the slow path's size assert,
+        // not wrap past the limit check.
+        if !p.is_null() {
+            if let Some(next) = (p as usize).checked_add(size) {
+                if next <= self.limit as usize {
+                    self.bump = next as *mut u8;
+                    return p;
+                }
+            }
         }
 
         self.alloc_slow(size)
@@ -90,9 +98,14 @@ impl Arena {
         let old_size = round_up_8(old_size);
         let new_size = round_up_8(new_size);
 
-        if p.wrapping_add(old_size) == self.bump && p.wrapping_add(new_size) <= self.limit {
-            self.bump = p.wrapping_add(new_size);
-            return true;
+        if p.wrapping_add(old_size) == self.bump {
+            // checked_add: same overflow discipline as `alloc`.
+            if let Some(new_end) = (p as usize).checked_add(new_size) {
+                if new_end <= self.limit as usize {
+                    self.bump = new_end as *mut u8;
+                    return true;
+                }
+            }
         }
 
         false
@@ -191,6 +204,27 @@ mod tests {
             let p = arena.alloc(40);
             assert_eq!(BlockHeader::of_ptr(p), block, "reserve was violated");
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "large objects take the dedicated-run path")]
+    fn absurd_size_fails_cleanly_instead_of_wrapping() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        arena.alloc(8); // non-null bump: the fast path is reachable
+        arena.alloc(usize::MAX - 64); // must hit the slow-path assert
+    }
+
+    #[test]
+    fn extend_refuses_absurd_size_instead_of_wrapping() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let buf = arena.alloc(64);
+        assert!(!arena.try_extend_in_place(buf, 64, usize::MAX - 64));
+        assert!(
+            arena.try_extend_in_place(buf, 64, 128),
+            "sane size still extends"
+        );
     }
 
     #[test]
