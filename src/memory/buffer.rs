@@ -70,7 +70,7 @@ impl Default for Buffer {
 /// Target capacity for a growth request: the mode decides the slack.
 /// `hint` is the caller's growth recommendation (0 = unknown); the
 /// active mode may override it, down to exact-size under `Critical`.
-fn desired_capacity(current: usize, min_capacity: usize, hint: usize) -> usize {
+pub(crate) fn desired_capacity(current: usize, min_capacity: usize, hint: usize) -> usize {
     match pressure_mode() {
         PressureMode::Plenty => min_capacity.max(current.saturating_mul(2)).max(hint),
         PressureMode::Tight => min_capacity.max(hint),

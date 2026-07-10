@@ -36,6 +36,8 @@ pub const BLOCK_KIND_LARGE: u32 = 3;
 pub const BLOCK_KIND_LARGE_RUN: u32 = 4;
 /// Immortal-region block: bump-allocated, never returned to the pool.
 pub const BLOCK_KIND_IMMORTAL: u32 = 5;
+/// Long-lived buffer-arena block: bump + per-block free list.
+pub const BLOCK_KIND_BUFFER: u32 = 6;
 
 /// Header in the first line of every block.
 ///

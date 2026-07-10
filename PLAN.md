@@ -34,10 +34,14 @@ actor/GC coordination via mailbox and the message-payload table
   `ll_heap_alloc`. No explicit match-arm needed in `ll_free`/`usable_size`
   (falls to the existing no-op default, same as `BLOCK_KIND_ARENA` today);
   bump-style allocation has no per-object size tracking anyway.
-- [ ] **Dedicated buffer arena (`BLOCK_KIND_BUFFER`)** — request-arena
-  buffer path done (`buffer.rs`: `Buffer`, `ll_buffer_ensure`,
-  extend-in-place / copy growth, OS-direct routing, pressure-mode flag);
-  the long-lived buffer arena itself remains. See
+- [x] **Dedicated buffer arena (`BLOCK_KIND_BUFFER`)** — done in two
+  layers: `buffer.rs` (request-arena path: `Buffer`, `ll_buffer_ensure`,
+  extend-in-place / copy growth, OS-direct routing, pressure-mode flag)
+  and `buffer_arena.rs` (long-lived: per-block free list, live-chunk
+  count, bounded critical-mode search, `ll_buffer_ensure_longlived`).
+  Residual: *K* and mode thresholds stay in the blocked item below;
+  cross-thread free of long-lived buffers deferred until a consumer
+  needs it (heap.rs remote-free is the template). See
   `rfc/model/memory/buffers.md` for the full design, updated this
   session: size routing (payloads > block payload go OS-direct, the
   free-list machinery never sees them), per-block intrusive free list
