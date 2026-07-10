@@ -20,6 +20,9 @@ pub struct Arena {
     limit: *mut u8,
     blocks: Vec<*mut BlockHeader>,
     destructors: Vec<*mut RcHeader>,
+    /// OS-direct payloads owned by this arena (buffers larger than a
+    /// block); freed at reset like everything else the arena owns.
+    larges: Vec<*mut u8>,
 }
 
 impl Default for Arena {
@@ -35,6 +38,7 @@ impl Arena {
             limit: std::ptr::null_mut(),
             blocks: Vec::new(),
             destructors: Vec::new(),
+            larges: Vec::new(),
         }
     }
 
@@ -111,6 +115,16 @@ impl Arena {
         false
     }
 
+    /// Allocation too large for a block: OS-direct via the standard
+    /// path, owned by the arena — freed at `reset`, not individually.
+    pub fn alloc_large(&mut self, size: usize) -> *mut u8 {
+        assert!(size > BLOCK_PAYLOAD, "block-sized allocations use alloc");
+        let p = unsafe { crate::memory::stdapi::ll_alloc(size, 16) };
+        assert!(!p.is_null(), "OS refused a {size}-byte allocation");
+        self.larges.push(p);
+        p
+    }
+
     /// Objects with side-effect destructors register here; `reset`
     /// hands them back to the caller (the object-lifecycle layer owns
     /// the actual `__destruct` protocol).
@@ -128,6 +142,9 @@ impl Arena {
         let pool = BlockPool::global();
         for block in self.blocks.drain(..) {
             pool.put(block);
+        }
+        for p in self.larges.drain(..) {
+            unsafe { crate::memory::stdapi::ll_free(p) };
         }
 
         self.bump = std::ptr::null_mut();

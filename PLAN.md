@@ -26,7 +26,7 @@ actor/GC coordination via mailbox and the message-payload table
 
 ## Memory manager (ll-model)
 
-- [ ] **Immortal region** — bump allocator, no reset, global singleton
+- [x] **Immortal region** — bump allocator, no reset, global singleton
   under a `Mutex` (locking needed because JIT class-loading can happen
   concurrently). New `BLOCK_KIND_IMMORTAL`, blocks from the shared
   `BlockPool`, `put()` never called on them. ABI: `ll_immortal_alloc(ctx,
@@ -34,7 +34,10 @@ actor/GC coordination via mailbox and the message-payload table
   `ll_heap_alloc`. No explicit match-arm needed in `ll_free`/`usable_size`
   (falls to the existing no-op default, same as `BLOCK_KIND_ARENA` today);
   bump-style allocation has no per-object size tracking anyway.
-- [ ] **Dedicated buffer arena (`BLOCK_KIND_BUFFER`)** — see
+- [ ] **Dedicated buffer arena (`BLOCK_KIND_BUFFER`)** — request-arena
+  buffer path done (`buffer.rs`: `Buffer`, `ll_buffer_ensure`,
+  extend-in-place / copy growth, OS-direct routing, pressure-mode flag);
+  the long-lived buffer arena itself remains. See
   `rfc/model/memory/buffers.md` for the full design, updated this
   session: size routing (payloads > block payload go OS-direct, the
   free-list machinery never sees them), per-block intrusive free list

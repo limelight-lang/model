@@ -28,6 +28,11 @@ pub fn set_current_context(ctx: *mut LLContext) {
 }
 
 #[inline]
+pub(crate) fn resolve_arena<'a>(ctx: *mut LLContext) -> &'a mut Arena {
+    resolve(ctx)
+}
+
+#[inline]
 fn resolve<'a>(ctx: *mut LLContext) -> &'a mut Arena {
     let ctx = if ctx.is_null() {
         CURRENT_CONTEXT.with(|c| c.get())
