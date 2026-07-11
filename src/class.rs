@@ -15,6 +15,13 @@
 //! flow into inherited interfaces), Cohen display for O(1)
 //! `instanceof`, property layout with fixed 16-byte Box slots.
 //!
+//! **Dispatch tables are pure code-pointer arrays** — the invariant:
+//! no headers inside any table (C++-style offset-to-top/RTTI prefixes
+//! are unnecessary because objects point at the descriptor, not at a
+//! table; the descriptor *is* the vtbl's header). That makes the tail
+//! a homogeneous train: `[Class][vtbl][itable A][itable B]…` in one
+//! allocation, every table found by link-time pointer/offset.
+//!
 //! Deliberately absent (generated-code territory or later layers):
 //! inline caches, property hooks, Ghost/Proxy shims, `__call`,
 //! dynamic properties.
@@ -342,22 +349,39 @@ impl ClassBuilder {
                 .collect::<Vec<_>>(),
         );
 
-        let iface_entries: Vec<IfaceEntry> = iface_decls
-            .iter()
-            .map(|(id, map)| {
-                let itable: Vec<*const ()> = map.iter().map(|&s| vtbl[s as usize]).collect();
-                IfaceEntry {
-                    iface_id: *id,
-                    method_count: map.len() as u32,
-                    itable: alloc_array(&itable),
-                    slot_map: alloc_array(map),
-                }
-            })
-            .collect();
-        let ifaces_mem = alloc_array(&iface_entries);
-
-        let total = size_of::<Class>() + vtbl.len() * size_of::<*const ()>();
+        // The dispatch train: one trailing allocation carries the vtbl
+        // and every itable — [Class][vtbl][itable A][itable B]…. All of
+        // them are pure code-pointer arrays (metadata lives beside the
+        // tables, never inside), so the tail is a plain concatenation.
+        // Slot maps are cold link-time data and stay off the train.
+        let ptr = size_of::<*const ()>();
+        let itables_len: usize = iface_decls.iter().map(|(_, m)| m.len()).sum();
+        let total = size_of::<Class>() + (vtbl.len() + itables_len) * ptr;
         let cls = immortal_alloc(total) as *mut Class;
+
+        let iface_entries: Vec<IfaceEntry> = {
+            let mut cursor = unsafe { (cls as *mut u8).add(size_of::<Class>() + vtbl.len() * ptr) }
+                as *mut *const ();
+            iface_decls
+                .iter()
+                .map(|(id, map)| {
+                    let itable = cursor as *const *const ();
+                    for &s in map {
+                        unsafe {
+                            cursor.write(vtbl[s as usize]);
+                            cursor = cursor.add(1);
+                        }
+                    }
+                    IfaceEntry {
+                        iface_id: *id,
+                        method_count: map.len() as u32,
+                        itable,
+                        slot_map: alloc_array(map),
+                    }
+                })
+                .collect()
+        };
+        let ifaces_mem = alloc_array(&iface_entries);
         unsafe {
             cls.write(Class {
                 flags: self.flags,
@@ -516,6 +540,37 @@ mod tests {
 
         let missing = unsafe { ll_find_itable(animal, 9999) };
         assert!(missing.is_null());
+    }
+
+    #[test]
+    fn itables_ride_the_descriptor_tail() {
+        let _g = crate::memory::block_pool::test_guard();
+        let i1 = ClassBuilder::interface("A");
+        let i2 = ClassBuilder::interface("B");
+
+        let cls = ClassBuilder::new("Train")
+            .method("x", m1 as *const ())
+            .method("y", m2 as *const ())
+            .implement(unsafe { &*i1 }, vec![0, 1])
+            .implement(unsafe { &*i2 }, vec![1])
+            .build();
+
+        let c = unsafe { &*cls };
+        let tail_start = cls as usize + size_of::<Class>();
+        let vtbl_end = tail_start + c.vtbl_len as usize * 8;
+        let train_end = vtbl_end + 3 * 8; // 2 + 1 itable entries
+
+        let (id1, id2) = unsafe { ((*i1).iface_id, (*i2).iface_id) };
+        let t1 = unsafe { ll_find_itable(cls, id1) } as usize;
+        let t2 = unsafe { ll_find_itable(cls, id2) } as usize;
+        assert!(
+            (vtbl_end..train_end).contains(&t1) && (vtbl_end..train_end).contains(&t2),
+            "itables must live in the descriptor's own tail"
+        );
+        unsafe {
+            assert_eq!(*(t1 as *const *const ()), m1 as *const ());
+            assert_eq!(*(t2 as *const *const ()), m2 as *const ());
+        }
     }
 
     #[test]
