@@ -29,14 +29,12 @@
 
 use std::collections::HashSet;
 
-use crate::class::PROP_REFCOUNTED;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_KIND_RETAINED, BlockHeader};
 use crate::object::Object;
 use crate::refcount::{
     ENTITY_OBJECT, ESCAPED, MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, ll_release, ll_retain,
 };
-use crate::value::Value;
 
 /// Full arena death: fixpoint, promotion by retention, deferred
 /// releases, blocks home. Replaces bare `Arena::reset` wherever the
@@ -141,7 +139,7 @@ unsafe fn mark_subgraph(root: *mut RcHeader, survivors: &mut Vec<*mut RcHeader>)
     unsafe { mark_one(root, survivors, &mut stack) };
 
     while let Some(obj) = stack.pop() {
-        for v in unsafe { ref_slots(obj) } {
+        for v in unsafe { crate::object::ref_child_values(obj) } {
             let child = v.entity_ptr();
             if unsafe { is_arena_entity(child) } {
                 unsafe { mark_one(child, survivors, &mut stack) };
@@ -175,7 +173,7 @@ unsafe fn count_children(surv: *mut RcHeader) {
     if unsafe { (*surv).flags } & ENTITY_OBJECT == 0 {
         return; // leaf entity: no reference slots
     }
-    for v in unsafe { ref_slots(surv as *mut Object) } {
+    for v in unsafe { crate::object::ref_child_values(surv as *mut Object) } {
         let child = v.entity_ptr();
         if child.is_null() {
             continue;
@@ -188,19 +186,6 @@ unsafe fn count_children(surv: *mut RcHeader) {
     }
 }
 
-/// The refcounted, currently-entity-holding Values of an object's
-/// declared slots.
-unsafe fn ref_slots(obj: *mut Object) -> impl Iterator<Item = Value> {
-    let cls = unsafe { (*obj).class() };
-    cls.props()
-        .iter()
-        .filter(|p| p.flags & PROP_REFCOUNTED != 0)
-        .map(move |p| unsafe { (*obj).prop_at(p.offset).read() })
-        .filter(|v| v.is_refcounted())
-        .collect::<Vec<_>>()
-        .into_iter()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,7 +195,7 @@ mod tests {
     use crate::memory::context::{LLContext, set_current_context};
     use crate::object::{ll_object_die, ll_object_new};
     use crate::refcount::{DESTRUCTED, HAS_DESTRUCTOR};
-    use crate::value::Tag;
+    use crate::value::{Tag, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Entity pointer behind a Box slot, or null for scalar/null Boxes.

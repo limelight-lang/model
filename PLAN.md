@@ -64,12 +64,17 @@ actor/GC coordination via mailbox and the message-payload table
   sparse-block evacuation; line recycling of retained blocks (needs
   the Immix-shaped GcHeap allocator, next item); flags-table extension
   (`ESCAPED`, `ENTITY_OBJECT`) to be reflected in rfc classes.md.
-- [ ] **GC strategy contract first** — fix the 4-interface contract
-  (`ll_ref_store` slot, safepoint poll, `GcHeap`-only allocator, object
-  metadata/teardown hooks) as a Rust trait before writing any concrete
-  strategy. MMTK must plug in as just another implementation
-  (`mmtk:<plan>`), never architecturally special-cased. Then implement
-  `rc-trace` (the default) as the first concrete strategy.
+- [x] **GC strategy contract first** — `gc.rs`: the 4-interface
+  contract as the `GcStrategy` trait (store hook, safepoint need,
+  `GcHeap`-only allocator, metadata consumption), `NoGc`/`PureRc` as
+  the trivial impls, `rc-trace` as the first real one: candidate-root
+  buffering on non-zero decrements (dedup via the buffered bit,
+  forget-on-death), Bacon–Rajan synchronous trial deletion on the
+  reserved color bits, threshold-triggered (`ll_gc_collect_cycles`
+  ABI). Known limits, logged: `__destruct` of cyclically-dead objects
+  is not run (needs Zend-style re-scan discipline); non-object heap
+  children of whites will need releasing when strings/arrays exist;
+  the heap allocator is the standard path until the Immix-shaped one.
 - [ ] **Allocation telemetry / debug mode** — two layers: (1) cheap
   aggregate stats (allocated / active / resident, mimalloc/jemalloc
   style), always-on candidate; (2) opt-in full event log (heaptrack

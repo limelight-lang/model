@@ -102,6 +102,18 @@ pub unsafe extern "C" fn ll_object_new(
     obj
 }
 
+/// The entity-holding Values currently sitting in an object's
+/// refcounted property slots — the children a tracer or teardown
+/// walks. Consumes `prop_layout.refcounted_slots()`, the metadata
+/// contract of `rfc/model/gc/strategies.md` §4.
+pub(crate) unsafe fn ref_child_values(obj: *mut Object) -> Vec<Value> {
+    let cls = unsafe { (*obj).class() };
+    cls.refcounted_slots()
+        .map(|offset| unsafe { (*obj).prop_at(offset).read() })
+        .filter(|v| v.is_refcounted())
+        .collect()
+}
+
 /// Phase 1 alone: run `__destruct` exactly once (sets the guard bit).
 /// Returns `false` when there was nothing to run. Arena reset uses
 /// this directly — dying arena objects get only phase 1, their memory
@@ -152,7 +164,12 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     // long-lived policy is TBD; only the GC heap frees here. The
     // deferred-free GC activity bit arrives with rc-satb.
     if unsafe { (*obj).rc.memory_category() } == MemoryCategory::GcHeap {
-        unsafe { crate::memory::stdapi::ll_free(obj as *mut u8) };
+        unsafe {
+            // The cycle collector must not keep a root into memory
+            // about to be reused.
+            crate::gc::forget_candidate(obj as *mut RcHeader);
+            crate::memory::stdapi::ll_free(obj as *mut u8);
+        }
     }
 }
 

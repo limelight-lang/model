@@ -138,9 +138,16 @@ pub unsafe extern "C" fn ll_release(header: *mut RcHeader) -> bool {
 
     if header.refcount == 0 {
         // Lifetime reaction depends on category: GC heap frees, arenas
-        // do nothing (arena reset reclaims). Cycle-root buffering for
-        // non-zero decrements arrives with the cycle collector.
+        // do nothing (arena reset reclaims).
         return header.memory_category() == MemoryCategory::GcHeap;
+    }
+
+    // Non-zero decrement on a heap object: a possible cycle root
+    // (`ll_buffer_cycle_root` of rfc/model/lowering.md). Only objects
+    // buffer — only they carry traceable reference slots. In a NoGC or
+    // pure-RC build this call compiles away with the strategy.
+    if header.memory_category() == MemoryCategory::GcHeap && header.flags & ENTITY_OBJECT != 0 {
+        unsafe { crate::gc::buffer_candidate(header) };
     }
     false
 }

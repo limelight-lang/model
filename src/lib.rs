@@ -5,6 +5,7 @@
 //! functions live here.
 
 pub mod class;
+pub mod gc;
 pub mod intern;
 pub mod memory;
 pub mod object;
