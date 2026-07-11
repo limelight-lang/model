@@ -59,8 +59,9 @@ actor/GC coordination via mailbox and the message-payload table
   per-block retain/evacuate/free decision (`arena-reset.md`), category
   bit rewriting for retained blocks, and the destructor↔escape fixpoint
   (reset already loops both logs; the escaped-objects-skip-destructors
-  half needs the object model). Blocked in part on object-layout
-  metadata (tracing children needs `prop_layout`).
+  half needs the object model). Object-layout metadata now exists
+  (`class.rs`: `prop_layout` with `refcounted_slots()`), so the
+  survivor trace is unblocked.
 - [ ] **GC strategy contract first** — fix the 4-interface contract
   (`ll_ref_store` slot, safepoint poll, `GcHeap`-only allocator, object
   metadata/teardown hooks) as a Rust trait before writing any concrete
@@ -88,6 +89,16 @@ actor/GC coordination via mailbox and the message-payload table
   workloads, which need the slice. Do not design further on paper.
 
 ## Object model (classes.md, already updated in rfc)
+
+- [x] **Core object model** — `value.rs` (16-byte Box, tags, refcounted
+  bit), `intern.rs` (immortal interned names, pointer equality),
+  `class.rs` (descriptor with inline trailing vtable, slot-stable
+  inheritance, itables re-linked in subclasses, Cohen display,
+  `prop_layout.refcounted_slots()`), `object.rs` (`ll_object_new`,
+  three-phase `ll_object_die` with resurrection check,
+  `ll_instanceof`). Deliberately absent, per agreed scope: inline
+  caches / hooks / dispatch choice (generated-code territory),
+  Ghost/Proxy shims, `__call`, dynamic properties (need arrays).
 
 - [ ] **General interception Proxy** — transparent method interception
   on an existing, already-constructed target object, without touching
