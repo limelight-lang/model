@@ -38,6 +38,10 @@ pub const BLOCK_KIND_LARGE_RUN: u32 = 4;
 pub const BLOCK_KIND_IMMORTAL: u32 = 5;
 /// Long-lived buffer-arena block: bump + per-block free list.
 pub const BLOCK_KIND_BUFFER: u32 = 6;
+/// A former arena block retained at reset because it carries survivors
+/// (`rfc/model/memory/arena-reset.md`, dense-block retention). Freed
+/// survivors are no-ops until Immix line recycling lands.
+pub const BLOCK_KIND_RETAINED: u32 = 7;
 
 /// Header in the first line of every block.
 ///

@@ -190,73 +190,100 @@ impl Arena {
 
     /// End of request: run pre-destructors via the callback, then
     /// return every block to the pool. O(blocks + log records), not
-    /// O(objects).
+    /// O(objects). The full promotion discipline (validation, trace,
+    /// per-block retention) lives in `crate::promote`; this is the
+    /// bare-mechanics variant used when no object model is in play.
     pub fn reset(&mut self, run_destructor: impl FnMut(*mut RcHeader)) {
         self.reset_with(run_destructor, |_| {});
     }
 
-    /// [`reset`] with an escape handler: `handle_escape` receives every
-    /// remembered-set slot (a longer-lived location holding a reference
-    /// into this arena). Validation and per-block promotion per
-    /// `rfc/model/memory/arena-reset.md` belong to the object-lifecycle
-    /// layer; until it lands the raw slots are handed to the caller.
+    /// [`reset`] with an escape handler receiving every remembered-set
+    /// slot. Composition of the reset primitives below.
     pub fn reset_with(
         &mut self,
         mut run_destructor: impl FnMut(*mut RcHeader),
         mut handle_escape: impl FnMut(*mut *mut RcHeader),
     ) {
-        // 1. Destructors. Taken in a loop: a destructor may track new
-        //    destructors (allocating into this arena is still legal
-        //    here), which start a fresh chain.
+        // Loops: a destructor may track new destructors or create new
+        // escapes (the fixpoint discipline of arena-reset.md).
         loop {
-            let head = self.destructors;
-            if head.is_null() {
+            let mut progress = false;
+            self.drain_destructors(|o| {
+                progress = true;
+                run_destructor(o);
+            });
+            self.drain_escapes(|s| {
+                progress = true;
+                handle_escape(s);
+            });
+            if !progress {
                 break;
             }
-            self.destructors = std::ptr::null_mut();
-            Self::drain_log(head, |rec| run_destructor(rec as *mut RcHeader));
         }
-
-        // 2. Escaped references — after destructors (they may create
-        //    new escapes; the fixpoint discipline of arena-reset.md).
-        loop {
-            let head = self.remembered;
-            if head.is_null() {
-                break;
-            }
-            self.remembered = std::ptr::null_mut();
-            Self::drain_log(head, |rec| handle_escape(rec as *mut *mut RcHeader));
-        }
-
-        // 3. Deferred releases of heap entities the arena referenced:
-        //    exactly one release per log record (the barrier skipped
-        //    the overwrite releases). Death here means a heap entity
-        //    whose last reference was from this arena.
-        let releases = self.release_at_reset;
-        self.release_at_reset = std::ptr::null_mut();
-        Self::drain_log(releases, |rec| unsafe {
-            if crate::refcount::ll_release(rec as *mut RcHeader) {
-                // TODO(object-lifecycle): run teardown for the dying
-                // entity; until then the memory is not reclaimed.
+        self.drain_release_log(|entity| unsafe {
+            if crate::refcount::ll_release(entity) {
+                // Bare-mechanics reset has no teardown layer; the
+                // promote path dispatches real entity teardown.
             }
         });
+        self.finish_reset(|_| false);
+    }
 
-        // 4. OS-direct payloads (their log lives in blocks that are
-        //    still alive at this point).
+    // --- Reset primitives (composed by `crate::promote`) -----------------
+
+    /// One-shot drain of the destructor log: takes the current chain;
+    /// entries tracked *during* the drain start a fresh chain for the
+    /// caller's next round.
+    pub fn drain_destructors(&mut self, mut f: impl FnMut(*mut RcHeader)) {
+        let head = self.destructors;
+        self.destructors = std::ptr::null_mut();
+        Self::drain_log(head, |rec| f(rec as *mut RcHeader));
+    }
+
+    /// One-shot drain of the remembered set (same take semantics).
+    pub fn drain_escapes(&mut self, mut f: impl FnMut(*mut *mut RcHeader)) {
+        let head = self.remembered;
+        self.remembered = std::ptr::null_mut();
+        Self::drain_log(head, |rec| f(rec as *mut *mut RcHeader));
+    }
+
+    /// One-shot drain of the release-at-reset log: exactly one release
+    /// is owed per record (the barrier skipped overwrite releases).
+    /// The caller performs the release and owns teardown dispatch.
+    pub fn drain_release_log(&mut self, mut f: impl FnMut(*mut RcHeader)) {
+        let head = self.release_at_reset;
+        self.release_at_reset = std::ptr::null_mut();
+        Self::drain_log(head, |rec| f(rec as *mut RcHeader));
+    }
+
+    /// Final step: free OS-direct payloads, return blocks to the pool
+    /// (except those `keep_block` claims — retained survivor blocks,
+    /// whose new kind the caller has already stamped), null the bump.
+    /// All logs must be drained first: their memory lives in these
+    /// blocks.
+    pub fn finish_reset(&mut self, mut keep_block: impl FnMut(*mut BlockHeader) -> bool) {
+        debug_assert!(
+            self.destructors.is_null()
+                && self.remembered.is_null()
+                && self.release_at_reset.is_null(),
+            "logs must be drained before finish_reset"
+        );
+
         let larges = self.larges;
         self.larges = std::ptr::null_mut();
         Self::drain_log(larges, |rec| unsafe {
             crate::memory::stdapi::ll_free(rec as *mut u8)
         });
 
-        // 3. Blocks, the logs' own memory included. Read the chain link
-        //    before `put` — the pool reuses the same field.
+        // Read the chain link before `put` — the pool reuses the field.
         let pool = BlockPool::global();
         let mut block = self.blocks;
         self.blocks = std::ptr::null_mut();
         while !block.is_null() {
             let next = unsafe { (*block).next };
-            pool.put(block);
+            if !keep_block(block) {
+                pool.put(block);
+            }
             block = next;
         }
 

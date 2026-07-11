@@ -49,19 +49,21 @@ actor/GC coordination via mailbox and the message-payload table
   live-chunk count returning empty blocks to the pool, no coalescing
   ever (compaction fallback is the defragmentation story). Only applies
   to long-lived buffers; request-arena buffers stay in the plain arena.
-- [ ] **Category / write barrier + remembered set + release-at-reset
-  list** — mechanics landed (`barrier.rs`: `ll_ref_store(ctx, owner,
+- [x] **Category / write barrier + remembered set + release-at-reset
+  list** — done end to end. `barrier.rs`: `ll_ref_store(ctx, owner,
   slot, old, new)` with RC ops + category compare; in-arena segment
-  logs for remembered set and release list; reset performs one release
-  per release-log record and hands remembered-set slots to a callback;
-  `blocks`/`destructors`/`larges` migrated off Rust `Vec`s). Remaining:
-  the reset-time consumer — validation of remembered-set entries, the
-  per-block retain/evacuate/free decision (`arena-reset.md`), category
-  bit rewriting for retained blocks, and the destructor↔escape fixpoint
-  (reset already loops both logs; the escaped-objects-skip-destructors
-  half needs the object model). Object-layout metadata now exists
-  (`class.rs`: `prop_layout` with `refcounted_slots()`), so the
-  survivor trace is unblocked.
+  logs; `blocks`/`destructors`/`larges` off Rust `Vec`s. `promote.rs`
+  (the reset-time consumer, `ll_arena_reset` now routes here):
+  destructor↔escape fixpoint (escaped objects skip their destructors;
+  destructor-created escapes are caught), conservative subgraph mark,
+  deduplicated slot validation, exact refcount initialization for
+  survivors (external slots + internal edges + compensating retains
+  for held heap entities), category bits rewritten in place, survivor
+  blocks kept as `BLOCK_KIND_RETAINED`, release-log teardown dispatch
+  via the `ENTITY_OBJECT` flag. Remaining per RFC phasing (additive):
+  sparse-block evacuation; line recycling of retained blocks (needs
+  the Immix-shaped GcHeap allocator, next item); flags-table extension
+  (`ESCAPED`, `ENTITY_OBJECT`) to be reflected in rfc classes.md.
 - [ ] **GC strategy contract first** — fix the 4-interface contract
   (`ll_ref_store` slot, safepoint poll, `GcHeap`-only allocator, object
   metadata/teardown hooks) as a Rust trait before writing any concrete

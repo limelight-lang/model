@@ -77,11 +77,12 @@ pub unsafe extern "C" fn ll_object_new(
     };
     let obj = mem as *mut Object;
 
-    let extra = if cls.has_destructor() {
-        HAS_DESTRUCTOR
-    } else {
-        0
-    };
+    let extra = crate::refcount::ENTITY_OBJECT
+        | if cls.has_destructor() {
+            HAS_DESTRUCTOR
+        } else {
+            0
+        };
     unsafe {
         (*obj).rc = RcHeader::new(category, extra);
         (*obj).class = class;
@@ -101,6 +102,26 @@ pub unsafe extern "C" fn ll_object_new(
     obj
 }
 
+/// Phase 1 alone: run `__destruct` exactly once (sets the guard bit).
+/// Returns `false` when there was nothing to run. Arena reset uses
+/// this directly — dying arena objects get only phase 1, their memory
+/// and children die with the arena.
+///
+/// # Safety
+/// `obj` must be a live object.
+pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
+    let cls = unsafe { (*obj).class() };
+    if !cls.has_destructor() || unsafe { (*obj).rc.flags } & DESTRUCTED != 0 {
+        return false;
+    }
+    unsafe { (*obj).rc.flags |= DESTRUCTED };
+    debug_assert_ne!(cls.destruct_slot, NO_DESTRUCT_SLOT);
+    let code = cls.vtbl()[cls.destruct_slot as usize];
+    let destruct: DestructorFn = unsafe { std::mem::transmute(code) };
+    unsafe { destruct(obj) };
+    true
+}
+
 /// Three-phase teardown. Called when the refcount reaches zero or a
 /// collector proves the object garbage.
 ///
@@ -109,20 +130,11 @@ pub unsafe extern "C" fn ll_object_new(
 /// a collector owns).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
-    let cls = unsafe { (*obj).class() };
-
     // Phase 1 — pre-destructor: exactly once, resurrection-aware.
-    if cls.has_destructor() && unsafe { (*obj).rc.flags } & DESTRUCTED == 0 {
-        unsafe { (*obj).rc.flags |= DESTRUCTED };
-        debug_assert_ne!(cls.destruct_slot, NO_DESTRUCT_SLOT);
-        let code = cls.vtbl()[cls.destruct_slot as usize];
-        let destruct: DestructorFn = unsafe { std::mem::transmute(code) };
-        unsafe { destruct(obj) };
-
-        if unsafe { (*obj).rc.refcount } > 0 {
-            return; // resurrected: __destruct stored $this somewhere
-        }
+    if unsafe { run_pre_destructor(obj) } && unsafe { (*obj).rc.refcount } > 0 {
+        return; // resurrected: __destruct stored $this somewhere
     }
+    let cls = unsafe { (*obj).class() };
 
     // Phase 2 — drop: release counted children, cascading.
     for offset in cls.refcounted_slots() {

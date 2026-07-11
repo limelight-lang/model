@@ -8,6 +8,7 @@ pub mod class;
 pub mod intern;
 pub mod memory;
 pub mod object;
+pub mod promote;
 pub mod refcount;
 pub mod value;
 

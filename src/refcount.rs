@@ -50,6 +50,15 @@ pub const COW: u32 = 1 << 9;
 /// `__destruct` has already run (exactly-once guard),
 /// `rfc/runtime/object-lifecycle.md`.
 pub const DESTRUCTED: u32 = 1 << 10;
+/// Transient mark used during arena reset: the entity is part of the
+/// escaped subgraph (`rfc/model/memory/arena-reset.md`). Cleared when
+/// the survivor's category is rewritten.
+pub const ESCAPED: u32 = 1 << 11;
+/// The entity is an [`crate::object::Object`] (has a class pointer at
+/// +8). Teardown paths that only have a bare `RcHeader` dispatch on
+/// this. Strings/arrays will claim sibling bits; flags-table extension
+/// to be reflected in rfc/model/classes.md.
+pub const ENTITY_OBJECT: u32 = 1 << 12;
 
 /// The 8-byte header at offset 0 of every heap entity.
 #[repr(C)]

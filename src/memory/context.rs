@@ -69,14 +69,13 @@ pub unsafe extern "C" fn ll_arena_track_destructor(ctx: *mut LLContext, obj: *mu
 }
 
 /// # Safety
-/// Same contract as [`ll_arena_alloc`]. Destructor execution is wired
-/// by the object-lifecycle layer; until it lands the list is drained
-/// without calls.
+/// Same contract as [`ll_arena_alloc`]; running PHP code must no
+/// longer reference the arena (destructors invoked from here may).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_arena_reset(ctx: *mut LLContext) {
-    resolve(ctx).reset(|_obj| {
-        // TODO(object-lifecycle): call the pre-destructor vtable slot.
-    })
+    // The full discipline: destructor/escape fixpoint, promotion by
+    // retention, deferred releases (rfc/model/memory/arena-reset.md).
+    unsafe { crate::promote::arena_reset_full(resolve(ctx)) }
 }
 
 /// Allocate immortal memory (never freed: class metadata, interned
