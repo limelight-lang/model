@@ -11,6 +11,7 @@ pub mod buffer_arena;
 pub mod context;
 pub mod heap;
 pub mod immortal;
+pub mod stats;
 pub mod stdapi;
 
 pub use arena::Arena;

@@ -85,6 +85,10 @@ impl BlockHeader {
 pub struct BlockPool {
     head: AtomicUsize, // block_ptr | tag(15 bits)
     regions_carved: AtomicUsize,
+    /// Blocks handed out minus blocks returned — block-granular
+    /// occupancy. Bumped only on the (rare) block operations, never on
+    /// object allocation: the telemetry design taxes no hot path.
+    blocks_out: AtomicUsize,
 }
 
 const TAG_MASK: usize = BLOCK_MASK; // low 15 bits
@@ -102,6 +106,7 @@ fn unpack(word: usize) -> (*mut BlockHeader, usize) {
 static GLOBAL_POOL: BlockPool = BlockPool {
     head: AtomicUsize::new(0),
     regions_carved: AtomicUsize::new(0),
+    blocks_out: AtomicUsize::new(0),
 };
 
 /// Serializes region carving only (rare path).
@@ -135,8 +140,16 @@ impl BlockPool {
         self.regions_carved.load(Ordering::Relaxed)
     }
 
+    /// Blocks currently out of the pool (arena, heap, buffer,
+    /// immortal, large — every consumer). Block granularity: the whole
+    /// point is that no per-object path pays for stats.
+    pub fn blocks_out(&self) -> usize {
+        self.blocks_out.load(Ordering::Relaxed)
+    }
+
     /// Get a free block: thread cache → global stack → carve a region.
     pub fn get(&self) -> *mut BlockHeader {
+        self.blocks_out.fetch_add(1, Ordering::Relaxed);
         let cached = THREAD_CACHE.with(|c| c.borrow_mut().blocks.pop());
         if let Some(block) = cached {
             return block;
@@ -164,6 +177,7 @@ impl BlockPool {
     /// pool is its sole authority, so this internal API stays safe.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn put(&self, block: *mut BlockHeader) {
+        self.blocks_out.fetch_sub(1, Ordering::Relaxed);
         unsafe { (*block).kind = BLOCK_KIND_FREE };
 
         THREAD_CACHE.with(|c| {

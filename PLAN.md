@@ -75,13 +75,14 @@ actor/GC coordination via mailbox and the message-payload table
   is not run (needs Zend-style re-scan discipline); non-object heap
   children of whites will need releasing when strings/arrays exist;
   the heap allocator is the standard path until the Immix-shaped one.
-- [ ] **Allocation telemetry / debug mode** — two layers: (1) cheap
-  aggregate stats (allocated / active / resident, mimalloc/jemalloc
-  style), always-on candidate; (2) opt-in full event log (heaptrack
-  style: alloc timestamp, free timestamp → lifetime, object type,
-  deduplicated call site via the existing `LLAllocSite`). Design pass
-  needed on hooking into arena/heap/immortal/buffer/GC paths without
-  taxing non-debug builds.
+- [ ] **Allocation telemetry / debug mode** — layer 1 done
+  (`memory/stats.rs`): always-on aggregate stats with **zero hot-path
+  tax** — counters only on rare block operations (pool get/put),
+  everything else computed at query time; block-granular by design;
+  `ll_memory_stats` ABI. Remaining: layer 2, the opt-in event log
+  (heaptrack style: alloc/free timestamps → lifetime, object type,
+  deduplicated call site via `LLAllocSite`) — still needs its design
+  pass; OS-direct runs are invisible to layer 1 until then.
 - [ ] **Tests, including performance benchmarks** — correctness tests per
   existing style (`test_guard`, scenario-per-test) for all of the above;
   criterion benchmarks following the project's honest-methodology
