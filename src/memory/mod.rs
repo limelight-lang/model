@@ -4,6 +4,7 @@
 //! `rfc` repository (`model/memory/*`).
 
 pub mod arena;
+pub mod barrier;
 pub mod block_pool;
 pub mod buffer;
 pub mod buffer_arena;

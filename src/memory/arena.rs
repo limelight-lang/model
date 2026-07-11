@@ -40,6 +40,8 @@ struct LogSegment {
 enum Log {
     Destructors,
     Larges,
+    RememberedSet,
+    ReleaseAtReset,
 }
 
 pub struct Arena {
@@ -53,6 +55,15 @@ pub struct Arena {
     /// OS-direct payloads owned by this arena — buffers larger than a
     /// block — freed at reset like everything else (in-arena log).
     larges: *mut LogSegment,
+    /// Remembered set: slots in longer-lived containers that received a
+    /// reference into this arena (`rfc/model/memory/arenas.md`). Fate
+    /// of the escapees is decided at reset.
+    remembered: *mut LogSegment,
+    /// Heap entities referenced from this arena's containers. The log
+    /// owns exactly one release per record — the barrier deliberately
+    /// does NOT release a displaced value on overwrite
+    /// (`rfc/model/memory/arenas.md`, "Why no release on overwrite").
+    release_at_reset: *mut LogSegment,
 }
 
 impl Default for Arena {
@@ -69,6 +80,8 @@ impl Arena {
             blocks: std::ptr::null_mut(),
             destructors: std::ptr::null_mut(),
             larges: std::ptr::null_mut(),
+            remembered: std::ptr::null_mut(),
+            release_at_reset: std::ptr::null_mut(),
         }
     }
 
@@ -162,10 +175,36 @@ impl Arena {
         self.log_push(Log::Destructors, obj as usize);
     }
 
+    /// Barrier hook: a longer-lived container received a reference into
+    /// this arena; remember the slot for reset-time promotion.
+    pub fn log_escape(&mut self, slot: *mut *mut RcHeader) {
+        self.log_push(Log::RememberedSet, slot as usize);
+    }
+
+    /// Barrier hook: a heap entity was stored into one of this arena's
+    /// containers. The log owns exactly one release per record; the
+    /// barrier never releases a displaced value in an arena container.
+    pub fn log_release_at_reset(&mut self, entity: *mut RcHeader) {
+        self.log_push(Log::ReleaseAtReset, entity as usize);
+    }
+
     /// End of request: run pre-destructors via the callback, then
     /// return every block to the pool. O(blocks + log records), not
     /// O(objects).
-    pub fn reset(&mut self, mut run_destructor: impl FnMut(*mut RcHeader)) {
+    pub fn reset(&mut self, run_destructor: impl FnMut(*mut RcHeader)) {
+        self.reset_with(run_destructor, |_| {});
+    }
+
+    /// [`reset`] with an escape handler: `handle_escape` receives every
+    /// remembered-set slot (a longer-lived location holding a reference
+    /// into this arena). Validation and per-block promotion per
+    /// `rfc/model/memory/arena-reset.md` belong to the object-lifecycle
+    /// layer; until it lands the raw slots are handed to the caller.
+    pub fn reset_with(
+        &mut self,
+        mut run_destructor: impl FnMut(*mut RcHeader),
+        mut handle_escape: impl FnMut(*mut *mut RcHeader),
+    ) {
         // 1. Destructors. Taken in a loop: a destructor may track new
         //    destructors (allocating into this arena is still legal
         //    here), which start a fresh chain.
@@ -178,7 +217,31 @@ impl Arena {
             Self::drain_log(head, |rec| run_destructor(rec as *mut RcHeader));
         }
 
-        // 2. OS-direct payloads (their log lives in blocks that are
+        // 2. Escaped references — after destructors (they may create
+        //    new escapes; the fixpoint discipline of arena-reset.md).
+        loop {
+            let head = self.remembered;
+            if head.is_null() {
+                break;
+            }
+            self.remembered = std::ptr::null_mut();
+            Self::drain_log(head, |rec| handle_escape(rec as *mut *mut RcHeader));
+        }
+
+        // 3. Deferred releases of heap entities the arena referenced:
+        //    exactly one release per log record (the barrier skipped
+        //    the overwrite releases). Death here means a heap entity
+        //    whose last reference was from this arena.
+        let releases = self.release_at_reset;
+        self.release_at_reset = std::ptr::null_mut();
+        Self::drain_log(releases, |rec| unsafe {
+            if crate::refcount::ll_release(rec as *mut RcHeader) {
+                // TODO(object-lifecycle): run teardown for the dying
+                // entity; until then the memory is not reclaimed.
+            }
+        });
+
+        // 4. OS-direct payloads (their log lives in blocks that are
         //    still alive at this point).
         let larges = self.larges;
         self.larges = std::ptr::null_mut();
@@ -207,6 +270,8 @@ impl Arena {
         let head = match which {
             Log::Destructors => self.destructors,
             Log::Larges => self.larges,
+            Log::RememberedSet => self.remembered,
+            Log::ReleaseAtReset => self.release_at_reset,
         };
 
         let head = if head.is_null() || unsafe { (*head).count } == LOG_SEG_RECORDS {
@@ -229,6 +294,8 @@ impl Arena {
         match which {
             Log::Destructors => self.destructors = head,
             Log::Larges => self.larges = head,
+            Log::RememberedSet => self.remembered = head,
+            Log::ReleaseAtReset => self.release_at_reset = head,
         }
     }
 

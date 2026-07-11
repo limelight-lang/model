@@ -50,20 +50,17 @@ actor/GC coordination via mailbox and the message-payload table
   ever (compaction fallback is the defragmentation story). Only applies
   to long-lived buffers; request-arena buffers stay in the plain arena.
 - [ ] **Category / write barrier + remembered set + release-at-reset
-  list** — the biggest remaining architectural gap. Static path
-  (compiler-proven escape): allocate directly in the target category,
-  no barrier at all. Dynamic path, dangerous direction: log the slot
-  into the arena's remembered set (a growable buffer inside the arena's
-  own bump memory, not a Rust `Vec`); fate decided lazily at arena
-  death, **per 32 KB block** (retain dense / evacuate sparse / free
-  empty, `arena-reset.md`). Reverse direction: `retain(new)` + append
-  to the release-at-reset list, **no release of the displaced value at
-  overwrite** — the list owns every release (`arenas.md`, updated).
-  Also migrate `Arena`'s existing `blocks`/`destructors` `Vec`s to the
-  same in-arena scheme. Once escape exists, `arena.rs`'s `reset()` must
-  implement the fixpoint loop from `arena-reset.md` step 1 (destructors
-  can create new escapes; escaped objects are not dying and are
-  skipped).
+  list** — mechanics landed (`barrier.rs`: `ll_ref_store(ctx, owner,
+  slot, old, new)` with RC ops + category compare; in-arena segment
+  logs for remembered set and release list; reset performs one release
+  per release-log record and hands remembered-set slots to a callback;
+  `blocks`/`destructors`/`larges` migrated off Rust `Vec`s). Remaining:
+  the reset-time consumer — validation of remembered-set entries, the
+  per-block retain/evacuate/free decision (`arena-reset.md`), category
+  bit rewriting for retained blocks, and the destructor↔escape fixpoint
+  (reset already loops both logs; the escaped-objects-skip-destructors
+  half needs the object model). Blocked in part on object-layout
+  metadata (tracing children needs `prop_layout`).
 - [ ] **GC strategy contract first** — fix the 4-interface contract
   (`ll_ref_store` slot, safepoint poll, `GcHeap`-only allocator, object
   metadata/teardown hooks) as a Rust trait before writing any concrete
