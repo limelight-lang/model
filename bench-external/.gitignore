@@ -1,0 +1,22 @@
+# Build artifacts: binaries, object files, debug info, and one-off data
+# dumps from running the tools in this directory. Only the tool sources
+# (*.cpp, *.h) and this file are checked in.
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.dll
+*.dll.lib
+*.lib
+*.sleepy
+samples*.txt
+*_samples.txt
+
+# Third-party source, not ours to vendor -- fetch per README.md.
+larson/larson.cpp
+
+# Personal helper script with a hardcoded local install path.
+larson/run_profile.cmd
+
+# Downloaded third-party tool binary.
+verysleepy/

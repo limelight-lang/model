@@ -269,6 +269,11 @@ impl BlockPool {
 #[cfg(test)]
 pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Tests are just another embedder of the C ABI's explicit-init
+    // contract (see `heap::ll_thread_init`); idempotent per thread, so
+    // folding it into the shared test fixture beats patching every test
+    // that happens to allocate a `GcHeap`/`LongLived` object.
+    crate::memory::heap::ll_thread_init();
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 

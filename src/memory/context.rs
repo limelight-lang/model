@@ -97,7 +97,7 @@ pub unsafe extern "C" fn ll_immortal_alloc(_ctx: *mut LLContext, size: usize) ->
 /// Callable from any thread with an initialized runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_heap_alloc(_ctx: *mut LLContext, size: usize) -> *mut u8 {
-    with_thread_heap(|heap| heap.alloc(size))
+    unsafe { with_thread_heap(|heap| heap.alloc(size)) }
 }
 
 /// Free a small object previously returned by [`ll_heap_alloc`].
@@ -107,7 +107,7 @@ pub unsafe extern "C" fn ll_heap_alloc(_ctx: *mut LLContext, size: usize) -> *mu
 /// been freed already.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_heap_free(_ctx: *mut LLContext, ptr: *mut u8) {
-    with_thread_heap(|heap| unsafe { heap.free(ptr) })
+    unsafe { with_thread_heap(|heap| heap.free(ptr)) }
 }
 
 #[cfg(test)]

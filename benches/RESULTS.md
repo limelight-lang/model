@@ -209,6 +209,62 @@ Bottom line: our v1 heap is **competitive with mimalloc, not superior** —
 tied locally, ~15% behind cross-thread — and clearly ahead of the system
 allocator. The cross-thread gap has a known, planned fix.
 
+## Reality check: the real C ABI path vs the in-process Rust benchmarks
+
+Every number above (`alloc.rs`, `standard.rs`, `mt_bench.rs`) calls
+`Heap`/`Arena` methods directly as Rust values in-process. Nothing above
+exercises `ll_malloc`/`ll_free`/`ll_heap_alloc` — the actual C ABI a real
+caller (generated PHP code, host code, or any external C/C++) uses.
+
+Linking the real, unmodified `larson.cpp` from
+[mimalloc-bench](https://github.com/daanx/mimalloc-bench) against that
+C ABI (`bench-external/larson/`, `larson 5 8 1000 5000 100 4141 1`)
+found our heap **~6.8x slower than mimalloc and slower than system
+malloc** — the opposite of the ~2x *win* over mimalloc `standard.rs`
+reports. Root cause and fix: `rfc/model/memory/heap-slot-allocation.md`.
+Short version — a block was unconditionally returned to the global pool
+the instant its last live slot was freed, and refill rebuilt an entire
+~500-slot free list eagerly; any workload where a size class's live
+count touches zero (a temp-buffer loop, this benchmark) paid a full
+block rebuild on *every* allocation. Fixed via lazy (bump) slot carving
+and a bounded one-empty-block-per-class retention policy.
+
+After the fix, same unmodified benchmark:
+
+| Contender | Throughput (ops/s) | vs mimalloc |
+|---|---|---|
+| mimalloc | ~45–54M | 1.0x |
+| ours | ~20.0M | ~2.2–2.7x slower |
+| system malloc | ~11.3M | ~4–4.7x slower |
+
+Moved from *slower than system malloc* to ~1.8x faster than it, and
+closed the mimalloc gap from ~6.8x to ~2.2–2.7x.
+
+A second fix (same RFC file, "Fix 3 — Fast TLS") replaced
+compiler-emitted TLS (`thread_local!`/`__declspec(thread)`, which on
+windows-msvc costs three dependent, non-pipelineable loads through a
+per-module indirection table) with the same trick mimalloc uses: a
+single `gs:[fixed_offset]` read via inline `asm!`, mirroring MSVC's
+`__readgsqword`. Isolated fixed-size loop (20M iterations, `SIZE=64`,
+`bench-external/larson/isolate_path.cpp`) went from ~7.7–9.0 ns/op to
+~6.8–7.3 ns/op; mimalloc measured ~3.6–4.3 ns/op and snmalloc (0.7.4,
+same harness) ~4.4–5.4 ns/op in the same runs. No regression on the
+real `larson.cpp` throughput (~18.4–20.0M ops/s, within run-to-run
+noise of the fixes-1-2 number) — larson's per-op cost outside the TLS
+lookup dilutes the relative win there.
+
+jemalloc could not be added to this comparison: `tikv-jemalloc-sys`'s
+autotools `configure` fails to find a working C compiler when invoked
+from windows-msvc (confirmed independently, matches this file's
+existing note in `Cargo.toml`).
+
+Remaining ~1.6–2x gap to mimalloc/snmalloc is not yet attributed
+further — the in-process Rust numbers above remain optimistic relative
+to what a real embedder sees through the actual C ABI, and should be
+read with that discount in mind until this exact real-binary check is
+added as a standing part of this file's methodology rather than a
+one-off investigation.
+
 ## What this does and does not prove
 
 Proves: for the allocate-many / free-together pattern that dominates a

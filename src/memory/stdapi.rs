@@ -73,7 +73,7 @@ pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
 
     // Small path: the thread-local heap. Its slots are ≥16-aligned.
     if size <= MAX_SMALL && align <= 16 && size_class_index(size).is_some() {
-        return with_thread_heap(|h| h.alloc(size));
+        return unsafe { with_thread_heap(|h| h.alloc(size)) };
     }
 
     if size <= BLOCK_PAYLOAD {
@@ -122,7 +122,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     let kind = unsafe { *(block as *const u32) };
 
     match kind {
-        BLOCK_KIND_HEAP => with_thread_heap(|h| unsafe { h.free(ptr) }),
+        BLOCK_KIND_HEAP => unsafe { with_thread_heap(|h| h.free(ptr)) },
         BLOCK_KIND_LARGE => BlockPool::global().put(block as *mut BlockHeader),
         BLOCK_KIND_LARGE_RUN => {
             let hdr = block as *mut LargeHeader;

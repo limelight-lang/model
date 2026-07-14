@@ -26,7 +26,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
-use ll_model::memory::heap::with_thread_heap;
+use ll_model::memory::heap::{ll_thread_init, with_thread_heap};
 use mimalloc::MiMalloc;
 
 const THREADS: usize = 8;
@@ -71,7 +71,7 @@ impl Which {
     #[inline]
     fn alloc(self, size: usize) -> *mut u8 {
         match self {
-            Which::Heap => with_thread_heap(|h| h.alloc(size)),
+            Which::Heap => unsafe { with_thread_heap(|h| h.alloc(size)) },
             Which::Mi => unsafe { MiMalloc.alloc(Layout::from_size_align_unchecked(size, 8)) },
             Which::Sys => unsafe { System.alloc(Layout::from_size_align_unchecked(size, 8)) },
         }
@@ -79,7 +79,7 @@ impl Which {
     #[inline]
     unsafe fn free(self, ptr: *mut u8, size: usize) {
         match self {
-            Which::Heap => with_thread_heap(|h| unsafe { h.free(ptr) }),
+            Which::Heap => unsafe { with_thread_heap(|h| h.free(ptr)) },
             Which::Mi => unsafe {
                 MiMalloc.dealloc(ptr, Layout::from_size_align_unchecked(size, 8))
             },
@@ -105,6 +105,7 @@ fn independent(which: Which, slots: usize, rounds: usize) -> f64 {
     let handles: Vec<_> = (0..THREADS)
         .map(|t| {
             thread::spawn(move || {
+                ll_thread_init();
                 let mut rng = Rng(0x1234_5678 ^ (t as u64 + 1).wrapping_mul(0x9E37));
                 let mut live: Vec<(*mut u8, usize)> = Vec::with_capacity(slots);
                 for _ in 0..slots {
@@ -158,6 +159,7 @@ fn bleeding(which: Which, rounds: usize) -> f64 {
             let rx = rxs[t].take().unwrap();
             let done = done.clone();
             thread::spawn(move || {
+                ll_thread_init();
                 let mut rng = Rng(0x0BADF00D ^ (t as u64 + 1).wrapping_mul(0x2545F491));
                 let mut freed = 0usize;
                 for _ in 0..rounds {
