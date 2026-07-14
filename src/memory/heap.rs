@@ -10,12 +10,24 @@
 //! - **Pointer → block by mask** (`ptr & !0x7FFF`) — no radix tree or
 //!   pagemap needed (jemalloc/snmalloc pay for those; our aligned blocks
 //!   give it for one AND).
-//! - **Free-list split** (mimalloc's core trick): `free` is where `alloc`
-//!   pops; `local_free` is where a same-thread `free` pushes. When `free`
-//!   empties, the slow path moves `local_free → free`. A burst of local
-//!   frees never touches the alloc hot path.
+//! - **Bitmap free-slot tracking**, not an intrusive linked list. A list
+//!   node's `next` pointer lives inside the slot itself, so popping/
+//!   pushing chases a pointer to a essentially random address within the
+//!   32 KB block — a cache-unfriendly, unpredictable-latency access
+//!   (measured: fine when the working set is small and hot, but the tail
+//!   grows sharply once it doesn't fit L1/L2). A bitmap replaces that with
+//!   one small, always-hot region (one bit per slot) that every alloc/free
+//!   touches — `alloc` is `tzcnt` (find first free) + clear the bit,
+//!   `free` is set the bit back. Measured ~10-20% faster in isolation on a
+//!   realistic (varying-size, live-set-churn) workload. See
+//!   `rfc/model/memory/heap-slot-allocation.md`. The bitmap is heap-owned
+//!   (one allocation per block, at `refill` — cold, not on the hot path),
+//!   not embedded in the fixed-size block header: the worst case (2032
+//!   slots for the smallest, 16-byte class) needs 256 bytes on its own,
+//!   the entire existing header budget.
 //! - **A fully-free block returns to the global pool** — real individual
-//!   reclamation, at block granularity.
+//!   reclamation, at block granularity (subject to the bounded
+//!   empty-block retention below).
 //!
 //! ## Cross-thread free (multi-threaded)
 //!
@@ -59,17 +71,52 @@ pub const SIZE_CLASSES: &[usize] = &[
 
 pub const MAX_SMALL: usize = 8192;
 
+/// Direct lookup table at 16-byte granularity: one array read, zero
+/// branches. Profiling on a real varying-size workload (8..1000 bytes)
+/// showed the previous linear scan — fully unrolled by the compiler into
+/// up to 26 sequential compare+branch pairs, since the compiler can't
+/// know `size` at compile time across the `ll_malloc` C ABI boundary —
+/// was a real, measurable cost, not a `size=64`-only artifact. See
+/// `rfc/model/memory/heap-slot-allocation.md`. Built once at compile
+/// time (`const fn`), embedded directly in `.rodata` — zero runtime
+/// construction cost.
+const CLASS_LUT_LEN: usize = MAX_SMALL / 16 + 2;
+
+const fn build_class_lut() -> [u8; CLASS_LUT_LEN] {
+    let mut table = [0u8; CLASS_LUT_LEN];
+    let mut g = 0;
+    while g < CLASS_LUT_LEN {
+        let size = g * 16;
+        let mut ci = 0;
+        while ci < SIZE_CLASSES.len() {
+            if SIZE_CLASSES[ci] >= size {
+                break;
+            }
+            ci += 1;
+        }
+        table[g] = ci as u8;
+        g += 1;
+    }
+    table
+}
+
+static CLASS_LUT: [u8; CLASS_LUT_LEN] = build_class_lut();
+
 /// Smallest size-class index fitting `size`, or `None` if too large.
 #[inline]
 pub fn size_class_index(size: usize) -> Option<usize> {
     if size > MAX_SMALL {
         return None;
     }
-    SIZE_CLASSES.iter().position(|&c| c >= size.max(1))
+    let ci = CLASS_LUT[(size + 15) >> 4] as usize;
+    Some(ci)
 }
 
-/// A free slot threads a free list through its own first 8 bytes — zero
-/// metadata overhead. Used for the per-block lists and the remote stack.
+/// A free slot threads a list through its own first 8 bytes — zero
+/// metadata overhead. Used only for `remote_free`, the cross-thread MPSC
+/// staging stack (a Treiber stack fundamentally needs linked nodes; that
+/// is unrelated to how a block tracks its own free slots, which is now a
+/// bitmap — see the module doc).
 #[repr(C)]
 struct FreeSlot {
     next: *mut FreeSlot,
@@ -96,14 +143,12 @@ struct HeapBlockHeader {
     /// (subject to the empty-reserve cap — see `Heap::retire_empty`).
     used: u32,
     slots: u32,
-    /// Slots at index `< bump` have been handed out at least once;
-    /// `>= bump` are virgin — never written, not on any list. See
-    /// `rfc/model/memory/heap-slot-allocation.md`.
-    bump: u32,
-    /// `alloc` pops from here (owner-only).
-    free: *mut FreeSlot,
-    /// Same-thread `free` pushes here (owner-only).
-    local_free: *mut FreeSlot,
+    /// One bit per slot, 1 = free. Heap-allocated at `refill` (a
+    /// `Vec<u64>`'s raw parts, owner-only, freed explicitly in
+    /// `retire_empty`'s real-release branch — see the module doc for why
+    /// this isn't embedded in the fixed-size header).
+    bitmap: *mut u64,
+    bitmap_words: u32,
     /// Owning heap — identifies local vs cross-thread free, and where a
     /// cross-thread free posts.
     owner: *const HeapShared,
@@ -116,6 +161,28 @@ impl HeapBlockHeader {
     #[inline]
     fn of_ptr(p: *mut u8) -> *mut HeapBlockHeader {
         ((p as usize) & !BLOCK_MASK) as *mut HeapBlockHeader
+    }
+}
+
+/// Set `ptr`'s bit back to free in its block's bitmap.
+///
+/// Computing the slot index costs one integer division (`class_size` is
+/// not a power of two for most classes, so the compiler can't fold it
+/// into a shift — it's a per-class runtime value, not a compile-time
+/// constant). Measured at ~3.5% of total time in an isolated profile.
+/// Known, deferred: fixable with a precomputed per-class
+/// multiply-by-reciprocal-plus-shift ("magic number division"), not done
+/// here — the risk of a subtly wrong hand-rolled reciprocal outweighed a
+/// 3.5% win under the time available. See
+/// `rfc/model/memory/heap-slot-allocation.md`.
+#[inline]
+fn mark_free(b: &HeapBlockHeader, block: *mut HeapBlockHeader, ptr: *mut u8) {
+    let class_size = SIZE_CLASSES[b.size_class as usize];
+    let base = (block as *mut u8).wrapping_add(LINE_SIZE);
+    let idx = (ptr as usize - base as usize) / class_size;
+    unsafe {
+        let word = b.bitmap.add(idx / 64);
+        *word |= 1u64 << (idx % 64);
     }
 }
 
@@ -174,42 +241,36 @@ impl Heap {
 
             let b = unsafe { &mut *block };
 
-            if !b.free.is_null() {
-                let slot = b.free;
-                b.free = unsafe { (*slot).next };
-                self.claim(ci, block, b);
-                return slot as *mut u8;
+            // Find the first free slot: scan bitmap words for a nonzero
+            // one, then the lowest set bit within it. Cache-friendly —
+            // the whole bitmap is one small, always-hot region, unlike
+            // chasing pointers scattered across the 32 KB block.
+            let mut found = None;
+            for w in 0..b.bitmap_words as usize {
+                let word = unsafe { *b.bitmap.add(w) };
+                if word != 0 {
+                    let bit = word.trailing_zeros() as usize;
+                    unsafe { *b.bitmap.add(w) = word & (word - 1) }; // clear lowest set bit
+                    found = Some(w * 64 + bit);
+                    break;
+                }
             }
 
-            if !b.local_free.is_null() {
-                b.free = b.local_free;
-                b.local_free = std::ptr::null_mut();
+            let Some(idx) = found else {
+                // Block genuinely full — unlink and try the next.
+                self.unlink(ci, block);
                 continue;
+            };
+
+            if b.used == 0 && self.empty_reserve[ci] == block {
+                self.empty_reserve[ci] = std::ptr::null_mut();
             }
+            b.used += 1;
 
-            if b.bump < b.slots {
-                let class_size = SIZE_CLASSES[ci];
-                let base = (block as *mut u8).wrapping_add(LINE_SIZE);
-                let slot = base.wrapping_add(b.bump as usize * class_size);
-                b.bump += 1;
-                self.claim(ci, block, b);
-                return slot;
-            }
-
-            // Block genuinely full — unlink and try the next.
-            self.unlink(ci, block);
+            let class_size = SIZE_CLASSES[ci];
+            let base = (block as *mut u8).wrapping_add(LINE_SIZE);
+            return base.wrapping_add(idx * class_size);
         }
-    }
-
-    /// Account for a slot leaving this block (from either the free lists
-    /// or a fresh bump-carve): clears the empty-reserve mark if this was
-    /// the class's retained spare, then bumps `used`.
-    #[inline]
-    fn claim(&mut self, ci: usize, block: *mut HeapBlockHeader, b: &mut HeapBlockHeader) {
-        if b.used == 0 && self.empty_reserve[ci] == block {
-            self.empty_reserve[ci] = std::ptr::null_mut();
-        }
-        b.used += 1;
     }
 
     /// Free a slot from [`alloc`]. If this thread owns the block it is a
@@ -240,14 +301,11 @@ impl Heap {
         }
     }
 
-    /// Owner-side free of `ptr` into its block.
+    /// Owner-side free of `ptr` into its block: set its bit back.
     unsafe fn free_local(&mut self, block: *mut HeapBlockHeader, ptr: *mut u8) {
         let b = unsafe { &mut *block };
         let ci = b.size_class as usize;
-
-        let slot = ptr as *mut FreeSlot;
-        unsafe { (*slot).next = b.local_free };
-        b.local_free = slot;
+        mark_free(b, block, ptr);
         b.used -= 1;
 
         if b.used == 0 {
@@ -263,7 +321,8 @@ impl Heap {
     /// Common tail once a block's `used` count has just reached zero:
     /// keep it as the class's one bounded empty spare (instant reuse, no
     /// refill) if there isn't one already; otherwise actually return it
-    /// to the global pool. See `rfc/model/memory/heap-slot-allocation.md`.
+    /// to the global pool (reclaiming the bitmap's own allocation first).
+    /// See `rfc/model/memory/heap-slot-allocation.md`.
     fn retire_empty(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         if self.empty_reserve[ci].is_null() {
             self.empty_reserve[ci] = block;
@@ -275,7 +334,15 @@ impl Heap {
         if unsafe { (*block).linked } {
             self.unlink(ci, block);
         }
-        unsafe { (*block).kind = 0 };
+        unsafe {
+            let b = &*block;
+            drop(Vec::from_raw_parts(
+                b.bitmap,
+                b.bitmap_words as usize,
+                b.bitmap_words as usize,
+            ));
+            (*block).kind = 0;
+        }
         BlockPool::global().put(block as *mut BlockHeader);
     }
 
@@ -294,8 +361,7 @@ impl Heap {
             let b = unsafe { &mut *block };
             let ci = b.size_class as usize;
 
-            unsafe { (*slot).next = b.local_free };
-            b.local_free = slot;
+            mark_free(b, block, slot as *mut u8);
             b.used -= 1;
 
             if b.used == 0 {
@@ -308,14 +374,26 @@ impl Heap {
         }
     }
 
-    /// Take a fresh block from the pool and link it as available. The
-    /// free list is not pre-threaded — slots are carved lazily by
-    /// `bump` as `alloc` needs them. See
-    /// `rfc/model/memory/heap-slot-allocation.md`.
+    /// Take a fresh block from the pool, allocate and initialize its
+    /// bitmap (all slots free), and link it as available. Initializing
+    /// the bitmap is O(slots/64) words, not O(slots) — it never touches
+    /// the slots' own memory, unlike the old eager free-list threading.
     fn refill(&mut self, ci: usize) -> *mut HeapBlockHeader {
         let class_size = SIZE_CLASSES[ci];
         let block = BlockPool::global().get() as *mut HeapBlockHeader;
         let slots = (BLOCK_PAYLOAD / class_size) as u32;
+        let word_count = slots.div_ceil(64) as usize;
+
+        let mut bitmap: Vec<u64> = vec![u64::MAX; word_count];
+        // Mask off bits beyond `slots` in the last word so alloc() can
+        // never return an out-of-bounds slot index.
+        let rem = slots % 64;
+        if rem != 0 {
+            let last = word_count - 1;
+            bitmap[last] &= (1u64 << rem) - 1;
+        }
+        let bitmap_ptr = bitmap.as_mut_ptr();
+        std::mem::forget(bitmap); // ownership moves to the block; freed in retire_empty
 
         unsafe {
             block.write(HeapBlockHeader {
@@ -323,9 +401,8 @@ impl Heap {
                 size_class: ci as u32,
                 used: 0,
                 slots,
-                bump: 0,
-                free: std::ptr::null_mut(),
-                local_free: std::ptr::null_mut(),
+                bitmap: bitmap_ptr,
+                bitmap_words: word_count as u32,
                 owner: self.shared,
                 next: std::ptr::null_mut(),
                 prev: std::ptr::null_mut(),

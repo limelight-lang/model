@@ -18,6 +18,7 @@ extern "C" {
     void ll_c_free(void *ptr);
     void ll_thread_init(void);
 }
+#include <mimalloc.h>
 
 static const size_t SIZE_CLASSES[] = {
     16, 32, 48, 64, 80, 96, 112, 128,
@@ -152,7 +153,30 @@ int main() {
         auto t1 = std::chrono::high_resolution_clock::now();
         for (auto p : live) ll_c_free(p);
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        printf("ours (linked list): %.1f ms  (%.2f ns/op)\n", ms, ms * 1e6 / ROUNDS);
+        printf("ours (real ll_malloc/ll_c_free, current impl): %.1f ms  (%.2f ns/op)\n", ms, ms * 1e6 / ROUNDS);
+    }
+
+    // --- mimalloc, identical workload, for a true apples-to-apples read
+    // on how close bitmap+O(1) would actually get us ---
+    {
+        Rng rng{4141};
+        std::vector<void *> live(LIVE_SET);
+        for (auto &p : live) {
+            p = mi_malloc(rng.size());
+            *(volatile char *)p = 'a';
+        }
+        auto t0 = std::chrono::high_resolution_clock::now();
+        for (size_t i = 0; i < ROUNDS; i++) {
+            size_t victim = rng.next() % LIVE_SET;
+            mi_free(live[victim]);
+            void *p = mi_malloc(rng.size());
+            *(volatile char *)p = 'a';
+            live[victim] = p;
+        }
+        auto t1 = std::chrono::high_resolution_clock::now();
+        for (auto p : live) mi_free(p);
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        printf("mimalloc:           %.1f ms  (%.2f ns/op)\n", ms, ms * 1e6 / ROUNDS);
     }
 
     // --- bitmap prototype, linear-scan size lookup (same as `ours`) ---

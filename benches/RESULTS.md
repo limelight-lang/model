@@ -265,6 +265,21 @@ read with that discount in mind until this exact real-binary check is
 added as a standing part of this file's methodology rather than a
 one-off investigation.
 
+Follow-up on a *realistic* workload (varying sizes 8..1000, 5000-object
+live-set churn, matching what `larson.cpp` actually does — not one
+fixed size) found the gap there was wider (~2.9x, not ~2.2–2.7x) and
+attributed to two more things the fixed-size loop couldn't see: the
+linear size-class scan (real for varying sizes, negligible for one
+fixed small size) and the intrusive-linked-list free-slot tracking
+(cache-unfriendly pointer chasing into scattered slot memory). Both
+fixed — O(1) lookup table, per-block bitmap — and landed in `Heap`.
+Real result on the same realistic workload: ~2.9x → ~2.0–2.2x slower
+than mimalloc. An isolated ablation prototype had suggested ~1.7x; the
+real number is more modest because the prototype's static per-class
+arena sidesteps real overhead (TLS, `refill`/`BlockPool`, block-list
+bookkeeping) the production `Heap` still pays. Full writeup:
+`rfc/model/memory/heap-slot-allocation.md` ("Fix 4").
+
 ## What this does and does not prove
 
 Proves: for the allocate-many / free-together pattern that dominates a
