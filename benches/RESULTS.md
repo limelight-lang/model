@@ -9,23 +9,43 @@ Data only. Bench code: [`benches/alloc.rs`](alloc.rs). Reproduce with
 - Developer laptop, not an isolated bench rig — expect run-to-run
   variance of ±10–15%. Treat these as *ratios*, not absolute truth.
 
-## Read this first: two harnesses, two answers, 4x apart
+## Read this first: how to compare against a rival, and how not to
 
-The same allocator, the same larson pattern, measured two ways:
+Three ways of measuring the same allocator against mimalloc on the same
+larson pattern, in increasing order of trustworthiness:
 
-| harness | verdict |
-|---|---|
-| in-process Rust (`benches/standard.rs`) | **we are 3.4x faster** than mimalloc |
-| real `larson.cpp` through the C ABI | **we are 1.25x slower** than mimalloc |
+| method | verdict | worth |
+|---|---|---|
+| in-process Rust (`benches/standard.rs`) | we are **3.4x faster** | nothing — we inline, mimalloc is behind a call boundary |
+| two exes: `larson_ours` vs `larson_mimalloc` | we are **1.13–1.26x slower** | nothing at this scale — see below |
+| both allocators in **one** binary, alternating | we are **1.05–1.07x slower** | this one |
 
-Both numbers below are real and neither is a typo. The in-process suite
-calls `Heap` as a Rust value, so it inlines into the benchmark loop, while
-mimalloc is reached through a non-inlinable `extern "C"` boundary. That is
-worth ~4x here, and it is measuring our harness, not our allocator.
+**Never compare two separately-linked executables for a difference under
+~10%.** Code layout, alignment and I-cache placement differ between two
+binaries by more than the effect being measured. Run against
+`larson_mimalloc.exe`, our number wandered over 1.12 / 1.14 / 1.18 / 1.26
+across a single afternoon, and every one of those was quoted here at some
+point as though it meant something. It did not.
 
-**The C ABI number is the honest one** — it is what a real embedder sees.
-Every in-process figure in this file should be read as an upper bound with
-that discount applied. See "Real C ABI vs mimalloc, by working set".
+`bench-external/larson/bisect_probe.cpp` is what the honest version looks
+like: larson's exact loop, both allocators compiled into one process, run
+alternately, best-of-3. It says **1.05–1.07x**, and it says the same thing
+run after run.
+
+That number was arrived at by elimination, not assumption. Bisecting
+larson's loop — its `lran2` RNG, its warmup permutation, its second
+`blksize` array, its two-writes-plus-a-read, its counters — moved the ratio
+by nothing (all variants 1.05–1.08x). Nor did the CRT (`/MT` 1.14x vs `/MD`
+1.13x), nor thread churn (removing it made the two-exe number *worse*), nor
+the cross-thread path (0.2% of frees). What was left was the comparison
+method itself.
+
+Also fixed while chasing this: mimalloc-bench reached mimalloc via
+`#define CUSTOM_MALLOC mi_malloc` — a direct call — while our shim wrapped
+both calls in an init check that ran on every malloc *and* every free.
+`ll_malloc`/`ll_c_free` now self-initialise on a cold branch, exactly as
+`mi_malloc` does (`test rcx,rcx; je _mi_malloc_generic`), and the shim is a
+direct `#define` like mimalloc's.
 
 ## alloc_40b_x500_write_then_reclaim
 
@@ -314,17 +334,15 @@ process:
 | 5 000 | 2.4 MB | 11.33 ns | 10.83 ns | **1.05x** |
 | 20 000 | 9.8 MB | 20.28 ns | 17.62 ns | 1.15x |
 
-`larson.cpp`'s standard invocation holds **5000** live objects. On the same
-binaries, real `larson 5 8 1000 5000 100 4141 1`, five runs interleaved:
+`larson.cpp`'s standard invocation holds **5000** live objects.
 
-| | throughput | vs mimalloc |
-|---|---|---|
-| before this work | ~27.0M ops/s | 2.11x slower |
-| **now** | **~45.6M ops/s** | **1.25x slower** |
-| mimalloc | ~57.0M ops/s | 1.0x |
+Throughput on real `larson 5 8 1000 5000 100 4141 1` went from ~27.0M to
+~49M ops/s over this work (+80%). The *ratio* against mimalloc from that
+same run is not quoted here on purpose — it is a two-exe comparison and
+therefore meaningless at this scale (see the top of this file). The
+one-binary measurement says **1.05–1.07x**.
 
-**+69%.** Details in `rfc/model/memory/heap-slot-allocation.md` ("Fix 5",
-"Fix 6").
+Details in `rfc/model/memory/heap-slot-allocation.md` ("Fix 5" .. "Fix 7").
 
 ### What the block size costs
 
@@ -388,9 +406,20 @@ claim in this file's history has been wrong, usually by 20-40%:
 - "the bitmap is ~10-20% faster than a free list" — it was ~18-20% slower;
   the ablation never measured a free list.
 - "cross-thread is our real weakness, mimalloc shards per page and we
-  don't" — that path is now ~40% *ahead* with the sharding still not built.
+  don't" — that path is now ahead, with the sharding still not built.
+- "1.25x slower than mimalloc through the real C ABI" — an artifact of
+  comparing two separately-linked exes. One binary says 1.05–1.07x.
 
 The pattern is always the same: a number measured on one harness, then
 generalised. Before quoting anything here, check when it was last measured
 and on which harness — several of these sat in this file for months reading
 as current fact.
+
+**And the thing none of them measured: memory.** Every number above is
+throughput. The single largest defect this allocator had was a leak —
+1.7 GiB held against a 2.5 MiB live set on the very benchmark this file
+leads with — and no benchmark here would ever have reported it, because
+none of them looked. `larson.cpp` was *designed* to catch exactly that
+(Larson & Krishnan's paper is about servers whose workers come and go and
+whose memory must not grow); we ran it for months and read only the ops/s
+line off the bottom.

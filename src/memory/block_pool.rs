@@ -162,9 +162,18 @@ impl BlockPool {
     }
 
     /// Get a free block: thread cache → global stack → carve a region.
+    ///
+    /// `try_with`, not `with`: this can run from a TLS destructor (a thread
+    /// giving its heap blocks back on the way out), by which point this
+    /// module's own `thread_local!` may already have been destroyed. TLS
+    /// destructor order is not defined, so the cache has to be optional
+    /// rather than assumed — `with` panics there, and panicking while a
+    /// thread unwinds is not a real option.
     pub fn get(&self) -> *mut BlockHeader {
         self.blocks_out.fetch_add(1, Ordering::Relaxed);
-        let cached = THREAD_CACHE.with(|c| c.borrow_mut().blocks.pop());
+        let cached = THREAD_CACHE
+            .try_with(|c| c.borrow_mut().blocks.pop())
+            .unwrap_or(None);
         if let Some(block) = cached {
             return block;
         }
@@ -180,7 +189,15 @@ impl BlockPool {
             }
         }
         let block = batch.pop().unwrap();
-        THREAD_CACHE.with(|c| c.borrow_mut().blocks.extend(batch));
+        if THREAD_CACHE
+            .try_with(|c| c.borrow_mut().blocks.append(&mut batch))
+            .is_err()
+        {
+            // No cache to put them in (see `get`'s note) — hand them back.
+            for b in batch {
+                self.push_global(b);
+            }
+        }
         block
     }
 
@@ -194,7 +211,9 @@ impl BlockPool {
         self.blocks_out.fetch_sub(1, Ordering::Relaxed);
         unsafe { (*block).kind = BLOCK_KIND_FREE };
 
-        THREAD_CACHE.with(|c| {
+        // `try_with` for the same reason as `get`: this runs from a TLS
+        // destructor on the thread-exit path, where the cache may be gone.
+        let cached = THREAD_CACHE.try_with(|c| {
             let mut cache = c.borrow_mut();
             cache.blocks.push(block);
 
@@ -205,6 +224,9 @@ impl BlockPool {
                 }
             }
         });
+        if cached.is_err() {
+            self.push_global(block);
+        }
     }
 
     fn push_global(&self, block: *mut BlockHeader) {

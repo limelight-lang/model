@@ -35,33 +35,50 @@
 //!
 //! ## Cross-thread free (multi-threaded)
 //!
-//! Each heap has a shared, thread-safe [`HeapShared`] holding a lock-free
-//! MPSC stack `remote_free`. A `free(ptr)` whose block is owned by
-//! *another* heap does one atomic push onto that owner's `remote_free`
-//! and touches nothing else — snmalloc's "message to the owner", one
-//! stack per owner. The owner drains `remote_free` on its slow path,
-//! returning slots to their blocks and reclaiming emptied blocks.
+//! Every block carries its own lock-free MPSC stack, `remote_free`. A
+//! `free(ptr)` whose block is owned by *another* heap does one atomic push
+//! onto **that block's** stack and touches nothing else.
 //!
-//! One stack per owner is **not** sharded per page the way mimalloc's
-//! `xthread_free` is, and that used to be recorded here and in
-//! `benches/RESULTS.md` as a known weakness worth ~15% on the cross-thread
-//! pattern, with per-destination batching as the planned fix. That was
-//! wrong about the cause: this path is now ~40% *ahead* of mimalloc on the
-//! same benchmark with the single stack untouched — what moved was the work
-//! the *drain* does per slot, not the contention on the stack. Do not build
-//! the sharding until a measurement asks for it. See
-//! `rfc/model/memory/heap-slot-allocation.md` ("Fix 6").
+//! Per block, not per heap, and that is load-bearing: it is what makes
+//! adoption (below) race-free. A thread freeing a slot reads `owner`, sees
+//! it is not itself, and pushes. If an adoption is racing that read it does
+//! not matter which owner was seen — the message lands in the block, and the
+//! block's *current* owner drains it. Parked in a per-heap stack instead, a
+//! message posted to a dying owner after adoption is stranded forever.
 //!
-//! `used` is therefore written **only by the owning thread** (on alloc,
-//! local free, and drain) — no atomics on it. A cross-thread free just
-//! parks the slot; the owner accounts for it at drain time.
+//! The owner collects a block's parked frees in two places, both cold:
+//! [`Heap::alloc_block_full`], when it has just run that block out of slots
+//! (exactly when they are worth having), and [`Heap::collect_owned`], which
+//! sweeps this class's blocks before asking the pool for more. The sweep is
+//! not optional: a block unlinked as full is never revisited otherwise, so
+//! its parked frees would sit forever and the thread would refill instead —
+//! measured at 34.2M -> 2.3M ops/s on the bleeding pattern when it was
+//! missing. mimalloc's full queue exists for the same reason.
 //!
-//! Not yet handled: **thread-exit abandonment**. If a thread with live
-//! heap blocks exits, blocks still holding objects (and any later
-//! cross-thread frees into them) are leaked rather than adopted by
-//! another thread (mimalloc adopts abandoned pages). Worker pools with
-//! long-lived threads are unaffected; documented as a known limit.
+//! `used` is written **only by the owning thread** (on alloc, local free,
+//! and collect) — no atomics on it. A cross-thread free just parks the slot;
+//! the owner accounts for it at collect time. That is also why `used == 0` is
+//! safe to act on: a parked slot still counts as live, so a block with one
+//! can never look empty.
+//!
+//! ## Thread-exit abandonment
+//!
+//! [`ll_thread_exit`] hands a dying thread's blocks over: empty ones to the
+//! pool, ones still holding live objects onto a global per-class abandoned
+//! list, from which the next thread needing that class adopts them
+//! ([`Heap::adopt`], on the refill path).
+//!
+//! This is not an optimisation. Without it every block a thread still owned
+//! when it died was stranded permanently, along with every later
+//! cross-thread free into it. Real `larson.cpp` — whose entire point is that
+//! a server's workers come and go, so it respawns its worker every ~20 ms —
+//! held **1.7 GiB against a 2.5 MiB live set**. With it: 10 MiB.
+//!
+//! Known limit: an abandoned block is only reclaimed when someone adopts it,
+//! so a class that goes permanently idle keeps its abandoned blocks. Bounded
+//! by what was live at thread exit, and no periodic trim exists yet.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::memory::block_pool::{
@@ -141,16 +158,24 @@ struct FreeSlot {
     next: *mut FreeSlot,
 }
 
-/// Shared, thread-safe part of a heap. Lives forever (leaked) so a
-/// block's `owner` pointer stays valid even after the owning thread
-/// exits. Its unique leaked address *is* the heap's identity (compared
-/// by pointer in `free`). There are only as many as there are heaps
-/// (roughly, threads).
-pub struct HeapShared {
-    /// Lock-free MPSC stack: any thread pushes a cross-thread-freed slot;
-    /// the owning thread drains the whole list at once.
-    remote_free: AtomicPtr<FreeSlot>,
+/// Blocks whose owning thread died while they still held live objects,
+/// per size class, chained through `owned_next`.
+///
+/// A `Mutex`, not a lock-free stack, on purpose: both users are cold —
+/// thread exit, and `alloc`'s refill path, which runs ~0.00003 times per
+/// allocation (measured). A lock-free stack here would buy nothing real and
+/// would need ABA tagging to be correct.
+struct Abandoned {
+    heads: [*mut HeapBlockHeader; NUM_CLASSES],
 }
+
+// SAFETY: the pointers are block headers in never-unmapped pool regions;
+// the mutex is what serialises access to the chain.
+unsafe impl Send for Abandoned {}
+
+static ABANDONED: Mutex<Abandoned> = Mutex::new(Abandoned {
+    heads: [std::ptr::null_mut(); NUM_CLASSES],
+});
 
 /// Per-block header. Overlays the block's first line; shares offset 0
 /// (`kind`) with the pool's `BlockHeader` (tagged union over the memory).
@@ -170,12 +195,31 @@ struct HeapBlockHeader {
     /// Slots at index `>= bump` are virgin: never touched, nothing to
     /// read or maintain, carved by address arithmetic on demand.
     bump: u32,
-    /// Owning heap — identifies local vs cross-thread free, and where a
-    /// cross-thread free posts.
-    owner: *const HeapShared,
+    /// Identity of the owning heap, or null once abandoned. **Compared,
+    /// never dereferenced** by a non-owner — which is what lets it be the
+    /// address of a thread-local `Heap` and lets adoption simply CAS it.
+    owner: AtomicPtr<Heap>,
+    /// Cross-thread frees destined for **this block**.
+    ///
+    /// The single most important field for adoption to be race-free, and the
+    /// reason it lives here rather than in the heap (where it used to). A
+    /// thread freeing a slot reads `owner`, sees it is not itself, and pushes
+    /// here. If an adoption is racing that read, it does not matter which
+    /// value of `owner` was seen: the message lands in the block, and the
+    /// block's *current* owner is the one who drains it. Parked in a heap
+    /// instead, a message posted to the dying owner after adoption would be
+    /// stranded forever — nobody drains a dead heap.
+    remote_free: AtomicPtr<FreeSlot>,
+    /// `available` list for this size class (blocks with room).
     next: *mut HeapBlockHeader,
     prev: *mut HeapBlockHeader,
     linked: bool,
+    /// Every block this heap owns, full or not, so a dying thread can
+    /// enumerate them. `available` cannot serve: a full block is unlinked
+    /// from it and would otherwise be unreachable — which is exactly how
+    /// they used to leak.
+    owned_next: *mut HeapBlockHeader,
+    owned_prev: *mut HeapBlockHeader,
 }
 
 impl HeapBlockHeader {
@@ -183,25 +227,6 @@ impl HeapBlockHeader {
     fn of_ptr(p: *mut u8) -> *mut HeapBlockHeader {
         ((p as usize) & !BLOCK_MASK) as *mut HeapBlockHeader
     }
-}
-
-/// Push `ptr` back onto its block's free list.
-///
-/// No index arithmetic: the link lives in the slot itself, so returning a
-/// slot needs neither its index nor the division-by-`class_size` that
-/// computing one would cost (`class_size` is not a power of two for most
-/// classes, so it cannot fold to a shift). `Heap::free` open-codes this on
-/// its fast path; this helper exists for [`Heap::drain_remote`].
-///
-/// # Safety
-/// `ptr` must be a slot belonging to `b`.
-#[inline]
-unsafe fn push_free(b: &mut HeapBlockHeader, ptr: *mut u8) {
-    let slot = ptr as *mut FreeSlot;
-    unsafe {
-        (*slot).next = b.free;
-    }
-    b.free = slot;
 }
 
 /// Opt-in counters behind the `probe-counters` feature, read out over the C
@@ -226,11 +251,19 @@ pub mod probe {
     pub static mut ALLOC_RETRIES: u64 = 0;
     pub static mut UNLINK_CALLS: u64 = 0;
     pub static mut LINK_CALLS: u64 = 0;
+    /// Frees that took the cross-thread path (block owned by someone else,
+    /// or abandoned) rather than the local one.
+    pub static mut REMOTE_FREES: u64 = 0;
+    /// Frees total.
+    pub static mut FREES: u64 = 0;
+    /// Blocks adopted from the abandoned list.
+    pub static mut ADOPTED: u64 = 0;
 
-    /// Write `[entries, retries, unlinks, links]` to `out`.
+    /// Write `[entries, retries, unlinks, links, remote_frees, frees,
+    /// adopted]` to `out`.
     ///
     /// # Safety
-    /// `out` must point to writable space for four `u64`s. Single-threaded
+    /// `out` must point to writable space for seven `u64`s. Single-threaded
     /// probe use only.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn ll_probe_counters(out: *mut u64) {
@@ -239,6 +272,9 @@ pub mod probe {
             *out.add(1) = ALLOC_RETRIES;
             *out.add(2) = UNLINK_CALLS;
             *out.add(3) = LINK_CALLS;
+            *out.add(4) = REMOTE_FREES;
+            *out.add(5) = FREES;
+            *out.add(6) = ADOPTED;
         }
     }
 }
@@ -262,7 +298,18 @@ pub struct Heap {
     /// re-carving on the very next allocation. See
     /// `rfc/model/memory/heap-slot-allocation.md`.
     empty_reserve: [*mut HeapBlockHeader; NUM_CLASSES],
-    shared: &'static HeapShared,
+    /// Every block this heap owns, full or not, chained through
+    /// `owned_next` — **per size class**, not one global chain.
+    ///
+    /// Per class because `collect_owned` walks this to find blocks holding
+    /// parked cross-thread frees, and it only ever wants one class: a single
+    /// chain makes that walk O(all our blocks) where it should be O(blocks of
+    /// this class) — ~67 vs ~3 at a 5000-object live set, and it showed
+    /// (bleeding larson: 22M vs 34M ops/s).
+    ///
+    /// Also what lets [`Heap::abandon_all`] enumerate at thread exit;
+    /// `available` cannot, since a full block is unlinked from it.
+    owned: [*mut HeapBlockHeader; NUM_CLASSES],
 }
 
 impl Default for Heap {
@@ -273,14 +320,17 @@ impl Default for Heap {
 
 impl Heap {
     pub fn new() -> Self {
-        let shared = Box::leak(Box::new(HeapShared {
-            remote_free: AtomicPtr::new(std::ptr::null_mut()),
-        }));
         Heap {
             available: [std::ptr::null_mut(); NUM_CLASSES],
             empty_reserve: [std::ptr::null_mut(); NUM_CLASSES],
-            shared,
+            owned: [std::ptr::null_mut(); NUM_CLASSES],
         }
+    }
+
+    /// This heap's identity, as stored in `HeapBlockHeader::owner`.
+    #[inline]
+    fn id(&self) -> *mut Heap {
+        self as *const Heap as *mut Heap
     }
 
     /// Allocate at least `size` bytes, or null if `size` exceeds the
@@ -373,14 +423,51 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn alloc_no_block(&mut self, ci: usize) -> *mut u8 {
-        if !self.shared.remote_free.load(Ordering::Relaxed).is_null() {
-            self.drain_remote();
-            if !self.available[ci].is_null() {
-                return self.alloc_class(ci);
-            }
+        // Our own blocks first: a block we unlinked as full may since have
+        // been filled with cross-thread frees, which nobody else will ever
+        // collect. `alloc_block_full` only ever collects the block it is
+        // serving from, so without this sweep a workload where another
+        // thread does the freeing strands every full block and refills
+        // forever. (Measured, the hard way: 34.2M -> 2.3M ops/s on
+        // `mt_bench`'s bleeding pattern.) This is what mimalloc's full queue
+        // is for.
+        if self.collect_owned(ci) {
+            return self.alloc_class(ci);
+        }
+        // Then adopt: an abandoned block of this class is memory we already
+        // hold, already carved for this exact size. Skipping this and carving
+        // fresh is how a thread-churning workload grows without bound
+        // (larson: 1.7 GiB resident against a 2.5 MiB live set).
+        if self.adopt(ci) {
+            return self.alloc_class(ci);
         }
         self.refill(ci);
         self.alloc_class(ci)
+    }
+
+    /// Sweep this heap's blocks of class `ci` for parked cross-thread frees.
+    /// Returns true if any block gained slots.
+    ///
+    /// O(blocks this heap owns), but only on the path that would otherwise
+    /// take a whole new block from the pool — always the better trade.
+    fn collect_owned(&mut self, ci: usize) -> bool {
+        let mut block = self.owned[ci];
+        let mut found = false;
+        while !block.is_null() {
+            let b = unsafe { &mut *block };
+            let next = b.owned_next;
+            if !b.remote_free.load(Ordering::Relaxed).is_null() && self.collect_remote(b) {
+                if b.used == 0 {
+                    self.retire_empty(ci, block);
+                    found = true;
+                } else if !b.linked {
+                    self.link(ci, block);
+                    found = true;
+                }
+            }
+            block = next;
+        }
+        found
     }
 
     /// Cold tail: the head block turned out to be full. Unlink it and retry
@@ -388,8 +475,151 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn alloc_block_full(&mut self, ci: usize, block: *mut HeapBlockHeader) -> *mut u8 {
+        // Before writing the block off as full, take whatever other threads
+        // freed into it. This is the *only* place cross-thread frees are
+        // reclaimed, and it is the natural one: we are here precisely because
+        // this block has no slots left, which is exactly when its parked
+        // frees are worth the walk.
+        let b = unsafe { &mut *block };
+        if self.collect_remote(b) {
+            return self.alloc_class(ci);
+        }
         self.unlink(ci, block);
         self.alloc_class(ci)
+    }
+
+    /// Take an abandoned block of this class, if one exists, and make it
+    /// ours. Returns false if there was nothing to adopt.
+    fn adopt(&mut self, ci: usize) -> bool {
+        let block = {
+            let mut list = ABANDONED.lock().unwrap();
+            let head = list.heads[ci];
+            if head.is_null() {
+                return false;
+            }
+            list.heads[ci] = unsafe { (*head).owned_next };
+            head
+        };
+
+        probe_count!(ADOPTED);
+        let b = unsafe { &mut *block };
+        b.owned_next = std::ptr::null_mut();
+        b.owned_prev = std::ptr::null_mut();
+        b.next = std::ptr::null_mut();
+        b.prev = std::ptr::null_mut();
+        b.linked = false;
+
+        // Claim it. Any free racing this either saw the old owner or sees us;
+        // both push into `b.remote_free`, which we now own and will collect.
+        b.owner.store(self.id(), Ordering::Release);
+        self.own(ci, block);
+
+        // Slots freed while it was ownerless are parked; take them now.
+        self.collect_remote(b);
+        if b.used == 0 {
+            self.retire_empty(ci, block);
+        } else if b.free.is_null() && b.bump >= b.slots {
+            // Adopted full: keep it (we own it) but it serves nothing yet.
+            return false;
+        } else {
+            self.link(ci, block);
+        }
+        !self.available[ci].is_null()
+    }
+
+    /// Add `block` to this heap's owned chain for its class.
+    fn own(&mut self, ci: usize, block: *mut HeapBlockHeader) {
+        unsafe {
+            (*block).owned_prev = std::ptr::null_mut();
+            (*block).owned_next = self.owned[ci];
+            if !self.owned[ci].is_null() {
+                (*self.owned[ci]).owned_prev = block;
+            }
+        }
+        self.owned[ci] = block;
+    }
+
+    /// Remove `block` from this heap's owned chain.
+    fn disown(&mut self, ci: usize, block: *mut HeapBlockHeader) {
+        unsafe {
+            let prev = (*block).owned_prev;
+            let next = (*block).owned_next;
+            if !prev.is_null() {
+                (*prev).owned_next = next;
+            } else {
+                self.owned[ci] = next;
+            }
+            if !next.is_null() {
+                (*next).owned_prev = prev;
+            }
+            (*block).owned_prev = std::ptr::null_mut();
+            (*block).owned_next = std::ptr::null_mut();
+        }
+    }
+
+    /// Thread exit: give up every block this heap owns.
+    ///
+    /// Empty ones go back to the pool. Ones still holding live objects go on
+    /// the global abandoned list for the next thread that needs that class —
+    /// they cannot go to the pool (their objects are alive) and they must not
+    /// simply be dropped (that is the leak this exists to fix).
+    ///
+    /// Idempotent: safe to call from both `ll_thread_exit` and the TLS guard.
+    pub fn abandon_all(&mut self) {
+        let mut list = ABANDONED.lock().unwrap();
+        for ci in 0..NUM_CLASSES {
+            let mut block = self.owned[ci];
+            while !block.is_null() {
+                let b = unsafe { &mut *block };
+                let next = b.owned_next;
+
+                // Collect first: slots freed cross-thread may make it empty,
+                // and an empty block is worth more to the pool than to the
+                // abandoned list.
+                self.collect_remote_locked(b);
+                b.owner.store(std::ptr::null_mut(), Ordering::Release);
+
+                if b.used == 0 {
+                    b.kind = 0;
+                    BlockPool::global().put(block as *mut BlockHeader);
+                } else {
+                    b.next = std::ptr::null_mut();
+                    b.prev = std::ptr::null_mut();
+                    b.linked = false;
+                    b.owned_prev = std::ptr::null_mut();
+                    b.owned_next = list.heads[ci];
+                    list.heads[ci] = block;
+                }
+                block = next;
+            }
+            self.owned[ci] = std::ptr::null_mut();
+        }
+        self.available = [std::ptr::null_mut(); NUM_CLASSES];
+        self.empty_reserve = [std::ptr::null_mut(); NUM_CLASSES];
+    }
+
+    /// [`collect_remote`] without touching `self` — for use while the
+    /// abandoned list's lock is held.
+    fn collect_remote_locked(&self, b: &mut HeapBlockHeader) {
+        let head = b.remote_free.swap(std::ptr::null_mut(), Ordering::Acquire);
+        if head.is_null() {
+            return;
+        }
+        let mut n = 0u32;
+        let mut last = head;
+        unsafe {
+            loop {
+                n += 1;
+                let nxt = (*last).next;
+                if nxt.is_null() {
+                    break;
+                }
+                last = nxt;
+            }
+            (*last).next = b.free;
+        }
+        b.free = head;
+        b.used -= n;
     }
 
     /// Re-enter the fast path once a cold tail has made a slot available.
@@ -416,8 +646,10 @@ impl Heap {
         let block = HeapBlockHeader::of_ptr(ptr);
         let b = unsafe { &mut *block };
 
-        if !std::ptr::eq(b.owner, self.shared) {
-            return unsafe { Self::free_remote(b.owner, ptr) };
+        probe_count!(FREES);
+        if b.owner.load(Ordering::Relaxed) != self.id() {
+            probe_count!(REMOTE_FREES);
+            return Self::free_remote(b, ptr);
         }
 
         // Push onto the block's free list: the `next` write lands in the
@@ -436,24 +668,60 @@ impl Heap {
         }
     }
 
-    /// Cold tail: the block belongs to another thread's heap. One atomic
-    /// push onto that owner's stack, touching nothing else.
+    /// Cold tail: this block is owned by another thread, or is abandoned.
+    /// One atomic push onto **the block's own** stack, touching nothing else.
     ///
-    /// # Safety
-    /// `ptr` must be a live slot owned by `owner`.
+    /// Note `used` is deliberately not touched: it is owner-only state, and
+    /// the owner accounts for this slot when it collects (see
+    /// [`Heap::collect_remote`]). That is also what makes `used == 0` safe to
+    /// act on — a slot parked here still counts as live, so a block with a
+    /// parked free can never look empty.
     #[cold]
     #[inline(never)]
-    unsafe fn free_remote(owner: *const HeapShared, ptr: *mut u8) {
+    fn free_remote(b: &HeapBlockHeader, ptr: *mut u8) {
         let slot = ptr as *mut FreeSlot;
-        let remote = unsafe { &(*owner).remote_free };
-        let mut head = remote.load(Ordering::Relaxed);
+        let mut head = b.remote_free.load(Ordering::Relaxed);
         loop {
             unsafe { (*slot).next = head };
-            match remote.compare_exchange_weak(head, slot, Ordering::Release, Ordering::Relaxed) {
+            match b.remote_free.compare_exchange_weak(
+                head,
+                slot,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(h) => head = h,
             }
         }
+    }
+
+    /// Pull this block's cross-thread frees onto its local free list.
+    /// Returns true if anything arrived.
+    ///
+    /// O(n) in what arrived since the last collect, walked once to get the
+    /// count `used` must drop by — the same amortised deal mimalloc makes in
+    /// `_mi_page_thread_free_collect`.
+    fn collect_remote(&mut self, b: &mut HeapBlockHeader) -> bool {
+        let head = b.remote_free.swap(std::ptr::null_mut(), Ordering::Acquire);
+        if head.is_null() {
+            return false;
+        }
+        let mut n = 0u32;
+        let mut last = head;
+        unsafe {
+            loop {
+                n += 1;
+                let nxt = (*last).next;
+                if nxt.is_null() {
+                    break;
+                }
+                last = nxt;
+            }
+            (*last).next = b.free;
+        }
+        b.free = head;
+        b.used -= n;
+        true
     }
 
     /// Common tail once a block's `used` count has just reached zero:
@@ -472,38 +740,14 @@ impl Heap {
         if unsafe { (*block).linked } {
             self.unlink(ci, block);
         }
+        self.disown(ci, block);
         unsafe {
+            (*block)
+                .owner
+                .store(std::ptr::null_mut(), Ordering::Release);
             (*block).kind = 0;
         }
         BlockPool::global().put(block as *mut BlockHeader);
-    }
-
-    /// Drain the owner's `remote_free` stack: return each cross-thread
-    /// freed slot to its block, reclaiming emptied blocks. Owner thread
-    /// only.
-    fn drain_remote(&mut self) {
-        let mut slot = self
-            .shared
-            .remote_free
-            .swap(std::ptr::null_mut(), Ordering::Acquire);
-
-        while !slot.is_null() {
-            let next = unsafe { (*slot).next };
-            let block = HeapBlockHeader::of_ptr(slot as *mut u8);
-            let b = unsafe { &mut *block };
-            let ci = b.size_class as usize;
-
-            unsafe { push_free(b, slot as *mut u8) };
-            b.used -= 1;
-
-            if b.used == 0 {
-                self.retire_empty(ci, block);
-            } else if !b.linked {
-                self.link(ci, block);
-            }
-
-            slot = next;
-        }
     }
 
     /// Take a fresh block from the pool, allocate and initialize its
@@ -526,12 +770,16 @@ impl Heap {
                 slots,
                 free: std::ptr::null_mut(),
                 bump: 0,
-                owner: self.shared,
+                owner: AtomicPtr::new(self.id()),
+                remote_free: AtomicPtr::new(std::ptr::null_mut()),
                 next: std::ptr::null_mut(),
                 prev: std::ptr::null_mut(),
                 linked: false,
+                owned_next: std::ptr::null_mut(),
+                owned_prev: std::ptr::null_mut(),
             });
         }
+        self.own(ci, block);
         self.link(ci, block);
         block
     }
@@ -749,6 +997,23 @@ mod tls {
         }
     }
 
+    /// [`get`] for callers that may legitimately run before any slot was
+    /// reserved — `ll_thread_init` on the very first thread, and
+    /// `ll_thread_exit` on a thread that never allocated. Returns null rather
+    /// than asserting.
+    #[inline]
+    pub fn get_raw() -> *mut Heap {
+        let s = STATE.load(Ordering::Relaxed);
+        if s == UNINIT {
+            return std::ptr::null_mut();
+        }
+        if s & FALLBACK_BIT == 0 {
+            unsafe { read_gs_qword(s) as *mut Heap }
+        } else {
+            get_fallback(s)
+        }
+    }
+
     /// The reserved slot landed outside the TEB's 64 inline slots, so the
     /// fixed-offset read is unavailable and the real Win32 call is needed.
     /// Practically unreachable — this is one of the first `TlsAlloc`s in the
@@ -792,6 +1057,12 @@ mod tls {
         THREAD_HEAP.with(|c| c.get())
     }
 
+    /// Mirrors the Windows path's signature; nothing to tolerate here.
+    #[inline]
+    pub fn get_raw() -> *mut Heap {
+        get()
+    }
+
     #[inline]
     pub fn set(p: *mut Heap) {
         THREAD_HEAP.with(|c| c.set(p));
@@ -807,15 +1078,90 @@ mod tls {
 /// repeated on every `malloc`/`free`. Limelight owns its own worker
 /// threads (see module doc), so this is always satisfiable — unlike a
 /// libc `malloc` replacement, which cannot demand callers opt in first.
+/// Give up this thread's heap blocks: empty ones to the pool, ones with
+/// live objects to the global abandoned list, where the next thread needing
+/// that size class will adopt them.
+///
+/// **Must be called before a thread that allocated exits.** Skipping it is
+/// not a leak of one heap — it strands every block that thread still owned,
+/// permanently, along with any later cross-thread free into them. Measured
+/// cost of skipping it, on `larson.cpp` (which respawns its worker every
+/// ~20 ms, by design — that is what the benchmark is *for*): 1.7 GiB
+/// resident against a 2.5 MiB live set.
+///
+/// Idempotent, and safe to call on a thread that never allocated. The TLS
+/// guard installed by [`ll_thread_init`] calls this automatically for threads
+/// that unwind normally; this export exists for callers who manage their own
+/// thread lifetimes, and for FFI callers whose threads Rust knows nothing
+/// about.
+#[unsafe(no_mangle)]
+pub extern "C" fn ll_thread_exit() {
+    let p = tls::get_raw();
+    if p.is_null() {
+        return;
+    }
+    // Clear the slot first: `abandon_all` must not be re-entered, and any
+    // allocation after this point must build a fresh heap rather than reuse
+    // one whose blocks we have just given away.
+    tls::set(std::ptr::null_mut());
+    unsafe {
+        (*p).abandon_all();
+        drop(Box::from_raw(p));
+    }
+}
+
+#[cfg(windows)]
+thread_local! {
+    /// Calls [`ll_thread_exit`] when a thread that allocated unwinds.
+    ///
+    /// A separate `thread_local!` purely for its destructor: the heap pointer
+    /// itself lives in a raw TEB slot (see the `tls` module) precisely to
+    /// avoid the module-indirected access a `thread_local!` would cost on
+    /// every allocation, and that raw slot has no destructor. Costs one
+    /// registration per thread, on the cold init path.
+    static EXIT_GUARD: ExitGuard = const { ExitGuard };
+}
+
+#[cfg(windows)]
+struct ExitGuard;
+
+#[cfg(windows)]
+impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        ll_thread_exit();
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_init() {
     // Must precede the first `tls::get()` anywhere: `get` deliberately does
     // not check whether the slot has been reserved (see its doc), so this
     // is the call that establishes that invariant.
     tls::ensure_slot();
-    if tls::get().is_null() {
+    if tls::get_raw().is_null() {
         tls::set(Box::into_raw(Box::new(Heap::new())));
+        #[cfg(windows)]
+        EXIT_GUARD.with(|_| {});
     }
+}
+
+/// This thread's heap, or null if it has never allocated.
+///
+/// The null case is what lets `ll_malloc`/`ll_c_free` self-initialise on a
+/// cold branch instead of making every caller wrap them in an init check.
+#[inline]
+pub fn thread_heap() -> *mut Heap {
+    tls::get_raw()
+}
+
+/// Post `ptr` to its block's cross-thread stack, without needing a heap of
+/// our own — for a thread that frees something it never could have allocated.
+///
+/// # Safety
+/// `ptr` must be a live slot from some heap's block.
+pub unsafe fn free_foreign(ptr: *mut u8) {
+    let block = HeapBlockHeader::of_ptr(ptr);
+    Heap::free_remote(unsafe { &*block }, ptr);
 }
 
 /// Run `f` with this thread's persistent small-object heap.

@@ -79,9 +79,38 @@ pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
     // when `size > MAX_SMALL`, which `size <= MAX_SMALL` already decides.
     // Asking twice cost a second CLASS_LUT lookup on every malloc.
     if size <= MAX_SMALL && align <= 16 {
-        return unsafe { with_thread_heap(|h| h.alloc(size)) };
+        // Self-initialising, via a cold branch on a null heap pointer.
+        //
+        // `ll_thread_init` remains the documented contract and is still the
+        // right thing for an embedder to call; this is what makes skipping it
+        // merely slower-once rather than undefined. It also makes the C ABI
+        // callable exactly the way mimalloc's is, which matters for measuring
+        // honestly: `mi_malloc` does this identical check inline
+        // (`test rcx,rcx; je _mi_malloc_generic`) and self-initialises. Making
+        // callers wrap us in an init check instead does not remove the cost —
+        // it moves it into their wrapper and out of our number. That is not a
+        // saving, it is a rigged comparison, and it was one: mimalloc-bench's
+        // shim reaches mimalloc with `#define CUSTOM_MALLOC mi_malloc` while
+        // ours went through a wrapper testing a `thread_local` on every malloc
+        // *and* every free.
+        let h = crate::memory::heap::thread_heap();
+        if h.is_null() {
+            return unsafe { ll_alloc_init(size) };
+        }
+        return unsafe { (*h).alloc(size) };
     }
     unsafe { ll_alloc_large(size, align) }
+}
+
+/// Cold tail: first allocation on this thread — build its heap, then retry.
+///
+/// # Safety
+/// Standard allocator contract.
+#[cold]
+#[inline(never)]
+unsafe fn ll_alloc_init(size: usize) -> *mut u8 {
+    crate::memory::heap::ll_thread_init();
+    unsafe { with_thread_heap(|h| h.alloc(size)) }
 }
 
 /// # Safety
@@ -146,7 +175,14 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     let kind = unsafe { *(block as *const u32) };
 
     if kind == BLOCK_KIND_HEAP {
-        return unsafe { with_thread_heap(|h| h.free(ptr)) };
+        let h = crate::memory::heap::thread_heap();
+        if h.is_null() {
+            // No heap on this thread means we cannot be the block's owner, so
+            // this is by definition a cross-thread free. Post it and go — no
+            // reason to build a heap for a thread that has never allocated.
+            return unsafe { crate::memory::heap::free_foreign(ptr) };
+        }
+        return unsafe { (*h).free(ptr) };
     }
     unsafe { ll_free_large(block, kind) };
 }
