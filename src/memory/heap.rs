@@ -538,16 +538,23 @@ impl Heap {
 
     /// Re-link a block that was full and has just had a slot freed.
     ///
-    /// Deliberately **not** at the head. `alloc` always serves from the
-    /// head, so putting a just-unfulled block there installs a head with
-    /// exactly one free slot: the next alloc takes it, the block is full
-    /// again, and the alloc after that has to walk past it and unlink it —
-    /// three cold header lines (the block, its `prev`, its `next`) burned
-    /// per cycle. Measured: `available`-walk per alloc ran 1.41 at a 5000
-    /// live set, and the gap to mimalloc tracked that number across every
-    /// live-set size. Inserting behind the head leaves a head that still
-    /// has slots, and lets this block accumulate more frees before alloc
-    /// reaches it.
+    /// Deliberately **not** at the head, even though inserting behind it
+    /// costs three header writes against the head-insert's one. `alloc`
+    /// serves from the head, so a just-unfulled block placed there becomes
+    /// an allocation point with exactly one free slot: the next alloc drains
+    /// it and it is full again immediately. Measured — link at head instead
+    /// and the block-switch rate doubles (0.32 → 0.77 per alloc) for
+    /// **−21.7%** throughput. Behind the head, the block accumulates more
+    /// frees before `alloc` reaches it.
+    ///
+    /// This is the general rule for everything on this path: **the rate of
+    /// block switches is what costs, not the bookkeeping around them.** A
+    /// switch means loading a block header and free-list head this thread
+    /// has not touched recently; the pointer updates are noise beside it.
+    /// Replacing this whole list with a per-class bitmap — zero foreign
+    /// header traffic — was measured at +0.3%, i.e. nothing. See
+    /// `rfc/model/memory/heap-slot-allocation.md`, "What churn actually
+    /// costs".
     fn relink_unfull(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         probe_count!(LINK_CALLS);
         let head = self.available[ci];
