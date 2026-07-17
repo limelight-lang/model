@@ -7,13 +7,13 @@
 //! (c) be reused outside the runtime.
 //!
 //! **Size-less free works** — the key that makes a standard `free(ptr)`
-//! possible over our design: every allocation lives in a 32 KB-aligned
-//! block, so `ptr & !0x7FFF` finds the block header, whose `kind` routes
+//! possible over our design: every allocation lives in a block-aligned
+//! block, so `ptr & !BLOCK_MASK` finds the block header, whose `kind` routes
 //! the free. No caller-provided size needed. Routing:
 //!
 //! - `≤ 8 KB`, align ≤ 16 → the small-object [`Heap`].
 //! - `8 KB .. block payload` → one pooled block (`BLOCK_KIND_LARGE`).
-//! - `> block payload` → an OS-direct 32 KB-aligned run
+//! - `> block payload` → an OS-direct block-aligned run
 //!   (`BLOCK_KIND_LARGE_RUN`), returned to the OS on free.
 //!
 //! The `+256` payload offset is 256-aligned, so any alignment ≤ 256 is
@@ -55,7 +55,7 @@ fn block_of(ptr: *mut u8) -> *mut u8 {
     ((ptr as usize) & !BLOCK_MASK) as *mut u8
 }
 
-/// Round `n` up to a whole number of 32 KB blocks.
+/// Round `n` up to a whole number of blocks.
 #[inline]
 fn round_up_blocks(n: usize) -> usize {
     (n + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1)
@@ -110,7 +110,7 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
             (block as *mut u8).add(LINE_SIZE)
         }
     } else {
-        // Huge: OS-direct, 32 KB-aligned so the mask still finds us.
+        // Huge: OS-direct, block-aligned so the mask still finds us.
         let run_bytes = round_up_blocks(size + LINE_SIZE);
         let layout = Layout::from_size_align(run_bytes, BLOCK_SIZE).unwrap();
         let block = unsafe { std::alloc::alloc(layout) } as *mut LargeHeader;

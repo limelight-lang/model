@@ -1,4 +1,4 @@
-//! Request arena: bump allocation over pooled 32 KB blocks.
+//! Request arena: bump allocation over pooled 64 KB blocks.
 //!
 //! The hot path is `alloc` — four instructions after inlining. The
 //! slow path takes a block from the global pool. Nothing is freed
@@ -386,9 +386,14 @@ mod tests {
         let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
 
+        // Derived from BLOCK_PAYLOAD, not hardcoded: the count is whatever
+        // exactly fills one block, and spelling it as a literal silently
+        // pinned this test to a 32 KB block. Changing BLOCK_SIZE then failed
+        // here with "block must be exactly full", which reads like an arena
+        // bug rather than a stale constant.
+        let slots = BLOCK_PAYLOAD / 8;
         let first = arena.alloc(8);
-        // 32512 payload / 8 = 4064 slots; one taken, fill the rest.
-        for _ in 0..4063 {
+        for _ in 0..slots - 1 {
             arena.alloc(8);
         }
         assert_eq!(arena.remaining(), 0, "block must be exactly full");

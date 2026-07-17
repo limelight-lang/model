@@ -1,7 +1,7 @@
-//! Global pool of 32 KB blocks.
+//! Global pool of 64 KB blocks.
 //!
 //! Layers (per `docs/memory-manager.md`): OS regions of 2 MB are carved
-//! into 32 KB blocks aligned to their size; free blocks live in a
+//! into 64 KB blocks aligned to their size; free blocks live in a
 //! process-global lock-free stack; each thread keeps a small cache in
 //! front of it (tcmalloc pattern: refill in batches, flush half on
 //! overflow, flush all on thread death).
@@ -14,14 +14,26 @@ use std::cell::RefCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub const BLOCK_SIZE: usize = 32 * 1024;
+/// Block size, and with it the number of slots a size class gets per block.
+///
+/// 64 KB, matching mimalloc's small page (`MI_SMALL_PAGE_SHIFT`). The number
+/// is chosen against block-list churn, not against footprint: a class's head
+/// block is unlinked when it fills and re-linked when a slot frees, and each
+/// crossing rewrites two neighbouring blocks' cold headers. Halving the
+/// slots per block doubles how often that line is crossed. At a 5000-object
+/// live set, 32 KB gave 0.63 link/unlink per alloc against 64 KB's 0.32, and
+/// the throughput followed. See `rfc/model/memory/heap-slot-allocation.md`.
+///
+/// Nothing else in the tree may assume this value: derive from it, or from
+/// `BLOCK_PAYLOAD` / `BLOCK_MASK`.
+pub const BLOCK_SIZE: usize = 64 * 1024;
 pub const BLOCK_MASK: usize = BLOCK_SIZE - 1;
 /// One 256-byte line at the block start holds the header.
 pub const LINE_SIZE: usize = 256;
 pub const BLOCK_PAYLOAD: usize = BLOCK_SIZE - LINE_SIZE;
 
 pub const REGION_SIZE: usize = 2 * 1024 * 1024;
-const BLOCKS_PER_REGION: usize = REGION_SIZE / BLOCK_SIZE; // 64
+const BLOCKS_PER_REGION: usize = REGION_SIZE / BLOCK_SIZE;
 
 const THREAD_CACHE_CAPACITY: usize = 8;
 const REFILL_BATCH: usize = 4;
@@ -32,7 +44,7 @@ pub const BLOCK_KIND_ARENA: u32 = 1;
 pub const BLOCK_KIND_HEAP: u32 = 2;
 /// A single pooled block holding one large object (8 KB..block payload).
 pub const BLOCK_KIND_LARGE: u32 = 3;
-/// An OS-direct, 32 KB-aligned run of blocks for a huge object.
+/// An OS-direct, block-aligned run of blocks for a huge object.
 pub const BLOCK_KIND_LARGE_RUN: u32 = 4;
 /// Immortal-region block: bump-allocated, never returned to the pool.
 pub const BLOCK_KIND_IMMORTAL: u32 = 5;
@@ -79,11 +91,11 @@ impl BlockHeader {
 
 /// Lock-free Treiber stack of free blocks.
 ///
-/// Blocks are 32 KB-aligned, so the low 15 bits of a block address are
+/// Blocks are `BLOCK_SIZE`-aligned, so the low bits of a block address are
 /// zero — we pack an ABA tag there. Dereferencing a popped-under-us
 /// block is safe in phase 1 because regions are never unmapped.
 pub struct BlockPool {
-    head: AtomicUsize, // block_ptr | tag(15 bits)
+    head: AtomicUsize, // block_ptr | tag, in the block-aligned low bits
     regions_carved: AtomicUsize,
     /// Blocks handed out minus blocks returned — block-granular
     /// occupancy. Bumped only on the (rare) block operations, never on
@@ -91,7 +103,9 @@ pub struct BlockPool {
     blocks_out: AtomicUsize,
 }
 
-const TAG_MASK: usize = BLOCK_MASK; // low 15 bits
+/// The block-aligned low bits, free for the ABA tag. Widens with
+/// `BLOCK_SIZE` — never spell the bit count as a literal.
+const TAG_MASK: usize = BLOCK_MASK;
 
 #[inline]
 fn pack(ptr: *mut BlockHeader, tag: usize) -> usize {

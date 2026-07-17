@@ -278,17 +278,41 @@ process:
 
 | live objects | live bytes | ours | mimalloc | ratio |
 |---|---|---|---|---|
-| 50 | 24 KB | 8.10 ns | 7.84 ns | 1.03x |
-| 200 | 98 KB | 5.91 ns | 6.24 ns | **0.95x** |
-| 1 000 | 492 KB | 8.05 ns | 6.81 ns | 1.18x |
-| 5 000 | 2.4 MB | 15.39 ns | 10.63 ns | **1.45x** |
-| 20 000 | 9.8 MB | 22.66 ns | 17.17 ns | 1.32x |
+| 50 | 24 KB | 8.28 ns | 7.59 ns | 1.09x |
+| 200 | 98 KB | 6.14 ns | 6.12 ns | **1.00x** |
+| 1 000 | 492 KB | 6.60 ns | 6.78 ns | **0.97x** |
+| 5 000 | 2.4 MB | 11.33 ns | 10.83 ns | **1.05x** |
+| 20 000 | 9.8 MB | 20.28 ns | 17.62 ns | 1.15x |
 
-`larson.cpp`'s standard invocation holds **5000** live objects — the
-worst row. On the same binaries, real `larson 5 8 1000 5000 100 4141 1`:
-ours ~36.4M ops/s vs mimalloc ~55.9M, i.e. **1.54x slower**, up from
-2.15x before the fixes in `rfc/model/memory/heap-slot-allocation.md`
-("Fix 5").
+`larson.cpp`'s standard invocation holds **5000** live objects. On the same
+binaries, real `larson 5 8 1000 5000 100 4141 1`, five runs interleaved:
+
+| | throughput | vs mimalloc |
+|---|---|---|
+| before this work | ~27.0M ops/s | 2.11x slower |
+| **now** | **~45.6M ops/s** | **1.25x slower** |
+| mimalloc | ~57.0M ops/s | 1.0x |
+
+**+69%.** Details in `rfc/model/memory/heap-slot-allocation.md` ("Fix 5",
+"Fix 6").
+
+### What the block size costs
+
+Fix 6 doubled `BLOCK_SIZE` to 64 KB, which buys the mid-curve rows above
+and costs footprint. A size class needs at least one whole block, so the
+floor is `classes_touched * BLOCK_SIZE`:
+
+| live bytes | 32 KB resident | 64 KB resident |
+|---|---|---|
+| 24 KB | 640 KB | 1280 KB |
+| 98 KB | 704 KB | 1280 KB |
+| 492 KB | 1184 KB | 1664 KB |
+| 2.4 MB | 3392 KB | 3776 KB |
+| 9.8 MB | 11.7 MB | 12.1 MB |
+
+Up to 2x on a tiny live set, ~3% at scale — the overhead is a fixed
+per-class floor, so it amortises away as the working set grows. In
+absolute terms the worst case is 640 KB → 1.28 MB.
 
 Two methodology notes this investigation cost us, worth keeping:
 

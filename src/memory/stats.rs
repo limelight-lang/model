@@ -19,7 +19,7 @@ pub struct MemoryStats {
     pub regions_carved: usize,
     /// Bytes held from the OS via regions.
     pub resident_bytes: usize,
-    /// 32 KB blocks currently out of the pool, all consumers.
+    /// Blocks currently out of the pool, all consumers.
     pub blocks_out: usize,
     /// Bytes those blocks span — the block-granular "active" number.
     pub active_bytes: usize,

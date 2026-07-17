@@ -5,9 +5,9 @@
 //! / snmalloc (best-benchmarked for small frequent allocations, and the
 //! best fit for infrastructure we already have):
 //!
-//! - **One 32 KB block per size class**, carved into fixed-size slots.
+//! - **One 64 KB block per size class**, carved into fixed-size slots.
 //!   The block is mimalloc's "page".
-//! - **Pointer → block by mask** (`ptr & !0x7FFF`) — no radix tree or
+//! - **Pointer → block by mask** (`ptr & !BLOCK_MASK`) — no radix tree or
 //!   pagemap needed (jemalloc/snmalloc pay for those; our aligned blocks
 //!   give it for one AND).
 //! - **Intrusive free list per block, plus a bump cursor for virgin
