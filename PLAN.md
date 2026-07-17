@@ -89,6 +89,25 @@ actor/GC coordination via mailbox and the message-payload table
   pattern (`benches/`, `RESULTS.md`). Synthetic benches (buffer-reclaim
   cache-line analysis) can run now; workload-shaped validation is
   blocked below.
+- [ ] **`stats.rs`'s three tests are racy under load** — they assert deltas
+  on the process-global `blocks_out`, but `test_guard` only serialises the
+  test bodies. A thread that exits now returns its blocks from a TLS
+  destructor (`ll_thread_exit` → `abandon_all` → `BlockPool::put`), outside
+  that lock. Reproduces at `--test-threads=16`
+  (`arena_lifecycle_is_visible_at_block_granularity`, off by exactly one
+  block); passes 12/12 at the default thread count, so it will surface as a
+  rare CI flake, not a clean failure.
+
+  **Not a product regression** — returning blocks at thread exit is the fix
+  in `rfc/model/memory/heap-slot-allocation.md` (fix 7a) that took larson
+  from 1.7 GiB resident to 10 MiB. These tests' isolation had been resting
+  on the leak: thread exit used to do nothing at all.
+
+  Fix by releasing a test's heap under the same lock the test holds, rather
+  than from a TLS destructor — e.g. have `test_guard`'s guard call
+  `ll_thread_exit` on drop. **Do not weaken the assertions to hide it**; a
+  global counter that only holds still because nothing returns memory is
+  exactly what these tests exist to catch.
 - [ ] **BLOCKED on vertical slice: threshold calibration** — the
   per-block dense/sparse threshold (`arena-reset.md`), memory-pressure
   mode thresholds and the critical-mode search bound *K*
