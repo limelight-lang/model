@@ -39,9 +39,18 @@
 //! MPSC stack `remote_free`. A `free(ptr)` whose block is owned by
 //! *another* heap does one atomic push onto that owner's `remote_free`
 //! and touches nothing else — snmalloc's "message to the owner", one
-//! stack per owner (batching by destination is a later optimization).
-//! The owner drains `remote_free` on its slow path, returning slots to
-//! their blocks and reclaiming emptied blocks.
+//! stack per owner. The owner drains `remote_free` on its slow path,
+//! returning slots to their blocks and reclaiming emptied blocks.
+//!
+//! One stack per owner is **not** sharded per page the way mimalloc's
+//! `xthread_free` is, and that used to be recorded here and in
+//! `benches/RESULTS.md` as a known weakness worth ~15% on the cross-thread
+//! pattern, with per-destination batching as the planned fix. That was
+//! wrong about the cause: this path is now ~40% *ahead* of mimalloc on the
+//! same benchmark with the single stack untouched — what moved was the work
+//! the *drain* does per slot, not the contention on the stack. Do not build
+//! the sharding until a measurement asks for it. See
+//! `rfc/model/memory/heap-slot-allocation.md` ("Fix 6").
 //!
 //! `used` is therefore written **only by the owning thread** (on alloc,
 //! local free, and drain) — no atomics on it. A cross-thread free just

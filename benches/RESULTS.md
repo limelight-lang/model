@@ -9,28 +9,46 @@ Data only. Bench code: [`benches/alloc.rs`](alloc.rs). Reproduce with
 - Developer laptop, not an isolated bench rig — expect run-to-run
   variance of ±10–15%. Treat these as *ratios*, not absolute truth.
 
+## Read this first: two harnesses, two answers, 4x apart
+
+The same allocator, the same larson pattern, measured two ways:
+
+| harness | verdict |
+|---|---|
+| in-process Rust (`benches/standard.rs`) | **we are 3.4x faster** than mimalloc |
+| real `larson.cpp` through the C ABI | **we are 1.25x slower** than mimalloc |
+
+Both numbers below are real and neither is a typo. The in-process suite
+calls `Heap` as a Rust value, so it inlines into the benchmark loop, while
+mimalloc is reached through a non-inlinable `extern "C"` boundary. That is
+worth ~4x here, and it is measuring our harness, not our allocator.
+
+**The C ABI number is the honest one** — it is what a real embedder sees.
+Every in-process figure in this file should be read as an upper bound with
+that discount applied. See "Real C ABI vs mimalloc, by working set".
+
 ## alloc_40b_x500_write_then_reclaim
 
 Workload per iteration: 500 allocations of 40 bytes, **each written to**
 (8-byte header, the minimum a real object pays), all kept alive, then
 **reclaimed** (arena/bumpalo `reset`; malloc/mimalloc per-object free).
-20 KB total fits one 32 KB block.
+20 KB total fits one block.
 
 | Contender | Time / 500 (median) | Per alloc | vs arena |
 |---|---|---|---|
-| **arena** | ~471 ns | ~0.94 ns | 1.0× |
-| **arena + reserve** | ~488 ns | ~0.98 ns | ~1.0× |
-| bumpalo | ~789 ns | ~1.58 ns | ~1.7× slower |
-| mimalloc (fast malloc) | ~3.29 µs | ~6.6 ns | ~7× slower |
-| system malloc (OS default) | ~24 µs | ~48 ns | ~50× slower |
+| **arena** | ~409 ns | ~0.82 ns | 1.0× |
+| **arena + reserve** | ~405 ns | ~0.81 ns | ~1.0× |
+| bumpalo | ~632 ns | ~1.26 ns | ~1.5× slower |
+| mimalloc (fast malloc) | ~2.22 µs | ~4.4 ns | ~5.4× slower |
+| system malloc (OS default) | ~16.8 µs | ~34 ns | ~41× slower |
 
 ## Reading the numbers honestly
 
-- **The arena is ~1.7× faster than bumpalo** and **~7× faster than
+- **The arena is ~1.5× faster than bumpalo** and **~5.4× faster than
   mimalloc**. Not the "50×" the first (flawed) benchmark suggested —
   that number came from comparing an untouched-memory bump loop against
   the slow OS allocator. mimalloc is the honest fast-malloc rival, and
-  ~7× is the real gap. The 50× column now belongs only to the default
+  ~5.4× is the real gap. The 41× column now belongs only to the default
   OS allocator, which nobody serious uses under load.
 
 - **`reserve` is within noise of the plain arena here — and that is
@@ -66,9 +84,9 @@ multi-threaded phase runs 8 workers against the one shared pool.
 |---|---|
 | objects allocated | ~250 million |
 | bytes allocated | ~33 GiB (total churn) |
-| wall time | ~0.57 s |
-| throughput | ~176 000 req/s, ~440 M obj/s |
-| per object | ~2.3 ns |
+| wall time | ~0.48 s |
+| throughput | ~210 000 req/s, ~524 M obj/s |
+| per object | ~1.9 ns |
 | **regions carved (OS memory)** | **1 region = 2 MiB** |
 | churn ratio | ~16 500× (bytes allocated / resident) |
 | plateau | 1 region at 10% done → 1 at 100% — **STABLE** |
@@ -78,8 +96,8 @@ multi-threaded phase runs 8 workers against the one shared pool.
 | Metric | Value |
 |---|---|
 | objects allocated | ~500 million |
-| wall time | ~0.31 s |
-| throughput | ~640 000 req/s, ~1.6 B obj/s aggregate |
+| wall time | ~0.20 s |
+| throughput | ~1 027 000 req/s, ~2.6 B obj/s aggregate |
 | **regions carved** | **2 regions = 4 MiB** |
 
 ### What the server sim shows
@@ -99,13 +117,13 @@ multi-threaded phase runs 8 workers against the one shared pool.
 
 ### Honest caveats on these numbers
 
-- **~2.3 ns/object here vs ~0.94 ns in the micro-benchmark.** The higher
+- **~1.9 ns/object here vs ~0.82 ns in the micro-benchmark.** The higher
   figure is the *realistic* one: it includes the simulation's own
   per-object RNG and size computation (a modulo + branch), variable
   request sizes, and real cache pressure over 33 GiB. The micro-bench is
   the best-case floor; this is closer to real work. Neither is "the"
   number — they bracket it.
-- The RNG/sizing cost is charged into per-object, so ~2.3 ns is an
+- The RNG/sizing cost is charged into per-object, so ~1.9 ns is an
   *upper* bound on the allocator's own share.
 - Phase 1 never returns regions to the OS, so "regions carved" is the
   high-water mark — exactly the number we want to show is bounded.
@@ -127,40 +145,40 @@ Time per iteration (lower is better), and per free+alloc round:
 
 | Pattern | our heap | mimalloc | system |
 |---|---|---|---|
-| larson (20k rounds) | **0.84 ms** (~42 ns/round) | 1.88 ms (~94 ns) | 2.50 ms (~125 ns) |
-| rptest (40k churn) | **1.85 ms** (~46 ns/round) | 4.40 ms (~110 ns) | 7.69 ms (~192 ns) |
-| vs our heap | 1.0× | ~2.2–2.4× slower | ~3–4× slower |
+| larson (20k rounds) | **0.535 ms** (~27 ns/round) | 1.82 ms (~91 ns) | 2.36 ms (~118 ns) |
+| rptest (40k churn) | **1.11 ms** (~28 ns/round) | 3.76 ms (~94 ns) | 6.18 ms (~155 ns) |
+| vs our heap | 1.0× | ~3.4× slower | ~4.4–5.6× slower |
 
 **jemalloc omitted**: `jemalloc-sys` does not build on
 windows-msvc (autotools `configure` fails). mimalloc is the primary
 rival regardless.
 
-### Three caveats that flatter us — read before believing "2× faster than mimalloc"
+### Three caveats that flatter us — read before believing "3.4× faster than mimalloc"
 
 The gap is real *for what our heap currently is*, but the comparison is
 not apples-to-apples, and honesty requires saying why:
 
-1. **Our heap is not thread-safe yet.** mimalloc pays for atomic
-   operations and a thread-ownership check on *every* free even in
-   single-threaded use (that is how it routes local vs cross-thread
-   frees). Our phase-1 heap pays none of that. A large part of the gap
-   is thread-safety we simply haven't built. *(Update: it has since
-   landed — see the multi-threaded rematch below, where the gap does
-   narrow to a tie locally and a ~15% deficit cross-thread.)*
-2. **Inlined vs a call boundary.** Our Rust `Heap` inlines into the
-   benchmark loop; mimalloc is reached through a non-inlinable
-   `extern "C"` boundary (linked C static lib). This mirrors our real
+1. **Inlined vs a call boundary — and this one is worth ~4x.** Our Rust
+   `Heap` inlines into the benchmark loop; mimalloc is reached through a
+   non-inlinable `extern "C"` boundary (linked C static lib). The same
+   allocator measured through its *own* C ABI against the same rival is
+   **1.25x slower**, not 3.4x faster (see "Real C ABI vs mimalloc"). That
+   is a 4x swing from the harness alone. This partly mirrors our real
    design — `ll_heap_alloc` *does* inline into PHP code via bitcode LTO,
-   that is the whole point — but in this harness it is still an
-   asymmetry in our favour.
-3. **Specialised envelope.** Our heap handles only ≤ 8 KB, 8-byte
+   that is the whole point — but as a comparison it is not apples to
+   apples.
+2. **Specialised envelope.** Our heap handles only ≤ 8 KB, 8-byte
    alignment, no large objects, one size-class scheme. mimalloc is a
    complete general allocator. Narrower job = faster.
 
-Honest headline: *in its current single-threaded, small-object, inlined
-form, our heap beats mimalloc ~2×* — with a meaningful share of that
-coming from work we haven't done (thread safety), not pure superiority.
-The design is sound and the numbers are encouraging; they are not a
+*(A third caveat used to sit here: "our heap is not thread-safe yet, and
+mimalloc pays for thread-safety we haven't built". That is obsolete — it
+landed, and the multi-threaded rematch below now runs ahead of mimalloc on
+both patterns.)*
+
+Honest headline: *measured in-process, our heap beats mimalloc ~3.4x; the
+same code through the real C ABI is 1.25x slower than mimalloc.* Believe the
+second number. The design is sound and the direction is right; this is not a
 victory lap over a production allocator.
 
 ## Multi-threaded: heap vs mimalloc vs system (the fair rematch)
@@ -179,35 +197,47 @@ Two patterns:
   thread (Larson's cross-thread "bleeding"): our `remote_free` stack vs
   mimalloc's per-page `xthread_free`.
 
-Aggregate throughput, **6 samples on a dev laptop — high variance,
-read as medians and ranges, not precise figures**:
+Aggregate throughput (M ops/s), **5 samples on a dev laptop — high
+variance, read as medians and ranges, not precise figures**:
 
 | Pattern | our heap | mimalloc | system |
 |---|---|---|---|
-| independent | ~11.5 (11–13) | ~12.0 (9–12) | ~2.7 |
-| bleeding | ~19.6 (15–22) | ~23.1 (19–24) | ~8.3 (4–9) |
+| independent | **~18.9** (17.5–19.1) | ~13.9 (13.5–14.9) | ~3.4 |
+| bleeding | **~34.2** (32.7–35.8) | ~24.4 (23.6–26.1) | ~7.1 |
 
-### Honest read — this one does not flatter us
+Previously (before `rfc/model/memory/heap-slot-allocation.md` fixes 5-6):
+independent ~11.5 vs ~12.0 — a tie; bleeding ~19.6 vs ~23.1 — **mimalloc
+~15% ahead**, recorded here as "the real weakness".
 
-- **Local path: essentially tied with mimalloc** (~11.5 vs ~12). The
-  ~2× single-thread lead above was mostly the inlining edge plus
-  mimalloc's per-free thread check and FFI boundary — advantages that
-  shrink under 8-thread scheduling/cache pressure. Tied with a
-  production allocator on the local path is a good v1 result, not a win.
-- **Cross-thread path: mimalloc is ~15% faster than us.** This is the
-  real weakness. We funnel *all* cross-thread frees for a heap through
-  **one** `remote_free` stack (one contended atomic per owner);
-  mimalloc shards them per page. That is exactly the deferred
-  optimization — snmalloc's per-destination batching or mimalloc's
-  per-page sharding — and the number quantifies what it would buy.
+### Honest read
+
+- **Local path: ~36% ahead of mimalloc** (~18.9 vs ~13.9), up from a tie.
+  Some of this is still the inlining edge this harness gives us (caveat 2
+  above) — the C ABI comparison is the one to trust for absolute claims.
+- **The documented cross-thread deficit is gone**, and that is the
+  surprise. See below.
+- **Cross-thread path: ~40% ahead of mimalloc** (~34.2 vs ~24.4), where it
+  used to be ~15% behind. **Nothing on that path was touched.** The
+  `remote_free` design is unchanged: still one contended atomic stack per
+  owner, still not sharded per page the way mimalloc does it. What changed
+  is only what the *drain* does once it has the slot — pushing onto a free
+  list instead of dividing to find a bitmap index, over half as many blocks.
+
+  So the conclusion recorded here previously — "we funnel cross-thread frees
+  through one stack, mimalloc shards per page, and that costs us 15%" — was
+  **wrong about the cause**. The single stack was never the bottleneck; the
+  per-slot work on the owner's side was. The "known, planned fix"
+  (per-destination batching / per-page sharding) is therefore **not
+  justified by any measurement we have**, and should not be built until
+  something re-establishes a need for it.
 - Both are 4–6× the system allocator on both patterns.
-
 - A first cold-start sample (our 8.2 vs mimalloc 3.2) was discarded as
   an unwarmed-mimalloc outlier — recording it would have been dishonest.
 
-Bottom line: our v1 heap is **competitive with mimalloc, not superior** —
-tied locally, ~15% behind cross-thread — and clearly ahead of the system
-allocator. The cross-thread gap has a known, planned fix.
+Bottom line: ahead of mimalloc on both multi-threaded patterns in this
+harness, and clearly ahead of the system allocator. Read that against
+caveat 2 above — the same code through the real C ABI is 1.25x *slower*
+than mimalloc, so this is not a claim that we are the faster allocator.
 
 ## Reality check: the real C ABI path vs the in-process Rust benchmarks
 
@@ -329,17 +359,14 @@ Two methodology notes this investigation cost us, worth keeping:
 Follow-up on a *realistic* workload (varying sizes 8..1000, 5000-object
 live-set churn, matching what `larson.cpp` actually does — not one
 fixed size) found the gap there was wider (~2.9x, not ~2.2–2.7x) and
-attributed to two more things the fixed-size loop couldn't see: the
-linear size-class scan (real for varying sizes, negligible for one
-fixed small size) and the intrusive-linked-list free-slot tracking
-(cache-unfriendly pointer chasing into scattered slot memory). Both
-fixed — O(1) lookup table, per-block bitmap — and landed in `Heap`.
-Real result on the same realistic workload: ~2.9x → ~2.0–2.2x slower
-than mimalloc. An isolated ablation prototype had suggested ~1.7x; the
-real number is more modest because the prototype's static per-class
-arena sidesteps real overhead (TLS, `refill`/`BlockPool`, block-list
-bookkeeping) the production `Heap` still pays. Full writeup:
-`rfc/model/memory/heap-slot-allocation.md` ("Fix 4").
+attributed it to the linear size-class scan and the intrusive-linked-list
+free-slot tracking. The first fix — an O(1) lookup table — stands. The
+second — replacing the free list with a per-block bitmap — **was later
+reverted**: it was chosen on an ablation that never actually measured a
+free list (see `rfc/model/memory/heap-slot-allocation.md`, fix 4's banner
+and fix 5), and removing it was worth +18-20%. Fixes 5-6 took the same
+workload from 2.11x slower to **1.25x slower**; the by-working-set table
+above is the current picture.
 
 ## What this does and does not prove
 
@@ -349,5 +376,21 @@ Rust bump allocator and a top-tier general allocator, *with reclamation
 counted*.
 
 Does not prove: anything about long-lived, individually-freed objects
-(the GC heap's job, not built yet), fragmentation over months, or
-multi-threaded contention. Those need their own benchmarks.
+(the GC heap's job, not built yet), or fragmentation over months. Those
+need their own benchmarks.
+
+**And a standing warning, earned the hard way.** Every "this is what's left"
+claim in this file's history has been wrong, usually by 20-40%:
+
+- "our heap beats mimalloc ~2x" — the real C ABI said 6.8x *slower*.
+- "the remaining ~2.0-2.2x gap is not fully attributed", with a list of
+  candidates — none of the listed candidates were it.
+- "the bitmap is ~10-20% faster than a free list" — it was ~18-20% slower;
+  the ablation never measured a free list.
+- "cross-thread is our real weakness, mimalloc shards per page and we
+  don't" — that path is now ~40% *ahead* with the sharding still not built.
+
+The pattern is always the same: a number measured on one harness, then
+generalised. Before quoting anything here, check when it was last measured
+and on which harness — several of these sat in this file for months reading
+as current fact.
