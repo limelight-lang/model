@@ -265,6 +265,43 @@ read with that discount in mind until this exact real-binary check is
 added as a standing part of this file's methodology rather than a
 one-off investigation.
 
+**Update: attributed and roughly halved — see the next section.**
+
+## Real C ABI vs mimalloc, by working set
+
+The single "~2x slower than mimalloc" figure above is one point on a
+curve, and it happens to be close to the curve's worst point. Measured
+with `bench-external/larson/scaling_probe.cpp` (larson's exact workload
+shape — random sizes 8..1000, free-a-random-victim-then-allocate — with
+only the live-set size varying), ours and mimalloc alternating inside one
+process:
+
+| live objects | live bytes | ours | mimalloc | ratio |
+|---|---|---|---|---|
+| 50 | 24 KB | 8.10 ns | 7.84 ns | 1.03x |
+| 200 | 98 KB | 5.91 ns | 6.24 ns | **0.95x** |
+| 1 000 | 492 KB | 8.05 ns | 6.81 ns | 1.18x |
+| 5 000 | 2.4 MB | 15.39 ns | 10.63 ns | **1.45x** |
+| 20 000 | 9.8 MB | 22.66 ns | 17.17 ns | 1.32x |
+
+`larson.cpp`'s standard invocation holds **5000** live objects — the
+worst row. On the same binaries, real `larson 5 8 1000 5000 100 4141 1`:
+ours ~36.4M ops/s vs mimalloc ~55.9M, i.e. **1.54x slower**, up from
+2.15x before the fixes in `rfc/model/memory/heap-slot-allocation.md`
+("Fix 5").
+
+Two methodology notes this investigation cost us, worth keeping:
+
+- **Interleave, or don't compare.** This laptop drifts ~20-30% over a long
+  session (mimalloc measured anywhere from 45M to 60M ops/s on the *same*
+  binary depending on how warm the machine was). Ratios from two different
+  sessions are not comparable; every table here alternates the contenders
+  run-by-run, and the rival's own column is the check that the two runs
+  were in the same state.
+- **A 39 MB live-set row exists and is deliberately not quoted.** It showed
+  us ahead, but mimalloc's own number moved 31% between two back-to-back
+  runs there, so the row isn't measuring what it claims.
+
 Follow-up on a *realistic* workload (varying sizes 8..1000, 5000-object
 live-set churn, matching what `larson.cpp` actually does — not one
 fixed size) found the gap there was wider (~2.9x, not ~2.2–2.7x) and

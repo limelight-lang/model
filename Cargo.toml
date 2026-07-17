@@ -8,6 +8,14 @@ description = "Limelight runtime data model: classes, memory manager, GC"
 # rlib for Rust consumers and tests, staticlib for the C++/LLVM layer
 crate-type = ["rlib", "staticlib"]
 
+[features]
+# Counters read by the bench-external probes (`walk_probe.cpp`,
+# `churn_probe.cpp`) via `ll_probe_counters`. Off by default: each one is a
+# store on the allocation hot path, which is exactly what those probes are
+# there to measure. Build with `--features probe-counters` for them, never
+# for a timing run.
+probe-counters = []
+
 [dependencies]
 
 [dev-dependencies]

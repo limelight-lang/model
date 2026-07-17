@@ -10,21 +10,25 @@
 //! - **Pointer → block by mask** (`ptr & !0x7FFF`) — no radix tree or
 //!   pagemap needed (jemalloc/snmalloc pay for those; our aligned blocks
 //!   give it for one AND).
-//! - **Bitmap free-slot tracking**, not an intrusive linked list. A list
-//!   node's `next` pointer lives inside the slot itself, so popping/
-//!   pushing chases a pointer to a essentially random address within the
-//!   32 KB block — a cache-unfriendly, unpredictable-latency access
-//!   (measured: fine when the working set is small and hot, but the tail
-//!   grows sharply once it doesn't fit L1/L2). A bitmap replaces that with
-//!   one small, always-hot region (one bit per slot) that every alloc/free
-//!   touches — `alloc` is `tzcnt` (find first free) + clear the bit,
-//!   `free` is set the bit back. Measured ~10-20% faster in isolation on a
-//!   realistic (varying-size, live-set-churn) workload. See
-//!   `rfc/model/memory/heap-slot-allocation.md`. The bitmap is heap-owned
-//!   (one allocation per block, at `refill` — cold, not on the hot path),
-//!   not embedded in the fixed-size block header: the worst case (2032
-//!   slots for the smallest, 16-byte class) needs 256 bytes on its own,
-//!   the entire existing header budget.
+//! - **Intrusive free list per block, plus a bump cursor for virgin
+//!   slots** — mimalloc's `page->free`/extend scheme. `alloc` pops the
+//!   list head (or bump-carves if the list is empty), `free` pushes the
+//!   slot back. Both are O(1) and branch-only.
+//!
+//!   A bitmap was tried instead (one bit per slot, `tzcnt` to find a free
+//!   one) and **lost**: it needs a side allocation per block, so every
+//!   alloc pays a second dependent load into a line nothing else touches,
+//!   answering "is this block full?" costs a scan of every word, and
+//!   `free` needs `(ptr - base) / class_size` — a real integer division,
+//!   since `class_size` isn't a power of two for most classes. The free
+//!   list has none of those: its `next` lives *inside* the slot, which is
+//!   the very memory the caller is about to write (on alloc) or has just
+//!   stopped using (on free), so it rides a line that is already hot and
+//!   needs no index arithmetic at all. Measured +18-20% on a real
+//!   `larson.cpp` through the C ABI. See
+//!   `rfc/model/memory/heap-slot-allocation.md` ("Fix 5") — including why
+//!   the benchmark that originally chose the bitmap was not measuring what
+//!   it claimed.
 //! - **A fully-free block returns to the global pool** — real individual
 //!   reclamation, at block granularity (subject to the bounded
 //!   empty-block retention below).
@@ -71,6 +75,13 @@ pub const SIZE_CLASSES: &[usize] = &[
 
 pub const MAX_SMALL: usize = 8192;
 
+/// Number of size classes. Named so the per-class tables in [`Heap`] can be
+/// fixed-size arrays stored inline rather than `Vec`s: a `Vec` puts the
+/// table behind a pointer (load the pointer, load `len` to bounds-check,
+/// then load the element) on a path that runs on every allocation, where an
+/// inline array is one load against a compile-time-constant bound.
+pub const NUM_CLASSES: usize = SIZE_CLASSES.len();
+
 /// Direct lookup table at 16-byte granularity: one array read, zero
 /// branches. Profiling on a real varying-size workload (8..1000 bytes)
 /// showed the previous linear scan — fully unrolled by the compiler into
@@ -113,10 +124,9 @@ pub fn size_class_index(size: usize) -> Option<usize> {
 }
 
 /// A free slot threads a list through its own first 8 bytes — zero
-/// metadata overhead. Used only for `remote_free`, the cross-thread MPSC
-/// staging stack (a Treiber stack fundamentally needs linked nodes; that
-/// is unrelated to how a block tracks its own free slots, which is now a
-/// bitmap — see the module doc).
+/// metadata overhead. Used both for a block's own free list and for
+/// `remote_free`, the cross-thread MPSC staging stack. Every size class is
+/// ≥ 16 bytes, so a slot always has room for the link.
 #[repr(C)]
 struct FreeSlot {
     next: *mut FreeSlot,
@@ -143,12 +153,14 @@ struct HeapBlockHeader {
     /// (subject to the empty-reserve cap — see `Heap::retire_empty`).
     used: u32,
     slots: u32,
-    /// One bit per slot, 1 = free. Heap-allocated at `refill` (a
-    /// `Vec<u64>`'s raw parts, owner-only, freed explicitly in
-    /// `retire_empty`'s real-release branch — see the module doc for why
-    /// this isn't embedded in the fixed-size header).
-    bitmap: *mut u64,
-    bitmap_words: u32,
+    /// Head of this block's free-slot list. `next` lives inside the freed
+    /// slot itself, so the list costs no side allocation and no metadata
+    /// line of its own — see the module doc.
+    free: *mut FreeSlot,
+    /// Slots handed out at least once, counting from the block start.
+    /// Slots at index `>= bump` are virgin: never touched, nothing to
+    /// read or maintain, carved by address arithmetic on demand.
+    bump: u32,
     /// Owning heap — identifies local vs cross-thread free, and where a
     /// cross-thread free posts.
     owner: *const HeapShared,
@@ -164,37 +176,83 @@ impl HeapBlockHeader {
     }
 }
 
-/// Set `ptr`'s bit back to free in its block's bitmap.
+/// Push `ptr` back onto its block's free list.
 ///
-/// Computing the slot index costs one integer division (`class_size` is
-/// not a power of two for most classes, so the compiler can't fold it
-/// into a shift — it's a per-class runtime value, not a compile-time
-/// constant). Measured at ~3.5% of total time in an isolated profile.
-/// Known, deferred: fixable with a precomputed per-class
-/// multiply-by-reciprocal-plus-shift ("magic number division"), not done
-/// here — the risk of a subtly wrong hand-rolled reciprocal outweighed a
-/// 3.5% win under the time available. See
-/// `rfc/model/memory/heap-slot-allocation.md`.
+/// No index arithmetic: the link lives in the slot itself, so returning a
+/// slot needs neither its index nor the division-by-`class_size` that
+/// computing one would cost (`class_size` is not a power of two for most
+/// classes, so it cannot fold to a shift). `Heap::free` open-codes this on
+/// its fast path; this helper exists for [`Heap::drain_remote`].
+///
+/// # Safety
+/// `ptr` must be a slot belonging to `b`.
 #[inline]
-fn mark_free(b: &HeapBlockHeader, block: *mut HeapBlockHeader, ptr: *mut u8) {
-    let class_size = SIZE_CLASSES[b.size_class as usize];
-    let base = (block as *mut u8).wrapping_add(LINE_SIZE);
-    let idx = (ptr as usize - base as usize) / class_size;
+unsafe fn push_free(b: &mut HeapBlockHeader, ptr: *mut u8) {
+    let slot = ptr as *mut FreeSlot;
     unsafe {
-        let word = b.bitmap.add(idx / 64);
-        *word |= 1u64 << (idx % 64);
+        (*slot).next = b.free;
     }
+    b.free = slot;
+}
+
+/// Opt-in counters behind the `probe-counters` feature, read out over the C
+/// ABI by `bench-external/larson/{walk_probe,churn_probe}.cpp`. They answer
+/// "how many blocks does one alloc walk?" and "how often do blocks cross the
+/// full/not-full line?" — the two questions that located the block-list
+/// churn in `rfc/model/memory/heap-slot-allocation.md` ("Fix 5b").
+///
+/// Deliberately not always-on: these are plain stores on the hot path, and a
+/// timing run built with them is measuring the counters as much as the
+/// allocator. Single-threaded probe use only — no atomics.
+#[cfg(feature = "probe-counters")]
+pub mod probe {
+    /// Entries into `Heap::alloc`. Each one examines exactly one block, so
+    /// this counts block examinations, **including** re-entries made by the
+    /// cold paths via `alloc_class`.
+    pub static mut ALLOC_ENTRIES: u64 = 0;
+    /// Re-entries specifically. `ENTRIES - RETRIES` is the number of real
+    /// allocations, and `ENTRIES / (ENTRIES - RETRIES)` is blocks walked per
+    /// allocation — 1.0 means every alloc found room in the first block it
+    /// looked at.
+    pub static mut ALLOC_RETRIES: u64 = 0;
+    pub static mut UNLINK_CALLS: u64 = 0;
+    pub static mut LINK_CALLS: u64 = 0;
+
+    /// Write `[entries, retries, unlinks, links]` to `out`.
+    ///
+    /// # Safety
+    /// `out` must point to writable space for four `u64`s. Single-threaded
+    /// probe use only.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn ll_probe_counters(out: *mut u64) {
+        unsafe {
+            *out.add(0) = ALLOC_ENTRIES;
+            *out.add(1) = ALLOC_RETRIES;
+            *out.add(2) = UNLINK_CALLS;
+            *out.add(3) = LINK_CALLS;
+        }
+    }
+}
+
+/// Bump a [`probe`] counter, or compile to nothing without the feature.
+macro_rules! probe_count {
+    ($name:ident) => {
+        #[cfg(feature = "probe-counters")]
+        unsafe {
+            probe::$name += 1;
+        }
+    };
 }
 
 /// Thread-local small-object heap. Per size class it holds the head of a
 /// doubly-linked list of blocks that still have room.
 pub struct Heap {
-    available: Vec<*mut HeapBlockHeader>,
+    available: [*mut HeapBlockHeader; NUM_CLASSES],
     /// At most one retained-but-empty block per size class, kept ready
     /// for instant reuse instead of returning to `BlockPool` and
     /// re-carving on the very next allocation. See
     /// `rfc/model/memory/heap-slot-allocation.md`.
-    empty_reserve: Vec<*mut HeapBlockHeader>,
+    empty_reserve: [*mut HeapBlockHeader; NUM_CLASSES],
     shared: &'static HeapShared,
 }
 
@@ -210,67 +268,128 @@ impl Heap {
             remote_free: AtomicPtr::new(std::ptr::null_mut()),
         }));
         Heap {
-            available: vec![std::ptr::null_mut(); SIZE_CLASSES.len()],
-            empty_reserve: vec![std::ptr::null_mut(); SIZE_CLASSES.len()],
+            available: [std::ptr::null_mut(); NUM_CLASSES],
+            empty_reserve: [std::ptr::null_mut(); NUM_CLASSES],
             shared,
         }
     }
 
     /// Allocate at least `size` bytes, or null if `size` exceeds the
     /// small-object range.
+    ///
+    /// ## Why this is split into a fast path and `#[cold]` tails
+    ///
+    /// Everything rare — refilling from `BlockPool`, draining cross-thread
+    /// frees, walking past a full block — lives in separate `#[cold]`
+    /// `#[inline(never)]` functions rather than in this body. That is not
+    /// tidiness, it is the codegen: a function containing calls and needing
+    /// many live values gets a stack frame and callee-saved register
+    /// spills, and **the fast path pays for them on every call even though
+    /// only the rare branch needs them**. Disassembly of the pre-split
+    /// version showed `Heap::alloc` opening with five `push`es, a
+    /// `sub rsp, 48` and a `movaps` saving `xmm6` (LLVM had picked a
+    /// callee-saved SSE register to zero 16 bytes in `unlink`), plus the
+    /// mirror image on exit — roughly 20 instructions of frame management
+    /// around a ~4-instruction free-list pop, and no inlining into
+    /// `ll_alloc` because the function was too big.
+    ///
+    /// Kept as a leaf, this compiles to a handful of instructions with no
+    /// frame, and the cold tails are reached by a tail call — exactly the
+    /// shape mimalloc's `mi_malloc` has (`jmp _mi_malloc_generic`).
+    /// `refill` runs ~0.00003 times per alloc (measured); without `#[cold]`
+    /// LLVM has no way to know that and optimises the body as if the
+    /// branches were balanced.
+    #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
-        let ci = match size_class_index(size) {
-            Some(ci) => ci,
-            None => return std::ptr::null_mut(),
+        probe_count!(ALLOC_ENTRIES);
+        if size > MAX_SMALL {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: `CLASS_LUT` is const-built with one entry per 16-byte
+        // step up to `MAX_SMALL`, and every entry it stores is an index
+        // `< NUM_CLASSES` for any `size <= MAX_SMALL` (the one larger entry
+        // is only reachable past that bound, excluded above). The bounds
+        // check LLVM would otherwise emit here cannot fire.
+        let ci = unsafe { *CLASS_LUT.get_unchecked((size + 15) >> 4) as usize };
+        debug_assert!(ci < NUM_CLASSES);
+
+        let block = unsafe { *self.available.get_unchecked(ci) };
+        if block.is_null() {
+            return self.alloc_no_block(ci);
+        }
+
+        let b = unsafe { &mut *block };
+
+        // O(1) pop from the in-slot free list, else carve a virgin slot,
+        // else the block is full. Branch-only: no scan, and no dependent
+        // load into a side structure.
+        let slot = b.free;
+        let p = if !slot.is_null() {
+            b.free = unsafe { (*slot).next };
+            slot as *mut u8
+        } else if b.bump < b.slots {
+            let idx = b.bump as usize;
+            b.bump += 1;
+            let class_size = unsafe { *SIZE_CLASSES.get_unchecked(ci) };
+            let base = (block as *mut u8).wrapping_add(LINE_SIZE);
+            base.wrapping_add(idx * class_size)
+        } else {
+            return self.alloc_block_full(ci, block);
         };
 
-        loop {
-            let block = self.available[ci];
-
-            if block.is_null() {
-                // Slow path: reclaim cross-thread frees before growing.
-                if !self.shared.remote_free.load(Ordering::Relaxed).is_null() {
-                    self.drain_remote();
-                    if !self.available[ci].is_null() {
-                        continue;
-                    }
-                }
-                self.refill(ci);
-                continue;
-            }
-
-            let b = unsafe { &mut *block };
-
-            // Find the first free slot: scan bitmap words for a nonzero
-            // one, then the lowest set bit within it. Cache-friendly —
-            // the whole bitmap is one small, always-hot region, unlike
-            // chasing pointers scattered across the 32 KB block.
-            let mut found = None;
-            for w in 0..b.bitmap_words as usize {
-                let word = unsafe { *b.bitmap.add(w) };
-                if word != 0 {
-                    let bit = word.trailing_zeros() as usize;
-                    unsafe { *b.bitmap.add(w) = word & (word - 1) }; // clear lowest set bit
-                    found = Some(w * 64 + bit);
-                    break;
-                }
-            }
-
-            let Some(idx) = found else {
-                // Block genuinely full — unlink and try the next.
-                self.unlink(ci, block);
-                continue;
-            };
-
-            if b.used == 0 && self.empty_reserve[ci] == block {
-                self.empty_reserve[ci] = std::ptr::null_mut();
-            }
-            b.used += 1;
-
-            let class_size = SIZE_CLASSES[ci];
-            let base = (block as *mut u8).wrapping_add(LINE_SIZE);
-            return base.wrapping_add(idx * class_size);
+        // Inline, not a `#[cold]` call: `p` is live across this point, so a
+        // call here would strand it in a callee-saved register and drag the
+        // whole stack frame back into the fast path. The `used == 0` test
+        // short-circuits, so the array read costs nothing in the common case.
+        if b.used == 0 && self.empty_reserve[ci] == block {
+            self.empty_reserve[ci] = std::ptr::null_mut();
         }
+        b.used += 1;
+
+        // If that was the block's last slot, retire it from `available`
+        // right now, while its header is still hot in registers. Leaving it
+        // at the head instead means the *next* alloc reloads this header
+        // cold only to discover it is full and unlink it then — same
+        // unlink, one extra cache miss. Not `#[cold]`: measured at ~0.32
+        // per alloc, far too common to bury behind a call.
+        if b.free.is_null() && b.bump >= b.slots {
+            self.unlink(ci, block);
+        }
+
+        p
+    }
+
+    /// Cold tail: this class has no block with room. Reclaim cross-thread
+    /// frees, else take a fresh block from the pool, then retry.
+    #[cold]
+    #[inline(never)]
+    fn alloc_no_block(&mut self, ci: usize) -> *mut u8 {
+        if !self.shared.remote_free.load(Ordering::Relaxed).is_null() {
+            self.drain_remote();
+            if !self.available[ci].is_null() {
+                return self.alloc_class(ci);
+            }
+        }
+        self.refill(ci);
+        self.alloc_class(ci)
+    }
+
+    /// Cold tail: the head block turned out to be full. Unlink it and retry
+    /// with whatever is behind it.
+    #[cold]
+    #[inline(never)]
+    fn alloc_block_full(&mut self, ci: usize, block: *mut HeapBlockHeader) -> *mut u8 {
+        self.unlink(ci, block);
+        self.alloc_class(ci)
+    }
+
+    /// Re-enter the fast path once a cold tail has made a slot available.
+    /// Separate from `alloc` only because the cold tails already know `ci`
+    /// and must not redo the size lookup.
+    fn alloc_class(&mut self, ci: usize) -> *mut u8 {
+        probe_count!(ALLOC_RETRIES);
+        let size = SIZE_CLASSES[ci];
+        self.alloc(size)
     }
 
     /// Free a slot from [`alloc`]. If this thread owns the block it is a
@@ -279,42 +398,52 @@ impl Heap {
     ///
     /// # Safety
     /// `ptr` must be a live allocation from some heap and not freed yet.
+    ///
+    /// Split fast/cold for the same codegen reason as [`alloc`] — see its
+    /// doc. The owning-thread push is the whole fast path; the cross-thread
+    /// hand-off and the block-emptied bookkeeping are cold tails.
+    #[inline]
     pub unsafe fn free(&mut self, ptr: *mut u8) {
         let block = HeapBlockHeader::of_ptr(ptr);
-        let owner = unsafe { (*block).owner };
+        let b = unsafe { &mut *block };
 
-        if std::ptr::eq(owner, self.shared) {
-            unsafe { self.free_local(block, ptr) };
-        } else {
-            // Cross-thread: one atomic push onto the owner's stack.
-            let slot = ptr as *mut FreeSlot;
-            let remote = unsafe { &(*owner).remote_free };
-            let mut head = remote.load(Ordering::Relaxed);
-            loop {
-                unsafe { (*slot).next = head };
-                match remote.compare_exchange_weak(head, slot, Ordering::Release, Ordering::Relaxed)
-                {
-                    Ok(_) => break,
-                    Err(h) => head = h,
-                }
-            }
+        if !std::ptr::eq(b.owner, self.shared) {
+            return unsafe { Self::free_remote(b.owner, ptr) };
+        }
+
+        // Push onto the block's free list: the `next` write lands in the
+        // slot the program has just stopped using, already hot in cache.
+        let slot = ptr as *mut FreeSlot;
+        unsafe { (*slot).next = b.free };
+        b.free = slot;
+        b.used -= 1;
+
+        let ci = b.size_class as usize;
+        if b.used == 0 {
+            return self.retire_empty(ci, block);
+        }
+        if !b.linked {
+            self.relink_unfull(ci, block);
         }
     }
 
-    /// Owner-side free of `ptr` into its block: set its bit back.
-    unsafe fn free_local(&mut self, block: *mut HeapBlockHeader, ptr: *mut u8) {
-        let b = unsafe { &mut *block };
-        let ci = b.size_class as usize;
-        mark_free(b, block, ptr);
-        b.used -= 1;
-
-        if b.used == 0 {
-            self.retire_empty(ci, block);
-            return;
-        }
-
-        if !b.linked {
-            self.link(ci, block);
+    /// Cold tail: the block belongs to another thread's heap. One atomic
+    /// push onto that owner's stack, touching nothing else.
+    ///
+    /// # Safety
+    /// `ptr` must be a live slot owned by `owner`.
+    #[cold]
+    #[inline(never)]
+    unsafe fn free_remote(owner: *const HeapShared, ptr: *mut u8) {
+        let slot = ptr as *mut FreeSlot;
+        let remote = unsafe { &(*owner).remote_free };
+        let mut head = remote.load(Ordering::Relaxed);
+        loop {
+            unsafe { (*slot).next = head };
+            match remote.compare_exchange_weak(head, slot, Ordering::Release, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(h) => head = h,
+            }
         }
     }
 
@@ -335,12 +464,6 @@ impl Heap {
             self.unlink(ci, block);
         }
         unsafe {
-            let b = &*block;
-            drop(Vec::from_raw_parts(
-                b.bitmap,
-                b.bitmap_words as usize,
-                b.bitmap_words as usize,
-            ));
             (*block).kind = 0;
         }
         BlockPool::global().put(block as *mut BlockHeader);
@@ -361,7 +484,7 @@ impl Heap {
             let b = unsafe { &mut *block };
             let ci = b.size_class as usize;
 
-            mark_free(b, block, slot as *mut u8);
+            unsafe { push_free(b, slot as *mut u8) };
             b.used -= 1;
 
             if b.used == 0 {
@@ -382,27 +505,18 @@ impl Heap {
         let class_size = SIZE_CLASSES[ci];
         let block = BlockPool::global().get() as *mut HeapBlockHeader;
         let slots = (BLOCK_PAYLOAD / class_size) as u32;
-        let word_count = slots.div_ceil(64) as usize;
 
-        let mut bitmap: Vec<u64> = vec![u64::MAX; word_count];
-        // Mask off bits beyond `slots` in the last word so alloc() can
-        // never return an out-of-bounds slot index.
-        let rem = slots % 64;
-        if rem != 0 {
-            let last = word_count - 1;
-            bitmap[last] &= (1u64 << rem) - 1;
-        }
-        let bitmap_ptr = bitmap.as_mut_ptr();
-        std::mem::forget(bitmap); // ownership moves to the block; freed in retire_empty
-
+        // No side allocation at all: an empty free list plus `bump = 0`
+        // means "every slot virgin" — O(1), touching nothing but the
+        // header line.
         unsafe {
             block.write(HeapBlockHeader {
                 kind: BLOCK_KIND_HEAP,
                 size_class: ci as u32,
                 used: 0,
                 slots,
-                bitmap: bitmap_ptr,
-                bitmap_words: word_count as u32,
+                free: std::ptr::null_mut(),
+                bump: 0,
                 owner: self.shared,
                 next: std::ptr::null_mut(),
                 prev: std::ptr::null_mut(),
@@ -413,7 +527,39 @@ impl Heap {
         block
     }
 
+    /// Re-link a block that was full and has just had a slot freed.
+    ///
+    /// Deliberately **not** at the head. `alloc` always serves from the
+    /// head, so putting a just-unfulled block there installs a head with
+    /// exactly one free slot: the next alloc takes it, the block is full
+    /// again, and the alloc after that has to walk past it and unlink it —
+    /// three cold header lines (the block, its `prev`, its `next`) burned
+    /// per cycle. Measured: `available`-walk per alloc ran 1.41 at a 5000
+    /// live set, and the gap to mimalloc tracked that number across every
+    /// live-set size. Inserting behind the head leaves a head that still
+    /// has slots, and lets this block accumulate more frees before alloc
+    /// reaches it.
+    fn relink_unfull(&mut self, ci: usize, block: *mut HeapBlockHeader) {
+        probe_count!(LINK_CALLS);
+        let head = self.available[ci];
+        if head.is_null() {
+            self.link(ci, block);
+            return;
+        }
+        unsafe {
+            let second = (*head).next;
+            (*block).prev = head;
+            (*block).next = second;
+            (*block).linked = true;
+            (*head).next = block;
+            if !second.is_null() {
+                (*second).prev = block;
+            }
+        }
+    }
+
     fn link(&mut self, ci: usize, block: *mut HeapBlockHeader) {
+        probe_count!(LINK_CALLS);
         let head = self.available[ci];
         unsafe {
             (*block).prev = std::ptr::null_mut();
@@ -427,6 +573,7 @@ impl Heap {
     }
 
     fn unlink(&mut self, ci: usize, block: *mut HeapBlockHeader) {
+        probe_count!(UNLINK_CALLS);
         unsafe {
             let prev = (*block).prev;
             let next = (*block).next;
@@ -500,10 +647,21 @@ mod tls {
     static STATE: AtomicU32 = AtomicU32::new(UNINIT);
     const FALLBACK_BIT: u32 = 1 << 31;
 
+    /// Resolve the slot, initializing it if this is the first ever call.
+    /// Only [`set`] and [`ensure_slot`] need this: both run from
+    /// `ll_thread_init`, the one place allowed to be the first caller.
     #[inline]
-    fn state() -> u32 {
+    fn state_or_init() -> u32 {
         let s = STATE.load(Ordering::Relaxed);
         if s != UNINIT { s } else { init() }
+    }
+
+    /// Reserve the process-wide TLS slot if nobody has yet. Must run before
+    /// the first [`get`] on any thread — `ll_thread_init` calls it, which is
+    /// exactly what lets `get` skip the initialized check.
+    #[inline]
+    pub fn ensure_slot() {
+        let _ = state_or_init();
     }
 
     #[cold]
@@ -554,19 +712,42 @@ mod tls {
         }
     }
 
+    /// Read this thread's heap pointer.
+    ///
+    /// Does **not** check whether `STATE` is initialized: `ll_thread_init`
+    /// must have run on this thread first, and it is what initializes
+    /// `STATE`, so by the time any allocation reaches here the value is
+    /// resolved. That contract already exists (see `ll_thread_init`'s doc —
+    /// the hot path trusts it and does not check); this just stops paying
+    /// for a second, redundant check of it. Disassembly showed the check
+    /// cost a global load plus two branches ahead of the one instruction
+    /// that actually reads the TEB.
     #[inline]
     pub fn get() -> *mut Heap {
-        let s = state();
+        let s = STATE.load(Ordering::Relaxed);
+        debug_assert_ne!(s, UNINIT, "ll_thread_init() was not called on this thread");
         if s & FALLBACK_BIT == 0 {
             unsafe { read_gs_qword(s) as *mut Heap }
         } else {
-            unsafe { TlsGetValue(s & !FALLBACK_BIT) as *mut Heap }
+            get_fallback(s)
         }
+    }
+
+    /// The reserved slot landed outside the TEB's 64 inline slots, so the
+    /// fixed-offset read is unavailable and the real Win32 call is needed.
+    /// Practically unreachable — this is one of the first `TlsAlloc`s in the
+    /// process — but keeping the call out of line matters: any call in the
+    /// hot function forces it to build a stack frame that the fast path then
+    /// pays for on every allocation.
+    #[cold]
+    #[inline(never)]
+    fn get_fallback(s: u32) -> *mut Heap {
+        unsafe { TlsGetValue(s & !FALLBACK_BIT) as *mut Heap }
     }
 
     #[inline]
     pub fn set(p: *mut Heap) {
-        let s = state();
+        let s = state_or_init();
         if s & FALLBACK_BIT == 0 {
             unsafe { write_gs_qword(s, p as u64) };
         } else {
@@ -584,6 +765,11 @@ mod tls {
     thread_local! {
         static THREAD_HEAP: Cell<*mut Heap> = const { Cell::new(std::ptr::null_mut()) };
     }
+
+    /// No-op here: `thread_local!` needs no process-wide slot reserved.
+    /// Exists so `ll_thread_init` is written once for both targets.
+    #[inline]
+    pub fn ensure_slot() {}
 
     #[inline]
     pub fn get() -> *mut Heap {
@@ -607,6 +793,10 @@ mod tls {
 /// libc `malloc` replacement, which cannot demand callers opt in first.
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_init() {
+    // Must precede the first `tls::get()` anywhere: `get` deliberately does
+    // not check whether the slot has been reserved (see its doc), so this
+    // is the call that establishes that invariant.
+    tls::ensure_slot();
     if tls::get().is_null() {
         tls::set(Box::into_raw(Box::new(Heap::new())));
     }
@@ -614,12 +804,23 @@ pub extern "C" fn ll_thread_init() {
 
 /// Run `f` with this thread's persistent small-object heap.
 ///
+/// `#[inline(always)]`, not merely `#[inline]`: left to its own judgement
+/// LLVM kept this as a real call, which forced the caller to materialise
+/// `f` in a stack slot and pass it by pointer — `ll_malloc` opened with
+/// `sub rsp, 40; mov [rsp+32], rcx; lea rcx, [rsp+32]; call` purely to hand
+/// over a closure that captures one integer. Inlined, the closure vanishes
+/// entirely and the TEB read lands directly in the caller.
+///
 /// # Safety
 /// [`ll_thread_init`] must have been called on this thread first. No
 /// check is made — that is the point (see `ll_thread_init`'s doc).
+#[inline(always)]
 pub unsafe fn with_thread_heap<R>(f: impl FnOnce(&mut Heap) -> R) -> R {
     let p = tls::get();
-    debug_assert!(!p.is_null(), "ll_thread_init() was not called on this thread");
+    debug_assert!(
+        !p.is_null(),
+        "ll_thread_init() was not called on this thread"
+    );
     f(unsafe { &mut *p })
 }
 

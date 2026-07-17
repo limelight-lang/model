@@ -33,7 +33,7 @@ use crate::memory::block_pool::{
     BLOCK_KIND_HEAP, BLOCK_KIND_LARGE, BLOCK_KIND_LARGE_RUN, BLOCK_MASK, BLOCK_PAYLOAD, BLOCK_SIZE,
     BlockHeader, BlockPool, LINE_SIZE,
 };
-use crate::memory::heap::{MAX_SMALL, size_class_index, with_thread_heap};
+use crate::memory::heap::{MAX_SMALL, with_thread_heap};
 
 /// Largest alignment the `+256` payload guarantees.
 const MAX_ALIGN: usize = LINE_SIZE;
@@ -66,13 +66,34 @@ fn round_up_blocks(n: usize) -> usize {
 ///
 /// # Safety
 /// Standard allocator contract.
+/// The small path is the whole body here; everything else is a `#[cold]`
+/// tail. Keeping the large-object branches in this function gave it a stack
+/// frame (`push rsi; push rdi; sub rsp, 56`) that every small `malloc` set
+/// up and tore down on its way to a tail call — see [`Heap::alloc`]'s doc
+/// for the full reasoning.
+#[inline]
 pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
+    // Small path: the thread-local heap. Its slots are ≥16-aligned.
+    //
+    // No `size_class_index(size).is_some()` here: it returns `None` exactly
+    // when `size > MAX_SMALL`, which `size <= MAX_SMALL` already decides.
+    // Asking twice cost a second CLASS_LUT lookup on every malloc.
+    if size <= MAX_SMALL && align <= 16 {
+        return unsafe { with_thread_heap(|h| h.alloc(size)) };
+    }
+    unsafe { ll_alloc_large(size, align) }
+}
+
+/// # Safety
+/// Standard allocator contract.
+#[cold]
+#[inline(never)]
+unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
     if align > MAX_ALIGN {
         return std::ptr::null_mut();
     }
-
-    // Small path: the thread-local heap. Its slots are ≥16-aligned.
-    if size <= MAX_SMALL && align <= 16 && size_class_index(size).is_some() {
+    // A small size can still land here via an alignment above 16.
+    if size <= MAX_SMALL {
         return unsafe { with_thread_heap(|h| h.alloc(size)) };
     }
 
@@ -114,6 +135,9 @@ pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
 /// # Safety
 /// `ptr` must be a live allocation from [`ll_alloc`] on this thread (for
 /// small objects) and not already freed.
+/// Split fast/cold like [`ll_alloc`]: the heap path is the body, the large
+/// and huge kinds are a `#[cold]` tail.
+#[inline]
 pub unsafe fn ll_free(ptr: *mut u8) {
     if ptr.is_null() {
         return;
@@ -121,8 +145,18 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     let block = block_of(ptr);
     let kind = unsafe { *(block as *const u32) };
 
+    if kind == BLOCK_KIND_HEAP {
+        return unsafe { with_thread_heap(|h| h.free(ptr)) };
+    }
+    unsafe { ll_free_large(block, kind) };
+}
+
+/// # Safety
+/// `block` must be the block header of a live non-heap allocation.
+#[cold]
+#[inline(never)]
+unsafe fn ll_free_large(block: *mut u8, kind: u32) {
     match kind {
-        BLOCK_KIND_HEAP => unsafe { with_thread_heap(|h| h.free(ptr)) },
         BLOCK_KIND_LARGE => BlockPool::global().put(block as *mut BlockHeader),
         BLOCK_KIND_LARGE_RUN => {
             let hdr = block as *mut LargeHeader;
