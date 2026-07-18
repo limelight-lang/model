@@ -303,14 +303,31 @@ impl BlockPool {
 /// test holds this for its duration. `into_inner` recovers a poisoned
 /// lock so one panicking test doesn't cascade.
 #[cfg(test)]
-pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn test_guard() -> TestGuard {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     // Tests are just another embedder of the C ABI's explicit-init
     // contract (see `heap::ll_thread_init`); idempotent per thread, so
     // folding it into the shared test fixture beats patching every test
     // that happens to allocate a `GcHeap`/`LongLived` object.
     crate::memory::heap::ll_thread_init();
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    TestGuard(LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Holds the test lock and, on drop, releases this thread's heap *while
+/// still holding it*. Without this the heap goes back via the TLS
+/// destructor after the test body released the lock, so its
+/// `BlockPool::put`s mutate `blocks_out` under a later test's feet —
+/// the stats-test flake recorded in PLAN.md.
+#[cfg(test)]
+pub(crate) struct TestGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+impl Drop for TestGuard {
+    fn drop(&mut self) {
+        // Runs before the mutex guard field is released: the thread's
+        // blocks return to the pool inside the serialized section.
+        crate::memory::heap::ll_thread_exit();
+    }
 }
 
 #[cfg(test)]
