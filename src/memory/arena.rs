@@ -144,6 +144,18 @@ impl Arena {
         }
     }
 
+    /// A marker that changes whenever this arena allocates. The bump
+    /// pointer already moves on every `alloc` (and jumps on a fresh block),
+    /// so it *is* the "did anyone allocate" flag — at zero cost on the hot
+    /// path. Arena reset snapshots it around a destructor round to tell a
+    /// **dirty** destructor (one that allocated, so it may have stored a new
+    /// object into a survivor) from a **pure** one (see
+    /// `rfc/model/memory/arena-reset.md` and `crate::promote`).
+    #[inline]
+    pub(crate) fn bump_cursor(&self) -> usize {
+        self.bump as usize
+    }
+
     /// Grow an allocation in place — only possible when it is the last
     /// one (its end is the bump top) and the block has room.
     pub fn try_extend_in_place(&mut self, p: *mut u8, old_size: usize, new_size: usize) -> bool {

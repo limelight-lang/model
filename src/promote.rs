@@ -39,6 +39,14 @@ use crate::refcount::{
     ll_retain,
 };
 
+/// Recursion guard for the reset fixpoint. Pure and non-recreating
+/// destructors converge in rounds bounded by the object count; this caps
+/// the pathological case (a destructor that endlessly creates new
+/// destructor-bearing objects). Hitting it is an error, not a silent drop
+/// of the un-settled tail — dropping it would dangle
+/// (`rfc/model/memory/arena-reset.md`, "Recursion bound").
+const ARENA_RESET_MAX_ROUNDS: usize = 10_000;
+
 /// Full arena death: fixpoint, promotion by retention, deferred
 /// releases, blocks home. Replaces bare `Arena::reset` wherever the
 /// object model is in play.
@@ -53,8 +61,11 @@ pub unsafe fn arena_reset_full(arena: &mut Arena) {
     // Escapees come from the arena's list (the entities themselves), each
     // carrying its live external hold-count in `refcount` (IS_ESCAPEE). A
     // holder slot is never dereferenced, so a holder that died before now
-    // cannot dangle this reset. A destructor may create new escapes or
-    // destructors, hence the loop.
+    // cannot dangle this reset. A destructor runs arbitrary PHP and may
+    // create new escapes, new destructors, or store a fresh arena object
+    // into a survivor — hence the loop, which settles until a round adds
+    // nothing (rfc/model/memory/arena-reset.md).
+    let mut rounds = 0usize;
     loop {
         let mut progress = false;
 
@@ -71,6 +82,14 @@ pub unsafe fn arena_reset_full(arena: &mut Arena) {
             unsafe { mark_subgraph(a, &mut survivors) };
         }
 
+        // Watch the bump cursor across the destructor round: a destructor
+        // that allocated is "dirty" — it may have stored a fresh arena
+        // object into an already-traced survivor (an arena→arena store the
+        // barrier does not escape), so the survivor trace must re-read its
+        // children to catch it (audit H2). A destructor that allocated
+        // nothing is "pure" and needs no re-trace. This is the runtime
+        // stand-in for the compile-time purity classification.
+        let before = arena.bump_cursor();
         let mut round_dtors = Vec::new();
         arena.drain_destructors(|o| round_dtors.push(o));
         for obj in round_dtors {
@@ -80,10 +99,18 @@ pub unsafe fn arena_reset_full(arena: &mut Arena) {
             }
             unsafe { crate::object::run_pre_destructor(obj as *mut Object) };
         }
+        if arena.bump_cursor() != before {
+            unsafe { retrace_survivors(&mut survivors) };
+        }
 
         if !progress {
             break;
         }
+        rounds += 1;
+        assert!(
+            rounds <= ARENA_RESET_MAX_ROUNDS,
+            "arena reset did not converge: a destructor keeps creating new work"
+        );
     }
 
     // --- 2. Count: internal edges, heap compensations -------------------
@@ -149,6 +176,30 @@ unsafe fn mark_subgraph(root: *mut RcHeader, survivors: &mut Vec<*mut RcHeader>)
             let child = v.entity_ptr();
             if unsafe { is_arena_entity(child) } {
                 unsafe { mark_one(child, survivors, &mut stack) };
+            }
+        }
+    }
+}
+
+/// Re-read every survivor's current children and mark any newly-appeared
+/// arena child. A destructor may have stored a fresh arena object into an
+/// already-traced survivor — an arena→arena store the barrier does not
+/// escape — so that child would otherwise be missed and dangle once the
+/// survivor is promoted (audit H2). Cheap when nothing changed: an
+/// already-marked child is skipped by the `ESCAPED` test. The index walk
+/// (not an iterator) re-scans survivors appended by `mark_subgraph` mid-loop.
+unsafe fn retrace_survivors(survivors: &mut Vec<*mut RcHeader>) {
+    let mut i = 0;
+    while i < survivors.len() {
+        let s = survivors[i];
+        i += 1;
+        if unsafe { (*s).flags } & ENTITY_OBJECT == 0 {
+            continue; // leaf entity: no reference slots
+        }
+        for v in unsafe { crate::object::ref_child_values(s as *mut Object) } {
+            let child = v.entity_ptr();
+            if unsafe { is_arena_entity(child) } && unsafe { (*child).flags } & ESCAPED == 0 {
+                unsafe { mark_subgraph(child, survivors) };
             }
         }
     }
@@ -517,6 +568,78 @@ mod tests {
             // H2 dies for real: A cascades to teardown.
             assert!(crate::refcount::ll_release(h2 as *mut RcHeader));
             ll_object_die(h2);
+        }
+    }
+
+    /// Regression for H2: a "dirty" destructor stores a *fresh* arena object
+    /// into an already-traced survivor. That store is arena→arena, so the
+    /// barrier does not escape it; without re-tracing the survivor after a
+    /// dirty destructor, the new child is never marked and dangles once the
+    /// survivor is promoted. The reset watches the arena bump cursor to know
+    /// a destructor allocated, then re-reads the survivors' children.
+    #[test]
+    fn dirty_destructor_storing_into_a_survivor_traces_the_new_child() {
+        let _g = crate::memory::block_pool::test_guard();
+
+        static SURVIVOR: AtomicUsize = AtomicUsize::new(0);
+        static NODE_CLS: AtomicUsize = AtomicUsize::new(0);
+        static NEW_CHILD: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn mutate_survivor_dtor(_o: *mut Object) {
+            let node_cls = NODE_CLS.load(Ordering::Relaxed) as *const crate::class::Class;
+            let s = SURVIVOR.load(Ordering::Relaxed) as *mut Object;
+            // `$s->next = new Node();` — a fresh arena object stored into an
+            // already-traced survivor (arena→arena: not an escape).
+            let node =
+                unsafe { ll_object_new(std::ptr::null_mut(), node_cls, MemoryCategory::RequestArena) };
+            NEW_CHILD.store(node as usize, Ordering::Relaxed);
+            unsafe {
+                let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
+                store_prop(arena, s, 16, node);
+            }
+        }
+
+        let node_cls = ClassBuilder::new("Node").prop("next", true).build();
+        let holder_cls = ClassBuilder::new("Cache").prop("keep", true).build();
+        let trigger_cls = ClassBuilder::new("Trigger")
+            .destructor(mutate_survivor_dtor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        set_current_context(&mut ctx);
+
+        let holder = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let s = unsafe { ll_object_new(&mut ctx, node_cls, MemoryCategory::RequestArena) };
+        let _trigger = unsafe { ll_object_new(&mut ctx, trigger_cls, MemoryCategory::RequestArena) };
+
+        NODE_CLS.store(node_cls as usize, Ordering::Relaxed);
+        SURVIVOR.store(s as usize, Ordering::Relaxed);
+        NEW_CHILD.store(0, Ordering::Relaxed);
+
+        unsafe {
+            // S escapes into the heap holder → it is a survivor.
+            store_prop(&mut arena, holder, 16, s);
+            // Trigger is unheld with a destructor (tracked); at reset its
+            // destructor stores a fresh Node into survivor S.
+            arena_reset_full(&mut arena);
+        }
+        set_current_context(std::ptr::null_mut());
+
+        let node = NEW_CHILD.load(Ordering::Relaxed) as *mut Object;
+        assert!(!node.is_null(), "the destructor created the child");
+        unsafe {
+            assert_eq!((*s).rc.memory_category(), MemoryCategory::GcHeap, "survivor promoted");
+            assert_eq!(
+                (*node).rc.memory_category(),
+                MemoryCategory::GcHeap,
+                "the destructor-added child was traced and promoted, not left to die with the arena"
+            );
+            assert_eq!((*node).rc.refcount, 1, "held once, by the survivor's slot");
+
+            // Teardown cascades holder → s → node with no dangling.
+            assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+            ll_object_die(holder);
         }
     }
 }
