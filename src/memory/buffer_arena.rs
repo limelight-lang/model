@@ -192,6 +192,23 @@ impl BufferArena {
     }
 }
 
+impl Drop for BufferArena {
+    /// A dying thread must not take its buffer block with it. `free` never
+    /// returns the *current* block (only rotation does), so an arena whose
+    /// last chunk was freed would still leak that block at thread exit.
+    /// Return it if it holds no live chunks. A block with live chunks means
+    /// the owner never freed those buffers — its bug — and the data cannot
+    /// be reclaimed here; nothing else this arena owns is reachable (rotated
+    /// blocks return themselves when their last chunk frees).
+    fn drop(&mut self) {
+        if !self.current.is_null() && unsafe { (*self.current).live } == 0 {
+            unsafe { (*self.current).kind = 0 };
+            BlockPool::global().put(self.current as *mut BlockHeader);
+            self.current = std::ptr::null_mut();
+        }
+    }
+}
+
 thread_local! {
     static THREAD_BUFFER_ARENA: std::cell::RefCell<BufferArena> =
         const { std::cell::RefCell::new(BufferArena::new()) };
@@ -299,6 +316,29 @@ pub unsafe extern "C" fn ll_buffer_release_longlived(
 mod tests {
     use super::*;
     use crate::memory::buffer::set_pressure_mode;
+
+    #[test]
+    fn drop_returns_the_empty_current_block() {
+        let _g = crate::memory::block_pool::test_guard();
+        let pool = BlockPool::global();
+        let before = pool.blocks_out();
+        {
+            let mut a = BufferArena::new();
+            let (p, g) = a.alloc(128); // takes the current block
+            assert_eq!(pool.blocks_out(), before + 1);
+            unsafe { a.free(p, g) }; // live → 0, but current: `free` keeps it
+            assert_eq!(
+                pool.blocks_out(),
+                before + 1,
+                "the current block is not returned by free"
+            );
+        } // drop
+        assert_eq!(
+            pool.blocks_out(),
+            before,
+            "Drop returned the empty current block instead of leaking it"
+        );
+    }
 
     #[test]
     fn alloc_grants_at_least_requested_and_min_chunk() {
