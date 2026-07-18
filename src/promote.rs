@@ -56,92 +56,102 @@ const ARENA_RESET_MAX_ROUNDS: usize = 10_000;
 /// live stack); destructors invoked here may still allocate into it.
 pub unsafe fn arena_reset_full(arena: &mut Arena) {
     let mut survivors: Vec<*mut RcHeader> = Vec::new();
-
-    // --- 1. Fixpoint: mark surviving escapees, destruct the dying -------
-    // Escapees come from the arena's list (the entities themselves), each
-    // carrying its live external hold-count in `refcount` (IS_ESCAPEE). A
-    // holder slot is never dereferenced, so a holder that died before now
-    // cannot dangle this reset. A destructor runs arbitrary PHP and may
-    // create new escapes, new destructors, or store a fresh arena object
-    // into a survivor — hence the loop, which settles until a round adds
-    // nothing (rfc/model/memory/arena-reset.md).
+    let mut retained: HashSet<usize> = HashSet::new();
+    // `survivors[..counted]` have already been counted and retained. New
+    // survivors past it are the current round's delta.
+    let mut counted = 0usize;
     let mut rounds = 0usize;
+
+    // The whole reset is one settling loop — no separate "release tail".
+    // Each pass settles the arena side (surviving escapees, the destructors
+    // of the dying, and survivor re-traces), counts and retains what it
+    // found, then runs the deferred releases. A release runs teardown that
+    // can create more work (a released entity's `__destruct`, run while it
+    // is still alive, may escape or allocate), so we loop until a pass
+    // releases nothing. The recursion cap is the only backstop.
     loop {
-        let mut progress = false;
+        // --- Settle: escapees, dying destructors, survivor re-trace (H2).
+        // Every `__destruct` runs here, with its object still fully alive;
+        // nothing is freed until the survivor set below is final.
+        loop {
+            let mut progress = false;
 
-        let mut round = Vec::new();
-        arena.drain_escapees(|e| round.push(e));
-        for a in round {
-            progress = true;
-            // Count returned to zero (every holder let go): not a survivor
-            // via external references. It may still survive as an internal
-            // edge of another root — the subgraph trace covers that.
-            if unsafe { (*a).flags } & IS_ESCAPEE == 0 {
-                continue;
+            let mut round = Vec::new();
+            arena.drain_escapees(|e| round.push(e));
+            for a in round {
+                progress = true;
+                // Count back to zero (every holder let go): survives only if
+                // an internal edge reaches it — the subgraph trace covers it.
+                if unsafe { (*a).flags } & IS_ESCAPEE == 0 {
+                    continue;
+                }
+                unsafe { mark_subgraph(a, &mut survivors) };
             }
-            unsafe { mark_subgraph(a, &mut survivors) };
-        }
 
-        // Watch the bump cursor across the destructor round: a destructor
-        // that allocated is "dirty" — it may have stored a fresh arena
-        // object into an already-traced survivor (an arena→arena store the
-        // barrier does not escape), so the survivor trace must re-read its
-        // children to catch it (audit H2). A destructor that allocated
-        // nothing is "pure" and needs no re-trace. This is the runtime
-        // stand-in for the compile-time purity classification.
-        let before = arena.bump_cursor();
-        let mut round_dtors = Vec::new();
-        arena.drain_destructors(|o| round_dtors.push(o));
-        for obj in round_dtors {
-            progress = true;
-            if unsafe { (*obj).flags } & ESCAPED != 0 {
-                continue; // escaped objects are not dying and are skipped
+            // Bump cursor moved ⇒ a destructor allocated ("dirty"): it may
+            // have stored a fresh arena object into an already-traced
+            // survivor (arena→arena, not an escape), so re-read survivors'
+            // children (audit H2). A "pure" destructor needs no re-trace —
+            // the runtime stand-in for the compile-time purity class.
+            let before = arena.bump_cursor();
+            let mut round_dtors = Vec::new();
+            arena.drain_destructors(|o| round_dtors.push(o));
+            for obj in round_dtors {
+                progress = true;
+                if unsafe { (*obj).flags } & ESCAPED != 0 {
+                    continue; // escaped objects survive; they do not destruct
+                }
+                unsafe { crate::object::run_pre_destructor(obj as *mut Object) };
             }
-            unsafe { crate::object::run_pre_destructor(obj as *mut Object) };
-        }
-        if arena.bump_cursor() != before {
-            unsafe { retrace_survivors(&mut survivors) };
+            if arena.bump_cursor() != before {
+                unsafe { retrace_survivors(&mut survivors) };
+            }
+
+            if !progress {
+                break;
+            }
+            rounds += 1;
+            assert!(rounds <= ARENA_RESET_MAX_ROUNDS, "arena reset did not converge");
         }
 
-        if !progress {
+        // --- Count + retain the new survivors, BEFORE any release. Their
+        // compensating retains for held heap entities must land before the
+        // matching release-log releases, or a heap child could hit zero and
+        // free early. External refs are already the IS_ESCAPEE hold-count;
+        // this adds internal arena→arena edges and those compensations.
+        for &surv in &survivors[counted..] {
+            unsafe { count_children(surv) };
+        }
+        for &surv in &survivors[counted..] {
+            unsafe {
+                // 00 = GcHeap; drop the transient ESCAPED and IS_ESCAPEE.
+                (*surv).flags &= !(MEMORY_CATEGORY_MASK | ESCAPED | IS_ESCAPEE);
+            }
+            let block = BlockHeader::of_ptr(surv as *const u8) as usize;
+            if retained.insert(block) {
+                unsafe { (*(block as *mut BlockHeader)).kind = BLOCK_KIND_RETAINED };
+            }
+        }
+        counted = survivors.len();
+
+        // --- Deferred releases. Teardown here (destructor first, then free)
+        // may create new work; a new escape settles as an ordinary escape
+        // next pass (the survivor it stored into is GcHeap by now). Loop
+        // while the log yields anything.
+        let mut released_any = false;
+        arena.drain_release_log(|entity| unsafe {
+            released_any = true;
+            if ll_release(entity) {
+                die(entity);
+            }
+        });
+        if !released_any {
             break;
         }
         rounds += 1;
-        assert!(
-            rounds <= ARENA_RESET_MAX_ROUNDS,
-            "arena reset did not converge: a destructor keeps creating new work"
-        );
+        assert!(rounds <= ARENA_RESET_MAX_ROUNDS, "arena reset did not converge");
     }
 
-    // --- 2. Count: internal edges, heap compensations -------------------
-    // External references are already each root's `refcount` (the
-    // IS_ESCAPEE hold-count, kept live by the barrier and holder teardown);
-    // no slot is read. This pass adds internal arena->arena edges and the
-    // compensating retains for held heap entities.
-    for &surv in &survivors {
-        unsafe { count_children(surv) };
-    }
-
-    // --- 3. Retention: rewrite categories, keep survivor blocks ---------
-    let mut retained: HashSet<usize> = HashSet::new();
-    for &surv in &survivors {
-        unsafe {
-            // 00 = GcHeap; drop the transient ESCAPED mark and the
-            // IS_ESCAPEE flag — the count is an ordinary refcount now.
-            (*surv).flags &= !(MEMORY_CATEGORY_MASK | ESCAPED | IS_ESCAPEE);
-        }
-        retained.insert(BlockHeader::of_ptr(surv as *const u8) as usize);
-    }
-    for &block in &retained {
-        unsafe { (*(block as *mut BlockHeader)).kind = BLOCK_KIND_RETAINED };
-    }
-
-    // --- 4. Deferred releases, then memory ------------------------------
-    arena.drain_release_log(|entity| unsafe {
-        if ll_release(entity) {
-            die(entity);
-        }
-    });
     arena.finish_reset(|block| retained.contains(&(block as usize)));
 }
 
@@ -641,5 +651,63 @@ mod tests {
             assert!(crate::refcount::ll_release(holder as *mut RcHeader));
             ll_object_die(holder);
         }
+    }
+
+    /// Regression for H7: a release-log entity's `__destruct` runs during
+    /// the release drain and appends a *new* release-log entry (it stores a
+    /// heap reference into a still-alive arena container). The single-pass
+    /// reset drained the log once and dropped that late entry, tripping
+    /// finish_reset's "logs drained" assert; the settling loop re-drains it.
+    #[test]
+    fn release_log_grown_during_the_drain_is_still_drained() {
+        let _g = crate::memory::block_pool::test_guard();
+        static C2_PTR: AtomicUsize = AtomicUsize::new(0);
+        static B_PTR: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn a_dtor(_o: *mut Object) {
+            // A, dying, stores heap B into the arena container C2 → appends
+            // a release-log entry *while the log is being drained*.
+            let c2 = C2_PTR.load(Ordering::Relaxed) as *mut Object;
+            let b = B_PTR.load(Ordering::Relaxed) as *mut Object;
+            unsafe {
+                let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
+                store_prop(arena, c2, 16, b);
+            }
+        }
+
+        let cont_cls = ClassBuilder::new("Container").prop("x", true).build();
+        let a_cls = ClassBuilder::new("A").destructor(a_dtor as *const ()).build();
+        let b_cls = ClassBuilder::new("B").build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        set_current_context(&mut ctx);
+
+        let c1 = unsafe { ll_object_new(&mut ctx, cont_cls, MemoryCategory::RequestArena) };
+        let c2 = unsafe { ll_object_new(&mut ctx, cont_cls, MemoryCategory::RequestArena) };
+        let a = unsafe { ll_object_new(&mut ctx, a_cls, MemoryCategory::GcHeap) };
+        let b = unsafe { ll_object_new(&mut ctx, b_cls, MemoryCategory::GcHeap) };
+
+        C2_PTR.store(c2 as usize, Ordering::Relaxed);
+        B_PTR.store(b as usize, Ordering::Relaxed);
+
+        unsafe {
+            // Heap A into arena container C1 → release-log entry, A retained.
+            store_prop(&mut arena, c1, 16, a);
+            // A's only remaining reference is the log's (creator ref dropped).
+            assert!(!crate::refcount::ll_release(a as *mut RcHeader));
+
+            // Reset: releasing A runs a_dtor, which appends B's release-log
+            // entry mid-drain; the loop must still drain it.
+            arena_reset_full(&mut arena);
+
+            // B was retained by the store and released once by the re-drained
+            // log: back to the creator's single reference (not leaked at 2).
+            assert_eq!((*b).rc.refcount, 1, "B's late release-log entry was drained");
+
+            assert!(ll_release(b as *mut RcHeader));
+            ll_object_die(b);
+        }
+        set_current_context(std::ptr::null_mut());
     }
 }
