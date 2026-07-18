@@ -931,6 +931,11 @@ mod tls {
     #[cold]
     fn init() -> u32 {
         let slot = unsafe { TlsAlloc() };
+        // TlsAlloc returns TLS_OUT_OF_INDEXES (u32::MAX) on failure — which
+        // also equals our UNINIT sentinel, so storing it would make every
+        // later `get` treat the slot as uninitialised and read a bad TEB
+        // offset. Fail loudly instead of corrupting silently.
+        assert_ne!(slot, u32::MAX, "TlsAlloc failed: no free TLS slots");
         let computed = if slot < FAST_SLOT_COUNT {
             TEB_TLS_SLOTS_OFFSET + slot * 8
         } else {
