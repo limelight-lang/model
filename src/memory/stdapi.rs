@@ -55,10 +55,12 @@ fn block_of(ptr: *mut u8) -> *mut u8 {
     ((ptr as usize) & !BLOCK_MASK) as *mut u8
 }
 
-/// Round `n` up to a whole number of blocks.
+/// Round `n` up to a whole number of blocks, or `None` if that would
+/// overflow `usize` (a near-`usize::MAX` request must fail cleanly, not
+/// wrap down to a tiny run and under-allocate).
 #[inline]
-fn round_up_blocks(n: usize) -> usize {
-    (n + BLOCK_SIZE - 1) & !(BLOCK_SIZE - 1)
+fn round_up_blocks(n: usize) -> Option<usize> {
+    n.checked_add(BLOCK_SIZE - 1).map(|x| x & !(BLOCK_SIZE - 1))
 }
 
 /// Allocate `size` bytes with alignment `align`. Returns null on
@@ -140,7 +142,13 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
         }
     } else {
         // Huge: OS-direct, block-aligned so the mask still finds us.
-        let run_bytes = round_up_blocks(size + LINE_SIZE);
+        // `size` is caller-controlled ABI input; guard the header add and
+        // the block round-up against overflow (either would wrap to a tiny
+        // run and hand back a memory-unsafe under-allocation).
+        let run_bytes = match size.checked_add(LINE_SIZE).and_then(round_up_blocks) {
+            Some(n) => n,
+            None => return std::ptr::null_mut(),
+        };
         let layout = Layout::from_size_align(run_bytes, BLOCK_SIZE).unwrap();
         let block = unsafe { std::alloc::alloc(layout) } as *mut LargeHeader;
         if block.is_null() {
@@ -340,6 +348,17 @@ mod tests {
             assert_eq!(*p, 0xAB);
             assert_eq!(*p.add(size - 1), 0xAB);
             ll_free(p);
+        }
+    }
+
+    #[test]
+    fn huge_size_overflow_returns_null_not_underallocation() {
+        let _g = crate::memory::block_pool::test_guard();
+        unsafe {
+            // size + LINE_SIZE and the block round-up both overflow usize:
+            // the request must be refused, never wrapped to a small run.
+            assert!(ll_alloc(usize::MAX, 16).is_null());
+            assert!(ll_alloc(usize::MAX - 100, 16).is_null());
         }
     }
 
