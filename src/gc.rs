@@ -113,6 +113,30 @@ impl GcStrategy for RcTrace {
 /// 10K; to be calibrated, PLAN.md).
 pub const CANDIDATE_THRESHOLD: usize = 10_000;
 
+/// The fill that actually triggers a collection. In production this folds
+/// to the constant above (zero cost); under `cfg(test)` it is lowerable so
+/// a test can force a collection at a precise point (e.g. mid-teardown, to
+/// reproduce the reclaim-during-phase-2 hazard deterministically).
+#[cfg(not(test))]
+#[inline(always)]
+fn candidate_threshold() -> usize {
+    CANDIDATE_THRESHOLD
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_THRESHOLD: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(CANDIDATE_THRESHOLD) };
+}
+#[cfg(test)]
+fn candidate_threshold() -> usize {
+    TEST_THRESHOLD.with(|c| c.get())
+}
+#[cfg(test)]
+pub(crate) fn set_test_threshold(n: usize) {
+    TEST_THRESHOLD.with(|c| c.set(n));
+}
+
 thread_local! {
     static CANDIDATES: RefCell<Vec<*mut RcHeader>> = const { RefCell::new(Vec::new()) };
 }
@@ -159,7 +183,7 @@ pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
     let full = CANDIDATES.with(|c| {
         let mut c = c.borrow_mut();
         c.push(entity);
-        c.len() >= CANDIDATE_THRESHOLD
+        c.len() >= candidate_threshold()
     });
     if full {
         unsafe { collect_cycles() };
@@ -446,5 +470,63 @@ mod tests {
             0,
             "straight-line deaths never buffer"
         );
+    }
+
+    /// Regression for the phase-2 double-free: a buffered, dying object
+    /// must be removed from the candidate buffer *before* `ll_object_die`
+    /// releases its children, because a child release can trip the
+    /// collection threshold and run a synchronous collection. If the dying
+    /// object were still buffered, that collection would trace it (refcount
+    /// already 0) into the white set and free it — then phase 3 frees it a
+    /// second time, and its still-live child gets swept with it.
+    ///
+    /// The threshold is lowered so the child release inside phase 2 triggers
+    /// the collection deterministically; on the unfixed code this test
+    /// double-frees `p` and frees the still-referenced `c`.
+    #[test]
+    fn buffered_dying_object_is_forgotten_before_its_children_are_released() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = node_class();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+
+        let p = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let c = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+
+        unsafe {
+            // p.next = c  → c held by p's slot (rc 2) and by us (the creator
+            // reference, rc component that must keep c alive past p's death).
+            link(&mut arena, p, 16, c);
+            assert_eq!((*c).rc.refcount, 2);
+
+            // Buffer p as a cycle-root candidate (a non-zero decrement),
+            // still under the default threshold so nothing collects yet.
+            crate::refcount::ll_retain(p as *mut RcHeader); // rc 2
+            assert!(!ll_release(p as *mut RcHeader)); // rc 1, buffered
+            assert_eq!(
+                CANDIDATES.with(|c| c.borrow().len()),
+                1,
+                "p is a buffered candidate root"
+            );
+
+            // From now, the very next buffered candidate forces a collection.
+            set_test_threshold(1);
+
+            // p's last reference dies; teardown releases c during phase 2,
+            // which buffers c and triggers the collection mid-teardown.
+            assert!(ll_release(p as *mut RcHeader)); // rc 0 → death
+            crate::object::ll_object_die(p);
+
+            // Restore before any further allocation/free in this thread.
+            set_test_threshold(CANDIDATE_THRESHOLD);
+
+            // c survived with exactly the creator reference; the collection
+            // did not sweep it, and p was freed exactly once (no crash).
+            assert_eq!((*c).rc.refcount, 1, "the live child must survive");
+
+            assert!(ll_release(c as *mut RcHeader));
+            crate::object::ll_object_die(c);
+        }
+        arena.reset(|_| {});
     }
 }

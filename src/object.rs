@@ -148,6 +148,14 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     }
     let cls = unsafe { (*obj).class() };
 
+    // Leave the cycle-collector candidate buffer before releasing any
+    // child. This object's refcount is already 0; a child release below can
+    // trip the candidate threshold and run a synchronous collection, which
+    // would otherwise trace this still-buffered object as a root and free it
+    // — then phase 3 frees it again (double free). No-op for entities that
+    // were never buffered (non-GcHeap, or GcHeap that never decremented).
+    unsafe { crate::gc::forget_candidate(obj as *mut RcHeader) };
+
     // Phase 2 — drop: release counted children, cascading.
     for offset in cls.refcounted_slots() {
         let v = unsafe { (*obj).prop_at(offset).read() };
@@ -164,12 +172,8 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     // long-lived policy is TBD; only the GC heap frees here. The
     // deferred-free GC activity bit arrives with rc-satb.
     if unsafe { (*obj).rc.memory_category() } == MemoryCategory::GcHeap {
-        unsafe {
-            // The cycle collector must not keep a root into memory
-            // about to be reused.
-            crate::gc::forget_candidate(obj as *mut RcHeader);
-            crate::memory::stdapi::ll_free(obj as *mut u8);
-        }
+        // The candidate buffer was already cleared above, before phase 2.
+        unsafe { crate::memory::stdapi::ll_free(obj as *mut u8) };
     }
 }
 
