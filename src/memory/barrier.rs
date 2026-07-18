@@ -21,7 +21,51 @@
 
 use crate::memory::arena::Arena;
 use crate::memory::context::{LLContext, resolve_arena};
-use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain};
+use crate::refcount::{COW, IS_ESCAPEE, MemoryCategory, RcHeader, ll_release, ll_retain};
+
+/// A longer-lived container took a reference to request-arena object
+/// `entity` (the **gain** of the escape rule, `rfc/model/memory/arenas.md`).
+/// Bump its escape hold-count; on the 0 → 1 transition it becomes an
+/// escapee and joins the arena's list. The count lives in `entity`'s
+/// otherwise-idle `refcount` ([`IS_ESCAPEE`]), so reset decides its fate
+/// from the count alone and never dereferences a holder slot.
+///
+/// # Safety
+/// `entity` must be a live request-arena entity.
+pub(crate) unsafe fn escape_gain(arena: &mut Arena, entity: *mut RcHeader) {
+    let e = unsafe { &mut *entity };
+    debug_assert!(
+        e.flags & COW == 0,
+        "COW arena value escape takes the deepCopy path, not the counter (deferred)"
+    );
+    if e.flags & IS_ESCAPEE == 0 {
+        e.flags |= IS_ESCAPEE;
+        e.refcount = 1;
+        arena.log_escapee(entity);
+    } else {
+        e.refcount += 1;
+    }
+}
+
+/// A longer-lived slot let go of request-arena escapee `entity`: either
+/// overwritten with another value, or its whole holder torn down. Those
+/// are the same **lose** event. Drop the hold-count; at zero it is no
+/// longer an escapee. No arena handle needed — the list is append-only and
+/// reset skips a zero count.
+///
+/// # Safety
+/// `entity` must be a live request-arena entity.
+pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
+    let e = unsafe { &mut *entity };
+    if e.flags & IS_ESCAPEE == 0 {
+        return; // not tracked (never gained, or already back to zero)
+    }
+    debug_assert!(e.refcount > 0, "escape hold-count underflow");
+    e.refcount -= 1;
+    if e.refcount == 0 {
+        e.flags &= !IS_ESCAPEE;
+    }
+}
 
 /// The store mechanics. `owner` is the entity containing `slot`;
 /// `old` is the slot's current value (the caller has it loaded);
@@ -50,10 +94,11 @@ pub unsafe fn ref_store(
         let new_cat = unsafe { (*new).memory_category() };
 
         // Dangerous direction: an arena reference stored into a
-        // longer-lived container would dangle after reset. Log the
-        // slot; the fate is decided per block at arena death.
+        // longer-lived container would dangle after reset. Count the
+        // escape (`gain`); its fate is decided at arena death from the
+        // count, never by reading this slot back.
         if new_cat == MemoryCategory::RequestArena && owner_cat != MemoryCategory::RequestArena {
-            arena.log_escape(slot);
+            unsafe { escape_gain(arena, new) };
         }
 
         // Reverse direction: a heap entity stored into an arena
@@ -65,12 +110,21 @@ pub unsafe fn ref_store(
     }
 
     if !old.is_null() {
+        let old_cat = unsafe { (*old).memory_category() };
+
+        // A longer-lived slot letting go of an arena escapee: drop its
+        // hold-count (`lose`). The barrier half of the escape rule; holder
+        // teardown is the other half, and it is the same event.
+        if old_cat == MemoryCategory::RequestArena && owner_cat != MemoryCategory::RequestArena {
+            unsafe { escape_lose(old) };
+        }
+
         // A displaced heap value in an arena container is NOT released
         // here: its own release-at-reset record owns that release
         // (releasing twice was the double-release bug the design
         // fixes). Everything else releases normally.
-        let old_is_log_owned = owner_cat == MemoryCategory::RequestArena
-            && unsafe { (*old).memory_category() } == MemoryCategory::GcHeap;
+        let old_is_log_owned =
+            owner_cat == MemoryCategory::RequestArena && old_cat == MemoryCategory::GcHeap;
 
         if !old_is_log_owned && unsafe { ll_release(old) } {
             // TODO(object-lifecycle): teardown of the dying entity.
@@ -144,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn arena_ref_into_heap_owner_lands_in_remembered_set() {
+    fn arena_ref_into_heap_owner_is_recorded_as_an_escapee() {
         let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
         let mut owner = Holder::new(MemoryCategory::GcHeap);
@@ -154,20 +208,19 @@ mod tests {
         unsafe { obj.write(entity(MemoryCategory::RequestArena)) };
 
         unsafe { owner.store(&mut arena, obj) };
-        assert_eq!(
-            unsafe { (*obj).refcount },
-            1,
-            "arena objects are not counted"
+        // The escape is counted in the entity itself (the IS_ESCAPEE
+        // hold-count), not by remembering the holder's slot.
+        assert_eq!(unsafe { (*obj).refcount }, 1, "one heap holder");
+        assert_ne!(
+            unsafe { (*obj).flags } & crate::refcount::IS_ESCAPEE,
+            0,
+            "marked as an escapee"
         );
 
-        let mut escapes = Vec::new();
-        arena.reset_with(|_| {}, |slot| escapes.push(slot));
-        assert_eq!(escapes, vec![&mut owner.slot as *mut _]);
-        assert_eq!(
-            unsafe { *escapes[0] },
-            obj,
-            "the slot still holds the escapee"
-        );
+        // Reset sees the escapee entity directly — no slot is dereferenced.
+        let mut escapees = Vec::new();
+        arena.reset_with(|_| {}, |e| escapees.push(e));
+        assert_eq!(escapees, vec![obj], "the escapee itself, not its slot");
     }
 
     #[test]

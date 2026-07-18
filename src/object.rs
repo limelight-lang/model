@@ -159,6 +159,18 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     // Phase 2 — drop: release counted children, cascading.
     for offset in cls.refcounted_slots() {
         let v = unsafe { (*obj).prop_at(offset).read() };
+
+        // This longer-lived holder is being torn down: for each
+        // request-arena escapee it held, drop the escape hold-count
+        // (`lose`, `rfc/model/memory/arenas.md`). Same event as an
+        // overwrite in the store barrier — the slot let go of the escapee.
+        // Heap children fall through to the normal release + cascade below.
+        if v.is_refcounted()
+            && unsafe { (*v.entity_ptr()).memory_category() } == MemoryCategory::RequestArena
+        {
+            unsafe { crate::memory::barrier::escape_lose(v.entity_ptr()) };
+        }
+
         if unsafe { value_release(&v) } {
             // TODO(strings/arrays): entity teardown for non-object
             // children when those entities exist.

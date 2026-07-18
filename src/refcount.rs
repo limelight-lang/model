@@ -60,6 +60,17 @@ pub const ESCAPED: u32 = 1 << 11;
 /// to be reflected in rfc/model/classes.md.
 pub const ENTITY_OBJECT: u32 = 1 << 12;
 
+/// The entity is a live **escapee**: a request-arena object that one or
+/// more longer-lived containers currently reference
+/// (`rfc/model/memory/arenas.md`, "The dangerous direction"). While set,
+/// `refcount` holds the **escape hold-count** (how many such containers
+/// point at it) instead of a lifetime count — arena objects are not
+/// lifetime-counted, so the field is free. Maintained incrementally by the
+/// store barrier and by holder teardown; consumed at arena reset to decide
+/// promotion. Cleared when the count returns to zero or the survivor's
+/// category is rewritten at promotion.
+pub const IS_ESCAPEE: u32 = 1 << 13;
+
 /// The 8-byte header at offset 0 of every heap entity.
 #[repr(C)]
 pub struct RcHeader {

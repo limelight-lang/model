@@ -1,5 +1,5 @@
-//! Arena death with promotion: the reset-time consumer of the
-//! remembered set (`rfc/model/memory/arena-reset.md`).
+//! Arena death with promotion: the reset-time consumer of the escapee
+//! list and its hold-counts (`rfc/model/memory/arena-reset.md`).
 //!
 //! Phase 1 implements **retention only** — the safe default and,
 //! per the RFC, the whole of the first implementation: no copying, no
@@ -8,18 +8,20 @@
 //!
 //! The algorithm:
 //!
-//! 1. **Fixpoint** over the destructor and remembered-set logs: mark
-//!    the escaped subgraph (conservatively — a slot may later be
-//!    overwritten; over-approximation is safe, the cost is floating
-//!    garbage, never a dangling pointer), then run pre-destructors of
-//!    dying, unescaped objects. Destructors run PHP code: they may
-//!    create new escapes and track new destructors, which start fresh
-//!    log chains — hence the loop.
-//! 2. **Count**: external references from the final state of every
-//!    logged slot (deduplicated), internal edges between survivors,
-//!    and one compensating retain per heap entity a survivor holds
-//!    (its release-at-reset record assumed the holder would die; the
-//!    survivor now owes its own release at its real death).
+//! 1. **Fixpoint** over the destructor log and the escapee list: from the
+//!    escapees whose hold-count is still non-zero, mark the surviving
+//!    subgraph, then run pre-destructors of dying, unescaped objects.
+//!    Destructors run PHP code: they may create new escapes (bumping
+//!    counts, appending to the list) and track new destructors — hence
+//!    the loop. No holder slot is ever dereferenced, so a holder that died
+//!    before now cannot dangle the reset (the remembered-set bug this
+//!    replaces).
+//! 2. **Count**: external references are already each root's `refcount`
+//!    (its `IS_ESCAPEE` hold-count, kept live by the barrier and holder
+//!    teardown); this pass only adds internal edges between survivors and
+//!    one compensating retain per heap entity a survivor holds (its
+//!    release-at-reset record assumed the holder would die; the survivor
+//!    now owes its own release at its real death).
 //! 3. **Retain blocks** carrying survivors: rewrite each survivor's
 //!    category to GcHeap in place (the pointer-tag alternative was
 //!    rejected exactly because this rewrite must be possible), stamp
@@ -33,7 +35,8 @@ use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_KIND_RETAINED, BlockHeader};
 use crate::object::Object;
 use crate::refcount::{
-    ENTITY_OBJECT, ESCAPED, MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, ll_release, ll_retain,
+    ENTITY_OBJECT, ESCAPED, IS_ESCAPEE, MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, ll_release,
+    ll_retain,
 };
 
 /// Full arena death: fixpoint, promotion by retention, deferred
@@ -45,23 +48,27 @@ use crate::refcount::{
 /// live stack); destructors invoked here may still allocate into it.
 pub unsafe fn arena_reset_full(arena: &mut Arena) {
     let mut survivors: Vec<*mut RcHeader> = Vec::new();
-    let mut slots: Vec<*mut *mut RcHeader> = Vec::new();
-    let mut seen_slots: HashSet<usize> = HashSet::new();
 
-    // --- 1. Fixpoint: mark escapes, destruct the dying ------------------
+    // --- 1. Fixpoint: mark surviving escapees, destruct the dying -------
+    // Escapees come from the arena's list (the entities themselves), each
+    // carrying its live external hold-count in `refcount` (IS_ESCAPEE). A
+    // holder slot is never dereferenced, so a holder that died before now
+    // cannot dangle this reset. A destructor may create new escapes or
+    // destructors, hence the loop.
     loop {
         let mut progress = false;
 
-        let mut round_slots = Vec::new();
-        arena.drain_escapes(|s| round_slots.push(s));
-        for slot in round_slots {
+        let mut round = Vec::new();
+        arena.drain_escapees(|e| round.push(e));
+        for a in round {
             progress = true;
-            if !seen_slots.insert(slot as usize) {
+            // Count returned to zero (every holder let go): not a survivor
+            // via external references. It may still survive as an internal
+            // edge of another root — the subgraph trace covers that.
+            if unsafe { (*a).flags } & IS_ESCAPEE == 0 {
                 continue;
             }
-            slots.push(slot);
-            let target = unsafe { *slot };
-            unsafe { mark_subgraph(target, &mut survivors) };
+            unsafe { mark_subgraph(a, &mut survivors) };
         }
 
         let mut round_dtors = Vec::new();
@@ -79,16 +86,11 @@ pub unsafe fn arena_reset_full(arena: &mut Arena) {
         }
     }
 
-    // --- 2. Count: external slots, internal edges, compensations --------
-    // Counts start from zero (mark_subgraph zeroed them): survivors
-    // enter the counted world with exact reference counts.
-    for &slot in &slots {
-        let target = unsafe { *slot };
-        if unsafe { is_arena_entity(target) } {
-            debug_assert_ne!(unsafe { (*target).flags } & ESCAPED, 0);
-            unsafe { (*target).refcount += 1 };
-        }
-    }
+    // --- 2. Count: internal edges, heap compensations -------------------
+    // External references are already each root's `refcount` (the
+    // IS_ESCAPEE hold-count, kept live by the barrier and holder teardown);
+    // no slot is read. This pass adds internal arena->arena edges and the
+    // compensating retains for held heap entities.
     for &surv in &survivors {
         unsafe { count_children(surv) };
     }
@@ -97,7 +99,9 @@ pub unsafe fn arena_reset_full(arena: &mut Arena) {
     let mut retained: HashSet<usize> = HashSet::new();
     for &surv in &survivors {
         unsafe {
-            (*surv).flags &= !(MEMORY_CATEGORY_MASK | ESCAPED); // 00 = GcHeap
+            // 00 = GcHeap; drop the transient ESCAPED mark and the
+            // IS_ESCAPEE flag — the count is an ordinary refcount now.
+            (*surv).flags &= !(MEMORY_CATEGORY_MASK | ESCAPED | IS_ESCAPEE);
         }
         retained.insert(BlockHeader::of_ptr(surv as *const u8) as usize);
     }
@@ -128,9 +132,11 @@ unsafe fn is_arena_entity(p: *mut RcHeader) -> bool {
     !p.is_null() && unsafe { (*p).memory_category() } == MemoryCategory::RequestArena
 }
 
-/// Mark the escaped subgraph from one external reference: the target
-/// and everything it references transitively inside the arena. Counts
-/// are zeroed at first mark; counting happens in a later single pass.
+/// Mark the surviving subgraph from one escapee root: the root and
+/// everything it references transitively inside the arena. A non-root
+/// survivor (reached only by an internal edge) has its count zeroed at
+/// first mark so the counting pass can rebuild it from edges; a root keeps
+/// its `refcount` — that is already its external hold-count.
 unsafe fn mark_subgraph(root: *mut RcHeader, survivors: &mut Vec<*mut RcHeader>) {
     if !unsafe { is_arena_entity(root) } {
         return; // stale entry: overwritten or never an arena value
@@ -158,7 +164,12 @@ unsafe fn mark_one(
     }
     unsafe {
         (*e).flags |= ESCAPED;
-        (*e).refcount = 0; // exact count rebuilt in the counting pass
+        // Roots (still IS_ESCAPEE) keep their external hold-count; a
+        // survivor reached only internally has none, so start it at zero
+        // and let the counting pass rebuild it from internal edges.
+        if (*e).flags & IS_ESCAPEE == 0 {
+            (*e).refcount = 0;
+        }
     }
     survivors.push(e);
     if unsafe { (*e).flags } & ENTITY_OBJECT != 0 {
@@ -461,6 +472,51 @@ mod tests {
             assert_eq!((*b).rc.refcount, 1, "deduplicated: one slot, one count");
             // `a` was conservatively marked but is unreferenced: floating
             // garbage of this reset, never a dangling pointer.
+        }
+    }
+
+    /// Regression for the remembered-set dangle (C2): a heap holder can die
+    /// before the arena resets. The old design logged holder *slots* and
+    /// read them back at reset, so a freed holder's slot was dereferenced
+    /// (and its stale contents re-counted). The escape counter never reads
+    /// a slot: the holder's teardown already dropped the count (`lose`), so
+    /// reset sees the true, live external count.
+    #[test]
+    fn holder_death_before_reset_neither_dangles_nor_miscounts() {
+        let _g = crate::memory::block_pool::test_guard();
+        let holder_cls = ClassBuilder::new("Box").prop("v", true).build();
+        let val_cls = ClassBuilder::new("Val").build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let h1 = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let h2 = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let a = unsafe { ll_object_new(&mut ctx, val_cls, MemoryCategory::RequestArena) };
+
+        unsafe {
+            // A escapes into two heap holders: hold-count 2.
+            store_prop(&mut arena, h1, 16, a);
+            store_prop(&mut arena, h2, 16, a);
+            assert_eq!((*a).rc.refcount, 2, "two heap holders");
+
+            // H1 dies before reset. Its teardown drops the count (lose) and
+            // frees its memory — including the slot that held A. The old
+            // slot-based reset would read that freed slot and re-count A to
+            // 2; the counter leaves the count at exactly 1.
+            assert!(crate::refcount::ll_release(h1 as *mut RcHeader));
+            ll_object_die(h1);
+            assert_eq!((*a).rc.refcount, 1, "H1's death dropped the count");
+
+            arena_reset_full(&mut arena);
+
+            // A survived (H2 holds it), promoted with exactly one
+            // reference, and no freed slot was ever dereferenced.
+            assert_eq!((*a).rc.memory_category(), MemoryCategory::GcHeap, "promoted");
+            assert_eq!((*a).rc.refcount, 1, "exactly H2's reference, not two");
+
+            // H2 dies for real: A cascades to teardown.
+            assert!(crate::refcount::ll_release(h2 as *mut RcHeader));
+            ll_object_die(h2);
         }
     }
 }

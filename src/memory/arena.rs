@@ -40,7 +40,7 @@ struct LogSegment {
 enum Log {
     Destructors,
     Larges,
-    RememberedSet,
+    Escapees,
     ReleaseAtReset,
 }
 
@@ -55,10 +55,15 @@ pub struct Arena {
     /// OS-direct payloads owned by this arena — buffers larger than a
     /// block — freed at reset like everything else (in-arena log).
     larges: *mut LogSegment,
-    /// Remembered set: slots in longer-lived containers that received a
-    /// reference into this arena (`rfc/model/memory/arenas.md`). Fate
-    /// of the escapees is decided at reset.
-    remembered: *mut LogSegment,
+    /// Escapees: request-arena objects that a longer-lived container
+    /// referenced (`rfc/model/memory/arenas.md`, "The dangerous
+    /// direction"). Append-only list of the **entities themselves**, not
+    /// their holder slots — the live external-reference count lives in each
+    /// entity's `refcount` (the [`IS_ESCAPEE`](crate::refcount::IS_ESCAPEE)
+    /// hold-count), so reset never dereferences a holder slot and cannot
+    /// dangle. Fate of each escapee (promote or drop) is decided at reset
+    /// from its count.
+    escapees: *mut LogSegment,
     /// Heap entities referenced from this arena's containers. The log
     /// owns exactly one release per record — the barrier deliberately
     /// does NOT release a displaced value on overwrite
@@ -80,7 +85,7 @@ impl Arena {
             blocks: std::ptr::null_mut(),
             destructors: std::ptr::null_mut(),
             larges: std::ptr::null_mut(),
-            remembered: std::ptr::null_mut(),
+            escapees: std::ptr::null_mut(),
             release_at_reset: std::ptr::null_mut(),
         }
     }
@@ -175,10 +180,15 @@ impl Arena {
         self.log_push(Log::Destructors, obj as usize);
     }
 
-    /// Barrier hook: a longer-lived container received a reference into
-    /// this arena; remember the slot for reset-time promotion.
-    pub fn log_escape(&mut self, slot: *mut *mut RcHeader) {
-        self.log_push(Log::RememberedSet, slot as usize);
+    /// Barrier hook: `entity` became an escapee (a longer-lived container
+    /// took a reference to this request-arena object for the first time —
+    /// its `IS_ESCAPEE` count went 0 → 1). Record it so reset can decide
+    /// its fate. Append-only: an escapee whose count later returns to zero
+    /// is simply skipped at reset, and a re-escape appends again (harmless,
+    /// deduplicated by the reset-time subgraph mark). The count itself is
+    /// maintained in the entity's `refcount`, not here.
+    pub fn log_escapee(&mut self, entity: *mut RcHeader) {
+        self.log_push(Log::Escapees, entity as usize);
     }
 
     /// Barrier hook: a heap entity was stored into one of this arena's
@@ -197,12 +207,12 @@ impl Arena {
         self.reset_with(run_destructor, |_| {});
     }
 
-    /// [`reset`] with an escape handler receiving every remembered-set
-    /// slot. Composition of the reset primitives below.
+    /// [`reset`] with an escape handler receiving every escapee entity.
+    /// Composition of the reset primitives below.
     pub fn reset_with(
         &mut self,
         mut run_destructor: impl FnMut(*mut RcHeader),
-        mut handle_escape: impl FnMut(*mut *mut RcHeader),
+        mut handle_escapee: impl FnMut(*mut RcHeader),
     ) {
         // Loops: a destructor may track new destructors or create new
         // escapes (the fixpoint discipline of arena-reset.md).
@@ -212,9 +222,9 @@ impl Arena {
                 progress = true;
                 run_destructor(o);
             });
-            self.drain_escapes(|s| {
+            self.drain_escapees(|e| {
                 progress = true;
-                handle_escape(s);
+                handle_escapee(e);
             });
             if !progress {
                 break;
@@ -240,11 +250,12 @@ impl Arena {
         Self::drain_log(head, |rec| f(rec as *mut RcHeader));
     }
 
-    /// One-shot drain of the remembered set (same take semantics).
-    pub fn drain_escapes(&mut self, mut f: impl FnMut(*mut *mut RcHeader)) {
-        let head = self.remembered;
-        self.remembered = std::ptr::null_mut();
-        Self::drain_log(head, |rec| f(rec as *mut *mut RcHeader));
+    /// One-shot drain of the escapee list (same take semantics): yields
+    /// each recorded escapee entity.
+    pub fn drain_escapees(&mut self, mut f: impl FnMut(*mut RcHeader)) {
+        let head = self.escapees;
+        self.escapees = std::ptr::null_mut();
+        Self::drain_log(head, |rec| f(rec as *mut RcHeader));
     }
 
     /// One-shot drain of the release-at-reset log: exactly one release
@@ -264,7 +275,7 @@ impl Arena {
     pub fn finish_reset(&mut self, mut keep_block: impl FnMut(*mut BlockHeader) -> bool) {
         debug_assert!(
             self.destructors.is_null()
-                && self.remembered.is_null()
+                && self.escapees.is_null()
                 && self.release_at_reset.is_null(),
             "logs must be drained before finish_reset"
         );
@@ -297,7 +308,7 @@ impl Arena {
         let head = match which {
             Log::Destructors => self.destructors,
             Log::Larges => self.larges,
-            Log::RememberedSet => self.remembered,
+            Log::Escapees => self.escapees,
             Log::ReleaseAtReset => self.release_at_reset,
         };
 
@@ -321,7 +332,7 @@ impl Arena {
         match which {
             Log::Destructors => self.destructors = head,
             Log::Larges => self.larges = head,
-            Log::RememberedSet => self.remembered = head,
+            Log::Escapees => self.escapees = head,
             Log::ReleaseAtReset => self.release_at_reset = head,
         }
     }
