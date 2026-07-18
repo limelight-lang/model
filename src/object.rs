@@ -143,8 +143,26 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     // Phase 1 — pre-destructor: exactly once, resurrection-aware.
-    if unsafe { run_pre_destructor(obj) } && unsafe { (*obj).rc.refcount } > 0 {
-        return; // resurrected: __destruct stored $this somewhere
+    //
+    // Guard the destructor with one extra reference so a *transient* $this
+    // reference taken inside it (`$x = $this;` then `$x` leaves scope: a
+    // retain followed by a release) cannot drive the count to zero and
+    // re-enter teardown while we are still in it — that would free `obj`
+    // here and again below (double free). A genuine resurrection (a
+    // reference that outlives the destructor) leaves the count above the
+    // guard, and is detected after it is dropped. The guard is only
+    // meaningful for lifetime-counted (GcHeap) objects; arena objects are
+    // not counted, so a $this reference there is a no-op anyway.
+    let counted = unsafe { (*obj).rc.lifetime_counted() };
+    if counted {
+        unsafe { (*obj).rc.refcount += 1 };
+    }
+    let ran = unsafe { run_pre_destructor(obj) };
+    if counted {
+        unsafe { (*obj).rc.refcount -= 1 };
+    }
+    if ran && unsafe { (*obj).rc.refcount } > 0 {
+        return; // resurrected: __destruct stored $this somewhere lasting
     }
     let cls = unsafe { (*obj).class() };
 
@@ -215,6 +233,7 @@ mod tests {
 
     static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
     static RESURRECT_INTO: AtomicUsize = AtomicUsize::new(0);
+    static TRANSIENT_DEATHS: AtomicUsize = AtomicUsize::new(0);
 
     unsafe extern "C" fn counting_destructor(_obj: *mut Object) {
         DESTRUCTS.fetch_add(1, Ordering::Relaxed);
@@ -224,6 +243,17 @@ mod tests {
         DESTRUCTS.fetch_add(1, Ordering::Relaxed);
         unsafe { ll_retain(obj as *mut RcHeader) };
         RESURRECT_INTO.store(obj as usize, Ordering::Relaxed);
+    }
+
+    /// `$x = $this;` then `$x` leaves scope: a transient retain + release.
+    /// Under the destructor guard the release must NOT report death — a
+    /// reported death here re-enters teardown and double-frees `obj`.
+    unsafe extern "C" fn transient_this_destructor(obj: *mut Object) {
+        DESTRUCTS.fetch_add(1, Ordering::Relaxed);
+        unsafe { ll_retain(obj as *mut RcHeader) };
+        if unsafe { ll_release(obj as *mut RcHeader) } {
+            TRANSIENT_DEATHS.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn with_ctx<R>(f: impl FnOnce(*mut LLContext) -> R) -> R {
@@ -332,6 +362,34 @@ mod tests {
                 DESTRUCTS.load(Ordering::Relaxed),
                 1,
                 "__destruct runs exactly once per object"
+            );
+        });
+    }
+
+    #[test]
+    fn transient_this_reference_in_destructor_does_not_reenter_teardown() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        TRANSIENT_DEATHS.store(0, Ordering::Relaxed);
+
+        let cls = ClassBuilder::new("Fleeting")
+            .destructor(transient_this_destructor as *const ())
+            .build();
+
+        with_ctx(|ctx| {
+            let obj = unsafe { ll_object_new(ctx, cls, MemoryCategory::GcHeap) };
+
+            // Last reference dies; teardown runs the destructor, which takes
+            // and drops a transient $this reference.
+            assert!(unsafe { ll_release(obj as *mut RcHeader) });
+            unsafe { ll_object_die(obj) };
+
+            assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "destructor ran once");
+            assert_eq!(
+                TRANSIENT_DEATHS.load(Ordering::Relaxed),
+                0,
+                "a transient $this release must not report death: without the \
+                 guard it re-enters teardown and double-frees obj"
             );
         });
     }
