@@ -123,10 +123,12 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
     if align > MAX_ALIGN {
         return std::ptr::null_mut();
     }
-    // A small size can still land here via an alignment above 16.
-    if size <= MAX_SMALL {
-        return unsafe { with_thread_heap(|h| h.alloc(size)) };
-    }
+    // A small size reaches here only via `align > 16`, which the heap
+    // cannot honor (its slots are 16-aligned). Route every `align > 16`
+    // request — small or large — through the pooled block path below, whose
+    // payload sits at `+256` (256-aligned), so any alignment up to
+    // `MAX_ALIGN` is satisfied. This also avoids touching the thread heap,
+    // which may be null on a thread that never called `ll_thread_init`.
 
     if size <= BLOCK_PAYLOAD {
         // One pooled block holds the object; payload at +256.
@@ -349,6 +351,43 @@ mod tests {
             assert_eq!(*p.add(size - 1), 0xAB);
             ll_free(p);
         }
+    }
+
+    #[test]
+    fn aligned_alloc_over_16_honors_alignment() {
+        let _g = crate::memory::block_pool::test_guard();
+        unsafe {
+            // align > 16 for a small size must be honored (the heap gives
+            // only 16); several in a row so a mis-aligned heap slot would
+            // show. Pooled payloads sit at +256, satisfying up to MAX_ALIGN.
+            for align in [32usize, 64, 128, 256] {
+                let ptrs: Vec<*mut u8> = (0..4).map(|_| ll_alloc(40, align)).collect();
+                for &p in &ptrs {
+                    assert!(!p.is_null());
+                    assert_eq!((p as usize) % align, 0, "align {align} honored");
+                }
+                for p in ptrs {
+                    ll_free(p);
+                }
+            }
+            // Above MAX_ALIGN is unsupported → null.
+            assert!(ll_alloc(40, 512).is_null());
+        }
+    }
+
+    #[test]
+    fn aligned_alloc_on_a_fresh_thread_does_not_deref_a_null_heap() {
+        let _g = crate::memory::block_pool::test_guard();
+        // A thread that never called `ll_thread_init`: an `align > 16` small
+        // request must not route to the (null) thread heap.
+        std::thread::spawn(|| unsafe {
+            let p = ll_alloc(40, 64);
+            assert!(!p.is_null());
+            assert_eq!((p as usize) % 64, 0);
+            ll_free(p);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
