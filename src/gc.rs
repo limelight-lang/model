@@ -17,6 +17,15 @@
 //! exactly this (flags 4-5 + buffered bit 6). MMTK, when it arrives,
 //! plugs in as just another implementation — never special-cased.
 //!
+//! **Arm vs fire** (`rfc/model/gc/strategies.md`, "Triggering"): buffering
+//! a candidate runs from inside `ll_release`, mid-mutation, so it only
+//! *arms* a collection (sets a pending flag); the collector *fires* only at
+//! a clean point where refcounts and edges agree — an explicit
+//! [`ll_gc_collect_cycles`] or the compiler's [`ll_gc_maybe_collect`] poll.
+//! Firing inline would double-count a just-released edge and free a live
+//! object. The arming *policy* (which signals, which thresholds) is the
+//! compiler's decision; this crate is only the mechanism.
+//!
 //! **Known phase-1 limit**: `__destruct` of cyclically-dead objects is
 //! not run (the counts are already trial-mutated when whites are
 //! known; running arbitrary PHP there needs the Zend-style re-scan
@@ -109,14 +118,14 @@ impl GcStrategy for RcTrace {
 
 // --- rc-trace machinery ----------------------------------------------------
 
-/// Candidate-root buffer fill that triggers a collection (Zend uses
-/// 10K; to be calibrated, PLAN.md).
+/// Candidate-root buffer fill that *arms* a collection (Zend uses 10K; to
+/// be calibrated, PLAN.md). Crossing it never runs the collector inline —
+/// it only records that one is due (see `buffer_candidate`).
 pub const CANDIDATE_THRESHOLD: usize = 10_000;
 
-/// The fill that actually triggers a collection. In production this folds
-/// to the constant above (zero cost); under `cfg(test)` it is lowerable so
-/// a test can force a collection at a precise point (e.g. mid-teardown, to
-/// reproduce the reclaim-during-phase-2 hazard deterministically).
+/// The fill that arms a collection. In production this folds to the
+/// constant above (zero cost); under `cfg(test)` it is lowerable so a test
+/// can arm at a precise point.
 #[cfg(not(test))]
 #[inline(always)]
 fn candidate_threshold() -> usize {
@@ -139,6 +148,14 @@ pub(crate) fn set_test_threshold(n: usize) {
 
 thread_local! {
     static CANDIDATES: RefCell<Vec<*mut RcHeader>> = const { RefCell::new(Vec::new()) };
+    /// A collection has been armed (the candidate buffer crossed the
+    /// threshold) but deferred. It fires only at a clean point, never
+    /// inline — see `buffer_candidate` and `ll_gc_maybe_collect`.
+    static COLLECT_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// True while a collection is running. The reentrancy guard that makes
+    /// any fire point safe even if it is somehow reached from within
+    /// teardown: a nested `collect_cycles` becomes a no-op.
+    static GC_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 const COLOR_BLACK: u32 = 0; // in use / definitely live (default)
@@ -171,7 +188,17 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
 }
 
 /// Called by `ll_release` on a non-zero decrement of a heap object:
-/// buffer it once as a possible cycle root.
+/// buffer it once as a possible cycle root, and *arm* (never run) a
+/// collection when the buffer fills.
+///
+/// This runs from **inside `ll_release`, mid-mutation**: the reference
+/// that was just decremented is still physically in its slot, so refcounts
+/// and edges disagree for this instant. Running the collector here would
+/// walk that stale edge and subtract the reference a second time, freeing a
+/// live object (`rfc/model/gc/strategies.md`, the arm/fire split). So we
+/// only record that a collection is due; it fires at a clean point, chosen
+/// by the compiler, via [`ll_gc_maybe_collect`] (or an explicit
+/// [`ll_gc_collect_cycles`]).
 ///
 /// # Safety
 /// `entity` must be live.
@@ -186,7 +213,7 @@ pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
         c.len() >= candidate_threshold()
     });
     if full {
-        unsafe { collect_cycles() };
+        COLLECT_PENDING.with(|p| p.set(true));
     }
 }
 
@@ -210,12 +237,39 @@ pub(crate) unsafe fn forget_candidate(entity: *mut RcHeader) {
     });
 }
 
-/// Bacon–Rajan synchronous cycle collection over the candidate
-/// buffer. Returns the number of entities reclaimed.
+/// Bacon–Rajan synchronous cycle collection over the candidate buffer.
+/// Returns the number of entities reclaimed.
+///
+/// Reentrancy-guarded: a call made while a collection is already running is
+/// a no-op, so a fire point reached from inside teardown (a `__destruct`
+/// that triggers collection, say) cannot recurse into the marker. Clears
+/// the pending flag it may have been armed with.
 ///
 /// # Safety
+/// Must run at a **clean point** — where refcounts and physical edges agree
+/// (between mutator operations), not mid-store or mid-teardown. That
+/// invariant is the whole reason for the arm/fire split
+/// (`rfc/model/gc/strategies.md`); `buffer_candidate` arms, this fires.
 /// Single mutator thread parked here by construction (`rc-trace`).
 pub unsafe fn collect_cycles() -> usize {
+    if GC_ACTIVE.with(|a| a.get()) {
+        return 0;
+    }
+    // Reset the guard on every exit path, including a panicking assert in
+    // debug builds, so a poisoned collection can't wedge the collector off.
+    struct Active;
+    impl Drop for Active {
+        fn drop(&mut self) {
+            GC_ACTIVE.with(|a| a.set(false));
+        }
+    }
+    GC_ACTIVE.with(|a| a.set(true));
+    COLLECT_PENDING.with(|p| p.set(false));
+    let _active = Active;
+    unsafe { collect_cycles_inner() }
+}
+
+unsafe fn collect_cycles_inner() -> usize {
     let roots: Vec<*mut RcHeader> = CANDIDATES.with(|c| c.borrow_mut().drain(..).collect());
     if roots.is_empty() {
         return 0;
@@ -313,14 +367,33 @@ unsafe fn collect_white(root: *mut RcHeader, whites: &mut Vec<*mut RcHeader>) {
     }
 }
 
-/// ABI: run a cycle collection now (threshold-triggered runs use the
-/// same path). Returns entities reclaimed.
+/// ABI: run a cycle collection now, whether or not one was armed. Returns
+/// entities reclaimed.
 ///
 /// # Safety
 /// Callable between requests / at a safepoint of the single mutator.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
     unsafe { collect_cycles() }
+}
+
+/// ABI: fire a collection only if one was *armed*, else do nothing. This is
+/// the poll the compiler injects at the safepoints it chooses — statement
+/// boundary, allocation slow path, request end (`rfc/model/gc/strategies.md`,
+/// §2 and the arm/fire split). The arming *policy* (which signals, which
+/// thresholds) is the compiler's decision, outside this crate; the runtime
+/// only records "due" and collects here, where the graph is clean.
+///
+/// # Safety
+/// Callable at a safepoint of the single mutator (roots enumerable,
+/// refcounts and edges consistent).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
+    if COLLECT_PENDING.with(|p| p.get()) {
+        unsafe { collect_cycles() }
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -472,19 +545,14 @@ mod tests {
         );
     }
 
-    /// Regression for the phase-2 double-free: a buffered, dying object
-    /// must be removed from the candidate buffer *before* `ll_object_die`
-    /// releases its children, because a child release can trip the
-    /// collection threshold and run a synchronous collection. If the dying
-    /// object were still buffered, that collection would trace it (refcount
-    /// already 0) into the white set and free it — then phase 3 frees it a
-    /// second time, and its still-live child gets swept with it.
-    ///
-    /// The threshold is lowered so the child release inside phase 2 triggers
-    /// the collection deterministically; on the unfixed code this test
-    /// double-frees `p` and frees the still-referenced `c`.
+    /// The candidate buffer crossing its threshold *arms* a collection but
+    /// never runs it inline. Here the arming happens inside `ll_object_die`'s
+    /// phase 2 (a child release), the worst possible moment: on the old
+    /// fire-inline code that collection ran mid-teardown and freed the
+    /// dying object a second time. Now it only sets the pending flag, and
+    /// the live child survives.
     #[test]
-    fn buffered_dying_object_is_forgotten_before_its_children_are_released() {
+    fn threshold_crossing_during_teardown_only_arms() {
         let _g = crate::memory::block_pool::test_guard();
         let cls = node_class();
         let mut arena = Arena::new();
@@ -495,37 +563,71 @@ mod tests {
 
         unsafe {
             // p.next = c  → c held by p's slot (rc 2) and by us (the creator
-            // reference, rc component that must keep c alive past p's death).
+            // reference, which must keep c alive past p's death).
             link(&mut arena, p, 16, c);
             assert_eq!((*c).rc.refcount, 2);
 
             // Buffer p as a cycle-root candidate (a non-zero decrement),
-            // still under the default threshold so nothing collects yet.
+            // still under the default threshold so nothing arms yet.
             crate::refcount::ll_retain(p as *mut RcHeader); // rc 2
             assert!(!ll_release(p as *mut RcHeader)); // rc 1, buffered
-            assert_eq!(
-                CANDIDATES.with(|c| c.borrow().len()),
-                1,
-                "p is a buffered candidate root"
-            );
+            assert!(!COLLECT_PENDING.with(|f| f.get()), "not armed yet");
 
-            // From now, the very next buffered candidate forces a collection.
+            // From now the next buffered candidate crosses the threshold.
             set_test_threshold(1);
 
             // p's last reference dies; teardown releases c during phase 2,
-            // which buffers c and triggers the collection mid-teardown.
+            // which buffers c and crosses the threshold *mid-teardown*.
             assert!(ll_release(p as *mut RcHeader)); // rc 0 → death
             crate::object::ll_object_die(p);
-
-            // Restore before any further allocation/free in this thread.
             set_test_threshold(CANDIDATE_THRESHOLD);
 
-            // c survived with exactly the creator reference; the collection
-            // did not sweep it, and p was freed exactly once (no crash).
+            // The collection was armed, not fired: nothing ran inside the
+            // teardown, so the still-referenced child is untouched and p was
+            // freed exactly once (no crash). On the fire-inline code
+            // COLLECT_PENDING is instead false here (a collection ran).
+            assert!(COLLECT_PENDING.with(|f| f.get()), "armed, not fired");
             assert_eq!((*c).rc.refcount, 1, "the live child must survive");
+
+            // Firing at a clean point reclaims nothing (c is externally held).
+            assert_eq!(ll_gc_maybe_collect(), 0);
+            assert!(!COLLECT_PENDING.with(|f| f.get()), "pending cleared");
 
             assert!(ll_release(c as *mut RcHeader));
             crate::object::ll_object_die(c);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// An armed collection is deferred to a clean fire point: crossing the
+    /// threshold from inside `ll_release` must not collect there (that is
+    /// the mid-mutation hazard), only arm. The cyclic garbage stays live
+    /// until `ll_gc_maybe_collect` runs it at a safe point.
+    #[test]
+    fn armed_cycle_is_deferred_to_maybe_collect() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = node_class();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+
+        let a = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        unsafe {
+            link(&mut arena, a, 16, a); // self-cycle: a.rc = 2
+            set_test_threshold(1); // the buffering release will cross it
+
+            // External reference dies: a non-zero decrement (a is still held
+            // by its own self-edge), so it buffers a and crosses the
+            // threshold from *inside* ll_release. Arm-and-defer must not
+            // collect here.
+            assert!(!ll_release(a as *mut RcHeader)); // a.rc 1, buffered
+            set_test_threshold(CANDIDATE_THRESHOLD);
+
+            assert!(COLLECT_PENDING.with(|f| f.get()), "armed");
+            assert_eq!((*a).rc.refcount, 1, "cyclic garbage still live, not collected inline");
+
+            // Fire at a clean point: now the cycle is reclaimed.
+            assert_eq!(ll_gc_maybe_collect(), 1);
+            assert!(!COLLECT_PENDING.with(|f| f.get()), "pending cleared after fire");
         }
         arena.reset(|_| {});
     }
