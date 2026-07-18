@@ -53,11 +53,14 @@ impl Object {
 /// Allocate and initialize an instance of `class` in `category`.
 /// The `__construct` call is emitted by the compiler at the call site.
 ///
+/// This is the typed Rust entry; the C ABI symbol `ll_object_new` is the
+/// [`ll_object_new_abi`] wrapper, which takes the category as a plain
+/// `u32` so a bad value from generated code is not an invalid-enum UB.
+///
 /// # Safety
 /// `ctx` per [`crate::memory::context::ll_arena_alloc`]; `class` must
 /// be a linked descriptor.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_object_new(
+pub unsafe fn ll_object_new(
     ctx: *mut LLContext,
     class: *const Class,
     category: MemoryCategory,
@@ -100,6 +103,31 @@ pub unsafe extern "C" fn ll_object_new(
         resolve_arena(ctx).track_destructor(obj as *mut RcHeader);
     }
     obj
+}
+
+/// C ABI entry for [`ll_object_new`]. The category crosses the boundary as
+/// a plain `u32` — the wire representation of the `#[repr(u32)]` enum, but a
+/// type that accepts any bit pattern. A value outside `0..=3` from generated
+/// code is therefore caught (debug) or masked to a valid category (release)
+/// rather than being instant UB the moment it is materialized as a
+/// `MemoryCategory`.
+///
+/// # Safety
+/// As [`ll_object_new`]; `category` must be a valid `MemoryCategory` code
+/// (`0..=3`) per the codegen contract.
+#[unsafe(export_name = "ll_object_new")]
+pub unsafe extern "C" fn ll_object_new_abi(
+    ctx: *mut LLContext,
+    class: *const Class,
+    category: u32,
+) -> *mut Object {
+    debug_assert!(
+        category <= MemoryCategory::Immortal as u32,
+        "MemoryCategory out of range across the ABI: {category}"
+    );
+    // `from_flags` masks to the 2-bit category field, so the enum value is
+    // always in range — no invalid-discriminant load.
+    unsafe { ll_object_new(ctx, class, MemoryCategory::from_flags(category)) }
 }
 
 /// The entity-holding Values currently sitting in an object's
@@ -390,6 +418,20 @@ mod tests {
                 0,
                 "a transient $this release must not report death: without the \
                  guard it re-enters teardown and double-frees obj"
+            );
+        });
+    }
+
+    #[test]
+    fn abi_object_new_takes_the_category_as_u32() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("Plain").build();
+        with_ctx(|ctx| {
+            // As generated code passes it: the category is a raw u32.
+            let obj = unsafe { ll_object_new_abi(ctx, cls, MemoryCategory::RequestArena as u32) };
+            assert_eq!(
+                unsafe { (*obj).rc.memory_category() },
+                MemoryCategory::RequestArena
             );
         });
     }
