@@ -21,7 +21,7 @@
 
 use crate::memory::arena::Arena;
 use crate::memory::context::{LLContext, resolve_arena};
-use crate::refcount::{COW, IS_ESCAPEE, MemoryCategory, RcHeader, ll_release, ll_retain};
+use crate::refcount::{COW, ENTITY_OBJECT, IS_ESCAPEE, MemoryCategory, RcHeader, ll_release, ll_retain};
 
 /// A longer-lived container took a reference to request-arena object
 /// `entity` (the **gain** of the escape rule, `rfc/model/memory/arenas.md`).
@@ -127,7 +127,13 @@ pub unsafe fn ref_store(
             owner_cat == MemoryCategory::RequestArena && old_cat == MemoryCategory::GcHeap;
 
         if !old_is_log_owned && unsafe { ll_release(old) } {
-            // TODO(object-lifecycle): teardown of the dying entity.
+            // The displaced value's last reference is gone: tear it down
+            // (destructor, then release its children, then free). Dispatch
+            // on the entity kind — only objects have teardown today;
+            // strings/arrays claim their own kind bits later.
+            if unsafe { (*old).flags } & ENTITY_OBJECT != 0 {
+                unsafe { crate::object::ll_object_die(old as *mut crate::object::Object) };
+            }
         }
     }
 

@@ -581,6 +581,46 @@ mod tests {
         }
     }
 
+    /// Overwriting a slot that held the last reference to a heap object
+    /// tears that object down (destructor + children + free), rather than
+    /// leaking it — the store barrier's displaced-value path (audit
+    /// barrier.rs:76, previously an empty TODO).
+    #[test]
+    fn overwriting_the_last_reference_tears_down_the_displaced_object() {
+        let _g = crate::memory::block_pool::test_guard();
+        static DTORS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn dtor(_o: *mut Object) {
+            DTORS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let val_cls = ClassBuilder::new("Val").destructor(dtor as *const ()).build();
+        let holder_cls = ClassBuilder::new("Holder").prop("x", true).build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let owner = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let a = unsafe { ll_object_new(&mut ctx, val_cls, MemoryCategory::GcHeap) };
+        let b = unsafe { ll_object_new(&mut ctx, val_cls, MemoryCategory::GcHeap) };
+
+        unsafe {
+            store_prop(&mut arena, owner, 16, a); // owner->x = a (a.rc 2)
+            assert!(!crate::refcount::ll_release(a as *mut RcHeader)); // a.rc 1 (the slot)
+
+            // Overwrite: A's last reference (the slot) goes away → A dies and
+            // its destructor runs. The old code released A but never tore it
+            // down.
+            store_prop(&mut arena, owner, 16, b);
+            assert_eq!(DTORS.load(Ordering::Relaxed), 1, "displaced A was torn down");
+
+            // cleanup: owner death releases b's slot reference (b.rc 2 → 1),
+            // then drop b's creator reference.
+            assert!(crate::refcount::ll_release(owner as *mut RcHeader));
+            ll_object_die(owner);
+            assert!(crate::refcount::ll_release(b as *mut RcHeader));
+            ll_object_die(b);
+        }
+    }
+
     /// Regression for H2: a "dirty" destructor stores a *fresh* arena object
     /// into an already-traced survivor. That store is arena→arena, so the
     /// barrier does not escape it; without re-tracing the survivor after a
