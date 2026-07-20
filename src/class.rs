@@ -491,13 +491,15 @@ mod tests {
     #[test]
     fn property_offsets_inherit_and_append() {
         let _g = crate::memory::block_pool::test_guard();
-        let animal = unsafe { &*base() };
-        let dog = unsafe {
-            &*ClassBuilder::new("Dog")
-                .parent(animal)
-                .prop("breed", true)
-                .build()
-        };
+        // `parent` takes the raw descriptor pointer: handing it a `&Class`
+        // would narrow provenance to the fixed fields, and `build` reads
+        // the parent's trailing vtable.
+        let animal_ptr = base();
+        let dog_ptr = ClassBuilder::new("Dog")
+            .parent(animal_ptr)
+            .prop("breed", true)
+            .build();
+        let (animal, dog) = unsafe { (&*animal_ptr, &*dog_ptr) };
 
         assert_eq!(animal.find_prop(intern_str("name")).unwrap().offset, 16);
         assert_eq!(animal.find_prop(intern_str("age")).unwrap().offset, 32);

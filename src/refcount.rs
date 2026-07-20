@@ -133,8 +133,8 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 /// # Safety
 /// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_release(header: *mut RcHeader) -> bool {
-    let header = unsafe { &mut *header };
+pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
+    let header = unsafe { &mut *entity };
 
     if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
         return false;
@@ -158,7 +158,13 @@ pub unsafe extern "C" fn ll_release(header: *mut RcHeader) -> bool {
     // buffer — only they carry traceable reference slots. In a NoGC or
     // pure-RC build this call compiles away with the strategy.
     if header.memory_category() == MemoryCategory::GcHeap && header.flags & ENTITY_OBJECT != 0 {
-        unsafe { crate::gc::buffer_candidate(header) };
+        // `entity`, not `header`: the buffered pointer outlives this call
+        // and the collector casts it back to `*mut Object` to read the
+        // class word and the property slots. A pointer derived from
+        // `&mut RcHeader` carries provenance over the 8-byte header only,
+        // so every one of those reads would be out of bounds of the tag
+        // it came from (audit `class.rs:115`, same family).
+        unsafe { crate::gc::buffer_candidate(entity) };
     }
     false
 }

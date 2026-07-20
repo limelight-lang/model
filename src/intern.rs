@@ -114,8 +114,11 @@ mod tests {
     #[test]
     fn entity_is_a_valid_immortal_cow_string() {
         let _g = crate::memory::block_pool::test_guard();
-        let s = unsafe { &*intern_str("hello") };
-        assert_eq!(unsafe { LLString::bytes(s) }, b"hello");
+        // Keep the raw pointer: `&*` would narrow provenance to the fixed
+        // fields, and the bytes live past them.
+        let p = intern_str("hello");
+        let s = unsafe { &*p };
+        assert_eq!(unsafe { LLString::bytes(p) }, b"hello");
         assert_eq!(s.len, 5);
         assert_eq!(s.rc.memory_category(), MemoryCategory::Immortal);
         assert_ne!(s.rc.flags & COW, 0, "immortal strings are COW-flagged");

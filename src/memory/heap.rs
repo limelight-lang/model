@@ -502,23 +502,33 @@ impl Heap {
         };
 
         probe_count!(ADOPTED);
-        let b = unsafe { &mut *block };
-        b.owned_next = std::ptr::null_mut();
-        b.owned_prev = std::ptr::null_mut();
-        b.next = std::ptr::null_mut();
-        b.prev = std::ptr::null_mut();
-        b.linked = false;
+        // Through the raw pointer, like `own`/`link`/`retire_empty`. Holding
+        // a `&mut` to the header across `self.own` would alias it: `own`
+        // writes these very fields through `block`, which invalidates any
+        // outstanding reference, and the old code then kept using it.
+        unsafe {
+            (*block).owned_next = std::ptr::null_mut();
+            (*block).owned_prev = std::ptr::null_mut();
+            (*block).next = std::ptr::null_mut();
+            (*block).prev = std::ptr::null_mut();
+            (*block).linked = false;
 
-        // Claim it. Any free racing this either saw the old owner or sees us;
-        // both push into `b.remote_free`, which we now own and will collect.
-        b.owner.store(self.id(), Ordering::Release);
+            // Claim it. Any free racing this either saw the old owner or
+            // sees us; both push into `remote_free`, which we now own and
+            // will collect.
+            (*block).owner.store(self.id(), Ordering::Release);
+        }
         self.own(ci, block);
 
-        // Slots freed while it was ownerless are parked; take them now.
-        self.collect_remote(b);
-        if b.used == 0 {
+        // Slots freed while it was ownerless are parked; take them now. The
+        // borrow lasts exactly this call.
+        self.collect_remote(unsafe { &mut *block });
+
+        let (used, free, bump, slots) =
+            unsafe { ((*block).used, (*block).free, (*block).bump, (*block).slots) };
+        if used == 0 {
             self.retire_empty(ci, block);
-        } else if b.free.is_null() && b.bump >= b.slots {
+        } else if free.is_null() && bump >= slots {
             // Adopted full: keep it (we own it) but it serves nothing yet.
             return false;
         } else {

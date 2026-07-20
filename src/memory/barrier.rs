@@ -200,14 +200,21 @@ mod tests {
         let mut owner = Holder::new(MemoryCategory::GcHeap);
         let mut a = entity(MemoryCategory::GcHeap);
         let mut b = entity(MemoryCategory::GcHeap);
+        // One pointer per entity, taken once: a second `&mut a` would
+        // retag and invalidate the copy the slot is holding.
+        let (pa, pb): (*mut RcHeader, *mut RcHeader) = (&mut a, &mut b);
 
-        unsafe { owner.store(&mut arena, &mut a) };
-        assert_eq!(owner.slot, &mut a as *mut _);
-        assert_eq!(a.refcount, 2, "initial + the slot's reference");
+        unsafe { owner.store(&mut arena, pa) };
+        assert_eq!(owner.slot, pa);
+        assert_eq!(unsafe { (*pa).refcount }, 2, "initial + the slot's reference");
 
-        unsafe { owner.store(&mut arena, &mut b) };
-        assert_eq!(a.refcount, 1, "displaced from a heap slot: released now");
-        assert_eq!(b.refcount, 2);
+        unsafe { owner.store(&mut arena, pb) };
+        assert_eq!(
+            unsafe { (*pa).refcount },
+            1,
+            "displaced from a heap slot: released now"
+        );
+        assert_eq!(unsafe { (*pb).refcount }, 2);
     }
 
     #[test]
