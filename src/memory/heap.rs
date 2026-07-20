@@ -848,6 +848,30 @@ impl Heap {
         BlockPool::global().put(block as *mut BlockHeader);
     }
 
+    /// Test oracle: total live slots this heap still accounts for, after
+    /// draining every block's cross-thread queue.
+    ///
+    /// Exists because the process-global `blocks_out` is the wrong
+    /// instrument for "did the owner account for every free". It is
+    /// shared, so another test's block returning late moves it in either
+    /// direction, and it only reacts once a block empties completely.
+    /// This counts the thing directly.
+    #[cfg(test)]
+    fn live_slots_after_collect(&mut self) -> u32 {
+        for ci in 0..NUM_CLASSES {
+            self.collect_owned(ci);
+        }
+        let mut total = 0;
+        for ci in 0..NUM_CLASSES {
+            let mut block = self.owned[ci];
+            while !block.is_null() {
+                total += unsafe { (*block).private.used };
+                block = unsafe { (*block).links.owned_next };
+            }
+        }
+        total
+    }
+
     /// Take a fresh block from the pool, stamp its header, and link it as
     /// available. O(1) and touching nothing but the header line: an empty
     /// free list plus `bump = 0` already means "every slot virgin", so
@@ -1632,11 +1656,18 @@ mod tests {
     /// one producer. The multi-producer push had no test at all.
     ///
     /// What would break if it were wrong: `free_remote` is a CAS loop, so a
-    /// lost race would drop a slot from the chain. The owner would then
-    /// collect fewer slots than were freed, `used` would never reach zero,
-    /// and the block would never go home — which is exactly what the final
-    /// `blocks_out` assertion catches. Corruption of the slot contents
-    /// before the free is caught by the stamp check in each freer.
+    /// lost race would drop a slot from the chain, and the owner would
+    /// account for fewer slots than were actually freed. That is measured
+    /// directly — after every freer has finished, the owner drains its
+    /// queues and must report **zero** live slots. Corruption of the slot
+    /// contents before the free is caught by the stamp check in each freer.
+    ///
+    /// It deliberately does *not* assert on the process-global
+    /// `blocks_out`. That counter is shared with every other test, so a
+    /// block returning late from elsewhere moves it in either direction —
+    /// which made this test flaky at ~2 runs in 10 under
+    /// `--test-threads=16`, failing on someone else's straggler rather
+    /// than on anything it was testing.
     #[test]
     fn many_threads_freeing_into_one_owner_lose_no_slots() {
         let _g = crate::memory::block_pool::test_guard();
@@ -1647,8 +1678,6 @@ mod tests {
         const PER: usize = 500;
         const STAMP: u8 = 0xAB;
 
-        let pool = BlockPool::global();
-        let before = pool.blocks_out();
 
         let mut txs = Vec::with_capacity(FREERS);
         let mut freers = Vec::with_capacity(FREERS);
@@ -1693,14 +1722,13 @@ mod tests {
         let freed: usize = freers.into_iter().map(|h| h.join().unwrap()).sum();
         assert_eq!(freed, FREERS * PER, "every slot was freed exactly once");
 
-        // Give the blocks up: this drains what the freers parked and
-        // settles `used`. Anything lost in the CAS loop shows up here as a
-        // block that can never be reclaimed.
-        ll_thread_exit();
+        // Every freer is done, so every push has landed. Drain the queues
+        // and account: a slot lost in the CAS loop shows up here as a live
+        // slot nobody holds.
+        let live = unsafe { with_thread_heap(|h| h.live_slots_after_collect()) };
         assert_eq!(
-            pool.blocks_out(),
-            before,
-            "a slot lost in the multi-producer push would strand its block"
+            live, 0,
+            "the owner lost track of a slot freed from another thread"
         );
     }
 
