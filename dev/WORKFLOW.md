@@ -37,6 +37,21 @@ cargo build --release
 The three threaded runs are not ceremony: several defects here only
 appear under contention, and one flake took three runs to surface.
 
+## Bugs first
+
+**A known bug is fixed before new work starts.** Not queued behind the
+interesting task, not "after this lands" — first. That includes a
+flaky test: a suite that fails sometimes is a suite nobody reads, and
+the next real failure hides inside the noise everyone has learned to
+re-run past.
+
+It also includes bugs found in passing, in code the current task never
+meant to touch. Silently working around one — a check that swallows it,
+a hardcoded value, a comment noting it — is not allowed. If it is
+genuinely unclear whether something *is* a bug, or whether fixing it
+drags in a larger change, ask; do not decide it quietly in either
+direction.
+
 ## Documentation follows the logic, in the same commit
 
 **When behaviour changes, the documentation describing it changes with

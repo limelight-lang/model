@@ -317,26 +317,45 @@ mod tests {
     use super::*;
     use crate::memory::buffer::set_pressure_mode;
 
+    /// Follows the block itself rather than the process-global
+    /// `blocks_out`. That counter is shared with every other test, so a
+    /// block returning late from elsewhere shifts it under this one's
+    /// feet — which made this test fail spuriously under
+    /// `--test-threads=16`. A block's `kind`, and who gets it next, are
+    /// facts about *this* block and nobody else can move them.
     #[test]
     fn drop_returns_the_empty_current_block() {
         let _g = crate::memory::block_pool::test_guard();
-        let pool = BlockPool::global();
-        let before = pool.blocks_out();
+
+        let block;
         {
             let mut a = BufferArena::new();
             let (p, g) = a.alloc(128); // takes the current block
-            assert_eq!(pool.blocks_out(), before + 1);
-            unsafe { a.free(p, g) }; // live → 0, but current: `free` keeps it
+            block = BlockHeader::of_ptr(p);
+            assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_BUFFER);
+
+            unsafe { a.free(p, g) }; // live → 0, but it is still current
             assert_eq!(
-                pool.blocks_out(),
-                before + 1,
-                "the current block is not returned by free"
+                unsafe { (*block).kind },
+                BLOCK_KIND_BUFFER,
+                "free must not return the block the arena is still bumping into"
             );
         } // drop
+
         assert_eq!(
-            pool.blocks_out(),
-            before,
+            unsafe { (*block).kind },
+            crate::memory::block_pool::BLOCK_KIND_FREE,
             "Drop returned the empty current block instead of leaking it"
+        );
+
+        // And it is genuinely back in the pool, not merely restamped: the
+        // next taker on this thread gets that same block.
+        let mut second = BufferArena::new();
+        let (p2, _) = second.alloc(8);
+        assert_eq!(
+            BlockHeader::of_ptr(p2),
+            block,
+            "the returned block went home to the pool"
         );
     }
 
