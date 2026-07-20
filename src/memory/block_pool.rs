@@ -98,16 +98,30 @@ impl BlockHeader {
 /// chain is touched only on a cache miss or an overflow flush.
 ///
 /// It was a Treiber stack with an ABA tag packed into the block-aligned
-/// low bits. That was **unsound**, and not because of ABA: `pop_global`
-/// read `(*ptr).next` non-atomically off a node another thread could
-/// have popped already. The header is a tagged union, so the winner is
-/// by then writing those same bytes as its own `used` counter — a real
-/// data race, which Miri reports. An atomic `next` would not have fixed
-/// it either, since the racing write is the owner's non-atomic one, and
-/// making *that* atomic would tax the allocation hot path.
+/// low bits. That was **unsound**, though not because of ABA, and not
+/// because of reclamation either — regions are never unmapped, so
+/// dereferencing a node popped from under you cannot fault. The defect
+/// was narrower and particular to this codebase: `pop_global` read
+/// `(*ptr).next` non-atomically, and the block header is a tagged union
+/// in which those same bytes are the heap's `used` counter, which the
+/// block's new owner writes non-atomically on every allocation. Two
+/// conflicting accesses, at least one non-atomic, is a data race by the
+/// memory model however harmless it looks — and Miri reports it.
 ///
-/// Taking the lock removes the race and the ABA tag together, and costs
-/// nothing measurable on a batched, cold path.
+/// Note what that does *not* say: a correct lock-free version is
+/// perfectly possible. Making `next` atomic alone would not do it, since
+/// the racing write is the owner's and lives on the allocation hot path
+/// where it must stay non-atomic. But giving the pool its **own** link
+/// field, at an offset no owner view aliases, would — atomic on both
+/// sides, with the existing tag for ABA.
+///
+/// The lock is a trade, not a necessity. Every user of this chain is
+/// cold: a per-thread cache fronts it and refills in batches, so it is
+/// touched only on a miss or an overflow flush. Measured live, the lock
+/// costs nothing on either benchmark, and it removes the race and the
+/// ABA tag together rather than adding a layout invariant to a union
+/// five modules already share. Revisit if this path ever stops being
+/// cold.
 struct FreeList {
     head: *mut BlockHeader,
 }
