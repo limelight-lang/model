@@ -460,7 +460,16 @@ mod tests {
             .build()
     }
 
+    /// Not runnable under Miri: it compares vtable entries against the
+    /// functions they should hold, and Miri does not give a function a
+    /// single address — `m2 as *const ()` yields a different pointer at
+    /// the builder's cast site than at the assertion's. The dispatch
+    /// tables round-trip exactly (verified by reading back what was
+    /// written); it is function *identity* Miri cannot model. On real
+    /// targets a function has one address, so this runs normally under
+    /// `cargo test` and the contract is unweakened.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri gives one function several addresses")]
     fn slots_are_stable_and_overrides_land_in_place() {
         let _g = crate::memory::block_pool::test_guard();
         let animal = base();
@@ -531,7 +540,10 @@ mod tests {
         assert_eq!(cc.display_len, 3);
     }
 
+    /// Miri-ignored for the same reason as
+    /// [`slots_are_stable_and_overrides_land_in_place`]: function identity.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri gives one function several addresses")]
     fn inherited_itable_sees_the_override() {
         let _g = crate::memory::block_pool::test_guard();
         let feedable = ClassBuilder::interface("Feedable");
@@ -561,7 +573,10 @@ mod tests {
         assert!(missing.is_null());
     }
 
+    /// Miri-ignored for the same reason as
+    /// [`slots_are_stable_and_overrides_land_in_place`]: function identity.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri gives one function several addresses")]
     fn itables_ride_the_descriptor_tail() {
         let _g = crate::memory::block_pool::test_guard();
         let i1 = ClassBuilder::interface("A");
