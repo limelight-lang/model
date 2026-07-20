@@ -47,8 +47,9 @@ rptest); headline comparison in `RESULTS.md`, change log in
 ## Key decisions
 
 `dev/DECISIONS.md` — arena handle as a raw pointer; trailing inline
-data through raw pointers; block header split by access rule; Miri
-against a UNIX target. All 2026-07-20.
+data through raw pointers; block header split by access rule; cold
+concurrent structures take a lock rather than a CAS loop; Miri against
+a UNIX target. All 2026-07-20.
 
 ## Diagrams
 

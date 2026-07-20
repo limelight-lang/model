@@ -85,6 +85,33 @@ layout is now load-bearing, and the pinning test exists to say so.
 
 ---
 
+## 2026-07-20 — cold concurrent structures take a lock, not a CAS loop
+
+**Decided:** the block pool's free chain moved from a lock-free Treiber
+stack to a `Mutex`, matching the abandoned-block list. The standing
+rule: a structure whose users are all cold does not get a lock-free
+implementation here.
+
+**Why:** `pop_global` read a node's `next` non-atomically while another
+thread could already own that block and be writing the same bytes
+through a different view of the tagged-union header. Making `next`
+atomic would not have fixed it — the racing write is the owner's, on
+the allocation hot path, and making *that* atomic to serve a cold path
+is the wrong trade. The race had to become impossible rather than
+atomic.
+
+**Considered and rejected:** giving the pool a dedicated atomic link
+field at an offset no owner view touches, keeping the stack lock-free.
+It works, but adds another layout invariant to a union five modules
+share, and keeps the ABA tag.
+
+**Cost:** none measured (see `BENCHMARKS.md`). A per-thread cache
+already fronts the chain and refills in batches, so the lock is taken
+rarely. The ABA tag is gone, which also retires the audit's concern
+about its width.
+
+---
+
 ## 2026-07-20 — Miri runs against a UNIX target
 
 **Decided:** the Miri suite runs with

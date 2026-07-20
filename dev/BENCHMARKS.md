@@ -46,6 +46,31 @@ no number, because the next person will trust it.
 
 ---
 
+## 2026-07-20 — block pool free list behind a mutex (H4)
+
+**Commit:** `0ee8f77`. **Machine:** dev box, Windows, release profile,
+IDE running. **Base:** `549c469`.
+
+**What changed:** the lock-free Treiber stack of free blocks replaced
+by a `Mutex`-guarded chain, removing a data race in `pop_global` and
+the ABA tag with it.
+
+| scenario | lock-free | mutex | change |
+|---|---|---|---|
+| larson_5k_slots | 749.04 µs | 752.59 µs | noise |
+| rptest_10k_blocks | 1.8994 ms | 1.8996 ms | none (p=0.12) |
+
+criterion reported −2.1% on larson at exactly p=0.05, with the interval
+nearly touching zero while the point estimates moved the *other* way.
+Read as noise, not a win — a change estimate that disagrees with the
+raw midpoints is not a result.
+
+**Verdict: accepted.** The lock costs nothing measurable, which is what
+a cold, batched path should show. Taking it was never expected to be
+faster; it was expected to be free, and it is.
+
+---
+
 ## 2026-07-20 — block header split into private / shared halves
 
 **Commit:** `ee89de0`. **Machine:** dev box, Windows, release profile,
