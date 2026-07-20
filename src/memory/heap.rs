@@ -1614,6 +1614,86 @@ mod tests {
         producer.join().unwrap();
     }
 
+    /// Several threads freeing into the **same** owner's blocks at once.
+    ///
+    /// The existing coverage missed this: `many_threads_alloc_free_no_corruption`
+    /// has every thread allocate and free on its own heap, so no slot ever
+    /// reaches `remote_free`, and `cross_thread_free_is_correct` has exactly
+    /// one producer. The multi-producer push had no test at all.
+    ///
+    /// What would break if it were wrong: `free_remote` is a CAS loop, so a
+    /// lost race would drop a slot from the chain. The owner would then
+    /// collect fewer slots than were freed, `used` would never reach zero,
+    /// and the block would never go home — which is exactly what the final
+    /// `blocks_out` assertion catches. Corruption of the slot contents
+    /// before the free is caught by the stamp check in each freer.
+    #[test]
+    fn many_threads_freeing_into_one_owner_lose_no_slots() {
+        let _g = crate::memory::block_pool::test_guard();
+        use std::sync::mpsc;
+        use std::thread;
+
+        const FREERS: usize = 4;
+        const PER: usize = 500;
+        const STAMP: u8 = 0xAB;
+
+        let pool = BlockPool::global();
+        let before = pool.blocks_out();
+
+        let mut txs = Vec::with_capacity(FREERS);
+        let mut freers = Vec::with_capacity(FREERS);
+        for _ in 0..FREERS {
+            let (tx, rx) = mpsc::channel::<usize>();
+            txs.push(tx);
+            freers.push(thread::spawn(move || {
+                ll_thread_init();
+                let mut n = 0usize;
+                for p in rx {
+                    let p = p as *mut u8;
+                    assert_eq!(
+                        unsafe { *p },
+                        STAMP,
+                        "slot corrupted before its cross-thread free"
+                    );
+                    unsafe { with_thread_heap(|h| h.free(p)) };
+                    n += 1;
+                }
+                ll_thread_exit();
+                n
+            }));
+        }
+
+        // This thread owns the blocks. Hand slots out round-robin so all
+        // four freers contend on the same block, and keep churning so the
+        // drain path runs while their pushes are arriving.
+        ll_thread_init();
+        unsafe {
+            with_thread_heap(|h| {
+                for i in 0..(FREERS * PER) {
+                    let p = h.alloc(24);
+                    p.write(STAMP);
+                    txs[i % FREERS].send(p as usize).unwrap();
+                    let churn = h.alloc(24);
+                    h.free(churn);
+                }
+            });
+        }
+        drop(txs);
+
+        let freed: usize = freers.into_iter().map(|h| h.join().unwrap()).sum();
+        assert_eq!(freed, FREERS * PER, "every slot was freed exactly once");
+
+        // Give the blocks up: this drains what the freers parked and
+        // settles `used`. Anything lost in the CAS loop shows up here as a
+        // block that can never be reclaimed.
+        ll_thread_exit();
+        assert_eq!(
+            pool.blocks_out(),
+            before,
+            "a slot lost in the multi-producer push would strand its block"
+        );
+    }
+
     #[test]
     fn many_threads_alloc_free_no_corruption() {
         let _g = crate::memory::block_pool::test_guard();
