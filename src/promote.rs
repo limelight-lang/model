@@ -51,10 +51,20 @@ const ARENA_RESET_MAX_ROUNDS: usize = 10_000;
 /// releases, blocks home. Replaces bare `Arena::reset` wherever the
 /// object model is in play.
 ///
+/// `arena` is a raw pointer for the reason this whole function exists:
+/// it runs `__destruct` bodies, and those reenter the runtime and
+/// resolve this same arena to allocate, log escapes, or track more
+/// destructors. An exclusive borrow held across the settling loop would
+/// alias every one of those reentrant uses (audit H5). So each arena
+/// operation below takes its own short-lived borrow, and **no borrow is
+/// ever live across a call that can run user code** — which is also why
+/// the drains collect first and act afterwards, rather than doing the
+/// work inside the drain closure.
+///
 /// # Safety
 /// The arena must not be reachable by running PHP code anymore (no
 /// live stack); destructors invoked here may still allocate into it.
-pub unsafe fn arena_reset_full(arena: &mut Arena) {
+pub unsafe fn arena_reset_full(arena: *mut Arena) {
     let mut survivors: Vec<*mut RcHeader> = Vec::new();
     let mut retained: HashSet<usize> = HashSet::new();
     // `survivors[..counted]` have already been counted and retained. New
@@ -77,7 +87,7 @@ pub unsafe fn arena_reset_full(arena: &mut Arena) {
             let mut progress = false;
 
             let mut round = Vec::new();
-            arena.drain_escapees(|e| round.push(e));
+            unsafe { (*arena).drain_escapees(|e| round.push(e)) };
             for a in round {
                 progress = true;
                 // Count back to zero (every holder let go): survives only if
@@ -93,9 +103,9 @@ pub unsafe fn arena_reset_full(arena: &mut Arena) {
             // survivor (arena→arena, not an escape), so re-read survivors'
             // children (audit H2). A "pure" destructor needs no re-trace —
             // the runtime stand-in for the compile-time purity class.
-            let before = arena.bump_cursor();
+            let before = unsafe { (*arena).bump_cursor() };
             let mut round_dtors = Vec::new();
-            arena.drain_destructors(|o| round_dtors.push(o));
+            unsafe { (*arena).drain_destructors(|o| round_dtors.push(o)) };
             for obj in round_dtors {
                 progress = true;
                 if unsafe { (*obj).flags } & ESCAPED != 0 {
@@ -103,7 +113,7 @@ pub unsafe fn arena_reset_full(arena: &mut Arena) {
                 }
                 unsafe { crate::object::run_pre_destructor(obj as *mut Object) };
             }
-            if arena.bump_cursor() != before {
+            if unsafe { (*arena).bump_cursor() } != before {
                 unsafe { retrace_survivors(&mut survivors) };
             }
 
@@ -138,21 +148,28 @@ pub unsafe fn arena_reset_full(arena: &mut Arena) {
         // may create new work; a new escape settles as an ordinary escape
         // next pass (the survivor it stored into is GcHeap by now). Loop
         // while the log yields anything.
-        let mut released_any = false;
-        arena.drain_release_log(|entity| unsafe {
-            released_any = true;
-            if ll_release(entity) {
-                die(entity);
-            }
-        });
-        if !released_any {
+        // Collect the round, then release it: `die` runs `__destruct`,
+        // which reenters and resolves this same arena, so the drain's
+        // borrow must already be gone by then (audit H5). Entries those
+        // destructors append stay in the log and the next pass takes
+        // them — the same settling the loop already relies on (H7).
+        let mut round_releases = Vec::new();
+        unsafe { (*arena).drain_release_log(|entity| round_releases.push(entity)) };
+        if round_releases.is_empty() {
             break;
+        }
+        for entity in round_releases {
+            unsafe {
+                if ll_release(entity) {
+                    die(entity);
+                }
+            }
         }
         rounds += 1;
         assert!(rounds <= ARENA_RESET_MAX_ROUNDS, "arena reset did not converge");
     }
 
-    arena.finish_reset(|block| retained.contains(&(block as usize)));
+    unsafe { (*arena).finish_reset(|block| retained.contains(&(block as usize))) };
 }
 
 /// Entity teardown dispatch from a bare header (the Box tag is not
@@ -281,9 +298,9 @@ mod tests {
 
     /// Store `value` into `holder`'s slot at `offset` through the real
     /// barrier, as generated code would.
-    unsafe fn store_prop(arena: &mut Arena, holder: *mut Object, offset: u32, value: *mut Object) {
+    unsafe fn store_prop(arena: *mut Arena, holder: *mut Object, offset: u32, value: *mut Object) {
         unsafe {
-            let slot = (*holder).prop_at(offset);
+            let slot = Object::prop_at(holder, offset);
             let old = entity_checked(&*slot);
             ref_store(
                 arena,
@@ -465,7 +482,7 @@ mod tests {
             let holder = HOLDER_SLOT.load(Ordering::Relaxed) as *mut Object;
             unsafe {
                 let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
-                let slot = (*holder).prop_at(16);
+                let slot = Object::prop_at(holder, 16);
                 ref_store(
                     arena,
                     holder as *mut RcHeader,
@@ -482,15 +499,21 @@ mod tests {
             .destructor(escaping_dtor as *const ())
             .build();
 
+        // One raw pointer per entity, reused — the shape generated code
+        // actually has (an `LLContext*` in a register). Taking a fresh
+        // `&mut arena`/`&mut ctx` per call would retag, invalidating the
+        // pointer `set_current_context` parked in TLS.
         let mut arena = Arena::new();
-        let mut ctx = LLContext { arena: &mut arena };
-        set_current_context(&mut ctx);
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+        let ctx_ptr: *mut LLContext = &mut ctx;
+        set_current_context(ctx_ptr);
 
-        let holder = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let holder = unsafe { ll_object_new(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
         HOLDER_SLOT.store(holder as usize, Ordering::Relaxed);
-        let obj = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::RequestArena) };
+        let obj = unsafe { ll_object_new(ctx_ptr, cls, MemoryCategory::RequestArena) };
 
-        unsafe { arena_reset_full(&mut arena) };
+        unsafe { arena_reset_full(arena_ptr) };
         set_current_context(std::ptr::null_mut());
 
         assert_eq!(DTORS.load(Ordering::Relaxed), 1);
@@ -655,13 +678,19 @@ mod tests {
             .destructor(mutate_survivor_dtor as *const ())
             .build();
 
+        // One raw pointer each, reused (see the note in
+        // `destructor_created_escape_survives_already_destructed`): the
+        // destructor reenters and resolves this same arena, so the reset
+        // must be handed the very pointer the context holds.
         let mut arena = Arena::new();
-        let mut ctx = LLContext { arena: &mut arena };
-        set_current_context(&mut ctx);
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+        let ctx_ptr: *mut LLContext = &mut ctx;
+        set_current_context(ctx_ptr);
 
-        let holder = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
-        let s = unsafe { ll_object_new(&mut ctx, node_cls, MemoryCategory::RequestArena) };
-        let _trigger = unsafe { ll_object_new(&mut ctx, trigger_cls, MemoryCategory::RequestArena) };
+        let holder = unsafe { ll_object_new(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
+        let s = unsafe { ll_object_new(ctx_ptr, node_cls, MemoryCategory::RequestArena) };
+        let _trigger = unsafe { ll_object_new(ctx_ptr, trigger_cls, MemoryCategory::RequestArena) };
 
         NODE_CLS.store(node_cls as usize, Ordering::Relaxed);
         SURVIVOR.store(s as usize, Ordering::Relaxed);
@@ -669,10 +698,10 @@ mod tests {
 
         unsafe {
             // S escapes into the heap holder → it is a survivor.
-            store_prop(&mut arena, holder, 16, s);
+            store_prop(arena_ptr, holder, 16, s);
             // Trigger is unheld with a destructor (tracked); at reset its
             // destructor stores a fresh Node into survivor S.
-            arena_reset_full(&mut arena);
+            arena_reset_full(arena_ptr);
         }
         set_current_context(std::ptr::null_mut());
 
@@ -719,27 +748,31 @@ mod tests {
         let a_cls = ClassBuilder::new("A").destructor(a_dtor as *const ()).build();
         let b_cls = ClassBuilder::new("B").build();
 
+        // One raw pointer each, reused: `a_dtor` reenters and resolves
+        // this same arena during the release drain.
         let mut arena = Arena::new();
-        let mut ctx = LLContext { arena: &mut arena };
-        set_current_context(&mut ctx);
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+        let ctx_ptr: *mut LLContext = &mut ctx;
+        set_current_context(ctx_ptr);
 
-        let c1 = unsafe { ll_object_new(&mut ctx, cont_cls, MemoryCategory::RequestArena) };
-        let c2 = unsafe { ll_object_new(&mut ctx, cont_cls, MemoryCategory::RequestArena) };
-        let a = unsafe { ll_object_new(&mut ctx, a_cls, MemoryCategory::GcHeap) };
-        let b = unsafe { ll_object_new(&mut ctx, b_cls, MemoryCategory::GcHeap) };
+        let c1 = unsafe { ll_object_new(ctx_ptr, cont_cls, MemoryCategory::RequestArena) };
+        let c2 = unsafe { ll_object_new(ctx_ptr, cont_cls, MemoryCategory::RequestArena) };
+        let a = unsafe { ll_object_new(ctx_ptr, a_cls, MemoryCategory::GcHeap) };
+        let b = unsafe { ll_object_new(ctx_ptr, b_cls, MemoryCategory::GcHeap) };
 
         C2_PTR.store(c2 as usize, Ordering::Relaxed);
         B_PTR.store(b as usize, Ordering::Relaxed);
 
         unsafe {
             // Heap A into arena container C1 → release-log entry, A retained.
-            store_prop(&mut arena, c1, 16, a);
+            store_prop(arena_ptr, c1, 16, a);
             // A's only remaining reference is the log's (creator ref dropped).
             assert!(!crate::refcount::ll_release(a as *mut RcHeader));
 
             // Reset: releasing A runs a_dtor, which appends B's release-log
             // entry mid-drain; the loop must still drain it.
-            arena_reset_full(&mut arena);
+            arena_reset_full(arena_ptr);
 
             // B was retained by the store and released once by the re-drained
             // log: back to the creator's single reference (not leaked at 2).

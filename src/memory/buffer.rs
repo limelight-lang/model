@@ -145,7 +145,14 @@ pub unsafe extern "C" fn ll_buffer_ensure(
     min_capacity: usize,
     hint: usize,
 ) -> *mut u8 {
-    buffer_ensure(resolve_arena(ctx), unsafe { &mut *buf }, min_capacity, hint)
+    // A leaf: it only allocates, never runs user code, so a borrow that
+    // lasts just this call cannot overlap a reentrant one (audit H5).
+    buffer_ensure(
+        unsafe { &mut *resolve_arena(ctx) },
+        unsafe { &mut *buf },
+        min_capacity,
+        hint,
+    )
 }
 
 #[cfg(test)]

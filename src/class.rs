@@ -109,11 +109,23 @@ pub struct Class {
 static NEXT_IFACE_ID: AtomicU32 = AtomicU32::new(1);
 
 impl Class {
+    /// The inline trailing vtable.
+    ///
+    /// Takes a raw pointer rather than `&self` on purpose: the vtable is
+    /// allocated *past* `size_of::<Class>()`, and a `&Class` only carries
+    /// provenance over the fixed fields, so reaching the trailing array
+    /// through it is outside that reference — UB under Stacked/Tree
+    /// Borrows, which Miri reports (audit `class.rs:115`). The result
+    /// borrows freely because class descriptors are immortal.
+    ///
+    /// # Safety
+    /// `cls` must point to a linked class descriptor, allocated with its
+    /// trailing vtable.
     #[inline]
-    pub fn vtbl(&self) -> &[*const ()] {
+    pub unsafe fn vtbl<'a>(cls: *const Class) -> &'a [*const ()] {
         unsafe {
-            let base = (self as *const Class).add(1) as *const *const ();
-            std::slice::from_raw_parts(base, self.vtbl_len as usize)
+            let base = (cls as *const u8).add(size_of::<Class>()) as *const *const ();
+            std::slice::from_raw_parts(base, (*cls).vtbl_len as usize)
         }
     }
 
@@ -265,7 +277,11 @@ impl ClassBuilder {
 
         // Vtable: parent's layout unchanged, overrides in place, new
         // methods appended. Method table mirrors it for the slow path.
-        let mut vtbl: Vec<*const ()> = parent.map_or(Vec::new(), |p| p.vtbl().to_vec());
+        let mut vtbl: Vec<*const ()> = if self.parent.is_null() {
+            Vec::new()
+        } else {
+            unsafe { Class::vtbl(self.parent) }.to_vec()
+        };
         let mut method_entries: Vec<(*const LLString, u32)> = parent.map_or(Vec::new(), |p| {
             unsafe { std::slice::from_raw_parts(p.methods, p.method_count as usize) }
                 .iter()
@@ -454,6 +470,7 @@ mod tests {
             .method("fetch", m3 as *const ())
             .build();
 
+        let (animal_ptr, dog_ptr) = (animal, dog);
         let (animal, dog) = unsafe { (&*animal, &*dog) };
         let eat = intern_str("eat");
         let speak = intern_str("speak");
@@ -462,9 +479,9 @@ mod tests {
         assert_eq!(animal.find_method(speak), dog.find_method(speak));
 
         let slot = dog.find_method(eat).unwrap() as usize;
-        assert_eq!(animal.vtbl()[slot], m2 as *const ());
+        assert_eq!(unsafe { Class::vtbl(animal_ptr) }[slot], m2 as *const ());
         assert_eq!(
-            dog.vtbl()[slot],
+            unsafe { Class::vtbl(dog_ptr) }[slot],
             m2_override as *const (),
             "override in place"
         );

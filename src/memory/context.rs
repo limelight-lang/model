@@ -27,13 +27,26 @@ pub fn set_current_context(ctx: *mut LLContext) {
     CURRENT_CONTEXT.with(|c| c.set(ctx));
 }
 
+/// The mounted arena, as a raw pointer.
+///
+/// Deliberately **not** `&mut Arena`. Destructors are documented to run
+/// reentrantly on the reset path (`rfc/model/memory/arena-reset.md`):
+/// `arena_reset_full` is working on the arena when a `__destruct` it
+/// invoked calls back in here and resolves the very same arena. Handing
+/// out `&mut Arena` made those two borrows overlap — two live `&mut` to
+/// one object, which is UB regardless of the machine code being fine
+/// (audit H5; Miri rejects it as soon as it can reach the path).
+///
+/// A raw pointer has no such exclusivity claim. Callers materialize a
+/// `&mut` for one leaf operation at a time and must never hold it across
+/// a call that can run user code.
 #[inline]
-pub(crate) fn resolve_arena<'a>(ctx: *mut LLContext) -> &'a mut Arena {
+pub(crate) fn resolve_arena(ctx: *mut LLContext) -> *mut Arena {
     resolve(ctx)
 }
 
 #[inline]
-fn resolve<'a>(ctx: *mut LLContext) -> &'a mut Arena {
+fn resolve(ctx: *mut LLContext) -> *mut Arena {
     let ctx = if ctx.is_null() {
         CURRENT_CONTEXT.with(|c| c.get())
     } else {
@@ -43,21 +56,21 @@ fn resolve<'a>(ctx: *mut LLContext) -> &'a mut Arena {
 
     let arena = unsafe { (*ctx).arena };
     assert!(!arena.is_null(), "context has no arena");
-    unsafe { &mut *arena }
+    arena
 }
 
 /// # Safety
 /// `ctx` must be null or point to a live `LLContext` whose arena is live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_arena_alloc(ctx: *mut LLContext, size: usize) -> *mut u8 {
-    resolve(ctx).alloc(size)
+    unsafe { (*resolve(ctx)).alloc(size) }
 }
 
 /// # Safety
 /// Same contract as [`ll_arena_alloc`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_arena_reserve(ctx: *mut LLContext, bytes: usize) {
-    resolve(ctx).reserve(bytes)
+    unsafe { (*resolve(ctx)).reserve(bytes) }
 }
 
 /// # Safety
@@ -65,7 +78,7 @@ pub unsafe extern "C" fn ll_arena_reserve(ctx: *mut LLContext, bytes: usize) {
 /// entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_arena_track_destructor(ctx: *mut LLContext, obj: *mut RcHeader) {
-    resolve(ctx).track_destructor(obj)
+    unsafe { (*resolve(ctx)).track_destructor(obj) }
 }
 
 /// # Safety

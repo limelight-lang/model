@@ -410,7 +410,7 @@ mod tests {
     /// Real store through the barrier: retain + slot write + Box stamp.
     unsafe fn link(arena: &mut Arena, from: *mut Object, offset: u32, to: *mut Object) {
         unsafe {
-            let slot = (*from).prop_at(offset);
+            let slot = Object::prop_at(from, offset);
             ref_store(
                 arena,
                 from as *mut RcHeader,

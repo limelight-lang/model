@@ -21,6 +21,13 @@ probe-counters = []
 [dev-dependencies]
 criterion = "0.5"
 bumpalo = "3"
+
+# Bench-only, and it builds C: `libmimalloc-sys` shells out to a C compiler
+# for the *target*. Miri runs the test suite against a UNIX target (the
+# Windows TLS path is inline `asm!`, which Miri cannot execute), and no
+# Linux C toolchain exists on a Windows dev box — so building this under
+# Miri fails before a single test runs. Nothing outside `benches/` uses it.
+[target.'cfg(not(miri))'.dev-dependencies]
 mimalloc = "0.1"
 # jemalloc (tikv-jemallocator) intentionally omitted: jemalloc-sys does
 # not build on the x86_64-pc-windows-msvc toolchain (autotools configure

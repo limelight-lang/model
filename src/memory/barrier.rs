@@ -32,7 +32,7 @@ use crate::refcount::{COW, ENTITY_OBJECT, IS_ESCAPEE, MemoryCategory, RcHeader, 
 ///
 /// # Safety
 /// `entity` must be a live request-arena entity.
-pub(crate) unsafe fn escape_gain(arena: &mut Arena, entity: *mut RcHeader) {
+pub(crate) unsafe fn escape_gain(arena: *mut Arena, entity: *mut RcHeader) {
     let e = unsafe { &mut *entity };
     debug_assert!(
         e.flags & COW == 0,
@@ -41,7 +41,7 @@ pub(crate) unsafe fn escape_gain(arena: &mut Arena, entity: *mut RcHeader) {
     if e.flags & IS_ESCAPEE == 0 {
         e.flags |= IS_ESCAPEE;
         e.refcount = 1;
-        arena.log_escapee(entity);
+        unsafe { (*arena).log_escapee(entity) };
     } else {
         e.refcount += 1;
     }
@@ -71,11 +71,18 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 /// `old` is the slot's current value (the caller has it loaded);
 /// `new` is the value being stored. Writes the slot.
 ///
+/// `arena` is a raw pointer, not `&mut Arena`: the displaced-value
+/// teardown below runs `__destruct`, which reenters the runtime and
+/// resolves this same arena. Holding an exclusive borrow across that
+/// call would alias (audit H5). Every arena touch here happens before
+/// that teardown, each through its own short-lived borrow.
+///
 /// # Safety
 /// `owner` must be a live entity containing `slot`; `old` must equal
-/// `*slot`; `old`/`new` must each be null or point to a live entity.
+/// `*slot`; `old`/`new` must each be null or point to a live entity;
+/// `arena` must point to the live mounted arena.
 pub unsafe fn ref_store(
-    arena: &mut Arena,
+    arena: *mut Arena,
     owner: *mut RcHeader,
     slot: *mut *mut RcHeader,
     old: *mut RcHeader,
@@ -105,7 +112,7 @@ pub unsafe fn ref_store(
         // container would leak (reset skips per-object drop). The log
         // owns exactly one release per record.
         if new_cat == MemoryCategory::GcHeap && owner_cat == MemoryCategory::RequestArena {
-            arena.log_release_at_reset(new);
+            unsafe { (*arena).log_release_at_reset(new) };
         }
     }
 

@@ -34,11 +34,21 @@ impl Object {
 
     /// The property slot at a `prop_layout` offset.
     ///
+    /// Takes the object as a raw pointer rather than `&mut self` on
+    /// purpose: slots live *past* `size_of::<Object>()`, and a reference
+    /// only carries provenance over the 16-byte header it points to.
+    /// Deriving a slot pointer from `&mut self` therefore puts every slot
+    /// access outside the borrow it came from — real UB under
+    /// Stacked/Tree Borrows, which Miri reports on the first store
+    /// (audit `class.rs:115`). The caller's raw pointer spans the whole
+    /// allocation, so deriving from it keeps the access in bounds.
+    ///
     /// # Safety
-    /// `offset` must come from this object's class layout.
+    /// `obj` must point to a live object allocated with its class's
+    /// `object_size`, and `offset` must come from that class's layout.
     #[inline]
-    pub unsafe fn prop_at(&mut self, offset: u32) -> *mut Value {
-        unsafe { (self as *mut Object as *mut u8).add(offset as usize) as *mut Value }
+    pub unsafe fn prop_at(obj: *mut Object, offset: u32) -> *mut Value {
+        unsafe { (obj as *mut u8).add(offset as usize) as *mut Value }
     }
 
     /// Stable for the object's lifetime (non-moving heap), so the id
@@ -69,7 +79,7 @@ pub unsafe fn ll_object_new(
     let size = cls.object_size as usize;
 
     let mem = match category {
-        MemoryCategory::RequestArena => resolve_arena(ctx).alloc(size),
+        MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },
         // Stand-in until the GC strategy owns the GcHeap allocator and
         // the long-lived arena gets its reclamation policy: both route
         // through the standard path (small → thread heap).
@@ -93,14 +103,14 @@ pub unsafe fn ll_object_new(
         // (definite assignment, init bitmap); the runtime default is
         // null in every Box slot.
         for slot in cls.props() {
-            (*obj).prop_at(slot.offset).write(Value::null());
+            Object::prop_at(obj, slot.offset).write(Value::null());
         }
     }
 
     // Arena objects with a PHP destructor must be tracked: reset runs
     // their pre-destructors first (rfc/model/memory/arenas.md).
     if category == MemoryCategory::RequestArena && cls.has_destructor() {
-        resolve_arena(ctx).track_destructor(obj as *mut RcHeader);
+        unsafe { (*resolve_arena(ctx)).track_destructor(obj as *mut RcHeader) };
     }
     obj
 }
@@ -137,7 +147,7 @@ pub unsafe extern "C" fn ll_object_new_abi(
 pub(crate) unsafe fn ref_child_values(obj: *mut Object) -> Vec<Value> {
     let cls = unsafe { (*obj).class() };
     cls.refcounted_slots()
-        .map(|offset| unsafe { (*obj).prop_at(offset).read() })
+        .map(|offset| unsafe { Object::prop_at(obj, offset).read() })
         .filter(|v| v.is_refcounted())
         .collect()
 }
@@ -156,7 +166,9 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
     }
     unsafe { (*obj).rc.flags |= DESTRUCTED };
     debug_assert_ne!(cls.destruct_slot, NO_DESTRUCT_SLOT);
-    let code = cls.vtbl()[cls.destruct_slot as usize];
+    // Through the raw class pointer, not `cls`: the vtable trails the
+    // descriptor's fixed fields, which a `&Class` does not cover.
+    let code = unsafe { Class::vtbl((*obj).class) }[cls.destruct_slot as usize];
     let destruct: DestructorFn = unsafe { std::mem::transmute(code) };
     unsafe { destruct(obj) };
     true
@@ -204,7 +216,7 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
 
     // Phase 2 — drop: release counted children, cascading.
     for offset in cls.refcounted_slots() {
-        let v = unsafe { (*obj).prop_at(offset).read() };
+        let v = unsafe { Object::prop_at(obj, offset).read() };
 
         // This longer-lived holder is being torn down: for each
         // request-arena escapee it held, drop the escape hold-count
@@ -304,7 +316,7 @@ mod tests {
             assert_eq!(o.rc.memory_category(), MemoryCategory::RequestArena);
             assert_eq!(o.class, cls);
             assert_eq!(o.rc.flags & HAS_DESTRUCTOR, 0, "no destructor declared");
-            let x = unsafe { o.prop_at(16).read() };
+            let x = unsafe { Object::prop_at(obj, 16).read() };
             assert_eq!(x.tag(), Tag::Null);
         });
     }
@@ -343,8 +355,7 @@ mod tests {
             let child = unsafe { ll_object_new(ctx, child_cls, MemoryCategory::GcHeap) };
             let parent = unsafe { ll_object_new(ctx, parent_cls, MemoryCategory::GcHeap) };
             unsafe {
-                (*parent)
-                    .prop_at(16)
+                Object::prop_at(parent, 16)
                     .write(Value::entity(Tag::Object, child as *mut RcHeader));
             }
             // The slot owns the child's initial reference: count stays 1.

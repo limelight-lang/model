@@ -30,11 +30,21 @@ pub struct LLString {
 }
 
 impl LLString {
+    /// The inline string bytes.
+    ///
+    /// Takes a raw pointer rather than `&self` for the same reason as
+    /// [`crate::class::Class::vtbl`]: the bytes live past
+    /// `size_of::<LLString>()`, which a `&LLString` does not cover
+    /// (audit `class.rs:115`). Interned strings are immortal, hence the
+    /// free lifetime.
+    ///
+    /// # Safety
+    /// `s` must point to a live string entity allocated with its bytes.
     #[inline]
-    pub fn bytes(&self) -> &[u8] {
+    pub unsafe fn bytes<'a>(s: *const LLString) -> &'a [u8] {
         unsafe {
-            let base = (self as *const LLString).add(1) as *const u8;
-            std::slice::from_raw_parts(base, self.len as usize)
+            let base = (s as *const u8).add(size_of::<LLString>());
+            std::slice::from_raw_parts(base, (*s).len as usize)
         }
     }
 }
@@ -105,7 +115,7 @@ mod tests {
     fn entity_is_a_valid_immortal_cow_string() {
         let _g = crate::memory::block_pool::test_guard();
         let s = unsafe { &*intern_str("hello") };
-        assert_eq!(s.bytes(), b"hello");
+        assert_eq!(unsafe { LLString::bytes(s) }, b"hello");
         assert_eq!(s.len, 5);
         assert_eq!(s.rc.memory_category(), MemoryCategory::Immortal);
         assert_ne!(s.rc.flags & COW, 0, "immortal strings are COW-flagged");
