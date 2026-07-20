@@ -89,13 +89,35 @@ impl BlockHeader {
     }
 }
 
-/// Lock-free Treiber stack of free blocks.
+/// The chain of free blocks, threaded through `BlockHeader::next`.
 ///
-/// Blocks are `BLOCK_SIZE`-aligned, so the low bits of a block address are
-/// zero — we pack an ABA tag there. Dereferencing a popped-under-us
-/// block is safe in phase 1 because regions are never unmapped.
+/// Behind a `Mutex`, not a lock-free stack — the same call the crate
+/// already makes for [`Abandoned`](crate::memory::heap), and for the same
+/// reason: every user of this chain is cold. A per-thread cache sits in
+/// front of it and refills in batches (`REFILL_BATCH`), so the global
+/// chain is touched only on a cache miss or an overflow flush.
+///
+/// It was a Treiber stack with an ABA tag packed into the block-aligned
+/// low bits. That was **unsound**, and not because of ABA: `pop_global`
+/// read `(*ptr).next` non-atomically off a node another thread could
+/// have popped already. The header is a tagged union, so the winner is
+/// by then writing those same bytes as its own `used` counter — a real
+/// data race, which Miri reports. An atomic `next` would not have fixed
+/// it either, since the racing write is the owner's non-atomic one, and
+/// making *that* atomic would tax the allocation hot path.
+///
+/// Taking the lock removes the race and the ABA tag together, and costs
+/// nothing measurable on a batched, cold path.
+struct FreeList {
+    head: *mut BlockHeader,
+}
+
+// SAFETY: the pointers are block headers in never-unmapped pool regions;
+// the mutex is what serialises access to the chain.
+unsafe impl Send for FreeList {}
+
 pub struct BlockPool {
-    head: AtomicUsize, // block_ptr | tag, in the block-aligned low bits
+    free: Mutex<FreeList>,
     regions_carved: AtomicUsize,
     /// Blocks handed out minus blocks returned — block-granular
     /// occupancy. Bumped only on the (rare) block operations, never on
@@ -103,22 +125,10 @@ pub struct BlockPool {
     blocks_out: AtomicUsize,
 }
 
-/// The block-aligned low bits, free for the ABA tag. Widens with
-/// `BLOCK_SIZE` — never spell the bit count as a literal.
-const TAG_MASK: usize = BLOCK_MASK;
-
-#[inline]
-fn pack(ptr: *mut BlockHeader, tag: usize) -> usize {
-    (ptr as usize) | (tag & TAG_MASK)
-}
-
-#[inline]
-fn unpack(word: usize) -> (*mut BlockHeader, usize) {
-    ((word & !TAG_MASK) as *mut BlockHeader, word & TAG_MASK)
-}
-
 static GLOBAL_POOL: BlockPool = BlockPool {
-    head: AtomicUsize::new(0),
+    free: Mutex::new(FreeList {
+        head: std::ptr::null_mut(),
+    }),
     regions_carved: AtomicUsize::new(0),
     blocks_out: AtomicUsize::new(0),
 };
@@ -230,51 +240,32 @@ impl BlockPool {
     }
 
     fn push_global(&self, block: *mut BlockHeader) {
-        loop {
-            let old = self.head.load(Ordering::Acquire);
-            let (old_ptr, old_tag) = unpack(old);
-            unsafe { (*block).next = old_ptr };
-            let new = pack(block, old_tag.wrapping_add(1));
-
-            if self
-                .head
-                .compare_exchange_weak(old, new, Ordering::Release, Ordering::Relaxed)
-                .is_ok()
-            {
-                return;
-            }
-        }
+        let mut free = self.free.lock().unwrap();
+        unsafe { (*block).next = free.head };
+        free.head = block;
     }
 
     fn pop_global(&self) -> Option<*mut BlockHeader> {
-        loop {
-            let old = self.head.load(Ordering::Acquire);
-            let (ptr, tag) = unpack(old);
-
-            if ptr.is_null() {
-                return None;
-            }
-
-            let next = unsafe { (*ptr).next };
-            let new = pack(next, tag.wrapping_add(1));
-
-            if self
-                .head
-                .compare_exchange_weak(old, new, Ordering::Release, Ordering::Relaxed)
-                .is_ok()
-            {
-                return Some(ptr);
-            }
+        let mut free = self.free.lock().unwrap();
+        let head = free.head;
+        if head.is_null() {
+            return None;
         }
+        // Reading `next` under the lock is the whole point: no other
+        // thread can be holding this block, so nobody is writing these
+        // bytes through another view of the header.
+        free.head = unsafe { (*head).next };
+        Some(head)
     }
 
     /// Reserve a 2 MB region from the OS and stack its 64 blocks.
     fn carve_region(&self) {
         let _guard = CARVE_LOCK.lock().unwrap();
 
-        // Someone may have carved while we waited for the lock.
-        let (head, _) = unpack(self.head.load(Ordering::Acquire));
-        if !head.is_null() {
+        // Someone may have carved while we waited for the lock. Take the
+        // free-list lock only to peek, and drop it before pushing below —
+        // `push_global` takes it itself.
+        if !self.free.lock().unwrap().head.is_null() {
             return;
         }
 
