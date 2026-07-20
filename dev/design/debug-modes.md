@@ -60,6 +60,12 @@ cost we are trying to measure. mimalloc makes the same call with
 
 Cumulative: each level implies the ones below.
 
+A level is not only a runtime setting — **it selects which allocation
+ABI the compiler targets** (§4). At level 0 the compiler emits calls to
+the release entry points and nothing in this document exists in the
+binary at all. From level 1 it emits calls to the debug twins and passes
+whatever that level needs: site id, then stack id, then arena identity.
+
 ### Axis B — production sampling (runtime, any build)
 
 Levels 1–3 are for development. A live server needs *some* of this
@@ -178,7 +184,51 @@ pub fn visit_live_objects(f: impl FnMut(&LiveObject));
 so nothing allocates during a walk, which matters because a walk may run
 under memory pressure or from a leak report at shutdown.
 
-## 4. Where an allocation came from: `LLAllocSite`
+## 4. The debug ABI: the compiler calls different entry points
+
+**Decision: in a debug build the compiler does not call the release
+allocation entry points with extra arguments — it calls a parallel set
+of debug entry points, which may take whatever arguments the level
+needs.**
+
+This is the mechanism that makes everything else in this document free
+in release, and it is worth stating before the individual features that
+use it, because they all ride on it.
+
+```
+release:   ll_object_new(ctx, class, category)
+debug:     ll_object_new_dbg(ctx, class, category, site, arena_id, ...)
+```
+
+Why a parallel ABI rather than an extra parameter or a runtime flag:
+
+- The release path stays **byte-identical**. No spare argument, no
+  branch, no register pressure, no inlining decision changed. This crate
+  exists to keep that path fast, and an observability feature that taxes
+  it has already failed.
+- The debug entry points are free to take anything, and to change, since
+  nothing outside a debug build links them.
+- Precedent: this is exactly what Zend does. In a debug build `emalloc`
+  expands through a macro that appends `__FILE__` and `__LINE__`, which
+  is why PHP can report leaks with a file and line at request shutdown.
+
+**The consequence that must not be missed: free gets no arguments.**
+`free` is reached from a refcount reaching zero, from the cycle
+collector, and from arena reset — none of which know the allocation
+site or the arena. So anything the compiler passes at allocation has to
+be *stored* to be available at death. That store is the shadow memory of
+§3. The two mechanisms are not alternatives; they compose:
+
+> the debug ABI is how metadata gets in, shadow memory is where it lives
+> until the object dies.
+
+**Price, stated plainly:** two ABIs to keep in step. A new allocation
+entry point means a debug twin, and a mismatch shows up as a debug-only
+bug — the worst kind to chase. Mitigation: generate the twins rather
+than write them, and have one test per pair asserting the debug entry
+produces an object indistinguishable from the release one.
+
+## 4.1. Where an allocation came from: `LLAllocSite`
 
 `PLAN.md` already names this. The design decision it needs:
 
@@ -193,19 +243,77 @@ survives inlining and optimization — which stack capture does not.
 
 ```
 LLAllocSite = u32   index into a static, immortal site table
-site table entry:   function name, file, line, class (all interned)
+site table entry:   file, line, function, class (all interned)
 ```
+
+**One `u32`, not `__FILE__` plus `__LINE__`.** Zend passes the string
+pointer and the line number as two arguments on every call. An index
+into a table the compiler emits once is strictly better: one register
+instead of two, no string pointers travelling through the runtime, and
+the table can grow richer fields later without touching a single call
+site. The file and line are still there — they are in the table, which
+is where they belong, since nothing at runtime reads them until a report
+is printed.
 
 The table is emitted by the compiler into the module and registered at
 load. `0` is reserved for "unknown / host code", so anything entering
 through the plain C ABI still works, just without attribution.
 
-**ABI impact:** the allocation entry points would take an extra `u32`.
-This must not change the release ABI, so the site parameter exists only
-in the instrumented ABI variant (a parallel `_dbg` entry point, or a
-compile-time-selected signature). *Open, and it is a compiler-side
-decision as much as ours — needs an RFC entry in `limelight-lang/rfc`
-before implementation.*
+## 4.2. Backtraces: who did this, and when
+
+A site id answers "where in the source". It does not answer "how did we
+get here", which for a leak is usually the more useful question — the
+same constructor called from two paths leaks in only one of them.
+
+**Decision: walk the language-level frame chain, never the machine
+stack.**
+
+Unwinding the native stack per allocation is both expensive and wrong
+for us: after inlining and optimization the machine frames no longer
+correspond to anything a user wrote. jemalloc unwinds because it serves
+arbitrary C programs and has no language-level structure to consult. We
+do — the runtime has (or will have) a frame chain for exceptions and
+stack traces, and that chain is the honest answer in user terms. Walking
+it is a pointer chase over a handful of frames, with no DWARF, no
+symbolization, and no unwinder.
+
+**Decision: store a deduplicated stack id, not the stack.**
+
+Storing a full chain per allocation is unaffordable in both time and
+space. Instead hash the frame chain, intern it in a stack table, and
+store the resulting `u32`. This is what heaptrack and jemalloc's
+profiler do, and it collapses the storage to four bytes with the full
+chain recoverable at report time.
+
+```
+LLStackId = u32     index into an interned stack table
+stack table entry:  the frame chain, itself deduplicated by suffix
+```
+
+Suffix deduplication matters: chains share tails, so interning each
+frame with a pointer to its parent turns the table into a tree and makes
+a deep chain cost one node.
+
+**Cost tiering, because even this is not free at every allocation:**
+
+| Level | What is captured | Cost |
+|---|---|---|
+| 1 | site id only | one constant argument |
+| 2 | site id + stack id | frame walk, bounded by depth |
+| sampled | full stack + wall clock for 1 in N | amortized to nothing |
+
+So `site` is always affordable and `stack` is the thing that gets
+sampled — the opposite of jemalloc, which must sample everything
+because it has no cheap site id available.
+
+**"When"** is already answered: the birth stamp of §5, on the virtual
+clock, with wall-clock time added for sampled allocations.
+
+**ABI impact** is covered by §4: these are arguments to the debug entry
+points and do not exist in the release ABI. The compiler must emit the
+site table, and — for level 2 — maintain the frame chain in debug
+builds. That is a compiler-side commitment as much as ours, so it
+*needs an RFC entry in `limelight-lang/rfc` before implementation.*
 
 ## 5. Lifetime
 
@@ -263,24 +371,42 @@ bits of `RcHeader` on every entity — `GcHeap`, `RequestArena`,
 representable today. Both bits are used, so it cannot be another
 category, and it must not become a per-object field.
 
-**Decision: arena identity is a property of the block, not the object.**
-An arena-owned block already carries `kind = BLOCK_KIND_ARENA` in its
-header; give it an arena id alongside. Then:
+**Decision: the compiler passes the arena identity to the debug
+allocation entry point (§4), and the runtime stores it in the shadow
+record.**
 
-```
-arena_of(ptr) = (ptr & !BLOCK_MASK)->arena_id
-```
+The compiler knows which arena it is allocating into — that is the whole
+basis of the category system it already drives. In a debug build it
+therefore hands the identity over as an argument, at zero cost to
+release, rather than the runtime inferring it.
 
-One mask and one load, no per-object cost, and it stays correct across
-promotion because promotion rewrites the object's category and re-stamps
-the block (`BLOCK_KIND_RETAINED`) — the machinery already exists.
+An arena id in the block header was considered and is **not** the
+primary mechanism. It answers a different and weaker question: it tells
+you where a block belongs *now*, so it cannot distinguish two objects
+born in different arenas that ended up in the same one, and it goes
+stale the moment an object is promoted. It stays useful as a
+cross-check — the walk of §3.3 can compare the recorded birth arena
+against the block's current owner, and a mismatch is either a promotion
+or a bug.
+
+Which points at the distinction worth keeping explicit in reports:
+
+| Question | Source |
+|---|---|
+| Where was it born? | shadow record, from the debug ABI |
+| Where does it live now? | `MemoryCategory` bits, plus the owning block |
+| Did it move? | the two disagreeing — i.e. it was promoted |
+
+That third row is not a curiosity. Promotion at arena reset is the
+crate's most intricate machinery, and "which objects were promoted, from
+where, and how long they then lived" is precisely the question its
+tuning needs.
 
 *Open, and honestly so:* **actors do not exist in this crate yet.** The
 only trace is a comment in `barrier.rs` noting that actor arenas are
-unreachable from outside. So the arena-id field is specified here but
-should not be built until actor arenas are real, or it will be designed
-against an imagined shape. What this document commits to is the *rule*:
-identity of the region belongs to the region, not to every object in it.
+unreachable from outside. So the argument is specified here but should
+not be built until actor arenas are real, or it will be designed against
+an imagined shape.
 
 ## 7. Integrity checks (level 3)
 
@@ -378,8 +504,13 @@ Ordered by value delivered per unit of work, not by section number:
    above; can be built in parallel by anyone.
 5. **Metrics export.** Trivial once (1) and (3) exist, because the
    histogram shape was chosen to match.
-6. **`LLAllocSite`.** Last, because it is the only item that needs the
-   compiler and an ABI decision, so it must go through the RFC first.
+6. **The debug ABI, and the attribution it carries** — site id, stack
+   id, arena identity (§4, §4.1, §4.2, §6). Implemented last here,
+   because it is the only work that needs the compiler, but its **RFC
+   should be opened first**: three separate features depend on it, and
+   the shape of the debug entry points is a decision the compiler team
+   has to live with. Do not let the last item to be built be the last
+   item to be designed.
 
 **Deferred on purpose:**
 
