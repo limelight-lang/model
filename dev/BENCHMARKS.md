@@ -26,8 +26,12 @@ git checkout main && git stash pop
 cargo bench --bench standard -- --baseline fresh our_heap
 ```
 
-Never compare against a baseline taken earlier in the day. See the
-2026-07-20 entry in `POSTMORTEM.md` for what that costs.
+**The rule, stated plainly: performance is only ever measured live,
+before and after, in one sitting.** A stored baseline records numbers,
+never the conditions they were taken under, so comparing against one
+taken earlier reports `code change + machine drift` as if it were the
+change alone. Never compare against a baseline taken earlier in the
+day. See the 2026-07-20 entry in `POSTMORTEM.md` for what that cost.
 
 **Noise signature.** A large change of similar size across benchmarks
 that stress different things is machine noise, not a result. These runs

@@ -23,7 +23,8 @@ of edits.
 
 One commit is one coherent change. Where two fixes are causally
 dependent (the second cannot be observed until the first lands), they
-go together rather than as a broken intermediate commit.
+go together rather than as a broken intermediate commit. *(inferred —
+this one is reasoning from practice, not a stated rule)*
 
 ## Verification (required before every commit)
 
