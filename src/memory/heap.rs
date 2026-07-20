@@ -824,6 +824,8 @@ impl Heap {
     /// keep it as the class's one bounded empty spare (instant reuse, no
     /// refill) if there isn't one already; otherwise actually return it
     /// to the global pool. See `rfc/model/memory/heap-slot-allocation.md`.
+    #[cold]
+    #[inline(never)]
     fn retire_empty(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         if self.empty_reserve[ci].is_null() {
             self.empty_reserve[ci] = block;
@@ -909,6 +911,14 @@ impl Heap {
     /// header traffic — was measured at +0.3%, i.e. nothing. See
     /// `rfc/model/memory/heap-slot-allocation.md`, "What churn actually
     /// costs".
+    /// `#[inline(never)]` but **not** `#[cold]`, and the difference is the
+    /// point. Out of line so `free`'s body stays short enough to inline
+    /// into `ll_free`; not `#[cold]`, because that is an assertion to LLVM
+    /// that the branch is rare, and here it is not obviously true — a
+    /// workload churning blocks across the full ↔ has-room boundary takes
+    /// it constantly. Claiming coldness that a workload disproves
+    /// deoptimizes a path that is actually hot.
+    #[inline(never)]
     fn relink_unfull(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         probe_count!(LINK_CALLS);
         let head = self.available[ci];
