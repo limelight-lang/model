@@ -7,6 +7,56 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-07-20 (second) — the fixed benchmark rule was still not enough
+
+**What happened.** With the stale-baseline rule from the entry below now
+in force, four consecutive attempts to measure H11 each produced a
+confident, statistically significant, wrong answer. criterion reported
+`p = 0.00` and `Performance has improved` on runs that were measuring
+the machine.
+
+The failures were each of a different kind, and each defence only
+caught the previous kind:
+
+1. Load arrived mid-session, so both arms were in one sitting — the
+   rule below was satisfied and did not help. Caught only by noticing
+   the absolutes were far outside their historical band.
+2. The `git stash` between arms changed file mtimes, so `cargo bench`
+   recompiled and every measurement began on a machine still busy from
+   its own build. This produced a *monotonic* improvement across three
+   arms — the shape of a machine recovering, not of a code difference.
+3. Running pre-built binaries directly without `--bench` made criterion
+   smoke-test each benchmark once and print `Success`. A silent no-op
+   that looks like a completed run.
+4. By the last attempt the box was 40–80% outside its bands with the
+   two control measurements of identical code 10% apart — unmeasurable,
+   most likely thermal after hours of compiles and Miri runs.
+
+**Root cause.** The first entry fixed *one* way a comparison can be
+invalid and I treated the problem as solved. The general fault is
+different: **a benchmark has no built-in way to say "I was not valid",
+so validity has to be measured too, not assumed.** A p-value describes
+whether a difference is random; it says nothing about whether the
+difference came from the code.
+
+Contributing: I stated a mechanism for the intermediate result
+(`relink_unfull` is hot in `rptest`, so marking it cold deoptimizes it)
+that was plausible and might even be true. Plausibility is what stopped
+the checking — the same failure as in the entry below, which is why this
+is a repeat and not a new lesson.
+
+**What changed so it cannot repeat.** `BENCHMARKS.md` now carries three
+independent validity checks rather than one rule: control repetition
+(A → B → A, run void if the A's disagree), absolute values checked
+against a recorded per-benchmark band before any delta is read, and
+both arms built before either is measured. Plus the `--bench` trap and
+a stated condition for declaring the box unmeasurable and stopping.
+
+The H11 change was **not committed**, because the rule it would have
+violated is the one this crate exists to keep.
+
+---
+
 ## 2026-07-20 — benchmarked against a stale baseline, believed the numbers
 
 **What happened.** While measuring the block-header split, three
