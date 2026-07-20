@@ -27,12 +27,15 @@ exists, the module docs at the top of each file are the map;
 
 - Allocation: `Heap::alloc` → `ll_alloc`, expected to inline fully,
   cold tails split with `#[cold] #[inline(never)]`.
-- Local free: `Heap::free`, including the `owner` check.
+- Local free: `Heap::free`, including the `owner` check. **Known gap:**
+  unlike `alloc`, it does not currently inline — its cold tails are not
+  split. Diagnosed with IR evidence, fix unmeasured; see the H11 entry
+  in `dev/BENCHMARKS.md`.
 - Store barrier: `ref_store` / `ll_ref_store`.
 - Arena bump: `Arena::alloc` → `ll_arena_alloc`.
 
 Measured by `cargo bench --bench standard -- our_heap` (larson,
-rptest); headline comparison in `RESULTS.md`, change log in
+rptest); headline comparison in `benches/RESULTS.md`, change log in
 `dev/BENCHMARKS.md`.
 
 ## Layout contracts (pinned by tests)

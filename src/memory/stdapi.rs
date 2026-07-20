@@ -20,12 +20,17 @@
 //! satisfied for free (covers malloc's 16-byte guarantee and
 //! `aligned_alloc` up to 256).
 //!
-//! **Thread-safety:** all paths are now multi-threaded. Large paths use
-//! the thread-safe pool/OS; the small path routes a cross-thread free to
-//! the owning heap's lock-free stack (see `heap`). The one remaining
-//! limit is thread-exit abandonment: blocks still holding objects when
-//! their owning thread exits are leaked rather than adopted. Fine for
-//! worker pools with long-lived threads.
+//! **Thread-safety:** all paths are multi-threaded. Large paths use the
+//! thread-safe pool/OS; the small path routes a cross-thread free to the
+//! owning block's lock-free stack (see `heap`). A thread that exits hands
+//! its blocks over automatically on every target — empty ones to the
+//! pool, ones still holding objects to the global abandoned list, from
+//! which the next thread needing that size class adopts them.
+//!
+//! Known limit: an abandoned block is reclaimed only when someone adopts
+//! it, so a size class that goes permanently idle keeps its abandoned
+//! blocks. Bounded by what was live at thread exit; no periodic trim
+//! exists yet.
 
 use std::alloc::{GlobalAlloc, Layout};
 

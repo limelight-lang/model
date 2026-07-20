@@ -26,8 +26,8 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use ll_model::Arena;
 use mimalloc::MiMalloc;
 
-/// 500 * 40 B = 20 KB — fits in one 32 KB block, so `reserve` covers the
-/// full loop.
+/// 500 * 40 B = 20 KB — fits in one block, so `reserve` covers the full
+/// loop.
 const N: usize = 500;
 const SIZE: usize = 40;
 

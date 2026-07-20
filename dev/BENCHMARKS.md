@@ -4,7 +4,7 @@ Every measurement lands here, not in chat and not only in a commit
 message. Negative results are recorded too — "tried it, it did not
 pay" saves the next attempt and is usually worth more than a win.
 
-`RESULTS.md` in the repository root holds the crate's headline
+`benches/RESULTS.md` holds the crate's headline
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 

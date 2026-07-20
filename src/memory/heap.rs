@@ -242,7 +242,12 @@ struct BlockLinks {
 struct BlockShared {
     /// Identity of the owning heap, or null once abandoned. **Compared,
     /// never dereferenced** by a non-owner — which is what lets it be the
-    /// address of a thread-local `Heap` and lets adoption simply CAS it.
+    /// address of a thread-local `Heap`. Adoption claims a block with a
+    /// plain `Release` store, not a CAS: the block is off the abandoned
+    /// list under its mutex by then, so no other thread is contending for
+    /// it, and a racing `free` is correct either way — it either sees the
+    /// old owner and parks the slot in `remote_free`, which the new owner
+    /// drains, or sees the new one.
     owner: AtomicPtr<Heap>,
 }
 
@@ -818,8 +823,7 @@ impl Heap {
     /// Common tail once a block's `used` count has just reached zero:
     /// keep it as the class's one bounded empty spare (instant reuse, no
     /// refill) if there isn't one already; otherwise actually return it
-    /// to the global pool (reclaiming the bitmap's own allocation first).
-    /// See `rfc/model/memory/heap-slot-allocation.md`.
+    /// to the global pool. See `rfc/model/memory/heap-slot-allocation.md`.
     fn retire_empty(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         if self.empty_reserve[ci].is_null() {
             self.empty_reserve[ci] = block;
@@ -842,10 +846,12 @@ impl Heap {
         BlockPool::global().put(block as *mut BlockHeader);
     }
 
-    /// Take a fresh block from the pool, allocate and initialize its
-    /// bitmap (all slots free), and link it as available. Initializing
-    /// the bitmap is O(slots/64) words, not O(slots) — it never touches
-    /// the slots' own memory, unlike the old eager free-list threading.
+    /// Take a fresh block from the pool, stamp its header, and link it as
+    /// available. O(1) and touching nothing but the header line: an empty
+    /// free list plus `bump = 0` already means "every slot virgin", so
+    /// there is no side allocation and no per-slot initialization at all
+    /// — unlike both the eager free-list threading and the bitmap this
+    /// replaced (see the module doc for why the bitmap lost).
     fn refill(&mut self, ci: usize) -> *mut HeapBlockHeader {
         let class_size = SIZE_CLASSES[ci];
         let block = BlockPool::global().get() as *mut HeapBlockHeader;
@@ -1174,31 +1180,23 @@ mod tls {
     }
 }
 
-/// Eagerly create this thread's heap. Must be called once per thread
-/// before any allocation on it — the hot path (`with_thread_heap`)
-/// trusts this and does not check. Idempotent.
-///
-/// This is the deliberate split: initialization is a cold, explicit,
-/// one-time call (like a worker thread's startup hook), not a check
-/// repeated on every `malloc`/`free`. Limelight owns its own worker
-/// threads (see module doc), so this is always satisfiable — unlike a
-/// libc `malloc` replacement, which cannot demand callers opt in first.
 /// Give up this thread's heap blocks: empty ones to the pool, ones with
 /// live objects to the global abandoned list, where the next thread needing
 /// that size class will adopt them.
 ///
-/// **Must be called before a thread that allocated exits.** Skipping it is
-/// not a leak of one heap — it strands every block that thread still owned,
-/// permanently, along with any later cross-thread free into them. Measured
-/// cost of skipping it, on `larson.cpp` (which respawns its worker every
-/// ~20 ms, by design — that is what the benchmark is *for*): 1.7 GiB
-/// resident against a 2.5 MiB live set.
+/// **This must happen before a thread that allocated exits.** Skipping it
+/// is not a leak of one heap — it strands every block that thread still
+/// owned, permanently, along with any later cross-thread free into them.
+/// Measured cost of skipping it, on `larson.cpp` (which respawns its
+/// worker every ~20 ms, by design — that is what the benchmark is *for*):
+/// 1.7 GiB resident against a 2.5 MiB live set.
 ///
-/// Idempotent, and safe to call on a thread that never allocated. The TLS
-/// guard installed by [`ll_thread_init`] calls this automatically for threads
-/// that unwind normally; this export exists for callers who manage their own
-/// thread lifetimes, and for FFI callers whose threads Rust knows nothing
-/// about.
+/// It happens **automatically** on every target: the TLS guard installed
+/// by [`ll_thread_init`] calls this when a thread unwinds normally. This
+/// export exists for callers who manage their own thread lifetimes, and
+/// for FFI callers whose threads Rust knows nothing about.
+///
+/// Idempotent, and safe to call on a thread that never allocated.
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_exit() {
     let p = tls::get_raw();
@@ -1261,6 +1259,18 @@ impl Drop for ExitGuard {
     }
 }
 
+/// Eagerly create this thread's heap. Must be called once per thread
+/// before any allocation on it — the hot path (`with_thread_heap`)
+/// trusts this and does not check. Idempotent.
+///
+/// This is the deliberate split: initialization is a cold, explicit,
+/// one-time call (like a worker thread's startup hook), not a check
+/// repeated on every `malloc`/`free`. Limelight owns its own worker
+/// threads (see module doc), so this is always satisfiable — unlike a
+/// libc `malloc` replacement, which cannot demand callers opt in first.
+///
+/// Also installs the TLS guard that returns this thread's blocks when it
+/// exits, so [`ll_thread_exit`] need not be called by hand.
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_init() {
     // Must precede the first `tls::get()` anywhere: `get` deliberately does

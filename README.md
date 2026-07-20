@@ -36,15 +36,18 @@ Per allocation, with reclamation (dev box, noisy — read as ratios):
 
 | Contender | Per alloc | vs arena |
 |---|---|---|
-| **arena** | ~0.94 ns | 1.0× |
-| **arena + `reserve`** | ~0.98 ns | ~1.0× |
-| bumpalo (best Rust bump allocator) | ~1.58 ns | ~1.7× slower |
-| mimalloc (fast malloc) | ~6.6 ns | ~7× slower |
-| system malloc (OS default) | ~48 ns | ~50× slower |
+| **arena** | ~0.82 ns | 1.0× |
+| **arena + `reserve`** | ~0.81 ns | ~1.0× |
+| bumpalo (best Rust bump allocator) | ~1.26 ns | ~1.5× slower |
+| mimalloc (fast malloc) | ~4.4 ns | ~5.4× slower |
+| system malloc (OS default) | ~34 ns | ~41× slower |
 
-The arena is ~1.7× faster than bumpalo and ~7× faster than mimalloc —
-the honest fast-malloc rival. Full data, caveats, and what these numbers
-do and don't prove: [`benches/RESULTS.md`](benches/RESULTS.md).
+The arena is ~1.5× faster than bumpalo and ~5.4× faster than mimalloc —
+the honest fast-malloc rival, and the comparison worth quoting. Not the
+"50×" an earlier, flawed benchmark suggested: that number came from
+comparing against the OS allocator. Full data, caveats, and what these
+numbers do and don't prove:
+[`benches/RESULTS.md`](benches/RESULTS.md).
 
 ## LLVM IR export
 
