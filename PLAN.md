@@ -75,20 +75,6 @@ actor/GC coordination via mailbox and the message-payload table
   is not run (needs Zend-style re-scan discipline); non-object heap
   children of whites will need releasing when strings/arrays exist;
   the heap allocator is the standard path until the Immix-shaped one.
-- [ ] **Allocation telemetry / debug mode** — layer 1 done
-  (`memory/stats.rs`): always-on aggregate stats with **zero hot-path
-  tax** — counters only on rare block operations (pool get/put),
-  everything else computed at query time; block-granular by design;
-  `ll_memory_stats` ABI. Layer 2 now has its design pass:
-  **`dev/design/debug-modes.md`** — a live object registry (what exists,
-  of what class, in which memory), per-request leak reporting on the
-  Zend MM model, lifetime histograms on a virtual clock, extensible
-  per-allocation metadata in shadow memory, integrity checks and fault
-  injection, and a dependency-free metrics export for Prometheus.
-  Build order is section 9 there; the first three items need no ABI
-  change and no compiler cooperation. `LLAllocSite` is last because it
-  needs both, via an RFC. OS-direct runs stay invisible to layer 1
-  until layer 2 lands.
 - [ ] **Tests, including performance benchmarks** — correctness tests per
   existing style (`test_guard`, scenario-per-test) for all of the above;
   criterion benchmarks following the project's honest-methodology
@@ -148,6 +134,21 @@ actor/GC coordination via mailbox and the message-payload table
   already-deferred "optimistic devirtualization with patching on
   subclass load" (CHA-style, `classes.md` Deferred section) or a
   different one.
+
+- [ ] **Allocation telemetry layer 2 / debug mode** — *deliberately last:
+  designed, not scheduled.* Layer 1 is done (`memory/stats.rs`):
+  always-on aggregate stats with **zero hot-path tax**, block-granular
+  by design, `ll_memory_stats` ABI. Layer 2 has its full design pass in
+  **`dev/design/debug-modes.md`** — live object registry (what exists,
+  of what class, in which memory), per-request leak reporting on the
+  Zend MM model, lifetime histograms on a virtual clock, extensible
+  per-allocation metadata in shadow memory, integrity checks and fault
+  injection, dependency-free metrics export for Prometheus, and a
+  parallel debug ABI carrying site id, stack id and arena identity.
+  Build order is section 9 there. Its first items need no ABI change and
+  no compiler work; the debug ABI needs both and wants its RFC opened
+  before anything is built. OS-direct runs stay invisible to layer 1
+  until this lands.
 
 ## Not yet started at all
 
