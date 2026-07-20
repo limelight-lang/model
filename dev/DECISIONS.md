@@ -1,0 +1,105 @@
+# Decisions
+
+An architecture changelog: what was decided and why, not what changed
+in the code. Routine fixes and renames belong to git, not here.
+
+A superseded decision is replaced by a **new entry**; old entries are
+never edited or deleted.
+
+---
+
+## 2026-07-20 — the arena handle is a raw pointer, not `&mut Arena`
+
+**Decided:** `resolve`, `resolve_arena`, `ref_store`, `escape_gain` and
+`arena_reset_full` all take `*mut Arena`. A `&mut` is materialized for
+one leaf operation at a time, and the rule is: **no borrow may be live
+across a call that can run user code.**
+
+**Why:** destructors are documented to run reentrantly on the reset
+path. `arena_reset_full` held a `&mut Arena` across its settling loop
+while a `__destruct` it invoked resolved the same arena — two live
+`&mut` to one object. That is UB regardless of the machine code being
+correct, and the reset path is exactly where the optimizer is most free
+to assume otherwise.
+
+**Considered and rejected:** keeping `&mut Arena` and relying on
+discipline about when it is held. It had already been violated in the
+one place it mattered, and nothing would catch the next violation.
+
+**Cost:** the borrow checker no longer helps on the arena API. Misuse
+is now caught by Miri, or not at all. The reset's release drain also
+had to become collect-then-release, because it used to run `die` inside
+the drain closure while the drain held the arena.
+
+---
+
+## 2026-07-20 — trailing inline data is reached through raw pointers
+
+**Decided:** `Object::prop_at`, `Class::vtbl` and `LLString::bytes`
+take a raw pointer spanning the whole allocation instead of `&self`.
+Entity pointers keep whole-allocation provenance rather than being
+narrowed through `&mut RcHeader` (`ll_release` now buffers its original
+argument, not the reborrow).
+
+**Why:** all three types put inline data past a fixed header. A
+reference carries provenance over the header only, so every access to
+the trailing data was outside the reference it was derived from.
+
+**Considered and rejected:** leaving it, on the grounds that it works.
+It is also what stops Miri before it reaches anything else, so leaving
+it meant giving up the only tool that can see this class of defect.
+
+**Cost:** these accessors are no longer methods, so call sites are
+slightly noisier.
+
+---
+
+## 2026-07-20 — the block header is split by access rule, not by topic
+
+**Decided:** `HeapBlockHeader` is four `repr(C)` structs laid back to
+back. Line 0 holds `BlockPrivate` (counters, free list, `available`
+links) together with `BlockShared { owner }`; line 1 holds
+`BlockRemote { remote_free }` alone; line 2 holds the cold
+`BlockLinks`. The owner borrows `&mut (*block).private` and cannot name
+the shared half.
+
+**Why:** `&mut HeapBlockHeader` claimed exclusivity over two atomics
+that every thread reaches by design, so the owner's borrow raced every
+non-owner's legitimate read. The audit filed this as a non-owner
+problem; Miri showed the owner is equally implicated, so no amount of
+care on the non-owner path could fix it. Making it a type rule was the
+only option that cannot be violated again — it had already been
+violated twice, in `adopt` and in `free`.
+
+**Considered and rejected:** grouping both atomics into one isolated
+"shared" struct. `owner` and `remote_free` have opposite access
+profiles — `owner` is read on every `free` and written twice in a
+block's life, `remote_free` is CASed by other threads — so isolating
+them together evicted a hot field and measured slower. Two further
+layouts were measured and rejected; see `BENCHMARKS.md`.
+
+**Cost:** none measured — faster on both benchmarks (larson −3.03%,
+rptest −1.54%), and the header still fits the block's reserved 256-byte
+line, so slots-per-block is unchanged. The price is conceptual: the
+layout is now load-bearing, and the pinning test exists to say so.
+
+---
+
+## 2026-07-20 — Miri runs against a UNIX target
+
+**Decided:** the Miri suite runs with
+`--target x86_64-unknown-linux-gnu`, and the bench-only `mimalloc`
+dev-dependency is gated behind `cfg(not(miri))`.
+
+**Why:** the Windows TLS fast path is inline `asm!`, which Miri cannot
+execute at all. The crate already has a portable `thread_local!` path
+for non-Windows targets, so pointing Miri at a UNIX target selects it
+with no source change.
+
+**Considered and rejected:** adding a `cfg(miri)` branch to the TLS
+module. It would have put a Miri-shaped concern into the hot path for
+no gain over choosing the target.
+
+**Cost:** Miri never exercises the Windows TLS path, which is the one
+that actually ships here. `-Zmiri-ignore-leaks` is also required, so
+Miri is blind to the leak-shaped findings.
