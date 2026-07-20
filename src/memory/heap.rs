@@ -1232,22 +1232,29 @@ impl Drop for Heap {
     }
 }
 
-#[cfg(windows)]
 thread_local! {
     /// Calls [`ll_thread_exit`] when a thread that allocated unwinds.
     ///
-    /// A separate `thread_local!` purely for its destructor: the heap pointer
-    /// itself lives in a raw TEB slot (see the `tls` module) precisely to
-    /// avoid the module-indirected access a `thread_local!` would cost on
-    /// every allocation, and that raw slot has no destructor. Costs one
-    /// registration per thread, on the cold init path.
+    /// A separate `thread_local!` purely for its destructor, on **every**
+    /// target: the heap pointer itself lives in a slot that has none. On
+    /// Windows that is a raw TEB slot, chosen precisely to avoid the
+    /// module-indirected access a `thread_local!` would cost on every
+    /// allocation; elsewhere it is a `Cell<*mut Heap>`, which has no
+    /// `Drop` either. Costs one registration per thread, on the cold init
+    /// path.
+    ///
+    /// This used to be `#[cfg(windows)]`, which meant ELF targets had no
+    /// automatic reclamation at all: a thread that allocated and then
+    /// exited stranded every block it owned, permanently, along with any
+    /// later cross-thread free into them. That is the same leak measured
+    /// on Windows before the guard existed — 1.7 GiB resident against a
+    /// 2.5 MiB live set on `larson.cpp`, which respawns its worker every
+    /// ~20 ms by design.
     static EXIT_GUARD: ExitGuard = const { ExitGuard };
 }
 
-#[cfg(windows)]
 struct ExitGuard;
 
-#[cfg(windows)]
 impl Drop for ExitGuard {
     fn drop(&mut self) {
         ll_thread_exit();
@@ -1262,7 +1269,6 @@ pub extern "C" fn ll_thread_init() {
     tls::ensure_slot();
     if tls::get_raw().is_null() {
         tls::set(Box::into_raw(Box::new(Heap::new())));
-        #[cfg(windows)]
         // `try_with`, not `with`: this can run *during* TLS teardown, when
         // a destructor allocates and self-initializes a heap on a thread
         // whose `EXIT_GUARD` slot is already destroyed. `with` panics
@@ -1366,6 +1372,46 @@ mod tests {
             size_of::<HeapBlockHeader>() <= LINE_SIZE,
             "header must fit the reserved line: {} > {LINE_SIZE}",
             size_of::<HeapBlockHeader>()
+        );
+    }
+
+    /// A thread that allocates and then exits **without** calling
+    /// `ll_thread_exit` must still give its blocks back: the TLS guard is
+    /// what makes that automatic, and it is the whole reason the guard
+    /// exists.
+    ///
+    /// Regression for audit H9. The guard used to be `#[cfg(windows)]`, so
+    /// on ELF targets nothing reclaimed anything — every worker thread
+    /// stranded its blocks forever. This test passes natively on Windows
+    /// either way; the one that matters is the Miri run, which executes
+    /// the non-Windows path (see `dev/WORKFLOW.md`):
+    ///
+    /// ```text
+    /// MIRIFLAGS="-Zmiri-ignore-leaks" cargo +nightly miri test \
+    ///     --target x86_64-unknown-linux-gnu --lib h9_
+    /// ```
+    #[test]
+    fn h9_exiting_thread_returns_its_blocks_without_an_explicit_call() {
+        let _g = crate::memory::block_pool::test_guard();
+        let pool = BlockPool::global();
+        let before = pool.blocks_out();
+
+        for _ in 0..3 {
+            std::thread::spawn(|| {
+                ll_thread_init();
+                let p = unsafe { crate::memory::stdapi::ll_alloc(40, 16) };
+                assert!(!p.is_null());
+                unsafe { crate::memory::stdapi::ll_free(p) };
+                // Deliberately no `ll_thread_exit()`: the guard must do it.
+            })
+            .join()
+            .unwrap();
+        }
+
+        assert_eq!(
+            pool.blocks_out(),
+            before,
+            "an exiting thread must not strand its blocks"
         );
     }
 
