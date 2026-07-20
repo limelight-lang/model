@@ -53,7 +53,9 @@ a UNIX target. All 2026-07-20.
 
 ## Diagrams
 
-`dev/design/` — none yet.
+`dev/design/debug-modes.md` — observability and debug levels: object
+registry, lifetimes, shadow metadata, integrity checks, metrics export.
+Design only, nothing implemented.
 
 ## Traps
 

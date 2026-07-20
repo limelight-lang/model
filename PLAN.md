@@ -79,10 +79,16 @@ actor/GC coordination via mailbox and the message-payload table
   (`memory/stats.rs`): always-on aggregate stats with **zero hot-path
   tax** — counters only on rare block operations (pool get/put),
   everything else computed at query time; block-granular by design;
-  `ll_memory_stats` ABI. Remaining: layer 2, the opt-in event log
-  (heaptrack style: alloc/free timestamps → lifetime, object type,
-  deduplicated call site via `LLAllocSite`) — still needs its design
-  pass; OS-direct runs are invisible to layer 1 until then.
+  `ll_memory_stats` ABI. Layer 2 now has its design pass:
+  **`dev/design/debug-modes.md`** — a live object registry (what exists,
+  of what class, in which memory), per-request leak reporting on the
+  Zend MM model, lifetime histograms on a virtual clock, extensible
+  per-allocation metadata in shadow memory, integrity checks and fault
+  injection, and a dependency-free metrics export for Prometheus.
+  Build order is section 9 there; the first three items need no ABI
+  change and no compiler cooperation. `LLAllocSite` is last because it
+  needs both, via an RFC. OS-direct runs stay invisible to layer 1
+  until layer 2 lands.
 - [ ] **Tests, including performance benchmarks** — correctness tests per
   existing style (`test_guard`, scenario-per-test) for all of the above;
   criterion benchmarks following the project's honest-methodology
