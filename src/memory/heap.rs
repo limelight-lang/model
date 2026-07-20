@@ -177,10 +177,17 @@ static ABANDONED: Mutex<Abandoned> = Mutex::new(Abandoned {
     heads: [std::ptr::null_mut(); NUM_CLASSES],
 });
 
-/// Per-block header. Overlays the block's first line; shares offset 0
-/// (`kind`) with the pool's `BlockHeader` (tagged union over the memory).
+/// The owner-private half of the header: only the thread named by
+/// [`BlockShared::owner`] may touch it. Split out so that borrowing it
+/// is an *honest* exclusive claim — `&mut HeapBlockHeader` was not, since
+/// it also covered the atomics every other thread reads, and the model
+/// counts taking a reference as an access (audit `heap.rs:647`).
+/// The fields the allocation fast path touches, kept together so they
+/// share one cache line with [`BlockShared::owner`] (see that type).
 #[repr(C)]
-struct HeapBlockHeader {
+struct BlockPrivate {
+    /// Offset 0 of the block, shared with the pool `BlockHeader`'s
+    /// tagged-union discriminant: must stay the first field.
     kind: u32,
     size_class: u32,
     /// Live slots (owner-written only). Block returns to the pool at 0
@@ -195,10 +202,59 @@ struct HeapBlockHeader {
     /// Slots at index `>= bump` are virgin: never touched, nothing to
     /// read or maintain, carved by address arithmetic on demand.
     bump: u32,
+    linked: bool,
+    /// `available` list for this size class (blocks with room). Hot, and
+    /// deliberately still in line 0: `link`/`unlink`/`relink_unfull` run
+    /// on every full ↔ has-room transition, and `rptest` churns blocks
+    /// across that boundary constantly. Evicting these to their own line
+    /// measured slower (direction only, same caveat as [`BlockShared`]).
+    next: *mut HeapBlockHeader,
+    prev: *mut HeapBlockHeader,
+}
+
+/// Owner-private and genuinely cold: only thread exit and adoption walk
+/// these, so they sit past the remote line.
+#[repr(C)]
+struct BlockLinks {
+    /// Every block this heap owns, full or not, so a dying thread can
+    /// enumerate them. `available` cannot serve: a full block is unlinked
+    /// from it and would otherwise be unreachable — which is exactly how
+    /// they used to leak.
+    owned_next: *mut HeapBlockHeader,
+    owned_prev: *mut HeapBlockHeader,
+}
+
+/// Shared, but **read-mostly**: written once at refill and again at
+/// adoption or abandonment, and read by every `free` to decide whether
+/// the slot is local. So it deliberately stays in the hot line, right
+/// behind [`BlockPrivate`], rather than moving out with `remote_free`.
+///
+/// Splitting it out of the private half at all is what makes the owner's
+/// `&mut` honest: a non-owner reads this concurrently by design, so no
+/// exclusive borrow may ever cover it (audit `heap.rs:647`).
+///
+/// Rejected alternative: parking `owner` on the isolated line together
+/// with `remote_free`. Every local free then touches a second line just
+/// to check ownership, and it measured clearly slower. (Direction only —
+/// that run was against a stale baseline on a noisy box, so no figure is
+/// quoted; the trustworthy A/B is the one in this change's commit.)
+#[repr(C)]
+struct BlockShared {
     /// Identity of the owning heap, or null once abandoned. **Compared,
     /// never dereferenced** by a non-owner — which is what lets it be the
     /// address of a thread-local `Heap` and lets adoption simply CAS it.
     owner: AtomicPtr<Heap>,
+}
+
+/// The contended half, alone on its own cache line.
+///
+/// This is the field cross-thread frees hammer with CAS, and it used to
+/// sit beside `used`/`free`/`bump`, so every push stole the line from
+/// under the owner's hot path (audit `heap.rs:212`). The header owns the
+/// block's whole reserved 256-byte line, so the padding costs no payload
+/// and no slots.
+#[repr(C, align(64))]
+struct BlockRemote {
     /// Cross-thread frees destined for **this block**.
     ///
     /// The single most important field for adoption to be race-free, and the
@@ -210,16 +266,22 @@ struct HeapBlockHeader {
     /// instead, a message posted to the dying owner after adoption would be
     /// stranded forever — nobody drains a dead heap.
     remote_free: AtomicPtr<FreeSlot>,
-    /// `available` list for this size class (blocks with room).
-    next: *mut HeapBlockHeader,
-    prev: *mut HeapBlockHeader,
-    linked: bool,
-    /// Every block this heap owns, full or not, so a dying thread can
-    /// enumerate them. `available` cannot serve: a full block is unlinked
-    /// from it and would otherwise be unreachable — which is exactly how
-    /// they used to leak.
-    owned_next: *mut HeapBlockHeader,
-    owned_prev: *mut HeapBlockHeader,
+}
+
+/// Per-block header. Overlays the block's first line; shares offset 0
+/// (`private.kind`) with the pool's `BlockHeader` (tagged union over the
+/// memory).
+///
+/// Field order is the layout contract, pinned by
+/// `block_header_halves_are_laid_out_as_the_design_requires`: hot private
+/// fields and `owner` in line 0, the contended `remote_free` alone in
+/// line 1, cold links after it.
+#[repr(C)]
+struct HeapBlockHeader {
+    private: BlockPrivate,
+    shared: BlockShared,
+    remote: BlockRemote,
+    links: BlockLinks,
 }
 
 impl HeapBlockHeader {
@@ -377,7 +439,7 @@ impl Heap {
             return self.alloc_no_block(ci);
         }
 
-        let b = unsafe { &mut *block };
+        let b = unsafe { &mut (*block).private };
 
         // O(1) pop from the in-slot free list, else carve a virgin slot,
         // else the block is full. Branch-only: no scan, and no dependent
@@ -454,9 +516,11 @@ impl Heap {
         let mut block = self.owned[ci];
         let mut found = false;
         while !block.is_null() {
-            let b = unsafe { &mut *block };
-            let next = b.owned_next;
-            if !b.remote_free.load(Ordering::Relaxed).is_null() && self.collect_remote(b) {
+            let next = unsafe { (*block).links.owned_next };
+            let pending =
+                unsafe { !(*block).remote.remote_free.load(Ordering::Relaxed).is_null() };
+            if pending && self.collect_remote(block) {
+                let b = unsafe { &mut (*block).private };
                 if b.used == 0 {
                     self.retire_empty(ci, block);
                     found = true;
@@ -480,8 +544,7 @@ impl Heap {
         // reclaimed, and it is the natural one: we are here precisely because
         // this block has no slots left, which is exactly when its parked
         // frees are worth the walk.
-        let b = unsafe { &mut *block };
-        if self.collect_remote(b) {
+        if self.collect_remote(block) {
             return self.alloc_class(ci);
         }
         self.unlink(ci, block);
@@ -497,7 +560,7 @@ impl Heap {
             if head.is_null() {
                 return false;
             }
-            list.heads[ci] = unsafe { (*head).owned_next };
+            list.heads[ci] = unsafe { (*head).links.owned_next };
             head
         };
 
@@ -507,16 +570,16 @@ impl Heap {
         // writes these very fields through `block`, which invalidates any
         // outstanding reference, and the old code then kept using it.
         unsafe {
-            (*block).owned_next = std::ptr::null_mut();
-            (*block).owned_prev = std::ptr::null_mut();
-            (*block).next = std::ptr::null_mut();
-            (*block).prev = std::ptr::null_mut();
-            (*block).linked = false;
+            (*block).links.owned_next = std::ptr::null_mut();
+            (*block).links.owned_prev = std::ptr::null_mut();
+            (*block).private.next = std::ptr::null_mut();
+            (*block).private.prev = std::ptr::null_mut();
+            (*block).private.linked = false;
 
             // Claim it. Any free racing this either saw the old owner or
             // sees us; both push into `remote_free`, which we now own and
             // will collect.
-            (*block).owner.store(self.id(), Ordering::Release);
+            (*block).shared.owner.store(self.id(), Ordering::Release);
         }
         self.own(ci, block);
 
@@ -525,7 +588,7 @@ impl Heap {
         self.collect_remote(unsafe { &mut *block });
 
         let (used, free, bump, slots) =
-            unsafe { ((*block).used, (*block).free, (*block).bump, (*block).slots) };
+            unsafe { ((*block).private.used, (*block).private.free, (*block).private.bump, (*block).private.slots) };
         if used == 0 {
             self.retire_empty(ci, block);
         } else if free.is_null() && bump >= slots {
@@ -540,10 +603,10 @@ impl Heap {
     /// Add `block` to this heap's owned chain for its class.
     fn own(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         unsafe {
-            (*block).owned_prev = std::ptr::null_mut();
-            (*block).owned_next = self.owned[ci];
+            (*block).links.owned_prev = std::ptr::null_mut();
+            (*block).links.owned_next = self.owned[ci];
             if !self.owned[ci].is_null() {
-                (*self.owned[ci]).owned_prev = block;
+                (*self.owned[ci]).links.owned_prev = block;
             }
         }
         self.owned[ci] = block;
@@ -552,18 +615,18 @@ impl Heap {
     /// Remove `block` from this heap's owned chain.
     fn disown(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         unsafe {
-            let prev = (*block).owned_prev;
-            let next = (*block).owned_next;
+            let prev = (*block).links.owned_prev;
+            let next = (*block).links.owned_next;
             if !prev.is_null() {
-                (*prev).owned_next = next;
+                (*prev).links.owned_next = next;
             } else {
                 self.owned[ci] = next;
             }
             if !next.is_null() {
-                (*next).owned_prev = prev;
+                (*next).links.owned_prev = prev;
             }
-            (*block).owned_prev = std::ptr::null_mut();
-            (*block).owned_next = std::ptr::null_mut();
+            (*block).links.owned_prev = std::ptr::null_mut();
+            (*block).links.owned_next = std::ptr::null_mut();
         }
     }
 
@@ -580,24 +643,25 @@ impl Heap {
         for ci in 0..NUM_CLASSES {
             let mut block = self.owned[ci];
             while !block.is_null() {
-                let b = unsafe { &mut *block };
-                let next = b.owned_next;
+                let next = unsafe { (*block).links.owned_next };
 
                 // Collect first: slots freed cross-thread may make it empty,
                 // and an empty block is worth more to the pool than to the
                 // abandoned list.
-                self.collect_remote_locked(b);
-                b.owner.store(std::ptr::null_mut(), Ordering::Release);
+                self.collect_remote_locked(block);
+                unsafe { (*block).shared.owner.store(std::ptr::null_mut(), Ordering::Release) };
 
+                let b = unsafe { &mut (*block).private };
                 if b.used == 0 {
                     b.kind = 0;
                     BlockPool::global().put(block as *mut BlockHeader);
                 } else {
+                    b.linked = false;
                     b.next = std::ptr::null_mut();
                     b.prev = std::ptr::null_mut();
-                    b.linked = false;
-                    b.owned_prev = std::ptr::null_mut();
-                    b.owned_next = list.heads[ci];
+                    let l = unsafe { &mut (*block).links };
+                    l.owned_prev = std::ptr::null_mut();
+                    l.owned_next = list.heads[ci];
                     list.heads[ci] = block;
                 }
                 block = next;
@@ -610,11 +674,15 @@ impl Heap {
 
     /// [`collect_remote`] without touching `self` — for use while the
     /// abandoned list's lock is held.
-    fn collect_remote_locked(&self, b: &mut HeapBlockHeader) {
-        let head = b.remote_free.swap(std::ptr::null_mut(), Ordering::Acquire);
+    fn collect_remote_locked(&self, block: *mut HeapBlockHeader) {
+        // Takes the raw block: it needs both halves, and they must be
+        // reached separately — the atomic through a shared reference, the
+        // private fields through an exclusive one.
+        let head = unsafe { (*block).remote.remote_free.swap(std::ptr::null_mut(), Ordering::Acquire) };
         if head.is_null() {
             return;
         }
+        let b = unsafe { &mut (*block).private };
         let mut n = 0u32;
         let mut last = head;
         unsafe {
@@ -654,13 +722,20 @@ impl Heap {
     #[inline]
     pub unsafe fn free(&mut self, ptr: *mut u8) {
         let block = HeapBlockHeader::of_ptr(ptr);
-        let b = unsafe { &mut *block };
 
         probe_count!(FREES);
-        if b.owner.load(Ordering::Relaxed) != self.id() {
+        // Reference the atomic alone, never the header, until ownership is
+        // established. `&mut *block` here would retag the whole header, and
+        // a retag counts as an access — on a block owned by another thread
+        // that races the owner's own borrow (audit `heap.rs:647`, which Miri
+        // reports as a data race between the two retags).
+        if unsafe { (*block).shared.owner.load(Ordering::Relaxed) } != self.id() {
             probe_count!(REMOTE_FREES);
-            return Self::free_remote(b, ptr);
+            return Self::free_remote(block, ptr);
         }
+
+        // Ours: the rest of the header is ours to borrow exclusively.
+        let b = unsafe { &mut (*block).private };
 
         // Push onto the block's free list: the `next` write lands in the
         // slot the program has just stopped using, already hot in cache.
@@ -688,12 +763,16 @@ impl Heap {
     /// parked free can never look empty.
     #[cold]
     #[inline(never)]
-    fn free_remote(b: &HeapBlockHeader, ptr: *mut u8) {
+    fn free_remote(block: *mut HeapBlockHeader, ptr: *mut u8) {
         let slot = ptr as *mut FreeSlot;
-        let mut head = b.remote_free.load(Ordering::Relaxed);
+        // The one field this thread may touch. Everything else in the header
+        // belongs to the owner, which is mutating it as we run, so no
+        // reference spanning the header may exist here.
+        let remote_free = unsafe { &(*block).remote.remote_free };
+        let mut head = remote_free.load(Ordering::Relaxed);
         loop {
             unsafe { (*slot).next = head };
-            match b.remote_free.compare_exchange_weak(
+            match remote_free.compare_exchange_weak(
                 head,
                 slot,
                 Ordering::Release,
@@ -711,11 +790,13 @@ impl Heap {
     /// O(n) in what arrived since the last collect, walked once to get the
     /// count `used` must drop by — the same amortised deal mimalloc makes in
     /// `_mi_page_thread_free_collect`.
-    fn collect_remote(&mut self, b: &mut HeapBlockHeader) -> bool {
-        let head = b.remote_free.swap(std::ptr::null_mut(), Ordering::Acquire);
+    fn collect_remote(&mut self, block: *mut HeapBlockHeader) -> bool {
+        // See [`collect_remote_locked`] on why this takes the raw block.
+        let head = unsafe { (*block).remote.remote_free.swap(std::ptr::null_mut(), Ordering::Acquire) };
         if head.is_null() {
             return false;
         }
+        let b = unsafe { &mut (*block).private };
         let mut n = 0u32;
         let mut last = head;
         unsafe {
@@ -742,20 +823,21 @@ impl Heap {
     fn retire_empty(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         if self.empty_reserve[ci].is_null() {
             self.empty_reserve[ci] = block;
-            if unsafe { !(*block).linked } {
+            if unsafe { !(*block).private.linked } {
                 self.link(ci, block);
             }
             return;
         }
-        if unsafe { (*block).linked } {
+        if unsafe { (*block).private.linked } {
             self.unlink(ci, block);
         }
         self.disown(ci, block);
         unsafe {
             (*block)
+                .shared
                 .owner
                 .store(std::ptr::null_mut(), Ordering::Release);
-            (*block).kind = 0;
+            (*block).private.kind = 0;
         }
         BlockPool::global().put(block as *mut BlockHeader);
     }
@@ -774,19 +856,27 @@ impl Heap {
         // header line.
         unsafe {
             block.write(HeapBlockHeader {
-                kind: BLOCK_KIND_HEAP,
-                size_class: ci as u32,
-                used: 0,
-                slots,
-                free: std::ptr::null_mut(),
-                bump: 0,
-                owner: AtomicPtr::new(self.id()),
-                remote_free: AtomicPtr::new(std::ptr::null_mut()),
-                next: std::ptr::null_mut(),
-                prev: std::ptr::null_mut(),
-                linked: false,
-                owned_next: std::ptr::null_mut(),
-                owned_prev: std::ptr::null_mut(),
+                private: BlockPrivate {
+                    kind: BLOCK_KIND_HEAP,
+                    size_class: ci as u32,
+                    used: 0,
+                    slots,
+                    free: std::ptr::null_mut(),
+                    bump: 0,
+                    linked: false,
+                    next: std::ptr::null_mut(),
+                    prev: std::ptr::null_mut(),
+                },
+                shared: BlockShared {
+                    owner: AtomicPtr::new(self.id()),
+                },
+                remote: BlockRemote {
+                    remote_free: AtomicPtr::new(std::ptr::null_mut()),
+                },
+                links: BlockLinks {
+                    owned_next: std::ptr::null_mut(),
+                    owned_prev: std::ptr::null_mut(),
+                },
             });
         }
         self.own(ci, block);
@@ -821,13 +911,13 @@ impl Heap {
             return;
         }
         unsafe {
-            let second = (*head).next;
-            (*block).prev = head;
-            (*block).next = second;
-            (*block).linked = true;
-            (*head).next = block;
+            let second = (*head).private.next;
+            (*block).private.prev = head;
+            (*block).private.next = second;
+            (*block).private.linked = true;
+            (*head).private.next = block;
             if !second.is_null() {
-                (*second).prev = block;
+                (*second).private.prev = block;
             }
         }
     }
@@ -836,11 +926,11 @@ impl Heap {
         probe_count!(LINK_CALLS);
         let head = self.available[ci];
         unsafe {
-            (*block).prev = std::ptr::null_mut();
-            (*block).next = head;
-            (*block).linked = true;
+            (*block).private.prev = std::ptr::null_mut();
+            (*block).private.next = head;
+            (*block).private.linked = true;
             if !head.is_null() {
-                (*head).prev = block;
+                (*head).private.prev = block;
             }
         }
         self.available[ci] = block;
@@ -849,19 +939,19 @@ impl Heap {
     fn unlink(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         probe_count!(UNLINK_CALLS);
         unsafe {
-            let prev = (*block).prev;
-            let next = (*block).next;
+            let prev = (*block).private.prev;
+            let next = (*block).private.next;
             if !prev.is_null() {
-                (*prev).next = next;
+                (*prev).private.next = next;
             } else {
                 self.available[ci] = next;
             }
             if !next.is_null() {
-                (*next).prev = prev;
+                (*next).private.prev = prev;
             }
-            (*block).prev = std::ptr::null_mut();
-            (*block).next = std::ptr::null_mut();
-            (*block).linked = false;
+            (*block).private.prev = std::ptr::null_mut();
+            (*block).private.next = std::ptr::null_mut();
+            (*block).private.linked = false;
         }
     }
 }
@@ -1176,7 +1266,7 @@ pub fn thread_heap() -> *mut Heap {
 /// `ptr` must be a live slot from some heap's block.
 pub unsafe fn free_foreign(ptr: *mut u8) {
     let block = HeapBlockHeader::of_ptr(ptr);
-    Heap::free_remote(unsafe { &*block }, ptr);
+    Heap::free_remote(block, ptr);
 }
 
 /// Run `f` with this thread's persistent small-object heap.
@@ -1205,6 +1295,54 @@ pub unsafe fn with_thread_heap<R>(f: impl FnOnce(&mut Heap) -> R) -> R {
 mod tests {
     use super::*;
     use crate::memory::block_pool::BLOCK_PAYLOAD;
+
+    #[test]
+    fn block_header_halves_are_laid_out_as_the_design_requires() {
+        use std::mem::offset_of;
+
+        // `kind` is the pool's tagged-union discriminant: the whole
+        // overlay depends on it staying at offset 0 of the block.
+        assert_eq!(offset_of!(HeapBlockHeader, private), 0);
+        assert_eq!(offset_of!(BlockPrivate, kind), 0);
+
+        // `owner` is read by every `free` to decide whether the slot is
+        // local, so it must stay in the same line as the hot private
+        // fields. Giving it a line of its own cost +10.8% on
+        // `rptest_10k_blocks_40_iters` (measured), because each local
+        // free then touched a second line just for the check.
+        // Everything the fast paths touch — the counters, the free list,
+        // the `available` links, and `owner` — must fit line 0 together.
+        // Each field evicted from it costs a miss on a path that runs per
+        // allocation or per full ↔ has-room transition; both evictions
+        // that were tried measured slower (see `BlockShared`).
+        let shared = offset_of!(HeapBlockHeader, shared);
+        assert_eq!(
+            (shared + size_of::<BlockShared>()).div_ceil(64),
+            1,
+            "the hot set (private + owner) must fit one cache line, got {} bytes",
+            shared + size_of::<BlockShared>()
+        );
+
+        // The contended field, by contrast, must be alone on its line, or
+        // a cross-thread push steals the line holding `used`/`free`/`bump`
+        // (audit `heap.rs:212`).
+        let remote = offset_of!(HeapBlockHeader, remote);
+        assert_eq!(remote % 64, 0, "remote_free must begin a cache line");
+        assert!(remote >= 64, "remote_free must leave the hot line");
+        assert_eq!(
+            offset_of!(HeapBlockHeader, links) / 64 >= 1,
+            true,
+            "cold links must not crowd the hot line"
+        );
+
+        // The header lives in the block's reserved first line; growing it
+        // past that would eat payload and change slots-per-block.
+        assert!(
+            size_of::<HeapBlockHeader>() <= LINE_SIZE,
+            "header must fit the reserved line: {} > {LINE_SIZE}",
+            size_of::<HeapBlockHeader>()
+        );
+    }
 
     #[test]
     fn size_class_selection() {
