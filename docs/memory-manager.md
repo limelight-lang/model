@@ -3,323 +3,291 @@
 How this crate implements the memory design from the
 [rfc](https://github.com/limelight-lang/rfc) repository
 (`model/memory/*`, `model/gc/heap-design.md`). The RFC holds the *why*;
-this document holds the *how* — concrete algorithms, structures, and the
-API that `src/memory/` implements.
+this document holds the *how* — the concrete algorithms and structures
+in `src/memory/`.
+
+**This describes the code as it is.** Where something is designed but
+not built, it says so. Superseded versions live in
+[`docs/history/`](history/) and are marked as such; the rule that keeps
+this file honest is in [`dev/WORKFLOW.md`](../dev/WORKFLOW.md).
 
 ---
 
 ## Layers
 
 ```
-OS                  regions of 2 MB, aligned (VirtualAlloc / mmap)
-                      │  carved into
-Global block pool   32 KB blocks, aligned to their size
-                      │  borrowed by
-Consumers           request arenas · immortal region · GC heap (future) · large objects
+OS                 2 MB regions, block-aligned (VirtualAlloc / mmap)
+                   never returned in phase 1
+  |
+BlockPool          64 KB blocks, carved from regions
+                   per-thread cache in front, batched refill/flush
+  |
+  +-- Heap         small objects, <= 8 KB: one block per size class,
+  |                carved into fixed slots
+  +-- Arena        per-request bump allocator
+  +-- BufferArena  growable byte buffers
+  +-- Immortal     bump, never freed: class metadata, interned strings
+  +-- Large        8 KB..payload: one whole block
+                   above payload: OS-direct block-aligned run
 ```
 
-One address space, one pool. Every consumer borrows blocks from the same
-pool and returns them there. No per-thread heaps, no memory kingdoms.
+Every allocation lives inside a 64 KB block aligned to its own size.
+That single fact carries the design: **the owning block of any pointer
+is `ptr & !BLOCK_MASK`** — one AND, no radix tree, no page map, no
+per-allocation size passed back in by the caller. Size-less `free(ptr)`
+works because the block header says what kind of memory this is.
 
----
+## The block header
 
-## The Block
+The first 256-byte line (`LINE_SIZE`) of every block is header; the
+payload starts at a fixed offset regardless of what the header holds, so
+header layout never costs payload.
 
-- **32 KB, aligned to 32 KB.** The owning block of any pointer is
-  computable with one mask: `block = ptr & !(32768 - 1)`.
-- Block header lives in the block's first 256-byte line: kind
-  (arena / heap / large), list link for the pool, room for future
-  metadata (line map, remembered-set hooks). Usable payload: 127 lines.
+It is a **tagged union**. `kind` at offset 0 discriminates, and each
+consumer overlays its own view:
 
-## Global Block Pool
+| `kind` | Owner | View |
+|---|---|---|
+| `FREE` | pool | free-chain link |
+| `HEAP` | `Heap` | `HeapBlockHeader` |
+| `ARENA` / `RETAINED` | `Arena` | block-list link |
+| `BUFFER` | `BufferArena` | `BufferBlockHeader` |
+| `IMMORTAL`, `LARGE`, `LARGE_RUN` | — | kind only |
 
-Concurrency scheme borrowed from tcmalloc/mimalloc, nothing invented:
+The union is why `kind` must stay at offset 0 in every view, and it is
+the source of one class of hazard worth knowing: bytes that mean one
+thing to one owner mean something else to another. A data race in
+`BlockPool::pop_global` came from exactly that overlap — see the type
+comment on `FreeList` in `block_pool.rs`.
 
-- **Per-thread cache**: a small array (~8 blocks). `get` = pop from
-  array — no atomics at all. `put` = push; on overflow, flush half to
-  the global stack.
-- **Global free stack**: lock-free Treiber stack (`AtomicPtr` head,
-  block headers are the links). Any thread may push or pop —
-  cross-thread block transfer is a single CAS.
-- **Refill**: cache and stack empty → reserve a new 2 MB region from
-  the OS, carve it into 64 blocks, take one, stack the rest.
+### `HeapBlockHeader`, and why it is four structs
 
-## Request Arena (bump allocation)
-
-State: current block, `bump` pointer, `limit`, list of owned blocks,
-destructor-tracking list.
-
-```
-alloc(size, align):                     # the hot path — inlined into
-    p = align_up(bump, align)           # generated code as ~5 instructions
-    if p + size <= limit:
-        bump = p + size
-        return p
-    return alloc_slow(size)             # new block from pool — rare
-
-reserve(n):                             # compiler batch hook: one limit
-    ensure limit - bump >= n            # check for a whole loop of news
-
-track_destructor(obj):                  # objects with side-effect
-    destructors.push(obj)               # destructors (HAS_DESTRUCTOR bit)
-
-reset():                                # end of request
-    run pre-destructors (exactly-once, per object-lifecycle.md)
-    return all blocks to the pool       # O(blocks), not O(objects)
-    clear state
-```
-
-Objects larger than a block's payload never enter the arena path — see
-Large objects.
-
-Phase 2 (per `rfc/model/memory/arena-reset.md`, not built yet):
-remembered set of escaped references, and reset() growing the
-evacuate-or-retain decision. The block header reserves space for it.
-
-## Immortal Region
-
-A bump allocator that never frees and never resets. Class descriptors,
-interned strings, itables. Written only during class loading; no
-concurrency on the hot path (loading takes a lock, reading never does).
-
-## Small-Object Heap (individually freeable)
-
-For long-lived objects that die individually (not in a request cohort):
-the **mimalloc model**, chosen after studying jemalloc / mimalloc /
-snmalloc (best-benchmarked for small frequent allocations, and the best
-fit for what we already built). See `src/memory/heap.rs`.
-
-- **One 32 KB block per size class**, carved into fixed-size slots (the
-  block is mimalloc's "page"). Size classes: 16 → 8192 B, ~25% max
-  internal fragmentation. Above 8 KB → the large-object path.
-- **Pointer → block by mask** (`ptr & !0x7FFF`). No radix tree or
-  pagemap — jemalloc and snmalloc pay for those; our aligned blocks make
-  it one AND.
-- **Free-list split** (mimalloc's core trick): `alloc` pops from `free`,
-  `free` pushes to `local_free`; when `free` empties the slow path moves
-  `local_free → free`. A burst of frees never touches the alloc hot
-  path, and the periodic collect is a deterministic cadence to hang
-  deferred work on later (RC decrements, GC).
-- **A fully-free block returns to the global pool** — real individual
-  reclamation at block granularity.
-
-Cross-thread free is implemented: snmalloc's MPSC-per-owner queue
-(`remote_free`), not a shared stack — see `src/memory/heap.rs`.
-Per-destination batching at the sender is a later optimization.
-
-This heap is the freeing allocator for the long-lived / GC-heap category.
-A tracing collector for cycles (MMTK Immix per the RFC) layers on top
-later; the heap itself handles acyclic individual reclamation now.
-
-## Large Objects (> ~8 KB)
-
-Dedicated block runs: contiguous blocks straight from the pool (or the
-OS for very large), header marks the run length. Never mixed into
-bump blocks — a huge string must not pin an arena block's worth of
-small objects. Freed as a run. (Not built yet — the heap returns null
-above its largest size class.)
-
----
-
-## ABI Surface (what generated code calls)
-
-Every function takes an **allocation context** as its first parameter.
-In generated code `ctx` lives in a dedicated register (pinned by the
-calling convention, Go-style) and is passed through for free.
-**`ctx == NULL` is legal**: the runtime falls back to the thread-local
-current context — this covers calls from the C++ layer, host code, FFI.
-
-```c
-/* hot — inlined into PHP code from bitcode */
-void*  ll_arena_alloc(LLContext* ctx, size_t size);
-void   ll_arena_reserve(LLContext* ctx, size_t bytes);   /* compiler batch hook */
-void*  ll_immortal_alloc(LLContext* ctx, size_t size);
-
-/* small-object heap — individually freeable, for long-lived objects */
-void*  ll_heap_alloc(LLContext* ctx, size_t size);
-void   ll_heap_free(LLContext* ctx, void* ptr);
-
-/* warm — real calls */
-void   ll_arena_track_destructor(LLContext* ctx, RcHeader* obj);
-void*  ll_large_alloc(LLContext* ctx, size_t size);
-
-/* cold — called by the host/server loop, not by PHP code */
-void   ll_arena_reset(LLContext* ctx);
-```
-
-Design points baked into this surface:
-
-- **Category is the choice of function, not a parameter** — the
-  compiler already decided arena/heap/immortal; no runtime branching.
-- **Arena internals are NOT ABI** — speed comes from bitcode inlining
-  (`opt -O2` inlines the bodies), so field layout stays private.
-- **`size` is usually a literal** — for `new Foo()` the compiler emits
-  `ll_arena_alloc(ctx, 40)`; after inlining, constants fold.
-
-### Analytics build
-
-Under a build flag (`--features alloc-trace`) every allocation function
-gains one trailing parameter — a pointer to a static, compiler-generated
-per-call-site record:
-
-```c
-typedef struct LLAllocSite {
-    const char* module;      /* all strings interned */
-    const char* class_name;
-    const char* function;
-    uint32_t    line;
-} LLAllocSite;
-```
-
-Different builds = different ABI, which is legal: runtime bitcode and
-the code generator are always built and versioned in lockstep (the
-single-LLVM-version rule extends to a single-ABI-version rule).
-
-## Mutable Buffers
-
-A **low-level growable-memory primitive** — not a heap entity. A buffer
-has **no `RcHeader`**, no class, no lifecycle: it is exactly three words,
-`{ data, len, capacity }`. Whatever needs to be a refcounted entity (a
-mutable string) embeds a buffer and puts *its own* `RcHeader` in front.
-Keeping the buffer header-free is deliberate: it is a mechanism many
-things reuse, not an object.
+Field order here is a contract, pinned by
+`block_header_halves_are_laid_out_as_the_design_requires`:
 
 ```
-Buffer (3 words, caller owns — stack or embedded):   payload (arena):
-{ data, len, capacity }  ─────────────────────────→  [bytes.......]
+line 0   BlockPrivate  kind, size_class, used, slots, free, bump,
+                       linked, next, prev
+         BlockShared   owner
+line 1   BlockRemote   remote_free, alone
+line 2   BlockLinks    owned_next, owned_prev
 ```
 
-The buffer struct is not referenced by address the way entities are —
-only its `data` payload moves, and the owner updates the field. Growth
-algorithm in `ll_buffer_ensure`:
+Two rules produced that layout, and both were measured:
 
-1. `capacity` suffices → return `data`, zero work.
-2. Payload is the **top of its block's bump** → extend in place: move
-   the bump, grow `capacity`. No copy, no new memory — an arena-only
-   trick that malloc-based runtimes cannot do.
-3. Otherwise → new payload at 2× capacity, copy, swap `data`. The old
-   payload is arena garbage (dies at reset) or heap-freed.
-4. Payload beyond the large threshold → block runs; growth first tries
-   to extend the run with adjacent free blocks.
+- **Only `remote_free` is isolated.** It is the field other threads
+  hammer with CAS, so sharing a line with the owner's hot fields cost
+  the owner a coherence miss per cross-thread free.
+- **Everything the fast paths touch stays in line 0**, including
+  `owner`, which every local `free` reads to test ownership, and
+  `next`/`prev`, touched on every full ↔ has-room transition. Both were
+  tried on their own line and both measured slower.
 
-The extra indirection through `data` is the honest price of mutability;
-immutable strings keep inline bytes and never pay it. Freezing a buffer
-into an immutable string (builder → string) is the string layer's job.
+The split into private and shared halves is not only about cache lines.
+`&mut HeapBlockHeader` was a false claim of exclusivity, since it
+covered atomics other threads read by design. The owner now borrows
+`&mut (*block).private` and cannot name the shared half at all.
 
-## Rust API (internal, not ABI)
+## BlockPool
 
-```rust
-// block_pool.rs
-pub struct BlockPool;                  // process-global
-impl BlockPool {
-    pub fn get(&self) -> BlockRef;     // thread cache → global stack → OS
-    pub fn put(&self, block: BlockRef);
-}
+A chain of free blocks threaded through the header, behind a `Mutex`,
+with a per-thread cache in front.
 
-// arena.rs
-pub struct Arena { /* bump, limit, blocks, destructors */ }
-impl Arena {
-    pub fn alloc(&mut self, size: usize, align: usize) -> *mut u8;
-    pub fn reserve(&mut self, bytes: usize);
-    pub fn track_destructor(&mut self, obj: *mut RcHeader);
-    pub fn reset(&mut self);
-}
+- `get`: thread cache → global chain (refill a batch) → carve a new
+  region.
+- `put`: thread cache; on overflow, flush half to the global chain.
 
-// heap.rs — small-object freeing allocator (mimalloc model)
-pub struct Heap { /* per-size-class available block lists */ }
-impl Heap {
-    pub fn alloc(&mut self, size: usize) -> *mut u8;   // null if > 8 KB
-    pub unsafe fn free(&mut self, ptr: *mut u8);
-}
+The lock is affordable because the global chain is cold by construction:
+batching means it is reached only on a cache miss or an overflow flush.
+It replaced a lock-free Treiber stack whose `pop` raced the union
+overlap described above; a correct lock-free version remains possible
+and is described in `block_pool.rs`.
+
+Regions are never unmapped in phase 1. `blocks_out` and
+`regions_carved` are the crate's own occupancy accounting, and they are
+the oracle for leak-shaped defects — Miri cannot see those, since a
+stranded block is still allocated memory.
+
+## Heap: small objects
+
+The mimalloc model. 32 size classes from 16 B to 8 KB, chosen to keep
+internal fragmentation under ~25%. The class index comes from a
+compile-time lookup table: one array read, no branches.
+
+Per class the heap keeps an `available` list of blocks with room, plus
+at most one empty block held in reserve for instant reuse.
+
+**Allocation** pops the head block's free list; if empty, it carves a
+virgin slot at `bump`. Both are O(1) and branch-only.
+
+The free list is **intrusive**: a free slot's `next` lives in the slot's
+own first 8 bytes. It therefore costs no side allocation and no metadata
+line — the link rides memory the caller is about to write anyway. A
+bitmap was tried instead and lost; the module doc in `heap.rs` records
+why, including the measurement.
+
+**Local free** finds the block by mask, confirms ownership, pushes the
+slot onto the block's free list and decrements `used`.
+
+Rare tails — refill, walking past a full block, a block emptying, a full
+block regaining room — live in separate functions. For `alloc` they are
+`#[cold] #[inline(never)]`, which is what keeps the fast path a frameless
+leaf that inlines into `ll_alloc`. **`free` does not do this yet**: it
+compiles to a real out-of-line call. Diagnosed with IR evidence, fix
+pending a measurement (`dev/BENCHMARKS.md`, H11).
+
+### Cross-thread free
+
+Each block owns a lock-free MPSC stack, `remote_free`. A `free` whose
+block belongs to another heap does one atomic push onto **that block's**
+stack and touches nothing else.
+
+Per block, not per heap, and that is load-bearing: it is what makes
+adoption race-free. A freeing thread reads `owner`, sees it is not
+itself, and pushes. If an adoption is racing that read it does not
+matter which owner was seen — the message lands in the block, and the
+block's *current* owner drains it. In a per-heap stack, a message posted
+to a dying owner after adoption would be stranded forever.
+
+There is no ABA hazard here, because there is no pop: producers only
+push, writing the head value into their own node, and the owner takes
+the whole chain with a single `swap`.
+
+`used` is **owner-only** and is deliberately not touched by the freeing
+thread; the owner accounts for parked slots when it collects. That is
+what makes `used == 0` safe to act on — a parked slot still counts as
+live, so a block with one can never look empty.
+
+The owner collects in two cold places: when it has just run a block out
+of slots, and when sweeping its blocks before asking the pool for more.
+The sweep is not optional — a block unlinked as full is never revisited
+otherwise, and its parked frees would sit forever.
+
+### Thread exit: abandonment and adoption
+
+A dying thread hands its blocks over: empty ones to the pool, ones still
+holding live objects onto a global per-class abandoned list. The next
+thread short of that class adopts one, claims `owner` with a plain
+`Release` store, and drains its parked frees.
+
+This is not an optimisation. Without it, every block a thread still
+owned when it died was stranded permanently, along with every later
+cross-thread free into it: 1.7 GiB resident against a 2.5 MiB live set
+on `larson.cpp`, which respawns its worker every ~20 ms by design.
+
+It happens automatically on **every** target, via a TLS guard installed
+by `ll_thread_init`, and `Heap`'s own `Drop`, so a heap dying by any
+route reclaims identically.
+
+Known limit: an abandoned block is reclaimed only when someone adopts
+it, so a permanently idle size class keeps its blocks. Bounded by what
+was live at thread exit; no periodic trim exists yet.
+
+## Arena: per-request memory
+
+A bump allocator whose blocks are chained through their headers. Its
+logs — escapees, tracked destructors, deferred releases — live in the
+arena's **own** bump memory, so there is no side `Vec` and everything
+dies with the arena at once.
+
+The arena handle crosses the runtime as `*mut Arena`, never `&mut`,
+because destructors reenter and resolve the same arena. The rule the
+code follows: **no borrow may be live across a call that can run user
+code.**
+
+## The object model
+
+Every entity begins with `RcHeader` — 8 bytes, at offset 0:
+
+```
+refcount  u32
+flags     u32    2 bits of which are the MemoryCategory
 ```
 
-## Validated Against jemalloc / mimalloc / snmalloc
+```
+MemoryCategory:  GcHeap | RequestArena | LongLived | Immortal
+```
 
-The scheme above was checked against the sources of the three
-state-of-the-art allocators (2026-07). Confirmed: pointer→block by mask
-(mimalloc does exactly this on segments; snmalloc pays shift+pagemap
-load), 2 MB OS regions (snmalloc superpages, jemalloc hugepages),
-per-thread cache over a global structure (all three), metadata embedded
-at the region start (mimalloc; jemalloc externalizes it for
-security/merging goals we don't have).
+An `Object` is that header, a class pointer, then 16-byte `Value`
+property slots. `Class` descriptors are immortal and carry their vtable
+inline, after the fixed fields.
 
-Adjustments adopted from the study:
+Trailing inline data — property slots, vtables, string bytes — is always
+reached through a raw pointer spanning the whole allocation, never
+through a reference to the fixed header. A reference carries provenance
+over what it points at, and the trailing bytes are not that.
 
-1. **Block header cache-line layout.** 256 B = 4 cache lines. The first
-   line holds read-mostly fields only (kind, run length, pool link);
-   any future atomics (remembered set, line marks) get their own lines.
-   All three allocators fight false sharing this way (snmalloc keeps
-   queue front/back on separate lines; jemalloc separates read-only
-   bin_info citing exactly this).
-2. **Cache refill/flush constants.** Refill the thread cache in batches
-   from the global stack; on overflow flush **half**, not all
-   (jemalloc tcache pattern: fill ~2× slab, flush 1/2). Constants
-   tunable, start: cache 8, refill 4.
-3. **OS return policy** (was a hole): lazy, delay-based purge of fully
-   free regions — industry numbers are mimalloc ~100 ms purge delay,
-   jemalloc 10 s dirty decay. Start with ~1 s delay, full-region
-   granularity, MEM_DECOMMIT / MADV_DONTNEED.
-4. **Cross-thread frees (future, multi-threaded phase): MPSC queue per
-   owning thread** with per-destination batching at the sender —
-   snmalloc's scheme ("thousands of remote deallocations per atomic"),
-   not a single shared stack. The phase-1 single global block stack is
-   fine — pool traffic is one op per ~500 objects, three orders below
-   malloc free-list traffic — but the sharding path is this one.
+## Lifetime
 
-Note: mimalloc tried bump allocation inside its pages and measured no
-win — because its pages must keep the free-list path anyway, so bump
-added a test to the hot path. Our arena has no per-object free path at
-all; the comparison does not transfer.
+Reference counting for `GcHeap`. Arena objects are **not counted at
+all** — they die with the arena. Immortals are never touched.
 
-## Invariants
+Cycles are collected by Bacon–Rajan trial deletion: a non-zero decrement
+buffers the object as a candidate root, and a threshold triggers a
+synchronous collection.
 
-1. Every block is 32 KB and 32 KB-aligned; `ptr & !0x7FFF` always lands
-   on a block header.
-2. Freed memory returns to the global pool immediately — any consumer
-   may reuse it.
-3. The arena hot path performs no atomics, no locks, no function calls.
-4. Nothing in the arena is freed per-object; reclamation is reset-only
-   (phase 1).
+### The store barrier
 
-## Build Order
+Every reference store the compiler could not resolve statically goes
+through one door, `ref_store`. It performs both halves at once:
 
-1. `block_pool` — regions, carving, thread cache, global stack. ✓
-2. `arena` — bump, reserve, destructor list, reset + `LLContext` ABI. ✓
-3. `heap` — small-object freeing allocator (mimalloc model), including
-   cross-thread free (`remote_free` MPSC-per-owner queue). ✓
-4. `stdapi` — `GlobalAlloc` + C `malloc`/`free`/`calloc`/`realloc`
-   over the manager; size-less free via block-header dispatch;
-   large-single-block and OS-direct huge paths. ✓
-5. `immortal` — trivial specialization of arena.
-6. Mutable buffers — built on the heap (growable, individually freed).
-7. (later) category barrier / write barrier + remembered set +
-   arena-reset promotion modes; MMTK tracing GC for cycles.
+- **Counting.** Retain the new value; release the displaced one, with
+  full teardown if that was its last reference.
+- **The category barrier.** An arena reference stored into a
+  longer-lived container is an *escape*: the barrier bumps a hold-count
+  kept in the escapee's own `refcount`. A heap reference stored into an
+  arena container would otherwise leak, so the barrier logs one
+  release-at-reset record for it.
 
-Note: `stdapi` also completed the large-object paths (single pooled
-block for 8 KB..payload, OS-direct 32 KB-aligned run above), so the
-manager now serves any size through one standard surface.
+The escape count lives in the escapee, not in a remembered set of holder
+slots. That is deliberate and was a correctness fix: a holder can die
+before the arena resets, and reading its slot back at reset dereferenced
+freed memory.
 
-## Test Plan
+## Arena reset: the settling loop
 
-**Correctness (unit tests, every stage):**
-- Block invariants: 32 KB size, 32 KB alignment, `ptr & !MASK` lands on
-  the header, payload starts at +256.
-- Arena: sequential allocation, size rounding to 8, slow path takes a
-  new block exactly at exhaustion, `reserve` prevents mid-loop refills,
-  `try_extend_in_place` succeeds only at the bump top.
-- Pool: get/put roundtrip reuses blocks (no new region carved);
-  cross-thread put (a dying thread's cache flushes to the global
-  stack, blocks are not lost).
-- Reset: destructor list is handed to the caller; blocks return to the
-  pool and are reused by the next arena.
+Not "move the bump pointer back". Resetting an arena runs a fixpoint,
+because destructors are user code and can allocate, escape, and create
+more destructors.
 
-**Performance (criterion benches, honest methodology):**
-- Same workload for every contender: N allocations of 40 bytes *plus
-  reclamation* — arena pays its reset, malloc pays its frees. No
-  measuring allocation while hiding the cleanup.
-- Contenders: our arena, the system allocator (malloc via `Box`),
-  `bumpalo` (the best Rust bump allocator) as the direct rival.
-- Variants: tight loop; with `reserve` (compiler batch hint);
-  mixed sizes.
-- Results published in the README with the exact bench code linked —
-  reproducible by `cargo bench`.
+Each pass:
+
+1. **Settle.** Drain the escapee list; for each escapee whose hold-count
+   is still non-zero, mark its surviving subgraph. Run the
+   pre-destructors of dying, unescaped objects. If a destructor
+   allocated — detected by the arena's bump cursor moving — re-read the
+   survivors' children, since it may have stored a fresh arena object
+   into an already-traced survivor, which is an arena→arena store the
+   barrier does not escape.
+2. **Count and retain.** For the new survivors, add internal
+   arena→arena edges, and one compensating retain per heap entity a
+   survivor holds — that entity's release-at-reset record assumed the
+   holder would die, and it no longer does.
+3. **Promote.** Rewrite each survivor's category to `GcHeap` in place,
+   and stamp its block `RETAINED` so it stays out of the pool.
+4. **Release.** Drain the deferred-release log, collecting the round
+   first and releasing after, because teardown here runs user code.
+
+Repeat until a pass releases nothing. A recursion bound is the only
+backstop; hitting it is an error rather than a silent drop, since
+dropping the unsettled tail would dangle.
+
+**No holder slot is ever dereferenced** anywhere in this. Survival is
+decided from counts carried in the objects themselves.
+
+Not built yet, per RFC phasing: sparse-block evacuation, line recycling
+of retained blocks, and the Immix-shaped `GcHeap` allocator. Promotion
+today is retention only, which the RFC calls the whole of the first
+implementation.
+
+## What is not here
+
+- **`GcStrategy`** exists as a trait with implementations, but nothing
+  consumes it — `refcount.rs` and `object.rs` call `gc::*` directly.
+  Scaffolding for a decision not yet made.
+- **Telemetry beyond block granularity.** Aggregate stats are always on
+  and cost nothing per object; the object registry, lifetimes and
+  per-allocation metadata are designed in
+  [`dev/design/debug-modes.md`](../dev/design/debug-modes.md) and not
+  implemented.
+- **Actors.** Referred to in comments; no representation in this crate.

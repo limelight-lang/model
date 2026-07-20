@@ -10,6 +10,13 @@ Knowledge map: `dev/ARCHITECTURE.md` — **not written yet**. Until it
 exists, the module docs at the top of each file are the map;
 `src/memory/heap.rs` and `src/promote.rs` carry the fullest ones.
 
+`docs/memory-manager.md` covers `src/memory/` end to end — layers, block
+header layout and why, the heap, cross-thread free, abandonment, the
+arena and its reset fixpoint, plus a closing list of what is *not*
+implemented. `memory/mod.rs` declares the module implements it, so it is
+normative and must move with the code (`dev/WORKFLOW.md`). Superseded
+versions live in `docs/history/`, marked at the top.
+
 ## Entry points
 
 - C ABI surface: `src/memory/context.rs` (arena + context),

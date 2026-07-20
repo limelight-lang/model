@@ -37,6 +37,46 @@ cargo build --release
 The three threaded runs are not ceremony: several defects here only
 appear under contention, and one flake took three runs to surface.
 
+## Documentation follows the logic, in the same commit
+
+**When behaviour changes, the documentation describing it changes with
+it — in the same commit, not later.** "Later" does not happen; the
+change ships, the comment stays, and it is now a lie that reads as
+authority.
+
+This is not a style preference here. This crate's comments are the
+record: they carry invariants, measurements, and alternatives that were
+tried and rejected. That is the codebase's most valuable asset, and it
+is worth exactly as much as its accuracy. A stale comment is worse than
+no comment, because a missing one prompts you to read the code while a
+wrong one stops you.
+
+Concretely, when a change lands, check:
+
+- the doc comment on the function or type touched;
+- the **module** doc, which usually states the contract that just moved;
+- `docs/memory-manager.md`, which `memory/mod.rs` declares this module
+  implements;
+- `README.md`, if a number or claim it quotes has moved;
+- `dev/` — a decision goes in `DECISIONS.md`, a measurement in
+  `BENCHMARKS.md`, a new trap in `POSTMORTEM.md`, and `INDEX.md` gains
+  a line for anything new to find.
+
+Evidence this rule was earned, all found in one session: `free`'s doc
+described a cold-tail split the code did not have; the module doc
+promised automatic thread-exit reclamation that existed only on Windows;
+`refill`'s doc described initializing a bitmap two lines above code
+saying it allocates nothing; `README.md` quoted benchmark numbers its
+own results file had superseded. Each was believed, and two of them
+misdirected real work.
+
+**When a document has drifted past patching, do not quietly rewrite
+history.** Move it to `docs/history/<name>-<date>.md`, mark it
+superseded at the top with what is known to be wrong in it, and write
+the new one. The reasoning in an old design document usually outlives
+its accuracy, and deleting it throws away the record of what was
+considered.
+
 ## Tests
 
 **Every fix needs a regression test verified to fail on the bug.**
