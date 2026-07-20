@@ -1209,9 +1209,26 @@ pub extern "C" fn ll_thread_exit() {
     // allocation after this point must build a fresh heap rather than reuse
     // one whose blocks we have just given away.
     tls::set(std::ptr::null_mut());
-    unsafe {
-        (*p).abandon_all();
-        drop(Box::from_raw(p));
+    // The blocks are given up by `Heap`'s `Drop`, so this is one path, not
+    // two: any other way a heap dies reclaims them identically.
+    unsafe { drop(Box::from_raw(p)) };
+}
+
+impl Drop for Heap {
+    /// Give the blocks up. Without this a `Heap` dropped by any route
+    /// other than [`ll_thread_exit`] stranded every block it owned —
+    /// permanently, since nothing else knows about them — and left the
+    /// blocks' `owner` pointing at freed memory. If a later `Heap` were
+    /// then placed at the same address, `free`'s owner comparison would
+    /// mistake those foreign blocks for its own.
+    ///
+    /// The crate's own tests are exactly such a route: they build a
+    /// `Heap`, allocate, and let it fall out of scope.
+    ///
+    /// `abandon_all` is idempotent, so the explicit thread-exit path
+    /// and this one compose without double-releasing anything.
+    fn drop(&mut self) {
+        self.abandon_all();
     }
 }
 
@@ -1246,7 +1263,15 @@ pub extern "C" fn ll_thread_init() {
     if tls::get_raw().is_null() {
         tls::set(Box::into_raw(Box::new(Heap::new())));
         #[cfg(windows)]
-        EXIT_GUARD.with(|_| {});
+        // `try_with`, not `with`: this can run *during* TLS teardown, when
+        // a destructor allocates and self-initializes a heap on a thread
+        // whose `EXIT_GUARD` slot is already destroyed. `with` panics
+        // there, and the release profile is `panic = "abort"`, so a
+        // perfectly ordinary thread exit would take the process down.
+        // Failing to register the guard is the right outcome instead: the
+        // thread is already exiting, and its blocks are reclaimed by the
+        // teardown in progress.
+        let _ = EXIT_GUARD.try_with(|_| {});
     }
 }
 
@@ -1341,6 +1366,37 @@ mod tests {
             size_of::<HeapBlockHeader>() <= LINE_SIZE,
             "header must fit the reserved line: {} > {LINE_SIZE}",
             size_of::<HeapBlockHeader>()
+        );
+    }
+
+    /// A `Heap` that dies by falling out of scope must give its blocks
+    /// back, exactly as `ll_thread_exit` does. Before `Drop` existed they
+    /// were stranded: nothing else knew about them, so the pool never saw
+    /// them again. Revert `impl Drop for Heap` and this test fails on the
+    /// final assert.
+    #[test]
+    fn a_dropped_heap_returns_its_blocks_to_the_pool() {
+        let _g = crate::memory::block_pool::test_guard();
+        let pool = BlockPool::global();
+        let before = pool.blocks_out();
+
+        {
+            let mut heap = Heap::new();
+            let p = heap.alloc(40);
+            assert!(!p.is_null());
+            assert!(
+                pool.blocks_out() > before,
+                "the heap took a block from the pool"
+            );
+            // Free it so the block is empty: an empty block goes home to
+            // the pool, which is what makes the count observable here.
+            unsafe { heap.free(p) };
+        }
+
+        assert_eq!(
+            pool.blocks_out(),
+            before,
+            "a heap dropped out of scope must not strand its blocks"
         );
     }
 
