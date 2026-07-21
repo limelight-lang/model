@@ -261,6 +261,12 @@ slots. That is deliberate and was a correctness fix: a holder can die
 before the arena resets, and reading its slot back at reset dereferenced
 freed memory.
 
+A dying holder owes its arena escapees a `lose` however it dies — the
+store barrier does it on overwrite, teardown does it in phase 2, and the
+cycle collector does it before freeing a white object. The trace itself
+never sees arena entities (only the heap is traced), so nothing else
+would.
+
 Two rules about the slot itself, both paid for by defects. **The barrier
 writes the whole 16-byte `Value`, not just its payload word** — one slot
 has one writer, and a caller stamping the tag afterwards leaves the slot

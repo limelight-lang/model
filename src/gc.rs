@@ -316,9 +316,20 @@ unsafe fn collect_cycles_inner() -> usize {
     // count-wise in mark_gray and were deliberately not restored;
     // whites reference only each other or restored-black survivors.
     // Phase-1 limit: __destruct is not run here (module doc).
+    //
+    // The escape hold-counts are a different matter and must be dropped
+    // explicitly: arena entities are invisible to the trace (only the
+    // heap is traced), so nothing above touched them, and a hold-count
+    // left standing makes arena reset believe a dead holder still holds
+    // its escapee — which it then promotes and keeps forever.
+    // `ll_object_die` does this in its phase 2; the collector never gets
+    // there, so it does it here.
     for &w in &whites {
         unsafe {
             debug_assert_eq!((*w).refcount, 0, "white must have no external refs");
+            if (*w).flags & ENTITY_OBJECT != 0 {
+                crate::object::release_arena_escapes(w as *mut Object);
+            }
             crate::memory::stdapi::ll_free(w as *mut u8);
         }
     }
@@ -442,6 +453,52 @@ mod tests {
 
     fn node_class() -> *const crate::class::Class {
         ClassBuilder::new("CycleNode").prop("next", true).build()
+    }
+
+    /// A cyclic garbage holder that referenced an arena object still
+    /// owes it a `lose`. The trace never sees arena entities — only the
+    /// heap is traced — so freeing the white set has to drop those
+    /// hold-counts itself. Left standing, the count makes arena reset
+    /// believe a dead holder still holds the escapee, and reset promotes
+    /// it: a leak for the life of the process, and a live-looking object
+    /// nobody can reach.
+    #[test]
+    fn collecting_a_holder_drops_its_escape_hold_counts() {
+        use crate::refcount::IS_ESCAPEE;
+
+        let _g = crate::memory::block_pool::test_guard();
+        let holder_cls = ClassBuilder::new("EscHolder")
+            .prop("peer", true)
+            .prop("esc", true)
+            .build();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+
+        unsafe {
+            let a = new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap);
+            let b = new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap);
+            let escapee = new_constructed(&mut ctx, node_class(), MemoryCategory::RequestArena);
+
+            link(&mut arena, a, 16, b); // a <-> b: a heap cycle
+            link(&mut arena, b, 16, a);
+            link(&mut arena, a, 32, escapee); // and a holds an arena object
+            assert_ne!(
+                (*escapee).rc.flags & IS_ESCAPEE,
+                0,
+                "the store made it an escapee"
+            );
+
+            assert!(!ll_release(a as *mut RcHeader));
+            assert!(!ll_release(b as *mut RcHeader));
+            assert_eq!(ll_gc_collect_cycles(), 2, "the cycle is garbage");
+
+            assert_eq!(
+                (*escapee).rc.flags & IS_ESCAPEE,
+                0,
+                "the dead holder let go of its escapee"
+            );
+        }
+        arena.reset(|_| {});
     }
 
     #[test]

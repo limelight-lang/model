@@ -240,6 +240,29 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
     true
 }
 
+/// Drop this object's escape hold-counts on the request-arena entities
+/// it references (`lose`, `rfc/model/memory/arenas.md`). A holder going
+/// away is the same event as a slot being overwritten, and it has to
+/// happen however the holder dies.
+///
+/// Split out for the cycle collector, which frees its white set directly
+/// and never enters [`ll_object_die`]'s phase 2 — where this is done
+/// inline, alongside the child releases the collector must *not* repeat.
+///
+/// # Safety
+/// `obj` must be a live object whose slots are still readable.
+pub(crate) unsafe fn release_arena_escapes(obj: *mut Object) {
+    let cls = unsafe { (*obj).class() };
+    for offset in cls.refcounted_slots() {
+        let v = unsafe { Object::prop_at(obj, offset).read() };
+        if v.is_refcounted()
+            && unsafe { (*v.entity_ptr()).memory_category() } == MemoryCategory::RequestArena
+        {
+            unsafe { crate::memory::barrier::escape_lose(v.entity_ptr()) };
+        }
+    }
+}
+
 /// Three-phase teardown. Called when the refcount reaches zero or a
 /// collector proves the object garbage.
 ///
