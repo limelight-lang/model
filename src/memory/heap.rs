@@ -389,6 +389,15 @@ pub struct Heap {
     /// Also what lets [`Heap::abandon_all`] enumerate at thread exit;
     /// `available` cannot, since a full block is unlinked from it.
     owned: [*mut HeapBlockHeader; NUM_CLASSES],
+    /// Live slots this heap took on by adopting abandoned blocks — objects
+    /// belonging to threads that are already gone, which this heap will
+    /// never free and must not be blamed for.
+    ///
+    /// Test-only, and it exists because the accounting oracle
+    /// [`Heap::live_slots_after_collect`] cannot otherwise tell "a free the
+    /// owner lost" from "a dead thread's live object we inherited".
+    #[cfg(test)]
+    adopted_live: u32,
 }
 
 impl Default for Heap {
@@ -403,6 +412,8 @@ impl Heap {
             available: [std::ptr::null_mut(); NUM_CLASSES],
             empty_reserve: [std::ptr::null_mut(); NUM_CLASSES],
             owned: [std::ptr::null_mut(); NUM_CLASSES],
+            #[cfg(test)]
+            adopted_live: 0,
         }
     }
 
@@ -609,6 +620,14 @@ impl Heap {
 
         let (used, free, bump, slots) =
             unsafe { ((*block).private.used, (*block).private.free, (*block).private.bump, (*block).private.slots) };
+        // Counted after the collect above, so slots freed while the block
+        // was ownerless are not mistaken for live ones. What remains
+        // belongs to a thread that has already exited, so nothing will
+        // ever free it and the oracle must not read it as a lost free.
+        #[cfg(test)]
+        {
+            self.adopted_live += used;
+        }
         if used == 0 {
             self.retire_empty(ci, block);
         } else if free.is_null() && bump >= slots {
@@ -863,14 +882,24 @@ impl Heap {
         BlockPool::global().put(block as *mut BlockHeader);
     }
 
-    /// Test oracle: total live slots this heap still accounts for, after
-    /// draining every block's cross-thread queue.
+    /// Test oracle: live slots this heap still accounts for **and is
+    /// responsible for**, after draining every block's cross-thread queue.
     ///
     /// Exists because the process-global `blocks_out` is the wrong
     /// instrument for "did the owner account for every free". It is
     /// shared, so another test's block returning late moves it in either
     /// direction, and it only reacts once a block empties completely.
     /// This counts the thing directly.
+    ///
+    /// Slots inherited by [`Heap::adopt`] are subtracted. An abandoned
+    /// block is abandoned *because* it still holds live objects, and the
+    /// thread that owned them is gone, so nobody will ever free them. They
+    /// are live, they are legitimately ours, and they are not a lost free.
+    /// Counting them made `many_threads_freeing_into_one_owner_lose_no_slots`
+    /// flaky: it passed alone and failed under `--test-threads=32`, where
+    /// an earlier test had left blocks on the abandoned list for this heap
+    /// to pick up mid-run (observed: adoptions of blocks with `used` 1, 3
+    /// and 147, and a failure reporting exactly the inherited count).
     #[cfg(test)]
     fn live_slots_after_collect(&mut self) -> u32 {
         for ci in 0..NUM_CLASSES {
@@ -884,7 +913,7 @@ impl Heap {
                 block = unsafe { (*block).links.owned_next };
             }
         }
-        total
+        total.saturating_sub(self.adopted_live)
     }
 
     /// Take a fresh block from the pool, stamp its header, and link it as
