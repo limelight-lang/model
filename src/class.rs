@@ -268,7 +268,24 @@ impl ClassBuilder {
         self
     }
 
+    /// **Null when the immortal region is exhausted.** Class metadata is
+    /// allocated there, and autoload can run mid-request, so a refusal is
+    /// reported to the frame that asked for the class rather than taken
+    /// as fatal. Whatever was already carved out stays carved: the
+    /// immortal region is never reclaimed by design, and losing a few
+    /// bytes on a failing load costs less than a rollback path that has
+    /// no memory to run in.
     pub fn build(&mut self) -> *const Class {
+        // The interned names come from `intern`, which reports the same
+        // way. A null here means one of them was refused earlier, and a
+        // class with a nameless property is not worth building.
+        if self.name.is_null()
+            || self.props.iter().any(|(n, _)| n.is_null())
+            || self.methods.iter().any(|(n, _)| n.is_null())
+        {
+            return std::ptr::null();
+        }
+
         let parent = if self.parent.is_null() {
             None
         } else {
@@ -364,6 +381,9 @@ impl ClassBuilder {
                 })
                 .collect::<Vec<_>>(),
         );
+        if props_mem.is_null() || methods_mem.is_null() {
+            return std::ptr::null();
+        }
 
         // The dispatch train: one trailing allocation carries the vtbl
         // and every itable — [Class][vtbl][itable A][itable B]…. All of
@@ -374,6 +394,9 @@ impl ClassBuilder {
         let itables_len: usize = iface_decls.iter().map(|(_, m)| m.len()).sum();
         let total = size_of::<Class>() + (vtbl.len() + itables_len) * ptr;
         let cls = immortal_alloc(total) as *mut Class;
+        if cls.is_null() {
+            return std::ptr::null();
+        }
 
         let iface_entries: Vec<IfaceEntry> = {
             let mut cursor = unsafe { (cls as *mut u8).add(size_of::<Class>() + vtbl.len() * ptr) }
@@ -398,6 +421,9 @@ impl ClassBuilder {
                 .collect()
         };
         let ifaces_mem = alloc_array(&iface_entries);
+        if ifaces_mem.is_null() || iface_entries.iter().any(|e| e.slot_map.is_null()) {
+            return std::ptr::null();
+        }
         unsafe {
             cls.write(Class {
                 flags: self.flags,
@@ -423,6 +449,9 @@ impl ClassBuilder {
             });
             display.push(cls);
             (*cls).display = alloc_array(&display);
+            if (*cls).display.is_null() {
+                return std::ptr::null();
+            }
 
             let vtbl_dst = cls.add(1) as *mut *const ();
             std::ptr::copy_nonoverlapping(vtbl.as_ptr(), vtbl_dst, vtbl.len());
@@ -431,12 +460,17 @@ impl ClassBuilder {
     }
 }
 
-/// Copy a slice into immortal metadata memory.
+/// Copy a slice into immortal metadata memory. Null if the region
+/// cannot grow; an empty slice needs no memory and yields a dangling
+/// non-null pointer, which nothing ever dereferences.
 fn alloc_array<T: Copy>(items: &[T]) -> *const T {
     if items.is_empty() {
         return std::ptr::NonNull::dangling().as_ptr();
     }
     let mem = immortal_alloc(std::mem::size_of_val(items)) as *mut T;
+    if mem.is_null() {
+        return std::ptr::null();
+    }
     unsafe { std::ptr::copy_nonoverlapping(items.as_ptr(), mem, items.len()) };
     mem
 }

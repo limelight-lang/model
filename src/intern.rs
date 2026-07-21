@@ -67,7 +67,9 @@ unsafe impl Send for InternTable {}
 static INTERN: Mutex<Option<InternTable>> = Mutex::new(None);
 
 /// Intern `bytes`: returns the unique immortal string entity for this
-/// content. Same content → same pointer, forever.
+/// content. Same content → same pointer, forever. **Null when the
+/// immortal region cannot grow**; nothing is recorded in that case, so
+/// the call can simply be retried.
 pub fn intern(bytes: &[u8]) -> *const LLString {
     let mut guard = INTERN.lock().unwrap();
     let table = guard.get_or_insert_with(|| InternTable(HashMap::new()));
@@ -78,6 +80,11 @@ pub fn intern(bytes: &[u8]) -> *const LLString {
 
     let total = size_of::<LLString>() + bytes.len();
     let s = immortal_alloc(total) as *mut LLString;
+    if s.is_null() {
+        // Nothing was published: the table is unchanged, so a later call
+        // with the same content still interns it correctly.
+        return std::ptr::null();
+    }
     unsafe {
         s.write(LLString {
             rc: RcHeader::new(MemoryCategory::Immortal, COW),

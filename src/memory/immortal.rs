@@ -30,9 +30,13 @@ static IMMORTAL: Mutex<Region> = Mutex::new(Region {
     limit: std::ptr::null_mut(),
 });
 
-/// Allocate `size` bytes that will never be freed. Panics on sizes
-/// above a block payload: immortal entities (class metadata, interned
-/// strings) are small; anything bigger is a caller bug.
+/// Allocate `size` bytes that will never be freed. **Null when memory
+/// runs out** — class loading can happen mid-request (autoload), so a
+/// refusal has to reach a frame that can raise, not kill the process.
+///
+/// Panics on sizes above a block payload: immortal entities (class
+/// metadata, interned strings) are small; anything bigger is a caller
+/// bug, which is a different thing from a machine out of memory.
 pub fn immortal_alloc(size: usize) -> *mut u8 {
     let size = round_up_8(size);
     assert!(
@@ -56,6 +60,12 @@ pub fn immortal_alloc(size: usize) -> *mut u8 {
     // Fresh block; the remainder of the old one is abandoned (same
     // waste profile as the arena slow path).
     let block = BlockPool::global().get();
+    if block.is_null() {
+        // The pool reports exhaustion instead of aborting, so this path
+        // reports too. The region keeps its old bump and limit: a refusal
+        // leaves nothing half-rotated, and a later call can succeed.
+        return std::ptr::null_mut();
+    }
     unsafe { (*block).kind = BLOCK_KIND_IMMORTAL };
     let p = BlockHeader::payload_start(block);
     r.bump = p.wrapping_add(size);
@@ -83,6 +93,28 @@ mod tests {
             unsafe { (*BlockHeader::of_ptr(a)).kind },
             BLOCK_KIND_IMMORTAL
         );
+    }
+
+    /// The third path that wrote the block header through the null the
+    /// pool now returns. Class loading runs mid-request under autoload,
+    /// so this one had to report as well.
+    #[test]
+    fn exhaustion_reports_null_and_leaves_the_region_usable() {
+        let _g = crate::memory::block_pool::test_guard();
+        use crate::memory::block_pool::FORCE_OOM;
+        use std::sync::atomic::Ordering;
+
+        // Fill whatever remains of the current block, so the next call
+        // has to ask the pool.
+        let _ = immortal_alloc(BLOCK_PAYLOAD);
+
+        FORCE_OOM.store(true, Ordering::Relaxed);
+        let p = immortal_alloc(64);
+        FORCE_OOM.store(false, Ordering::Relaxed);
+        assert!(p.is_null(), "exhaustion must report, not abort");
+
+        let q = immortal_alloc(64);
+        assert!(!q.is_null(), "the region survived the refusal");
     }
 
     #[test]

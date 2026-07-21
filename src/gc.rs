@@ -426,18 +426,17 @@ mod tests {
     use crate::refcount::ll_release;
     use crate::value::Tag;
 
-    /// Real store through the barrier: retain + slot write + Box stamp.
+    /// Real store through the barrier: retain + whole-value slot write.
     unsafe fn link(arena: &mut Arena, from: *mut Object, offset: u32, to: *mut Object) {
         unsafe {
             let slot = Object::prop_at(from, offset);
             ref_store(
                 arena,
                 from as *mut RcHeader,
-                (slot as *mut u8) as *mut *mut RcHeader,
+                slot,
                 std::ptr::null_mut(),
-                to as *mut RcHeader,
+                Value::entity(Tag::Object, to as *mut RcHeader),
             );
-            slot.write(Value::entity(Tag::Object, to as *mut RcHeader));
         }
     }
 

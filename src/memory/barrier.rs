@@ -22,6 +22,7 @@
 use crate::memory::arena::Arena;
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::refcount::{COW, ENTITY_OBJECT, IS_ESCAPEE, MemoryCategory, RcHeader, ll_release, ll_retain};
+use crate::value::Value;
 
 /// A longer-lived container took a reference to request-arena object
 /// `entity` (the **gain** of the escape rule, `rfc/model/memory/arenas.md`).
@@ -75,8 +76,17 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 }
 
 /// The store mechanics. `owner` is the entity containing `slot`;
-/// `old` is the slot's current value (the caller has it loaded);
-/// `new` is the value being stored. Writes the slot.
+/// `old` is the slot's current entity (the caller has it loaded, null
+/// for a non-entity); `new` is the whole `Value` being stored.
+///
+/// **The barrier writes the entire 16-byte `Value`, not just its
+/// payload word.** It used to write the payload and leave every call
+/// site to stamp the tag afterwards, which left the slot torn — new
+/// pointer, old tag — for the length of the call. Nothing noticed while
+/// the slot was published last, because the tear ended before anything
+/// could look; publishing before teardown makes a reentrant collector
+/// able to read it, and "tag says object, pointer is null" is a crash.
+/// One writer for one slot is also simply the right rule.
 ///
 /// `arena` is a raw pointer, not `&mut Arena`: the displaced-value
 /// teardown below runs `__destruct`, which reenters the runtime and
@@ -91,20 +101,28 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 pub unsafe fn ref_store(
     arena: *mut Arena,
     owner: *mut RcHeader,
-    slot: *mut *mut RcHeader,
+    slot: *mut Value,
     old: *mut RcHeader,
-    new: *mut RcHeader,
+    new: Value,
 ) {
     debug_assert!(!owner.is_null(), "a slot always has an owner");
-    debug_assert_eq!(unsafe { *slot }, old, "old must be the slot's value");
 
-    if !new.is_null() {
-        unsafe { ll_retain(new) };
+    // A non-entity value (int, bool, null) counts as a null entity here:
+    // the categories and the counts are about entities only.
+    let new_ptr = if new.is_refcounted() {
+        new.entity_ptr()
+    } else {
+        std::ptr::null_mut()
+    };
+
+    if !new_ptr.is_null() {
+        unsafe { ll_retain(new_ptr) };
     }
 
     let owner_cat = unsafe { (*owner).memory_category() };
 
-    if !new.is_null() {
+    if !new_ptr.is_null() {
+        let new = new_ptr;
         let new_cat = unsafe { (*new).memory_category() };
 
         // Dangerous direction: an arena reference stored into a
@@ -122,6 +140,14 @@ pub unsafe fn ref_store(
             unsafe { (*arena).log_release_at_reset(new) };
         }
     }
+
+    // The slot is published **before** anything releases `old`, and as a
+    // whole value. Teardown of a displaced value runs `__destruct`, which
+    // is user code and may collect. A collection that starts while the
+    // slot still holds `old` walks an edge the refcount has already given
+    // up and subtracts it a second time — the audit's C1. Everything
+    // below reads `old` from the argument, not from the slot.
+    unsafe { slot.write(new) };
 
     if !old.is_null() {
         let old_cat = unsafe { (*old).memory_category() };
@@ -150,8 +176,6 @@ pub unsafe fn ref_store(
             }
         }
     }
-
-    unsafe { *slot = new };
 }
 
 /// The unified store barrier (`rfc/model/gc/strategies.md`): the single
@@ -165,9 +189,9 @@ pub unsafe fn ref_store(
 pub unsafe extern "C" fn ll_ref_store(
     ctx: *mut LLContext,
     owner: *mut RcHeader,
-    slot: *mut *mut RcHeader,
+    slot: *mut Value,
     old: *mut RcHeader,
-    new: *mut RcHeader,
+    new: Value,
 ) {
     unsafe { ref_store(resolve_arena(ctx), owner, slot, old, new) }
 }
@@ -183,20 +207,33 @@ mod tests {
     /// A one-slot container: header + slot, like a minimal object.
     struct Holder {
         header: RcHeader,
-        slot: *mut RcHeader,
+        slot: Value,
     }
 
     impl Holder {
         fn new(cat: MemoryCategory) -> Self {
             Holder {
                 header: entity(cat),
-                slot: std::ptr::null_mut(),
+                slot: Value::null(),
+            }
+        }
+
+        fn entity_ptr(&self) -> *mut RcHeader {
+            if self.slot.is_refcounted() {
+                self.slot.entity_ptr()
+            } else {
+                std::ptr::null_mut()
             }
         }
 
         unsafe fn store(&mut self, arena: &mut Arena, new: *mut RcHeader) {
-            let old = self.slot;
-            unsafe { ref_store(arena, &mut self.header, &mut self.slot, old, new) };
+            let old = self.entity_ptr();
+            let value = if new.is_null() {
+                Value::null()
+            } else {
+                Value::entity(crate::value::Tag::Object, new)
+            };
+            unsafe { ref_store(arena, &mut self.header, &mut self.slot, old, value) };
         }
     }
 
@@ -212,7 +249,7 @@ mod tests {
         let (pa, pb): (*mut RcHeader, *mut RcHeader) = (&mut a, &mut b);
 
         unsafe { owner.store(&mut arena, pa) };
-        assert_eq!(owner.slot, pa);
+        assert_eq!(owner.entity_ptr(), pa);
         assert_eq!(unsafe { (*pa).refcount }, 2, "initial + the slot's reference");
 
         unsafe { owner.store(&mut arena, pb) };
@@ -287,11 +324,105 @@ mod tests {
 
         unsafe { owner.store(&mut arena, &mut a) };
         unsafe { owner.store(&mut arena, std::ptr::null_mut()) };
-        assert!(owner.slot.is_null());
+        assert!(owner.entity_ptr().is_null());
         assert_eq!(a.refcount, 2, "the log still owns A's release");
 
         arena.reset(|_| {});
         assert_eq!(a.refcount, 1, "exactly one release, from the log");
+    }
+
+    /// Audit C1: the displaced value's `__destruct` is user code and may
+    /// collect. If the slot still pointed at the value being torn down,
+    /// the collector would walk an edge the refcount has already given up.
+    ///
+    /// The damage needs the owner to be garbage itself: then nothing
+    /// restores the subtracted count, the dying value goes white with it,
+    /// and `collect_white` frees it **while its own teardown is running** —
+    /// a free of memory the caller is still inside, followed by a second
+    /// free when teardown finishes. Publishing the slot first removes the
+    /// edge, so only the owner's genuine garbage is collected.
+    #[test]
+    fn a_collecting_destructor_cannot_see_the_slot_it_is_being_removed_from() {
+        use crate::class::ClassBuilder;
+        use crate::gc::{ll_gc_collect_cycles, set_test_threshold};
+        use crate::memory::context::LLContext;
+        use crate::object::{Object, ll_object_new};
+        use crate::value::{Tag, Value};
+
+        static COLLECTED: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+        unsafe extern "C" fn collect_from_destructor(_obj: *mut Object) {
+            let n = unsafe { ll_gc_collect_cycles() };
+            COLLECTED.store(n, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        let _g = crate::memory::block_pool::test_guard();
+        let owner_cls = ClassBuilder::new("C1Owner")
+            .prop("next", true)
+            .prop("mine", true)
+            .build();
+        let dying_cls = ClassBuilder::new("C1Dying")
+            .destructor(collect_from_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+
+        unsafe {
+            let owner = ll_object_new(&mut ctx, owner_cls, MemoryCategory::GcHeap);
+            let old = ll_object_new(&mut ctx, dying_cls, MemoryCategory::GcHeap);
+            let next = Object::prop_at(owner, 16);
+            let mine = Object::prop_at(owner, 32);
+
+            // owner --mine--> owner: a self-cycle, so the owner is garbage
+            // held up only by its own edge.
+            ref_store(
+                &mut arena,
+                owner as *mut RcHeader,
+                mine,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Object, owner as *mut RcHeader),
+            );
+            // owner --next--> old, then drop the creation reference: the
+            // slot holds the only one left.
+            ref_store(
+                &mut arena,
+                owner as *mut RcHeader,
+                next,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Object, old as *mut RcHeader),
+            );
+            assert!(!ll_release(old as *mut RcHeader));
+
+            // Drop the owner's external reference too: now it is a
+            // buffered candidate root, and the collection the destructor
+            // starts will trace it — through `next`, if the old value is
+            // still visible there.
+            set_test_threshold(usize::MAX); // arm nothing, fire only from the destructor
+            assert!(!ll_release(owner as *mut RcHeader));
+
+            // Displaces `old`: last reference gone, teardown runs, the
+            // destructor collects from inside it.
+            ref_store(
+                &mut arena,
+                owner as *mut RcHeader,
+                next,
+                old as *mut RcHeader,
+                Value::null(),
+            );
+
+            // The collection reclaimed the owner's self-cycle and nothing
+            // else. Two means it also took `old`, whose teardown was on the
+            // stack at that moment.
+            assert_eq!(
+                COLLECTED.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "the dying value must not be visible to a collection inside its own destructor"
+            );
+            set_test_threshold(crate::gc::CANDIDATE_THRESHOLD);
+        }
+        arena.reset(|_| {});
     }
 
     #[test]
@@ -303,7 +434,7 @@ mod tests {
 
         unsafe { owner.store(&mut arena, &mut s) };
         assert_eq!(s.refcount, 1, "immortals are never counted");
-        assert_eq!(owner.slot, &mut s as *mut _);
+        assert_eq!(owner.entity_ptr(), &mut s as *mut _);
 
         let mut escapes = 0;
         arena.reset_with(|_| {}, |_| escapes += 1);

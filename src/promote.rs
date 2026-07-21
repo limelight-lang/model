@@ -302,19 +302,12 @@ mod tests {
         unsafe {
             let slot = Object::prop_at(holder, offset);
             let old = entity_checked(&*slot);
-            ref_store(
-                arena,
-                holder as *mut RcHeader,
-                (slot as *mut u8) as *mut *mut RcHeader,
-                old,
-                value as *mut RcHeader,
-            );
-            // The barrier wrote the payload; stamp the Box tag/flags.
-            if !value.is_null() {
-                slot.write(Value::entity(Tag::Object, value as *mut RcHeader));
+            let new = if value.is_null() {
+                Value::null()
             } else {
-                slot.write(Value::null());
-            }
+                Value::entity(Tag::Object, value as *mut RcHeader)
+            };
+            ref_store(arena, holder as *mut RcHeader, slot, old, new);
         }
     }
 
@@ -486,11 +479,10 @@ mod tests {
                 ref_store(
                     arena,
                     holder as *mut RcHeader,
-                    (slot as *mut u8) as *mut *mut RcHeader,
+                    slot,
                     std::ptr::null_mut(),
-                    obj as *mut RcHeader,
+                    Value::entity(Tag::Object, obj as *mut RcHeader),
                 );
-                slot.write(Value::entity(Tag::Object, obj as *mut RcHeader));
             }
         }
 
