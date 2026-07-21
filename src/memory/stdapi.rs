@@ -38,7 +38,7 @@ use crate::memory::block_pool::{
     BLOCK_KIND_HEAP, BLOCK_KIND_LARGE, BLOCK_KIND_LARGE_RUN, BLOCK_MASK, BLOCK_PAYLOAD, BLOCK_SIZE,
     BlockHeader, BlockPool, LINE_SIZE,
 };
-use crate::memory::heap::{MAX_SMALL, with_thread_heap};
+use crate::memory::heap::MAX_SMALL;
 
 /// Largest alignment the `+256` payload guarantees.
 const MAX_ALIGN: usize = LINE_SIZE;
@@ -117,7 +117,13 @@ pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
 #[inline(never)]
 unsafe fn ll_alloc_init(size: usize) -> *mut u8 {
     crate::memory::heap::ll_thread_init();
-    unsafe { with_thread_heap(|h| h.alloc(size)) }
+    // Building the heap can itself be refused, and then there is no heap
+    // to allocate from — report it the same way as any other exhaustion.
+    let h = crate::memory::heap::thread_heap();
+    if h.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe { (*h).alloc(size) }
 }
 
 /// # Safety

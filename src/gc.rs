@@ -84,6 +84,11 @@ pub(crate) fn set_test_threshold(n: usize) {
     TEST_THRESHOLD.with(|c| c.set(n));
 }
 
+/// Tests only: make the candidate buffer refuse to grow.
+#[cfg(test)]
+pub(crate) static FORCE_BUFFER_REFUSAL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 thread_local! {
     static CANDIDATES: RefCell<Vec<*mut RcHeader>> = const { RefCell::new(Vec::new()) };
     /// A collection has been armed (the candidate buffer crossed the
@@ -138,17 +143,47 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
 /// by the compiler, via [`ll_gc_maybe_collect`] (or an explicit
 /// [`ll_gc_collect_cycles`]).
 ///
+/// ## Buffering is best-effort, and that is what keeps it abort-free
+///
+/// The buffer is a `Vec`, so growing it can fail — and `push` would
+/// resolve that failure by killing the process, an abort nobody chose
+/// and the ABI never mentions. There is a better answer here than
+/// anywhere else in the runtime: **not buffering a candidate is always
+/// safe.** It costs a cycle that this collection will not find, and the
+/// object stays correct in every other respect, because the buffered bit
+/// is only set when the entry really went in. So growth is attempted,
+/// and a refusal arms a collection instead — the buffer is full and the
+/// machine is short on memory, which is exactly when collecting is worth
+/// more than remembering one more root.
+///
 /// # Safety
 /// `entity` must be live.
 pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
     if unsafe { (*entity).flags } & CYCLE_COLLECTOR_BUFFERED != 0 {
         return;
     }
-    let (index, full) = CANDIDATES.with(|c| {
+    let recorded = CANDIDATES.with(|c| {
         let mut c = c.borrow_mut();
+        // Fault injection, tests only: a refused `Vec` growth cannot be
+        // provoked on demand, and an untested failure path is a guess
+        // (same reasoning as `block_pool::FORCE_OOM`).
+        #[cfg(test)]
+        if FORCE_BUFFER_REFUSAL.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        if c.len() == c.capacity() && c.try_reserve(1).is_err() {
+            return None;
+        }
         c.push(entity);
-        (c.len() - 1, c.len() >= candidate_threshold())
+        Some((c.len() - 1, c.len() >= candidate_threshold()))
     });
+    let (index, full) = match recorded {
+        Some(v) => v,
+        None => {
+            COLLECT_PENDING.with(|p| p.set(true));
+            return;
+        }
+    };
     // The buffered bit and the position go into the same store.
     unsafe { (*entity).flags |= CYCLE_COLLECTOR_BUFFERED | encode_index(index) };
     if full {
@@ -609,6 +644,34 @@ mod tests {
             assert!(!COLLECT_PENDING.with(|f| f.get()), "pending cleared after fire");
         }
         arena.reset(|_| {});
+    }
+
+    /// A buffer that cannot grow refuses the candidate instead of taking
+    /// the process down with it. The entity must come out of that
+    /// unmarked — a buffered bit with no entry behind it would make the
+    /// object permanently unbufferable and, worse, make `forget_candidate`
+    /// hunt for something that was never there.
+    #[test]
+    fn a_refused_candidate_is_left_unmarked_and_arms_a_collection() {
+        use std::sync::atomic::Ordering;
+
+        let mut e = RcHeader::new(MemoryCategory::GcHeap, 0);
+        let p = &mut e as *mut RcHeader;
+        COLLECT_PENDING.with(|f| f.set(false));
+
+        FORCE_BUFFER_REFUSAL.store(true, Ordering::Relaxed);
+        unsafe { buffer_candidate(p) };
+        FORCE_BUFFER_REFUSAL.store(false, Ordering::Relaxed);
+
+        assert!(CANDIDATES.with(|c| c.borrow().is_empty()), "nothing was recorded");
+        assert_eq!(e.flags & CYCLE_COLLECTOR_BUFFERED, 0, "and nothing was claimed");
+        assert!(COLLECT_PENDING.with(|f| f.get()), "a refusal arms instead");
+
+        // Still bufferable once there is room again.
+        unsafe { buffer_candidate(p) };
+        assert_eq!(CANDIDATES.with(|c| c.borrow().len()), 1);
+        unsafe { forget_candidate(p) };
+        COLLECT_PENDING.with(|f| f.set(false));
     }
 
     /// `swap_remove` moves the tail candidate, so its recorded position

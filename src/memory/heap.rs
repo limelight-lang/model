@@ -1320,7 +1320,18 @@ pub extern "C" fn ll_thread_init() {
     // is the call that establishes that invariant.
     tls::ensure_slot();
     if tls::get_raw().is_null() {
-        tls::set(Box::into_raw(Box::new(Heap::new())));
+        // Not `Box::new`: its failure mode is `handle_alloc_error`, which
+        // aborts — an abort nobody chose and no caller can see coming.
+        // A refusal leaves the slot null, which is a state the whole
+        // module already models (`thread_heap` documents it), so every
+        // allocation path reports null instead of the process dying.
+        let layout = std::alloc::Layout::new::<Heap>();
+        let heap = unsafe { std::alloc::alloc(layout) } as *mut Heap;
+        if heap.is_null() {
+            return;
+        }
+        unsafe { heap.write(Heap::new()) };
+        tls::set(heap);
         // `try_with`, not `with`: this can run *during* TLS teardown, when
         // a destructor allocates and self-initializes a heap on a thread
         // whose `EXIT_GUARD` slot is already destroyed. `with` panics
