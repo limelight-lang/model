@@ -52,11 +52,39 @@ fn resolve(ctx: *mut LLContext) -> *mut Arena {
     } else {
         ctx
     };
-    assert!(!ctx.is_null(), "no allocation context on this thread");
+    if ctx.is_null() {
+        no_context();
+    }
 
     let arena = unsafe { (*ctx).arena };
-    assert!(!arena.is_null(), "context has no arena");
+    if arena.is_null() {
+        no_arena();
+    }
     arena
+}
+
+/// The two ways [`resolve`] can fail, out of line.
+///
+/// These were `assert!`s. The message is built at the call site, so the
+/// panic machinery inlined into every hot ABI entry that resolves a
+/// context — `ll_arena_alloc`, `ll_ref_store`, `ll_object_new` — as two
+/// `alloca [48 x i8]`, on functions that otherwise need no stack at all.
+/// `#[cold]` + `#[inline(never)]` moves only the panic out; both checks
+/// still run on every call. Measured on `ll_arena_alloc`: prologue
+/// 88 -> 40 bytes, body 58 -> 35 instructions. The remaining 40 is
+/// shadow space the Windows x64 ABI demands for these two calls, so the
+/// entry does not become frameless — that would need the checks gone,
+/// not merely moved.
+#[cold]
+#[inline(never)]
+fn no_context() -> ! {
+    panic!("no allocation context on this thread");
+}
+
+#[cold]
+#[inline(never)]
+fn no_arena() -> ! {
+    panic!("context has no arena");
 }
 
 /// # Safety
