@@ -88,6 +88,12 @@ pub unsafe fn ll_object_new(
         },
         MemoryCategory::Immortal => immortal_alloc(size),
     };
+    // Out of memory. The caller raises; nothing here is half-built,
+    // because nothing was built (`rfc/runtime/exceptions.md`: the Rust
+    // core reports, a Limelight frame raises).
+    if mem.is_null() {
+        return std::ptr::null_mut();
+    }
     let obj = mem as *mut Object;
 
     let extra = crate::refcount::ENTITY_OBJECT

@@ -99,8 +99,10 @@ impl BufferArena {
             }
         }
 
-        if self.bump.is_null() || (self.remaining()) < size {
-            self.rotate_block();
+        if (self.bump.is_null() || (self.remaining()) < size) && !self.rotate_block() {
+            // Out of memory: null with a zero grant, so a caller that
+            // ignores the pointer cannot mistake the capacity for real.
+            return (std::ptr::null_mut(), 0);
         }
 
         let p = self.bump;
@@ -170,7 +172,11 @@ impl BufferArena {
         self.limit as usize - self.bump as usize
     }
 
-    fn rotate_block(&mut self) {
+    /// False when the OS refuses. The arena is left empty rather than
+    /// half-rotated: the previous current block has already gone home by
+    /// then, so it must not stay referenced.
+    #[must_use]
+    fn rotate_block(&mut self) -> bool {
         // An old current that emptied while current can only go home
         // now, at rotation — `free` keeps it alive until this moment.
         if !self.current.is_null() && unsafe { (*self.current).live } == 0 {
@@ -179,6 +185,14 @@ impl BufferArena {
         }
 
         let block = BlockPool::global().get() as *mut BufferBlockHeader;
+        if block.is_null() {
+            // The old current has already gone home above, so leave the
+            // arena empty rather than pointing at a freed block.
+            self.current = std::ptr::null_mut();
+            self.bump = std::ptr::null_mut();
+            self.limit = std::ptr::null_mut();
+            return false;
+        }
         unsafe {
             block.write(BufferBlockHeader {
                 kind: BLOCK_KIND_BUFFER,
@@ -189,6 +203,7 @@ impl BufferArena {
         self.current = block;
         self.bump = (block as *mut u8).wrapping_add(LINE_SIZE);
         self.limit = (block as *mut u8).wrapping_add(crate::memory::block_pool::BLOCK_SIZE);
+        true
     }
 }
 
@@ -240,9 +255,16 @@ pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usiz
         with_buffer_arena(|a| a.alloc(target))
     } else {
         let p = unsafe { crate::memory::stdapi::ll_alloc(target, 16) };
-        assert!(!p.is_null(), "OS refused a {target}-byte buffer");
         (p, target)
     };
+
+    if new_data.is_null() {
+        // Out of memory. Leave the buffer exactly as it was — its old
+        // payload is still live and still its capacity — and report.
+        // Freeing the old one here would turn a failed growth into a
+        // dangling buffer.
+        return std::ptr::null_mut();
+    }
 
     if buf.len > 0 {
         unsafe { std::ptr::copy_nonoverlapping(buf.data, new_data, buf.len) };

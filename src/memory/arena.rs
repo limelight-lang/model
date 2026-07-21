@@ -119,7 +119,9 @@ impl Arena {
             "large objects take the dedicated-run path, not the arena"
         );
 
-        self.fresh_block();
+        if !self.fresh_block() {
+            return std::ptr::null_mut();
+        }
 
         let p = self.bump;
         self.bump = p.wrapping_add(size);
@@ -128,10 +130,13 @@ impl Arena {
 
     /// Compiler batch hook: guarantee `bytes` of headroom so a loop of
     /// allocations runs without limit checks.
+    /// Best-effort: if the pool is empty and the OS refuses, the headroom
+    /// is simply not there and the following `alloc` reports the failure.
+    /// Reserving is an optimization, so it has nothing of its own to say.
     pub fn reserve(&mut self, bytes: usize) {
         assert!(bytes <= BLOCK_PAYLOAD, "reserve larger than a block");
         if self.remaining() < bytes {
-            self.fresh_block();
+            let _ = self.fresh_block();
         }
     }
 
@@ -177,10 +182,14 @@ impl Arena {
 
     /// Allocation too large for a block: OS-direct via the standard
     /// path, owned by the arena — freed at `reset`, not individually.
+    /// Null when the OS refuses. Nothing is logged in that case, so reset
+    /// has no phantom run to free.
     pub fn alloc_large(&mut self, size: usize) -> *mut u8 {
         assert!(size > BLOCK_PAYLOAD, "block-sized allocations use alloc");
         let p = unsafe { crate::memory::stdapi::ll_alloc(size, 16) };
-        assert!(!p.is_null(), "OS refused a {size}-byte allocation");
+        if p.is_null() {
+            return p;
+        }
         self.log_push(Log::Larges, p as usize);
         p
     }
@@ -326,6 +335,23 @@ impl Arena {
 
         let head = if head.is_null() || unsafe { (*head).count } == LOG_SEG_RECORDS {
             let seg = self.alloc(size_of::<LogSegment>()) as *mut LogSegment;
+            // A different failure from "the program asked for memory and
+            // did not get it", and it must not be quietly turned into
+            // one. Losing a log record is a broken invariant: an
+            // unrecorded escapee dangles when the arena resets, an
+            // unrecorded large run is never freed. There is nothing safe
+            // to continue into, so this aborts where an ordinary
+            // allocation failure reports.
+            //
+            // The real fix is the reserve the exception design already
+            // calls for (`rfc/runtime/exceptions.md`): the failure path
+            // has to be funded in advance, because by the time it runs
+            // there is nothing left to fund it with. Not built yet.
+            assert!(
+                !seg.is_null(),
+                "out of memory recording an arena log entry — the record \
+                 cannot be dropped without dangling at reset"
+            );
             unsafe {
                 (*seg).next = head;
                 (*seg).count = 0;
@@ -362,8 +388,15 @@ impl Arena {
         }
     }
 
-    fn fresh_block(&mut self) {
+    /// False when the pool has nothing and the OS refused more. The
+    /// arena's state is left untouched in that case, so a caller that
+    /// reports the failure leaves a usable arena behind.
+    #[must_use]
+    fn fresh_block(&mut self) -> bool {
         let block = BlockPool::global().get();
+        if block.is_null() {
+            return false;
+        }
         unsafe {
             (*block).kind = BLOCK_KIND_ARENA;
             (*block).next = self.blocks;
@@ -371,6 +404,7 @@ impl Arena {
         self.blocks = block;
         self.bump = BlockHeader::payload_start(block);
         self.limit = BlockHeader::end(block);
+        true
     }
 }
 
@@ -387,6 +421,34 @@ mod tests {
     use super::*;
     use crate::memory::block_pool::{BLOCK_MASK, LINE_SIZE};
     use crate::refcount::{MemoryCategory, RcHeader};
+
+    /// Exhaustion is reported, not fatal. Every pooled path used to abort
+    /// on it — `carve_region`, `alloc_large`, the buffer arena — while the
+    /// huge-allocation path returned null, so a C caller got null for
+    /// 200 KB and a dead process for 40 bytes.
+    ///
+    /// Revert any of those to `assert!` and this test kills the process
+    /// rather than failing.
+    #[test]
+    fn exhaustion_reports_null_and_leaves_the_arena_usable() {
+        let _g = crate::memory::block_pool::test_guard();
+        use crate::memory::block_pool::FORCE_OOM;
+        use std::sync::atomic::Ordering;
+
+        let mut arena = Arena::new();
+
+        FORCE_OOM.store(true, Ordering::Relaxed);
+        let p = arena.alloc(40);
+        FORCE_OOM.store(false, Ordering::Relaxed);
+
+        assert!(p.is_null(), "exhaustion must report, not abort");
+
+        // Still usable once memory is available again: the refusal left
+        // no half-rotated state behind.
+        let q = arena.alloc(40);
+        assert!(!q.is_null(), "the arena survived the refusal");
+        arena.reset(|_| {});
+    }
 
     #[test]
     fn allocations_are_sequential_and_rounded() {

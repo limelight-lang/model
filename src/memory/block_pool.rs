@@ -150,6 +150,12 @@ static GLOBAL_POOL: BlockPool = BlockPool {
 /// Serializes region carving only (rare path).
 static CARVE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Makes [`BlockPool::get`] report exhaustion. Test-only, and the only
+/// way to reach the out-of-memory paths deliberately.
+#[cfg(test)]
+pub(crate) static FORCE_OOM: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 thread_local! {
     static THREAD_CACHE: RefCell<ThreadCache> =
         const { RefCell::new(ThreadCache { blocks: Vec::new() }) };
@@ -187,6 +193,12 @@ impl BlockPool {
 
     /// Get a free block: thread cache → global stack → carve a region.
     ///
+    /// **Returns null when the OS refuses memory.** Every caller must
+    /// handle it; nothing on this path aborts. That is the one contract
+    /// for exhaustion across the whole manager — the huge-allocation path
+    /// in `stdapi` has always returned null, and this used to abort, so a
+    /// C caller got null for 200 KB and a dead process for 40 bytes.
+    ///
     /// `try_with`, not `with`: this can run from a TLS destructor (a thread
     /// giving its heap blocks back on the way out), by which point this
     /// module's own `thread_local!` may already have been destroyed. TLS
@@ -194,6 +206,13 @@ impl BlockPool {
     /// rather than assumed — `with` panics there, and panicking while a
     /// thread unwinds is not a real option.
     pub fn get(&self) -> *mut BlockHeader {
+        // Fault injection, tests only: the OS refusing memory cannot be
+        // provoked on demand, and an untested failure path is a guess.
+        #[cfg(test)]
+        if FORCE_OOM.load(Ordering::Relaxed) {
+            return std::ptr::null_mut();
+        }
+
         self.blocks_out.fetch_add(1, Ordering::Relaxed);
         let cached = THREAD_CACHE
             .try_with(|c| c.borrow_mut().blocks.pop())
@@ -202,17 +221,24 @@ impl BlockPool {
             return block;
         }
 
-        // Refill the cache in a batch, return one.
+        // Refill the cache in a batch, return one. A refused region stops
+        // the loop rather than spinning on it — see `carve_region`.
         let mut batch = Vec::with_capacity(REFILL_BATCH);
         while batch.len() < REFILL_BATCH {
             match self.pop_global() {
                 Some(b) => batch.push(b),
                 None => {
-                    self.carve_region();
+                    if !self.carve_region() {
+                        break;
+                    }
                 }
             }
         }
-        let block = batch.pop().unwrap();
+        let Some(block) = batch.pop() else {
+            // Nothing anywhere: undo the optimistic count and report.
+            self.blocks_out.fetch_sub(1, Ordering::Relaxed);
+            return std::ptr::null_mut();
+        };
         if THREAD_CACHE
             .try_with(|c| c.borrow_mut().blocks.append(&mut batch))
             .is_err()
@@ -273,19 +299,27 @@ impl BlockPool {
     }
 
     /// Reserve a 2 MB region from the OS and stack its 64 blocks.
-    fn carve_region(&self) {
+    /// Returns false if the OS refused the region — the caller must not
+    /// spin. Out of memory is a condition to **report**, not to abort on:
+    /// a request that cannot get memory is the request's problem, and the
+    /// worker goes on to serve the next one. The abort that used to be
+    /// here also disagreed with the huge-allocation path, which has always
+    /// returned null.
+    fn carve_region(&self) -> bool {
         let _guard = CARVE_LOCK.lock().unwrap();
 
         // Someone may have carved while we waited for the lock. Take the
         // free-list lock only to peek, and drop it before pushing below —
         // `push_global` takes it itself.
         if !self.free.lock().unwrap().head.is_null() {
-            return;
+            return true;
         }
 
         let layout = Layout::from_size_align(REGION_SIZE, BLOCK_SIZE).unwrap();
         let region = unsafe { alloc(layout) };
-        assert!(!region.is_null(), "OS refused a {REGION_SIZE}-byte region");
+        if region.is_null() {
+            return false;
+        }
 
         for i in 0..BLOCKS_PER_REGION {
             let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut BlockHeader;
@@ -298,6 +332,7 @@ impl BlockPool {
         }
 
         self.regions_carved.fetch_add(1, Ordering::Relaxed);
+        true
     }
 }
 

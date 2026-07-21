@@ -508,7 +508,9 @@ impl Heap {
         if self.adopt(ci) {
             return self.alloc_class(ci);
         }
-        self.refill(ci);
+        if self.refill(ci).is_null() {
+            return std::ptr::null_mut();
+        }
         self.alloc_class(ci)
     }
 
@@ -878,9 +880,15 @@ impl Heap {
     /// there is no side allocation and no per-slot initialization at all
     /// — unlike both the eager free-list threading and the bitmap this
     /// replaced (see the module doc for why the bitmap lost).
+    /// Null when the pool is empty and the OS refused more; the heap is
+    /// left untouched, so the caller can report the failure and the heap
+    /// stays usable for smaller classes.
     fn refill(&mut self, ci: usize) -> *mut HeapBlockHeader {
         let class_size = SIZE_CLASSES[ci];
         let block = BlockPool::global().get() as *mut HeapBlockHeader;
+        if block.is_null() {
+            return block;
+        }
         let slots = (BLOCK_PAYLOAD / class_size) as u32;
 
         // No side allocation at all: an empty free list plus `bump = 0`
