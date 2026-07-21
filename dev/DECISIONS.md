@@ -8,6 +8,76 @@ never edited or deleted.
 
 ---
 
+## 2026-07-21 — the barrier owns the whole slot, and publishes it first
+
+**Decided:** `ref_store` takes `slot: *mut Value` and `new: Value`, and
+writes the whole 16-byte value **before** releasing the displaced one.
+`ll_ref_store` changes shape with it.
+
+**Why:** two defects that turn out to be one. Releasing first lets a
+`__destruct` collect while the slot still points at the value being torn
+down (audit C1); publishing first removes that edge. But publishing only
+the payload word — which is all the barrier used to write, leaving every
+call site to stamp the tag — makes the slot readable while torn, and
+"tag says object, pointer is null" is a crash rather than a
+miscount. One slot has one writer.
+
+**Considered and rejected:** keeping the split write and having the
+collector tolerate a torn slot. That spreads the invariant to every
+future reader instead of removing it, and the reader that forgets is a
+crash under memory pressure.
+
+**Cost:** an ABI change, taken now because no generated code exists yet.
+The `Value` travels by value into an `extern "C"` function, which on
+Windows x64 means a pointer to a caller copy; unmeasured, and recorded
+here rather than in `BENCHMARKS.md` for that reason.
+
+---
+
+## 2026-07-21 — a destructor is owed by the constructor, not by the factory
+
+**Decided:** creation is two steps. `ll_object_new` is the factory: it
+allocates and stamps the header, nothing more. `ll_object_constructed`
+runs after the user constructor returns successfully — it sets
+`HAS_DESTRUCTOR` on the header and registers the arena log record.
+Teardown dispatches on that header flag, never on the class.
+
+**Why:** a constructor that throws must not get its `__destruct`
+(`rfc/runtime/object-lifecycle.md`). Registering in the factory leaves a
+record demanding exactly the forbidden call, for exactly the objects
+forbidden to have it. Dispatching on the class does the same on the
+refcount path.
+
+**Considered and rejected:** a separate "constructed" bit. The header
+flag already meant "this object owes a destructor" everywhere it was
+read; making it mean that literally costs nothing and removes a bit.
+
+**Cost:** generated code must emit the second call. A class with no
+destructor needs no call at all, so the cost lands only where the
+guarantee exists.
+
+---
+
+## 2026-07-21 — a refused destructor record fails the creation
+
+**Decided:** `Arena::track_destructor` returns false instead of
+aborting; the creation that asked for it raises memory-exhausted. The
+other three arena logs keep the abort, moved from `grow_log` to each
+caller so the reason can be stated where it applies.
+
+**Why:** a lost escapee or release record dangles or leaks — there is
+nothing safe to continue into. A lost destructor record only skips a
+side effect, and there is a better answer available: fail the creation,
+which lands on the already-specified path for a constructor that threw.
+Nothing is silently skipped, because an object whose registration failed
+does not survive its own creation.
+
+**Cost:** the aborts are still there, now three instead of one. They are
+placeholders for the reserve (`rfc/runtime/exceptions.md`, "The log
+reserve protocol"), which is not built.
+
+---
+
 ## 2026-07-20 — the arena handle is a raw pointer, not `&mut Arena`
 
 **Decided:** `resolve`, `resolve_arena`, `ref_store`, `escape_gain` and

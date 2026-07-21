@@ -95,9 +95,10 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 /// that teardown, each through its own short-lived borrow.
 ///
 /// # Safety
-/// `owner` must be a live entity containing `slot`; `old` must equal
-/// `*slot`; `old`/`new` must each be null or point to a live entity;
-/// `arena` must point to the live mounted arena.
+/// `owner` must be a live entity containing `slot`; `old` must be the
+/// entity the slot currently holds (null when it holds a non-entity);
+/// `old` and `new`'s entity must each be null or point to a live
+/// entity; `arena` must point to the live mounted arena.
 pub unsafe fn ref_store(
     arena: *mut Arena,
     owner: *mut RcHeader,
@@ -106,6 +107,18 @@ pub unsafe fn ref_store(
     new: Value,
 ) {
     debug_assert!(!owner.is_null(), "a slot always has an owner");
+    debug_assert_eq!(
+        {
+            let held = unsafe { slot.read() };
+            if held.is_refcounted() {
+                held.entity_ptr()
+            } else {
+                std::ptr::null_mut()
+            }
+        },
+        old,
+        "old must be the entity the slot holds"
+    );
 
     // A non-entity value (int, bool, null) counts as a null entity here:
     // the categories and the counts are about entities only.

@@ -192,7 +192,7 @@ impl Arena {
         }
         assert!(
             self.log_push(Log::Larges, p as usize),
-            "out of memory recording an arena large run — the record cannot              be dropped without leaking the run at reset"
+            "out of memory recording an arena large run — the record cannot be \n             dropped without leaking the run at reset"
         );
         p
     }
@@ -224,7 +224,7 @@ impl Arena {
     pub fn log_escapee(&mut self, entity: *mut RcHeader) {
         assert!(
             self.log_push(Log::Escapees, entity as usize),
-            "out of memory recording an arena escapee — the record cannot              be dropped without dangling at reset"
+            "out of memory recording an arena escapee — the record cannot be \n             dropped without dangling at reset"
         );
     }
 
@@ -234,7 +234,7 @@ impl Arena {
     pub fn log_release_at_reset(&mut self, entity: *mut RcHeader) {
         assert!(
             self.log_push(Log::ReleaseAtReset, entity as usize),
-            "out of memory recording an arena release-at-reset — the record              cannot be dropped without leaking the entity"
+            "out of memory recording an arena release-at-reset — the record \n             cannot be dropped without leaking the entity"
         );
     }
 
@@ -600,7 +600,7 @@ mod tests {
             .map(|_| {
                 let obj = arena.alloc(16) as *mut RcHeader;
                 unsafe { obj.write(RcHeader::new(MemoryCategory::RequestArena, 0)) };
-                arena.track_destructor(obj);
+                assert!(arena.track_destructor(obj));
                 obj
             })
             .collect();
@@ -622,7 +622,7 @@ mod tests {
 
         let obj = arena.alloc(16) as *mut RcHeader;
         unsafe { obj.write(RcHeader::new(MemoryCategory::RequestArena, 0)) };
-        arena.track_destructor(obj);
+        assert!(arena.track_destructor(obj));
         let old_block = BlockHeader::of_ptr(obj as *mut u8);
 
         let mut ran = Vec::new();

@@ -24,7 +24,7 @@ versions live in `docs/history/`, marked at the top.
   the end-of-construction hook that registers the destructor),
   `src/memory/stdapi.rs` (`ll_malloc`/`ll_free`/aligned),
   `src/memory/barrier.rs` (`ll_ref_store`), `src/object.rs`
-  (`ll_object_new`, `ll_object_die`), `src/refcount.rs`
+  (`ll_object_die`), `src/refcount.rs`
   (`ll_retain`/`ll_release`).
 - Crate root: `src/lib.rs`. Built as `rlib` + `staticlib` for the
   C++/LLVM layer.

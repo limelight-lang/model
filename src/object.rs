@@ -96,8 +96,8 @@ pub unsafe fn ll_object_new(
     }
     let obj = mem as *mut Object;
 
-    let extra = crate::refcount::ENTITY_OBJECT
-;
+    // No `HAS_DESTRUCTOR` here: the flag is set by `object_constructed`.
+    let extra = crate::refcount::ENTITY_OBJECT;
     unsafe {
         (*obj).rc = RcHeader::new(category, extra);
         (*obj).class = class;
@@ -435,6 +435,9 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
         let heap_obj = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        // Through the count first, as generated code would: `ll_release`
+        // reports the death, and the caller performs the teardown.
+        assert!(unsafe { crate::refcount::ll_release(heap_obj as *mut RcHeader) });
         unsafe { ll_object_die(heap_obj) };
         assert_eq!(
             DESTRUCTS.load(Ordering::Relaxed),
