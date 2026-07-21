@@ -346,7 +346,7 @@ pub unsafe extern "C" fn ll_instanceof(obj: *const Object, target: *const Class)
     let cls = unsafe { (*obj).class() };
     let target = unsafe { &*target };
     if target.flags & crate::class::CLASS_INTERFACE != 0 {
-        cls.find_iface(target.iface_id).is_some()
+        cls.find_interface(target.interface_id).is_some()
     } else {
         cls.instance_of_class(target)
     }
@@ -584,10 +584,10 @@ mod tests {
         let _g = crate::memory::block_pool::test_guard();
         extern "C" fn noop() {}
 
-        let iface = ClassBuilder::interface("Speaks");
+        let interface = ClassBuilder::interface("Speaks");
         let animal = ClassBuilder::new("Animal")
             .method("speak", noop as *const ())
-            .implement(unsafe { &*iface }, vec![0])
+            .implement(unsafe { &*interface }, vec![0])
             .build();
         let dog = ClassBuilder::new("Dog").parent(animal).build();
         let rock = ClassBuilder::new("Rock").build();
@@ -598,9 +598,9 @@ mod tests {
             unsafe {
                 assert!(ll_instanceof(d, animal));
                 assert!(ll_instanceof(d, dog));
-                assert!(ll_instanceof(d, iface), "interface via inherited itable");
+                assert!(ll_instanceof(d, interface), "interface via inherited itable");
                 assert!(!ll_instanceof(r, animal));
-                assert!(!ll_instanceof(r, iface));
+                assert!(!ll_instanceof(r, interface));
             }
         });
     }

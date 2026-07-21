@@ -70,8 +70,8 @@ pub struct MethodEntry {
 /// its own vtable — overrides then flow into inherited interfaces.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct IfaceEntry {
-    pub iface_id: u32,
+pub struct InterfaceEntry {
+    pub interface_id: u32,
     pub method_count: u32,
     pub itable: *const *const (),
     /// interface slot → class vtable slot.
@@ -85,12 +85,12 @@ pub struct Class {
     pub object_size: u32,
     /// Identity for interface dispatch; meaningful when
     /// `CLASS_INTERFACE` is set.
-    pub iface_id: u32,
+    pub interface_id: u32,
     /// Cohen display length; own depth = `display_len - 1`.
     pub display_len: u32,
     pub prop_count: u32,
     pub method_count: u32,
-    pub iface_count: u32,
+    pub interface_count: u32,
     /// Vtable slot of `__destruct`, or [`NO_DESTRUCT_SLOT`].
     pub destruct_slot: u32,
     pub vtbl_len: u32,
@@ -102,7 +102,7 @@ pub struct Class {
     pub display: *const *const Class,
     pub props: *const PropSlot,
     pub methods: *const MethodEntry,
-    pub interfaces: *const IfaceEntry,
+    pub interfaces: *const InterfaceEntry,
     // vtbl: [*const (); vtbl_len] — inline trailing array.
 }
 
@@ -169,10 +169,10 @@ impl Class {
     /// Interface lookup: linear scan of a short array sorted by id
     /// (classes implement few interfaces; cache locality beats a
     /// hashtable). The analog of COM's QueryInterface.
-    pub fn find_iface(&self, iface_id: u32) -> Option<&IfaceEntry> {
+    pub fn find_interface(&self, interface_id: u32) -> Option<&InterfaceEntry> {
         let entries =
-            unsafe { std::slice::from_raw_parts(self.interfaces, self.iface_count as usize) };
-        entries.iter().find(|e| e.iface_id == iface_id)
+            unsafe { std::slice::from_raw_parts(self.interfaces, self.interface_count as usize) };
+        entries.iter().find(|e| e.interface_id == interface_id)
     }
 
     #[inline]
@@ -187,8 +187,8 @@ impl Class {
 /// # Safety
 /// `cls` must point to a linked class descriptor.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_find_itable(cls: *const Class, iface_id: u32) -> *const *const () {
-    match unsafe { (*cls).find_iface(iface_id) } {
+pub unsafe extern "C" fn ll_find_itable(cls: *const Class, interface_id: u32) -> *const *const () {
+    match unsafe { (*cls).find_interface(interface_id) } {
         Some(e) => e.itable,
         None => std::ptr::null(),
     }
@@ -263,8 +263,8 @@ impl ClassBuilder {
 
     /// Implement an interface: `slot_map[i]` is this class's vtable
     /// slot serving the interface's slot `i`.
-    pub fn implement(mut self, iface: &Class, slot_map: Vec<u32>) -> Self {
-        self.interfaces.push((iface.iface_id, slot_map));
+    pub fn implement(mut self, interface: &Class, slot_map: Vec<u32>) -> Self {
+        self.interfaces.push((interface.interface_id, slot_map));
         self
     }
 
@@ -352,17 +352,17 @@ impl ClassBuilder {
 
         // Interfaces: parent's are re-linked against OUR vtable (an
         // override must flow into the inherited itable), then our own.
-        let mut iface_decls: Vec<(u32, Vec<u32>)> = parent.map_or(Vec::new(), |p| {
-            unsafe { std::slice::from_raw_parts(p.interfaces, p.iface_count as usize) }
+        let mut interface_declarations: Vec<(u32, Vec<u32>)> = parent.map_or(Vec::new(), |p| {
+            unsafe { std::slice::from_raw_parts(p.interfaces, p.interface_count as usize) }
                 .iter()
                 .map(|e| {
                     let map =
                         unsafe { std::slice::from_raw_parts(e.slot_map, e.method_count as usize) };
-                    (e.iface_id, map.to_vec())
+                    (e.interface_id, map.to_vec())
                 })
                 .collect()
         });
-        iface_decls.append(&mut self.interfaces);
+        interface_declarations.append(&mut self.interfaces);
 
         // Display: parent's chain + self.
         let mut display: Vec<*const Class> = parent.map_or(Vec::new(), |p| unsafe {
@@ -391,17 +391,17 @@ impl ClassBuilder {
         // tables, never inside), so the tail is a plain concatenation.
         // Slot maps are cold link-time data and stay off the train.
         let ptr = size_of::<*const ()>();
-        let itables_len: usize = iface_decls.iter().map(|(_, m)| m.len()).sum();
+        let itables_len: usize = interface_declarations.iter().map(|(_, m)| m.len()).sum();
         let total = size_of::<Class>() + (vtbl.len() + itables_len) * ptr;
         let cls = immortal_alloc(total) as *mut Class;
         if cls.is_null() {
             return std::ptr::null();
         }
 
-        let iface_entries: Vec<IfaceEntry> = {
+        let interface_entries: Vec<InterfaceEntry> = {
             let mut cursor = unsafe { (cls as *mut u8).add(size_of::<Class>() + vtbl.len() * ptr) }
                 as *mut *const ();
-            iface_decls
+            interface_declarations
                 .iter()
                 .map(|(id, map)| {
                     let itable = cursor as *const *const ();
@@ -411,8 +411,8 @@ impl ClassBuilder {
                             cursor = cursor.add(1);
                         }
                     }
-                    IfaceEntry {
-                        iface_id: *id,
+                    InterfaceEntry {
+                        interface_id: *id,
                         method_count: map.len() as u32,
                         itable,
                         slot_map: alloc_array(map),
@@ -420,15 +420,15 @@ impl ClassBuilder {
                 })
                 .collect()
         };
-        let ifaces_mem = alloc_array(&iface_entries);
-        if ifaces_mem.is_null() || iface_entries.iter().any(|e| e.slot_map.is_null()) {
+        let interfaces_mem = alloc_array(&interface_entries);
+        if interfaces_mem.is_null() || interface_entries.iter().any(|e| e.slot_map.is_null()) {
             return std::ptr::null();
         }
         unsafe {
             cls.write(Class {
                 flags: self.flags,
                 object_size,
-                iface_id: if self.flags & CLASS_INTERFACE != 0 {
+                interface_id: if self.flags & CLASS_INTERFACE != 0 {
                     NEXT_IFACE_ID.fetch_add(1, Ordering::Relaxed)
                 } else {
                     0
@@ -436,7 +436,7 @@ impl ClassBuilder {
                 display_len: display.len() as u32 + 1,
                 prop_count: props.len() as u32,
                 method_count: method_entries.len() as u32,
-                iface_count: iface_entries.len() as u32,
+                interface_count: interface_entries.len() as u32,
                 destruct_slot,
                 vtbl_len: vtbl.len() as u32,
                 _pad: 0,
@@ -445,7 +445,7 @@ impl ClassBuilder {
                 display: std::ptr::null(), // set below (self-referential)
                 props: props_mem,
                 methods: methods_mem,
-                interfaces: ifaces_mem,
+                interfaces: interfaces_mem,
             });
             display.push(cls);
             (*cls).display = alloc_array(&display);
@@ -584,14 +584,14 @@ mod tests {
 
         let animal = ClassBuilder::new("Animal")
             .method("eat", m2 as *const ())
-            .implement(unsafe { &*feedable }, vec![0]) // iface slot 0 → vtbl slot 0 (eat)
+            .implement(unsafe { &*feedable }, vec![0]) // interface slot 0 → vtbl slot 0 (eat)
             .build();
         let dog = ClassBuilder::new("Dog")
             .parent(animal)
             .method("eat", m2_override as *const ())
             .build();
 
-        let id = unsafe { (*feedable).iface_id };
+        let id = unsafe { (*feedable).interface_id };
         let animal_it = unsafe { ll_find_itable(animal, id) };
         let dog_it = unsafe { ll_find_itable(dog, id) };
         assert!(!animal_it.is_null() && !dog_it.is_null());
@@ -628,7 +628,7 @@ mod tests {
         let vtbl_end = tail_start + c.vtbl_len as usize * 8;
         let train_end = vtbl_end + 3 * 8; // 2 + 1 itable entries
 
-        let (id1, id2) = unsafe { ((*i1).iface_id, (*i2).iface_id) };
+        let (id1, id2) = unsafe { ((*i1).interface_id, (*i2).interface_id) };
         let t1 = unsafe { ll_find_itable(cls, id1) } as usize;
         let t2 = unsafe { ll_find_itable(cls, id2) } as usize;
         assert!(
