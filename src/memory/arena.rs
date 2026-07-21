@@ -325,6 +325,18 @@ impl Arena {
 
     /// Append a record to an in-arena log, growing the segment chain
     /// from the arena's own bump memory.
+    ///
+    /// ## Why the growth branch is a `#[cold]` call
+    ///
+    /// Two of the four callers are the store barrier's arena-log hooks
+    /// (`log_escapee`, `log_release_at_reset`), which sit inside
+    /// `ref_store`. With the growth branch inline, each of them dragged
+    /// `Arena::alloc` -> `BlockPool::get` and the out-of-memory panic
+    /// into the barrier: 308 IR lines and two `alloca [48 x i8]` for a
+    /// branch taken once per `LOG_SEG_RECORDS` records. Generated code
+    /// calls the barrier on every unresolved reference store, so its
+    /// size is the thing that decides whether the store inlines at all.
+    #[inline]
     fn log_push(&mut self, which: Log, value: usize) {
         let head = match which {
             Log::Destructors => self.destructors,
@@ -334,29 +346,7 @@ impl Arena {
         };
 
         let head = if head.is_null() || unsafe { (*head).count } == LOG_SEG_RECORDS {
-            let seg = self.alloc(size_of::<LogSegment>()) as *mut LogSegment;
-            // A different failure from "the program asked for memory and
-            // did not get it", and it must not be quietly turned into
-            // one. Losing a log record is a broken invariant: an
-            // unrecorded escapee dangles when the arena resets, an
-            // unrecorded large run is never freed. There is nothing safe
-            // to continue into, so this aborts where an ordinary
-            // allocation failure reports.
-            //
-            // The real fix is the reserve the exception design already
-            // calls for (`rfc/runtime/exceptions.md`): the failure path
-            // has to be funded in advance, because by the time it runs
-            // there is nothing left to fund it with. Not built yet.
-            assert!(
-                !seg.is_null(),
-                "out of memory recording an arena log entry — the record \
-                 cannot be dropped without dangling at reset"
-            );
-            unsafe {
-                (*seg).next = head;
-                (*seg).count = 0;
-            }
-            seg
+            self.grow_log(head)
         } else {
             head
         };
@@ -373,6 +363,37 @@ impl Arena {
             Log::Escapees => self.escapees = head,
             Log::ReleaseAtReset => self.release_at_reset = head,
         }
+    }
+
+    /// The full segment: carve a fresh one from the arena's own bump
+    /// memory and link it in front of `head`. Runs once per
+    /// `LOG_SEG_RECORDS` pushes — see [`log_push`](Self::log_push) for
+    /// why it is out of line.
+    #[cold]
+    #[inline(never)]
+    fn grow_log(&mut self, head: *mut LogSegment) -> *mut LogSegment {
+        let seg = self.alloc(size_of::<LogSegment>()) as *mut LogSegment;
+        // A different failure from "the program asked for memory and did
+        // not get it", and it must not be quietly turned into one. Losing
+        // a log record is a broken invariant: an unrecorded escapee
+        // dangles when the arena resets, an unrecorded large run is never
+        // freed. There is nothing safe to continue into, so this aborts
+        // where an ordinary allocation failure reports.
+        //
+        // The real fix is the reserve the exception design already calls
+        // for (`rfc/runtime/exceptions.md`): the failure path has to be
+        // funded in advance, because by the time it runs there is nothing
+        // left to fund it with. Not built yet.
+        assert!(
+            !seg.is_null(),
+            "out of memory recording an arena log entry — the record \
+             cannot be dropped without dangling at reset"
+        );
+        unsafe {
+            (*seg).next = head;
+            (*seg).count = 0;
+        }
+        seg
     }
 
     /// Visit every record of a segment chain (newest segment first).
