@@ -49,7 +49,8 @@ use std::cell::RefCell;
 
 use crate::object::Object;
 use crate::refcount::{
-    CYCLE_COLLECTOR_BUFFERED, CYCLE_COLLECTOR_COLOR_SHIFT, ENTITY_OBJECT, MemoryCategory, RcHeader,
+    CANDIDATE_INDEX_MASK, CANDIDATE_INDEX_MAX, CANDIDATE_INDEX_SHIFT, CYCLE_COLLECTOR_BUFFERED,
+    CYCLE_COLLECTOR_COLOR_SHIFT, ENTITY_OBJECT, MemoryCategory, RcHeader,
 };
 use crate::value::Value;
 
@@ -143,21 +144,45 @@ pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
     if unsafe { (*entity).flags } & CYCLE_COLLECTOR_BUFFERED != 0 {
         return;
     }
-    unsafe { (*entity).flags |= CYCLE_COLLECTOR_BUFFERED };
-    let full = CANDIDATES.with(|c| {
+    let (index, full) = CANDIDATES.with(|c| {
         let mut c = c.borrow_mut();
         c.push(entity);
-        c.len() >= candidate_threshold()
+        (c.len() - 1, c.len() >= candidate_threshold())
     });
+    // The buffered bit and the position go into the same store.
+    unsafe { (*entity).flags |= CYCLE_COLLECTOR_BUFFERED | encode_index(index) };
     if full {
         COLLECT_PENDING.with(|p| p.set(true));
     }
 }
 
+/// `index + 1` in the candidate-index field, or zero when it does not
+/// fit — see [`CANDIDATE_INDEX_MAX`].
+#[inline]
+fn encode_index(index: usize) -> u32 {
+    if index > CANDIDATE_INDEX_MAX {
+        return 0;
+    }
+    (index as u32 + 1) << CANDIDATE_INDEX_SHIFT
+}
+
+/// The buffer position recorded in the header, if it was recorded.
+#[inline]
+unsafe fn decode_index(entity: *mut RcHeader) -> Option<usize> {
+    let raw = (unsafe { (*entity).flags } & CANDIDATE_INDEX_MASK) >> CANDIDATE_INDEX_SHIFT;
+    (raw != 0).then(|| raw as usize - 1)
+}
+
 /// Called when a buffered entity dies through plain refcounting: its
 /// memory is about to be reused, the buffer must not keep a dangling
-/// root. Linear removal; rare (most candidates either get collected
-/// or stay alive).
+/// root.
+///
+/// The position comes from the entity's own header
+/// ([`CANDIDATE_INDEX_SHIFT`]), so this is a swap-remove, not a search.
+/// It used to scan the buffer — up to 10 000 pointers on an event that
+/// happens on every ordinary death of a buffered object. The scan
+/// survives only as the fallback for a position that did not fit the
+/// field.
 ///
 /// # Safety
 /// `entity` must still point at the (dying) entity.
@@ -165,11 +190,28 @@ pub(crate) unsafe fn forget_candidate(entity: *mut RcHeader) {
     if unsafe { (*entity).flags } & CYCLE_COLLECTOR_BUFFERED == 0 {
         return;
     }
-    unsafe { (*entity).flags &= !CYCLE_COLLECTOR_BUFFERED };
+    let at = unsafe { decode_index(entity) };
+    unsafe { (*entity).flags &= !(CYCLE_COLLECTOR_BUFFERED | CANDIDATE_INDEX_MASK) };
     CANDIDATES.with(|c| {
         let mut c = c.borrow_mut();
-        if let Some(i) = c.iter().position(|&p| p == entity) {
+        // A recorded position is trusted only if the slot really holds
+        // this entity; anything else falls back to the scan rather than
+        // removing an innocent candidate.
+        let i = match at {
+            Some(i) if c.get(i) == Some(&entity) => Some(i),
+            _ => c.iter().position(|&p| p == entity),
+        };
+        if let Some(i) = i {
             c.swap_remove(i);
+            // The tail element moved into `i` and must learn its new
+            // position — unless it never had one recorded.
+            if let Some(&moved) = c.get(i) {
+                if unsafe { decode_index(moved) }.is_some() {
+                    unsafe {
+                        (*moved).flags = ((*moved).flags & !CANDIDATE_INDEX_MASK) | encode_index(i)
+                    };
+                }
+            }
         }
     });
 }
@@ -212,7 +254,7 @@ unsafe fn collect_cycles_inner() -> usize {
         return 0;
     }
     for &r in &roots {
-        unsafe { (*r).flags &= !CYCLE_COLLECTOR_BUFFERED };
+        unsafe { (*r).flags &= !(CYCLE_COLLECTOR_BUFFERED | CANDIDATE_INDEX_MASK) };
     }
 
     // mark_gray: trial-delete every internal edge reachable from roots.
@@ -567,5 +609,37 @@ mod tests {
             assert!(!COLLECT_PENDING.with(|f| f.get()), "pending cleared after fire");
         }
         arena.reset(|_| {});
+    }
+
+    /// `swap_remove` moves the tail candidate, so its recorded position
+    /// has to move with it. A stale one cannot corrupt the buffer — the
+    /// slot is checked before removal and a mismatch falls back to the
+    /// scan — so this asserts the position itself, not just the outcome.
+    #[test]
+    fn forgetting_a_candidate_keeps_the_moved_one_findable() {
+        let mut h: Vec<RcHeader> = (0..4).map(|_| RcHeader::new(MemoryCategory::GcHeap, 0)).collect();
+        let p: Vec<*mut RcHeader> = h.iter_mut().map(|e| e as *mut RcHeader).collect();
+        let buffer = || CANDIDATES.with(|c| c.borrow().clone());
+
+        unsafe {
+            for &e in &p {
+                buffer_candidate(e);
+            }
+            assert_eq!(buffer(), p, "buffered in order");
+
+            // Removes index 1 and moves p[3] into it.
+            forget_candidate(p[1]);
+            assert_eq!(buffer(), vec![p[0], p[3], p[2]]);
+            assert_eq!(decode_index(p[3]), Some(1), "the moved candidate knows where it is");
+            assert_eq!(decode_index(p[1]), None, "the removed one no longer claims a slot");
+
+            forget_candidate(p[3]);
+            assert_eq!(buffer(), vec![p[0], p[2]], "the moved candidate was found");
+
+            forget_candidate(p[0]);
+            forget_candidate(p[2]);
+            assert!(buffer().is_empty());
+            assert!(h.iter().all(|e| e.flags & CYCLE_COLLECTOR_BUFFERED == 0));
+        }
     }
 }
