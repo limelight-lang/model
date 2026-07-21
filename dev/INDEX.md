@@ -20,6 +20,8 @@ versions live in `docs/history/`, marked at the top.
 ## Entry points
 
 - C ABI surface: `src/memory/context.rs` (arena + context),
+  `src/object.rs` (`ll_object_new` factory, `ll_object_constructed` —
+  the end-of-construction hook that registers the destructor),
   `src/memory/stdapi.rs` (`ll_malloc`/`ll_free`/aligned),
   `src/memory/barrier.rs` (`ll_ref_store`), `src/object.rs`
   (`ll_object_new`, `ll_object_die`), `src/refcount.rs`
@@ -34,10 +36,9 @@ versions live in `docs/history/`, marked at the top.
 
 - Allocation: `Heap::alloc` → `ll_alloc`, expected to inline fully,
   cold tails split with `#[cold] #[inline(never)]`.
-- Local free: `Heap::free`, including the `owner` check. **Known gap:**
-  unlike `alloc`, it does not currently inline — its cold tails are not
-  split. Diagnosed with IR evidence, fix unmeasured; see the H11 entry
-  in `dev/BENCHMARKS.md`.
+- Local free: `Heap::free`, including the `owner` check. Split into a
+  fast path and `#[cold]` tails like `alloc`; the split measured as no
+  change outside the noise floor (H11 in `dev/BENCHMARKS.md`).
 - Store barrier: `ref_store` / `ll_ref_store`.
 - Arena bump: `Arena::alloc` → `ll_arena_alloc`.
 

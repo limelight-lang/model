@@ -97,11 +97,7 @@ pub unsafe fn ll_object_new(
     let obj = mem as *mut Object;
 
     let extra = crate::refcount::ENTITY_OBJECT
-        | if cls.has_destructor() {
-            HAS_DESTRUCTOR
-        } else {
-            0
-        };
+;
     unsafe {
         (*obj).rc = RcHeader::new(category, extra);
         (*obj).class = class;
@@ -113,11 +109,70 @@ pub unsafe fn ll_object_new(
         }
     }
 
-    // Arena objects with a PHP destructor must be tracked: reset runs
-    // their pre-destructors first (rfc/model/memory/arenas.md).
-    if category == MemoryCategory::RequestArena && cls.has_destructor() {
-        unsafe { (*resolve_arena(ctx)).track_destructor(obj as *mut RcHeader) };
+    // The destructor is NOT registered here. The factory only produces
+    // the object; `__destruct` is owed only once the user constructor has
+    // returned successfully (`rfc/runtime/object-lifecycle.md`, "Two
+    // constructors"), and registering earlier would demand a `__destruct`
+    // for exactly the objects whose constructor threw.
+    obj
+}
+
+/// The user constructor returned successfully: from here on the object
+/// owes a `__destruct`. Sets the header flag teardown dispatches on, and
+/// for an arena object records it in the arena's destructor log, which is
+/// what makes reset run the pre-destructor.
+///
+/// **False when the record could not be written.** The caller raises
+/// memory-exhausted at the creation site, and that is deliberately the
+/// same outcome as a constructor that threw: our teardown runs, the user
+/// destructor does not — which is exactly right, since the object never
+/// finished being constructed as far as anyone can observe.
+///
+/// A class without a destructor needs no call; generated code emits it
+/// only where the class has one.
+///
+/// # Safety
+/// `obj` must be a live object whose constructor has just returned.
+#[must_use]
+pub unsafe fn object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool {
+    let cls = unsafe { (*obj).class() };
+    if !cls.has_destructor() {
+        return true;
     }
+    if unsafe { (*obj).rc.memory_category() } == MemoryCategory::RequestArena
+        && !unsafe { (*resolve_arena(ctx)).track_destructor(obj as *mut RcHeader) }
+    {
+        return false;
+    }
+    unsafe { (*obj).rc.flags |= HAS_DESTRUCTOR };
+    true
+}
+
+/// C ABI for [`object_constructed`].
+///
+/// # Safety
+/// As [`object_constructed`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool {
+    unsafe { object_constructed(ctx, obj) }
+}
+
+/// Test helper: create an object and complete its construction the way
+/// generated code does — factory, then `object_constructed` once the
+/// user constructor would have returned. Tests model generated code, so
+/// they must take both steps.
+#[cfg(test)]
+pub(crate) unsafe fn new_constructed(
+    ctx: *mut LLContext,
+    class: *const Class,
+    category: MemoryCategory,
+) -> *mut Object {
+    let obj = unsafe { ll_object_new(ctx, class, category) };
+    assert!(!obj.is_null(), "allocation refused in a test");
+    assert!(
+        unsafe { object_constructed(ctx, obj) },
+        "destructor registration refused in a test"
+    );
     obj
 }
 
@@ -167,7 +222,12 @@ pub(crate) unsafe fn ref_child_values(obj: *mut Object) -> Vec<Value> {
 /// `obj` must be a live object.
 pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
     let cls = unsafe { (*obj).class() };
-    if !cls.has_destructor() || unsafe { (*obj).rc.flags } & DESTRUCTED != 0 {
+    // The header flag, not the class: a class may declare `__destruct`
+    // while this particular object never finished construction, and such
+    // an object must not run it (`rfc/runtime/object-lifecycle.md`).
+    if unsafe { (*obj).rc.flags } & HAS_DESTRUCTOR == 0
+        || unsafe { (*obj).rc.flags } & DESTRUCTED != 0
+    {
         return false;
     }
     unsafe { (*obj).rc.flags |= DESTRUCTED };
@@ -316,7 +376,7 @@ mod tests {
         let cls = ClassBuilder::new("Plain").prop("x", true).build();
 
         with_ctx(|ctx| {
-            let obj = unsafe { ll_object_new(ctx, cls, MemoryCategory::RequestArena) };
+            let obj = unsafe { new_constructed(ctx, cls, MemoryCategory::RequestArena) };
             let o = unsafe { &mut *obj };
             assert_eq!(o.rc.refcount, 1);
             assert_eq!(o.rc.memory_category(), MemoryCategory::RequestArena);
@@ -336,12 +396,52 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let obj = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::RequestArena) };
+        let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
         assert_ne!(unsafe { (*obj).rc.flags } & HAS_DESTRUCTOR, 0);
 
         let mut delivered = Vec::new();
         arena.reset(|o| delivered.push(o));
         assert_eq!(delivered, vec![obj as *mut RcHeader]);
+    }
+
+    /// The factory does not owe a `__destruct`; the completed user
+    /// constructor does. An object that never got past the factory —
+    /// because `__construct` threw, or because registering the record was
+    /// refused — must not appear in the arena's destructor log and must
+    /// not run its `__destruct` on teardown.
+    #[test]
+    fn an_unconstructed_object_owes_no_destructor() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("ThrewInCtor")
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        // The factory alone: no `object_constructed` call, as for a
+        // constructor that raised.
+        let obj = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::RequestArena) };
+        assert_eq!(unsafe { (*obj).rc.flags } & HAS_DESTRUCTOR, 0);
+
+        let mut delivered = Vec::new();
+        arena.reset(|o| delivered.push(o));
+        assert!(delivered.is_empty(), "nothing was registered");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "and nothing ran");
+
+        // Same rule on the refcounted path, where teardown dispatches on
+        // the header rather than on a log: a heap object that never
+        // completed construction dies without its `__destruct`.
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let heap_obj = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        unsafe { ll_object_die(heap_obj) };
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            0,
+            "teardown must dispatch on the object's own flag, not on the class"
+        );
+        arena.reset(|_| {});
     }
 
     #[test]
@@ -358,8 +458,8 @@ mod tests {
             .build();
 
         with_ctx(|ctx| {
-            let child = unsafe { ll_object_new(ctx, child_cls, MemoryCategory::GcHeap) };
-            let parent = unsafe { ll_object_new(ctx, parent_cls, MemoryCategory::GcHeap) };
+            let child = unsafe { new_constructed(ctx, child_cls, MemoryCategory::GcHeap) };
+            let parent = unsafe { new_constructed(ctx, parent_cls, MemoryCategory::GcHeap) };
             unsafe {
                 Object::prop_at(parent, 16)
                     .write(Value::entity(Tag::Object, child as *mut RcHeader));
@@ -388,7 +488,7 @@ mod tests {
             .build();
 
         with_ctx(|ctx| {
-            let obj = unsafe { ll_object_new(ctx, cls, MemoryCategory::GcHeap) };
+            let obj = unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) };
 
             assert!(unsafe { ll_release(obj as *mut RcHeader) });
             unsafe { ll_object_die(obj) };
@@ -422,7 +522,7 @@ mod tests {
             .build();
 
         with_ctx(|ctx| {
-            let obj = unsafe { ll_object_new(ctx, cls, MemoryCategory::GcHeap) };
+            let obj = unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) };
 
             // Last reference dies; teardown runs the destructor, which takes
             // and drops a transient $this reference.
@@ -467,8 +567,8 @@ mod tests {
         let rock = ClassBuilder::new("Rock").build();
 
         with_ctx(|ctx| {
-            let d = unsafe { ll_object_new(ctx, dog, MemoryCategory::RequestArena) };
-            let r = unsafe { ll_object_new(ctx, rock, MemoryCategory::RequestArena) };
+            let d = unsafe { new_constructed(ctx, dog, MemoryCategory::RequestArena) };
+            let r = unsafe { new_constructed(ctx, rock, MemoryCategory::RequestArena) };
             unsafe {
                 assert!(ll_instanceof(d, animal));
                 assert!(ll_instanceof(d, dog));

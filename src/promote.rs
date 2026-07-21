@@ -282,7 +282,7 @@ mod tests {
     use crate::memory::barrier::ref_store;
     use crate::memory::block_pool::BLOCK_KIND_ARENA;
     use crate::memory::context::{LLContext, set_current_context};
-    use crate::object::{ll_object_die, ll_object_new};
+    use crate::object::{ll_object_die, new_constructed};
     use crate::refcount::{DESTRUCTED, HAS_DESTRUCTOR};
     use crate::value::{Tag, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -318,7 +318,7 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let obj = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::RequestArena) };
+        let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
         let block = BlockHeader::of_ptr(obj as *const u8);
 
         unsafe { arena_reset_full(&mut arena) };
@@ -338,8 +338,8 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let holder = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
-        let obj = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::RequestArena) };
+        let holder = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
 
         unsafe { store_prop(&mut arena, holder, 16, obj) };
         let block = BlockHeader::of_ptr(obj as *const u8);
@@ -374,9 +374,9 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let holder = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
-        let a = unsafe { ll_object_new(&mut ctx, node, MemoryCategory::RequestArena) };
-        let b = unsafe { ll_object_new(&mut ctx, node, MemoryCategory::RequestArena) };
+        let holder = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, node, MemoryCategory::RequestArena) };
+        let b = unsafe { new_constructed(&mut ctx, node, MemoryCategory::RequestArena) };
 
         unsafe {
             store_prop(&mut arena, a, 16, b); // arena→arena: no logs
@@ -401,9 +401,9 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let holder = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
-        let cfg = unsafe { ll_object_new(&mut ctx, cfg_cls, MemoryCategory::GcHeap) };
-        let keeper = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::RequestArena) };
+        let holder = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let cfg = unsafe { new_constructed(&mut ctx, cfg_cls, MemoryCategory::GcHeap) };
+        let keeper = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
 
         unsafe {
             // Heap entity into an arena container: retain + release log.
@@ -445,8 +445,8 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let cfg = unsafe { ll_object_new(&mut ctx, cfg_cls, MemoryCategory::GcHeap) };
-        let tmp = unsafe { ll_object_new(&mut ctx, tmp_cls, MemoryCategory::RequestArena) };
+        let cfg = unsafe { new_constructed(&mut ctx, cfg_cls, MemoryCategory::GcHeap) };
+        let tmp = unsafe { new_constructed(&mut ctx, tmp_cls, MemoryCategory::RequestArena) };
 
         unsafe {
             store_prop(&mut arena, tmp, 16, cfg);
@@ -501,9 +501,9 @@ mod tests {
         let ctx_ptr: *mut LLContext = &mut ctx;
         set_current_context(ctx_ptr);
 
-        let holder = unsafe { ll_object_new(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
+        let holder = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
         HOLDER_SLOT.store(holder as usize, Ordering::Relaxed);
-        let obj = unsafe { ll_object_new(ctx_ptr, cls, MemoryCategory::RequestArena) };
+        let obj = unsafe { new_constructed(ctx_ptr, cls, MemoryCategory::RequestArena) };
 
         unsafe { arena_reset_full(arena_ptr) };
         set_current_context(std::ptr::null_mut());
@@ -533,9 +533,9 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let holder = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
-        let a = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::RequestArena) };
-        let b = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::RequestArena) };
+        let holder = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
+        let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
 
         unsafe {
             store_prop(&mut arena, holder, 16, a); // logged
@@ -565,9 +565,9 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let h1 = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
-        let h2 = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
-        let a = unsafe { ll_object_new(&mut ctx, val_cls, MemoryCategory::RequestArena) };
+        let h1 = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let h2 = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, val_cls, MemoryCategory::RequestArena) };
 
         unsafe {
             // A escapes into two heap holders: hold-count 2.
@@ -613,9 +613,9 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let owner = unsafe { ll_object_new(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
-        let a = unsafe { ll_object_new(&mut ctx, val_cls, MemoryCategory::GcHeap) };
-        let b = unsafe { ll_object_new(&mut ctx, val_cls, MemoryCategory::GcHeap) };
+        let owner = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, val_cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, val_cls, MemoryCategory::GcHeap) };
 
         unsafe {
             store_prop(&mut arena, owner, 16, a); // owner->x = a (a.rc 2)
@@ -656,7 +656,7 @@ mod tests {
             // `$s->next = new Node();` — a fresh arena object stored into an
             // already-traced survivor (arena→arena: not an escape).
             let node =
-                unsafe { ll_object_new(std::ptr::null_mut(), node_cls, MemoryCategory::RequestArena) };
+                unsafe { new_constructed(std::ptr::null_mut(), node_cls, MemoryCategory::RequestArena) };
             NEW_CHILD.store(node as usize, Ordering::Relaxed);
             unsafe {
                 let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
@@ -680,9 +680,9 @@ mod tests {
         let ctx_ptr: *mut LLContext = &mut ctx;
         set_current_context(ctx_ptr);
 
-        let holder = unsafe { ll_object_new(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
-        let s = unsafe { ll_object_new(ctx_ptr, node_cls, MemoryCategory::RequestArena) };
-        let _trigger = unsafe { ll_object_new(ctx_ptr, trigger_cls, MemoryCategory::RequestArena) };
+        let holder = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
+        let s = unsafe { new_constructed(ctx_ptr, node_cls, MemoryCategory::RequestArena) };
+        let _trigger = unsafe { new_constructed(ctx_ptr, trigger_cls, MemoryCategory::RequestArena) };
 
         NODE_CLS.store(node_cls as usize, Ordering::Relaxed);
         SURVIVOR.store(s as usize, Ordering::Relaxed);
@@ -748,10 +748,10 @@ mod tests {
         let ctx_ptr: *mut LLContext = &mut ctx;
         set_current_context(ctx_ptr);
 
-        let c1 = unsafe { ll_object_new(ctx_ptr, cont_cls, MemoryCategory::RequestArena) };
-        let c2 = unsafe { ll_object_new(ctx_ptr, cont_cls, MemoryCategory::RequestArena) };
-        let a = unsafe { ll_object_new(ctx_ptr, a_cls, MemoryCategory::GcHeap) };
-        let b = unsafe { ll_object_new(ctx_ptr, b_cls, MemoryCategory::GcHeap) };
+        let c1 = unsafe { new_constructed(ctx_ptr, cont_cls, MemoryCategory::RequestArena) };
+        let c2 = unsafe { new_constructed(ctx_ptr, cont_cls, MemoryCategory::RequestArena) };
+        let a = unsafe { new_constructed(ctx_ptr, a_cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(ctx_ptr, b_cls, MemoryCategory::GcHeap) };
 
         C2_PTR.store(c2 as usize, Ordering::Relaxed);
         B_PTR.store(b as usize, Ordering::Relaxed);

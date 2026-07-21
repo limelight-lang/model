@@ -101,11 +101,16 @@ pub unsafe extern "C" fn ll_arena_reserve(ctx: *mut LLContext, bytes: usize) {
     unsafe { (*resolve(ctx)).reserve(bytes) }
 }
 
+/// Register `obj` for a pre-destructor at reset. **False when the record
+/// could not be written**; see [`crate::object::object_constructed`],
+/// which is the entry generated code actually calls — registration
+/// belongs to the end of construction, not to allocation.
+///
 /// # Safety
 /// Same contract as [`ll_arena_alloc`]; `obj` must point to a live
 /// entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_arena_track_destructor(ctx: *mut LLContext, obj: *mut RcHeader) {
+pub unsafe extern "C" fn ll_arena_track_destructor(ctx: *mut LLContext, obj: *mut RcHeader) -> bool {
     unsafe { (*resolve(ctx)).track_destructor(obj) }
 }
 

@@ -190,15 +190,28 @@ impl Arena {
         if p.is_null() {
             return p;
         }
-        self.log_push(Log::Larges, p as usize);
+        assert!(
+            self.log_push(Log::Larges, p as usize),
+            "out of memory recording an arena large run — the record cannot              be dropped without leaking the run at reset"
+        );
         p
     }
 
     /// Objects with side-effect destructors register here; `reset`
     /// hands them back to the caller (the object-lifecycle layer owns
     /// the actual `__destruct` protocol).
-    pub fn track_destructor(&mut self, obj: *mut RcHeader) {
-        self.log_push(Log::Destructors, obj as usize);
+    ///
+    /// **False when the record could not be written.** Unlike the escape
+    /// and release logs, a lost destructor record does not dangle — it
+    /// silently skips a `__destruct`, which is a semantic break. The
+    /// answer is not to abort but to fail the creation that asked for it:
+    /// registration happens once `__construct` has returned, so a refusal
+    /// raises memory-exhausted at the creation site, which is exactly the
+    /// path a throwing constructor already takes
+    /// (`rfc/runtime/object-lifecycle.md`).
+    #[must_use]
+    pub fn track_destructor(&mut self, obj: *mut RcHeader) -> bool {
+        self.log_push(Log::Destructors, obj as usize)
     }
 
     /// Barrier hook: `entity` became an escapee (a longer-lived container
@@ -209,14 +222,20 @@ impl Arena {
     /// deduplicated by the reset-time subgraph mark). The count itself is
     /// maintained in the entity's `refcount`, not here.
     pub fn log_escapee(&mut self, entity: *mut RcHeader) {
-        self.log_push(Log::Escapees, entity as usize);
+        assert!(
+            self.log_push(Log::Escapees, entity as usize),
+            "out of memory recording an arena escapee — the record cannot              be dropped without dangling at reset"
+        );
     }
 
     /// Barrier hook: a heap entity was stored into one of this arena's
     /// containers. The log owns exactly one release per record; the
     /// barrier never releases a displaced value in an arena container.
     pub fn log_release_at_reset(&mut self, entity: *mut RcHeader) {
-        self.log_push(Log::ReleaseAtReset, entity as usize);
+        assert!(
+            self.log_push(Log::ReleaseAtReset, entity as usize),
+            "out of memory recording an arena release-at-reset — the record              cannot be dropped without leaking the entity"
+        );
     }
 
     /// End of request: run pre-destructors via the callback, then
@@ -337,7 +356,8 @@ impl Arena {
     /// calls the barrier on every unresolved reference store, so its
     /// size is the thing that decides whether the store inlines at all.
     #[inline]
-    fn log_push(&mut self, which: Log, value: usize) {
+    #[must_use]
+    fn log_push(&mut self, which: Log, value: usize) -> bool {
         let head = match which {
             Log::Destructors => self.destructors,
             Log::Larges => self.larges,
@@ -346,7 +366,11 @@ impl Arena {
         };
 
         let head = if head.is_null() || unsafe { (*head).count } == LOG_SEG_RECORDS {
-            self.grow_log(head)
+            let grown = self.grow_log(head);
+            if grown.is_null() {
+                return false;
+            }
+            grown
         } else {
             head
         };
@@ -363,6 +387,7 @@ impl Arena {
             Log::Escapees => self.escapees = head,
             Log::ReleaseAtReset => self.release_at_reset = head,
         }
+        true
     }
 
     /// The full segment: carve a fresh one from the arena's own bump
@@ -373,6 +398,9 @@ impl Arena {
     #[inline(never)]
     fn grow_log(&mut self, head: *mut LogSegment) -> *mut LogSegment {
         let seg = self.alloc(size_of::<LogSegment>()) as *mut LogSegment;
+        if seg.is_null() {
+            return std::ptr::null_mut();
+        }
         // A different failure from "the program asked for memory and did
         // not get it", and it must not be quietly turned into one. Losing
         // a log record is a broken invariant: an unrecorded escapee

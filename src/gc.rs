@@ -422,7 +422,7 @@ mod tests {
     use crate::memory::arena::Arena;
     use crate::memory::barrier::ref_store;
     use crate::memory::context::LLContext;
-    use crate::object::ll_object_new;
+    use crate::object::new_constructed;
     use crate::refcount::ll_release;
     use crate::value::Tag;
 
@@ -451,8 +451,8 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
 
-        let a = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
-        let b = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         unsafe {
             link(&mut arena, a, 16, b); // a→b: b rc=2
             link(&mut arena, b, 16, a); // b→a: a rc=2
@@ -473,7 +473,7 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
 
-        let a = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         unsafe {
             link(&mut arena, a, 16, a); // a→a: rc=2
             assert!(!ll_release(a as *mut RcHeader));
@@ -489,8 +489,8 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
 
-        let a = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
-        let b = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         unsafe {
             link(&mut arena, a, 16, b);
             link(&mut arena, b, 16, a);
@@ -517,7 +517,7 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
 
-        let a = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         unsafe {
             crate::refcount::ll_retain(a as *mut RcHeader);
             crate::refcount::ll_retain(a as *mut RcHeader); // rc=3
@@ -550,7 +550,7 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
 
-        let a = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         unsafe {
             // Plain death: refcount to zero, no non-zero decrement ever.
             assert!(ll_release(a as *mut RcHeader));
@@ -576,8 +576,8 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
 
-        let p = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
-        let c = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let p = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let c = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
 
         unsafe {
             // p.next = c  → c held by p's slot (rc 2) and by us (the creator
@@ -628,7 +628,7 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
 
-        let a = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         unsafe {
             link(&mut arena, a, 16, a); // self-cycle: a.rc = 2
             set_test_threshold(1); // the buffering release will cross it

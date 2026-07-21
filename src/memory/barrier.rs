@@ -346,7 +346,7 @@ mod tests {
         use crate::class::ClassBuilder;
         use crate::gc::{ll_gc_collect_cycles, set_test_threshold};
         use crate::memory::context::LLContext;
-        use crate::object::{Object, ll_object_new};
+        use crate::object::{Object, new_constructed};
         use crate::value::{Tag, Value};
 
         static COLLECTED: std::sync::atomic::AtomicUsize =
@@ -370,8 +370,8 @@ mod tests {
         let mut ctx = LLContext { arena: &mut arena };
 
         unsafe {
-            let owner = ll_object_new(&mut ctx, owner_cls, MemoryCategory::GcHeap);
-            let old = ll_object_new(&mut ctx, dying_cls, MemoryCategory::GcHeap);
+            let owner = new_constructed(&mut ctx, owner_cls, MemoryCategory::GcHeap);
+            let old = new_constructed(&mut ctx, dying_cls, MemoryCategory::GcHeap);
             let next = Object::prop_at(owner, 16);
             let mine = Object::prop_at(owner, 32);
 

@@ -132,9 +132,11 @@ slot onto the block's free list and decrements `used`.
 Rare tails — refill, walking past a full block, a block emptying, a full
 block regaining room — live in separate functions. For `alloc` they are
 `#[cold] #[inline(never)]`, which is what keeps the fast path a frameless
-leaf that inlines into `ll_alloc`. **`free` does not do this yet**: it
-compiles to a real out-of-line call. Diagnosed with IR evidence, fix
-pending a measurement (`dev/BENCHMARKS.md`, H11).
+leaf that inlines into `ll_alloc`. `free` is split the same way. The
+split was measured and changed nothing outside the noise floor, which is
+the expected result for a path whose tails run a few times in ten
+thousand calls (`dev/BENCHMARKS.md`, H11); it is kept for the shape, not
+for a number.
 
 ### Cross-thread free
 
@@ -212,6 +214,18 @@ An `Object` is that header, a class pointer, then 16-byte `Value`
 property slots. `Class` descriptors are immortal and carry their vtable
 inline, after the fixed fields.
 
+**Creation is two steps, and only the second owes a destructor.**
+`ll_object_new` is the factory: it allocates and stamps the header, and
+that is all. `ll_object_constructed` is called once the user constructor
+has returned successfully — it sets the header's `HAS_DESTRUCTOR` flag
+and, for an arena object, writes the destructor-log record. Teardown
+dispatches on that flag, never on the class, so an object whose
+constructor threw runs our own teardown and not its `__destruct`
+(`rfc/runtime/object-lifecycle.md`). Registration can be refused when
+memory is short: it reports false, and the creation fails with
+memory-exhausted — the same observable outcome as a throwing
+constructor.
+
 Trailing inline data — property slots, vtables, string bytes — is always
 reached through a raw pointer spanning the whole allocation, never
 through a reference to the fixed header. A reference carries provenance
@@ -223,8 +237,11 @@ Reference counting for `GcHeap`. Arena objects are **not counted at
 all** — they die with the arena. Immortals are never touched.
 
 Cycles are collected by Bacon–Rajan trial deletion: a non-zero decrement
-buffers the object as a candidate root, and a threshold triggers a
-synchronous collection.
+buffers the object as a candidate root, and crossing the threshold
+**arms** a collection — it never runs one inline. Buffering happens
+inside `ll_release`, mid-mutation, where refcounts and edges disagree;
+the collection fires at a clean point, an explicit
+`ll_gc_collect_cycles` or the compiler's `ll_gc_maybe_collect` poll.
 
 ### The store barrier
 
@@ -243,6 +260,15 @@ The escape count lives in the escapee, not in a remembered set of holder
 slots. That is deliberate and was a correctness fix: a holder can die
 before the arena resets, and reading its slot back at reset dereferenced
 freed memory.
+
+Two rules about the slot itself, both paid for by defects. **The barrier
+writes the whole 16-byte `Value`, not just its payload word** — one slot
+has one writer, and a caller stamping the tag afterwards leaves the slot
+torn in between. And **the slot is published before the displaced value
+is released**, because releasing it can run `__destruct`, which is user
+code that may collect: a collection that still sees the old edge
+subtracts a reference the count has already given up, and frees a value
+whose teardown is on the stack.
 
 ## Arena reset: the settling loop
 
