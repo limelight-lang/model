@@ -52,6 +52,31 @@ genuinely unclear whether something *is* a bug, or whether fixing it
 drags in a larger change, ask; do not decide it quietly in either
 direction.
 
+## Naming: write the word
+
+A name is clear and states what the thing is. Short is good, but it is
+the second goal, not the first — a name that is short by dropping
+letters has bought nothing and sold the word.
+
+**Abbreviations are avoided, effectively always.** `InterfaceEntry`,
+not `IfaceEntry`; `interface_count`, not `iface_count`;
+`declaration_index`, not `decl_idx`. Four saved characters cost every
+future reader a small act of decoding, and there are many more readings
+than writings.
+
+The exceptions are names that are *already* the word in this domain,
+where expanding them would be the unclear choice:
+
+- established terms — `vtbl`, `itable`, `refcount`, `rc`, `gc`, `abi`,
+  `tls`, `id`;
+- what the thing is called outside our code — a C ABI symbol, a field
+  mirroring a published structure, a term the RFC defines;
+- conventional locals whose scope is a few lines — `i`, `n`, `ptr`,
+  `cls`, `b` for a block in a five-line loop.
+
+When in doubt, write the word. A long name in a hot function costs
+nothing at runtime.
+
 ## Documentation follows the logic, in the same commit
 
 **When behaviour changes, the documentation describing it changes with
