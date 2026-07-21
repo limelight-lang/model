@@ -11,6 +11,7 @@ pub mod buffer_arena;
 pub mod context;
 pub mod heap;
 pub mod immortal;
+pub(crate) mod reserve;
 pub mod stats;
 pub mod stdapi;
 

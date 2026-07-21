@@ -419,6 +419,16 @@ pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
 /// refcounts and edges consistent).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
+    // The safepoint is also where the barrier's reserve is refilled. It
+    // is the only place that can be: drawing on the reserve happens
+    // inside `ll_ref_store`, which has no way to report anything, while
+    // this poll runs in a frame that can raise. Refilling here is what
+    // turns "the barrier would eventually fail" into "the next safepoint
+    // raises memory-exhausted", thousands of records earlier
+    // (`rfc/runtime/exceptions.md`, "The log reserve protocol").
+    if crate::memory::reserve::is_drawn() {
+        let _ = crate::memory::reserve::replenish();
+    }
     if COLLECT_PENDING.with(|p| p.get()) {
         unsafe { collect_cycles() }
     } else {
@@ -714,6 +724,9 @@ mod tests {
     /// hunt for something that was never there.
     #[test]
     fn a_refused_candidate_is_left_unmarked_and_arms_a_collection() {
+        // `FORCE_BUFFER_REFUSAL` is process-global, so this has to hold
+        // the test lock like any other fault injection here.
+        let _g = crate::memory::block_pool::test_guard();
         use std::sync::atomic::Ordering;
 
         let mut e = RcHeader::new(MemoryCategory::GcHeap, 0);

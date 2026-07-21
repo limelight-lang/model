@@ -1332,6 +1332,11 @@ pub extern "C" fn ll_thread_init() {
         }
         unsafe { heap.write(Heap::new()) };
         tls::set(heap);
+        // Fill the barrier's reserve while a refusal is still reportable:
+        // from here the thread's first allocation reports null, and the
+        // store barrier has no channel at all
+        // (`crate::memory::reserve`).
+        let _ = crate::memory::reserve::replenish();
         // `try_with`, not `with`: this can run *during* TLS teardown, when
         // a destructor allocates and self-initializes a heap on a thread
         // whose `EXIT_GUARD` slot is already destroyed. `with` panics

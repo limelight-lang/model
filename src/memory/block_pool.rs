@@ -349,8 +349,14 @@ pub(crate) fn test_guard() -> TestGuard {
     // contract (see `heap::ll_thread_init`); idempotent per thread, so
     // folding it into the shared test fixture beats patching every test
     // that happens to allocate a `GcHeap`/`LongLived` object.
+    //
+    // Lock first, initialize second. Init takes blocks — the heap's own,
+    // and the barrier reserve's — so doing it before the lock lets a
+    // thread queued on the lock move the global block count under the
+    // test that is currently running and counting.
+    let guard = TestGuard(LOCK.lock().unwrap_or_else(|e| e.into_inner()));
     crate::memory::heap::ll_thread_init();
-    TestGuard(LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+    guard
 }
 
 /// Holds the test lock and, on drop, releases this thread's heap *while
@@ -365,7 +371,11 @@ pub(crate) struct TestGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, (
 impl Drop for TestGuard {
     fn drop(&mut self) {
         // Runs before the mutex guard field is released: the thread's
-        // blocks return to the pool inside the serialized section.
+        // blocks return to the pool inside the serialized section. The
+        // barrier reserve is spare memory held by the same thread, and
+        // block-accounting tests count what is out — so it goes back
+        // here too, rather than sitting on two blocks per test thread.
+        crate::memory::reserve::drain_for_test();
         crate::memory::heap::ll_thread_exit();
     }
 }

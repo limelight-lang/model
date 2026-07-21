@@ -8,6 +8,37 @@ never edited or deleted.
 
 ---
 
+## 2026-07-21 — the store barrier is funded, not checked
+
+**Decided:** two blocks per thread are held back for arena log growth
+(`memory::reserve`). `grow_log` draws on them when the pool refuses; the
+draw sets a flag that `ll_gc_maybe_collect` — the compiler's safepoint
+poll — refills on. A reserve block is linked into the arena's block list
+so reset returns it, but it **never becomes the arena's bump block**.
+
+**Why:** `ll_ref_store` has no channel and must not grow one — a check
+after every reference store is the Zend shape this runtime rejects. But
+it can fail, because recording an escape grows a log. The reserve does
+not make failure impossible, it *moves* it: the barrier keeps working
+from the reserve, and the next poll, which runs in a frame that can
+raise, turns the shortage into an ordinary memory-exhausted exception —
+thousands of records before the reserve would run dry.
+
+**Considered and rejected:** intrusive log links in the entities
+themselves, which would need no reserve at all. It fails on
+release-at-reset (one heap entity gets one record per store, in several
+arenas' logs) and would cost 8 bytes in every arena object's header —
+paying permanently, per entity, to remove a reserve that costs two
+blocks per thread.
+
+**Cost:** the arithmetic depends on a compiler contract that does not
+exist yet — a bounded number of barrier operations between two polls.
+Until a compiler emits polls, the refill only happens where something
+calls `ll_gc_maybe_collect`, so in this crate the reserve is a
+mechanism with its trigger stubbed by tests.
+
+---
+
 ## 2026-07-21 — the barrier owns the whole slot, and publishes it first
 
 **Decided:** `ref_store` takes `slot: *mut Value` and `new: Value`, and

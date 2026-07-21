@@ -32,6 +32,11 @@ versions live in `docs/history/`, marked at the top.
 - Benches: `benches/alloc.rs`, `benches/standard.rs`; external probes
   in `bench-external/`.
 
+`src/memory/reserve.rs` — the per-thread block reserve that keeps the
+store barrier's log growth from failing; drawn in `Arena::grow_log`,
+refilled at `ll_gc_maybe_collect`. Design in
+`rfc/runtime/exceptions.md`, "The log reserve protocol".
+
 ## Hot paths
 
 - Allocation: `Heap::alloc` → `ll_alloc`, expected to inline fully,

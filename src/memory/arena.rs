@@ -69,6 +69,13 @@ pub struct Arena {
     /// does NOT release a displaced value on overwrite
     /// (`rfc/model/memory/arenas.md`, "Why no release on overwrite").
     release_at_reset: *mut LogSegment,
+    /// Carving cursor for log segments cut from a reserve block, kept
+    /// apart from `bump` on purpose: a reserve block must never become
+    /// the arena's allocation front, or the next ordinary `alloc` would
+    /// spend the memory that exists so the barrier cannot fail
+    /// (`crate::memory::reserve`).
+    log_bump: *mut u8,
+    log_limit: *mut u8,
 }
 
 impl Default for Arena {
@@ -87,6 +94,8 @@ impl Arena {
             larges: std::ptr::null_mut(),
             escapees: std::ptr::null_mut(),
             release_at_reset: std::ptr::null_mut(),
+            log_bump: std::ptr::null_mut(),
+            log_limit: std::ptr::null_mut(),
         }
     }
 
@@ -340,6 +349,9 @@ impl Arena {
 
         self.bump = std::ptr::null_mut();
         self.limit = std::ptr::null_mut();
+        // The carving cursor pointed into a block that just went home.
+        self.log_bump = std::ptr::null_mut();
+        self.log_limit = std::ptr::null_mut();
     }
 
     /// Append a record to an in-arena log, growing the segment chain
@@ -397,31 +409,59 @@ impl Arena {
     #[cold]
     #[inline(never)]
     fn grow_log(&mut self, head: *mut LogSegment) -> *mut LogSegment {
-        let seg = self.alloc(size_of::<LogSegment>()) as *mut LogSegment;
+        let mut seg = self.alloc(size_of::<LogSegment>()) as *mut LogSegment;
+        if seg.is_null() {
+            // Ordinary memory is gone, which is exactly what the thread's
+            // reserve is held back for (`crate::memory::reserve`).
+            seg = self.carve_log_from_reserve() as *mut LogSegment;
+        }
+        // Past the reserve there is nothing left to try. The refusal is
+        // reported rather than resolved here, because what a lost record
+        // means differs per log: for escapees, release-at-reset and large
+        // runs it is a broken invariant and the caller aborts; a lost
+        // destructor record only skips a side effect, and that one fails
+        // the object's creation instead.
         if seg.is_null() {
             return std::ptr::null_mut();
         }
-        // A different failure from "the program asked for memory and did
-        // not get it", and it must not be quietly turned into one. Losing
-        // a log record is a broken invariant: an unrecorded escapee
-        // dangles when the arena resets, an unrecorded large run is never
-        // freed. There is nothing safe to continue into, so this aborts
-        // where an ordinary allocation failure reports.
-        //
-        // The real fix is the reserve the exception design already calls
-        // for (`rfc/runtime/exceptions.md`): the failure path has to be
-        // funded in advance, because by the time it runs there is nothing
-        // left to fund it with. Not built yet.
-        assert!(
-            !seg.is_null(),
-            "out of memory recording an arena log entry — the record \
-             cannot be dropped without dangling at reset"
-        );
         unsafe {
             (*seg).next = head;
             (*seg).count = 0;
         }
         seg
+    }
+
+    /// Cut one log segment out of the thread's reserve.
+    ///
+    /// The reserve block is linked into this arena's block list, so reset
+    /// hands it back to the pool like any other, but it is deliberately
+    /// **not** installed as `bump`/`limit`: ordinary allocation must keep
+    /// reporting null while the reserve lasts, because that null is what
+    /// lets a Limelight frame raise memory-exhausted. Instead the block
+    /// is carved by `log_bump`/`log_limit`, which only this path uses —
+    /// so one block yields ~15 segments rather than one.
+    #[cold]
+    #[inline(never)]
+    fn carve_log_from_reserve(&mut self) -> *mut u8 {
+        let size = round_up_8(size_of::<LogSegment>());
+
+        if self.log_bump.is_null() || self.log_bump.wrapping_add(size) > self.log_limit {
+            let block = crate::memory::reserve::draw();
+            if block.is_null() {
+                return std::ptr::null_mut();
+            }
+            unsafe {
+                (*block).kind = BLOCK_KIND_ARENA;
+                (*block).next = self.blocks;
+            }
+            self.blocks = block;
+            self.log_bump = BlockHeader::payload_start(block);
+            self.log_limit = BlockHeader::end(block);
+        }
+
+        let p = self.log_bump;
+        self.log_bump = p.wrapping_add(size);
+        p
     }
 
     /// Visit every record of a segment chain (newest segment first).
@@ -587,6 +627,56 @@ mod tests {
             !arena.try_extend_in_place(buf, 128, 256),
             "no longer the top - must refuse"
         );
+    }
+
+    /// The barrier has no way to report a failure, so its log growth must
+    /// not have one. When the pool refuses, the segment comes from the
+    /// thread's reserve — and the escape record still lands, which is the
+    /// whole point: a lost escapee dangles at reset.
+    ///
+    /// The reserve block must not become the arena's bump block either.
+    /// If it did, ordinary allocation would spend the memory that exists
+    /// so the barrier cannot fail, and the null that lets a frame raise
+    /// would never be returned.
+    #[test]
+    fn the_barrier_log_grows_from_the_reserve_when_the_pool_refuses() {
+        let _g = crate::memory::block_pool::test_guard();
+        use crate::memory::block_pool::FORCE_OOM;
+        use std::sync::atomic::Ordering;
+
+        crate::memory::reserve::drain_for_test();
+        assert!(crate::memory::reserve::replenish());
+
+        let mut arena = Arena::new();
+        let mut entity = RcHeader::new(MemoryCategory::RequestArena, 0);
+
+        FORCE_OOM.store(true, Ordering::Relaxed);
+        assert!(
+            arena.alloc(16).is_null(),
+            "ordinary allocation reports the exhaustion"
+        );
+        // Records an escapee: this is the path with no channel at all.
+        arena.log_escapee(&mut entity);
+        assert!(
+            arena.alloc(16).is_null(),
+            "and still reports it — the reserve is not the arena's bump block"
+        );
+        FORCE_OOM.store(false, Ordering::Relaxed);
+
+        assert!(
+            crate::memory::reserve::is_drawn(),
+            "the draw asks the next safepoint for a refill"
+        );
+        assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+        assert!(
+            !crate::memory::reserve::is_drawn(),
+            "which the safepoint answers"
+        );
+
+        let mut seen = 0;
+        arena.reset_with(|_| {}, |_| seen += 1);
+        assert_eq!(seen, 1, "the escapee record survived the exhaustion");
+        crate::memory::reserve::drain_for_test();
     }
 
     #[test]
