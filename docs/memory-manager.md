@@ -282,9 +282,15 @@ implementation.
 
 ## What is not here
 
-- **`GcStrategy`** exists as a trait with implementations, but nothing
-  consumes it — `refcount.rs` and `object.rs` call `gc::*` directly.
-  Scaffolding for a decision not yet made.
+- **Strategy selection.** The RFC's four-interface contract is not
+  represented in code, and deliberately so: `refcount.rs` and
+  `object.rs` call `gc::*` directly, and the one composition built is
+  `rc-trace`. A `GcStrategy` trait with trivial impls used to stand in
+  for it and was removed — nothing constructed it, and being
+  dispatch-shaped it could not deliver the build-time choice the
+  contract asks for. When a `nogc` or pure-`rc` build is wanted, a
+  cargo feature around those call sites compiles the buffering away,
+  which is what "selected at build time" actually means.
 - **Telemetry beyond block granularity.** Aggregate stats are always on
   and cost nothing per object; the object registry, lifetimes and
   per-allocation metadata are designed in

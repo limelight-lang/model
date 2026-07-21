@@ -64,10 +64,14 @@ actor/GC coordination via mailbox and the message-payload table
   sparse-block evacuation; line recycling of retained blocks (needs
   the Immix-shaped GcHeap allocator, next item); flags-table extension
   (`ESCAPED`, `ENTITY_OBJECT`) to be reflected in rfc classes.md.
-- [x] **GC strategy contract first** — `gc.rs`: the 4-interface
-  contract as the `GcStrategy` trait (store hook, safepoint need,
-  `GcHeap`-only allocator, metadata consumption), `NoGc`/`PureRc` as
-  the trivial impls, `rc-trace` as the first real one: candidate-root
+- [x] **GC strategy contract first** — `gc.rs`: `rc-trace` as the first
+  real composition. (The 4-interface contract was first sketched as a
+  `GcStrategy` trait with `NoGc`/`PureRc` impls; that has since been
+  **removed** — nothing constructed it, and a trait is dispatch-shaped
+  where the contract asks for a build-time choice that compiles the
+  other strategies away. A cargo feature is the right tool when a
+  second build is wanted; the contract itself lives in the RFC.)
+  Candidate-root
   buffering on non-zero decrements (dedup via the buffered bit,
   forget-on-death), Bacon–Rajan synchronous trial deletion on the
   reserved color bits, threshold-triggered (`ll_gc_collect_cycles`

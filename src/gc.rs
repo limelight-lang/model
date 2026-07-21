@@ -1,13 +1,27 @@
-//! GC strategies: the fixed contract, and `rc-trace` — the default.
+//! The `rc-trace` cycle collector.
 //!
 //! Per `rfc/model/gc/strategies.md` there is no universal GC: the
-//! collector is a pluggable strategy behind a fixed four-interface
-//! contract, selected at build time. [`GcStrategy`] *is* that contract
-//! in Rust-trait form; strategies implement it, nothing else in the
-//! runtime knows which one is active. This crate's build corresponds
-//! to the `rc-trace` composition (ARC + arenas + stop-the-thread cycle
-//! tracing); a NoGC or pure-RC build compiles the candidate buffering
-//! away — modeled here by the trivial [`NoGc`] / [`PureRc`] impls.
+//! collector is meant to be a strategy behind a fixed four-interface
+//! contract, chosen at build time. **That contract lives in the RFC, not
+//! in this file.** This crate implements one composition — `rc-trace`:
+//! ARC as the primary reclamation path, arenas absorbing the bulk, and
+//! stop-the-thread tracing for cycles only.
+//!
+//! There is **no selection mechanism today**, and the module should not
+//! pretend otherwise: `ll_release` calls [`buffer_candidate`] directly,
+//! and `ll_object_die` calls [`forget_candidate`] directly. A `nogc` or
+//! pure-`rc` build would compile the buffering away, and the tool for
+//! that is a cargo feature around those call sites — build-time
+//! selection with nothing left behind, which is what the contract asks
+//! for. It is not built yet.
+//!
+//! A `GcStrategy` trait with `NoGc`/`PureRc`/`RcTrace` impls used to sit
+//! here. It was removed: nothing constructed or called it, its methods
+//! took `&mut self` with no instance to hold, and being dispatch-shaped
+//! it could not deliver the one thing it claimed — a build-time choice
+//! that compiles the other strategies away. The abstraction is worth
+//! introducing when a second real strategy exists and its shape is
+//! known; MMTk, when it arrives, is that moment.
 //!
 //! The `rc-trace` cycle collector is Bacon–Rajan synchronous trial
 //! deletion (the Zend architecture done right): candidate roots are
@@ -38,83 +52,6 @@ use crate::refcount::{
     CYCLE_COLLECTOR_BUFFERED, CYCLE_COLLECTOR_COLOR_SHIFT, ENTITY_OBJECT, MemoryCategory, RcHeader,
 };
 use crate::value::Value;
-
-/// The strategy contract (`rfc/model/gc/strategies.md`). Selection is
-/// a build-time decision; hot paths of the selected strategy are
-/// expected to inline (no dynamic dispatch anywhere in the runtime).
-pub trait GcStrategy {
-    const NAME: &'static str;
-    /// §1: does this strategy contribute a hook to `ll_ref_store`?
-    /// (SATB's deletion barrier will; nothing else does.)
-    const HAS_STORE_HOOK: bool = false;
-    /// §2: does this strategy need poll safepoints? (Concurrent
-    /// marking only; `rc-trace` parks the mutator instead.)
-    const NEEDS_SAFEPOINTS: bool = false;
-
-    /// §3: the strategy owns the `GcHeap` allocator. Arenas allocate
-    /// independently and are invisible to it.
-    fn heap_alloc(&mut self, size: usize) -> *mut u8;
-
-    /// § 3, releasing side.
-    ///
-    /// # Safety
-    /// `ptr` must be a live `heap_alloc` allocation of this strategy.
-    unsafe fn heap_free(&mut self, ptr: *mut u8);
-
-    /// A non-zero decrement happened on a heap object: a possible
-    /// cycle root (§4 consumes object metadata to trace from it).
-    ///
-    /// # Safety
-    /// `entity` must be live.
-    unsafe fn buffer_candidate(&mut self, _entity: *mut RcHeader) {}
-
-    /// Run a collection cycle; returns entities reclaimed.
-    fn collect(&mut self) -> usize {
-        0
-    }
-}
-
-/// `nogc`: bump allocation, never frees. Benchmark baseline.
-pub struct NoGc;
-impl GcStrategy for NoGc {
-    const NAME: &'static str = "nogc";
-    fn heap_alloc(&mut self, size: usize) -> *mut u8 {
-        unsafe { crate::memory::stdapi::ll_alloc(size, 16) }
-    }
-    unsafe fn heap_free(&mut self, _ptr: *mut u8) {} // never frees
-}
-
-/// `rc`: ARC + arenas, leaks cycles. Approximately elephc's model.
-pub struct PureRc;
-impl GcStrategy for PureRc {
-    const NAME: &'static str = "rc";
-    fn heap_alloc(&mut self, size: usize) -> *mut u8 {
-        unsafe { crate::memory::stdapi::ll_alloc(size, 16) }
-    }
-    unsafe fn heap_free(&mut self, ptr: *mut u8) {
-        unsafe { crate::memory::stdapi::ll_free(ptr) }
-    }
-}
-
-/// `rc-trace` (the default): ARC is the primary reclamation path,
-/// arenas absorb the bulk, stop-the-thread tracing collects cycles
-/// only. The candidate buffer and collector below are its machinery.
-pub struct RcTrace;
-impl GcStrategy for RcTrace {
-    const NAME: &'static str = "rc-trace";
-    fn heap_alloc(&mut self, size: usize) -> *mut u8 {
-        unsafe { crate::memory::stdapi::ll_alloc(size, 16) }
-    }
-    unsafe fn heap_free(&mut self, ptr: *mut u8) {
-        unsafe { crate::memory::stdapi::ll_free(ptr) }
-    }
-    unsafe fn buffer_candidate(&mut self, entity: *mut RcHeader) {
-        unsafe { buffer_candidate(entity) }
-    }
-    fn collect(&mut self) -> usize {
-        unsafe { collect_cycles() }
-    }
-}
 
 // --- rc-trace machinery ----------------------------------------------------
 
