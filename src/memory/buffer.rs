@@ -82,6 +82,9 @@ pub(crate) fn desired_capacity(current: usize, min_capacity: usize, hint: usize)
 /// moved) payload pointer. Growth algorithm per `docs/memory-manager.md`:
 /// enough capacity → nothing; top-of-bump → extend in place; otherwise
 /// fresh payload + copy, the old payload dies with the arena.
+///
+/// **Null on exhaustion**, with `buf` left exactly as it was — the same
+/// contract as every other allocation path here.
 pub fn buffer_ensure(
     arena: &mut Arena,
     buf: &mut Buffer,
@@ -112,6 +115,14 @@ pub fn buffer_ensure(
         arena.alloc_large(target)
     };
 
+    if new_data.is_null() {
+        // Out of memory. Leave the buffer exactly as it was — old payload,
+        // old capacity, still valid — and report, the same contract as
+        // `buffer_ensure_longlived`. Stamping the null in would give the
+        // caller a buffer claiming capacity over no memory at all.
+        return std::ptr::null_mut();
+    }
+
     if buf.len > 0 {
         unsafe { std::ptr::copy_nonoverlapping(buf.data, new_data, buf.len) };
     }
@@ -122,17 +133,25 @@ pub fn buffer_ensure(
     buf.data
 }
 
-/// Append `bytes` to `buf`, growing as needed.
-pub fn buffer_append(arena: &mut Arena, buf: &mut Buffer, bytes: &[u8]) {
+/// Append `bytes` to `buf`, growing as needed. False when the growth
+/// was refused: nothing is appended and `buf` is untouched.
+pub fn buffer_append(arena: &mut Arena, buf: &mut Buffer, bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return true; // nothing to grow for, and an empty buffer has no payload
+    }
     let needed = buf.len + bytes.len();
-    buffer_ensure(arena, buf, needed, 0);
+    if buffer_ensure(arena, buf, needed, 0).is_null() {
+        return false;
+    }
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.data.add(buf.len), bytes.len()) };
     buf.len = needed;
+    true
 }
 
 // --- C ABI ---------------------------------------------------------------
 
-/// Ensure the buffer holds `min_capacity`; returns the payload pointer.
+/// Ensure the buffer holds `min_capacity`; returns the payload pointer,
+/// or null if memory ran out (the buffer keeps its old payload).
 /// `hint` is a growth recommendation (0 = let the mode decide).
 ///
 /// # Safety
@@ -174,6 +193,35 @@ mod tests {
         assert_eq!(b.len, 0);
         assert!(b.capacity >= 20);
         assert_eq!(b.capacity % 8, 0);
+    }
+
+    /// A refused growth must leave the buffer as it was. Copying into the
+    /// null payload was a write through null; stamping the new capacity in
+    /// would have left a buffer promising memory it does not own.
+    #[test]
+    fn refused_growth_leaves_the_buffer_intact() {
+        let _g = crate::memory::block_pool::test_guard();
+        use crate::memory::block_pool::FORCE_OOM;
+        use std::sync::atomic::Ordering;
+
+        let mut a = arena();
+        let mut b = Buffer::new();
+        assert!(buffer_append(&mut a, &mut b, b"hello"));
+        // Not the bump top any more, so growth must allocate; and the rest
+        // of the block is too small for the request below, so the
+        // allocation has to ask the pool — which is what is refused.
+        let _intruder = a.alloc(40_000);
+        let (data, capacity) = (b.data, b.capacity);
+
+        FORCE_OOM.store(true, Ordering::Relaxed);
+        let p = buffer_ensure(&mut a, &mut b, 40_000, 0);
+        let appended = buffer_append(&mut a, &mut b, &[0u8; 40_000]);
+        FORCE_OOM.store(false, Ordering::Relaxed);
+
+        assert!(p.is_null(), "exhaustion must report, not abort");
+        assert!(!appended, "a refused append reports instead of writing");
+        assert_eq!((b.data, b.capacity, b.len), (data, capacity, 5));
+        assert_eq!(unsafe { std::slice::from_raw_parts(b.data, 5) }, b"hello");
     }
 
     #[test]

@@ -138,6 +138,13 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
     if size <= BLOCK_PAYLOAD {
         // One pooled block holds the object; payload at +256.
         let block = BlockPool::global().get() as *mut LargeHeader;
+        if block.is_null() {
+            // The pool reports exhaustion rather than aborting, so this
+            // path has to carry the report the rest of the way: writing
+            // the header first would dereference null, which is how the
+            // old abort came back as UB.
+            return std::ptr::null_mut();
+        }
         unsafe {
             block.write(LargeHeader {
                 kind: BLOCK_KIND_LARGE,
@@ -341,6 +348,30 @@ mod tests {
             assert_eq!(*(p as *mut u64), 0xDEAD_BEEF);
             ll_free(p);
         }
+    }
+
+    /// The pooled LARGE path is the middle band — bigger than a heap slot,
+    /// smaller than a block payload — and it is the band the exhaustion
+    /// contract was written for: null, never a dead process. It used to
+    /// write the block header before looking at the pointer, so a refusal
+    /// there was a null dereference.
+    #[test]
+    fn pooled_large_reports_exhaustion_instead_of_writing_through_null() {
+        let _g = crate::memory::block_pool::test_guard();
+        use crate::memory::block_pool::FORCE_OOM;
+        use std::sync::atomic::Ordering;
+
+        FORCE_OOM.store(true, Ordering::Relaxed);
+        let p = unsafe { ll_alloc(20_000, 16) };
+        let aligned = unsafe { ll_alloc(40, 64) }; // align > 16 routes here too
+        FORCE_OOM.store(false, Ordering::Relaxed);
+
+        assert!(p.is_null(), "exhaustion must report, not abort");
+        assert!(aligned.is_null(), "the over-aligned route reports too");
+
+        let q = unsafe { ll_alloc(20_000, 16) };
+        assert!(!q.is_null(), "the path survived the refusal");
+        unsafe { ll_free(q) };
     }
 
     #[test]
