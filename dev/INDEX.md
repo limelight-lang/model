@@ -6,9 +6,20 @@ located.
 
 ## Modules
 
-Knowledge map: `dev/ARCHITECTURE.md` — **not written yet**. Until it
-exists, the module docs at the top of each file are the map;
-`src/memory/heap.rs` and `src/promote.rs` carry the fullest ones.
+Knowledge map: `dev/ARCHITECTURE.md` — **not written yet, and agreed to
+be written** (2026-07-21). What is missing is the document that says how
+the crate works *together*, as opposed to where things are (this file),
+why they were decided (`DECISIONS.md`) or what one file does (its module
+doc): the layers and who owns whom, the four end-to-end paths
+(allocation, reference store, object death, arena reset), and the
+invariants that live *between* modules rather than inside one — the
+block header being a tagged union with `kind` at offset 0, the pool's
+`next` overlaying the heap's `used`, an escapee's hold-count living in
+its `refcount`, who owns a block at each moment. Those cross-module
+invariants are exactly where documentation drifted this week, because
+there is nowhere to write them down. Until it exists, the module docs at
+the top of each file are the map; `src/memory/heap.rs` and
+`src/promote.rs` carry the fullest ones.
 
 `docs/memory-manager.md` covers `src/memory/` end to end — layers, block
 header layout and why, the heap, cross-thread free, abandonment, the
