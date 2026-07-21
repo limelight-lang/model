@@ -180,7 +180,17 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
     // (`ll_buffer_cycle_root` of rfc/model/lowering.md). Only objects
     // buffer — only they carry traceable reference slots. In a NoGC or
     // pure-RC build this call compiles away with the strategy.
-    if header.memory_category() == MemoryCategory::GcHeap && header.flags & ENTITY_OBJECT != 0 {
+    //
+    // The "already buffered" test is here rather than only inside
+    // `buffer_candidate`, because `flags` is in a register on this line
+    // and an object is buffered at most once per collection: without it
+    // every later decrement of the same object paid a call and a reload
+    // to be told nothing had changed. The callee keeps its own copy of
+    // the test — it has other callers, and this one is an optimization,
+    // not the invariant.
+    if header.memory_category() == MemoryCategory::GcHeap
+        && header.flags & (ENTITY_OBJECT | CYCLE_COLLECTOR_BUFFERED) == ENTITY_OBJECT
+    {
         // `entity`, not `header`: the buffered pointer outlives this call
         // and the collector casts it back to `*mut Object` to read the
         // class word and the property slots. A pointer derived from

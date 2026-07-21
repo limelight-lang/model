@@ -99,6 +99,36 @@ from a back-to-back run. Direction ("this alternative measured slower")
 is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
+
+## 2026-07-21 — `buffer_candidate` taken out of `ll_release`
+
+**Commit:** this one. **Evidence:** release IR, not a timing run — see
+the note above about what this box can and cannot resolve.
+
+**What changed:** the cycle collector's candidate buffering was fully
+inlined into `ll_release`: thread-local access, `RefCell` borrow, `Vec`
+push with its growth and panic paths, two `alloca`s. `ll_release` is the
+most frequent operation in the runtime and the work is needed at most
+once per object per collection. It now tests the buffered bit itself —
+from the flags word it already holds — and calls an `#[inline(never)]`
+`buffer_candidate` only when there is something to record.
+
+| function | before | after |
+|---|---|---|
+| `ll_release` | 169 IR lines, 21 calls | 38 IR lines, 1 tail call |
+| `alloca` in `ll_release` | 2 | 0 |
+
+**Verdict: accepted on IR.** No timing claim is made: the effect is a
+smaller hot function and a cold tail, the same shape as `Heap::alloc`'s
+split, and this box cannot resolve differences of that size.
+
+**Correction to the audit that prompted it.** The finding read "early-out
+`buffer_candidate` за границей вызова, каждый ненулевой декремент платит
+call + перезагрузку flags". That was not true: LLVM had inlined the
+callee, so there was no call — the cost was the opposite, the whole
+buffering machinery sitting in the hot function. Hoisting the test and
+forcing the callee out of line is what the finding should have said.
+
 ---
 
 ## 2026-07-21 — `free`'s cold tails (H11): **no measurable difference**

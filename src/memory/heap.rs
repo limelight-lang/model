@@ -302,29 +302,38 @@ impl HeapBlockHeader {
 /// full/not-full line?" — the two questions that located the block-list
 /// churn in `rfc/model/memory/heap-slot-allocation.md` ("Fix 5b").
 ///
-/// Deliberately not always-on: these are plain stores on the hot path, and a
+/// Deliberately not always-on: these are stores on the hot path, and a
 /// timing run built with them is measuring the counters as much as the
-/// allocator. Single-threaded probe use only — no atomics.
+/// allocator.
+///
+/// Relaxed atomics, not `static mut`: `REMOTE_FREES` is bumped on the
+/// cross-thread free path, which is cross-thread by definition, so plain
+/// stores there were a data race — a real one, not a formality, and one
+/// that a probe build is exactly the wrong place to debug. Relaxed adds
+/// cost nothing beyond the store on any target we care about, and this
+/// module only exists in a build that already accepts the counters.
 #[cfg(feature = "probe-counters")]
 pub mod probe {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     /// Entries into `Heap::alloc`. Each one examines exactly one block, so
     /// this counts block examinations, **including** re-entries made by the
     /// cold paths via `alloc_class`.
-    pub static mut ALLOC_ENTRIES: u64 = 0;
+    pub static ALLOC_ENTRIES: AtomicU64 = AtomicU64::new(0);
     /// Re-entries specifically. `ENTRIES - RETRIES` is the number of real
     /// allocations, and `ENTRIES / (ENTRIES - RETRIES)` is blocks walked per
     /// allocation — 1.0 means every alloc found room in the first block it
     /// looked at.
-    pub static mut ALLOC_RETRIES: u64 = 0;
-    pub static mut UNLINK_CALLS: u64 = 0;
-    pub static mut LINK_CALLS: u64 = 0;
+    pub static ALLOC_RETRIES: AtomicU64 = AtomicU64::new(0);
+    pub static UNLINK_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static LINK_CALLS: AtomicU64 = AtomicU64::new(0);
     /// Frees that took the cross-thread path (block owned by someone else,
     /// or abandoned) rather than the local one.
-    pub static mut REMOTE_FREES: u64 = 0;
+    pub static REMOTE_FREES: AtomicU64 = AtomicU64::new(0);
     /// Frees total.
-    pub static mut FREES: u64 = 0;
+    pub static FREES: AtomicU64 = AtomicU64::new(0);
     /// Blocks adopted from the abandoned list.
-    pub static mut ADOPTED: u64 = 0;
+    pub static ADOPTED: AtomicU64 = AtomicU64::new(0);
 
     /// Write `[entries, retries, unlinks, links, remote_frees, frees,
     /// adopted]` to `out`.
@@ -334,14 +343,17 @@ pub mod probe {
     /// probe use only.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn ll_probe_counters(out: *mut u64) {
-        unsafe {
-            *out.add(0) = ALLOC_ENTRIES;
-            *out.add(1) = ALLOC_RETRIES;
-            *out.add(2) = UNLINK_CALLS;
-            *out.add(3) = LINK_CALLS;
-            *out.add(4) = REMOTE_FREES;
-            *out.add(5) = FREES;
-            *out.add(6) = ADOPTED;
+        let all = [
+            &ALLOC_ENTRIES,
+            &ALLOC_RETRIES,
+            &UNLINK_CALLS,
+            &LINK_CALLS,
+            &REMOTE_FREES,
+            &FREES,
+            &ADOPTED,
+        ];
+        for (i, c) in all.iter().enumerate() {
+            unsafe { *out.add(i) = c.load(Ordering::Relaxed) };
         }
     }
 }
@@ -350,8 +362,8 @@ pub mod probe {
 macro_rules! probe_count {
     ($name:ident) => {
         #[cfg(feature = "probe-counters")]
-        unsafe {
-            probe::$name += 1;
+        {
+            probe::$name.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     };
 }
@@ -1065,6 +1077,14 @@ mod tls {
     /// `ll_thread_init`, the one place allowed to be the first caller.
     #[inline]
     fn state_or_init() -> u32 {
+        // Fault injection, tests only. It sits here rather than in `init`
+        // because `init` runs once per process: by the time a test asks,
+        // the slot is long since reserved, and what needs simulating is
+        // "there is no slot", not "reserving one failed".
+        #[cfg(test)]
+        if FORCE_TLS_FAILURE.load(Ordering::Relaxed) != 0 {
+            return UNINIT;
+        }
         let s = STATE.load(Ordering::Relaxed);
         if s != UNINIT { s } else { init() }
     }
@@ -1077,14 +1097,24 @@ mod tls {
         let _ = state_or_init();
     }
 
+    /// Tests only: pretend the process has no TLS slots left.
+    #[cfg(test)]
+    pub(crate) static FORCE_TLS_FAILURE: AtomicU32 = AtomicU32::new(0);
+
     #[cold]
     fn init() -> u32 {
         let slot = unsafe { TlsAlloc() };
-        // TlsAlloc returns TLS_OUT_OF_INDEXES (u32::MAX) on failure — which
-        // also equals our UNINIT sentinel, so storing it would make every
-        // later `get` treat the slot as uninitialised and read a bad TEB
-        // offset. Fail loudly instead of corrupting silently.
-        assert_ne!(slot, u32::MAX, "TlsAlloc failed: no free TLS slots");
+        // TlsAlloc returns TLS_OUT_OF_INDEXES (u32::MAX) on failure, which is
+        // also our UNINIT sentinel: storing it would make every later `get`
+        // treat the slot as uninitialised and read a bad TEB offset. So the
+        // failure is reported instead — `STATE` stays UNINIT, `set` refuses,
+        // `ll_thread_init` leaves the thread without a heap, and the first
+        // allocation on it returns null. A process that cannot spare one TLS
+        // slot is in trouble either way, but that is the caller's news to
+        // hear, not ours to end the process over.
+        if slot == u32::MAX {
+            return UNINIT;
+        }
         let computed = if slot < FAST_SLOT_COUNT {
             TEB_TLS_SLOTS_OFFSET + slot * 8
         } else {
@@ -1181,13 +1211,20 @@ mod tls {
     }
 
     #[inline]
-    pub fn set(p: *mut Heap) {
+    /// False when no slot could be reserved: there is nowhere to put the
+    /// pointer, and the caller must not act as though there were.
+    #[must_use]
+    pub fn set(p: *mut Heap) -> bool {
         let s = state_or_init();
+        if s == UNINIT {
+            return false;
+        }
         if s & FALLBACK_BIT == 0 {
             unsafe { write_gs_qword(s, p as u64) };
         } else {
             unsafe { TlsSetValue(s & !FALLBACK_BIT, p as *mut core::ffi::c_void) };
         }
+        true
     }
 }
 
@@ -1218,8 +1255,11 @@ mod tls {
     }
 
     #[inline]
-    pub fn set(p: *mut Heap) {
+    /// Always succeeds here; the Windows path can refuse (no TLS slot).
+    #[must_use]
+    pub fn set(p: *mut Heap) -> bool {
         THREAD_HEAP.with(|c| c.set(p));
+        true
     }
 }
 
@@ -1249,7 +1289,10 @@ pub extern "C" fn ll_thread_exit() {
     // Clear the slot first: `abandon_all` must not be re-entered, and any
     // allocation after this point must build a fresh heap rather than reuse
     // one whose blocks we have just given away.
-    tls::set(std::ptr::null_mut());
+    // Clearing cannot fail: the slot exists, or `get_raw` above would
+    // have reported null and returned.
+    let cleared = tls::set(std::ptr::null_mut());
+    debug_assert!(cleared, "the slot existed a line ago");
     // The blocks are given up by `Heap`'s `Drop`, so this is one path, not
     // two: any other way a heap dies reclaims them identically.
     unsafe { drop(Box::from_raw(p)) };
@@ -1332,7 +1375,14 @@ pub extern "C" fn ll_thread_init() {
             return;
         }
         unsafe { heap.write(Heap::new()) };
-        tls::set(heap);
+        if !tls::set(heap) {
+            // No TLS slot to hold it: hand the memory straight back and
+            // leave the thread heapless, which the allocation paths
+            // already report as null.
+            unsafe { std::ptr::drop_in_place(heap) };
+            unsafe { std::alloc::dealloc(heap as *mut u8, layout) };
+            return;
+        }
         // Fill the barrier's reserve while a refusal is still reportable:
         // from here the thread's first allocation reports null, and the
         // store barrier has no channel at all
@@ -1395,6 +1445,38 @@ pub unsafe fn with_thread_heap<R>(f: impl FnOnce(&mut Heap) -> R) -> R {
 mod tests {
     use super::*;
     use crate::memory::block_pool::BLOCK_PAYLOAD;
+
+    /// A process with no TLS slot left cannot give this thread a heap.
+    /// That is reported the same way as any other exhaustion — the
+    /// allocation returns null — and not by ending the process, which is
+    /// what storing `TlsAlloc`'s failure value used to lead to: it equals
+    /// our "uninitialised" sentinel, so the slot would have looked
+    /// unreserved and every read would have gone to a bad TEB offset.
+    #[cfg(windows)]
+    #[test]
+    fn a_thread_without_a_tls_slot_reports_instead_of_dying() {
+        let _g = crate::memory::block_pool::test_guard();
+        use std::sync::atomic::Ordering;
+
+        // A fresh thread: this one already has its heap installed.
+        let (told, heapless, refused) = std::thread::spawn(|| {
+            tls::FORCE_TLS_FAILURE.store(1, Ordering::Relaxed);
+            // The refusal has to be *said*, not swallowed: a silent miss
+            // leaves the caller believing the pointer was stored.
+            let told = !tls::set(std::ptr::null_mut());
+            ll_thread_init();
+            let heapless = thread_heap().is_null();
+            let p = unsafe { crate::memory::stdapi::ll_alloc(40, 16) };
+            tls::FORCE_TLS_FAILURE.store(0, Ordering::Relaxed);
+            (told, heapless, p.is_null())
+        })
+        .join()
+        .unwrap();
+
+        assert!(told, "installing into a slot that does not exist must report");
+        assert!(heapless, "so the thread stays without a heap");
+        assert!(refused, "and the allocation reports null");
+    }
 
     #[test]
     fn block_header_halves_are_laid_out_as_the_design_requires() {

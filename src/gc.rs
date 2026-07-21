@@ -161,8 +161,18 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
 /// set. Losing one cycle beats losing the process, but it is lost for
 /// the life of the thread.
 ///
+/// ## Why this is out of line
+///
+/// It was not, and the whole of it — the thread-local access, the
+/// `RefCell` borrow, a `Vec` push with its growth and panic paths —
+/// inlined into `ll_release`, the most frequent operation in the
+/// runtime, on a path taken at most once per object per collection.
+/// `ll_release` now tests the buffered bit itself, from flags it already
+/// holds, and calls this only when something has to be recorded.
+///
 /// # Safety
 /// `entity` must be live.
+#[inline(never)]
 pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
     if unsafe { (*entity).flags } & CYCLE_COLLECTOR_BUFFERED != 0 {
         return;
