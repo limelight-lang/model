@@ -7,6 +7,46 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-07-21 — a test oracle read global state and blamed the runtime
+
+**What happened.** `many_threads_freeing_into_one_owner_lose_no_slots`
+failed about one run in twenty at `--test-threads=32`, and never in
+thirty runs alone. Its assertion says "the owner lost track of a slot
+freed from another thread" — a lost cross-thread free, the worst defect
+this allocator could have. Half a session went into reading the MPSC
+push and drain paths looking for the race.
+
+There was no race. The oracle summed `used` over every block the heap
+owns, and some of those blocks were **adopted**. A block reaches the
+abandoned list precisely because it still holds live objects when its
+thread exits, so adoption hands a heap live slots belonging to a thread
+that is gone. The oracle read another test's leftovers as this test's
+lost frees.
+
+**Root cause.** The oracle was written to replace `blocks_out`, whose
+stated problem was exactly this — "it is shared, so another test's
+block returning late moves it in either direction". The replacement
+counted a different global and inherited the same fault. **A test that
+reads process-global runtime state has to say which part of it is
+attributable to the test**, and neither instrument did.
+
+**Why it was not caught.** It passes alone, in every ordering the
+default thread count produces, and its failure names a plausible real
+bug in the most suspicious subsystem in the crate. A flake that accuses
+something real is worse than one that looks like noise: it sends the
+reader into the code it names.
+
+**What was actually decisive.** Not reading the code — instrumenting
+it. One temporary print in `adopt` showed blocks arriving with `used`
+of 1, 3 and 147, and the failing assertion reporting exactly the
+inherited count. The reasoning pass before it had produced four wrong
+hypotheses about the CAS loop.
+
+**Rule this leaves.** When a concurrency test fails intermittently,
+establish *what it counts* before investigating *what it accuses*.
+
+---
+
 ## 2026-07-20 (second) — the fixed benchmark rule was still not enough
 
 **What happened.** With the stale-baseline rule from the entry below now
