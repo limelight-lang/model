@@ -547,8 +547,9 @@ impl Heap {
     #[inline(never)]
     fn alloc_block_full(&mut self, ci: usize, block: *mut HeapBlockHeader) -> *mut u8 {
         // Before writing the block off as full, take whatever other threads
-        // freed into it. This is the *only* place cross-thread frees are
-        // reclaimed, and it is the natural one: we are here precisely because
+        // freed into it. This is one of the two places cross-thread frees
+        // are reclaimed — `collect_owned` sweeps the rest — and it is the
+        // natural one: we are here precisely because
         // this block has no slots left, which is exactly when its parked
         // frees are worth the walk.
         if self.collect_remote(block) {

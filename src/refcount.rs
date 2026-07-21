@@ -80,7 +80,7 @@ pub const IS_ESCAPEE: u32 = 1 << 13;
 pub const CANDIDATE_INDEX_SHIFT: u32 = 14;
 pub const CANDIDATE_INDEX_MASK: u32 = 0x0003_FFFF << CANDIDATE_INDEX_SHIFT;
 /// Largest buffer position the field can hold. Beyond it the index is
-/// stored as zero: 262 143 candidates is 26 full thresholds without a
+/// stored as zero: 262 142 candidates is 26 full thresholds without a
 /// single collection point, and the fallback costs only speed.
 pub const CANDIDATE_INDEX_MAX: usize = 0x0003_FFFF - 1;
 

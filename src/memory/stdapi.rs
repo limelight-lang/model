@@ -2,9 +2,16 @@
 //! `malloc`/`free`/`calloc`/`realloc`/`aligned_alloc` exports over the
 //! Limelight memory manager.
 //!
-//! This lets the allocator (a) drop into any Rust program as
-//! `#[global_allocator]`, (b) run the real C benchmark suites unchanged,
-//! (c) be reused outside the runtime.
+//! This lets the allocator (a) run the real C benchmark suites
+//! unchanged and (b) be reused outside the runtime.
+//!
+//! **Not yet usable as a Rust `#[global_allocator]`**, despite the impl
+//! at the bottom of this file: regions come from `std::alloc::alloc`
+//! with block alignment (`block_pool::carve_region`), so installing
+//! this as the global allocator makes region carving re-enter
+//! `ll_alloc` with an alignment it refuses — every allocation would
+//! then report null. It becomes true once regions come from
+//! `VirtualAlloc`/`mmap` directly.
 //!
 //! **Size-less free works** — the key that makes a standard `free(ptr)`
 //! possible over our design: every allocation lives in a block-aligned

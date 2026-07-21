@@ -1,6 +1,6 @@
 //! Growable-buffer primitive: `{ data, len, capacity }`, no `RcHeader`.
 //!
-//! Not a heap entity (`docs/memory-manager.md` "Mutable Buffers"): three
+//! Not a heap entity (`rfc/model/memory/buffers.md`): three
 //! words the owner embeds or keeps on the stack; only the `data` payload
 //! moves. Entities that need a lifecycle (mutable strings) embed a
 //! buffer and put their own header in front.
@@ -79,7 +79,7 @@ pub(crate) fn desired_capacity(current: usize, min_capacity: usize, hint: usize)
 }
 
 /// Ensure `buf` can hold `min_capacity` bytes; returns the (possibly
-/// moved) payload pointer. Growth algorithm per `docs/memory-manager.md`:
+/// moved) payload pointer. Growth algorithm per `rfc/model/memory/buffers.md`:
 /// enough capacity → nothing; top-of-bump → extend in place; otherwise
 /// fresh payload + copy, the old payload dies with the arena.
 ///

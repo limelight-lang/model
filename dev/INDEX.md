@@ -22,7 +22,7 @@ versions live in `docs/history/`, marked at the top.
 - C ABI surface: `src/memory/context.rs` (arena + context),
   `src/object.rs` (`ll_object_new` factory, `ll_object_constructed` —
   the end-of-construction hook that registers the destructor),
-  `src/memory/stdapi.rs` (`ll_malloc`/`ll_free`/aligned),
+  `src/memory/stdapi.rs` (`ll_malloc`/`ll_c_free`/aligned),
   `src/memory/barrier.rs` (`ll_ref_store`), `src/object.rs`
   (`ll_object_die`), `src/refcount.rs`
   (`ll_retain`/`ll_release`).
@@ -42,8 +42,10 @@ refilled at `ll_gc_maybe_collect`. Design in
 - Allocation: `Heap::alloc` → `ll_alloc`, expected to inline fully,
   cold tails split with `#[cold] #[inline(never)]`.
 - Local free: `Heap::free`, including the `owner` check. Split into a
-  fast path and `#[cold]` tails like `alloc`; the split measured as no
-  change outside the noise floor (H11 in `dev/BENCHMARKS.md`).
+  fast path and out-of-line tails like `alloc` — except `relink_unfull`,
+  which is out of line but not `#[cold]`, the boundary being crossed too
+  often for that. Measured as no change outside the noise floor (H11 in
+  `dev/BENCHMARKS.md`).
 - Store barrier: `ref_store` / `ll_ref_store`.
 - Arena bump: `Arena::alloc` → `ll_arena_alloc`.
 
@@ -62,10 +64,13 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
 
 ## Key decisions
 
-`dev/DECISIONS.md` — arena handle as a raw pointer; trailing inline
-data through raw pointers; block header split by access rule; cold
-concurrent structures take a lock rather than a CAS loop; Miri against
-a UNIX target. All 2026-07-20.
+`dev/DECISIONS.md` — 2026-07-20: arena handle as a raw pointer;
+trailing inline data through raw pointers; block header split by access
+rule; cold concurrent structures take a lock rather than a CAS loop;
+Miri against a UNIX target. 2026-07-21: the barrier owns the whole slot
+and publishes it before teardown; a destructor is owed by the
+constructor, not the factory; a refused destructor record fails the
+creation; the store barrier is funded by a per-thread reserve.
 
 ## Diagrams
 

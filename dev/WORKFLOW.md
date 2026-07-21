@@ -1,8 +1,8 @@
 # Workflow
 
 How work is done in this crate. Not how the code is built
-(`ARCHITECTURE.md`), not what was decided (`DECISIONS.md`) — the
-routine that is the same for every task.
+(`ARCHITECTURE.md`, still unwritten), not what was decided
+(`DECISIONS.md`) — the routine that is the same for every task.
 
 These rules are written down from established practice in this
 repository, not invented. Where a rule was inferred rather than stated,

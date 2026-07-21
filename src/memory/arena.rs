@@ -362,8 +362,9 @@ impl Arena {
     /// Two of the four callers are the store barrier's arena-log hooks
     /// (`log_escapee`, `log_release_at_reset`), which sit inside
     /// `ref_store`. With the growth branch inline, each of them dragged
-    /// `Arena::alloc` -> `BlockPool::get` and the out-of-memory panic
-    /// into the barrier: 308 IR lines and two `alloca [48 x i8]` for a
+    /// `Arena::alloc` -> `BlockPool::get` and, as the code stood then,
+    /// an out-of-memory panic into the barrier: 308 IR lines and two
+    /// `alloca [48 x i8]` for a
     /// branch taken once per `LOG_SEG_RECORDS` records. Generated code
     /// calls the barrier on every unresolved reference store, so its
     /// size is the thing that decides whether the store inlines at all.

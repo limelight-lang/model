@@ -52,8 +52,11 @@ against a recorded per-benchmark band before any delta is read, and
 both arms built before either is measured. Plus the `--bench` trap and
 a stated condition for declaring the box unmeasurable and stopping.
 
-The H11 change was **not committed**, because the rule it would have
-violated is the one this crate exists to keep.
+The H11 change was **not committed on that evidence**, because the rule
+it would have violated is the one this crate exists to keep. It landed
+later, on a valid measurement that showed no difference outside the
+noise floor, and was kept for the shape of the code rather than for a
+number (`1824392`; H11 in `BENCHMARKS.md`).
 
 ---
 

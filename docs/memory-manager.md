@@ -16,7 +16,8 @@ this file honest is in [`dev/WORKFLOW.md`](../dev/WORKFLOW.md).
 ## Layers
 
 ```
-OS                 2 MB regions, block-aligned (VirtualAlloc / mmap)
+OS                 2 MB regions, block-aligned (via Rust's global
+                   allocator today; VirtualAlloc / mmap later)
                    never returned in phase 1
   |
 BlockPool          64 KB blocks, carved from regions
@@ -132,7 +133,10 @@ slot onto the block's free list and decrements `used`.
 Rare tails — refill, walking past a full block, a block emptying, a full
 block regaining room — live in separate functions. For `alloc` they are
 `#[cold] #[inline(never)]`, which is what keeps the fast path a frameless
-leaf that inlines into `ll_alloc`. `free` is split the same way. The
+leaf that inlines into `ll_alloc`. `free` is split the same way, with
+one deliberate difference: `relink_unfull` is out of line but **not**
+`#[cold]`, because a workload churning blocks across the full ↔
+has-room boundary takes that branch constantly. The
 split was measured and changed nothing outside the noise floor, which is
 the expected result for a path whose tails run a few times in ten
 thousand calls (`dev/BENCHMARKS.md`, H11); it is kept for the shape, not
@@ -188,9 +192,14 @@ was live at thread exit; no periodic trim exists yet.
 ## Arena: per-request memory
 
 A bump allocator whose blocks are chained through their headers. Its
-logs — escapees, tracked destructors, deferred releases — live in the
-arena's **own** bump memory, so there is no side `Vec` and everything
-dies with the arena at once.
+four logs — escapees, tracked destructors, deferred releases, large
+payloads — live in the arena's **own** bump memory, so there is no side
+`Vec` and everything dies with the arena at once.
+
+When that bump memory is exhausted a log segment is carved from the
+thread's reserve instead (see "The log reserve" below), through a
+separate cursor: a reserve block is linked into the arena's block list
+but never becomes its bump, or ordinary allocation would spend it.
 
 The arena handle crosses the runtime as `*mut Arena`, never `&mut`,
 because destructors reenter and resolve the same arena. The rule the
@@ -233,8 +242,11 @@ over what it points at, and the trailing bytes are not that.
 
 ## Lifetime
 
-Reference counting for `GcHeap`. Arena objects are **not counted at
-all** — they die with the arena. Immortals are never touched.
+Reference counting for `GcHeap`. Arena objects are **not
+lifetime-counted** — they die with the arena — with one exception: COW
+values are counted in every category (`rfc/model/values.md`), and an
+arena object's `refcount` field is reused as its escape hold-count while
+`IS_ESCAPEE` is set. Immortals are never touched.
 
 Cycles are collected by Bacon–Rajan trial deletion: a non-zero decrement
 buffers the object as a candidate root, and crossing the threshold
@@ -249,7 +261,10 @@ Every reference store the compiler could not resolve statically goes
 through one door, `ref_store`. It performs both halves at once:
 
 - **Counting.** Retain the new value; release the displaced one, with
-  full teardown if that was its last reference.
+  full teardown if that was its last reference. One exception: a heap
+  value displaced from an *arena* container is not released here at all
+  — its release-at-reset record owns that release, and doing both was
+  the double-release the design exists to prevent.
 - **The category barrier.** An arena reference stored into a
   longer-lived container is an *escape*: the barrier bumps a hold-count
   kept in the escapee's own `refcount`. A heap reference stored into an
@@ -275,6 +290,27 @@ is released**, because releasing it can run `__destruct`, which is user
 code that may collect: a collection that still sees the old edge
 subtracts a reference the count has already given up, and frees a value
 whose teardown is on the stack.
+
+### The log reserve
+
+Recording an escape or a release-at-reset can need memory, and the
+barrier has no way to report that it did not get any: `ll_ref_store`
+returns nothing, and a check after every store is the cost the whole
+design avoids. So two blocks per thread are held back (`memory::reserve`)
+and filled at `ll_thread_init`, where a refusal is still reportable.
+`Arena::grow_log` draws on them once the pool refuses.
+
+That does not make failure impossible — it moves it. Drawing sets a flag
+that `ll_gc_maybe_collect`, the compiler's safepoint poll, refills on;
+the poll runs where a frame can raise, so the barrier's unreportable
+failure becomes an ordinary memory-exhausted exception thousands of
+records earlier. Behind the reserve the three logs that cannot lose a
+record still abort — escapees, release-at-reset, large runs — while a
+refused *destructor* record instead fails the object's creation
+(`Arena::track_destructor` returns false).
+
+Design and the compiler-side contract it rests on:
+`rfc/runtime/exceptions.md`, "The log reserve protocol".
 
 ## Arena reset: the settling loop
 

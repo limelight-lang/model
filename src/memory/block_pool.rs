@@ -2,7 +2,7 @@
 //!
 //! Layers (per `docs/memory-manager.md`): OS regions of 2 MB are carved
 //! into 64 KB blocks aligned to their size; free blocks live in a
-//! process-global lock-free stack; each thread keeps a small cache in
+//! process-global chain behind a `Mutex`; each thread keeps a small cache in
 //! front of it (tcmalloc pattern: refill in batches, flush half on
 //! overflow, flush all on thread death).
 //!
@@ -298,7 +298,7 @@ impl BlockPool {
         Some(head)
     }
 
-    /// Reserve a 2 MB region from the OS and stack its 64 blocks.
+    /// Reserve a 2 MB region from the OS and stack its `BLOCKS_PER_REGION` blocks.
     /// Returns false if the OS refused the region — the caller must not
     /// spin. Out of memory is a condition to **report**, not to abort on:
     /// a request that cannot get memory is the request's problem, and the
