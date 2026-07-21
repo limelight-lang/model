@@ -1,1 +1,9 @@
 /target
+
+# Must never be published: this repository is public and the audit lists
+# defects, including ones not fixed yet (`dev/WORKFLOW.md`, "Files that
+# must stay untracked"). Ignored rather than merely untracked, because
+# "untracked" survives exactly until someone types `git add -A` — which
+# is how both of these once reached a public commit.
+/AUDIT.md
+/.idea/
