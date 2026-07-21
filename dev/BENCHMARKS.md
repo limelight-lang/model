@@ -39,18 +39,25 @@ it, however good B looked. This is the only check needing no prior
 history, and the only one that catches load arriving mid-session, which
 the back-to-back rule does not.
 
-**Check absolutes against the known band before reading any delta.**
-The same code has been measured many times, so the normal range is
-known:
+**Throw away the first run.** It is systematically slow: measured at
+854 µs against ~700 µs for later runs of the *same binary* — 22% off,
+reproducibly. Cold caches, cold branch predictors, a cold frequency
+state. Treat the first measurement as warm-up and discard it. Several
+comparisons were wrecked by using it as arm A.
 
-| scenario | quiet-machine band |
-|---|---|
-| `larson_5k_slots_20k_rounds/our_heap` | 749–769 µs |
-| `rptest_10k_blocks_40_iters/our_heap` | 1.89–1.93 ms |
+**A band of "normal" values is less useful than it sounds.** One was
+recorded here as 749–769 µs for larson and 1.89–1.93 ms for rptest, and
+a day later the same code ran at 686–730 µs and 1.72–1.78 ms — the band
+had captured a warm machine and was quietly biasing every later
+comparison against it. If a band is kept it has to be re-taken cold, and
+it is only good for spotting gross contamination (a value 50% out), not
+for validating a few-percent delta.
 
-A point outside its band describes the machine, not the code, and no
-delta computed from it means anything. Update the bands when the code
-legitimately moves them.
+**Know the noise floor before believing a delta.** Repeated runs of an
+identical binary, first discarded, still disagree by **1.5–3%** on this
+box, and an occasional run comes back with an interval 12% wide. Nothing
+smaller than that is resolvable here, no matter what p-value criterion
+prints.
 
 **Build both arms before measuring either.** `git stash` touches file
 mtimes, so `cargo bench` recompiles between arms and each measurement
@@ -94,11 +101,27 @@ no number, because the next person will trust it.
 
 ---
 
-## 2026-07-20 — `free`'s cold tails (H11): **measurement inconclusive**
+## 2026-07-21 — `free`'s cold tails (H11): **no measurable difference**
 
-**Not committed.** The code change is two attributes; the evidence that
-it is *correct* is solid and machine-independent, but the evidence that
-it is *faster* could not be obtained, so it stays out of the tree.
+**Committed** (`1824392`), on structural evidence rather than a timing
+win — and this entry keeps that distinction rather than dressing one up
+as the other.
+
+**Measured 2026-07-21, bracketed A→B→A→B→A with pre-built binaries and
+the first run discarded. The answer is "no measurable difference":**
+
+| | A (no split) | B (split) |
+|---|---|---|
+| larson | 706.71, 696.36 µs | 714.51, 693.45 µs |
+| rptest | 1.7584 ms, (one run disturbed) | 1.7846, 1.7528 ms |
+
+Runs of the *same* binary differ by 1.5–3%, which is the size of the
+effect being looked for. The instrument is coarser than the thing
+measured. That is not "no effect" — it is "not resolvable here", and the
+two must not be confused.
+
+The change stands on the IR evidence below, and on the absence of a
+regression.
 
 **What was established, from release LLVM IR (`cargo rustc --release
 --lib -- --emit=llvm-ir`), which no machine load can distort:**
@@ -120,21 +143,20 @@ Two variants were built, both achieving the inline:
 - **`retire_empty` only** → `ll_free` body 129 IR lines, with
   `relink_unfull` inlined
 
-**Why no verdict.** Four measurement attempts, all void: two were
-contaminated by load arriving mid-session, one by the recompile between
-arms, and the last found the box 40–80% outside its bands with the two
-control A's 10% apart. An intermediate reading suggested marking
-`relink_unfull` cold is a large regression on `rptest` — plausible,
-since that benchmark churns blocks across the full ↔ has-room boundary
-constantly, so the tail may not be cold *in that workload*. **That
-hypothesis is unverified and must not be quoted as a finding.**
+**Only one tail is `#[cold]`, deliberately.** `retire_empty` is
+genuinely rare — a block reaching zero live slots. `relink_unfull` is
+`#[inline(never)]` **without** `#[cold]`, because `#[cold]` asserts to
+LLVM that a branch is rare, and a workload churning blocks across the
+full ↔ has-room boundary takes it constantly. Both variants achieve the
+inline; only one of them makes a claim that could turn out false, so the
+one that stays is the one that claims less.
 
-**Next time, on a quiet machine:** measure three arms — none cold,
-`retire_empty` only, both cold — with the control repetition above. The
-question is not whether `free` should inline (IR says yes) but whether
-`relink_unfull` is cold enough to deserve the attribute. `#[cold]` is an
-assertion to LLVM, and if it is false the branch is deoptimized on a
-path that is actually hot.
+**Four earlier attempts on 2026-07-20 were void** — load arriving
+mid-session, a recompile between arms, and finally a box 40–80% off with
+the control runs 10% apart. One of them suggested marking
+`relink_unfull` cold is a large regression on rptest. That reading came
+from a contaminated run and was never reproduced; it is recorded as the
+reason for caution, not as a finding.
 
 ---
 
