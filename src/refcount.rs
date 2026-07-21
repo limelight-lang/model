@@ -123,6 +123,16 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
         return; // immortal COW entities are no-ops too
     }
 
+    // With `checked-refcount`, saturate rather than wrap. Wrapping to
+    // zero would make the next release think the entity died and free it
+    // while it is still referenced. Saturating leaks it instead, which is
+    // the safe direction. See the feature's note in `Cargo.toml` for why
+    // this is optional and not a default.
+    #[cfg(feature = "checked-refcount")]
+    if header.refcount == u32::MAX {
+        return;
+    }
+
     header.refcount += 1;
 }
 
@@ -225,6 +235,28 @@ mod tests {
     fn cow_on_heap_dies_at_zero() {
         let mut header = RcHeader::new(MemoryCategory::GcHeap, COW);
         assert!(release(&mut header));
+    }
+
+    /// With `checked-refcount`, a count at the ceiling stops moving and
+    /// the entity is effectively immortal. Without the guard the `+= 1`
+    /// wraps to zero, and the next release frees an entity that is still
+    /// referenced — the failure this trades a leak for.
+    ///
+    /// Only meaningful with the feature on:
+    /// `cargo test --features checked-refcount`.
+    #[cfg(feature = "checked-refcount")]
+    #[test]
+    fn a_saturated_refcount_never_wraps_to_zero() {
+        let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+        h.refcount = u32::MAX;
+
+        unsafe { ll_retain(&mut h) };
+        assert_eq!(h.refcount, u32::MAX, "saturated, not wrapped");
+
+        // And it stays alive: a release from the ceiling must not be able
+        // to reach zero in one step either.
+        let died = unsafe { ll_release(&mut h) };
+        assert!(!died, "an entity at the ceiling does not die of one release");
     }
 
     #[test]

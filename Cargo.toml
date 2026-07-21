@@ -16,6 +16,18 @@ crate-type = ["rlib", "staticlib"]
 # for a timing run.
 probe-counters = []
 
+# Saturate the reference count instead of letting it wrap. Off by
+# default: `refcount` is a `u32`, so wrapping needs four billion live
+# references — at least 32 GB of pointers just to hold them — which no
+# legitimate program reaches. The real risk is a defect in generated code
+# or FFI calling retain without a matching store, and that is what this
+# is for. Costs one compare and one never-taken branch per retain
+# (measured in IR: 22 -> 26 lines), on the most frequent operation in the
+# runtime, which is why it is a choice rather than a default. When it
+# fires the object becomes permanently immortal — a leak, chosen over
+# freeing an object that is still referenced.
+checked-refcount = []
+
 [dependencies]
 
 [dev-dependencies]

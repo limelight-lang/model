@@ -43,6 +43,13 @@ pub(crate) unsafe fn escape_gain(arena: *mut Arena, entity: *mut RcHeader) {
         e.refcount = 1;
         unsafe { (*arena).log_escapee(entity) };
     } else {
+        // Same field, same arithmetic, so the same guard as `ll_retain`:
+        // a wrapped hold-count would make reset believe every holder let
+        // go and drop a still-held escapee.
+        #[cfg(feature = "checked-refcount")]
+        if e.refcount == u32::MAX {
+            return;
+        }
         e.refcount += 1;
     }
 }
