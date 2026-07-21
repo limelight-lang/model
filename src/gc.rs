@@ -149,12 +149,17 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
 /// resolve that failure by killing the process, an abort nobody chose
 /// and the ABI never mentions. There is a better answer here than
 /// anywhere else in the runtime: **not buffering a candidate is always
-/// safe.** It costs a cycle that this collection will not find, and the
-/// object stays correct in every other respect, because the buffered bit
-/// is only set when the entry really went in. So growth is attempted,
-/// and a refusal arms a collection instead — the buffer is full and the
-/// machine is short on memory, which is exactly when collecting is worth
-/// more than remembering one more root.
+/// safe.** Nothing is corrupted and nothing dangles, because the
+/// buffered bit is only set when the entry really went in. So growth is
+/// attempted, and a refusal arms a collection instead.
+///
+/// The price is a leak, not a delay, and the doc should say so:
+/// buffering is edge-triggered on a non-zero decrement, so a refused
+/// root is never re-offered. If that decrement was the last external
+/// release of a garbage cycle, no further decrement comes and no later
+/// collection can find it — this buffer is the collector's only root
+/// set. Losing one cycle beats losing the process, but it is lost for
+/// the life of the thread.
 ///
 /// # Safety
 /// `entity` must be live.
