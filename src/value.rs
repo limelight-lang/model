@@ -4,7 +4,9 @@
 //! flags (1) + 6 reserved. Unboxed representations (raw i64/f64/ptr
 //! for declared types) are a compiler contract and have no runtime
 //! type here. `false` and `true` are separate tags so truth tests
-//! never read the payload; there is deliberately no `undef` tag.
+//! never read the payload; there is deliberately no `undef` *tag* —
+//! the uninitialized state of a Box property slot is a `flags` bit
+//! ([`VALUE_UNDEF`]), not a type.
 
 use crate::refcount::{RcHeader, ll_release, ll_retain};
 
@@ -29,6 +31,17 @@ pub enum Tag {
 /// the tag implies so retain/release on Box copy is one bit test, no
 /// tag decoding (`rfc/model/values.md`).
 pub const VALUE_REFCOUNTED: u8 = 1 << 0;
+
+/// Box flag: this is an **uninitialized** property slot (`mixed` /
+/// untyped, declared without a default). Reading it throws `Error`, per
+/// PHP's uninitialized-typed-property semantics; a write clears it. It
+/// is confined to property slots and never set on a Box in a local,
+/// parameter, return, array element or reference box, so it cannot flow
+/// into a value context — unlike Zend's `IS_UNDEF` (`rfc/model/values.md`).
+/// Raw typed slots have no room for it and use the per-object init
+/// bitmap instead. Reserved here; the read/write semantics land with the
+/// object-layout rework.
+pub const VALUE_UNDEF: u8 = 1 << 1;
 
 /// The Box. `#[repr(C)]`: generated code addresses the fields by
 /// offset (payload +0, tag +8, flags +9).
