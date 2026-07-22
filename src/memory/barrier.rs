@@ -21,7 +21,7 @@
 
 use crate::memory::arena::Arena;
 use crate::memory::context::{LLContext, resolve_arena};
-use crate::refcount::{COW, ENTITY_OBJECT, IS_ESCAPEE, MemoryCategory, RcHeader, ll_release, ll_retain};
+use crate::refcount::{COW, IS_ESCAPEE, MemoryCategory, RcHeader, is_object, ll_release, ll_retain};
 use crate::value::Value;
 
 /// A longer-lived container took a reference to request-arena object
@@ -184,7 +184,7 @@ pub unsafe fn ref_store(
             // (destructor, then release its children, then free). Dispatch
             // on the entity kind — only objects have teardown today;
             // strings/arrays claim their own kind bits later.
-            if unsafe { (*old).flags } & ENTITY_OBJECT != 0 {
+            if is_object(unsafe { (*old).flags }) {
                 unsafe { crate::object::ll_object_die(old as *mut crate::object::Object) };
             }
         }

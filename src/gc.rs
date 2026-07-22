@@ -50,7 +50,7 @@ use std::cell::RefCell;
 use crate::object::Object;
 use crate::refcount::{
     CANDIDATE_INDEX_MASK, CANDIDATE_INDEX_MAX, CANDIDATE_INDEX_SHIFT, CYCLE_COLLECTOR_BUFFERED,
-    CYCLE_COLLECTOR_COLOR_SHIFT, ENTITY_OBJECT, MemoryCategory, RcHeader,
+    CYCLE_COLLECTOR_COLOR_SHIFT, MemoryCategory, RcHeader, is_object,
 };
 use crate::value::Value;
 
@@ -120,7 +120,7 @@ unsafe fn set_color(e: *mut RcHeader, c: u32) {
 /// the general heap is traced — arenas and immortals are invisible to
 /// every strategy by contract.
 unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
-    if unsafe { (*e).flags } & ENTITY_OBJECT == 0 {
+    if !is_object(unsafe { (*e).flags }) {
         return Vec::new();
     }
     unsafe { crate::object::ref_child_values(e as *mut Object) }
@@ -337,7 +337,7 @@ unsafe fn collect_cycles_inner() -> usize {
     for &w in &whites {
         unsafe {
             debug_assert_eq!((*w).refcount, 0, "white must have no external refs");
-            if (*w).flags & ENTITY_OBJECT != 0 {
+            if is_object((*w).flags) {
                 crate::object::release_arena_escapes(w as *mut Object);
             }
             crate::memory::stdapi::ll_free(w as *mut u8);

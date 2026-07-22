@@ -35,8 +35,8 @@ use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_KIND_RETAINED, BlockHeader};
 use crate::object::Object;
 use crate::refcount::{
-    ENTITY_OBJECT, ESCAPED, IS_ESCAPEE, MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, ll_release,
-    ll_retain,
+    ARENA_RESET_MARK, IS_ESCAPEE, MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, is_object,
+    ll_release, ll_retain,
 };
 
 /// Recursion guard for the reset fixpoint. Pure and non-recreating
@@ -108,7 +108,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             unsafe { (*arena).drain_destructors(|o| round_dtors.push(o)) };
             for obj in round_dtors {
                 progress = true;
-                if unsafe { (*obj).flags } & ESCAPED != 0 {
+                if unsafe { (*obj).flags } & ARENA_RESET_MARK != 0 {
                     continue; // escaped objects survive; they do not destruct
                 }
                 unsafe { crate::object::run_pre_destructor(obj as *mut Object) };
@@ -134,8 +134,11 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         }
         for &surv in &survivors[counted..] {
             unsafe {
-                // 00 = GcHeap; drop the transient ESCAPED and IS_ESCAPEE.
-                (*surv).flags &= !(MEMORY_CATEGORY_MASK | ESCAPED | IS_ESCAPEE);
+                // 00 = GcHeap; drop the transient arena-reset mark and
+                // IS_ESCAPEE. The mark lives in the GC-state field, so
+                // clearing it also leaves the promoted object's GC state at
+                // 00 (LIVE), the correct fresh heap state.
+                (*surv).flags &= !(MEMORY_CATEGORY_MASK | ARENA_RESET_MARK | IS_ESCAPEE);
             }
             let block = BlockHeader::of_ptr(surv as *const u8) as usize;
             if retained.insert(block) {
@@ -175,7 +178,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
 /// Entity teardown dispatch from a bare header (the Box tag is not
 /// available here). Strings/arrays claim their own kind bits later.
 unsafe fn die(entity: *mut RcHeader) {
-    if unsafe { (*entity).flags } & ENTITY_OBJECT != 0 {
+    if is_object(unsafe { (*entity).flags }) {
         unsafe { crate::object::ll_object_die(entity as *mut Object) };
     }
     // Non-object entities have no teardown yet.
@@ -213,19 +216,22 @@ unsafe fn mark_subgraph(root: *mut RcHeader, survivors: &mut Vec<*mut RcHeader>)
 /// already-traced survivor — an arena→arena store the barrier does not
 /// escape — so that child would otherwise be missed and dangle once the
 /// survivor is promoted (audit H2). Cheap when nothing changed: an
-/// already-marked child is skipped by the `ESCAPED` test. The index walk
-/// (not an iterator) re-scans survivors appended by `mark_subgraph` mid-loop.
+/// already-marked child is skipped by the arena-reset-mark test. The index
+/// walk (not an iterator) re-scans survivors appended by `mark_subgraph`
+/// mid-loop.
 unsafe fn retrace_survivors(survivors: &mut Vec<*mut RcHeader>) {
     let mut i = 0;
     while i < survivors.len() {
         let s = survivors[i];
         i += 1;
-        if unsafe { (*s).flags } & ENTITY_OBJECT == 0 {
+        if !is_object(unsafe { (*s).flags }) {
             continue; // leaf entity: no reference slots
         }
         for v in unsafe { crate::object::ref_child_values(s as *mut Object) } {
             let child = v.entity_ptr();
-            if unsafe { is_arena_entity(child) } && unsafe { (*child).flags } & ESCAPED == 0 {
+            if unsafe { is_arena_entity(child) }
+                && unsafe { (*child).flags } & ARENA_RESET_MARK == 0
+            {
                 unsafe { mark_subgraph(child, survivors) };
             }
         }
@@ -237,11 +243,11 @@ unsafe fn mark_one(
     survivors: &mut Vec<*mut RcHeader>,
     stack: &mut Vec<*mut Object>,
 ) {
-    if unsafe { (*e).flags } & ESCAPED != 0 {
+    if unsafe { (*e).flags } & ARENA_RESET_MARK != 0 {
         return;
     }
     unsafe {
-        (*e).flags |= ESCAPED;
+        (*e).flags |= ARENA_RESET_MARK;
         // Roots (still IS_ESCAPEE) keep their external hold-count; a
         // survivor reached only internally has none, so start it at zero
         // and let the counting pass rebuild it from internal edges.
@@ -250,7 +256,7 @@ unsafe fn mark_one(
         }
     }
     survivors.push(e);
-    if unsafe { (*e).flags } & ENTITY_OBJECT != 0 {
+    if is_object(unsafe { (*e).flags }) {
         stack.push(e as *mut Object);
     }
 }
@@ -259,7 +265,7 @@ unsafe fn mark_one(
 /// children (internal edges), a compensating retain to heap entities
 /// (their release-at-reset record no longer matches a dying holder).
 unsafe fn count_children(surv: *mut RcHeader) {
-    if unsafe { (*surv).flags } & ENTITY_OBJECT == 0 {
+    if !is_object(unsafe { (*surv).flags }) {
         return; // leaf entity: no reference slots
     }
     for v in unsafe { crate::object::ref_child_values(surv as *mut Object) } {
@@ -283,7 +289,7 @@ mod tests {
     use crate::memory::block_pool::BLOCK_KIND_ARENA;
     use crate::memory::context::{LLContext, set_current_context};
     use crate::object::{ll_object_die, new_constructed};
-    use crate::refcount::{DESTRUCTED, HAS_DESTRUCTOR};
+    use crate::refcount::{DESTRUCTOR_PENDING, DESTRUCTOR_RAN};
     use crate::value::{Tag, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -354,7 +360,7 @@ mod tests {
             "recategorized in place"
         );
         assert_eq!(o.rc.refcount, 1, "exactly the one external reference");
-        assert_eq!(o.rc.flags & ESCAPED, 0, "transient mark cleared");
+        assert_eq!(o.rc.flags & ARENA_RESET_MARK, 0, "transient mark cleared");
         assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_RETAINED);
 
         // The survivor is an ordinary counted object now: its one
@@ -517,11 +523,11 @@ mod tests {
             );
             assert_eq!((*obj).rc.refcount, 1);
             assert_ne!(
-                (*obj).rc.flags & DESTRUCTED,
+                (*obj).rc.flags & DESTRUCTOR_RAN,
                 0,
                 "survives already-destructed"
             );
-            assert_ne!((*obj).rc.flags & HAS_DESTRUCTOR, 0);
+            assert_ne!((*obj).rc.flags & DESTRUCTOR_PENDING, 0);
         }
     }
 

@@ -70,7 +70,9 @@ here rather than in `BENCHMARKS.md` for that reason.
 **Decided:** creation is two steps. `ll_object_new` is the factory: it
 allocates and stamps the header, nothing more. `ll_object_constructed`
 runs after the user constructor returns successfully — it sets
-`HAS_DESTRUCTOR` on the header and registers the arena log record.
+`DESTRUCTOR_PENDING` on the header (named `HAS_DESTRUCTOR` at the time;
+renamed in the 2026-07-22 flags compaction) and registers the arena log
+record.
 Teardown dispatches on that header flag, never on the class.
 
 **Why:** a constructor that throws must not get its `__destruct`

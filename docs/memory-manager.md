@@ -226,7 +226,7 @@ inline, after the fixed fields.
 **Creation is two steps, and only the second owes a destructor.**
 `ll_object_new` is the factory: it allocates and stamps the header, and
 that is all. `ll_object_constructed` is called once the user constructor
-has returned successfully — it sets the header's `HAS_DESTRUCTOR` flag
+has returned successfully — it sets the header's `DESTRUCTOR_PENDING` flag
 and, for an arena object, writes the destructor-log record. Teardown
 dispatches on that flag, never on the class, so an object whose
 constructor threw runs our own teardown and not its `__destruct`

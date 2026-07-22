@@ -11,7 +11,7 @@
 use crate::class::{Class, NO_DESTRUCT_SLOT};
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::memory::immortal::immortal_alloc;
-use crate::refcount::{DESTRUCTED, HAS_DESTRUCTOR, MemoryCategory, RcHeader};
+use crate::refcount::{DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHeader};
 use crate::value::{Tag, Value, value_release};
 
 /// Object layout (`rfc/model/classes.md`): header, class pointer,
@@ -96,8 +96,10 @@ pub unsafe fn ll_object_new(
     }
     let obj = mem as *mut Object;
 
-    // No `HAS_DESTRUCTOR` here: the flag is set by `object_constructed`.
-    let extra = crate::refcount::ENTITY_OBJECT;
+    // No `DESTRUCTOR_PENDING` here: the flag is set by `object_constructed`.
+    // Object is the zero kind field, so this contributes no bits; it is
+    // written out to keep the factory's produced kind explicit.
+    let extra = crate::refcount::EntityKind::Object.to_flags();
     unsafe {
         (*obj).rc = RcHeader::new(category, extra);
         (*obj).class = class;
@@ -144,7 +146,7 @@ pub unsafe fn object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool 
     {
         return false;
     }
-    unsafe { (*obj).rc.flags |= HAS_DESTRUCTOR };
+    unsafe { (*obj).rc.flags |= DESTRUCTOR_PENDING };
     true
 }
 
@@ -225,12 +227,12 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
     // The header flag, not the class: a class may declare `__destruct`
     // while this particular object never finished construction, and such
     // an object must not run it (`rfc/runtime/object-lifecycle.md`).
-    if unsafe { (*obj).rc.flags } & HAS_DESTRUCTOR == 0
-        || unsafe { (*obj).rc.flags } & DESTRUCTED != 0
+    if unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING == 0
+        || unsafe { (*obj).rc.flags } & DESTRUCTOR_RAN != 0
     {
         return false;
     }
-    unsafe { (*obj).rc.flags |= DESTRUCTED };
+    unsafe { (*obj).rc.flags |= DESTRUCTOR_RAN };
     debug_assert_ne!(cls.destruct_slot, NO_DESTRUCT_SLOT);
     // Through the raw class pointer, not `cls`: the vtable trails the
     // descriptor's fixed fields, which a `&Class` does not cover.
@@ -404,7 +406,7 @@ mod tests {
             assert_eq!(o.rc.refcount, 1);
             assert_eq!(o.rc.memory_category(), MemoryCategory::RequestArena);
             assert_eq!(o.class, cls);
-            assert_eq!(o.rc.flags & HAS_DESTRUCTOR, 0, "no destructor declared");
+            assert_eq!(o.rc.flags & DESTRUCTOR_PENDING, 0, "no destructor declared");
             let x = unsafe { Object::prop_at(obj, 16).read() };
             assert_eq!(x.tag(), Tag::Null);
         });
@@ -420,7 +422,7 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
         let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
-        assert_ne!(unsafe { (*obj).rc.flags } & HAS_DESTRUCTOR, 0);
+        assert_ne!(unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING, 0);
 
         let mut delivered = Vec::new();
         arena.reset(|o| delivered.push(o));
@@ -445,7 +447,7 @@ mod tests {
         // The factory alone: no `object_constructed` call, as for a
         // constructor that raised.
         let obj = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::RequestArena) };
-        assert_eq!(unsafe { (*obj).rc.flags } & HAS_DESTRUCTOR, 0);
+        assert_eq!(unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING, 0);
 
         let mut delivered = Vec::new();
         arena.reset(|o| delivered.push(o));
@@ -526,7 +528,7 @@ mod tests {
             );
 
             // The resurrection reference dies too. Phase 1 is skipped
-            // (DESTRUCTED bit), phases 2-3 proceed.
+            // (DESTRUCTOR_RAN bit), phases 2-3 proceed.
             assert!(unsafe { ll_release(obj as *mut RcHeader) });
             unsafe { ll_object_die(obj) };
             assert_eq!(

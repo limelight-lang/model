@@ -33,8 +33,20 @@ impl MemoryCategory {
 }
 
 /// GC state for the CAS handoff (bits 2-3), `rfc/model/gc/heap-design.md`.
+/// Idle for arena-category entities — no strategy ever sees them — so
+/// arena reset borrows its low bit as a transient mark, see
+/// [`ARENA_RESET_MARK`].
 pub const GC_STATE_SHIFT: u32 = 2;
 pub const GC_STATE_MASK: u32 = 0b11 << GC_STATE_SHIFT;
+
+/// Transient mark set on an arena entity while arena reset traces its
+/// escaped subgraph. Arena entities never run a GC strategy, so the
+/// GC-state field is idle for them and reset borrows its low bit here
+/// (`rfc/model/classes.md`, "Flags layout"; `rfc/model/memory/arena-reset.md`).
+/// Cleared when a survivor is promoted to the heap, where its whole
+/// category + GC-state is rewritten. Replaces the old dedicated `ESCAPED`
+/// flag bit, freed by the 2026-07-22 flags compaction.
+pub const ARENA_RESET_MARK: u32 = 1 << GC_STATE_SHIFT;
 
 /// Cycle-collector color (bits 4-5) + buffered bit (6).
 pub const CYCLE_COLLECTOR_COLOR_SHIFT: u32 = 4;
@@ -42,23 +54,18 @@ pub const CYCLE_COLLECTOR_BUFFERED: u32 = 1 << 6;
 
 /// Entity has weak references (side table exists).
 pub const HAS_WEAK_REFERENCES: u32 = 1 << 7;
-/// Entity has a destructor with side effects (arena must call it).
-pub const HAS_DESTRUCTOR: u32 = 1 << 8;
+/// This instance owes a `__destruct`: set only when the user constructor
+/// has returned successfully, and only for a class that has a destructor.
+/// What every teardown path dispatches on (`rfc/runtime/object-lifecycle.md`).
+/// Was `HAS_DESTRUCTOR` before the 2026-07-22 flags compaction.
+pub const DESTRUCTOR_PENDING: u32 = 1 << 8;
+/// `__destruct` has already run (exactly-once guard),
+/// `rfc/runtime/object-lifecycle.md`. Was `DESTRUCTED`, and now adjacent
+/// to [`DESTRUCTOR_PENDING`].
+pub const DESTRUCTOR_RAN: u32 = 1 << 9;
 /// Copy-on-write semantics: refcount is always maintained,
 /// writes with refcount > 1 must separate (`rfc/model/values.md`).
-pub const COW: u32 = 1 << 9;
-/// `__destruct` has already run (exactly-once guard),
-/// `rfc/runtime/object-lifecycle.md`.
-pub const DESTRUCTED: u32 = 1 << 10;
-/// Transient mark used during arena reset: the entity is part of the
-/// escaped subgraph (`rfc/model/memory/arena-reset.md`). Cleared when
-/// the survivor's category is rewritten.
-pub const ESCAPED: u32 = 1 << 11;
-/// The entity is an [`crate::object::Object`] (has a class pointer at
-/// +8). Teardown paths that only have a bare `RcHeader` dispatch on
-/// this. Strings/arrays will claim sibling bits; flags-table extension
-/// to be reflected in rfc/model/classes.md.
-pub const ENTITY_OBJECT: u32 = 1 << 12;
+pub const COW: u32 = 1 << 10;
 
 /// The entity is a live **escapee**: a request-arena object that one or
 /// more longer-lived containers currently reference
@@ -69,20 +76,62 @@ pub const ENTITY_OBJECT: u32 = 1 << 12;
 /// store barrier and by holder teardown; consumed at arena reset to decide
 /// promotion. Cleared when the count returns to zero or the survivor's
 /// category is rewritten at promotion.
-pub const IS_ESCAPEE: u32 = 1 << 13;
+pub const IS_ESCAPEE: u32 = 1 << 11;
+
+/// Entity kind (bits 12-14): what makes a bare heap pointer
+/// self-describing for freeing and for a `mixed` conversion. `0` object is
+/// the zero default, so an entity built with no kind bits is an object;
+/// strings, arrays and the other kinds set theirs explicitly. Authoritative
+/// table: `rfc/model/classes.md`, "Flags layout". Replaces the old
+/// dedicated `ENTITY_OBJECT` flag bit.
+pub const ENTITY_KIND_SHIFT: u32 = 12;
+pub const ENTITY_KIND_MASK: u32 = 0b111 << ENTITY_KIND_SHIFT;
+
+/// The seven entity kinds (code `7` is reserved). A value context `Box`
+/// and the FFI wrapper `Box` share the [`EntityKind::Box`] tag,
+/// distinguished by context (`rfc/model/values.md`, `rfc/model/memory/ffi.md`).
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EntityKind {
+    Object = 0,
+    String = 1,
+    Array = 2,
+    Reference = 3,
+    Box = 4,
+    WeakRef = 5,
+    Lazy = 6,
+}
+
+impl EntityKind {
+    /// The kind bits for construction, positioned at [`ENTITY_KIND_SHIFT`].
+    #[inline]
+    pub const fn to_flags(self) -> u32 {
+        (self as u32) << ENTITY_KIND_SHIFT
+    }
+}
+
+/// True when the entity kind field is `Object` (the zero default). The
+/// dispatch every teardown and trace path makes on a bare header; replaces
+/// the old dedicated `ENTITY_OBJECT` flag test. Kept as a flags-word
+/// predicate because most call sites hold a raw `*mut RcHeader` and have
+/// the flags in a register already.
+#[inline]
+pub fn is_object(flags: u32) -> bool {
+    flags & ENTITY_KIND_MASK == 0
+}
 
 /// Where the entity sits in the cycle collector's candidate buffer,
 /// stored as `index + 1` so that zero means "position unknown" (bits
-/// 14-31, the top of the flags word). Zend keeps the same thing in
+/// 15-31, the top of the flags word). Zend keeps the same thing in
 /// `gc_info` for the same reason: without it, forgetting a candidate
 /// means a linear scan of the whole buffer. Zero is always safe — the
 /// collector falls back to that scan (`crate::gc::forget_candidate`).
-pub const CANDIDATE_INDEX_SHIFT: u32 = 14;
-pub const CANDIDATE_INDEX_MASK: u32 = 0x0003_FFFF << CANDIDATE_INDEX_SHIFT;
+pub const CANDIDATE_INDEX_SHIFT: u32 = 15;
+pub const CANDIDATE_INDEX_MASK: u32 = 0x0001_FFFF << CANDIDATE_INDEX_SHIFT;
 /// Largest buffer position the field can hold. Beyond it the index is
-/// stored as zero: 262 142 candidates is 26 full thresholds without a
+/// stored as zero: 131 070 candidates is many full thresholds without a
 /// single collection point, and the fallback costs only speed.
-pub const CANDIDATE_INDEX_MAX: usize = 0x0003_FFFF - 1;
+pub const CANDIDATE_INDEX_MAX: usize = 0x0001_FFFF - 1;
 
 /// The 8-byte header at offset 0 of every heap entity.
 #[repr(C)]
@@ -188,8 +237,11 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
     // to be told nothing had changed. The callee keeps its own copy of
     // the test — it has other callers, and this one is an optimization,
     // not the invariant.
+    // Object kind is the zero kind field, so "an object that is not yet
+    // buffered" is exactly "kind bits and buffered bit all clear" — one
+    // masked compare, the same single test the old `ENTITY_OBJECT` bit gave.
     if header.memory_category() == MemoryCategory::GcHeap
-        && header.flags & (ENTITY_OBJECT | CYCLE_COLLECTOR_BUFFERED) == ENTITY_OBJECT
+        && header.flags & (ENTITY_KIND_MASK | CYCLE_COLLECTOR_BUFFERED) == 0
     {
         // `entity`, not `header`: the buffered pointer outlives this call
         // and the collector casts it back to `*mut Object` to read the
@@ -288,5 +340,56 @@ mod tests {
         assert_eq!(align_of::<RcHeader>(), 4);
         assert_eq!(core::mem::offset_of!(RcHeader, refcount), 0);
         assert_eq!(core::mem::offset_of!(RcHeader, flags), 4);
+    }
+
+    /// The flags word layout is a contract with the compiler and the C
+    /// mirror in `rfc/model/lowering.md`: generated code stamps these exact
+    /// bit positions. Pin them so the 2026-07-22 compaction cannot drift.
+    #[test]
+    fn flags_layout_is_the_compacted_design() {
+        assert_eq!(MEMORY_CATEGORY_MASK, 0b11, "category: bits 0-1");
+        assert_eq!(GC_STATE_MASK, 0b11 << 2, "gc state: bits 2-3");
+        assert_eq!(ARENA_RESET_MARK, 1 << 2, "reset mark borrows gc-state bit 2");
+        assert_eq!(CYCLE_COLLECTOR_BUFFERED, 1 << 6);
+        assert_eq!(HAS_WEAK_REFERENCES, 1 << 7);
+        assert_eq!(DESTRUCTOR_PENDING, 1 << 8);
+        assert_eq!(DESTRUCTOR_RAN, 1 << 9);
+        assert_eq!(COW, 1 << 10);
+        assert_eq!(IS_ESCAPEE, 1 << 11);
+        assert_eq!(ENTITY_KIND_SHIFT, 12);
+        assert_eq!(ENTITY_KIND_MASK, 0b111 << 12, "entity kind: bits 12-14");
+        assert_eq!(CANDIDATE_INDEX_SHIFT, 15);
+        assert_eq!(CANDIDATE_INDEX_MASK, 0x0001_FFFF << 15, "candidate index: bits 15-31, 17 wide");
+        assert_eq!(CANDIDATE_INDEX_MAX, 131_070);
+
+        // The kind field and the candidate index must not overlap, and the
+        // whole word must stay 32 bits wide.
+        assert_eq!(ENTITY_KIND_MASK & CANDIDATE_INDEX_MASK, 0, "kind and index are disjoint");
+        assert_eq!(CANDIDATE_INDEX_MASK >> 15 << 15, CANDIDATE_INDEX_MASK, "index reaches the top bit");
+        assert_eq!(0x8000_0000u32 & CANDIDATE_INDEX_MASK, 0x8000_0000, "and includes bit 31");
+    }
+
+    /// `Object` is the zero kind field, so a header built with no kind bits
+    /// reads as an object — the property the whole `ENTITY_OBJECT`-bit
+    /// removal rests on — while every other kind sits inside the field.
+    #[test]
+    fn object_is_the_zero_kind() {
+        assert_eq!(EntityKind::Object.to_flags(), 0);
+        assert!(is_object(0));
+        assert!(is_object(MemoryCategory::GcHeap as u32 | COW), "non-kind bits do not confuse it");
+
+        for kind in [
+            EntityKind::String,
+            EntityKind::Array,
+            EntityKind::Reference,
+            EntityKind::Box,
+            EntityKind::WeakRef,
+            EntityKind::Lazy,
+        ] {
+            let bits = kind.to_flags();
+            assert_ne!(bits, 0, "{kind:?} is a non-zero kind");
+            assert_eq!(bits & !ENTITY_KIND_MASK, 0, "{kind:?} lands inside the kind field");
+            assert!(!is_object(bits), "{kind:?} is not an object");
+        }
     }
 }
