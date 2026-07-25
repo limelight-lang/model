@@ -8,6 +8,41 @@ never edited or deleted.
 
 ---
 
+## 2026-07-25 — a generated lifecycle body unrolls small, loops large
+
+**Decided:** the counted-field strides of a compiler-generated lifecycle
+operation — `dispose`'s releases, the retain strides of `clone` /
+`deep_clone` / `thread_*`, and `factory`'s non-zero-default stamps — are
+emitted unrolled for a class with few counted fields, and as a loop over
+`traced_runs` once the field count crosses a threshold. The RFC's
+"straight-line, release slot 1, release slot 2, …" is the small-class
+shape, not an absolute (`rfc/model/classes.md`, "Generated body shape";
+`lowering.md`, Allocation).
+
+**Why:** these bodies run once per object, so unrolled path length wins
+for the common handful-of-fields class — no loop counter, no map load, and
+the releases cancel against matching retains under the ARC optimizer. But
+code size is paid per class *per operation*; a class with dozens of
+counted fields would emit those dozens in `dispose`, again in `clone`,
+again in each `thread_*`, bloating the icache for no gain. Past the
+threshold the loop reads the same `traced_runs` the GC already strides, so
+a large class needs no second teardown map — the trace map serves both the
+inline data consumer (GC) and the looped code consumer (`dispose`).
+
+**Not fixed by the model:** the crossover field count is a codegen tuning
+parameter, calibrated against real workloads like every other size
+threshold here (order of a few tens of fields). The model fixes the two
+shapes and the rule that picks between them, not the number.
+
+**Bearing on this crate:** `dispose` is generated code, so the threshold
+lives in the compiler, not in `ll-model`. Here it only means A1's generic
+runtime `ll_object_die` is a temporary stand-in: A3 replaces it with the
+descriptor's `dispose` pointer, and the crate's tests supply hand-written
+`dispose` functions that model the generated small-class (unrolled) form.
+The GC trace keeps striding `traced_runs` as data regardless.
+
+---
+
 ## 2026-07-21 — the store barrier is funded, not checked
 
 **Decided:** two blocks per thread are held back for arena log growth
