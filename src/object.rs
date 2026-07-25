@@ -4,16 +4,17 @@
 //! `ll_object_new` is the out-of-line allocation path — the compiler
 //! inlines the bump-pointer version when class and category are
 //! statically known, but both perform the same steps. `ll_object_die`
-//! is the teardown entry every strategy funnels into: pre-destructor
-//! with resurrection check, drop of counted children, memory release
-//! by category.
+//! is the teardown entry every strategy funnels into: it dispatches to
+//! the class's `dispose` (pre-destructor with resurrection check, then
+//! drop of counted children), then frees the memory by category.
+//! `dispose` is a descriptor pointer — [`ll_default_dispose`] is the
+//! generic stand-in a class carries until the compiler generates one
+//! specialized to its layout (`dev/DECISIONS.md`, 2026-07-25).
 
 use crate::class::{Class, NO_DESTRUCT_SLOT};
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::memory::immortal::immortal_alloc;
-use crate::refcount::{
-    DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHeader, is_object, ll_release,
-};
+use crate::refcount::{DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHeader};
 use crate::value::Value;
 
 /// Object layout (`rfc/model/classes.md`): header, class pointer, then
@@ -303,14 +304,31 @@ pub(crate) unsafe fn release_arena_escapes(obj: *mut Object) {
     }
 }
 
-/// Three-phase teardown. Called when the refcount reaches zero or a
-/// collector proves the object garbage.
+/// The class's internal destructor `dispose(obj)`
+/// (`rfc/model/classes.md`, "dispose — the internal destructor"), as a
+/// function-pointer type. It runs the user `__destruct` under the
+/// resurrection guard and releases the object's counted children, then
+/// returns whether teardown completed — `true` to free the object,
+/// `false` when a resurrection kept it alive. The object's own memory free
+/// is the caller's ([`ll_object_die`]).
+pub type DisposeFn = unsafe extern "C" fn(*mut Object) -> bool;
+
+/// The default `dispose`: the generic, layout-reading stand-in a class
+/// carries until the compiler emits one specialized to its fields
+/// (`dev/DECISIONS.md`, 2026-07-25). It reads `traced_runs` (via
+/// [`for_each_counted_child`]) to release children; a generated `dispose`
+/// would unroll the releases straight-line, or loop for a large class,
+/// with no map read. The effects are identical, so a test may install a
+/// hand-written unrolled `dispose` to model generated code.
+///
+/// Runs phases 1–2 of teardown; phase 3, the memory free, is
+/// [`ll_object_die`]'s. Returns `true` to proceed to the free, `false` on
+/// resurrection.
 ///
 /// # Safety
-/// `obj` must be a live object whose count just reached zero (or that
-/// a collector owns).
+/// `obj` a live object whose count just reached zero (or a collector owns).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
+pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
     // Phase 1 — pre-destructor: exactly once, resurrection-aware.
     //
     // Guard the destructor with one extra reference so a *transient* $this
@@ -331,43 +349,53 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
         unsafe { (*obj).rc.refcount -= 1 };
     }
     if ran && unsafe { (*obj).rc.refcount } > 0 {
-        return; // resurrected: __destruct stored $this somewhere lasting
+        return false; // resurrected: __destruct stored $this somewhere lasting
     }
     // Leave the cycle-collector candidate buffer before releasing any
     // child. This object's refcount is already 0; a child release below can
     // trip the candidate threshold and run a synchronous collection, which
     // would otherwise trace this still-buffered object as a root and free it
-    // — then phase 3 frees it again (double free). No-op for entities that
-    // were never buffered (non-GcHeap, or GcHeap that never decremented).
+    // — then the free in `ll_object_die` frees it again (double free). No-op
+    // for entities never buffered (non-GcHeap, or GcHeap never decremented).
     unsafe { crate::gc::forget_candidate(obj as *mut RcHeader) };
 
-    // Phase 2 — drop: release counted children, cascading.
+    // Phase 2 — drop each counted child through the barrier's `drop`
+    // micro-op: escape-lose for a held arena escapee, release + cascade
+    // otherwise. `owner_cat` is this object's category — always GcHeap on
+    // this path (only GcHeap objects reach full teardown; arena objects get
+    // phase 1 only at reset), and passing it makes teardown's drop identical
+    // to the store barrier's.
+    let owner_cat = unsafe { (*obj).rc.memory_category() };
     unsafe {
         for_each_counted_child(obj, |child| {
-            // This longer-lived holder is being torn down: for each
-            // request-arena escapee it held, drop the escape hold-count
-            // (`lose`, `rfc/model/memory/arenas.md`). Same event as an
-            // overwrite in the store barrier — the slot let go of the
-            // escapee. Heap children fall through to release + cascade.
-            if (*child).memory_category() == MemoryCategory::RequestArena {
-                crate::memory::barrier::escape_lose(child);
-            }
-            if ll_release(child) {
-                // The child died with this release. Tear it down by kind;
-                // only objects have a class-driven teardown today.
-                if is_object((*child).flags) {
-                    ll_object_die(child as *mut Object);
-                }
-                // TODO(strings/arrays): non-object entity teardown (A2).
-            }
+            crate::memory::barrier::drop_ref(owner_cat, child);
         });
+    }
+    true
+}
+
+/// Teardown entry: dispatch to the class's `dispose` (phases 1–2), then
+/// free the object's own memory if it completed (phase 3). Called when the
+/// refcount reaches zero or a collector proves the object garbage.
+///
+/// The teardown body lives in `obj->class->dispose` — one indirect call
+/// into per-class code, the collector holding only `obj`
+/// (`rfc/model/classes.md`). This crate installs [`ll_default_dispose`] as
+/// the stand-in; the memory free stays here, generic and by category.
+///
+/// # Safety
+/// `obj` a live object whose count just reached zero (or a collector owns).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
+    let dispose: DisposeFn = unsafe { std::mem::transmute((*(*obj).class).dispose) };
+    if !unsafe { dispose(obj) } {
+        return; // resurrected: kept alive, not freed
     }
 
     // Phase 3 — memory, by category. Arenas reclaim at reset; the
-    // long-lived policy is TBD; only the GC heap frees here. The
-    // deferred-free GC activity bit arrives with rc-satb.
+    // long-lived policy is TBD; only the GC heap frees here. The candidate
+    // buffer was already cleared inside `dispose`, before its child drops.
     if unsafe { (*obj).rc.memory_category() } == MemoryCategory::GcHeap {
-        // The candidate buffer was already cleared above, before phase 2.
         unsafe { crate::memory::stdapi::ll_free(obj as *mut u8) };
     }
 }
@@ -400,9 +428,18 @@ mod tests {
     static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
     static RESURRECT_INTO: AtomicUsize = AtomicUsize::new(0);
     static TRANSIENT_DEATHS: AtomicUsize = AtomicUsize::new(0);
+    static DISPOSE_DISPATCHED: AtomicUsize = AtomicUsize::new(0);
 
     unsafe extern "C" fn counting_destructor(_obj: *mut Object) {
         DESTRUCTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A stand-in for a compiler-generated specialized `dispose`: it marks
+    /// that the descriptor's pointer was dispatched to, then delegates the
+    /// real teardown to the default so the effects are unchanged.
+    unsafe extern "C" fn counting_dispose(obj: *mut Object) -> bool {
+        DISPOSE_DISPATCHED.fetch_add(1, Ordering::Relaxed);
+        unsafe { ll_default_dispose(obj) }
     }
 
     unsafe extern "C" fn resurrecting_destructor(obj: *mut Object) {
@@ -577,6 +614,49 @@ mod tests {
                 DESTRUCTS.load(Ordering::Relaxed),
                 2,
                 "parent and its pointer-slot child both destructed"
+            );
+        });
+    }
+
+    /// Teardown dispatches through the class's `dispose` pointer, not a
+    /// hardcoded path: a class carrying a custom `dispose` sees it invoked,
+    /// and the real teardown still runs (here via delegation). This is the
+    /// hook A3 opens for the compiler's specialized `dispose`.
+    #[test]
+    fn teardown_dispatches_through_the_class_dispose_pointer() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        DISPOSE_DISPATCHED.store(0, Ordering::Relaxed);
+
+        let child_cls = ClassBuilder::new("DispChild")
+            .destructor(counting_destructor as *const ())
+            .build();
+        let parent_cls = ClassBuilder::new("DispParent")
+            .prop_pointer("child")
+            .destructor(counting_destructor as *const ())
+            .dispose(counting_dispose as *const ())
+            .build();
+
+        with_ctx(|ctx| {
+            let child = unsafe { new_constructed(ctx, child_cls, MemoryCategory::GcHeap) };
+            let parent = unsafe { new_constructed(ctx, parent_cls, MemoryCategory::GcHeap) };
+            unsafe {
+                let slot = (parent as *mut u8).add(16) as *mut *mut RcHeader;
+                slot.write(child as *mut RcHeader);
+            }
+
+            assert!(unsafe { ll_release(parent as *mut RcHeader) });
+            unsafe { ll_object_die(parent) };
+
+            assert_eq!(
+                DISPOSE_DISPATCHED.load(Ordering::Relaxed),
+                1,
+                "teardown went through the descriptor's dispose (the parent's only)"
+            );
+            assert_eq!(
+                DESTRUCTS.load(Ordering::Relaxed),
+                2,
+                "parent + child still destructed via the custom dispose"
             );
         });
     }

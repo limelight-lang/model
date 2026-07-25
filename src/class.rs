@@ -173,6 +173,11 @@ pub struct Class {
     pub props: *const PropSlot,
     pub methods: *const MethodEntry,
     pub interfaces: *const InterfaceEntry,
+    /// The internal destructor `dispose(obj)` (`crate::object::DisposeFn`):
+    /// runs `__destruct` and releases counted fields, one indirect call
+    /// into per-class code. Holds [`crate::object::ll_default_dispose`]
+    /// until the compiler generates a specialized one.
+    pub dispose: *const (),
     /// Counted-pointer trace runs (stride 8, skip `NULL`).
     pub ptr_runs: *const Run,
     /// Box trace runs (stride 16, skip when the refcounted flag is clear).
@@ -284,6 +289,7 @@ pub struct ClassBuilder {
     props: Vec<(*const LLString, SlotKind)>,
     methods: Vec<(*const LLString, *const ())>,
     interfaces: Vec<(u32, Vec<u32>)>,
+    dispose: *const (),
 }
 
 impl ClassBuilder {
@@ -295,7 +301,18 @@ impl ClassBuilder {
             props: Vec::new(),
             methods: Vec::new(),
             interfaces: Vec::new(),
+            // The generic teardown stand-in until a compiler generates a
+            // specialized `dispose` for this class.
+            dispose: crate::object::ll_default_dispose as *const (),
         }
+    }
+
+    /// Install a specialized `dispose` (`crate::object::DisposeFn`),
+    /// modeling the per-class teardown the compiler would generate. The
+    /// default is [`crate::object::ll_default_dispose`].
+    pub fn dispose(mut self, code: *const ()) -> Self {
+        self.dispose = code;
+        self
     }
 
     /// Declare an interface (no instances; carries an id and fixes
@@ -613,6 +630,7 @@ impl ClassBuilder {
                 props: props_mem,
                 methods: methods_mem,
                 interfaces: interfaces_mem,
+                dispose: self.dispose,
                 ptr_runs: ptr_runs_mem,
                 box_runs: box_runs_mem,
             });

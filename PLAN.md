@@ -31,10 +31,13 @@ Done, per RFC:
 
 The crate still runs the **old** teardown/barrier shape around that body:
 `ll_object_new`/`ll_object_die` are generic runtime routines (A3 replaces
-them with generated `factory`/`dispose`), `promote::die` handles objects
-only, and only `EntityKind::Object` is produced (A2). The store barrier
-now has the slot-kind micro-ops (A4: `store_ptr`/`store_box`/`drop_ref`),
-though the GC/promote test graphs still build through the `ref_store` Box
+them), `promote::die` handles objects only, and only `EntityKind::Object`
+is produced (A2). Teardown now dispatches through the descriptor's
+`dispose` pointer (A3), with `ll_default_dispose` the generic stand-in
+until the compiler generates specialized ones; the `factory` half of A3
+still needs generation, so `ll_object_new` stays. The store barrier has
+the slot-kind micro-ops (A4: `store_ptr`/`store_box`/`drop_ref`), though
+the GC/promote test graphs still build through the `ref_store` Box
 composition. The rest of the rewrite is the work below.
 
 ## Recommended order
@@ -68,11 +71,17 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   `store_box`+`drop_ref` composition for existing callers; ABI
   `ll_store_ptr` / `ll_store_box` / `ll_drop`. Composition/inlining/
   specialization stays in lowering (the RFC's §1). `rfc/model/gc/strategies.md`.
-- [ ] **A3. Lifecycle family** — per class: `factory(ctx, category)`,
-  `dispose(obj)` (runs `__destruct`), `clone` / `deep_clone` /
-  `thread_clone` / `thread_move`. Descriptor carries factory + dispose
-  pointers. Retire generic `ll_object_new` / `ll_object_die`. Only the GC
-  reads `traced_runs` as data. `rfc/runtime/object-lifecycle.md`.
+- [~] **A3. Lifecycle family** — *dispose dispatch landed 2026-07-25*: the
+  descriptor carries a `dispose` pointer, teardown dispatches through
+  `obj->class->dispose(obj)` (child releases via A4's `drop_ref`), and
+  `ll_default_dispose` is the generic stand-in a class carries until the
+  compiler generates a specialized one; a test can install its own. Still
+  open: **`factory` in the descriptor** (a `factory(ctx, category)` with
+  no class param needs per-class generation — the generic path stays
+  `ll_object_new(ctx, class, category)`), and **`clone` / `deep_clone` /
+  `thread_clone` / `thread_move`** (multi-threading-future, "reserved" in
+  the RFC). "Only the GC reads `traced_runs` as data" holds once generated
+  disposes replace the stand-in. `rfc/runtime/object-lifecycle.md`.
 - [ ] **A5. `VALUE_UNDEF` semantics + `WRITING` lock bit** — uninitialized
   state per `values.md`; the `WRITING` Box-flags lock bit for rc-satb
   `store_box` (torn-16-byte-read fix, C3). `rfc/model/values.md`,

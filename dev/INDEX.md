@@ -36,7 +36,8 @@ versions live in `docs/history/`, marked at the top.
   `src/memory/stdapi.rs` (`ll_malloc`/`ll_c_free`/aligned),
   `src/memory/barrier.rs` (`ll_store_ptr`/`ll_store_box`/`ll_drop`/
   `ll_ref_store`), `src/object.rs`
-  (`ll_object_die`), `src/refcount.rs`
+  (`ll_object_die`, dispatching to the descriptor's `dispose` —
+  `ll_default_dispose` the stand-in), `src/refcount.rs`
   (`ll_retain`/`ll_release`).
 - Crate root: `src/lib.rs`. Built as `rlib` + `staticlib` for the
   C++/LLVM layer.
