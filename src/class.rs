@@ -13,7 +13,9 @@
 //! the slow path (interned name → slot), per-interface itables with
 //! slot maps (rebuilt against the subclass's own vtable, so overrides
 //! flow into inherited interfaces), Cohen display for O(1)
-//! `instanceof`, property layout with fixed 16-byte Box slots.
+//! `instanceof`, and property layout with machine-typed slots (scalar /
+//! bare pointer / Box, grouped into three runs) plus the two typed trace
+//! lists (`ptr_runs` / `box_runs`) the GC and teardown stride.
 //!
 //! **Dispatch tables are pure code-pointer arrays** — the invariant:
 //! no headers inside any table (C++-style offset-to-top/RTTI prefixes
@@ -40,18 +42,81 @@ pub const CLASS_HAS_DESTRUCTOR: u32 = 1 << 3;
 /// No `__destruct`.
 pub const NO_DESTRUCT_SLOT: u32 = u32::MAX;
 
-/// Property slot flags.
-pub const PROP_REFCOUNTED: u32 = 1 << 0;
+/// The machine representation of a declared property's type — what the
+/// slot physically *is*, chosen at link time (`rfc/model/classes.md`,
+/// "Slot kinds"). Traced-ness and stride both follow from the kind, so
+/// there is no separate per-slot "is a reference" flag any more.
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlotKind {
+    /// Raw `i64` / `f64` (an `int` / `float` property): 8 bytes, never
+    /// traced.
+    Scalar = 0,
+    /// A bare 8-byte pointer to a counted entity — a declared class type,
+    /// `string` or `array`. `NULL` means uninitialized. Traced as a
+    /// pointer run (stride 8, skip `NULL`).
+    Pointer = 1,
+    /// A 16-byte [`crate::value::Value`] Box — the one boxed slot form,
+    /// for an untyped / `mixed` property (nullable scalars join it later).
+    /// Traced as a Box run (stride 16, skip when the refcounted flag is
+    /// clear).
+    Boxed = 2,
+    /// A `bool` byte (1 byte), never traced. Bit-packing into a byte block
+    /// is a deferred optimization (`rfc` backlog, A7).
+    Bool = 3,
+}
 
-/// A declared property: fixed offset from the object base, computed at
-/// link time. Slots are 16-byte Boxes in phase 1 (unboxed slots are a
-/// compiler contract layered on later).
+impl SlotKind {
+    /// Bytes the slot occupies.
+    #[inline]
+    pub const fn size(self) -> u32 {
+        match self {
+            SlotKind::Scalar | SlotKind::Pointer => 8,
+            SlotKind::Boxed => 16,
+            SlotKind::Bool => 1,
+        }
+    }
+
+    /// Alignment the slot requires.
+    #[inline]
+    pub const fn align(self) -> u32 {
+        match self {
+            SlotKind::Bool => 1,
+            _ => 8,
+        }
+    }
+
+    /// Whether the GC traces this slot: pointer and Box slots hold counted
+    /// references, scalars and bools never do.
+    #[inline]
+    pub const fn is_traced(self) -> bool {
+        matches!(self, SlotKind::Pointer | SlotKind::Boxed)
+    }
+}
+
+/// A contiguous stretch of same-kind traced slots in the object body:
+/// `count` slots starting at byte `offset`. Pointer runs stride 8, Box
+/// runs stride 16 — the GC trace map (`rfc/model/classes.md`, "Slot
+/// order"). A `Run` compresses `count` slots into one 8-byte pair.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Run {
+    pub offset: u32,
+    pub count: u32,
+}
+
+/// A declared property: its fixed offset from the object base, its
+/// machine slot kind, and its declaration-order index — all computed at
+/// link time. Physical order groups the runs, so it no longer matches
+/// declaration order, which `serialize()`/`foreach`/reflection still
+/// observe; `declaration_index` preserves it.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PropSlot {
     pub name: *const LLString,
     pub offset: u32,
-    pub flags: u32,
+    pub kind: SlotKind,
+    pub declaration_index: u32,
 }
 
 /// Slow-path method table entry: interned name → vtable slot. Hot
@@ -81,8 +146,12 @@ pub struct InterfaceEntry {
 #[repr(C)]
 pub struct Class {
     pub flags: u32,
-    /// Instance allocation size: 16-byte header+class, then prop slots.
+    /// Instance allocation size: `layout_end` rounded up to 8.
     pub object_size: u32,
+    /// First free byte, unrounded: where a subclass resumes laying out
+    /// its own properties, so a subclass field may sit in this class's
+    /// tail padding (`rfc/model/classes.md`, JDK-15 rule).
+    pub layout_end: u32,
     /// Identity for interface dispatch; meaningful when
     /// `CLASS_INTERFACE` is set.
     pub interface_id: u32,
@@ -94,7 +163,8 @@ pub struct Class {
     /// Vtable slot of `__destruct`, or [`NO_DESTRUCT_SLOT`].
     pub destruct_slot: u32,
     pub vtbl_len: u32,
-    _pad: u32,
+    pub ptr_run_count: u32,
+    pub box_run_count: u32,
     pub parent: *const Class,
     pub name: *const LLString,
     /// Ancestors root→self, indexed by depth: `instanceof` is one load
@@ -103,6 +173,10 @@ pub struct Class {
     pub props: *const PropSlot,
     pub methods: *const MethodEntry,
     pub interfaces: *const InterfaceEntry,
+    /// Counted-pointer trace runs (stride 8, skip `NULL`).
+    pub ptr_runs: *const Run,
+    /// Box trace runs (stride 16, skip when the refcounted flag is clear).
+    pub box_runs: *const Run,
     // vtbl: [*const (); vtbl_len] — inline trailing array.
 }
 
@@ -134,13 +208,18 @@ impl Class {
         unsafe { std::slice::from_raw_parts(self.props, self.prop_count as usize) }
     }
 
-    /// Offsets of property slots that may hold counted references —
-    /// the contract GC tracing and phase-2 teardown consume.
-    pub fn refcounted_slots(&self) -> impl Iterator<Item = u32> + '_ {
-        self.props()
-            .iter()
-            .filter(|p| p.flags & PROP_REFCOUNTED != 0)
-            .map(|p| p.offset)
+    /// Counted-pointer trace runs (stride 8, skip `NULL`) — the GC and
+    /// teardown consumer contract for bare-pointer slots.
+    #[inline]
+    pub fn ptr_runs(&self) -> &[Run] {
+        unsafe { std::slice::from_raw_parts(self.ptr_runs, self.ptr_run_count as usize) }
+    }
+
+    /// Box trace runs (stride 16, skip when the refcounted flag is clear)
+    /// — the same contract for `mixed`/untyped Box slots.
+    #[inline]
+    pub fn box_runs(&self) -> &[Run] {
+        unsafe { std::slice::from_raw_parts(self.box_runs, self.box_run_count as usize) }
     }
 
     /// Slow-path lookup: interned name → vtable slot. Name equality is
@@ -202,7 +281,7 @@ pub struct ClassBuilder {
     name: *const LLString,
     parent: *const Class,
     flags: u32,
-    props: Vec<(*const LLString, u32)>,
+    props: Vec<(*const LLString, SlotKind)>,
     methods: Vec<(*const LLString, *const ())>,
     interfaces: Vec<(u32, Vec<u32>)>,
 }
@@ -237,11 +316,33 @@ impl ClassBuilder {
         self
     }
 
-    /// Declare a property. `refcounted` marks slots that can hold
-    /// counted references (traced by GC, released at drop).
-    pub fn prop(mut self, name: &str, refcounted: bool) -> Self {
-        let flags = if refcounted { PROP_REFCOUNTED } else { 0 };
-        self.props.push((crate::intern::intern_str(name), flags));
+    /// Declare a property, in the boolean compatibility shim over the two
+    /// common kinds: `true` → a [`SlotKind::Boxed`] slot (a counted
+    /// reference stored as a 16-byte Value — the form the store barrier can
+    /// write until A4's `store_ptr`), `false` → a [`SlotKind::Scalar`]
+    /// slot. Bare-pointer and `bool` slots have their own declarations.
+    pub fn prop(self, name: &str, refcounted: bool) -> Self {
+        let kind = if refcounted {
+            SlotKind::Boxed
+        } else {
+            SlotKind::Scalar
+        };
+        self.prop_of(name, kind)
+    }
+
+    /// Declare a bare-pointer property (a declared class type / `string` /
+    /// `array`): 8 bytes, traced as a pointer run, `NULL` = uninitialized.
+    pub fn prop_pointer(self, name: &str) -> Self {
+        self.prop_of(name, SlotKind::Pointer)
+    }
+
+    /// Declare a `bool` property: 1 byte, never traced.
+    pub fn prop_bool(self, name: &str) -> Self {
+        self.prop_of(name, SlotKind::Bool)
+    }
+
+    fn prop_of(mut self, name: &str, kind: SlotKind) -> Self {
+        self.props.push((crate::intern::intern_str(name), kind));
         self
     }
 
@@ -329,26 +430,84 @@ impl ClassBuilder {
             }
         }
 
-        // Properties: parent slots first (offsets stable), own appended.
-        let mut props: Vec<PropSlot> = parent.map_or(Vec::new(), |p| {
-            p.props()
-                .iter()
-                .map(|s| PropSlot {
-                    name: s.name,
-                    offset: s.offset,
-                    flags: s.flags,
-                })
-                .collect()
-        });
-        for &(name, flags) in &self.props {
-            let offset = 16 + props.len() as u32 * 16;
+        // Property layout (`rfc/model/classes.md`, "Slot order"). Parent
+        // slots keep their offsets; this class lays its own out in three
+        // runs — counted pointers, then Boxes, then the rest in
+        // declaration order — starting at the parent's `layout_end`, so an
+        // own field may land in the parent's tail padding (JDK-15 rule).
+        // Hole-filling and bit-packing are deferred optimizations (A5/A7).
+        let parent_layout_end = parent.map_or(16, |p| p.layout_end);
+        let parent_prop_count = parent.map_or(0, |p| p.prop_count);
+
+        let mut props: Vec<PropSlot> = parent.map_or(Vec::new(), |p| p.props().to_vec());
+        // A subclass appends at most one run per kind for its own slots.
+        let mut ptr_runs: Vec<Run> = parent.map_or(Vec::new(), |p| p.ptr_runs().to_vec());
+        let mut box_runs: Vec<Run> = parent.map_or(Vec::new(), |p| p.box_runs().to_vec());
+
+        // Classify own props, in declaration order, into the three runs.
+        let mut own_pointers: Vec<(*const LLString, u32)> = Vec::new();
+        let mut own_boxes: Vec<(*const LLString, u32)> = Vec::new();
+        let mut own_rest: Vec<(*const LLString, SlotKind, u32)> = Vec::new();
+        for (i, &(name, kind)) in self.props.iter().enumerate() {
+            let declaration_index = parent_prop_count + i as u32;
+            match kind {
+                SlotKind::Pointer => own_pointers.push((name, declaration_index)),
+                SlotKind::Boxed => own_boxes.push((name, declaration_index)),
+                _ => own_rest.push((name, kind, declaration_index)),
+            }
+        }
+
+        let align_up = |cursor: u32, align: u32| (cursor + align - 1) & !(align - 1);
+        let mut cursor = parent_layout_end;
+
+        // Counted pointers: one contiguous run, stride 8.
+        if !own_pointers.is_empty() {
+            cursor = align_up(cursor, 8);
+            ptr_runs.push(Run {
+                offset: cursor,
+                count: own_pointers.len() as u32,
+            });
+            for &(name, declaration_index) in &own_pointers {
+                props.push(PropSlot {
+                    name,
+                    offset: cursor,
+                    kind: SlotKind::Pointer,
+                    declaration_index,
+                });
+                cursor += 8;
+            }
+        }
+        // Boxes: one contiguous run, stride 16.
+        if !own_boxes.is_empty() {
+            cursor = align_up(cursor, 8);
+            box_runs.push(Run {
+                offset: cursor,
+                count: own_boxes.len() as u32,
+            });
+            for &(name, declaration_index) in &own_boxes {
+                props.push(PropSlot {
+                    name,
+                    offset: cursor,
+                    kind: SlotKind::Boxed,
+                    declaration_index,
+                });
+                cursor += 16;
+            }
+        }
+        // The rest, in declaration order: scalars and bools, never traced.
+        for &(name, kind, declaration_index) in &own_rest {
+            cursor = align_up(cursor, kind.align());
             props.push(PropSlot {
                 name,
-                offset,
-                flags,
+                offset: cursor,
+                kind,
+                declaration_index,
             });
+            cursor += kind.size();
         }
-        let object_size = 16 + props.len() as u32 * 16;
+
+        let layout_end = cursor;
+        let object_size = align_up(cursor, 8);
 
         // Interfaces: parent's are re-linked against OUR vtable (an
         // override must flow into the inherited itable), then our own.
@@ -381,7 +540,13 @@ impl ClassBuilder {
                 })
                 .collect::<Vec<_>>(),
         );
-        if props_mem.is_null() || methods_mem.is_null() {
+        let ptr_runs_mem = alloc_array(&ptr_runs);
+        let box_runs_mem = alloc_array(&box_runs);
+        if props_mem.is_null()
+            || methods_mem.is_null()
+            || ptr_runs_mem.is_null()
+            || box_runs_mem.is_null()
+        {
             return std::ptr::null();
         }
 
@@ -428,6 +593,7 @@ impl ClassBuilder {
             cls.write(Class {
                 flags: self.flags,
                 object_size,
+                layout_end,
                 interface_id: if self.flags & CLASS_INTERFACE != 0 {
                     NEXT_IFACE_ID.fetch_add(1, Ordering::Relaxed)
                 } else {
@@ -439,13 +605,16 @@ impl ClassBuilder {
                 interface_count: interface_entries.len() as u32,
                 destruct_slot,
                 vtbl_len: vtbl.len() as u32,
-                _pad: 0,
+                ptr_run_count: ptr_runs.len() as u32,
+                box_run_count: box_runs.len() as u32,
                 parent: self.parent,
                 name: self.name,
                 display: std::ptr::null(), // set below (self-referential)
                 props: props_mem,
                 methods: methods_mem,
                 interfaces: interfaces_mem,
+                ptr_runs: ptr_runs_mem,
+                box_runs: box_runs_mem,
             });
             display.push(cls);
             (*cls).display = alloc_array(&display);
@@ -544,16 +713,98 @@ mod tests {
             .build();
         let (animal, dog) = unsafe { (&*animal_ptr, &*dog_ptr) };
 
+        // name is a Boxed slot (the `refcounted` shim), age a Scalar: the
+        // Box run is placed first, the scalar after it. object_size is the
+        // exact byte count (40), not the old uniform 16-per-slot.
         assert_eq!(animal.find_prop(intern_str("name")).unwrap().offset, 16);
         assert_eq!(animal.find_prop(intern_str("age")).unwrap().offset, 32);
+        assert_eq!(animal.layout_end, 40);
+        assert_eq!(animal.object_size, 40);
+
+        // Inherited offsets are unchanged; Dog's own box slot resumes at
+        // the parent's layout_end (40).
         assert_eq!(dog.find_prop(intern_str("name")).unwrap().offset, 16);
-        assert_eq!(dog.find_prop(intern_str("breed")).unwrap().offset, 48);
-        assert_eq!(dog.object_size, 64);
+        assert_eq!(dog.find_prop(intern_str("age")).unwrap().offset, 32);
+        assert_eq!(dog.find_prop(intern_str("breed")).unwrap().offset, 40);
+        assert_eq!(dog.object_size, 56);
+
+        // The trace map: two Box runs (parent's name, then Dog's breed),
+        // no pointer runs. The scalar `age` is in neither — never traced.
         assert_eq!(
-            dog.refcounted_slots().collect::<Vec<_>>(),
-            vec![16, 48],
-            "age is unboxed-scalar-shaped, not traced"
+            dog.box_runs(),
+            &[Run { offset: 16, count: 1 }, Run { offset: 40, count: 1 }],
+            "age is scalar-shaped, not traced"
         );
+        assert!(dog.ptr_runs().is_empty());
+    }
+
+    /// The full slot-kind spread: a bare pointer (traced, stride-8 run), a
+    /// Box (traced, stride-16 run), a scalar and a bool (never traced),
+    /// each at the offset its kind and the run grouping dictate. Also pins
+    /// declaration order surviving the physical regrouping, and the exact
+    /// `layout_end` / `object_size` split that a subclass builds on.
+    #[test]
+    fn slot_kinds_lay_out_in_three_runs() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls_ptr = ClassBuilder::new("Mixed")
+            .prop_pointer("next") // Pointer, 8
+            .prop("data", true) // Boxed, 16
+            .prop("id", false) // Scalar, 8
+            .prop_bool("ok") // Bool, 1
+            .build();
+        let cls = unsafe { &*cls_ptr };
+
+        // Pointers first, then Boxes, then the rest in declaration order.
+        assert_eq!(cls.find_prop(intern_str("next")).unwrap().offset, 16);
+        assert_eq!(cls.find_prop(intern_str("data")).unwrap().offset, 24);
+        assert_eq!(cls.find_prop(intern_str("id")).unwrap().offset, 40);
+        assert_eq!(cls.find_prop(intern_str("ok")).unwrap().offset, 48);
+
+        // One pointer run and one Box run; the scalar and the bool are in
+        // neither.
+        assert_eq!(cls.ptr_runs(), &[Run { offset: 16, count: 1 }]);
+        assert_eq!(cls.box_runs(), &[Run { offset: 24, count: 1 }]);
+
+        // Slot kinds are recorded per property.
+        assert_eq!(cls.find_prop(intern_str("next")).unwrap().kind, SlotKind::Pointer);
+        assert_eq!(cls.find_prop(intern_str("id")).unwrap().kind, SlotKind::Scalar);
+        assert_eq!(cls.find_prop(intern_str("ok")).unwrap().kind, SlotKind::Bool);
+
+        // Declaration order is preserved though physical order regrouped.
+        assert_eq!(cls.find_prop(intern_str("next")).unwrap().declaration_index, 0);
+        assert_eq!(cls.find_prop(intern_str("data")).unwrap().declaration_index, 1);
+        assert_eq!(cls.find_prop(intern_str("id")).unwrap().declaration_index, 2);
+        assert_eq!(cls.find_prop(intern_str("ok")).unwrap().declaration_index, 3);
+
+        // The bool ends the layout mid-word: layout_end is unrounded (49),
+        // object_size is it rounded up to 8 (56), leaving 7 bytes of tail.
+        assert_eq!(cls.layout_end, 49);
+        assert_eq!(cls.object_size, 56);
+    }
+
+    /// A subclass field falls into the parent's tail padding (JDK-15 rule):
+    /// `Mixed` ends at layout_end 49 with object_size 56, so a 1-byte bool
+    /// added by a subclass lands at 49 and the object does not grow.
+    #[test]
+    fn subclass_reuses_the_parents_tail_padding() {
+        let _g = crate::memory::block_pool::test_guard();
+        let parent = ClassBuilder::new("Mixed2")
+            .prop_pointer("next")
+            .prop("data", true)
+            .prop("id", false)
+            .prop_bool("ok")
+            .build();
+        let sub = ClassBuilder::new("Sub")
+            .parent(parent)
+            .prop_bool("flag")
+            .build();
+        let sub = unsafe { &*sub };
+
+        // flag sits inside the parent's [49, 56) padding, so object_size
+        // stays 56 — the field cost nothing in allocation.
+        assert_eq!(sub.find_prop(intern_str("flag")).unwrap().offset, 49);
+        assert_eq!(sub.layout_end, 50);
+        assert_eq!(sub.object_size, 56, "own field fit in the parent's tail padding");
     }
 
     #[test]

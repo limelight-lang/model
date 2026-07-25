@@ -52,6 +52,7 @@ use crate::refcount::{
     CANDIDATE_INDEX_MASK, CANDIDATE_INDEX_MAX, CANDIDATE_INDEX_SHIFT, CYCLE_COLLECTOR_BUFFERED,
     CYCLE_COLLECTOR_COLOR_SHIFT, MemoryCategory, RcHeader, is_object,
 };
+#[cfg(test)]
 use crate::value::Value;
 
 // --- rc-trace machinery ----------------------------------------------------
@@ -123,11 +124,15 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
     if !is_object(unsafe { (*e).flags }) {
         return Vec::new();
     }
-    unsafe { crate::object::ref_child_values(e as *mut Object) }
-        .iter()
-        .map(Value::entity_ptr)
-        .filter(|&c| unsafe { (*c).memory_category() } == MemoryCategory::GcHeap)
-        .collect()
+    let mut children = Vec::new();
+    unsafe {
+        crate::object::for_each_counted_child(e as *mut Object, |c| {
+            if (*c).memory_category() == MemoryCategory::GcHeap {
+                children.push(c);
+            }
+        });
+    }
+    children
 }
 
 /// Called by `ll_release` on a non-zero decrement of a heap object:

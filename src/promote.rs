@@ -202,11 +202,12 @@ unsafe fn mark_subgraph(root: *mut RcHeader, survivors: &mut Vec<*mut RcHeader>)
     unsafe { mark_one(root, survivors, &mut stack) };
 
     while let Some(obj) = stack.pop() {
-        for v in unsafe { crate::object::ref_child_values(obj) } {
-            let child = v.entity_ptr();
-            if unsafe { is_arena_entity(child) } {
-                unsafe { mark_one(child, survivors, &mut stack) };
-            }
+        unsafe {
+            crate::object::for_each_counted_child(obj, |child| {
+                if is_arena_entity(child) {
+                    mark_one(child, survivors, &mut stack);
+                }
+            });
         }
     }
 }
@@ -227,13 +228,12 @@ unsafe fn retrace_survivors(survivors: &mut Vec<*mut RcHeader>) {
         if !is_object(unsafe { (*s).flags }) {
             continue; // leaf entity: no reference slots
         }
-        for v in unsafe { crate::object::ref_child_values(s as *mut Object) } {
-            let child = v.entity_ptr();
-            if unsafe { is_arena_entity(child) }
-                && unsafe { (*child).flags } & ARENA_RESET_MARK == 0
-            {
-                unsafe { mark_subgraph(child, survivors) };
-            }
+        unsafe {
+            crate::object::for_each_counted_child(s as *mut Object, |child| {
+                if is_arena_entity(child) && (*child).flags & ARENA_RESET_MARK == 0 {
+                    mark_subgraph(child, survivors);
+                }
+            });
         }
     }
 }
@@ -268,16 +268,14 @@ unsafe fn count_children(surv: *mut RcHeader) {
     if !is_object(unsafe { (*surv).flags }) {
         return; // leaf entity: no reference slots
     }
-    for v in unsafe { crate::object::ref_child_values(surv as *mut Object) } {
-        let child = v.entity_ptr();
-        if child.is_null() {
-            continue;
-        }
-        match unsafe { (*child).memory_category() } {
-            MemoryCategory::RequestArena => unsafe { (*child).refcount += 1 },
-            MemoryCategory::GcHeap => unsafe { ll_retain(child) },
-            _ => {}
-        }
+    unsafe {
+        crate::object::for_each_counted_child(surv as *mut Object, |child| {
+            match (*child).memory_category() {
+                MemoryCategory::RequestArena => (*child).refcount += 1,
+                MemoryCategory::GcHeap => ll_retain(child),
+                _ => {}
+            }
+        });
     }
 }
 

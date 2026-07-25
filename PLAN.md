@@ -16,18 +16,25 @@ Done, per RFC:
   immortal region, buffers / buffer-arena, block pool, the Immix-shaped
   heap, the store-barrier log reserve, the store barrier + remembered set
   + release-at-reset list, stats layer 1. Audit closed, clean under Miri.
-- **Object model, OLD layout**: `value` (16-byte Box), `intern`, `class`
-  (inline vtable, itables, Cohen display), `object` (`ll_object_new`,
-  three-phase `ll_object_die`, `ll_instanceof`).
+- **Object model**: `value` (16-byte Box), `intern`, `class` (inline
+  vtable, itables, Cohen display), `object` (`ll_object_new`, three-phase
+  `ll_object_die`, `ll_instanceof`).
 - **GC**: `rc-trace` cycle collector (Bacon–Rajan).
 - **Compact RcHeader flags** (`bad9bd6`) + the `EntityKind` enum +
   `is_object`; `VALUE_UNDEF` bit reserved.
+- **A1 — new object body + slot kinds** (2026-07-25): machine-typed slots
+  (`SlotKind` scalar / pointer / Box / bool), the three-run link-time
+  layout with `layout_end`/`object_size` and parent tail-padding reuse,
+  and `traced_runs` as two typed lists (`ptr_runs`/`box_runs`). The GC,
+  teardown and promote consume them through one shared walker,
+  `for_each_counted_child`. Factory now zero-fills the body.
 
-The crate still runs the **old** object layout: one 16-byte Box per
-property, `ll_object_new`/`ll_object_die` live, `promote::die` handles
-objects only, only `EntityKind::Object` is produced. The redesign is
-designed in `rfc` but **not coded**. Rewriting the crate to it is the
-work below.
+The crate still runs the **old** teardown/barrier shape around that body:
+`ll_object_new`/`ll_object_die` are generic runtime routines (A3 replaces
+them with generated `factory`/`dispose`), the store barrier is Box-only
+(A4 adds `store_ptr`, so object-reference *test* props stay `Boxed` until
+then), `promote::die` handles objects only, and only `EntityKind::Object`
+is produced (A2). The rest of the rewrite is the work below.
 
 ## Recommended order
 
@@ -44,10 +51,10 @@ first.
 
 Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
 
-- [ ] **A1. New object body + slot kinds** — `RcHeader`(8) + class(8) +
-  machine-typed slots; 16-byte Box only for `mixed`/untyped; `traced_runs`
-  as two typed lists (pointer runs stride-8 skip-NULL, Box runs stride-16
-  skip-by-flag). Foundation for the rest. `rfc/model/classes.md`,
+- [x] **A1. New object body + slot kinds** (2026-07-25) — `RcHeader`(8) +
+  class(8) + machine-typed slots; 16-byte Box only for `mixed`/untyped;
+  `traced_runs` as two typed lists (pointer runs stride-8 skip-NULL, Box
+  runs stride-16 skip-by-flag). Foundation for the rest. `rfc/model/classes.md`,
   `lowering.md`.
 - [ ] **A2. Entity kinds + bare-pointer teardown switch** — actually
   produce non-object kinds (string / array / reference / Box / WeakRef /

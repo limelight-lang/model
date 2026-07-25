@@ -11,11 +11,15 @@
 use crate::class::{Class, NO_DESTRUCT_SLOT};
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::memory::immortal::immortal_alloc;
-use crate::refcount::{DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHeader};
-use crate::value::{Tag, Value, value_release};
+use crate::refcount::{
+    DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHeader, is_object, ll_release,
+};
+use crate::value::Value;
 
-/// Object layout (`rfc/model/classes.md`): header, class pointer,
-/// then fixed 16-byte property slots at the offsets in `prop_layout`.
+/// Object layout (`rfc/model/classes.md`): header, class pointer, then
+/// machine-typed property slots at the offsets in `prop_layout` — a raw
+/// `i64`/`f64` scalar, a bare pointer, or a 16-byte Box, each the
+/// representation of its declared type.
 #[repr(C)]
 pub struct Object {
     pub rc: RcHeader,
@@ -103,12 +107,15 @@ pub unsafe fn ll_object_new(
     unsafe {
         (*obj).rc = RcHeader::new(category, extra);
         (*obj).class = class;
-        // Defaults / UNINIT discriminants are a compiler contract
-        // (definite assignment, init bitmap); the runtime default is
-        // null in every Box slot.
-        for slot in cls.props() {
-            Object::prop_at(obj, slot.offset).write(Value::null());
-        }
+        // Zero-fill the property region in one pass: a null pointer is
+        // uninitialized, an all-zero Box is `null` (tag 0, refcounted
+        // clear), a zero scalar is 0, a clear bool is false — every
+        // uninitialized slot's correct start at once. The `undef` flag on
+        // a defaultless `mixed`/untyped Box, and non-zero defaults, are
+        // stamped by the compiler at the `new` site (A5); the factory only
+        // zeroes. `size >= size_of::<Object>()` always (16-byte header).
+        let body = (obj as *mut u8).add(size_of::<Object>());
+        core::ptr::write_bytes(body, 0, size - size_of::<Object>());
     }
 
     // The destructor is NOT registered here. The factory only produces
@@ -203,16 +210,49 @@ pub unsafe extern "C" fn ll_object_new_abi(
     unsafe { ll_object_new(ctx, class, MemoryCategory::from_flags(category)) }
 }
 
-/// The entity-holding Values currently sitting in an object's
-/// refcounted property slots — the children a tracer or teardown
-/// walks. Consumes `prop_layout.refcounted_slots()`, the metadata
-/// contract of `rfc/model/gc/strategies.md` §4.
-pub(crate) unsafe fn ref_child_values(obj: *mut Object) -> Vec<Value> {
+/// Visit every live counted child of an object — the shared walk over
+/// `traced_runs` that GC tracing, teardown, promotion and escape-release
+/// consume (`rfc/model/gc/strategies.md` §4). Pointer runs (stride 8)
+/// skip a `NULL` slot; Box runs (stride 16) skip a slot whose refcounted
+/// flag is clear. Each surviving child is yielded once as a non-null
+/// `*mut RcHeader`. The slot lvalue is deliberately not exposed: no
+/// consumer rewrites a slot here — a store goes through the barrier,
+/// which knows the slot's kind statically.
+///
+/// Generic over the visitor and `#[inline]`, so each caller monomorphizes
+/// and inlines it: the GC trace becomes a bare stride with a direct body
+/// and no per-child indirect call (`rfc/model/classes.md`, "Why tracing
+/// stays data"). This is the shared *runtime* walk of A1; A3 retires
+/// teardown's use of it for a generated `dispose`, while the GC keeps
+/// striding the same runs.
+///
+/// # Safety
+/// `obj` must point to a live object whose slots are still readable.
+#[inline]
+pub(crate) unsafe fn for_each_counted_child(obj: *mut Object, mut visit: impl FnMut(*mut RcHeader)) {
     let cls = unsafe { (*obj).class() };
-    cls.refcounted_slots()
-        .map(|offset| unsafe { Object::prop_at(obj, offset).read() })
-        .filter(|v| v.is_refcounted())
-        .collect()
+    let base = obj as *mut u8;
+
+    // Pointer runs: bare 8-byte pointers, `NULL` is empty.
+    for run in cls.ptr_runs() {
+        for i in 0..run.count {
+            let slot = unsafe { base.add((run.offset + i * 8) as usize) } as *const *mut RcHeader;
+            let child = unsafe { slot.read() };
+            if !child.is_null() {
+                visit(child);
+            }
+        }
+    }
+    // Box runs: 16-byte Values, empty is the refcounted flag clear.
+    for run in cls.box_runs() {
+        for i in 0..run.count {
+            let slot = unsafe { base.add((run.offset + i * 16) as usize) } as *const Value;
+            let v = unsafe { slot.read() };
+            if v.is_refcounted() {
+                visit(v.entity_ptr());
+            }
+        }
+    }
 }
 
 /// Phase 1 alone: run `__destruct` exactly once (sets the guard bit).
@@ -254,14 +294,12 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
 /// # Safety
 /// `obj` must be a live object whose slots are still readable.
 pub(crate) unsafe fn release_arena_escapes(obj: *mut Object) {
-    let cls = unsafe { (*obj).class() };
-    for offset in cls.refcounted_slots() {
-        let v = unsafe { Object::prop_at(obj, offset).read() };
-        if v.is_refcounted()
-            && unsafe { (*v.entity_ptr()).memory_category() } == MemoryCategory::RequestArena
-        {
-            unsafe { crate::memory::barrier::escape_lose(v.entity_ptr()) };
-        }
+    unsafe {
+        for_each_counted_child(obj, |child| {
+            if (*child).memory_category() == MemoryCategory::RequestArena {
+                crate::memory::barrier::escape_lose(child);
+            }
+        });
     }
 }
 
@@ -295,8 +333,6 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     if ran && unsafe { (*obj).rc.refcount } > 0 {
         return; // resurrected: __destruct stored $this somewhere lasting
     }
-    let cls = unsafe { (*obj).class() };
-
     // Leave the cycle-collector candidate buffer before releasing any
     // child. This object's refcount is already 0; a child release below can
     // trip the candidate threshold and run a synchronous collection, which
@@ -306,27 +342,25 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     unsafe { crate::gc::forget_candidate(obj as *mut RcHeader) };
 
     // Phase 2 — drop: release counted children, cascading.
-    for offset in cls.refcounted_slots() {
-        let v = unsafe { Object::prop_at(obj, offset).read() };
-
-        // This longer-lived holder is being torn down: for each
-        // request-arena escapee it held, drop the escape hold-count
-        // (`lose`, `rfc/model/memory/arenas.md`). Same event as an
-        // overwrite in the store barrier — the slot let go of the escapee.
-        // Heap children fall through to the normal release + cascade below.
-        if v.is_refcounted()
-            && unsafe { (*v.entity_ptr()).memory_category() } == MemoryCategory::RequestArena
-        {
-            unsafe { crate::memory::barrier::escape_lose(v.entity_ptr()) };
-        }
-
-        if unsafe { value_release(&v) } {
-            // TODO(strings/arrays): entity teardown for non-object
-            // children when those entities exist.
-            if v.tag() == Tag::Object {
-                unsafe { ll_object_die(v.entity_ptr() as *mut Object) };
+    unsafe {
+        for_each_counted_child(obj, |child| {
+            // This longer-lived holder is being torn down: for each
+            // request-arena escapee it held, drop the escape hold-count
+            // (`lose`, `rfc/model/memory/arenas.md`). Same event as an
+            // overwrite in the store barrier — the slot let go of the
+            // escapee. Heap children fall through to release + cascade.
+            if (*child).memory_category() == MemoryCategory::RequestArena {
+                crate::memory::barrier::escape_lose(child);
             }
-        }
+            if ll_release(child) {
+                // The child died with this release. Tear it down by kind;
+                // only objects have a class-driven teardown today.
+                if is_object((*child).flags) {
+                    ll_object_die(child as *mut Object);
+                }
+                // TODO(strings/arrays): non-object entity teardown (A2).
+            }
+        });
     }
 
     // Phase 3 — memory, by category. Arenas reclaim at reset; the
@@ -360,6 +394,7 @@ mod tests {
     use crate::class::ClassBuilder;
     use crate::memory::arena::Arena;
     use crate::refcount::{ll_release, ll_retain};
+    use crate::value::Tag;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
@@ -502,6 +537,46 @@ mod tests {
                 DESTRUCTS.load(Ordering::Relaxed),
                 2,
                 "parent and child pre-destructors both ran"
+            );
+        });
+    }
+
+    /// The same cascade, but through a **bare-pointer** slot (`prop_pointer`)
+    /// rather than a Box — this is what exercises `for_each_counted_child`'s
+    /// pointer-run branch (stride 8, skip `NULL`). Without it the child's
+    /// release never happens and its destructor does not run.
+    #[test]
+    fn teardown_cascades_through_a_bare_pointer_slot() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+
+        let child_cls = ClassBuilder::new("PtrChild")
+            .destructor(counting_destructor as *const ())
+            .build();
+        let parent_cls = ClassBuilder::new("PtrParent")
+            .prop_pointer("child")
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        with_ctx(|ctx| {
+            let child = unsafe { new_constructed(ctx, child_cls, MemoryCategory::GcHeap) };
+            let parent = unsafe { new_constructed(ctx, parent_cls, MemoryCategory::GcHeap) };
+            // Store a class-typed reference into the 8-byte pointer slot at
+            // +16; the slot takes over the child's initial reference (count
+            // stays 1), as the Box cascade above does. The store barrier's
+            // pointer form is A4 — here the raw write models generated code.
+            unsafe {
+                let slot = (parent as *mut u8).add(16) as *mut *mut RcHeader;
+                slot.write(child as *mut RcHeader);
+            }
+
+            assert!(unsafe { ll_release(parent as *mut RcHeader) });
+            unsafe { ll_object_die(parent) };
+
+            assert_eq!(
+                DESTRUCTS.load(Ordering::Relaxed),
+                2,
+                "parent and its pointer-slot child both destructed"
             );
         });
     }
