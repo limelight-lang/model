@@ -31,10 +31,11 @@ Done, per RFC:
 
 The crate still runs the **old** teardown/barrier shape around that body:
 `ll_object_new`/`ll_object_die` are generic runtime routines (A3 replaces
-them with generated `factory`/`dispose`), the store barrier is Box-only
-(A4 adds `store_ptr`, so object-reference *test* props stay `Boxed` until
-then), `promote::die` handles objects only, and only `EntityKind::Object`
-is produced (A2). The rest of the rewrite is the work below.
+them with generated `factory`/`dispose`), `promote::die` handles objects
+only, and only `EntityKind::Object` is produced (A2). The store barrier
+now has the slot-kind micro-ops (A4: `store_ptr`/`store_box`/`drop_ref`),
+though the GC/promote test graphs still build through the `ref_store` Box
+composition. The rest of the rewrite is the work below.
 
 ## Recommended order
 
@@ -60,10 +61,13 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   produce non-object kinds (string / array / reference / Box / WeakRef /
   lazy) and switch `die` on the kind field; today `die` handles objects
   only. Strings and arrays are non-objects (no class pointer).
-- [ ] **A4. Store-barrier micro-ops** — `store_ptr` / `store_box`
-  (publish) + `drop` (release old, slot-kind-independent); `owner_cat` is
-  a compiler parameter, not a load from owner flags, so a headerless
-  static block can be a destination. `rfc/model/gc/strategies.md`.
+- [x] **A4. Store-barrier micro-ops** (2026-07-25) — `store_ptr` /
+  `store_box` (publish) + `drop_ref` (release old, slot-kind-independent);
+  `owner_cat` is a compiler parameter, not a load from owner flags, so a
+  headerless static block can be a destination. `ref_store` kept as the
+  `store_box`+`drop_ref` composition for existing callers; ABI
+  `ll_store_ptr` / `ll_store_box` / `ll_drop`. Composition/inlining/
+  specialization stays in lowering (the RFC's §1). `rfc/model/gc/strategies.md`.
 - [ ] **A3. Lifecycle family** — per class: `factory(ctx, category)`,
   `dispose(obj)` (runs `__destruct`), `clone` / `deep_clone` /
   `thread_clone` / `thread_move`. Descriptor carries factory + dispose

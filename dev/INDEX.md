@@ -34,7 +34,8 @@ versions live in `docs/history/`, marked at the top.
   `src/object.rs` (`ll_object_new` factory, `ll_object_constructed` —
   the end-of-construction hook that registers the destructor),
   `src/memory/stdapi.rs` (`ll_malloc`/`ll_c_free`/aligned),
-  `src/memory/barrier.rs` (`ll_ref_store`), `src/object.rs`
+  `src/memory/barrier.rs` (`ll_store_ptr`/`ll_store_box`/`ll_drop`/
+  `ll_ref_store`), `src/object.rs`
   (`ll_object_die`), `src/refcount.rs`
   (`ll_retain`/`ll_release`).
 - Crate root: `src/lib.rs`. Built as `rlib` + `staticlib` for the
@@ -57,7 +58,10 @@ refilled at `ll_gc_maybe_collect`. Design in
   which is out of line but not `#[cold]`, the boundary being crossed too
   often for that. Measured as no change outside the noise floor (H11 in
   `dev/BENCHMARKS.md`).
-- Store barrier: `ref_store` / `ll_ref_store`.
+- Store barrier: the micro-ops `store_ptr` / `store_box` (publish) and
+  `drop_ref` (release the displaced entity), and the `ref_store`
+  composition; ABI `ll_store_ptr` / `ll_store_box` / `ll_drop` /
+  `ll_ref_store`.
 - Arena bump: `Arena::alloc` → `ll_arena_alloc`.
 
 Measured by `cargo bench --bench standard -- our_heap` (larson,

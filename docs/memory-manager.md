@@ -257,18 +257,30 @@ the collection fires at a clean point, an explicit
 
 ### The store barrier
 
-Every reference store the compiler could not resolve statically goes
-through one door, `ref_store`. It performs both halves at once:
+A reference store the compiler could not resolve statically is not one
+call but a few **micro-operations** the compiler composes per site
+(`rfc/model/gc/strategies.md` §1): `store_ptr` / `store_box` to publish,
+`drop` to release the displaced value. The runtime provides the pieces;
+which of them, in what order, and with which checks elided is the
+compiler's. `owner_cat` — the destination's memory category — is passed
+as a compile-time constant, not read from an owner header, so a headerless
+static block can be a store target too. `ref_store` remains as the
+convenience composition (`store_box` + `drop`) for a Box-slot overwrite.
 
-- **Counting.** Retain the new value; release the displaced one, with
-  full teardown if that was its last reference. One exception: a heap
-  value displaced from an *arena* container is not released here at all
-  — its release-at-reset record owns that release, and doing both was
-  the double-release the design exists to prevent.
-- **The category barrier.** An arena reference stored into a
-  longer-lived container is an *escape*: the barrier bumps a hold-count
-  kept in the escapee's own `refcount`. A heap reference stored into an
-  arena container would otherwise leak, so the barrier logs one
+- **Publish (`store_ptr` / `store_box`).** Retain the new value and run
+  the category barrier, then write the slot — 8 bytes for a bare pointer
+  slot, the whole 16-byte `Value` for a Box slot. An initializing store is
+  a publish alone: no old value, no drop.
+- **Drop.** Release the displaced entity, with full teardown if that was
+  its last reference. One exception: a heap value displaced from an
+  *arena* container is not released here at all — its release-at-reset
+  record owns that release, and doing both was the double-release the
+  design exists to prevent. `drop` takes the displaced entity, not the
+  slot, so one `drop` serves both slot kinds.
+- **The category barrier** (inside publish). An arena reference stored
+  into a longer-lived container is an *escape*: the barrier bumps a
+  hold-count kept in the escapee's own `refcount`. A heap reference stored
+  into an arena container would otherwise leak, so the barrier logs one
   release-at-reset record for it.
 
 The escape count lives in the escapee, not in a remembered set of holder
@@ -282,14 +294,15 @@ cycle collector does it before freeing a white object. The trace itself
 never sees arena entities (only the heap is traced), so nothing else
 would.
 
-Two rules about the slot itself, both paid for by defects. **The barrier
-writes the whole 16-byte `Value`, not just its payload word** — one slot
-has one writer, and a caller stamping the tag afterwards leaves the slot
-torn in between. And **the slot is published before the displaced value
-is released**, because releasing it can run `__destruct`, which is user
-code that may collect: a collection that still sees the old edge
-subtracts a reference the count has already given up, and frees a value
-whose teardown is on the stack.
+Two rules about the slot itself, both paid for by defects. **`store_box`
+writes the whole 16-byte `Value`, not just its payload word** (the
+`store_ptr` form writes the 8-byte pointer) — one slot has one writer, and
+a caller stamping the tag afterwards leaves the slot torn in between. And
+**the slot is published before the displaced value is released** — the
+`store_*` precedes the `drop` — because releasing can run `__destruct`,
+which is user code that may collect: a collection that still sees the old
+edge subtracts a reference the count has already given up, and frees a
+value whose teardown is on the stack.
 
 ### The log reserve
 
