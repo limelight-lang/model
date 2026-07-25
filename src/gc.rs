@@ -40,17 +40,21 @@
 //! object. The arming *policy* (which signals, which thresholds) is the
 //! compiler's decision; this crate is only the mechanism.
 //!
-//! **Known phase-1 limit**: `__destruct` of cyclically-dead objects is
-//! not run (the counts are already trial-mutated when whites are
-//! known; running arbitrary PHP there needs the Zend-style re-scan
-//! discipline). Logged in PLAN.md; memory safety is unaffected.
+//! `__destruct` of cyclically-dead objects **is** run, before the white
+//! set is freed (`run_cyclic_destructors`). Because the counts are
+//! trial-mutated when whites are known, they are first restored to a
+//! consistent graph; then the destructors run through the ordinary
+//! teardown path, and the set is re-collected so a resurrected subgraph
+//! survives — the Zend-style discipline, with no new mechanism (no retain
+//! hook, no GC-window flag).
 
 use std::cell::RefCell;
 
 use crate::object::Object;
 use crate::refcount::{
     CANDIDATE_INDEX_MASK, CANDIDATE_INDEX_MAX, CANDIDATE_INDEX_SHIFT, CYCLE_COLLECTOR_BUFFERED,
-    CYCLE_COLLECTOR_COLOR_SHIFT, MemoryCategory, RcHeader, is_object,
+    CYCLE_COLLECTOR_COLOR_SHIFT, DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHeader,
+    is_object, ll_release,
 };
 #[cfg(test)]
 use crate::value::Value;
@@ -304,51 +308,120 @@ pub unsafe fn collect_cycles() -> usize {
 }
 
 unsafe fn collect_cycles_inner() -> usize {
-    let roots: Vec<*mut RcHeader> = CANDIDATES.with(|c| c.borrow_mut().drain(..).collect());
-    if roots.is_empty() {
-        return 0;
-    }
-    for &r in &roots {
-        unsafe { (*r).flags &= !(CYCLE_COLLECTOR_BUFFERED | CANDIDATE_INDEX_MASK) };
-    }
+    let mut reclaimed = 0;
+    loop {
+        let roots: Vec<*mut RcHeader> = CANDIDATES.with(|c| c.borrow_mut().drain(..).collect());
+        if roots.is_empty() {
+            return reclaimed;
+        }
+        for &r in &roots {
+            unsafe { (*r).flags &= !(CYCLE_COLLECTOR_BUFFERED | CANDIDATE_INDEX_MASK) };
+        }
 
-    // mark_gray: trial-delete every internal edge reachable from roots.
-    for &r in &roots {
-        unsafe { mark_gray(r) };
-    }
-    // scan: subgraphs with external references left get restored to
-    // black (re-incrementing), the rest turn white.
-    for &r in &roots {
-        unsafe { scan(r) };
-    }
-    // Gather whites (marking black to visit once).
-    let mut whites = Vec::new();
-    for &r in &roots {
-        unsafe { collect_white(r, &mut whites) };
-    }
+        // mark_gray: trial-delete every internal edge reachable from roots.
+        for &r in &roots {
+            unsafe { mark_gray(r) };
+        }
+        // scan: subgraphs with external references left get restored to
+        // black (re-incrementing), the rest turn white.
+        for &r in &roots {
+            unsafe { scan(r) };
+        }
+        // Gather whites (marking black to visit once).
+        let mut whites = Vec::new();
+        for &r in &roots {
+            unsafe { collect_white(r, &mut whites) };
+        }
 
-    // Free the white set. Internal-edge releases already happened
-    // count-wise in mark_gray and were deliberately not restored;
-    // whites reference only each other or restored-black survivors.
-    // Phase-1 limit: __destruct is not run here (module doc).
-    //
-    // The escape hold-counts are a different matter and must be dropped
-    // explicitly: arena entities are invisible to the trace (only the
-    // heap is traced), so nothing above touched them, and a hold-count
-    // left standing makes arena reset believe a dead holder still holds
-    // its escapee — which it then promotes and keeps forever.
-    // `ll_object_die` does this in its phase 2; the collector never gets
-    // there, so it does it here.
-    for &w in &whites {
-        unsafe {
-            debug_assert_eq!((*w).refcount, 0, "white must have no external refs");
-            if is_object((*w).flags) {
-                crate::object::release_arena_escapes(w as *mut Object);
+        // Any cyclic garbage still owing a `__destruct` cannot be freed yet:
+        // run the destructors (`run_cyclic_destructors`) and re-collect. A
+        // resurrected subgraph survives the re-trace; the rest returns as
+        // garbage with `DESTRUCTOR_RAN` set, so this loops until nothing owes
+        // a destructor, then falls through to the free.
+        let owes_destructor = whites.iter().any(|&w| unsafe {
+            is_object((*w).flags)
+                && (*w).flags & DESTRUCTOR_PENDING != 0
+                && (*w).flags & DESTRUCTOR_RAN == 0
+        });
+        if owes_destructor {
+            unsafe { run_cyclic_destructors(&whites) };
+            continue; // the survivors re-buffered themselves; re-collect
+        }
+
+        // Free the white set. Internal-edge releases already happened
+        // count-wise in mark_gray and were deliberately not restored;
+        // whites reference only each other or restored-black survivors.
+        //
+        // The escape hold-counts are a different matter and must be dropped
+        // explicitly: arena entities are invisible to the trace (only the
+        // heap is traced), so nothing above touched them, and a hold-count
+        // left standing makes arena reset believe a dead holder still holds
+        // its escapee — which it then promotes and keeps forever.
+        // `ll_object_die` does this in its phase 2; the collector never gets
+        // there, so it does it here.
+        for &w in &whites {
+            unsafe {
+                debug_assert_eq!((*w).refcount, 0, "white must have no external refs");
+                if is_object((*w).flags) {
+                    crate::object::release_arena_escapes(w as *mut Object);
+                }
+                crate::memory::stdapi::ll_free(w as *mut u8);
             }
-            crate::memory::stdapi::ll_free(w as *mut u8);
+        }
+        reclaimed += whites.len();
+        return reclaimed;
+    }
+}
+
+/// Run `__destruct` for a cyclic-garbage set before it is freed, then leave
+/// its survivors re-buffered for the caller to re-collect.
+///
+/// The white counts are trial-deleted (internal in-edges unreflected), and
+/// destructors must not run over that: `ll_release`/`drop_ref` read those
+/// counts, so a `$this->x = null` would drive a live sibling to a false zero
+/// and double-free it. So, in order:
+///
+/// 1. **Restore** real counts — re-increment every white's heap children,
+///    undoing `mark_gray` for white-sourced edges (`scan_black` already did
+///    survivor-sourced ones). The graph is now a consistent garbage cycle.
+/// 2. **Guard** every white (`+= 1`): with real counts `rc >= 1` holds, so a
+///    released sibling stops at its guard, not at zero.
+/// 3. **Run** each pending `__destruct` once (`DESTRUCTOR_RAN`). A store
+///    retains normally, so a resurrection is just an ordinary reference.
+/// 4. **Un-guard via `ll_release`** (never a raw `-= 1`): a white whose cycle
+///    a destructor broke dies here through the proven path (`dispose` skips
+///    the already-run `__destruct`); a still-referenced one re-buffers itself
+///    for the re-collection.
+///
+/// No new mechanism — once counts are real, every operation is the ordinary
+/// one.
+///
+/// # Safety
+/// `whites` are the just-collected cyclic garbage (trial-deleted counts);
+/// `GC_ACTIVE` is held.
+unsafe fn run_cyclic_destructors(whites: &[*mut RcHeader]) {
+    for &w in whites {
+        for child in unsafe { heap_children(w) } {
+            unsafe { (*child).refcount += 1 };
         }
     }
-    whites.len()
+    for &w in whites {
+        unsafe { (*w).refcount += 1 };
+    }
+    for &w in whites {
+        if is_object(unsafe { (*w).flags }) {
+            unsafe { crate::object::run_pre_destructor(w as *mut Object) };
+        }
+    }
+    for &w in whites {
+        if unsafe { ll_release(w) } {
+            if is_object(unsafe { (*w).flags }) {
+                unsafe { crate::object::ll_object_die(w as *mut Object) };
+            } else {
+                unsafe { crate::memory::stdapi::ll_free(w as *mut u8) };
+            }
+        }
+    }
 }
 
 unsafe fn mark_gray(root: *mut RcHeader) {
@@ -463,7 +536,7 @@ mod tests {
     use crate::value::Tag;
 
     /// Real store through the barrier: retain + whole-value slot write.
-    unsafe fn link(arena: &mut Arena, from: *mut Object, offset: u32, to: *mut Object) {
+    unsafe fn link(arena: *mut Arena, from: *mut Object, offset: u32, to: *mut Object) {
         unsafe {
             let slot = Object::prop_at(from, offset);
             ref_store(
@@ -545,6 +618,164 @@ mod tests {
 
         let freed = unsafe { collect_cycles() };
         assert_eq!(freed, 2, "the cycle is garbage and must be reclaimed");
+        arena.reset(|_| {});
+    }
+
+    /// Cyclic garbage must run `__destruct` before it is freed — the gap
+    /// this closes. A two-node cycle of objects each with a destructor,
+    /// unreferenced from outside, is collected; both destructors must fire.
+    #[test]
+    fn cyclic_garbage_runs_its_destructor() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CYCLE_DTORS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn counting(_o: *mut Object) {
+            CYCLE_DTORS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let _g = crate::memory::block_pool::test_guard();
+        CYCLE_DTORS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("DtorNode")
+            .prop("next", true)
+            .destructor(counting as *const ())
+            .build();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+
+        unsafe {
+            let a = new_constructed(&mut ctx, cls, MemoryCategory::GcHeap);
+            let b = new_constructed(&mut ctx, cls, MemoryCategory::GcHeap);
+            link(&mut arena, a, 16, b);
+            link(&mut arena, b, 16, a);
+            assert!(!ll_release(a as *mut RcHeader));
+            assert!(!ll_release(b as *mut RcHeader));
+
+            assert_eq!(collect_cycles(), 2, "the cycle is garbage");
+            assert_eq!(
+                CYCLE_DTORS.load(Ordering::Relaxed),
+                2,
+                "both cyclic objects ran __destruct before being freed"
+            );
+        }
+        arena.reset(|_| {});
+    }
+
+    /// A destructor that nulls its own edge (`$this->next = null`) releases
+    /// a sibling mid-teardown. The guard must hold that sibling to its own
+    /// un-guard; nothing may be freed twice (Miri is the real check).
+    #[test]
+    fn a_destructor_unsetting_its_own_edge_does_not_double_free() {
+        use crate::memory::context::{resolve_arena, set_current_context};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static DTORS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn unset_next(obj: *mut Object) {
+            DTORS.fetch_add(1, Ordering::Relaxed);
+            unsafe {
+                let arena = resolve_arena(std::ptr::null_mut());
+                let slot = Object::prop_at(obj, 16);
+                let v = slot.read();
+                let old = if v.is_refcounted() {
+                    v.entity_ptr()
+                } else {
+                    std::ptr::null_mut()
+                };
+                ref_store(arena, obj as *mut RcHeader, slot, old, Value::null());
+            }
+        }
+
+        let _g = crate::memory::block_pool::test_guard();
+        DTORS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("Unsetter")
+            .prop("next", true)
+            .destructor(unset_next as *const ())
+            .build();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+        let ctx_ptr: *mut LLContext = &mut ctx;
+        set_current_context(ctx_ptr);
+
+        unsafe {
+            let a = new_constructed(ctx_ptr, cls, MemoryCategory::GcHeap);
+            let b = new_constructed(ctx_ptr, cls, MemoryCategory::GcHeap);
+            link(arena_ptr, a, 16, b);
+            link(arena_ptr, b, 16, a);
+            assert!(!ll_release(a as *mut RcHeader));
+            assert!(!ll_release(b as *mut RcHeader));
+            collect_cycles();
+            assert_eq!(DTORS.load(Ordering::Relaxed), 2, "both ran once, no double free");
+        }
+        set_current_context(std::ptr::null_mut());
+        arena.reset(|_| {});
+    }
+
+    /// A destructor stores `$this` into a live holder, resurrecting the
+    /// cycle. The re-trace must keep the resurrected object *and* its child
+    /// (which gained no direct external reference — it survives only because
+    /// its parent does), and `__destruct` must not run a second time.
+    #[test]
+    fn a_destructor_resurrecting_the_cycle_keeps_it_and_its_child() {
+        use crate::memory::context::{resolve_arena, set_current_context};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static DTORS: AtomicUsize = AtomicUsize::new(0);
+        static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn resurrect(obj: *mut Object) {
+            DTORS.fetch_add(1, Ordering::Relaxed);
+            unsafe {
+                let arena = resolve_arena(std::ptr::null_mut());
+                let l = LIVE.load(Ordering::Relaxed) as *mut Object;
+                let slot = Object::prop_at(l, 16);
+                ref_store(
+                    arena,
+                    l as *mut RcHeader,
+                    slot,
+                    std::ptr::null_mut(),
+                    Value::entity(Tag::Object, obj as *mut RcHeader),
+                );
+            }
+        }
+
+        let _g = crate::memory::block_pool::test_guard();
+        DTORS.store(0, Ordering::Relaxed);
+        let a_cls = ClassBuilder::new("Resur")
+            .prop("next", true)
+            .destructor(resurrect as *const ())
+            .build();
+        let l_cls = ClassBuilder::new("LiveHolder").prop("keep", true).build();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+        let ctx_ptr: *mut LLContext = &mut ctx;
+        set_current_context(ctx_ptr);
+
+        unsafe {
+            let l = new_constructed(ctx_ptr, l_cls, MemoryCategory::GcHeap);
+            let a = new_constructed(ctx_ptr, a_cls, MemoryCategory::GcHeap);
+            let b = new_constructed(ctx_ptr, node_class(), MemoryCategory::GcHeap);
+            LIVE.store(l as usize, Ordering::Relaxed);
+            link(arena_ptr, a, 16, b);
+            link(arena_ptr, b, 16, a);
+            assert!(!ll_release(a as *mut RcHeader));
+            assert!(!ll_release(b as *mut RcHeader));
+
+            let freed = collect_cycles();
+            assert_eq!(DTORS.load(Ordering::Relaxed), 1);
+            assert_eq!(freed, 0, "resurrected: nothing freed");
+            assert_eq!(Object::prop_at(l, 16).read().entity_ptr(), a as *mut RcHeader, "L keeps A");
+            assert_eq!(Object::prop_at(a, 16).read().entity_ptr(), b as *mut RcHeader, "A->B intact");
+            assert_eq!((*a).rc.refcount, 2, "A: B->A + L->A");
+            assert_eq!((*b).rc.refcount, 1, "B: A->B");
+
+            // Drop the holder; the cycle is garbage again but __destruct
+            // already ran, so it must not fire twice.
+            ref_store(arena_ptr, l as *mut RcHeader, Object::prop_at(l, 16), a as *mut RcHeader, Value::null());
+            assert!(ll_release(l as *mut RcHeader));
+            crate::object::ll_object_die(l);
+            assert_eq!(collect_cycles(), 2, "the un-held cycle is reclaimed");
+            assert_eq!(DTORS.load(Ordering::Relaxed), 1, "no second __destruct");
+        }
+        set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
 

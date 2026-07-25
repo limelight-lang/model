@@ -97,8 +97,13 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
 
 - [ ] Immix-shaped `GcHeap` allocator → line recycling of retained blocks
   + sparse-block evacuation at reset (`arena-reset.md`).
-- [ ] Run `__destruct` of cyclically-dead objects (Zend-style re-scan
-  discipline); today the cycle collector skips it.
+- [x] Run `__destruct` of cyclically-dead objects (2026-07-25) — Zend-style
+  discipline (`run_cyclic_destructors`): restore the white set's real
+  counts, guard, run each `__destruct` once through the ordinary teardown,
+  then re-collect so a resurrected subgraph survives. No new mechanism (no
+  retain hook, no GC-window flag); reuses `drop_ref`/`ll_object_die`/
+  `forget_candidate`. Tested for the plain cycle, an `unset`-in-destructor
+  (double-free), and resurrection into a live holder (child survival).
 - [ ] `rc-satb` as a second build-time GC strategy (needs the `WRITING`
   bit from A5). `rfc/model/gc/satb.md`.
 
