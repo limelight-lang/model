@@ -123,17 +123,13 @@ unsafe fn store_category_barrier(
     }
 }
 
-/// The `store_ptr` micro-op (`rfc/model/gc/strategies.md` §1): **publish**
-/// a reference into a bare 8-byte pointer slot. Retains `new`, runs the
-/// category barrier, then writes the pointer. Publish only — no drop. An
-/// initializing store is `store_ptr` alone; an overwriting store is
-/// `store_ptr` then [`drop_ref`] of the displaced entity, in that order
-/// (the slot is published before anything releases the old value —
+/// The `store_ptr` micro-op (`rfc/model/gc/strategies.md` §1): **publish** a
+/// reference into a bare 8-byte pointer slot — retain, category barrier,
+/// write. Publish only: an initializing store is `store_ptr` alone, an
+/// overwriting one is `store_ptr` then [`drop_ref`] (publish before release,
 /// audit C1). `owner_cat` is a parameter, not a load from an owner header,
-/// so a headerless destination (a static block, A6) can be a slot.
-///
-/// `new` may be `NULL` (storing `null` / clearing a slot): then there is
-/// nothing to retain or note, only the write.
+/// so a headerless destination (a static block, A6) can be a slot. A `NULL`
+/// `new` (clearing the slot) just writes, nothing to retain or note.
 ///
 /// # Safety
 /// `slot` a live 8-byte pointer slot; `new` null or a live entity; `arena`

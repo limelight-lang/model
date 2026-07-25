@@ -212,20 +212,16 @@ pub unsafe extern "C" fn ll_object_new_abi(
 }
 
 /// Visit every live counted child of an object — the shared walk over
-/// `traced_runs` that GC tracing, teardown, promotion and escape-release
-/// consume (`rfc/model/gc/strategies.md` §4). Pointer runs (stride 8)
-/// skip a `NULL` slot; Box runs (stride 16) skip a slot whose refcounted
-/// flag is clear. Each surviving child is yielded once as a non-null
-/// `*mut RcHeader`. The slot lvalue is deliberately not exposed: no
-/// consumer rewrites a slot here — a store goes through the barrier,
-/// which knows the slot's kind statically.
+/// `traced_runs` for GC tracing, teardown, promotion and escape-release
+/// (`rfc/model/gc/strategies.md` §4). Pointer runs (stride 8) skip a `NULL`
+/// slot; Box runs (stride 16) skip a clear refcounted flag. Each child is
+/// yielded once as a non-null `*mut RcHeader`; the slot lvalue is not
+/// exposed, since a store goes through the barrier (which knows the slot
+/// kind statically), not through here.
 ///
-/// Generic over the visitor and `#[inline]`, so each caller monomorphizes
-/// and inlines it: the GC trace becomes a bare stride with a direct body
-/// and no per-child indirect call (`rfc/model/classes.md`, "Why tracing
-/// stays data"). This is the shared *runtime* walk of A1; A3 retires
-/// teardown's use of it for a generated `dispose`, while the GC keeps
-/// striding the same runs.
+/// Generic over the visitor and `#[inline]` so each caller monomorphizes to
+/// a bare stride with no per-child indirect call (`rfc/model/classes.md`,
+/// "Why tracing stays data").
 ///
 /// # Safety
 /// `obj` must point to a live object whose slots are still readable.
@@ -313,17 +309,15 @@ pub(crate) unsafe fn release_arena_escapes(obj: *mut Object) {
 /// is the caller's ([`ll_object_die`]).
 pub type DisposeFn = unsafe extern "C" fn(*mut Object) -> bool;
 
-/// The default `dispose`: the generic, layout-reading stand-in a class
-/// carries until the compiler emits one specialized to its fields
-/// (`dev/DECISIONS.md`, 2026-07-25). It reads `traced_runs` (via
-/// [`for_each_counted_child`]) to release children; a generated `dispose`
-/// would unroll the releases straight-line, or loop for a large class,
-/// with no map read. The effects are identical, so a test may install a
-/// hand-written unrolled `dispose` to model generated code.
+/// The default `dispose`: the generic stand-in a class carries until the
+/// compiler emits one specialized to its layout (`dev/DECISIONS.md`,
+/// 2026-07-25). It reads `traced_runs` (via [`for_each_counted_child`]) to
+/// release children; a generated `dispose` would unroll the releases with no
+/// map read, to identical effect — so a test may install its own.
 ///
-/// Runs phases 1–2 of teardown; phase 3, the memory free, is
-/// [`ll_object_die`]'s. Returns `true` to proceed to the free, `false` on
-/// resurrection.
+/// Runs phases 1–2 (the resurrection-guarded `__destruct` and the child
+/// releases); phase 3, the memory free, is [`ll_object_die`]'s. Returns
+/// `true` to proceed to the free, `false` on resurrection.
 ///
 /// # Safety
 /// `obj` a live object whose count just reached zero (or a collector owns).
