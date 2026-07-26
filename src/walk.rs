@@ -271,10 +271,12 @@ unsafe fn collect_cycles_inner() -> CollectStats {
     // kind when A2 starts producing it: a lazy object carries a class
     // pointer and destructs/severs like an object, and the raw-free
     // fallback in `unguard` would leak its children's counts.
+    let mut any_destructor_ran = false;
     for members in &confirmed {
         for &m in members {
             if is_object(unsafe { (*m).flags }) {
-                unsafe { crate::object::run_pre_destructor(m as *mut Object) };
+                any_destructor_ran |=
+                    unsafe { crate::object::run_pre_destructor(m as *mut Object) };
             }
         }
     }
@@ -285,8 +287,16 @@ unsafe fn collect_cycles_inner() -> CollectStats {
     // gave it RC > IN beyond the guard — the component is acquitted,
     // guards come off through `ll_release`, survivors live on with true
     // counts and their destructors behind them.
+    //
+    // Skipped wholesale when no destructor ran anywhere: the only writes
+    // since the first exact test were our own guards (+1 each, exactly
+    // the discount), so the re-verify would recompute the identical
+    // equality. Destructor-less classes are the common case, and this
+    // saves the second trace of every component. Global flag, not
+    // per-component, so the skip owes nothing to any cross-component
+    // reasoning about what a destructor can reach.
     for members in confirmed {
-        if !unsafe { exact_test(&members, 1) } {
+        if any_destructor_ran && !unsafe { exact_test(&members, 1) } {
             stats.acquitted += 1;
             unsafe { unguard(&members, &mut stats) };
             continue;
