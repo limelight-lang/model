@@ -100,6 +100,33 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-07-26 — the rc-walk build vs default; an atomic bump cursor rejected
+
+First measurement of the `rc-walk` configuration against the default,
+after step 3 commits 1–6 (relaxed-atomic retain/release, the deferral
+branch in `ll_free`, kind stores, the swept field/flag stores).
+`cargo bench --bench standard -- our_heap`, warm-up run discarded,
+A → B → A-control:
+
+| arm | larson | rptest |
+|---|---|---|
+| A default | 794 µs | 1.99 ms |
+| B rc-walk, bump as relaxed atomic | **904 µs (+14%)** | 2.61 ms (+31%) |
+| B rc-walk, bump plain (isolation) | 807 µs | 1.94 ms |
+| B rc-walk, final (no cursor snapshot) | 784 µs | 1.94 ms |
+| A control | 800 µs | 2.14 ms |
+
+The rptest column is **void** by the control rule (the two A's
+disagree by 7%); larson's A's agree and its delta is real. The entire
+regression was the one `bump += 1` turned into a relaxed-atomic store
+for the collector's cursor snapshot — isolated by reverting exactly
+that line. Verdict: **rejected**. The cursor is not read at all now:
+commissioning zeroes every entity-block slot header, so the walker
+scans whole blocks and virgin slots skip on the occupancy test — the
+extra scan is collector-side, which is the side rc-walk always pays
+on. With that, the rc-walk build measures **within noise of default**
+on the raw-heap path (784 µs vs 794–800 µs).
+
 ## 2026-07-26 — free-list link moved to slot bytes 8–15 (rc-walk step 1): **within noise**
 
 **Commit:** this one. Windows box, release, `cargo bench --bench

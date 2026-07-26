@@ -135,7 +135,10 @@ impl Epoch {
         protocol::handshake_acks() >= self.acks_needed
     }
 
-    /// Snapshot the region registry and every entity block's cursor.
+    /// Snapshot the region registry and every entity block. No cursor
+    /// is read: commissioning zeroes every slot header, so the walk
+    /// scans whole blocks and virgin slots skip on the occupancy test
+    /// (`heap::EntityBlockSnapshot`).
     pub fn snapshot(&mut self) {
         debug_assert!(self.acked(), "snapshot before the activity bit was published");
         self.blocks = snapshot_entity_blocks();
@@ -243,7 +246,28 @@ impl Epoch {
     /// too: the duties are mutator work.
     pub fn recheck_and_post(&mut self) {
         debug_assert!(self.acked(), "re-check before the handshake ack");
-        for component in std::mem::take(&mut self.candidates) {
+        // Distribute the recorded edges to their candidate components
+        // once — one pass over `edges[]`, not one per component (the
+        // per-component scan was quadratic, and a churning mutator
+        // makes the edge list large).
+        let candidates = std::mem::take(&mut self.candidates);
+        let mut component_of = vec![u32::MAX; self.entities.len()];
+        for (id, component) in candidates.iter().enumerate() {
+            for &i in component {
+                component_of[i as usize] = id as u32;
+            }
+        }
+        let mut component_edges: Vec<Vec<u32>> = vec![Vec::new(); candidates.len()];
+        for (k, edge) in self.edges.iter().enumerate() {
+            for member in [edge.src, edge.dst] {
+                let c = component_of[member as usize];
+                if c != u32::MAX {
+                    component_edges[c as usize].push(k as u32);
+                    break; // once per edge, even with both ends inside
+                }
+            }
+        }
+        for (id, component) in candidates.into_iter().enumerate() {
             let mut clean = true;
             // Counts against the walk snapshot.
             for &i in &component {
@@ -255,17 +279,15 @@ impl Epoch {
             }
             // Recorded in-edge cells re-read against their walk values.
             if clean {
-                let members: std::collections::HashSet<u32> = component.iter().copied().collect();
-                for edge in &self.edges {
-                    if members.contains(&edge.dst) || members.contains(&edge.src) {
-                        let now = unsafe {
-                            (*(edge.field as *const std::sync::atomic::AtomicU64))
-                                .load(Ordering::Relaxed)
-                        };
-                        if now != edge.raw {
-                            clean = false;
-                            break;
-                        }
+                for &k in &component_edges[id] {
+                    let edge = &self.edges[k as usize];
+                    let now = unsafe {
+                        (*(edge.field as *const std::sync::atomic::AtomicU64))
+                            .load(Ordering::Relaxed)
+                    };
+                    if now != edge.raw {
+                        clean = false;
+                        break;
                     }
                 }
             }
@@ -738,6 +760,114 @@ mod tests {
         assert_eq!(stats.confirmed, 1);
         assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 3);
         assert!(!walked_addresses().contains(&(s2 as usize)));
+        arena.reset(|_| {});
+    }
+
+    /// Free-running concurrency: the collector loops whole epochs while
+    /// the mutator churns — allocating garbage rings, dropping them,
+    /// checkpointing only as a side effect of its own allocations. The
+    /// races this executes (collector byte stores against mutator word
+    /// stores and field stores) are the design's accepted ones, now all
+    /// through relaxed atomics; the assertions are the invariants that
+    /// must hold whatever the interleaving: the live ring survives,
+    /// every garbage destructor runs exactly once, nothing crashes.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "free-running mixed-size atomic races are the design's accepted model gap; Miri rejects them and cannot pace live threads — the stepped tests carry Miri coverage"
+    )]
+    fn a_free_running_mutator_survives_concurrent_epochs() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("CollectorStress")
+            .prop("child", true)
+            .prop("link", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let mk = |ctx: &mut LLContext| unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) };
+
+        // The canary: a frame-held ring that must survive every epoch.
+        let (k1, k2) = (mk(&mut ctx), mk(&mut ctx));
+        unsafe {
+            tie(k1, 16, k2);
+            tie(k2, 16, k1);
+            ll_retain(k1 as *mut RcHeader);
+        }
+
+        let collector = std::thread::spawn(|| {
+            let mut stats = Vec::new();
+            for _ in 0..4 {
+                stats.push(run_epoch());
+            }
+            stats
+        });
+
+        // The mutator: garbage rings and short-lived holders. Bounded —
+        // an unthrottled loop out-produces the epochs and the deferral
+        // window by orders of magnitude (measured: gigabytes of parked
+        // garbage) — and after the bound it just keeps checkpointing.
+        // Its own entity allocations are checkpoints too.
+        let mut rings = 0usize;
+        while !collector.is_finished() {
+            if rings < 10_000 {
+                let (a, b) = (mk(&mut ctx), mk(&mut ctx));
+                unsafe {
+                    tie(a, 16, b);
+                    tie(b, 16, a);
+                    tie(a, 32, k1); // an edge into the live ring, retained
+                    ll_retain(k1 as *mut RcHeader);
+                    // Both frame references gone: the ring floats, cyclic.
+                }
+                rings += 1;
+                let holder = mk(&mut ctx);
+                unsafe {
+                    // A fresh holder is never condemned (allocate-black),
+                    // so its release always reports the death.
+                    assert!(ll_release(holder as *mut RcHeader));
+                    crate::object::ll_object_die(holder);
+                }
+            }
+            checkpoint();
+            std::hint::spin_loop();
+        }
+        let epoch_stats = collector.join().unwrap();
+        assert_eq!(epoch_stats.len(), 4);
+
+        // Quiesce and sweep what the concurrent epochs did not reach:
+        // rings born after the last snapshot need one epoch to mature
+        // and one to die.
+        checkpoint();
+        let seen = walked_addresses();
+        assert!(
+            seen.contains(&(k1 as usize)) && seen.contains(&(k2 as usize)),
+            "the live ring survived every interleaving"
+        );
+        stepped_epoch();
+        stepped_epoch();
+        stepped_epoch();
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed) as usize,
+            2 * rings + rings, // both ring members + each holder... holders have no destructor? they do: same class
+            "every garbage entity destructed exactly once"
+        );
+        let seen = walked_addresses();
+        assert!(seen.contains(&(k1 as usize)) && seen.contains(&(k2 as usize)));
+
+        // The canary dies only when the frame lets go — with the ring
+        // references the garbage rings piled on it all dropped.
+        assert_eq!(
+            unsafe { (*k1).rc.refcount },
+            2, // frame + k2's slot: every ring's retain was dropped
+            "each collected ring released its edge into the live ring"
+        );
+        assert!(!unsafe { ll_release(k1 as *mut RcHeader) });
+        stepped_epoch();
+        stepped_epoch();
+        let seen = walked_addresses();
+        assert!(!seen.contains(&(k1 as usize)) && !seen.contains(&(k2 as usize)));
         arena.reset(|_| {});
     }
 

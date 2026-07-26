@@ -38,6 +38,25 @@ pub(crate) const BLOCKS_PER_REGION: usize = REGION_SIZE / BLOCK_SIZE;
 const THREAD_CACHE_CAPACITY: usize = 8;
 const REFILL_BATCH: usize = 4;
 
+/// Store a block header's `kind` discriminant. Under `rc-walk` the
+/// store is a release atomic: the collector's snapshot reads kinds of
+/// every block in every region concurrently, a racing plain store is
+/// undefined behaviour, and the release ordering is what publishes a
+/// commissioned block's other header fields before its kind says
+/// "entity" (`heap::snapshot_entity_blocks` loads with acquire).
+#[inline]
+pub(crate) unsafe fn store_block_kind(kind_field: *mut u32, kind: u32) {
+    #[cfg(not(feature = "rc-walk"))]
+    unsafe {
+        kind_field.write(kind)
+    };
+    #[cfg(feature = "rc-walk")]
+    unsafe {
+        (*(kind_field as *const std::sync::atomic::AtomicU32))
+            .store(kind, std::sync::atomic::Ordering::Release)
+    };
+}
+
 /// Block kinds stored in the header.
 pub const BLOCK_KIND_FREE: u32 = 0;
 pub const BLOCK_KIND_ARENA: u32 = 1;
@@ -291,7 +310,7 @@ impl BlockPool {
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn put(&self, block: *mut BlockHeader) {
         self.blocks_out.fetch_sub(1, Ordering::Relaxed);
-        unsafe { (*block).kind = BLOCK_KIND_FREE };
+        unsafe { store_block_kind(&raw mut (*block).kind, BLOCK_KIND_FREE) };
 
         // `try_with` for the same reason as `get`: this runs from a TLS
         // destructor on the thread-exit path, where the cache may be gone.
@@ -360,7 +379,7 @@ impl BlockPool {
         for i in 0..BLOCKS_PER_REGION {
             let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut BlockHeader;
             unsafe {
-                (*block).kind = BLOCK_KIND_FREE;
+                store_block_kind(&raw mut (*block).kind, BLOCK_KIND_FREE);
                 (*block).reserved = 0;
                 (*block).next = std::ptr::null_mut();
             }

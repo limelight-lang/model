@@ -8,6 +8,50 @@ never edited or deleted.
 
 ---
 
+## 2026-07-27 — the mutator's racy stores go relaxed-atomic; the cursor snapshot dies for it (rc-walk step 3, commit 6)
+
+**Decided:** under `rc-walk`, every mutator store a free-running
+collector can race compiles as a relaxed atomic: object-field stores
+(`barrier::write_ptr_slot` / `write_value_slot`, used by the store
+micro-ops, sever and the reference box), header flag writes and reads
+on GcHeap teardown paths (`mutator_load_header` /
+`mutator_update_flags` / the guard pair in `refcount.rs`), and block
+`kind` stores (`block_pool::store_block_kind`, release — pairing with
+the snapshot's acquire, so a block reading "entity" has its class and
+zeroed slots visible; kind is now published last at commissioning and
+in the large-allocation headers). Field *reads* stay plain: the
+collector writes nothing but the two header bytes.
+
+**The one exception is the bump cursor — resolved by not reading it.**
+An atomic `bump += 1` measured **+14% on larson** (isolated by
+reverting exactly that line; `dev/BENCHMARKS.md`). Instead the
+snapshot takes no cursor: commissioning zeroes every entity-slot
+header, so the walker scans whole blocks and virgin slots skip on the
+occupancy test. Collector-side work for mutator-side zero — the
+design's own trade, and the rfc carries the amendment.
+
+**A soundness hole found and closed while sweeping:** the dispose
+guard's transient `rc 0 → 1 → 0` bypassed the F5 rule with plain
+arithmetic — an entity condemned *while its own destructor ran* would
+finish teardown under the verdict, and the drain would later tear a
+freed slot. The un-guard is now condemned-aware
+(`mutator_unguard_release`): reaching zero under the byte defers the
+rest of teardown to the drain (fields intact, `DESTRUCTOR_RAN` set —
+torn exactly once there). With that, the deferred-death store keeps
+the byte SET as the drain's marker, so the acquittal duties can tell
+a deferred death (tear it) from a slot that died ordinarily after a
+touch and was freed (leave it) — `acquit_condemned` snapshots the
+deferred set before clearing bytes.
+
+**Known limits, accepted and on record:** collector byte stores
+against mutator word stores are mixed-size atomics — sound on x86-64
+and AArch64, unrepresentable to Miri, so the free-running stress test
+is Miri-ignored while every stepped test keeps Miri coverage; a
+mutator thread must not exit while an epoch is in flight (entity-block
+retirement is between-epochs only — actors revisit).
+
+---
+
 ## 2026-07-26 — the collector is a steppable state machine; edge validation is one map lookup (rc-walk step 3, commit 4)
 
 **Decided:** the collector side (`src/collector.rs`) exposes each epoch

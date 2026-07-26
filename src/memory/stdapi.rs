@@ -163,11 +163,17 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
         }
         unsafe {
             block.write(LargeHeader {
-                kind: BLOCK_KIND_LARGE,
+                kind: 0,
                 _pad: 0,
                 size,
                 run_bytes: 0,
             });
+            // Kind last (release under rc-walk): the collector snapshot
+            // reads every block's kind concurrently.
+            crate::memory::block_pool::store_block_kind(
+                &raw mut (*block).kind,
+                BLOCK_KIND_LARGE,
+            );
             (block as *mut u8).add(LINE_SIZE)
         }
     } else {
@@ -186,11 +192,15 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
         }
         unsafe {
             block.write(LargeHeader {
-                kind: BLOCK_KIND_LARGE_RUN,
+                kind: 0,
                 _pad: 0,
                 size,
                 run_bytes,
             });
+            crate::memory::block_pool::store_block_kind(
+                &raw mut (*block).kind,
+                BLOCK_KIND_LARGE_RUN,
+            );
             (block as *mut u8).add(LINE_SIZE)
         }
     }

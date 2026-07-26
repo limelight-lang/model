@@ -462,15 +462,76 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
 
         debug_assert!(refcount > 0, "release of dead entity");
         let refcount = refcount - 1;
-        let stored = (flags & !CONDEMNED_BYTE_MASK) as u64;
+        let dying = refcount == 0
+            && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap;
+        let condemned = flags & CONDEMNED_BYTE_MASK != 0;
+        // The masking clear — except on the deferred-death store, where
+        // the byte STAYS SET as the drain's marker: the acquittal duties
+        // tear exactly the members reading `rc 0, byte 1`, and must not
+        // touch a slot that died ordinarily (byte cleared by the very
+        // touch that acquitted it) and was already freed.
+        let stored = if dying && condemned {
+            flags as u64
+        } else {
+            (flags & !CONDEMNED_BYTE_MASK) as u64
+        };
         unsafe { header_word_store(entity, stored << 32 | refcount as u64) };
 
-        if refcount == 0 && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap {
+        if dying {
             // Condemned: this death belongs to the drain (doc above).
-            return flags & CONDEMNED_BYTE_MASK == 0;
+            return !condemned;
         }
         false
     }
+}
+
+/// Mutator-side relaxed header read; pair of the mutator's word store.
+/// Under a live epoch every plain header access races the collector's
+/// byte stores, which is undefined behaviour — these helpers are the
+/// same instructions with the race made defined.
+#[cfg(feature = "rc-walk")]
+#[inline]
+pub(crate) unsafe fn mutator_load_header(header: *const RcHeader) -> (u32, u32) {
+    let word = unsafe { header_word_load(header as *mut RcHeader) };
+    (word as u32, (word >> 32) as u32)
+}
+
+/// Mutator-side flags update as one relaxed whole-word store. May bury
+/// a concurrent collector byte store — a lost stamp or verdict, always
+/// the conservative direction (`rfc/model/gc/rc-walk.md`).
+#[cfg(feature = "rc-walk")]
+#[inline]
+pub(crate) unsafe fn mutator_update_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
+    let word = unsafe { header_word_load(header) };
+    let flags = f((word >> 32) as u32) as u64;
+    unsafe { header_word_store(header, flags << 32 | word as u32 as u64) };
+}
+
+/// The teardown guard's `+1` (relaxed whole-word; flags kept).
+#[cfg(feature = "rc-walk")]
+#[inline]
+pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
+    let word = unsafe { header_word_load(header) };
+    let flags_half = word & 0xFFFF_FFFF_0000_0000;
+    unsafe { header_word_store(header, flags_half | (word as u32 + 1) as u64) };
+}
+
+/// The teardown guard's condemned-aware `-1`: returns
+/// `(new refcount, deferred)`. `deferred` is true when the drop reached
+/// zero with the condemned byte set — the death now belongs to the
+/// drain (byte kept, teardown must stop). This closes the window the
+/// plain guard left open: an entity condemned *while its own destructor
+/// runs* must not finish teardown underneath the verdict, or the drain
+/// later tears a freed slot.
+#[cfg(feature = "rc-walk")]
+#[inline]
+pub(crate) unsafe fn mutator_unguard_release(header: *mut RcHeader) -> (u32, bool) {
+    let word = unsafe { header_word_load(header) };
+    let refcount = (word as u32) - 1;
+    let flags = (word >> 32) as u32;
+    let deferred = refcount == 0 && flags & CONDEMNED_BYTE_MASK != 0;
+    unsafe { header_word_store(header, (flags as u64) << 32 | refcount as u64) };
+    (refcount, deferred)
 }
 
 #[cfg(test)]
@@ -658,6 +719,11 @@ mod tests {
         h.flags |= 1 << CONDEMNED_BYTE_SHIFT;
         assert!(!release(&mut h), "death deferred, not reported");
         assert_eq!(h.refcount, 0, "the count did reach zero");
+        assert_ne!(
+            h.flags & CONDEMNED_BYTE_MASK,
+            0,
+            "the deferred-death store keeps the byte: it is the drain's marker"
+        );
 
         // Uncondemned control: the same release reports the death.
         let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);

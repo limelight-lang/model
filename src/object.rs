@@ -159,7 +159,16 @@ pub unsafe fn object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool 
     {
         return false;
     }
-    unsafe { (*obj).rc.flags |= DESTRUCTOR_PENDING };
+    #[cfg(not(feature = "rc-walk"))]
+    unsafe {
+        (*obj).rc.flags |= DESTRUCTOR_PENDING
+    };
+    // Post-publish header write: races the collector's byte stores
+    // under a live epoch, so it goes through the relaxed word helper.
+    #[cfg(feature = "rc-walk")]
+    unsafe {
+        crate::refcount::mutator_update_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_PENDING)
+    };
     true
 }
 
@@ -288,7 +297,7 @@ pub(crate) unsafe fn sever_counted_children(obj: *mut Object, displaced: &mut Ve
             let slot = unsafe { base.add((run.offset + i * 8) as usize) } as *mut *mut RcHeader;
             let child = unsafe { slot.read() };
             if !child.is_null() {
-                unsafe { slot.write(std::ptr::null_mut()) };
+                unsafe { crate::memory::barrier::write_ptr_slot(slot, std::ptr::null_mut()) };
                 displaced.push(child);
             }
         }
@@ -298,7 +307,7 @@ pub(crate) unsafe fn sever_counted_children(obj: *mut Object, displaced: &mut Ve
             let slot = unsafe { base.add((run.offset + i * 16) as usize) } as *mut Value;
             let v = unsafe { slot.read() };
             if v.is_refcounted() {
-                unsafe { slot.write(Value::null()) };
+                unsafe { crate::memory::barrier::write_value_slot(slot, Value::null()) };
                 displaced.push(v.entity_ptr());
             }
         }
@@ -317,12 +326,25 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
     // The header flag, not the class: a class may declare `__destruct`
     // while this particular object never finished construction, and such
     // an object must not run it (`rfc/runtime/object-lifecycle.md`).
-    if unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING == 0
-        || unsafe { (*obj).rc.flags } & DESTRUCTOR_RAN != 0
+    #[cfg(not(feature = "rc-walk"))]
     {
-        return false;
+        if unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING == 0
+            || unsafe { (*obj).rc.flags } & DESTRUCTOR_RAN != 0
+        {
+            return false;
+        }
+        unsafe { (*obj).rc.flags |= DESTRUCTOR_RAN };
     }
-    unsafe { (*obj).rc.flags |= DESTRUCTOR_RAN };
+    #[cfg(feature = "rc-walk")]
+    {
+        let (_, flags) = unsafe { crate::refcount::mutator_load_header(obj as *const RcHeader) };
+        if flags & DESTRUCTOR_PENDING == 0 || flags & DESTRUCTOR_RAN != 0 {
+            return false;
+        }
+        unsafe {
+            crate::refcount::mutator_update_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_RAN)
+        };
+    }
     debug_assert_ne!(cls.destruct_slot, NO_DESTRUCT_SLOT);
     // Through the raw class pointer, not `cls`: the vtable trails the
     // descriptor's fixed fields, which a `&Class` does not cover.
@@ -366,24 +388,58 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
     // guard, and is detected after it is dropped. The guard is only
     // meaningful for lifetime-counted (GcHeap) objects; arena objects are
     // not counted, so a $this reference there is a no-op anyway.
-    let counted = unsafe { (*obj).rc.lifetime_counted() };
-    if counted {
-        unsafe { (*obj).rc.refcount += 1 };
+    #[cfg(not(feature = "rc-walk"))]
+    {
+        let counted = unsafe { (*obj).rc.lifetime_counted() };
+        if counted {
+            unsafe { (*obj).rc.refcount += 1 };
+        }
+        let ran = unsafe { run_pre_destructor(obj) };
+        if counted {
+            unsafe { (*obj).rc.refcount -= 1 };
+        }
+        if ran && unsafe { (*obj).rc.refcount } > 0 {
+            return false; // resurrected: __destruct stored $this somewhere lasting
+        }
+        // Leave the cycle-collector candidate buffer before releasing any
+        // child. This object's refcount is already 0; a child release below can
+        // trip the candidate threshold and run a synchronous collection, which
+        // would otherwise trace this still-buffered object as a root and free it
+        // — then the free in `ll_object_die` frees it again (double free). No-op
+        // for entities never buffered (non-GcHeap, or GcHeap never decremented).
+        unsafe { crate::gc::forget_candidate(obj as *mut RcHeader) };
     }
-    let ran = unsafe { run_pre_destructor(obj) };
-    if counted {
-        unsafe { (*obj).rc.refcount -= 1 };
+    #[cfg(feature = "rc-walk")]
+    {
+        // Header traffic through the relaxed word helpers: the walker
+        // reads this header concurrently, and the guard's transient
+        // `rc 0 → 1 → 0` is visible to it (a phantom row at worst —
+        // repaired by Phases 3–4). No candidate buffer exists to leave.
+        let (_, flags) = unsafe { crate::refcount::mutator_load_header(obj as *const RcHeader) };
+        let counted = MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap;
+        if counted {
+            unsafe { crate::refcount::mutator_guard_retain(obj as *mut RcHeader) };
+        }
+        let ran = unsafe { run_pre_destructor(obj) };
+        if counted {
+            let (refcount, deferred) =
+                unsafe { crate::refcount::mutator_unguard_release(obj as *mut RcHeader) };
+            if deferred {
+                // Condemned while the destructor ran: the un-guard
+                // reached zero under a live verdict, so the rest of
+                // teardown — child releases and the free — belongs to
+                // the drain, which finds `DESTRUCTOR_RAN` set and the
+                // fields intact, and tears exactly once. Finishing here
+                // would put a freed slot inside a posted component.
+                return false;
+            }
+            if ran && refcount > 0 {
+                return false; // resurrected
+            }
+        } else if ran && unsafe { (*obj).rc.refcount } > 0 {
+            return false;
+        }
     }
-    if ran && unsafe { (*obj).rc.refcount } > 0 {
-        return false; // resurrected: __destruct stored $this somewhere lasting
-    }
-    // Leave the cycle-collector candidate buffer before releasing any
-    // child. This object's refcount is already 0; a child release below can
-    // trip the candidate threshold and run a synchronous collection, which
-    // would otherwise trace this still-buffered object as a root and free it
-    // — then the free in `ll_object_die` frees it again (double free). No-op
-    // for entities never buffered (non-GcHeap, or GcHeap never decremented).
-    unsafe { crate::gc::forget_candidate(obj as *mut RcHeader) };
 
     // Phase 2 — drop each counted child through the barrier's `drop`
     // micro-op: escape-lose for a held arena escapee, release + cascade
@@ -421,8 +477,22 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     // Phase 3 — memory, by category. Arenas reclaim at reset; the
     // long-lived policy is TBD; only the GC heap frees here. The candidate
     // buffer was already cleared inside `dispose`, before its child drops.
-    if unsafe { (*obj).rc.memory_category() } == MemoryCategory::GcHeap {
+    if unsafe { header_category(obj as *const RcHeader) } == MemoryCategory::GcHeap {
         unsafe { crate::memory::stdapi::ll_free(obj as *mut u8) };
+    }
+}
+
+/// The category of a possibly-walked header: a relaxed read under
+/// `rc-walk` (the collector's byte stores race every plain header
+/// access during an epoch), a plain read otherwise.
+#[inline]
+pub(crate) unsafe fn header_category(header: *const RcHeader) -> MemoryCategory {
+    #[cfg(not(feature = "rc-walk"))]
+    return unsafe { (*header).memory_category() };
+    #[cfg(feature = "rc-walk")]
+    {
+        let (_, flags) = unsafe { crate::refcount::mutator_load_header(header) };
+        MemoryCategory::from_flags(flags)
     }
 }
 
@@ -443,7 +513,11 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     const OBJECT: u32 = EntityKind::Object as u32;
     const LAZY: u32 = EntityKind::Lazy as u32;
     const REFERENCE: u32 = EntityKind::Reference as u32;
-    let kind = (unsafe { (*entity).flags } & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
+    #[cfg(not(feature = "rc-walk"))]
+    let flags = unsafe { (*entity).flags };
+    #[cfg(feature = "rc-walk")]
+    let flags = unsafe { crate::refcount::mutator_load_header(entity) }.1;
+    let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },
         REFERENCE => unsafe {

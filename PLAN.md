@@ -146,11 +146,16 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   (exactly-once probed through the free list), DC3's premise shown
   unreachable. Kills of broken variants stay TLC's (a runtime
   use-after-free has no deterministic observable) — agreed with
-  Edmond, rfc danger-cases note updated. Still owed (6): the
-  mutator-side relaxed-atomic sweep (fields, flag bits, block
-  cursors — formally racy against a free-running collector; stepped
-  tests never execute the race), then free-running stress, re-benching
-  the swept hot paths.
+  Edmond, rfc danger-cases note updated. *Commit 6 landed 2026-07-27*:
+  the relaxed-atomic sweep (field stores, header flags, block kinds),
+  the condemned-aware dispose un-guard (a real F5 bypass found and
+  closed — DECISIONS), the byte-preserving deferred-death store, the
+  cursor-free snapshot (an atomic bump measured +14% larson —
+  rejected, BENCHMARKS), a quadratic re-check fixed, and the
+  free-running stress test (Miri-ignored; stepped tests carry Miri).
+  **Step 3 is complete.** Next rungs stay per rc-walk.md build order:
+  weak references (4), the escalation ladder if measurement shows
+  starvation (5); trigger thresholds remain measurements.
 - ~~Immix-shaped `GcHeap` allocator~~ — **dropped entirely 2026-07-25**
   (confirmed 2026-07-27): no line recycling, no reuse of retained-block
   holes. Segregated entity blocks solved what Immix was drafted for;

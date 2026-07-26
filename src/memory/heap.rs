@@ -743,7 +743,7 @@ impl Heap {
 
                 let b = unsafe { &mut (*block).private };
                 if b.used == 0 {
-                    b.kind = 0;
+                    unsafe { crate::memory::block_pool::store_block_kind(&raw mut b.kind, 0) };
                     BlockPool::global().put(block as *mut BlockHeader);
                 } else {
                     b.linked = false;
@@ -928,7 +928,7 @@ impl Heap {
                 .shared
                 .owner
                 .store(std::ptr::null_mut(), Ordering::Release);
-            (*block).private.kind = 0;
+            crate::memory::block_pool::store_block_kind(&raw mut (*block).private.kind, 0);
         }
         BlockPool::global().put(block as *mut BlockHeader);
     }
@@ -1005,10 +1005,19 @@ impl Heap {
         // No side allocation at all: an empty free list plus `bump = 0`
         // means "every slot virgin" — O(1), touching nothing but the
         // header line.
+        //
+        // Under `rc-walk` the kind is published LAST with a release
+        // store (`store_block_kind`): the collector's snapshot must not
+        // read "entity" before the size class, cursor and zeroed slots
+        // behind it are visible.
+        #[cfg(not(feature = "rc-walk"))]
+        let commissioned_kind = self.block_kind;
+        #[cfg(feature = "rc-walk")]
+        let commissioned_kind = 0;
         unsafe {
             block.write(HeapBlockHeader {
                 private: BlockPrivate {
-                    kind: self.block_kind,
+                    kind: commissioned_kind,
                     size_class: ci as u32,
                     used: 0,
                     slots,
@@ -1030,6 +1039,13 @@ impl Heap {
                 },
             });
         }
+        #[cfg(feature = "rc-walk")]
+        unsafe {
+            crate::memory::block_pool::store_block_kind(
+                &raw mut (*block).private.kind,
+                self.block_kind,
+            )
+        };
         self.own(ci, block);
         self.link(ci, block);
         block
@@ -1643,9 +1659,14 @@ pub(crate) struct EntityBlockSnapshot {
     pub payload: usize,
     /// Slot stride: the block's size class in bytes.
     pub class_size: usize,
-    /// Bump cursor at snapshot time: only slots below it are walked.
-    /// The cursor bounds the scan; the epoch byte decides maturity — a
-    /// free-list pop hands out slots far below any cursor mid-epoch.
+    /// Every slot of the block, virgin tail included. The walker does
+    /// NOT read the bump cursor: commissioning zeroes every slot's
+    /// header, so a virgin slot reads refcount 0 and skips — the same
+    /// occupancy test as a freed one. Skipping the cursor keeps the
+    /// mutator's `bump += 1` a plain store (an atomic one measured
+    /// +14% on larson, `dev/BENCHMARKS.md` 2026-07-26); the full-block
+    /// scan is collector-side work, which is always the right side to
+    /// pay on.
     pub slots: usize,
 }
 
@@ -1655,10 +1676,9 @@ pub(crate) struct EntityBlockSnapshot {
 /// for the epoch's whole life. Sorted by payload address, for the
 /// child-pointer validation's binary search.
 ///
-/// Runs on the collector thread; the kind and cursor reads are relaxed
-/// atomics (a mutator may be commissioning or bumping concurrently —
-/// a block or slot it is mid-way through appears either not at all or
-/// bounded by an older cursor, both conservative).
+/// Runs on the collector thread; the kind read is an acquire atomic
+/// pairing with commissioning's release store (a block mid-commission
+/// appears not at all — conservative).
 #[cfg(feature = "rc-walk")]
 pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -1666,8 +1686,11 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
     for region in BlockPool::global().regions() {
         for i in 0..BLOCKS_PER_REGION {
             let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut HeapBlockHeader;
+            // Acquire pairs with commissioning's release kind store: a
+            // block reading "entity" has its class, cursor and zeroed
+            // slots visible.
             let kind = unsafe {
-                (*(&raw const (*block).private.kind as *const AtomicU32)).load(Ordering::Relaxed)
+                (*(&raw const (*block).private.kind as *const AtomicU32)).load(Ordering::Acquire)
             };
             if kind != BLOCK_KIND_ENTITY {
                 continue;
@@ -1676,13 +1699,11 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
                 (*(&raw const (*block).private.size_class as *const AtomicU32))
                     .load(Ordering::Relaxed)
             };
-            let bump = unsafe {
-                (*(&raw const (*block).private.bump as *const AtomicU32)).load(Ordering::Relaxed)
-            };
+            let class_size = SIZE_CLASSES[size_class as usize];
             blocks.push(EntityBlockSnapshot {
                 payload: unsafe { (block as *mut u8).add(LINE_SIZE) } as usize,
-                class_size: SIZE_CLASSES[size_class as usize],
-                slots: bump as usize,
+                class_size,
+                slots: BLOCK_PAYLOAD / class_size,
             });
         }
     }

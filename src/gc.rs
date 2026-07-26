@@ -258,6 +258,9 @@ unsafe fn decode_index(entity: *mut RcHeader) -> Option<usize> {
 ///
 /// # Safety
 /// `entity` must still point at the (dying) entity.
+// Dead under `rc-walk` — see `candidate_threshold`'s note; the one
+// caller left (`ll_default_dispose`) is cfg'd to the rc-trace arm.
+#[cfg_attr(feature = "rc-walk", expect(dead_code))]
 pub(crate) unsafe fn forget_candidate(entity: *mut RcHeader) {
     if unsafe { (*entity).flags } & CYCLE_COLLECTOR_BUFFERED == 0 {
         return;

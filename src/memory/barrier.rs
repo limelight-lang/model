@@ -144,7 +144,43 @@ pub(crate) unsafe fn store_ptr(
         unsafe { ll_retain(new) };
         unsafe { store_category_barrier(arena, owner_cat, new) };
     }
-    unsafe { slot.write(new) };
+    unsafe { write_ptr_slot(slot, new) };
+}
+
+/// Write an 8-byte pointer slot of a (possibly) walked object. Under
+/// `rc-walk` the store is a relaxed atomic: the collector reads fields
+/// concurrently, a racing plain store is undefined behaviour, and the
+/// relaxed store is the same instruction. Same story for
+/// [`write_value_slot`], whose two words the walker may see torn — the
+/// design absorbs the tear (a phantom or missed edge, repaired by
+/// Phases 3-4), the atomics make it defined.
+#[inline]
+pub(crate) unsafe fn write_ptr_slot(slot: *mut *mut RcHeader, new: *mut RcHeader) {
+    #[cfg(not(feature = "rc-walk"))]
+    unsafe {
+        slot.write(new)
+    };
+    #[cfg(feature = "rc-walk")]
+    unsafe {
+        (*(slot as *const std::sync::atomic::AtomicPtr<RcHeader>))
+            .store(new, std::sync::atomic::Ordering::Relaxed)
+    };
+}
+
+/// Write a 16-byte `Value` slot; see [`write_ptr_slot`].
+#[inline]
+pub(crate) unsafe fn write_value_slot(slot: *mut Value, new: Value) {
+    #[cfg(not(feature = "rc-walk"))]
+    unsafe {
+        slot.write(new)
+    };
+    #[cfg(feature = "rc-walk")]
+    unsafe {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let words = core::mem::transmute::<Value, [u64; 2]>(new);
+        (*(slot as *const AtomicU64)).store(words[0], Ordering::Relaxed);
+        (*((slot as *const u8).add(8) as *const AtomicU64)).store(words[1], Ordering::Relaxed);
+    };
 }
 
 /// The `store_box` micro-op: the same publish for a 16-byte `Value` slot.
@@ -173,7 +209,7 @@ pub(crate) unsafe fn store_box(
         unsafe { ll_retain(new_ptr) };
         unsafe { store_category_barrier(arena, owner_cat, new_ptr) };
     }
-    unsafe { slot.write(new) };
+    unsafe { write_value_slot(slot, new) };
 }
 
 /// The `drop` micro-op: **release** the entity a slot held after an
@@ -197,7 +233,7 @@ pub(crate) unsafe fn drop_ref(owner_cat: MemoryCategory, old: *mut RcHeader) {
     if old.is_null() {
         return;
     }
-    let old_cat = unsafe { (*old).memory_category() };
+    let old_cat = unsafe { crate::object::header_category(old) };
 
     // A longer-lived slot letting go of an arena escapee: drop its
     // hold-count (`lose`). The barrier half of the escape rule; holder

@@ -79,11 +79,11 @@ pub unsafe extern "C" fn ll_reference_new_abi(
 /// # Safety
 /// `boxed` must be a live reference box.
 pub(crate) unsafe fn reference_die(boxed: *mut LLReference) {
-    let owner_cat = unsafe { (*boxed).rc.memory_category() };
+    let owner_cat = unsafe { crate::object::header_category(boxed as *const RcHeader) };
     let v = unsafe { (*boxed).value };
     if v.is_refcounted() {
         unsafe {
-            (*boxed).value = Value::null();
+            crate::memory::barrier::write_value_slot(&raw mut (*boxed).value, Value::null());
             crate::memory::barrier::drop_ref(owner_cat, v.entity_ptr());
         }
     }
