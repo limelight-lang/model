@@ -30,6 +30,10 @@ versions live in `docs/history/`, marked at the top.
 
 ## Entry points
 
+- Entity walking (rc-walk build step 1): `src/walk.rs` — kind-dispatched
+  tracer + heap census over `memory::heap::for_each_entity_slot`; entity
+  blocks and the region registry are in `heap.rs`/`block_pool.rs`
+  (design: `rfc/model/gc/rc-walk.md`; decision entry 2026-07-26).
 - C ABI surface: `src/memory/context.rs` (arena + context),
   `src/object.rs` (`ll_object_new` factory, `ll_object_constructed` —
   the end-of-construction hook that registers the destructor),
@@ -80,7 +84,8 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
 
 ## Key decisions
 
-`dev/DECISIONS.md` — 2026-07-20: arena handle as a raw pointer;
+`dev/DECISIONS.md` — 2026-07-26: entity blocks as a second heap
+population (rc-walk step 1). 2026-07-20: arena handle as a raw pointer;
 trailing inline data through raw pointers; block header split by access
 rule; cold concurrent structures take a lock rather than a CAS loop;
 Miri against a UNIX target. 2026-07-21: the barrier owns the whole slot

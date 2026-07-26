@@ -8,6 +8,35 @@ never edited or deleted.
 
 ---
 
+## 2026-07-26 — entity blocks are a second heap population (rc-walk step 1)
+
+**Decided:** GC entities (`GcHeap`/`LongLived` factory allocations) come
+from their own block population — `BLOCK_KIND_ENTITY`, served by a second
+`Heap` instance per thread — while raw C-ABI allocations keep
+`BLOCK_KIND_HEAP`. Four rules make the population walkable
+(`rfc/model/gc/rc-walk.md`): the in-slot free-list link moves to slot
+bytes 8–15 (bytes 0–7 keep the dead entity's final refcount-0 header —
+the occupancy test), commissioning zeroes every slot's first 8 bytes,
+the factory publishes the header last as one 8-byte store, and the block
+pool records every region base in an append-only registry so blocks can
+be enumerated. Abandoned-block lists are segregated per population.
+
+**Why:** a walker cannot tell a live 40-byte object from a live 40-byte
+C buffer in a shared block, and reading the buffer's first 8 bytes as a
+header is a wild read. Design and proofs live in the rfc repo (rc-walk
+spec, model, 22-run TLC battery).
+
+**Considered and rejected:** an in-header FREE stamp (dies with the
+first free once the link lived in bytes 0–7 — retired in the spec);
+moving the link only for entity blocks (two code paths for no gain: the
+new offset is the same cache line, and every class is ≥ 16 bytes).
+
+**Cost:** one 8-byte zeroing store per slot per entity-block
+commissioning (cold, once per block); a second `Heap` per thread
+(~1.2 KB); huge entities (> 8 KB) stay outside the walk, conservatively.
+
+---
+
 ## 2026-07-25 — a generated lifecycle body unrolls small, loops large
 
 **Decided:** the counted-field strides of a compiler-generated lifecycle

@@ -85,11 +85,12 @@ pub unsafe fn ll_object_new(
 
     let mem = match category {
         MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },
-        // Stand-in until the GC strategy owns the GcHeap allocator and
-        // the long-lived arena gets its reclamation policy: both route
-        // through the standard path (small → thread heap).
+        // Counted entities live in the segregated entity-block population
+        // the cycle collector walks (`rfc/model/gc/rc-walk.md`). LongLived
+        // rides along: the walker skips it by category per entity, and the
+        // long-lived arena's own reclamation policy is still TBD.
         MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-            crate::memory::stdapi::ll_alloc(size, 16)
+            crate::memory::heap::entity_alloc(size)
         },
         MemoryCategory::Immortal => immortal_alloc(size),
     };
@@ -106,8 +107,6 @@ pub unsafe fn ll_object_new(
     // written out to keep the factory's produced kind explicit.
     let extra = crate::refcount::EntityKind::Object.to_flags();
     unsafe {
-        (*obj).rc = RcHeader::new(category, extra);
-        (*obj).class = class;
         // Zero-fill the property region in one pass: a null pointer is
         // uninitialized, an all-zero Box is `null` (tag 0, refcounted
         // clear), a zero scalar is 0, a clear bool is false — every
@@ -117,6 +116,18 @@ pub unsafe fn ll_object_new(
         // zeroes. `size >= size_of::<Object>()` always (16-byte header).
         let body = (obj as *mut u8).add(size_of::<Object>());
         core::ptr::write_bytes(body, 0, size - size_of::<Object>());
+        (*obj).class = class;
+        // The header is published LAST, as one 8-byte store — never
+        // refcount and flags separately (`rfc/model/gc/rc-walk.md`,
+        // Phase 1: the carve-to-first-store window). Until this store the
+        // slot reads refcount 0 — commissioning zeroed it, or the previous
+        // occupant's death left it — so a walker classifies it as free
+        // rather than reading a half-built entity. Becomes a relaxed
+        // atomic store when the collector thread arrives (build step 3).
+        debug_assert_eq!(obj as usize % 8, 0);
+        (obj as *mut u64).write(core::mem::transmute::<RcHeader, u64>(RcHeader::new(
+            category, extra,
+        )));
     }
 
     // The destructor is NOT registered here. The factory only produces

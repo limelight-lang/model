@@ -33,6 +33,14 @@
 //!   reclamation, at block granularity (subject to the bounded
 //!   empty-block retention below).
 //!
+//! The heap runs **twice per thread** over this same code: a raw heap
+//! (`BLOCK_KIND_HEAP`) for C-ABI buffers and an entity heap
+//! (`BLOCK_KIND_ENTITY`) for GC entities, as one [`ThreadHeaps`] pair
+//! behind the TLS slot. Segregation, the bytes-8–15 free-list link, the
+//! commissioning zero pass and [`for_each_entity_slot`] are rc-walk
+//! build step 1 (`rfc/model/gc/rc-walk.md`; `docs/memory-manager.md`,
+//! "Entity blocks").
+//!
 //! ## Cross-thread free (multi-threaded)
 //!
 //! Every block carries its own lock-free MPSC stack, `remote_free`. A
@@ -82,7 +90,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::memory::block_pool::{
-    BLOCK_KIND_HEAP, BLOCK_MASK, BLOCK_PAYLOAD, BlockHeader, BlockPool, LINE_SIZE,
+    BLOCK_KIND_ENTITY, BLOCK_KIND_HEAP, BLOCK_MASK, BLOCK_PAYLOAD, BLOCK_SIZE,
+    BLOCKS_PER_REGION, BlockHeader, BlockPool, LINE_SIZE,
 };
 
 /// Size classes (bytes). Smallest class >= request is used. Chosen to
@@ -149,12 +158,23 @@ pub fn size_class_index(size: usize) -> Option<usize> {
     Some(ci)
 }
 
-/// A free slot threads a list through its own first 8 bytes — zero
-/// metadata overhead. Used both for a block's own free list and for
-/// `remote_free`, the cross-thread MPSC staging stack. Every size class is
-/// ≥ 16 bytes, so a slot always has room for the link.
+/// A free slot threads a list through its own bytes 8–15 — zero metadata
+/// overhead. Used both for a block's own free list and for `remote_free`,
+/// the cross-thread MPSC staging stack. Every size class is ≥ 16 bytes,
+/// so a slot always has room for the link, and bytes 8–15 sit on the same
+/// cache line as bytes 0–7, so the measured argument for the in-slot list
+/// (`rfc/model/memory/heap-slot-allocation.md`) is untouched.
+///
+/// Bytes 0–7 are deliberately **never written by the allocator**: in an
+/// entity block they keep the dead entity's final header — refcount 0,
+/// which is the walker's occupancy test (`rfc/model/gc/rc-walk.md`). The
+/// link lived in bytes 0–7 before rc-walk step 1; one offset for both
+/// populations keeps a single code path.
 #[repr(C)]
 struct FreeSlot {
+    /// The preserved first 8 bytes: a dead entity's final header in an
+    /// entity block, stale payload in a raw block. Never accessed.
+    header: u64,
     next: *mut FreeSlot,
 }
 
@@ -166,7 +186,12 @@ struct FreeSlot {
 /// allocation (measured). A lock-free stack here would buy nothing real and
 /// would need ABA tagging to be correct.
 struct Abandoned {
-    heads: [*mut HeapBlockHeader; NUM_CLASSES],
+    /// Indexed by population first — `[0]` raw blocks (`BLOCK_KIND_HEAP`),
+    /// `[1]` entity blocks (`BLOCK_KIND_ENTITY`) — then by size class.
+    /// Separate lists because adoption must never move a block across
+    /// populations: a raw heap handing out entity-block slots would put C
+    /// buffers where the walker reads headers (`rfc/model/gc/rc-walk.md`).
+    heads: [[*mut HeapBlockHeader; NUM_CLASSES]; 2],
 }
 
 // SAFETY: the pointers are block headers in never-unmapped pool regions;
@@ -174,8 +199,14 @@ struct Abandoned {
 unsafe impl Send for Abandoned {}
 
 static ABANDONED: Mutex<Abandoned> = Mutex::new(Abandoned {
-    heads: [std::ptr::null_mut(); NUM_CLASSES],
+    heads: [[std::ptr::null_mut(); NUM_CLASSES]; 2],
 });
+
+/// The population index a block kind maps to in [`Abandoned::heads`].
+#[inline]
+fn population_index(block_kind: u32) -> usize {
+    (block_kind == BLOCK_KIND_ENTITY) as usize
+}
 
 /// The owner-private half of the header: only the thread named by
 /// [`BlockShared::owner`] may touch it. Split out so that borrowing it
@@ -398,6 +429,11 @@ pub struct Heap {
     /// owner lost" from "a dead thread's live object we inherited".
     #[cfg(test)]
     adopted_live: u32,
+    /// The block kind this heap stamps at refill and adopts by:
+    /// `BLOCK_KIND_HEAP` for raw C-ABI allocations, `BLOCK_KIND_ENTITY`
+    /// for GC entities. Two populations of the same allocator, never
+    /// mixed (`rfc/model/gc/rc-walk.md`).
+    block_kind: u32,
 }
 
 impl Default for Heap {
@@ -407,13 +443,26 @@ impl Default for Heap {
 }
 
 impl Heap {
+    /// A heap serving raw allocations (`BLOCK_KIND_HEAP` blocks).
     pub fn new() -> Self {
+        Self::with_kind(BLOCK_KIND_HEAP)
+    }
+
+    /// A heap serving GC entities (`BLOCK_KIND_ENTITY` blocks): same
+    /// allocator, segregated block population, zeroed slot headers at
+    /// commissioning.
+    pub fn new_entity() -> Self {
+        Self::with_kind(BLOCK_KIND_ENTITY)
+    }
+
+    fn with_kind(block_kind: u32) -> Self {
         Heap {
             available: [std::ptr::null_mut(); NUM_CLASSES],
             empty_reserve: [std::ptr::null_mut(); NUM_CLASSES],
             owned: [std::ptr::null_mut(); NUM_CLASSES],
             #[cfg(test)]
             adopted_live: 0,
+            block_kind,
         }
     }
 
@@ -585,13 +634,14 @@ impl Heap {
     /// Take an abandoned block of this class, if one exists, and make it
     /// ours. Returns false if there was nothing to adopt.
     fn adopt(&mut self, ci: usize) -> bool {
+        let population = population_index(self.block_kind);
         let block = {
             let mut list = ABANDONED.lock().unwrap();
-            let head = list.heads[ci];
+            let head = list.heads[population][ci];
             if head.is_null() {
                 return false;
             }
-            list.heads[ci] = unsafe { (*head).links.owned_next };
+            list.heads[population][ci] = unsafe { (*head).links.owned_next };
             head
         };
 
@@ -678,6 +728,7 @@ impl Heap {
     ///
     /// Idempotent: safe to call from both `ll_thread_exit` and the TLS guard.
     pub fn abandon_all(&mut self) {
+        let population = population_index(self.block_kind);
         let mut list = ABANDONED.lock().unwrap();
         for ci in 0..NUM_CLASSES {
             let mut block = self.owned[ci];
@@ -700,8 +751,8 @@ impl Heap {
                     b.prev = std::ptr::null_mut();
                     let l = unsafe { &mut (*block).links };
                     l.owned_prev = std::ptr::null_mut();
-                    l.owned_next = list.heads[ci];
-                    list.heads[ci] = block;
+                    l.owned_next = list.heads[population][ci];
+                    list.heads[population][ci] = block;
                 }
                 block = next;
             }
@@ -933,13 +984,31 @@ impl Heap {
         }
         let slots = (BLOCK_PAYLOAD / class_size) as u32;
 
+        // Commissioning rule for entity blocks (`rfc/model/gc/rc-walk.md`,
+        // Phase 1): every slot's first 8 bytes must read refcount 0 until
+        // an entity is published into it, or the walker meets bytes that
+        // lie. Regions come from the process allocator and blocks recycle
+        // through the pool, so provenance is never a known-fresh OS commit
+        // — the explicit 8-bytes-per-slot pass always runs here. Cold path
+        // (once per block), ≤ 4080 stores at the smallest class.
+        //
+        // Raw blocks skip it: nothing ever reads their dead slots, and the
+        // O(1) "no per-slot initialization" property below is measured
+        // (module doc: why the bitmap lost).
+        if self.block_kind == BLOCK_KIND_ENTITY {
+            let base = BlockHeader::payload_start(block as *mut BlockHeader);
+            for i in 0..slots as usize {
+                unsafe { (base.add(i * class_size) as *mut u64).write(0) };
+            }
+        }
+
         // No side allocation at all: an empty free list plus `bump = 0`
         // means "every slot virgin" — O(1), touching nothing but the
         // header line.
         unsafe {
             block.write(HeapBlockHeader {
                 private: BlockPrivate {
-                    kind: BLOCK_KIND_HEAP,
+                    kind: self.block_kind,
                     size_class: ci as u32,
                     used: 0,
                     slots,
@@ -1322,9 +1391,25 @@ pub extern "C" fn ll_thread_exit() {
     // have reported null and returned.
     let cleared = tls::set(std::ptr::null_mut());
     debug_assert!(cleared, "the slot existed a line ago");
-    // The blocks are given up by `Heap`'s `Drop`, so this is one path, not
-    // two: any other way a heap dies reclaims them identically.
-    unsafe { drop(Box::from_raw(p)) };
+    // The blocks are given up by `Heap`'s `Drop` (both instances of the
+    // pair), so this is one path, not two: any other way a heap dies
+    // reclaims them identically.
+    unsafe { drop(Box::from_raw(p as *mut ThreadHeaps)) };
+}
+
+/// The two heap instances a thread owns: raw C-ABI allocations and GC
+/// entities — the same allocator over two segregated block populations
+/// (`rfc/model/gc/rc-walk.md`, "Prerequisite: entity blocks are
+/// segregated").
+///
+/// `#[repr(C)]` with `raw` first, and that is load-bearing: the TLS slot
+/// stores a pointer to this pair, and [`thread_heap`] hands the same
+/// pointer out as the raw heap — the `ll_malloc` hot path pays no offset
+/// and no second load for the split.
+#[repr(C)]
+pub struct ThreadHeaps {
+    raw: Heap,
+    entity: Heap,
 }
 
 impl Drop for Heap {
@@ -1398,13 +1483,20 @@ pub extern "C" fn ll_thread_init() {
         // A refusal leaves the slot null, which is a state the whole
         // module already models (`thread_heap` documents it), so every
         // allocation path reports null instead of the process dying.
-        let layout = std::alloc::Layout::new::<Heap>();
-        let heap = unsafe { std::alloc::alloc(layout) } as *mut Heap;
+        let layout = std::alloc::Layout::new::<ThreadHeaps>();
+        let heap = unsafe { std::alloc::alloc(layout) } as *mut ThreadHeaps;
         if heap.is_null() {
             return;
         }
-        unsafe { heap.write(Heap::new()) };
-        if !tls::set(heap) {
+        unsafe {
+            heap.write(ThreadHeaps {
+                raw: Heap::new(),
+                entity: Heap::new_entity(),
+            })
+        };
+        // The slot stores the pair's address as `*mut Heap`: with
+        // `repr(C)` and `raw` first, that IS the raw heap's address.
+        if !tls::set(heap as *mut Heap) {
             // No TLS slot to hold it: hand the memory straight back and
             // leave the thread heapless, which the allocation paths
             // already report as null.
@@ -1429,13 +1521,105 @@ pub extern "C" fn ll_thread_init() {
     }
 }
 
-/// This thread's heap, or null if it has never allocated.
+/// This thread's raw heap, or null if it has never allocated.
 ///
 /// The null case is what lets `ll_malloc`/`ll_c_free` self-initialise on a
 /// cold branch instead of making every caller wrap them in an init check.
 #[inline]
 pub fn thread_heap() -> *mut Heap {
     tls::get_raw()
+}
+
+/// This thread's entity heap, or null if it has never allocated. One
+/// field offset past the TLS read — the pair is `repr(C)`.
+#[inline]
+pub fn thread_entity_heap() -> *mut Heap {
+    let p = tls::get_raw() as *mut ThreadHeaps;
+    if p.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe { &raw mut (*p).entity }
+}
+
+/// Allocate a GC entity of `size` bytes from this thread's entity heap.
+/// Self-initialising like `ll_alloc`. A size past the small range falls
+/// back to the standard large path: such entities live outside entity
+/// blocks and outside the walk — conservative, per
+/// `rfc/model/gc/rc-walk.md` ("Huge objects").
+///
+/// # Safety
+/// Standard allocator contract; the caller publishes an `RcHeader` into
+/// the slot's first 8 bytes (header last — see `ll_object_new`).
+#[inline]
+pub unsafe fn entity_alloc(size: usize) -> *mut u8 {
+    if size <= MAX_SMALL {
+        let h = thread_entity_heap();
+        if h.is_null() {
+            return unsafe { entity_alloc_init(size) };
+        }
+        return unsafe { (*h).alloc(size) };
+    }
+    unsafe { crate::memory::stdapi::ll_alloc(size, 16) }
+}
+
+/// Cold tail: first entity allocation on this thread.
+///
+/// # Safety
+/// As [`entity_alloc`].
+#[cold]
+#[inline(never)]
+unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
+    ll_thread_init();
+    let h = thread_entity_heap();
+    if h.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe { (*h).alloc(size) }
+}
+
+/// Visit every occupied slot of every entity block, process-wide — the
+/// census primitive under the rc-walk collector's Phase 1 and the
+/// synchronous walk of build step 2 (`rfc/model/gc/rc-walk.md`).
+///
+/// Occupancy is exact by construction: commissioning zeroes slot
+/// headers, the factory publishes a header last, and a freed slot keeps
+/// its final refcount-0 header (the free-list link lives in bytes 8–15).
+/// The scan is bounded by each block's bump cursor, so virgin slots are
+/// never read. Blocks of every other kind — arena, retained, large,
+/// buffer, raw heap — are skipped: un-walked memory is a root source,
+/// never an error.
+///
+/// # Safety
+/// Requires a quiescent mutator: block kinds, cursors and slot headers
+/// are read unsynchronised, which is sound only while no thread
+/// allocates or frees concurrently (the crate's single-mutator phase;
+/// the concurrent collector adds its snapshot discipline in build
+/// step 3).
+pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::RcHeader)) {
+    for region in BlockPool::global().regions() {
+        for i in 0..BLOCKS_PER_REGION {
+            let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut HeapBlockHeader;
+            // The kind gates every further header read: only `kind` (and
+            // the pool link) is initialized in a block that has never been
+            // commissioned — reading `size_class`/`bump` there is reading
+            // uninitialized memory (Miri-caught). An entity block's header
+            // was fully written by `refill`.
+            if unsafe { (*block).private.kind } != BLOCK_KIND_ENTITY {
+                continue;
+            }
+            let (size_class, bump) =
+                unsafe { ((*block).private.size_class, (*block).private.bump) };
+            let class_size = SIZE_CLASSES[size_class as usize];
+            let base = unsafe { (block as *mut u8).add(LINE_SIZE) };
+            for s in 0..bump as usize {
+                let slot =
+                    unsafe { base.add(s * class_size) } as *mut crate::refcount::RcHeader;
+                if unsafe { (*slot).refcount } != 0 {
+                    visit(slot);
+                }
+            }
+        }
+    }
 }
 
 /// Post `ptr` to its block's cross-thread stack, without needing a heap of
@@ -1658,6 +1842,151 @@ mod tests {
         let b = heap.alloc(64);
         assert_eq!(a, b, "a freed slot must be handed back");
         unsafe { heap.free(b) };
+    }
+
+    /// The free-list link lives in slot bytes 8–15, so a free leaves the
+    /// first 8 bytes exactly as the dying occupant left them — in an
+    /// entity block that is the final refcount-0 header, the walker's
+    /// occupancy test (`rfc/model/gc/rc-walk.md`). Fails with the link at
+    /// bytes 0–7, where the push clobbered them.
+    #[test]
+    fn free_leaves_the_slots_first_8_bytes_untouched() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut heap = Heap::new();
+        let p = heap.alloc(64);
+        unsafe { std::ptr::write_bytes(p, 0xAA, 64) };
+        unsafe { heap.free(p) };
+        for i in 0..8 {
+            assert_eq!(
+                unsafe { *p.add(i) },
+                0xAA,
+                "byte {i} of a freed slot was clobbered by the free-list link"
+            );
+        }
+        let again = heap.alloc(64);
+        assert_eq!(again, p, "the slot still threads the free list");
+        unsafe { heap.free(again) };
+    }
+
+    /// Commissioning an entity block zeroes every slot's first 8 bytes,
+    /// whatever the block held before — the rc-walk rule that closes the
+    /// carve-to-first-store window. The raw population deliberately skips
+    /// the pass, which is also the control proving the scribble survives
+    /// the pool round-trip (i.e. that this test can fail).
+    #[test]
+    fn entity_commissioning_zeroes_slot_headers_of_a_recycled_block() {
+        let _g = crate::memory::block_pool::test_guard();
+        let pool = BlockPool::global();
+        let class = 3072usize; // uncommon class: no adoptable leftovers
+        let slots = BLOCK_PAYLOAD / class;
+
+        let scribble = |block: *mut BlockHeader| unsafe {
+            std::ptr::write_bytes(BlockHeader::payload_start(block), 0xEE, BLOCK_PAYLOAD);
+        };
+        let slot_header = |p: *mut u8, s: usize| unsafe {
+            ((p as usize & !BLOCK_MASK) as *mut u8)
+                .add(LINE_SIZE + s * class)
+                .cast::<u64>()
+                .read()
+        };
+
+        // Control: the raw population keeps the garbage (thread-cache
+        // LIFO hands the scribbled block straight back to refill).
+        let block = pool.get();
+        scribble(block);
+        pool.put(block);
+        let mut raw = Heap::new();
+        let p = raw.alloc(class);
+        assert_eq!(p as usize & !BLOCK_MASK, block as usize, "LIFO reuse");
+        assert_eq!(
+            slot_header(p, 1),
+            0xEEEE_EEEE_EEEE_EEEE,
+            "control: without the pass the scribble survives commissioning"
+        );
+        unsafe { raw.free(p) };
+        drop(raw);
+
+        // The entity population must not: every slot header reads 0.
+        let block = pool.get();
+        scribble(block);
+        pool.put(block);
+        let mut entity = Heap::new_entity();
+        let p = entity.alloc(class);
+        assert_eq!(p as usize & !BLOCK_MASK, block as usize, "LIFO reuse");
+        for s in 1..slots {
+            assert_eq!(
+                slot_header(p, s),
+                0,
+                "slot {s} header must be zeroed at entity commissioning"
+            );
+        }
+        unsafe { entity.free(p) };
+    }
+
+    /// A block never crosses populations through abandonment: a raw heap
+    /// must not adopt an entity block, or C buffers land where the walker
+    /// reads headers.
+    #[test]
+    fn adoption_never_crosses_block_populations() {
+        let _g = crate::memory::block_pool::test_guard();
+        let class = 3072usize; // uncommon class: adoption is deterministic
+
+        let mut donor = Heap::new_entity();
+        let held = donor.alloc(class);
+        assert!(!held.is_null());
+        let entity_block = held as usize & !BLOCK_MASK;
+        donor.abandon_all(); // still holds `held`: goes to the abandoned list
+
+        // A raw heap of the same class must refill fresh, not adopt it.
+        let mut raw = Heap::new();
+        let p = raw.alloc(class);
+        assert_ne!(
+            p as usize & !BLOCK_MASK,
+            entity_block,
+            "a raw heap must never serve from an entity block"
+        );
+        unsafe {
+            assert_eq!((*HeapBlockHeader::of_ptr(p)).private.kind, BLOCK_KIND_HEAP);
+        }
+        unsafe { raw.free(p) };
+
+        // An entity heap is the legitimate adopter; freeing both slots
+        // sends the block home instead of leaving it stranded abandoned.
+        let mut adopter = Heap::new_entity();
+        let q = adopter.alloc(class);
+        assert_eq!(
+            q as usize & !BLOCK_MASK,
+            entity_block,
+            "the entity heap adopts the abandoned entity block"
+        );
+        unsafe {
+            adopter.free(q);
+            adopter.free(held);
+        }
+    }
+
+    /// End to end over the C ABI: the factory's population is disjoint
+    /// from `ll_malloc`'s, and `ll_free` routes each kind to its heap.
+    #[test]
+    fn entity_and_raw_allocations_are_segregated_end_to_end() {
+        let _g = crate::memory::block_pool::test_guard();
+        let e = unsafe { entity_alloc(40) };
+        let r = unsafe { crate::memory::stdapi::ll_malloc(40) };
+        assert!(!e.is_null() && !r.is_null());
+        unsafe {
+            assert_eq!((*HeapBlockHeader::of_ptr(e)).private.kind, BLOCK_KIND_ENTITY);
+            assert_eq!((*HeapBlockHeader::of_ptr(r)).private.kind, BLOCK_KIND_HEAP);
+        }
+        assert_ne!(
+            e as usize & !BLOCK_MASK,
+            r as usize & !BLOCK_MASK,
+            "the two populations never share a block"
+        );
+        // Both go home through the one size-less free.
+        unsafe {
+            crate::memory::stdapi::ll_free(e);
+            crate::memory::stdapi::ll_free(r);
+        }
     }
 
     /// Regression test for the pathology found via a real `larson.cpp`

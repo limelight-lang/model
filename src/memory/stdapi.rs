@@ -22,6 +22,9 @@
 //! - `8 KB .. block payload` → one pooled block (`BLOCK_KIND_LARGE`).
 //! - `> block payload` → an OS-direct block-aligned run
 //!   (`BLOCK_KIND_LARGE_RUN`), returned to the OS on free.
+//! - `BLOCK_KIND_ENTITY` (GC entities, allocated via
+//!   `heap::entity_alloc`, never by `ll_alloc`) → the thread's entity
+//!   heap; `ll_free` covers them so object teardown stays size-less.
 //!
 //! The `+256` payload offset is 256-aligned, so any alignment ≤ 256 is
 //! satisfied for free (covers malloc's 16-byte guarantee and
@@ -42,8 +45,8 @@
 use std::alloc::{GlobalAlloc, Layout};
 
 use crate::memory::block_pool::{
-    BLOCK_KIND_HEAP, BLOCK_KIND_LARGE, BLOCK_KIND_LARGE_RUN, BLOCK_MASK, BLOCK_PAYLOAD, BLOCK_SIZE,
-    BlockHeader, BlockPool, LINE_SIZE,
+    BLOCK_KIND_ENTITY, BLOCK_KIND_HEAP, BLOCK_KIND_LARGE, BLOCK_KIND_LARGE_RUN, BLOCK_MASK,
+    BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader, BlockPool, LINE_SIZE,
 };
 use crate::memory::heap::MAX_SMALL;
 
@@ -219,6 +222,16 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         }
         return unsafe { (*h).free(ptr) };
     }
+    // The entity population: same slot mechanics, its own heap instance.
+    // This is object teardown's path (`ll_object_die` → here), not the C
+    // `free` hot path, so the second compare costs nothing that matters.
+    if kind == BLOCK_KIND_ENTITY {
+        let h = crate::memory::heap::thread_entity_heap();
+        if h.is_null() {
+            return unsafe { crate::memory::heap::free_foreign(ptr) };
+        }
+        return unsafe { (*h).free(ptr) };
+    }
     unsafe { ll_free_large(block, kind) };
 }
 
@@ -247,7 +260,7 @@ unsafe fn ll_usable_size(ptr: *mut u8) -> usize {
     let block = block_of(ptr);
     let kind = unsafe { *(block as *const u32) };
     match kind {
-        BLOCK_KIND_HEAP => {
+        BLOCK_KIND_HEAP | BLOCK_KIND_ENTITY => {
             // Heap slot: the class size (upper bound on the request).
             use crate::memory::heap::SIZE_CLASSES;
             let ci = unsafe { *((block as *const u32).add(1)) } as usize;

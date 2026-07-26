@@ -12,6 +12,7 @@ pub mod object;
 pub mod promote;
 pub mod refcount;
 pub mod value;
+pub mod walk;
 
 pub use class::{Class, ClassBuilder};
 pub use intern::{LLString, intern, intern_str};

@@ -100,6 +100,34 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-07-26 — free-list link moved to slot bytes 8–15 (rc-walk step 1): **within noise**
+
+**Commit:** this one. Windows box, release, `cargo bench --bench
+standard -- our_heap`, stash-swap A→B→A in one sitting, first run of the
+session discarded as warm-up.
+
+**What changed on the measured path:** `FreeSlot::next` moved from slot
+bytes 0–7 to 8–15 (same cache line; one addressing offset in
+alloc-pop/free-push), `Heap` gained a cold `block_kind` field, `refill`
+gained one branch (entity-only zero pass, not taken by the raw heap).
+The entity population itself is off this benchmark's path entirely.
+
+| scenario | A1 (base) | B (new) | A2 (control) |
+|---|---|---|---|
+| larson (median) | 665.1 µs | 667.7 µs | 665.0 µs |
+| rptest (median) | 1.6485 ms | 1.6784 ms | 1.6500 ms |
+
+A1 ≈ A2 (0.01% / 0.1%): the run is valid. B vs A: larson +0.4%,
+rptest +1.8% — both inside this box's 1.5–3% noise floor (see Method),
+so **no resolvable difference**. Matches the prediction that bytes 8–15
+ride the same line the slot write already owns
+(`rfc/model/memory/heap-slot-allocation.md` argument unchanged).
+
+**Verdict: accepted.** Re-check rptest if a future session shows a
+drift in the same direction.
+
+---
+
 ## 2026-07-21 — `buffer_candidate` taken out of `ll_release`
 
 **Commit:** this one. **Evidence:** release IR, not a timing run — see

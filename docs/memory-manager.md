@@ -109,6 +109,13 @@ Regions are never unmapped in phase 1. `blocks_out` and
 the oracle for leak-shaped defects — Miri cannot see those, since a
 stranded block is still allocated memory.
 
+The pool also keeps the **region registry**: the base address of every
+region ever carved, append-only, indices stable for the life of the
+process. It exists for the entity walker (`rfc/model/gc/rc-walk.md`) —
+counting regions without recording their bases left nothing able to
+enumerate blocks. OS-direct `LARGE_RUN` allocations are not regions and
+stay outside it: huge objects are never walked, conservatively.
+
 ## Heap: small objects
 
 The mimalloc model. 32 size classes from 16 B to 8 KB, chosen to keep
@@ -122,10 +129,15 @@ at most one empty block held in reserve for instant reuse.
 virgin slot at `bump`. Both are O(1) and branch-only.
 
 The free list is **intrusive**: a free slot's `next` lives in the slot's
-own first 8 bytes. It therefore costs no side allocation and no metadata
-line — the link rides memory the caller is about to write anyway. A
-bitmap was tried instead and lost; the module doc in `heap.rs` records
-why, including the measurement.
+own bytes 8–15. It therefore costs no side allocation and no metadata
+line — the link rides a cache line the caller has just stopped touching.
+A bitmap was tried instead and lost; the module doc in `heap.rs` records
+why, including the measurement. The link lived in bytes 0–7 until
+rc-walk step 1 moved it: bytes 0–7 must survive a free untouched, because
+in an entity block they keep the dead entity's final refcount-0 header —
+the walker's occupancy test. One offset for both populations keeps a
+single code path, and the cache-line argument is unchanged (every class
+is ≥ 16 bytes).
 
 **Local free** finds the block by mask, confirms ownership, pushes the
 slot onto the block's free list and decrements `used`.
@@ -141,6 +153,38 @@ split was measured and changed nothing outside the noise floor, which is
 the expected result for a path whose tails run a few times in ten
 thousand calls (`dev/BENCHMARKS.md`, H11); it is kept for the shape, not
 for a number.
+
+### Entity blocks: the second population
+
+The heap runs **twice per thread** over the same code: a raw heap
+(`BLOCK_KIND_HEAP`) for C-ABI buffers and an entity heap
+(`BLOCK_KIND_ENTITY`) for GC entities, held as one `repr(C)` pair behind
+the TLS slot — the raw heap first, so `ll_malloc`'s path still pays a
+single TEB read and no offset. Segregation is the prerequisite of any
+walking collector (`rfc/model/gc/rc-walk.md`): a walker reads every
+occupied slot's first 8 bytes as an `RcHeader`, and a raw 40-byte buffer
+sharing a block with 40-byte objects would make that a wild read.
+
+Three rules distinguish the entity population:
+
+- **Commissioning zeroes slot headers**: refill writes 8 zero bytes per
+  slot before the block serves, whatever the block held before. With the
+  factory publishing an object's header *last* (one 8-byte store), a
+  slot therefore reads `refcount 0` from commissioning until the instant
+  it is a fully formed entity — the walker's three-way classification
+  never meets bytes that lie.
+- **A free leaves bytes 0–7 untouched** (the link is at 8–15): the dead
+  entity's final `refcount 0` header *is* the vacancy stamp. There is no
+  teardown stamp to forget.
+- **Abandoned lists are per population**: adoption never moves a block
+  across populations, so a raw heap can never hand out entity-block
+  slots.
+
+`for_each_entity_slot` (the census primitive under `walk.rs`) enumerates
+the registry's regions, skips every non-entity block, and visits
+occupied slots bounded by each block's bump cursor. Entities past the
+small-object range fall back to the large path and stay outside the walk
+— conservative, like every other un-walked region.
 
 ### Cross-thread free
 
@@ -224,8 +268,12 @@ property slots. `Class` descriptors are immortal and carry their vtable
 inline, after the fixed fields.
 
 **Creation is two steps, and only the second owes a destructor.**
-`ll_object_new` is the factory: it allocates and stamps the header, and
-that is all. `ll_object_constructed` is called once the user constructor
+`ll_object_new` is the factory: it allocates — `GcHeap`/`LongLived` from
+the entity population, arena and immortal from theirs — zero-fills the
+body, writes the class, and publishes the header **last**, as one 8-byte
+store (`rfc/model/gc/rc-walk.md`: until that store the slot reads
+refcount 0, so a walker classifies it as free rather than reading a
+half-built entity). That is all it does. `ll_object_constructed` is called once the user constructor
 has returned successfully — it sets the header's `DESTRUCTOR_PENDING` flag
 and, for an arena object, writes the destructor-log record. Teardown
 dispatches on that flag, never on the class, so an object whose

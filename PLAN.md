@@ -95,8 +95,19 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
 
 ### Phase B — GC completeness (tails deferred in the old plan)
 
+- [x] **rc-walk build step 1** (2026-07-26) — entity blocks segregated
+  from raw C-ABI allocations (`BLOCK_KIND_ENTITY`, second `Heap` per
+  thread), region registry with stable indices, free-list link moved to
+  slot bytes 8–15, slot headers zeroed at block commissioning, factory
+  publishes the header last as one 8-byte store, kind-dispatched tracer
+  + heap census (`src/walk.rs`). Design machine-checked in the rfc repo
+  (`model/gc/rc-walk.md` + proof docs). Next rungs: step 2 (synchronous
+  whole-heap walk + exact-test drain), step 3 (collector thread, epochs,
+  condemnation, message queue).
 - [ ] Immix-shaped `GcHeap` allocator → line recycling of retained blocks
-  + sparse-block evacuation at reset (`arena-reset.md`).
+  + sparse-block evacuation at reset (`arena-reset.md`). **Stale**: Immix
+  was dropped from the plan 2026-07-25; this line awaits the arena-reset
+  redesign write-up.
 - [x] Run `__destruct` of cyclically-dead objects (2026-07-25) — Zend-style
   discipline (`run_cyclic_destructors`): restore the white set's real
   counts, guard, run each `__destruct` once through the ordinary teardown,

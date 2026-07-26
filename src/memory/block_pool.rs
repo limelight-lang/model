@@ -33,7 +33,7 @@ pub const LINE_SIZE: usize = 256;
 pub const BLOCK_PAYLOAD: usize = BLOCK_SIZE - LINE_SIZE;
 
 pub const REGION_SIZE: usize = 2 * 1024 * 1024;
-const BLOCKS_PER_REGION: usize = REGION_SIZE / BLOCK_SIZE;
+pub(crate) const BLOCKS_PER_REGION: usize = REGION_SIZE / BLOCK_SIZE;
 
 const THREAD_CACHE_CAPACITY: usize = 8;
 const REFILL_BATCH: usize = 4;
@@ -54,6 +54,13 @@ pub const BLOCK_KIND_BUFFER: u32 = 6;
 /// (`rfc/model/memory/arena-reset.md`, dense-block retention). Freed
 /// survivors are no-ops until Immix line recycling lands.
 pub const BLOCK_KIND_RETAINED: u32 = 7;
+/// Entity block: same size-class layout as `BLOCK_KIND_HEAP`, but its
+/// slots hold GC entities (header at offset 0) and only these blocks are
+/// walked by the cycle collector (`rfc/model/gc/rc-walk.md`,
+/// "Prerequisite: entity blocks are segregated"). A raw C-ABI buffer must
+/// never land in one: the walker reads every occupied slot's first 8
+/// bytes as an `RcHeader`.
+pub const BLOCK_KIND_ENTITY: u32 = 8;
 
 /// Header in the first line of every block.
 ///
@@ -137,6 +144,15 @@ pub struct BlockPool {
     /// occupancy. Bumped only on the (rare) block operations, never on
     /// object allocation: the telemetry design taxes no hot path.
     blocks_out: AtomicUsize,
+    /// Region registry: the base address of every 2 MB region ever
+    /// carved. The pool used to count regions without recording their
+    /// bases, so nothing could enumerate blocks — which the entity
+    /// walker must (`rfc/model/gc/rc-walk.md`, "a region registry").
+    /// Append-only and regions are never unmapped (phase 1), so an index
+    /// is a stable handle for as long as the process lives. OS-direct
+    /// `BLOCK_KIND_LARGE_RUN` allocations are not regions and are not
+    /// here — huge objects stay outside the walk, conservatively.
+    regions: Mutex<Vec<usize>>,
 }
 
 static GLOBAL_POOL: BlockPool = BlockPool {
@@ -145,6 +161,7 @@ static GLOBAL_POOL: BlockPool = BlockPool {
     }),
     regions_carved: AtomicUsize::new(0),
     blocks_out: AtomicUsize::new(0),
+    regions: Mutex::new(Vec::new()),
 };
 
 /// Serializes region carving only (rare path).
@@ -189,6 +206,18 @@ impl BlockPool {
     /// point is that no per-object path pays for stats.
     pub fn blocks_out(&self) -> usize {
         self.blocks_out.load(Ordering::Relaxed)
+    }
+
+    /// Snapshot of the region registry: every 2 MB region base, in carve
+    /// order. Indices are stable handles (append-only, never unmapped).
+    /// Cold: a clone of a handful of words under the registry lock.
+    pub fn regions(&self) -> Vec<*mut u8> {
+        self.regions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|&base| base as *mut u8)
+            .collect()
     }
 
     /// Get a free block: thread cache → global stack → carve a region.
@@ -320,6 +349,10 @@ impl BlockPool {
         if region.is_null() {
             return false;
         }
+        // Register before any block is handed out: the walker may
+        // enumerate the registry at any time, and a block it cannot map
+        // back to a region would be invisible to the census.
+        self.regions.lock().unwrap().push(region as usize);
 
         for i in 0..BLOCKS_PER_REGION {
             let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut BlockHeader;
@@ -402,6 +435,23 @@ mod tests {
             BlockHeader::end(block) as usize - block as usize,
             BLOCK_SIZE
         );
+
+        pool.put(block);
+    }
+
+    #[test]
+    fn region_registry_covers_every_pooled_block() {
+        let _g = test_guard();
+        let pool = BlockPool::global();
+        let block = pool.get();
+
+        let regions = pool.regions();
+        assert!(!regions.is_empty(), "carving must register the region");
+        let covered = regions.iter().any(|&r| {
+            let base = r as usize;
+            (block as usize) >= base && (block as usize) < base + REGION_SIZE
+        });
+        assert!(covered, "a pooled block must fall inside a registered region");
 
         pool.put(block);
     }
