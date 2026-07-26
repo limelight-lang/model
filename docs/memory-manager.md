@@ -303,6 +303,14 @@ inside `ll_release`, mid-mutation, where refcounts and edges disagree;
 the collection fires at a clean point, an explicit
 `ll_gc_collect_cycles` or the compiler's `ll_gc_maybe_collect` poll.
 
+A second, whole-heap collector exists as `walk::collect_cycles`
+(rc-walk build step 2, `rfc/model/gc/rc-walk.md`): a synchronous walk of
+the entity blocks with roots *computed* (`RC − IN > 0`) rather than
+buffered, and every verdict re-proven by the exact test before anything
+is freed. It needs no candidate buffer and no barrier and today serves
+as a leak detector and the exact test's correctness harness; the
+concurrent rc-walk collector (build step 3) grows out of it.
+
 ### The store barrier
 
 A reference store the compiler could not resolve statically is not one

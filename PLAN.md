@@ -101,9 +101,17 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   slot bytes 8–15, slot headers zeroed at block commissioning, factory
   publishes the header last as one 8-byte store, kind-dispatched tracer
   + heap census (`src/walk.rs`). Design machine-checked in the rfc repo
-  (`model/gc/rc-walk.md` + proof docs). Next rungs: step 2 (synchronous
-  whole-heap walk + exact-test drain), step 3 (collector thread, epochs,
-  condemnation, message queue).
+  (`model/gc/rc-walk.md` + proof docs).
+- [x] **rc-walk build step 2** (2026-07-26) — `walk::collect_cycles`, the
+  synchronous whole-heap collection: Phase 1 walk over entity blocks,
+  computed roots (`RC − IN > 0`), BFS mark, weakly-connected garbage
+  components, and the full Phase 4 drain inline — exact test, guard,
+  destructors once, guard-discounted re-verify (F1), sever
+  (`object::sever_counted_children`) + un-guard through ordinary
+  teardown. A whole-heap leak detector needing no candidate buffer, and
+  the exact test's correctness harness. Next rung: step 3 (collector
+  thread, epoch/condemned bytes, handshake filter, message queue,
+  deferred-free bit).
 - [ ] Immix-shaped `GcHeap` allocator → line recycling of retained blocks
   + sparse-block evacuation at reset (`arena-reset.md`). **Stale**: Immix
   was dropped from the plan 2026-07-25; this line awaits the arena-reset

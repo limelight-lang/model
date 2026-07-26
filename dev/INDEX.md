@@ -30,10 +30,12 @@ versions live in `docs/history/`, marked at the top.
 
 ## Entry points
 
-- Entity walking (rc-walk build step 1): `src/walk.rs` — kind-dispatched
-  tracer + heap census over `memory::heap::for_each_entity_slot`; entity
-  blocks and the region registry are in `heap.rs`/`block_pool.rs`
-  (design: `rfc/model/gc/rc-walk.md`; decision entry 2026-07-26).
+- Entity walking (rc-walk build steps 1–2): `src/walk.rs` —
+  kind-dispatched tracer, heap census, and `walk::collect_cycles` (the
+  synchronous whole-heap collection with the Phase-4 exact-test drain)
+  over `memory::heap::for_each_entity_slot`; entity blocks and the
+  region registry are in `heap.rs`/`block_pool.rs` (design:
+  `rfc/model/gc/rc-walk.md`; decision entry 2026-07-26).
 - C ABI surface: `src/memory/context.rs` (arena + context),
   `src/object.rs` (`ll_object_new` factory, `ll_object_constructed` —
   the end-of-construction hook that registers the destructor),

@@ -263,6 +263,54 @@ pub(crate) unsafe fn for_each_counted_child(obj: *mut Object, mut visit: impl Fn
     }
 }
 
+/// Sever this object's counted children: null each counted slot and
+/// collect the displaced children into `displaced` — **without dropping
+/// them**. The "sever" half of the rc-walk drain's "sever and free"
+/// (`rfc/model/gc/rc-walk.md`, Phase 4); the caller owns the drops, and
+/// owes one per collected entry.
+///
+/// Deliberately not drop-inline: a dropped external child's teardown
+/// runs arbitrary `__destruct` code, and the drain must not let any user
+/// code run between severing and freeing its members — deferring the
+/// drops until the members are gone closes the resurrected-hollow-member
+/// window structurally (see `walk::collect_cycles`). Afterwards the
+/// ordinary teardown that follows the un-guard finds the fields already
+/// null and releases nothing twice.
+///
+/// The second occurrence of the slot strides beside
+/// [`for_each_counted_child`], deliberately not folded into it: the
+/// walker exposes children and hides slot lvalues by contract (a store
+/// goes through the barrier); this is teardown machinery and needs the
+/// lvalue. A third occurrence is the point to abstract.
+///
+/// # Safety
+/// `obj` must be a live object whose slots are readable and writable.
+pub(crate) unsafe fn sever_counted_children(obj: *mut Object, displaced: &mut Vec<*mut RcHeader>) {
+    let cls = unsafe { (*obj).class() };
+    let base = obj as *mut u8;
+
+    for run in cls.ptr_runs() {
+        for i in 0..run.count {
+            let slot = unsafe { base.add((run.offset + i * 8) as usize) } as *mut *mut RcHeader;
+            let child = unsafe { slot.read() };
+            if !child.is_null() {
+                unsafe { slot.write(std::ptr::null_mut()) };
+                displaced.push(child);
+            }
+        }
+    }
+    for run in cls.box_runs() {
+        for i in 0..run.count {
+            let slot = unsafe { base.add((run.offset + i * 16) as usize) } as *mut Value;
+            let v = unsafe { slot.read() };
+            if v.is_refcounted() {
+                unsafe { slot.write(Value::null()) };
+                displaced.push(v.entity_ptr());
+            }
+        }
+    }
+}
+
 /// Phase 1 alone: run `__destruct` exactly once (sets the guard bit).
 /// Returns `false` when there was nothing to run. Arena reset uses
 /// this directly — dying arena objects get only phase 1, their memory
