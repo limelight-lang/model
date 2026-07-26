@@ -117,17 +117,11 @@ pub unsafe fn ll_object_new(
         let body = (obj as *mut u8).add(size_of::<Object>());
         core::ptr::write_bytes(body, 0, size - size_of::<Object>());
         (*obj).class = class;
-        // The header is published LAST, as one 8-byte store — never
-        // refcount and flags separately (`rfc/model/gc/rc-walk.md`,
-        // Phase 1: the carve-to-first-store window). Until this store the
-        // slot reads refcount 0 — commissioning zeroed it, or the previous
-        // occupant's death left it — so a walker classifies it as free
-        // rather than reading a half-built entity. Becomes a relaxed
-        // atomic store when the collector thread arrives (build step 3).
-        debug_assert_eq!(obj as usize % 8, 0);
-        (obj as *mut u64).write(core::mem::transmute::<RcHeader, u64>(RcHeader::new(
-            category, extra,
-        )));
+        // The header is published LAST (`publish_header`: one 8-byte
+        // store, relaxed atomic under rc-walk). Until it lands the slot
+        // reads refcount 0, so a walker classifies it as free rather
+        // than reading a half-built entity.
+        crate::refcount::publish_header(obj as *mut RcHeader, RcHeader::new(category, extra));
     }
 
     // The destructor is NOT registered here. The factory only produces

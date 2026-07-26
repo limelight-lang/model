@@ -89,7 +89,9 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
 
 ## Key decisions
 
-`dev/DECISIONS.md` — 2026-07-26: entity blocks as a second heap
+`dev/DECISIONS.md` — 2026-07-26: GC strategy is the build-time `rc-walk`
+cargo feature (the two collectors share header bits; verification runs
+both configurations); entity blocks as a second heap
 population (rc-walk step 1). 2026-07-20: arena handle as a raw pointer;
 trailing inline data through raw pointers; block header split by access
 rule; cold concurrent structures take a lock rather than a CAS loop;

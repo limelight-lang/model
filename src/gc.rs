@@ -69,7 +69,12 @@ pub const CANDIDATE_THRESHOLD: usize = 10_000;
 /// The fill that arms a collection. In production this folds to the
 /// constant above (zero cost); under `cfg(test)` it is lowerable so a test
 /// can arm at a precise point.
+// In an `rc-walk` build nothing feeds the candidate buffer (`ll_release`
+// computes no candidates — the walk does), so the feeding half of the
+// rc-trace machinery is expectedly dead there while the module stays
+// compiled as the registered alternative strategy.
 #[cfg(not(test))]
+#[cfg_attr(feature = "rc-walk", expect(dead_code))]
 #[inline(always)]
 fn candidate_threshold() -> usize {
     CANDIDATE_THRESHOLD
@@ -81,16 +86,17 @@ thread_local! {
         const { std::cell::Cell::new(CANDIDATE_THRESHOLD) };
 }
 #[cfg(test)]
+#[cfg_attr(feature = "rc-walk", expect(dead_code))]
 fn candidate_threshold() -> usize {
     TEST_THRESHOLD.with(|c| c.get())
 }
-#[cfg(test)]
+#[cfg(all(test, not(feature = "rc-walk")))]
 pub(crate) fn set_test_threshold(n: usize) {
     TEST_THRESHOLD.with(|c| c.set(n));
 }
 
 /// Tests only: make the candidate buffer refuse to grow.
-#[cfg(test)]
+#[cfg(all(test, not(feature = "rc-walk")))]
 pub(crate) static FORCE_BUFFER_REFUSAL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -185,6 +191,8 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
 ///
 /// # Safety
 /// `entity` must be live.
+// Dead under `rc-walk` — see `candidate_threshold`'s note.
+#[cfg_attr(feature = "rc-walk", expect(dead_code))]
 #[inline(never)]
 pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
     if unsafe { (*entity).flags } & CYCLE_COLLECTOR_BUFFERED != 0 {
@@ -195,7 +203,7 @@ pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
         // Fault injection, tests only: a refused `Vec` growth cannot be
         // provoked on demand, and an untested failure path is a guess
         // (same reasoning as `block_pool::FORCE_OOM`).
-        #[cfg(test)]
+        #[cfg(all(test, not(feature = "rc-walk")))]
         if FORCE_BUFFER_REFUSAL.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
@@ -531,7 +539,14 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     }
 }
 
-#[cfg(test)]
+// The whole module is the rc-trace strategy, and these are its tests:
+// they feed the candidate buffer through `ll_release`, which an `rc-walk`
+// build compiles without the buffering tail — there the collector is the
+// walk, tested in `walk.rs`. Strategy selection is build-time
+// (`rfc/model/gc/strategies.md`); each strategy's tests run in the
+// configuration where that strategy is wired, and the default
+// configuration keeps running these.
+#[cfg(all(test, not(feature = "rc-walk")))]
 mod tests {
     use super::*;
     use crate::class::ClassBuilder;

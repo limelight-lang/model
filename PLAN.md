@@ -114,9 +114,16 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   destructors once, guard-discounted re-verify (F1), sever
   (`object::sever_counted_children`) + un-guard through ordinary
   teardown. A whole-heap leak detector needing no candidate buffer, and
-  the exact test's correctness harness. Next rung: step 3 (collector
-  thread, epoch/condemned bytes, handshake filter, message queue,
-  deferred-free bit).
+  the exact test's correctness harness.
+- [~] **rc-walk build step 3** — the concurrent collector, in five
+  commits. *Commit 1 landed 2026-07-26*: the `rc-walk` cargo feature
+  (build-time strategy selection — the collectors share header bits,
+  `dev/DECISIONS.md`), epoch + condemned bytes at header bytes 6–7,
+  the retain/release condemned mask, relaxed-atomic header accesses
+  (asm-verified: no RMW, no call tail in release), and the
+  condemned-never-dies-ordinarily rule (F5). Still owed: deferred-free
+  queue (2), checkpoint + verdict messages (3), the collector thread
+  with Phases 1–3 (4), adversarial DC tests (5).
 - ~~Immix-shaped `GcHeap` allocator~~ — **dropped entirely 2026-07-25**
   (confirmed 2026-07-27): no line recycling, no reuse of retained-block
   holes. Segregated entity blocks solved what Immix was drafted for;

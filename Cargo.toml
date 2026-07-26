@@ -28,6 +28,17 @@ probe-counters = []
 # freeing an object that is still referenced.
 checked-refcount = []
 
+# Select the rc-walk concurrent cycle collector instead of rc-trace
+# (`rfc/model/gc/rc-walk.md`). Strategy selection is build-time by design
+# (`rfc/model/gc/strategies.md`): the two collectors claim the same top
+# half of the header flags word — rc-trace stores its candidate index in
+# bits 15-31, rc-walk its epoch byte (16-23) and condemned byte (24-31) —
+# and rc-walk obliges every retain/release to clear the condemned byte,
+# which would corrupt a live candidate index. With this feature on, the
+# candidate buffer is never fed and header accesses compile as relaxed
+# atomics (another thread — the collector — reads them).
+rc-walk = []
+
 [dependencies]
 
 [dev-dependencies]

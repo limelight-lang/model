@@ -2,7 +2,12 @@
 //!
 //! Layout and flag bits per `rfc/model/classes.md`; retain/release fast
 //! path per `rfc/model/lowering.md`. Phase 1: one thread per request, no
-//! atomics (as in Zend).
+//! atomics (as in Zend). Under the `rc-walk` feature the header accesses
+//! compile as **relaxed atomics** instead — same instructions on x86-64
+//! and AArch64, but the collector thread reads headers concurrently and
+//! without the annotation that race is undefined behaviour
+//! (`rfc/model/gc/rc-walk.md`, "The two header bytes"). Still no atomic
+//! read-modify-write anywhere.
 
 /// Mask of the memory-category *field* — flags bits 0-1.
 pub const MEMORY_CATEGORY_MASK: u32 = 0b11;
@@ -126,6 +131,12 @@ pub fn is_object(flags: u32) -> bool {
 /// `gc_info` for the same reason: without it, forgetting a candidate
 /// means a linear scan of the whole buffer. Zero is always safe — the
 /// collector falls back to that scan (`crate::gc::forget_candidate`).
+///
+/// **rc-trace only.** In an `rc-walk` build the field is dead — nothing
+/// ever feeds the candidate buffer — and its bits belong to the epoch
+/// and condemned bytes below. The two strategies cannot share the top
+/// half of the word, which is why selection is a build-time feature
+/// (`rfc/model/gc/strategies.md`).
 pub const CANDIDATE_INDEX_SHIFT: u32 = 15;
 pub const CANDIDATE_INDEX_MASK: u32 = 0x0001_FFFF << CANDIDATE_INDEX_SHIFT;
 /// Largest buffer position the field can hold. Beyond it the index is
@@ -133,8 +144,45 @@ pub const CANDIDATE_INDEX_MASK: u32 = 0x0001_FFFF << CANDIDATE_INDEX_SHIFT;
 /// single collection point, and the fallback costs only speed.
 pub const CANDIDATE_INDEX_MAX: usize = 0x0001_FFFF - 1;
 
+/// rc-walk's **epoch byte** — header byte 6, flags bits 16-23
+/// (`rfc/model/gc/rc-walk.md`, "The two header bytes"). The collector's
+/// maturity stamp: 0 on every fresh header (the factory writes the flags
+/// word with this byte zero at no extra cost), the current epoch number
+/// once the walker has met the entity. Written by the **collector only**,
+/// as a plain byte store; the mutator's whole-word header stores may bury
+/// a concurrent stamp, which costs one epoch of latency, never a verdict.
+#[cfg(feature = "rc-walk")]
+pub const EPOCH_BYTE_SHIFT: u32 = 16;
+#[cfg(feature = "rc-walk")]
+pub const EPOCH_BYTE_MASK: u32 = 0xFF << EPOCH_BYTE_SHIFT;
+
+/// rc-walk's **condemned byte** — header byte 7, flags bits 24-31. The
+/// collector writes 1 to condemn; every mutator `retain`/`release`
+/// clears it with one masking operation on the word it already loads and
+/// stores. Different addresses from the refcount, plain stores on both
+/// sides — no atomic read-modify-write anywhere. The byte is Phase 3's
+/// filter, not the safety gate: a lost update in either direction costs
+/// a wasted message or a missed epoch, never a live entity.
+#[cfg(feature = "rc-walk")]
+pub const CONDEMNED_BYTE_SHIFT: u32 = 24;
+#[cfg(feature = "rc-walk")]
+pub const CONDEMNED_BYTE_MASK: u32 = 0xFF << CONDEMNED_BYTE_SHIFT;
+
+#[cfg(all(feature = "rc-walk", not(target_endian = "little")))]
+compile_error!(
+    "rc-walk handles the header as one 8-byte word with refcount in the \
+     low half; the byte offsets 6-7 of the epoch and condemned bytes \
+     assume a little-endian target"
+);
+
 /// The 8-byte header at offset 0 of every heap entity.
-#[repr(C)]
+///
+/// Aligned to 8: the factory publishes it as one 8-byte store, and under
+/// `rc-walk` every access compiles as a relaxed atomic on the whole word
+/// — both need the address 8-aligned. Every real entity already was (the
+/// smallest heap slot is 16 bytes); the attribute makes stack-built
+/// headers in tests honest too.
+#[repr(C, align(8))]
 pub struct RcHeader {
     pub refcount: u32,
     pub flags: u32,
@@ -165,37 +213,122 @@ impl RcHeader {
     }
 }
 
+/// Publish a fully-built entity's header as **one 8-byte store** — never
+/// refcount and flags separately (`rfc/model/gc/rc-walk.md`, Phase 1: a
+/// torn pair would expose garbage kind bits behind a live count). Until
+/// this store the slot reads refcount 0 — block commissioning zeroed it,
+/// or the previous occupant's death left it — so a walker classifies the
+/// slot as free rather than reading a half-built entity. Under `rc-walk`
+/// the store is a relaxed atomic: the collector thread reads headers
+/// concurrently, and without the annotation the race is undefined
+/// behaviour.
+///
+/// # Safety
+/// `slot` must be 8-aligned, writable, and not yet published as a live
+/// entity (the body must already be fully formed).
+#[inline]
+pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
+    debug_assert_eq!(slot as usize % 8, 0);
+    let word = unsafe { core::mem::transmute::<RcHeader, u64>(header) };
+    #[cfg(not(feature = "rc-walk"))]
+    unsafe {
+        (slot as *mut u64).write(word)
+    };
+    #[cfg(feature = "rc-walk")]
+    unsafe {
+        (*(slot as *const core::sync::atomic::AtomicU64))
+            .store(word, core::sync::atomic::Ordering::Relaxed)
+    };
+}
+
+/// Relaxed-atomic load of the whole header word: refcount in the low
+/// half, flags in the high (little-endian, enforced above). Same
+/// instruction as a plain load on x86-64 and AArch64; the annotation is
+/// what makes the cross-thread race with the collector's byte stores
+/// defined (`rfc/model/gc/rc-walk.md`, "The two header bytes").
+#[cfg(feature = "rc-walk")]
+#[inline]
+unsafe fn header_word_load(header: *mut RcHeader) -> u64 {
+    unsafe {
+        (*(header as *const core::sync::atomic::AtomicU64))
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Relaxed-atomic store of the whole header word; pair of
+/// [`header_word_load`].
+#[cfg(feature = "rc-walk")]
+#[inline]
+unsafe fn header_word_store(header: *mut RcHeader, word: u64) {
+    unsafe {
+        (*(header as *const core::sync::atomic::AtomicU64))
+            .store(word, core::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// Increment the reference count.
 ///
 /// Fast path per `rfc/model/lowering.md`: one branch on the category
 /// bits covers arenas and immortals. COW entities always count
 /// (`rfc/model/values.md`) — their category is checked only on release.
 ///
+/// Under `rc-walk` the whole header is loaded and stored as one relaxed
+/// atomic word and the store clears the condemned byte — the mutator's
+/// entire per-operation obligation to that collector
+/// (`rfc/model/gc/rc-walk.md`, "What the mutator pays").
+///
 /// # Safety
 /// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
-    let header = unsafe { &mut *header };
+    #[cfg(not(feature = "rc-walk"))]
+    {
+        let header = unsafe { &mut *header };
 
-    if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
-        return; // arena or immortal, not COW: not counted
+        if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
+            return; // arena or immortal, not COW: not counted
+        }
+
+        if header.memory_category() == MemoryCategory::Immortal {
+            return; // immortal COW entities are no-ops too
+        }
+
+        // With `checked-refcount`, saturate rather than wrap. Wrapping to
+        // zero would make the next release think the entity died and free it
+        // while it is still referenced. Saturating leaks it instead, which is
+        // the safe direction. See the feature's note in `Cargo.toml` for why
+        // this is optional and not a default.
+        #[cfg(feature = "checked-refcount")]
+        if header.refcount == u32::MAX {
+            return;
+        }
+
+        header.refcount += 1;
     }
 
-    if header.memory_category() == MemoryCategory::Immortal {
-        return; // immortal COW entities are no-ops too
-    }
+    #[cfg(feature = "rc-walk")]
+    {
+        let word = unsafe { header_word_load(header) };
+        let refcount = word as u32;
+        let flags = (word >> 32) as u32;
 
-    // With `checked-refcount`, saturate rather than wrap. Wrapping to
-    // zero would make the next release think the entity died and free it
-    // while it is still referenced. Saturating leaks it instead, which is
-    // the safe direction. See the feature's note in `Cargo.toml` for why
-    // this is optional and not a default.
-    #[cfg(feature = "checked-refcount")]
-    if header.refcount == u32::MAX {
-        return;
-    }
+        if flags & MEMORY_CATEGORY_MASK != 0 && flags & COW == 0 {
+            return; // arena or immortal, not COW: not counted
+        }
 
-    header.refcount += 1;
+        if MemoryCategory::from_flags(flags) == MemoryCategory::Immortal {
+            return; // immortal COW entities are no-ops too
+        }
+
+        // Saturation rationale as in the rc-trace arm above.
+        #[cfg(feature = "checked-refcount")]
+        if refcount == u32::MAX {
+            return;
+        }
+
+        let flags = (flags & !CONDEMNED_BYTE_MASK) as u64;
+        unsafe { header_word_store(header, flags << 32 | (refcount + 1) as u64) };
+    }
 }
 
 /// Decrement the reference count. Returns `true` when the entity died
@@ -204,56 +337,96 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 /// (the kind switch), or `ll_object_die` directly where the caller
 /// statically knows an object.
 ///
+/// Under `rc-walk` there is no candidate buffering — candidates are
+/// computed by the collector's walk, which is the design's advertised
+/// net reduction on this path — and **a condemned entity never dies on
+/// the ordinary path**: a release reaching zero on an entity whose
+/// condemned byte is set returns `false`, the count stays zero, and the
+/// entity belongs to the Phase 4 drain, which finds it balanced
+/// (`0 = 0`), runs its still-unrun destructor and frees it exactly once
+/// (`rfc/model/gc/rc-walk.md`, Phase 4; finding F5). The byte is
+/// observed in the word this release already loaded, before its own
+/// masking clears it.
+///
 /// # Safety
 /// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
-    let header = unsafe { &mut *entity };
-
-    if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
-        return false;
-    }
-
-    if header.memory_category() == MemoryCategory::Immortal {
-        return false;
-    }
-
-    debug_assert!(header.refcount > 0, "release of dead entity");
-    header.refcount -= 1;
-
-    if header.refcount == 0 {
-        // Lifetime reaction depends on category: GC heap frees, arenas
-        // do nothing (arena reset reclaims).
-        return header.memory_category() == MemoryCategory::GcHeap;
-    }
-
-    // Non-zero decrement on a heap object: a possible cycle root
-    // (`ll_buffer_cycle_root` of rfc/model/lowering.md). Only objects
-    // buffer — only they carry traceable reference slots. In a NoGC or
-    // pure-RC build this call compiles away with the strategy.
-    //
-    // The "already buffered" test is here rather than only inside
-    // `buffer_candidate`, because `flags` is in a register on this line
-    // and an object is buffered at most once per collection: without it
-    // every later decrement of the same object paid a call and a reload
-    // to be told nothing had changed. The callee keeps its own copy of
-    // the test — it has other callers, and this one is an optimization,
-    // not the invariant.
-    // Object kind is the zero kind field, so "an object that is not yet
-    // buffered" is exactly "kind bits and buffered bit all clear" — one
-    // masked compare, the same single test the old `ENTITY_OBJECT` bit gave.
-    if header.memory_category() == MemoryCategory::GcHeap
-        && header.flags & (ENTITY_KIND_MASK | CYCLE_COLLECTOR_BUFFERED) == 0
+    #[cfg(not(feature = "rc-walk"))]
     {
-        // `entity`, not `header`: the buffered pointer outlives this call
-        // and the collector casts it back to `*mut Object` to read the
-        // class word and the property slots. A pointer derived from
-        // `&mut RcHeader` carries provenance over the 8-byte header only,
-        // so every one of those reads would be out of bounds of the tag
-        // it came from (audit `class.rs:115`, same family).
-        unsafe { crate::gc::buffer_candidate(entity) };
+        let header = unsafe { &mut *entity };
+
+        if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
+            return false;
+        }
+
+        if header.memory_category() == MemoryCategory::Immortal {
+            return false;
+        }
+
+        debug_assert!(header.refcount > 0, "release of dead entity");
+        header.refcount -= 1;
+
+        if header.refcount == 0 {
+            // Lifetime reaction depends on category: GC heap frees, arenas
+            // do nothing (arena reset reclaims).
+            return header.memory_category() == MemoryCategory::GcHeap;
+        }
+
+        // Non-zero decrement on a heap object: a possible cycle root
+        // (`ll_buffer_cycle_root` of rfc/model/lowering.md). Only objects
+        // buffer — only they carry traceable reference slots. In a NoGC or
+        // pure-RC build this call compiles away with the strategy.
+        //
+        // The "already buffered" test is here rather than only inside
+        // `buffer_candidate`, because `flags` is in a register on this line
+        // and an object is buffered at most once per collection: without it
+        // every later decrement of the same object paid a call and a reload
+        // to be told nothing had changed. The callee keeps its own copy of
+        // the test — it has other callers, and this one is an optimization,
+        // not the invariant.
+        // Object kind is the zero kind field, so "an object that is not yet
+        // buffered" is exactly "kind bits and buffered bit all clear" — one
+        // masked compare, the same single test the old `ENTITY_OBJECT` bit gave.
+        if header.memory_category() == MemoryCategory::GcHeap
+            && header.flags & (ENTITY_KIND_MASK | CYCLE_COLLECTOR_BUFFERED) == 0
+        {
+            // `entity`, not `header`: the buffered pointer outlives this call
+            // and the collector casts it back to `*mut Object` to read the
+            // class word and the property slots. A pointer derived from
+            // `&mut RcHeader` carries provenance over the 8-byte header only,
+            // so every one of those reads would be out of bounds of the tag
+            // it came from (audit `class.rs:115`, same family).
+            unsafe { crate::gc::buffer_candidate(entity) };
+        }
+        false
     }
-    false
+
+    #[cfg(feature = "rc-walk")]
+    {
+        let word = unsafe { header_word_load(entity) };
+        let refcount = word as u32;
+        let flags = (word >> 32) as u32;
+
+        if flags & MEMORY_CATEGORY_MASK != 0 && flags & COW == 0 {
+            return false;
+        }
+
+        if MemoryCategory::from_flags(flags) == MemoryCategory::Immortal {
+            return false;
+        }
+
+        debug_assert!(refcount > 0, "release of dead entity");
+        let refcount = refcount - 1;
+        let stored = (flags & !CONDEMNED_BYTE_MASK) as u64;
+        unsafe { header_word_store(entity, stored << 32 | refcount as u64) };
+
+        if refcount == 0 && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap {
+            // Condemned: this death belongs to the drain (doc above).
+            return flags & CONDEMNED_BYTE_MASK == 0;
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -339,7 +512,10 @@ mod tests {
     #[test]
     fn header_is_8_bytes_at_offset_zero() {
         assert_eq!(size_of::<RcHeader>(), 8);
-        assert_eq!(align_of::<RcHeader>(), 4);
+        // 8, not 4, since the rc-walk groundwork: the header is published
+        // and (under rc-walk) accessed as one 8-byte word, which demands
+        // an 8-aligned address. Every real slot already satisfied it.
+        assert_eq!(align_of::<RcHeader>(), 8);
         assert_eq!(core::mem::offset_of!(RcHeader, refcount), 0);
         assert_eq!(core::mem::offset_of!(RcHeader, flags), 4);
     }
@@ -369,6 +545,79 @@ mod tests {
         assert_eq!(ENTITY_KIND_MASK & CANDIDATE_INDEX_MASK, 0, "kind and index are disjoint");
         assert_eq!(CANDIDATE_INDEX_MASK >> 15 << 15, CANDIDATE_INDEX_MASK, "index reaches the top bit");
         assert_eq!(0x8000_0000u32 & CANDIDATE_INDEX_MASK, 0x8000_0000, "and includes bit 31");
+    }
+
+    /// The rc-walk halves of the flags word: epoch byte at header byte 6,
+    /// condemned byte at header byte 7 — byte-addressable, so the
+    /// collector can write each with a plain byte store while the mutator
+    /// stores the whole word (`rfc/model/gc/rc-walk.md`).
+    #[cfg(feature = "rc-walk")]
+    #[test]
+    fn rc_walk_bytes_sit_at_header_bytes_six_and_seven() {
+        assert_eq!(EPOCH_BYTE_MASK, 0xFF << 16, "epoch byte: flags bits 16-23");
+        assert_eq!(CONDEMNED_BYTE_MASK, 0xFF << 24, "condemned byte: bits 24-31");
+        assert_eq!(EPOCH_BYTE_MASK & CONDEMNED_BYTE_MASK, 0);
+        // Neither byte may reach into the mutator-owned low half.
+        let low_half = MEMORY_CATEGORY_MASK
+            | GC_STATE_MASK
+            | (0b11 << CYCLE_COLLECTOR_COLOR_SHIFT)
+            | CYCLE_COLLECTOR_BUFFERED
+            | HAS_WEAK_REFERENCES
+            | DESTRUCTOR_PENDING
+            | DESTRUCTOR_RAN
+            | COW
+            | IS_ESCAPEE
+            | ENTITY_KIND_MASK;
+        assert_eq!((EPOCH_BYTE_MASK | CONDEMNED_BYTE_MASK) & low_half, 0);
+
+        // Byte addressability on a real header: a byte store at offset
+        // 6/7 lands exactly on the mask (little-endian, enforced at
+        // compile time).
+        let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+        let p = &mut h as *mut RcHeader as *mut u8;
+        unsafe {
+            p.add(6).write(3);
+            p.add(7).write(1);
+        }
+        assert_eq!(h.flags & EPOCH_BYTE_MASK, 3 << EPOCH_BYTE_SHIFT);
+        assert_eq!(h.flags & CONDEMNED_BYTE_MASK, 1 << CONDEMNED_BYTE_SHIFT);
+        assert_eq!(h.refcount, 1, "the refcount bytes are untouched");
+    }
+
+    /// The mutator's whole obligation to rc-walk: retain and release
+    /// clear the condemned byte and leave the epoch byte alone.
+    #[cfg(feature = "rc-walk")]
+    #[test]
+    fn retain_and_release_clear_the_condemned_byte_only() {
+        let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+        h.flags |= (7 << EPOCH_BYTE_SHIFT) | (1 << CONDEMNED_BYTE_SHIFT);
+
+        retain(&mut h);
+        assert_eq!(h.refcount, 2);
+        assert_eq!(h.flags & CONDEMNED_BYTE_MASK, 0, "retain clears the verdict");
+        assert_eq!(h.flags & EPOCH_BYTE_MASK, 7 << EPOCH_BYTE_SHIFT, "the stamp survives");
+
+        h.flags |= 1 << CONDEMNED_BYTE_SHIFT;
+        assert!(!release(&mut h));
+        assert_eq!(h.flags & CONDEMNED_BYTE_MASK, 0, "release clears it too");
+        assert_eq!(h.flags & EPOCH_BYTE_MASK, 7 << EPOCH_BYTE_SHIFT);
+    }
+
+    /// A condemned entity never dies on the ordinary path: the release
+    /// reaching zero reports no death — the count stays zero and the
+    /// entity belongs to the Phase 4 drain (`rfc/model/gc/rc-walk.md`,
+    /// finding F5's superseding rule).
+    #[cfg(feature = "rc-walk")]
+    #[test]
+    fn a_condemned_entity_defers_its_death_to_the_drain() {
+        let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+        h.flags |= 1 << CONDEMNED_BYTE_SHIFT;
+        assert!(!release(&mut h), "death deferred, not reported");
+        assert_eq!(h.refcount, 0, "the count did reach zero");
+
+        // Uncondemned control: the same release reports the death.
+        let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+        assert!(release(&mut h));
     }
 
     /// `Object` is the zero kind field, so a header built with no kind bits

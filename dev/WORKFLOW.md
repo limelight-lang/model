@@ -31,11 +31,26 @@ this one is reasoning from practice, not a stated rule)*
 ```
 cargo test --lib
 cargo test --lib -- --test-threads=16     # three times
+cargo test --lib --features rc-walk -- --test-threads=16   # three times
 cargo build --release
+cargo build --release --features rc-walk
 ```
 
 The three threaded runs are not ceremony: several defects here only
 appear under contention, and one flake took three runs to surface.
+
+The `rc-walk` runs exist because GC strategy selection is a build-time
+feature (the two collectors claim the same header bits — see the
+feature's note in `Cargo.toml`), so the crate has two real
+configurations and both must be green. Strategy-bound tests are gated
+to their configuration (`cfg(not(feature = "rc-walk"))` on rc-trace
+tests); that gating is selection, not muting — the default runs keep
+executing them.
+
+Run each test command **as its own command and read its result line**;
+never pipe into a filter that can swallow a failure and let a commit
+through on a red suite (that happened once — see `ll-next-todo`'s
+flake note, 2026-07-27).
 
 ## Bugs first
 

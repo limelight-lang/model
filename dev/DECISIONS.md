@@ -8,6 +8,41 @@ never edited or deleted.
 
 ---
 
+## 2026-07-26 — GC strategy is a build-time cargo feature; rc-walk claims the flags top half (rc-walk step 3, commit 1)
+
+**Decided:** the `rc-walk` cargo feature selects the rc-walk collector
+in place of rc-trace. Under it: flags bits 16–23 are the **epoch byte**
+(header byte 6) and 24–31 the **condemned byte** (header byte 7);
+every `ll_retain`/`ll_release` clears the condemned byte with one mask
+on the header word it already loads and stores; a release reaching zero
+on a condemned entity **skips teardown** and leaves the death to the
+Phase 4 drain (the F5 rule); `ll_release` loses the candidate-buffering
+tail entirely. All header accesses on this path compile as relaxed
+atomics on the whole 8-byte word, and `RcHeader` is now `align(8)` —
+the factory always published it as one 8-byte store, the attribute
+makes the requirement explicit (the pinned layout test moved 4 → 8).
+Header publication is centralized in `refcount::publish_header`.
+
+**Why:** the two strategies claim the same bits — rc-trace's candidate
+index is bits 15–31 — and rc-walk's mask on every retain/release would
+corrupt a live index, so coexistence in one binary is impossible; the
+rfc makes strategy selection build-time for exactly this kind of reason
+(`rfc/model/gc/strategies.md`). Runtime switching was considered and
+rejected: a per-operation branch in retain/release is the cost the
+rc-walk design exists to avoid, and a shared layout would cost rc-trace
+its O(1) candidate forget.
+
+**Evidence (release asm, x86-64):** rc-walk `ll_retain` is one 8-byte
+load + mask/inc + one 8-byte store, no lock prefix, no RMW; `ll_release`
+likewise, with the condemned test two `sete` on the already-loaded word
+and **no call tail** (rc-trace's buffering call is gone — the design's
+advertised net reduction). The default configuration's code is
+unchanged. Verification now runs both configurations
+(`dev/WORKFLOW.md`); rc-trace's tests are gated to the default
+configuration, where they keep running.
+
+---
+
 ## 2026-07-26 — entity blocks are a second heap population (rc-walk step 1)
 
 **Decided:** GC entities (`GcHeap`/`LongLived` factory allocations) come

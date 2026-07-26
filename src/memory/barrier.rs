@@ -524,6 +524,12 @@ mod tests {
     /// a free of memory the caller is still inside, followed by a second
     /// free when teardown finishes. Publishing the slot first removes the
     /// edge, so only the owner's genuine garbage is collected.
+    ///
+    /// rc-trace only: the scenario fires `ll_gc_collect_cycles` from the
+    /// destructor, and an `rc-walk` build never feeds its candidate
+    /// buffer (the publish-before-teardown order it proves is
+    /// strategy-independent and holds there too).
+    #[cfg(not(feature = "rc-walk"))]
     #[test]
     fn a_collecting_destructor_cannot_see_the_slot_it_is_being_removed_from() {
         use crate::class::ClassBuilder;

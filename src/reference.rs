@@ -49,11 +49,10 @@ pub unsafe fn ll_reference_new(
     let boxed = mem as *mut LLReference;
     unsafe {
         (*boxed).value = Value::null();
-        debug_assert_eq!(boxed as usize % 8, 0);
-        (boxed as *mut u64).write(core::mem::transmute::<RcHeader, u64>(RcHeader::new(
-            category,
-            EntityKind::Reference.to_flags(),
-        )));
+        crate::refcount::publish_header(
+            boxed as *mut RcHeader,
+            RcHeader::new(category, EntityKind::Reference.to_flags()),
+        );
     }
     boxed
 }
