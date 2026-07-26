@@ -314,47 +314,14 @@ unsafe fn collect_cycles_inner() -> CollectStats {
     for members in confirmed {
         if any_destructor_ran && !unsafe { exact_test(&members, 1) } {
             stats.acquitted += 1;
-            unsafe { unguard(&members, &mut stats) };
+            stats.collected += unsafe { unguard(&members) };
             continue;
         }
-        // Sever: every member's slots are nulled and the displaced
-        // children collected; in-component children are then released
-        // (they stop at their guards), while **external children are
-        // deferred until the members are freed**. The exact test already
-        // proves no external reference to any member exists, so an
-        // external `__destruct` could not name a member even if it ran
-        // here — but deferring makes that a structural property instead
-        // of a proof-dependent one: between sever and free, no user code
-        // runs at all, so a resurrected-but-hollowed member cannot exist
-        // (the hazard `rfc/model/gc/rc-walk-review.md` leaves open around
-        // weak references). Then un-guard: every member reaches a true
-        // zero and takes the ordinary free path (`dispose` finds the
-        // fields already null and `DESTRUCTOR_RAN` already set).
-        let member_set: HashSet<usize> = members.iter().map(|&m| m as usize).collect();
-        let mut displaced: Vec<*mut RcHeader> = Vec::new();
-        for &m in &members {
-            if is_object(unsafe { (*m).flags }) {
-                unsafe { crate::object::sever_counted_children(m as *mut Object, &mut displaced) };
-            } else if unsafe { entity_kind(m) } == EntityKind::Reference as u32 {
-                // A reference member severs its one Value the same way.
-                let r = m as *mut crate::reference::LLReference;
-                let v = unsafe { (*r).value };
-                if v.is_refcounted() {
-                    unsafe { (*r).value = Value::null() };
-                    displaced.push(v.entity_ptr());
-                }
-            }
-        }
-        let mut external: Vec<*mut RcHeader> = Vec::new();
-        for child in displaced {
-            if member_set.contains(&(child as usize)) {
-                let died = unsafe { ll_release(child) };
-                debug_assert!(!died, "a guarded member cannot die of a sever release");
-            } else {
-                external.push(child);
-            }
-        }
-        unsafe { unguard(&members, &mut stats) };
+        // Sever, un-guard, then drop the deferred external children —
+        // the shared tail (`sever_component`, `unguard`): between sever
+        // and free no user code runs at all.
+        let external = unsafe { sever_component(&members) };
+        stats.collected += unsafe { unguard(&members) };
         // The members are gone; now the severed external children die
         // ordinarily, destructors and all. Members were GcHeap holders,
         // so the barrier's drop handles an arena escapee's hold-count
@@ -364,6 +331,47 @@ unsafe fn collect_cycles_inner() -> CollectStats {
         }
     }
     stats
+}
+
+/// Sever every member's counted children: each member's slots are
+/// nulled and the displaced children collected; in-component children
+/// are released immediately (they stop at their guards), **external
+/// children are returned for the deferred drop after the members are
+/// freed**. The exact test already proves no external reference to any
+/// member exists, so an external `__destruct` could not name a member
+/// even if it ran between sever and free — but deferring makes that a
+/// structural property instead of a proof-dependent one: no user code
+/// runs at all in the window (the hazard `rfc/model/gc/rc-walk-review.md`
+/// leaves open around weak references).
+///
+/// # Safety
+/// Every member must be a live, guarded component member.
+unsafe fn sever_component(members: &[*mut RcHeader]) -> Vec<*mut RcHeader> {
+    let member_set: HashSet<usize> = members.iter().map(|&m| m as usize).collect();
+    let mut displaced: Vec<*mut RcHeader> = Vec::new();
+    for &m in members {
+        if is_object(unsafe { (*m).flags }) {
+            unsafe { crate::object::sever_counted_children(m as *mut Object, &mut displaced) };
+        } else if unsafe { entity_kind(m) } == EntityKind::Reference as u32 {
+            // A reference member severs its one Value the same way.
+            let r = m as *mut crate::reference::LLReference;
+            let v = unsafe { (*r).value };
+            if v.is_refcounted() {
+                unsafe { (*r).value = Value::null() };
+                displaced.push(v.entity_ptr());
+            }
+        }
+    }
+    let mut external: Vec<*mut RcHeader> = Vec::new();
+    for child in displaced {
+        if member_set.contains(&(child as usize)) {
+            let died = unsafe { ll_release(child) };
+            debug_assert!(!died, "a guarded member cannot die of a sever release");
+        } else {
+            external.push(child);
+        }
+    }
+    external
 }
 
 /// The exact test over one component's **current** fields:
@@ -396,14 +404,132 @@ unsafe fn exact_test(members: &[*mut RcHeader], discount: u32) -> bool {
 /// acquittal survivor keeps its true count and lives on. On the
 /// confirmed path every member reaches zero here: external drops are
 /// deferred past this point, so nothing can have retained a member since
-/// the re-verify.
-unsafe fn unguard(members: &[*mut RcHeader], stats: &mut CollectStats) {
+/// the re-verify. Returns how many members died.
+unsafe fn unguard(members: &[*mut RcHeader]) -> usize {
+    let mut collected = 0;
     for &m in members {
         if unsafe { ll_release(m) } {
             unsafe { crate::object::ll_entity_die(m) };
-            stats.collected += 1;
+            collected += 1;
         }
     }
+    collected
+}
+
+// --- The message drain (rc-walk build step 3) -------------------------------
+
+/// Outcome of draining one posted component.
+#[cfg(feature = "rc-walk")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DrainOutcome {
+    /// Members (and deferred deaths) torn down.
+    pub collected: usize,
+    /// The message was dropped — exact-test mismatch or a destructor
+    /// resurrection. The acquittal duties ran either way.
+    pub acquitted: bool,
+}
+
+/// Drain one **confirmed** component posted by the collector — Phase 4
+/// of `rfc/model/gc/rc-walk.md`, on the owning mutator thread, trusting
+/// nothing it was told. Unlike [`collect_cycles`]'s batch (which guards
+/// every confirmed component before any destructor runs, because
+/// nothing else protects a sibling component there), this processes one
+/// component alone: a destructor's release into a *different* condemned
+/// component stops at that component's condemned byte — the death
+/// defers to its own drain — so the per-message shape is sound only
+/// with the bytes in play.
+///
+/// A member that died while condemned arrives with `refcount 0`, fields
+/// and destructor intact (its ordinary death was skipped wholesale, the
+/// F5 rule): it reads `0 = 0`, confirms, and is torn down exactly once
+/// here.
+///
+/// # Safety
+/// Members must be entities of one posted component, on their owning
+/// thread; no other drain may hold guards on them.
+#[cfg(feature = "rc-walk")]
+pub(crate) unsafe fn drain_confirmed(members: &[*mut RcHeader]) -> DrainOutcome {
+    use crate::refcount::CONDEMNED_BYTE_MASK;
+
+    // The exact test first, against current fields, race-free on this
+    // thread. Any mismatch drops the message whole; the drop still owes
+    // the acquittal duties.
+    if !unsafe { exact_test(members, 0) } {
+        return DrainOutcome {
+            collected: unsafe { acquit_condemned(members) },
+            acquitted: true,
+        };
+    }
+
+    // Confirmed: the members are ours — the equality just proved no
+    // reference from outside the component exists. Clear the condemned
+    // bytes **before any release**: the drain's own un-guards must reach
+    // real deaths, not re-defer them to a drain that will never come.
+    for &m in members {
+        unsafe { (*m).flags &= !CONDEMNED_BYTE_MASK };
+    }
+    for &m in members {
+        unsafe { (*m).refcount += 1 }; // the guard; a dead member goes 0 → 1
+    }
+    let mut any_destructor_ran = false;
+    for &m in members {
+        if is_object(unsafe { (*m).flags }) {
+            any_destructor_ran |= unsafe { crate::object::run_pre_destructor(m as *mut Object) };
+        }
+    }
+    // Guard-discounted re-verify (finding F1), skipped when no
+    // destructor ran — same reasoning as in `collect_cycles`.
+    if any_destructor_ran && !unsafe { exact_test(members, 1) } {
+        // Resurrection: guards come off through `ll_release`, survivors
+        // keep true counts, destructors are behind them.
+        return DrainOutcome {
+            collected: unsafe { unguard(members) },
+            acquitted: true,
+        };
+    }
+    let external = unsafe { sever_component(members) };
+    let collected = unsafe { unguard(members) };
+    for child in external {
+        unsafe { crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, child) };
+    }
+    DrainOutcome {
+        collected,
+        acquitted: false,
+    }
+}
+
+/// The acquittal duties (`rfc/model/gc/rc-walk.md`, Phase 3): clear the
+/// members' condemned bytes, then tear down every member whose count
+/// reached zero **while condemned** — its ordinary death was deferred to
+/// exactly this drain, and no other hand is left to run it. Bytes first,
+/// all of them: a teardown below may release another member to zero, and
+/// with its byte still set that death would defer to a drain that is no
+/// longer coming — a permanent zombie. Returns the deferred deaths torn.
+///
+/// The pre-dead set is snapshotted before any teardown: no counted
+/// reference to a dead member exists (a field pointing at it would be
+/// one), so a teardown here can never add to the set — but it can free a
+/// *live* member it holds, and re-reading counts mid-loop would then
+/// touch a freed slot.
+///
+/// # Safety
+/// As [`drain_confirmed`].
+#[cfg(feature = "rc-walk")]
+pub(crate) unsafe fn acquit_condemned(members: &[*mut RcHeader]) -> usize {
+    use crate::refcount::CONDEMNED_BYTE_MASK;
+
+    for &m in members {
+        unsafe { (*m).flags &= !CONDEMNED_BYTE_MASK };
+    }
+    let deferred_deaths: Vec<*mut RcHeader> = members
+        .iter()
+        .copied()
+        .filter(|&m| unsafe { (*m).refcount } == 0)
+        .collect();
+    for &m in &deferred_deaths {
+        unsafe { crate::object::ll_entity_die(m) };
+    }
+    deferred_deaths.len()
 }
 
 #[cfg(test)]

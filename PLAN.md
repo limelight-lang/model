@@ -125,8 +125,13 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   2026-07-26*: the deferred-free queue (`memory/deferred_free.rs`) —
   the GC activity bit in `ll_free`, all four freeable kinds park on a
   thread-local intrusive list through their own bytes 8–15, flush on
-  the owning thread between epochs. Still owed: checkpoint + verdict
-  messages (3), the collector thread with Phases 1–3 (4, incl. the
+  the owning thread between epochs. *Commit 3 landed 2026-07-26*: the
+  epoch protocol's mutator side (`src/epoch.rs`) — soft-handshake ack,
+  verdict queue (confirm + acquit), non-reentrant checkpoint riding
+  `entity_alloc` + `ll_gc_maybe_collect`; per-component drains in
+  `walk.rs` (`drain_confirmed` with the F5 dead-member path,
+  `acquit_condemned` with the duty ordering), F8 reentrancy pinned by
+  test. Still owed: the collector thread with Phases 1–3 (4, incl. the
   bit-publication handshake before snapshot), adversarial DC tests (5).
 - ~~Immix-shaped `GcHeap` allocator~~ — **dropped entirely 2026-07-25**
   (confirmed 2026-07-27): no line recycling, no reuse of retained-block

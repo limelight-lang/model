@@ -8,6 +8,44 @@ never edited or deleted.
 
 ---
 
+## 2026-07-26 — checkpoints ride the factory allocation and the poll; the drain is one thread-local bit (rc-walk step 3, commit 3)
+
+**Decided:** the rc-walk checkpoint (handshake ack + verdict drain,
+`src/epoch.rs`) is tested at the **end of `entity_alloc`** and in
+**`ll_gc_maybe_collect`** — not in raw `ll_malloc`. Two relaxed loads
+and a predicted branch, taken only when the collector wants attention.
+The verdict queue is a mutex (cold, per-epoch trickle — the 2026-07-20
+cold-lock rule). Drain non-reentrancy is one thread-local bit: a
+nested allocator entry from a draining destructor serves memory and
+acks a handshake, but never picks up a message (finding F8).
+
+**Why the placement:** the design puts checkpoints inside the memory
+manager, not compiler polls — but inside `Heap::alloc` a `&mut Heap`
+is live, and a draining destructor that allocates would re-enter the
+heap through a second `&mut`: undefined behaviour, not just a design
+hazard. At the end of the free function `entity_alloc` the borrow is
+dead and reentrancy is plain recursion. Raw `ll_malloc` stays
+checkpoint-free: it is the benchmarked C-ABI hot path, and a
+buffer-only workload delays the epoch no worse than the accepted
+no-allocation limit (F2).
+
+**Per-message drain vs the batch:** `walk::drain_confirmed` processes
+one component alone; that is sound only because a destructor's release
+into a *different* condemned component stops at that component's
+condemned byte. The synchronous `collect_cycles` keeps its batch-guard
+umbrella — there no bytes are set, and a sibling component would be
+unprotected. Two flows, each documented with its own invariant.
+
+**Acquittal duties order:** clear every member's condemned byte
+*first*, then tear the deferred deaths from a pre-snapshotted set —
+a teardown can release another member to zero (byte must already be
+clear, or the death defers to a drain that never comes), and it can
+free a live member (so counts are never re-read mid-loop). The
+confirmed path clears bytes before its guards for the same reason:
+its own un-guards must reach real deaths.
+
+---
+
 ## 2026-07-26 — deferred free parks through the dead memory itself (rc-walk step 3, commit 2)
 
 **Decided:** the GC activity bit is one global `AtomicBool` tested with

@@ -5,6 +5,8 @@
 //! functions live here.
 
 pub mod class;
+#[cfg(feature = "rc-walk")]
+pub(crate) mod epoch;
 pub mod gc;
 pub mod intern;
 pub mod memory;

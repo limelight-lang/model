@@ -533,6 +533,11 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     if crate::memory::reserve::is_drawn() {
         let _ = crate::memory::reserve::replenish();
     }
+    // The compiler's poll is also an rc-walk checkpoint: handshake ack
+    // and verdict drain (`crate::epoch`). In that build nothing arms
+    // COLLECT_PENDING, so the rc-trace branch below stays cold dead.
+    #[cfg(feature = "rc-walk")]
+    crate::epoch::checkpoint();
     if COLLECT_PENDING.with(|p| p.get()) {
         unsafe { collect_cycles() }
     } else {
