@@ -139,10 +139,18 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   driver, post-epoch flush at the checkpoint; F3 maturity latency and
   the Phase 3 filter pinned by stepped tests. Trigger stays an explicit
   call (thresholds are unmeasured — rc-walk.md open question 1).
-  Still owed (5): the mutator-side relaxed-atomic sweep (fields, flag
-  bits, block cursors — formally racy against a free-running collector;
-  stepped tests never execute the race), then the adversarial DC tests
-  with real interleavings, re-benching the swept hot paths.
+  *Commit 5 landed 2026-07-26*: the forced-timeline DC tests against
+  the sound gates — DC1's machine-found trace (walk split into
+  count/field passes for the interleave; caught by the Phase 3 count
+  re-read AND independently by the exact test), DC0's `0 = 0` confirm
+  (exactly-once probed through the free list), DC3's premise shown
+  unreachable. Kills of broken variants stay TLC's (a runtime
+  use-after-free has no deterministic observable) — agreed with
+  Edmond, rfc danger-cases note updated. Still owed (6): the
+  mutator-side relaxed-atomic sweep (fields, flag bits, block
+  cursors — formally racy against a free-running collector; stepped
+  tests never execute the race), then free-running stress, re-benching
+  the swept hot paths.
 - ~~Immix-shaped `GcHeap` allocator~~ — **dropped entirely 2026-07-25**
   (confirmed 2026-07-27): no line recycling, no reuse of retained-block
   holes. Segregated entity blocks solved what Immix was drafted for;

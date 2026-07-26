@@ -328,6 +328,95 @@ mod tests {
         arena.reset(|_| {});
     }
 
+    /// DC0's confirm side (`rfc/model/gc/rc-walk-danger-cases.md`): a
+    /// member that died while condemned arrives at the drain with
+    /// `rc 0`, fields and destructor intact, balances `0 = 0`, and is
+    /// torn down **exactly once** — the double-enqueue of the old
+    /// design is what the F5 rule made unreachable. The exactly-once
+    /// is probed through the free list: a twice-enqueued slot would be
+    /// handed to two allocations.
+    #[test]
+    fn dc0_a_death_while_condemned_confirms_balanced_and_tears_once() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("Dc0Deferred")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let x = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let x_addr = x as usize;
+        unsafe {
+            condemn(x as *mut RcHeader);
+            assert!(!ll_release(x as *mut RcHeader), "death deferred to the drain");
+        }
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0);
+
+        post_verdict(Verdict::Confirm, vec![x as *mut RcHeader]);
+        checkpoint();
+        assert_eq!(outstanding_verdicts(), 0);
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "torn exactly once, merely later");
+        assert!(!walked_addresses().contains(&x_addr));
+
+        // The free-list probe: one enqueue → the slot serves one
+        // allocation, and the next one gets different memory.
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        assert_eq!(a as usize, x_addr, "LIFO: the torn slot is back in circulation");
+        assert_ne!(b as usize, x_addr, "and was enqueued exactly once");
+        unsafe {
+            assert!(ll_release(a as *mut RcHeader));
+            crate::object::ll_object_die(a);
+            assert!(ll_release(b as *mut RcHeader));
+            crate::object::ll_object_die(b);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// DC3's premise made unreachable: a condemned entity's deferred
+    /// death never touches the free list before its drain, so no drain
+    /// action can ever write into a free or recycled slot — the two
+    /// owners of one slot cannot arise.
+    #[test]
+    fn dc3_a_deferred_death_keeps_its_slot_out_of_circulation() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("Dc3Parked")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let x = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let x_addr = x as usize;
+        unsafe {
+            condemn(x as *mut RcHeader);
+            assert!(!ll_release(x as *mut RcHeader));
+        }
+
+        // The slot is dead to the walk (rc 0) but NOT on the free list:
+        // an allocation must not land on it while the drain is owed.
+        let y = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        assert_ne!(y as usize, x_addr, "the deferred death's slot is out of circulation");
+
+        post_verdict(Verdict::Acquit, vec![x as *mut RcHeader]);
+        checkpoint();
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1);
+        // Only now is the slot free — and reusable.
+        let z = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        assert_eq!(z as usize, x_addr, "freed by the drain, LIFO hands it out next");
+        unsafe {
+            assert!(ll_release(y as *mut RcHeader));
+            crate::object::ll_object_die(y);
+            assert!(ll_release(z as *mut RcHeader));
+            crate::object::ll_object_die(z);
+        }
+        arena.reset(|_| {});
+    }
+
     /// Finding F8: an allocation inside a draining destructor is a
     /// checkpoint inside the drain — it must serve memory and never pick
     /// up the next message. The second message drains only after the

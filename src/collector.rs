@@ -79,6 +79,8 @@ pub(crate) struct Epoch {
     /// Walked mature GcHeap entities, their snapshot rows, and edges.
     entities: Vec<*mut RcHeader>,
     rows: Vec<u32>,
+    /// Flags as read with each row — the kind bits steer pass 2.
+    flags: Vec<u32>,
     edges: Vec<Edge>,
     /// Candidate components as indices into `entities`.
     candidates: Vec<Vec<u32>>,
@@ -120,6 +122,7 @@ impl Epoch {
             blocks: Vec::new(),
             entities: Vec::new(),
             rows: Vec::new(),
+            flags: Vec::new(),
             edges: Vec::new(),
             candidates: Vec::new(),
             acks_needed,
@@ -144,9 +147,20 @@ impl Epoch {
     /// test is one lookup in the walked-row map, which subsumes the
     /// occupancy, boundary and epoch-byte validation — an id that maps
     /// to no row contributes to its target's RC and never to IN.
+    ///
+    /// Two passes, separately steppable ([`Epoch::walk_rows`] then
+    /// [`Epoch::walk_edges`]): a count can be read long before the
+    /// fields it guards — that window is DC1's raw material
+    /// (`rfc/model/gc/rc-walk-danger-cases.md`), and the forcing tests
+    /// interleave mutator actions between the passes.
     pub fn walk(&mut self) {
-        // Pass 1: classify and collect rows.
-        let mut flags_of: Vec<u32> = Vec::new();
+        self.walk_rows();
+        self.walk_edges();
+    }
+
+    /// Phase 1, pass 1: classify every snapshotted slot and record a
+    /// refcount row per mature GcHeap entity.
+    pub fn walk_rows(&mut self) {
         for b in &self.blocks {
             for s in 0..b.slots {
                 let slot = (b.payload + s * b.class_size) as *mut RcHeader;
@@ -170,12 +184,15 @@ impl Epoch {
                 }
                 self.entities.push(slot);
                 self.rows.push(refcount);
-                flags_of.push(flags);
+                self.flags.push(flags);
             }
         }
         self.stats.walked = self.entities.len();
+    }
 
-        // Pass 2: out-edges of every row, through the collector tracer.
+    /// Phase 1, pass 2: out-edges of every row, through the collector
+    /// tracer.
+    pub fn walk_edges(&mut self) {
         let ids: HashMap<usize, u32> = self
             .entities
             .iter()
@@ -184,11 +201,13 @@ impl Epoch {
             .collect();
         for i in 0..self.entities.len() {
             let entity = self.entities[i];
-            let kind = (flags_of[i] & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
+            let kind = (self.flags[i] & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
+            let edges = &mut self.edges;
+            let dropped = &mut self.stats.dropped_edges;
             trace_mature(entity, kind, |field, raw, child| {
                 match ids.get(&(child as usize)) {
-                    Some(&dst) => self.edges.push(Edge { src: i as u32, dst, field, raw }),
-                    None => self.stats.dropped_edges += 1,
+                    Some(&dst) => edges.push(Edge { src: i as u32, dst, field, raw }),
+                    None => *dropped += 1,
                 }
             });
         }
@@ -630,6 +649,95 @@ mod tests {
             assert!(ll_release(holder as *mut RcHeader));
             crate::object::ll_object_die(holder);
         }
+        arena.reset(|_| {});
+    }
+
+    /// DC1 forced end-to-end (`rfc/model/gc/rc-walk-danger-cases.md`) —
+    /// the machine-found trace that defeats a byte-only filter: the walk
+    /// reads s2's count, the mutator then inflates `IN` with self-loops
+    /// stored **between the count pass and the field pass**, and the
+    /// diff reads `crc 2 − in 2 = 0` — the frame reference is exactly
+    /// the masked term. The sound design must catch it twice,
+    /// independently: the Phase 3 count re-read, and — driven past the
+    /// filter, as a broken byte-only confirm would — the Phase 4 exact
+    /// test. (The kill itself, freeing s2 under the live frame, is the
+    /// TLC battery's job: `MC_dc1.cfg`, 16 states.)
+    #[test]
+    fn dc1_a_stale_count_masked_by_self_loops_is_caught_twice() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("Dc1Mask")
+            .prop("child", true)
+            .prop("link", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let mk = |ctx: &mut LLContext| unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) };
+        let (s1, s2, s3) = (mk(&mut ctx), mk(&mut ctx), mk(&mut ctx));
+        unsafe {
+            tie(s1, 16, s2); // the ring, f1
+            tie(s2, 16, s1);
+            tie(s1, 32, s3); // s1.f2 = s3
+            ll_retain(s1 as *mut RcHeader); // fr1
+        }
+        stepped_epoch(); // everything matures
+
+        unsafe {
+            // m1: fr2 borrows s2.
+            ll_retain(s2 as *mut RcHeader);
+            // m2: drop fr1 — the ring is now garbage-shaped.
+            assert!(!ll_release(s1 as *mut RcHeader));
+            // m3: store(s2.f1, fr2) — first self-loop. Publish first,
+            // then drop the displaced s1: it dies, cascading s3.
+            ll_retain(s2 as *mut RcHeader);
+            tie(s2, 16, s2);
+            crate::memory::barrier::drop_ref(
+                MemoryCategory::GcHeap,
+                s1 as *mut RcHeader,
+            );
+        }
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "s1 and s3 died ordinarily");
+        assert_eq!(unsafe { (*s2).rc.refcount }, 2, "fr2 + self-loop");
+
+        let mut e = Epoch::open();
+        checkpoint();
+        e.snapshot();
+        e.walk_rows(); // crc[s2] = 2, read here and now stale forever
+        unsafe {
+            // m5: the second self-loop lands between the passes.
+            ll_retain(s2 as *mut RcHeader);
+            tie(s2, 32, s2);
+        }
+        e.walk_edges(); // records BOTH self-edges: in[s2] = 2
+        e.judge();
+        assert_eq!(e.stats.candidates, 1, "the mask worked: {{s2}} is a candidate");
+        e.condemn();
+        checkpoint();
+        e.recheck_and_post();
+        assert_eq!(e.stats.acquitted, 1, "gate 1: the count re-read sees 3 ≠ 2");
+        assert_eq!(e.stats.confirmed, 0);
+        checkpoint(); // the acquittal duties
+        let _ = e.close();
+        checkpoint();
+        assert!(walked_addresses().contains(&(s2 as usize)), "s2 lives");
+        assert_eq!(unsafe { (*s2).rc.refcount }, 3, "fr2 + two self-loops, intact");
+
+        // Gate 2, independently: drive the same verdict PAST the filter,
+        // exactly what a byte-only confirm would post.
+        unsafe { (*s2).rc.flags |= 1 << crate::refcount::CONDEMNED_BYTE_SHIFT };
+        crate::epoch::post_verdict(crate::epoch::Verdict::Confirm, vec![s2 as *mut RcHeader]);
+        checkpoint();
+        assert!(walked_addresses().contains(&(s2 as usize)), "exact test: 3 ≠ indeg 2");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "no destructor ran on s2");
+
+        // fr2 lets go: rc 2 = in 2, genuine garbage now.
+        assert!(!unsafe { ll_release(s2 as *mut RcHeader) });
+        let stats = stepped_epoch();
+        assert_eq!(stats.confirmed, 1);
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 3);
+        assert!(!walked_addresses().contains(&(s2 as usize)));
         arena.reset(|_| {});
     }
 
