@@ -59,6 +59,12 @@ store barrier's log growth from failing; drawn in `Arena::grow_log`,
 refilled at `ll_gc_maybe_collect`. Design in
 `rfc/runtime/exceptions.md`, "The log reserve protocol".
 
+`src/memory/deferred_free.rs` (`rc-walk` builds) — the GC activity bit
+and the parked-free list: while an epoch is in flight, `ll_free` parks
+instead of recycling (slot identity for the walker); the owning thread
+flushes after the epoch. Design: `rfc/model/gc/rc-walk.md`, "Deferred
+physical release"; `rfc/model/gc/heap-design.md`.
+
 ## Hot paths
 
 - Allocation: `Heap::alloc` → `ll_alloc`, expected to inline fully,

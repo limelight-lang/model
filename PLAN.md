@@ -121,9 +121,13 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   `dev/DECISIONS.md`), epoch + condemned bytes at header bytes 6–7,
   the retain/release condemned mask, relaxed-atomic header accesses
   (asm-verified: no RMW, no call tail in release), and the
-  condemned-never-dies-ordinarily rule (F5). Still owed: deferred-free
-  queue (2), checkpoint + verdict messages (3), the collector thread
-  with Phases 1–3 (4), adversarial DC tests (5).
+  condemned-never-dies-ordinarily rule (F5). *Commit 2 landed
+  2026-07-26*: the deferred-free queue (`memory/deferred_free.rs`) —
+  the GC activity bit in `ll_free`, all four freeable kinds park on a
+  thread-local intrusive list through their own bytes 8–15, flush on
+  the owning thread between epochs. Still owed: checkpoint + verdict
+  messages (3), the collector thread with Phases 1–3 (4, incl. the
+  bit-publication handshake before snapshot), adversarial DC tests (5).
 - ~~Immix-shaped `GcHeap` allocator~~ — **dropped entirely 2026-07-25**
   (confirmed 2026-07-27): no line recycling, no reuse of retained-block
   holes. Segregated entity blocks solved what Immix was drafted for;

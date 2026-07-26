@@ -8,6 +8,36 @@ never edited or deleted.
 
 ---
 
+## 2026-07-26 — deferred free parks through the dead memory itself (rc-walk step 3, commit 2)
+
+**Decided:** the GC activity bit is one global `AtomicBool` tested with
+a relaxed load in `ll_free` after the kind dispatch; a parked
+allocation threads a **thread-local intrusive list through its own
+bytes 8–15**, and the owning thread flushes through the real free
+between epochs (`src/memory/deferred_free.rs`). All four freeable
+kinds park — entity slots, raw heap buffers, pooled large, OS-direct
+runs — not just the two the walker chases today.
+
+**Why bytes 8–15:** parking must not allocate (a free path with a
+growth failure mode is a new defect class, and a `Vec` push is exactly
+that), the memory is dead and ≥ 16 bytes in every freeable kind, and
+bytes 0–7 of an entity slot must keep the final refcount-0 header —
+the walker's occupancy test. Same choice the in-slot free list already
+made, same cache line.
+
+**Why all four kinds:** the walker chases array storage once Phase C
+lands, and storage can be any size; parking large/huge now costs
+nothing and removes a future correctness edge. Not parked: no-op kinds
+(arena, retained — nothing recycles, identity holds) and cross-thread
+`free_foreign` (single-mutator crate; actors reopen it — on record).
+
+**Owed to commit 4:** the collector must publish the bit through a
+handshake **before** snapshotting (a mutator that has not observed the
+bit can still recycle a snapshotted slot), and the flush runs on the
+owning thread after the epoch closes.
+
+---
+
 ## 2026-07-26 — GC strategy is a build-time cargo feature; rc-walk claims the flags top half (rc-walk step 3, commit 1)
 
 **Decided:** the `rc-walk` cargo feature selects the rc-walk collector

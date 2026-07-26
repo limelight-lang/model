@@ -212,6 +212,21 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     let block = block_of(ptr);
     let kind = unsafe { *(block as *const u32) };
 
+    // While an rc-walk epoch is in flight, every freeable kind parks
+    // instead of recycling — identity of walked slots and chased buffers
+    // (`deferred_free`, one relaxed load + predicted branch, per
+    // `rfc/model/gc/rc-walk.md`). The no-op kinds (arena, retained) fall
+    // through: they recycle nothing, so identity holds without parking.
+    #[cfg(feature = "rc-walk")]
+    if crate::memory::deferred_free::active()
+        && matches!(
+            kind,
+            BLOCK_KIND_HEAP | BLOCK_KIND_ENTITY | BLOCK_KIND_LARGE | BLOCK_KIND_LARGE_RUN
+        )
+    {
+        return unsafe { crate::memory::deferred_free::park(ptr) };
+    }
+
     if kind == BLOCK_KIND_HEAP {
         let h = crate::memory::heap::thread_heap();
         if h.is_null() {

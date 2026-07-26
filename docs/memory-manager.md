@@ -186,6 +186,21 @@ occupied slots bounded by each block's bump cursor. Entities past the
 small-object range fall back to the large path and stay outside the walk
 — conservative, like every other un-walked region.
 
+### Deferred free (rc-walk builds)
+
+While an rc-walk collection epoch is in flight, `ll_free` **parks**
+every freeable kind instead of recycling it (`deferred_free.rs`): one
+relaxed load of a global activity bit and a predicted branch, after the
+kind dispatch, active only during an epoch. The entity still dies on
+time, destructor included — only reuse waits, so a walked slot cannot
+become a different object mid-epoch (identity is what makes the Phase 4
+exact test sound, `rfc/model/gc/rc-walk.md`). Parked memory threads a
+thread-local intrusive list through its own bytes 8–15 — bytes 0–7 keep
+the dead entity's refcount-0 header, the walker's vacancy stamp — and
+the owning thread flushes the list through the real free once the epoch
+closes. Cross-thread frees do not park (single-mutator crate; actors
+reopen this).
+
 ### Cross-thread free
 
 Each block owns a lock-free MPSC stack, `remote_free`. A `free` whose

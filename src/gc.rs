@@ -56,7 +56,7 @@ use crate::refcount::{
     CYCLE_COLLECTOR_COLOR_SHIFT, DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHeader,
     is_object, ll_release,
 };
-#[cfg(test)]
+#[cfg(all(test, not(feature = "rc-walk")))]
 use crate::value::Value;
 
 // --- rc-trace machinery ----------------------------------------------------
@@ -72,9 +72,11 @@ pub const CANDIDATE_THRESHOLD: usize = 10_000;
 // In an `rc-walk` build nothing feeds the candidate buffer (`ll_release`
 // computes no candidates — the walk does), so the feeding half of the
 // rc-trace machinery is expectedly dead there while the module stays
-// compiled as the registered alternative strategy.
+// compiled as the registered alternative strategy. Only
+// `buffer_candidate` carries the `expect`: the lint treats everything an
+// allowed-dead item references as live, so annotating its callees too
+// would leave those expectations unfulfilled.
 #[cfg(not(test))]
-#[cfg_attr(feature = "rc-walk", expect(dead_code))]
 #[inline(always)]
 fn candidate_threshold() -> usize {
     CANDIDATE_THRESHOLD
@@ -86,7 +88,6 @@ thread_local! {
         const { std::cell::Cell::new(CANDIDATE_THRESHOLD) };
 }
 #[cfg(test)]
-#[cfg_attr(feature = "rc-walk", expect(dead_code))]
 fn candidate_threshold() -> usize {
     TEST_THRESHOLD.with(|c| c.get())
 }
