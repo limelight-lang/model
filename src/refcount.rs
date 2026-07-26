@@ -266,6 +266,50 @@ unsafe fn header_word_store(header: *mut RcHeader, word: u64) {
     }
 }
 
+/// Collector-side whole-header read: refcount in the low half, flags in
+/// the high. Stale by design; Phases 3–4 repair what it misreads.
+///
+/// # Safety
+/// `header` must point into a live entity-block slot (occupied or free —
+/// a free slot legitimately reads refcount 0).
+#[cfg(feature = "rc-walk")]
+#[inline]
+pub(crate) unsafe fn collector_load_header(header: *mut RcHeader) -> u64 {
+    unsafe { header_word_load(header) }
+}
+
+/// The collector's maturity stamp: one plain byte store into header
+/// byte 6. A concurrent mutator whole-word store may bury it — the
+/// entity then reads "new" one more epoch: latency, never a verdict
+/// (`rfc/model/gc/rc-walk.md`, "The two header bytes").
+///
+/// # Safety
+/// `header` must point to an occupied entity-block slot.
+#[cfg(feature = "rc-walk")]
+#[inline]
+pub(crate) unsafe fn collector_stamp_epoch(header: *mut RcHeader, epoch_number: u8) {
+    debug_assert_ne!(epoch_number, 0, "0 means never-stamped; numbers cycle 1-255");
+    unsafe {
+        (*((header as *mut u8).add(6) as *const core::sync::atomic::AtomicU8))
+            .store(epoch_number, core::sync::atomic::Ordering::Relaxed)
+    };
+}
+
+/// The collector's verdict: 1 into the condemned byte (header byte 7).
+/// Every mutator retain/release clears it; the byte is Phase 3's filter,
+/// not the safety gate.
+///
+/// # Safety
+/// `header` must point to an occupied entity-block slot.
+#[cfg(feature = "rc-walk")]
+#[inline]
+pub(crate) unsafe fn collector_condemn(header: *mut RcHeader) {
+    unsafe {
+        (*((header as *mut u8).add(7) as *const core::sync::atomic::AtomicU8))
+            .store(1, core::sync::atomic::Ordering::Relaxed)
+    };
+}
+
 /// Increment the reference count.
 ///
 /// Fast path per `rfc/model/lowering.md`: one branch on the category

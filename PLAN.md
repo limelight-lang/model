@@ -131,8 +131,18 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   `entity_alloc` + `ll_gc_maybe_collect`; per-component drains in
   `walk.rs` (`drain_confirmed` with the F5 dead-member path,
   `acquit_condemned` with the duty ordering), F8 reentrancy pinned by
-  test. Still owed: the collector thread with Phases 1–3 (4, incl. the
-  bit-publication handshake before snapshot), adversarial DC tests (5).
+  test. *Commit 4 landed 2026-07-26*: the collector side
+  (`src/collector.rs`) — the steppable epoch state machine, Phases 1–3
+  end to end (three-way classification by epoch byte, row-lookup edge
+  validation, shared Phase 2 math, condemn + handshake +
+  snapshot-compare re-check, verdict posting), the threaded `run_epoch`
+  driver, post-epoch flush at the checkpoint; F3 maturity latency and
+  the Phase 3 filter pinned by stepped tests. Trigger stays an explicit
+  call (thresholds are unmeasured — rc-walk.md open question 1).
+  Still owed (5): the mutator-side relaxed-atomic sweep (fields, flag
+  bits, block cursors — formally racy against a free-running collector;
+  stepped tests never execute the race), then the adversarial DC tests
+  with real interleavings, re-benching the swept hot paths.
 - ~~Immix-shaped `GcHeap` allocator~~ — **dropped entirely 2026-07-25**
   (confirmed 2026-07-27): no line recycling, no reuse of retained-block
   holes. Segregated entity blocks solved what Immix was drafted for;

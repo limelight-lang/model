@@ -8,6 +8,44 @@ never edited or deleted.
 
 ---
 
+## 2026-07-26 — the collector is a steppable state machine; edge validation is one map lookup (rc-walk step 3, commit 4)
+
+**Decided:** the collector side (`src/collector.rs`) exposes each epoch
+phase as a separately callable step (open → snapshot → walk → judge →
+condemn → recheck_and_post → close), with `run_epoch` chaining them
+behind spin-yield waits for the threaded shape. Stepping is what the
+danger-case forcing harness needs (`rc-walk-review.md` layer 3: "a
+collector single-stepped between walk, condemn and check") — and it
+makes the deterministic tests single-threaded, so no data race executes
+and Miri's verdict is meaningful. Phase 2 (`garbage_components`) was
+extracted from `collect_cycles` and is shared array math.
+
+**Child validation collapsed to a row lookup:** the design's occupancy /
+slot-boundary / epoch-byte checks exist so the walker neither
+dereferences a racy child pointer nor records an edge into a skipped
+row. Recording edges as *indices into the walked-row map* achieves both
+in one lookup — a child that maps to no row (immature, reused,
+non-GcHeap, or garbage bytes) is dropped with a counter, and no child
+is ever dereferenced at all. The A8 clause holds by construction.
+
+**Mature-only class chase:** the walker reads a class pointer at `+8`
+only for entities stamped in an *older* epoch. The factory's
+header-last publish is relaxed, so a fresh entity's class store has no
+ordering guarantee — but a mature entity's publish is separated from
+this epoch's reads by at least one handshake, which is the fence. The
+new/current classification is therefore also the memory-ordering guard.
+
+**On record as owed (commit 5):** a free-running mutator still issues
+*plain* stores — object fields (barrier micro-ops, sever), header flag
+bits (`DESTRUCTOR_RAN`, drain guards), block cursors — that formally
+race the collector's atomic reads. The stepped tests never execute
+those races; the concurrent stress tests of commit 5 require the
+relaxed-atomic sweep of those mutator sites first, with the hot-path
+codegen re-measured (`bump += 1` and the barrier stores are
+benchmarked paths).
+
+---
+
 ## 2026-07-26 — checkpoints ride the factory allocation and the poll; the drain is one thread-local bit (rc-walk step 3, commit 3)
 
 **Decided:** the rc-walk checkpoint (handshake ack + verdict drain,

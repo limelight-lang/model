@@ -187,75 +187,12 @@ unsafe fn collect_cycles_inner() -> CollectStats {
         }
     }
 
-    // Phase 2 — DIFF and MARK, entirely in private memory. Roots are
-    // computed, not enumerated: RC − IN > 0 means something outside the
-    // walked population holds the entity.
-    let mut in_degree = vec![0u32; n];
-    for &(_, dst) in &edges {
-        in_degree[dst as usize] += 1;
-    }
-    let mut marked = vec![false; n];
-    let mut stack: Vec<u32> = (0..n as u32)
-        .filter(|&i| rc[i as usize] > in_degree[i as usize])
+    // Phase 2 — DIFF and MARK (`garbage_components`), then map the index
+    // components back onto entity pointers.
+    let components: Vec<Vec<*mut RcHeader>> = garbage_components(n, &rc, &edges)
+        .into_iter()
+        .map(|members| members.into_iter().map(|i| entities[i as usize]).collect())
         .collect();
-    for &i in &stack {
-        marked[i as usize] = true;
-    }
-    // Forward adjacency (CSR) for the mark walk.
-    let mut offsets = vec![0u32; n + 1];
-    for &(src, _) in &edges {
-        offsets[src as usize + 1] += 1;
-    }
-    for i in 0..n {
-        offsets[i + 1] += offsets[i];
-    }
-    let mut forward = vec![0u32; edges.len()];
-    let mut cursor = offsets.clone();
-    for &(src, dst) in &edges {
-        forward[cursor[src as usize] as usize] = dst;
-        cursor[src as usize] += 1;
-    }
-    while let Some(i) = stack.pop() {
-        for k in offsets[i as usize]..offsets[i as usize + 1] {
-            let j = forward[k as usize];
-            if !marked[j as usize] {
-                marked[j as usize] = true;
-                stack.push(j);
-            }
-        }
-    }
-
-    // Unmarked entities are cyclic garbage, grouped into weakly connected
-    // components — followed in both directions, so a garland of linked
-    // rings dies as one unit (decided 2026-07-26).
-    let mut undirected: Vec<Vec<u32>> = vec![Vec::new(); n];
-    for &(src, dst) in &edges {
-        if !marked[src as usize] && !marked[dst as usize] {
-            undirected[src as usize].push(dst);
-            undirected[dst as usize].push(src);
-        }
-    }
-    let mut component_of = vec![u32::MAX; n];
-    let mut components: Vec<Vec<*mut RcHeader>> = Vec::new();
-    for i in 0..n as u32 {
-        if marked[i as usize] || component_of[i as usize] != u32::MAX {
-            continue;
-        }
-        let id = components.len() as u32;
-        let mut members = Vec::new();
-        let mut queue = vec![i];
-        component_of[i as usize] = id;
-        while let Some(v) = queue.pop() {
-            members.push(entities[v as usize]);
-            for &w in &undirected[v as usize] {
-                if component_of[w as usize] == u32::MAX {
-                    component_of[w as usize] = id;
-                    queue.push(w);
-                }
-            }
-        }
-        components.push(members);
-    }
     stats.candidate_components = components.len();
 
     // Phase 4 — VERIFY and RELEASE, inline. The exact test runs first,
@@ -372,6 +309,81 @@ unsafe fn sever_component(members: &[*mut RcHeader]) -> Vec<*mut RcHeader> {
         }
     }
     external
+}
+
+/// Phase 2 of `rfc/model/gc/rc-walk.md` — DIFF and MARK over a private
+/// snapshot, shared by the synchronous collection and the concurrent
+/// collector's judge step. Roots are computed, not enumerated:
+/// `RC − IN > 0` means something outside the walked population holds
+/// the entity. Unmarked entities are grouped into **weakly** connected
+/// components — edges followed in both directions, so a garland of
+/// linked garbage rings is judged as one unit (decided 2026-07-26).
+/// Pure array math: nothing here touches shared memory.
+pub(crate) fn garbage_components(n: usize, rc: &[u32], edges: &[(u32, u32)]) -> Vec<Vec<u32>> {
+    let mut in_degree = vec![0u32; n];
+    for &(_, dst) in edges {
+        in_degree[dst as usize] += 1;
+    }
+    let mut marked = vec![false; n];
+    let mut stack: Vec<u32> = (0..n as u32)
+        .filter(|&i| rc[i as usize] > in_degree[i as usize])
+        .collect();
+    for &i in &stack {
+        marked[i as usize] = true;
+    }
+    // Forward adjacency (CSR) for the mark walk.
+    let mut offsets = vec![0u32; n + 1];
+    for &(src, _) in edges {
+        offsets[src as usize + 1] += 1;
+    }
+    for i in 0..n {
+        offsets[i + 1] += offsets[i];
+    }
+    let mut forward = vec![0u32; edges.len()];
+    let mut cursor = offsets.clone();
+    for &(src, dst) in edges {
+        forward[cursor[src as usize] as usize] = dst;
+        cursor[src as usize] += 1;
+    }
+    while let Some(i) = stack.pop() {
+        for k in offsets[i as usize]..offsets[i as usize + 1] {
+            let j = forward[k as usize];
+            if !marked[j as usize] {
+                marked[j as usize] = true;
+                stack.push(j);
+            }
+        }
+    }
+
+    let mut undirected: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for &(src, dst) in edges {
+        if !marked[src as usize] && !marked[dst as usize] {
+            undirected[src as usize].push(dst);
+            undirected[dst as usize].push(src);
+        }
+    }
+    let mut component_of = vec![u32::MAX; n];
+    let mut components: Vec<Vec<u32>> = Vec::new();
+    for i in 0..n as u32 {
+        if marked[i as usize] || component_of[i as usize] != u32::MAX {
+            continue;
+        }
+        let id = components.len() as u32;
+        let mut members = Vec::new();
+        let mut queue = vec![i];
+        component_of[i as usize] = id;
+        while let Some(v) = queue.pop() {
+            members.push(v);
+            for &w in &undirected[v as usize] {
+                if component_of[w as usize] == u32::MAX {
+                    component_of[w as usize] = id;
+                    queue.push(w);
+                }
+            }
+        }
+        components.push(members);
+    }
+    components
 }
 
 /// The exact test over one component's **current** fields:

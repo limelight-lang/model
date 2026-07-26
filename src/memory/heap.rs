@@ -1632,6 +1632,64 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
     }
 }
 
+/// One entity block as the rc-walk collector snapshotted it at epoch
+/// open (`rfc/model/gc/rc-walk.md`, Phase 1). Plain numbers, no
+/// pointers: the collector computes slot addresses itself and touches
+/// slots only through the relaxed-atomic header helpers.
+#[cfg(feature = "rc-walk")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EntityBlockSnapshot {
+    /// Address of the first slot (block payload).
+    pub payload: usize,
+    /// Slot stride: the block's size class in bytes.
+    pub class_size: usize,
+    /// Bump cursor at snapshot time: only slots below it are walked.
+    /// The cursor bounds the scan; the epoch byte decides maturity — a
+    /// free-list pop hands out slots far below any cursor mid-epoch.
+    pub slots: usize,
+}
+
+/// Snapshot every entity block for one collection epoch: the region
+/// registry is append-only and a block changes population only between
+/// epochs (frees park while one is in flight), so the list is stable
+/// for the epoch's whole life. Sorted by payload address, for the
+/// child-pointer validation's binary search.
+///
+/// Runs on the collector thread; the kind and cursor reads are relaxed
+/// atomics (a mutator may be commissioning or bumping concurrently —
+/// a block or slot it is mid-way through appears either not at all or
+/// bounded by an older cursor, both conservative).
+#[cfg(feature = "rc-walk")]
+pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let mut blocks = Vec::new();
+    for region in BlockPool::global().regions() {
+        for i in 0..BLOCKS_PER_REGION {
+            let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut HeapBlockHeader;
+            let kind = unsafe {
+                (*(&raw const (*block).private.kind as *const AtomicU32)).load(Ordering::Relaxed)
+            };
+            if kind != BLOCK_KIND_ENTITY {
+                continue;
+            }
+            let size_class = unsafe {
+                (*(&raw const (*block).private.size_class as *const AtomicU32))
+                    .load(Ordering::Relaxed)
+            };
+            let bump = unsafe {
+                (*(&raw const (*block).private.bump as *const AtomicU32)).load(Ordering::Relaxed)
+            };
+            blocks.push(EntityBlockSnapshot {
+                payload: unsafe { (block as *mut u8).add(LINE_SIZE) } as usize,
+                class_size: SIZE_CLASSES[size_class as usize],
+                slots: bump as usize,
+            });
+        }
+    }
+    blocks.sort_unstable_by_key(|b| b.payload);
+    blocks
+}
+
 /// Post `ptr` to its block's cross-thread stack, without needing a heap of
 /// our own — for a thread that frees something it never could have allocated.
 ///

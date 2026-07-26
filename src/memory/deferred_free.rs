@@ -70,9 +70,6 @@ pub(crate) fn active() -> bool {
 
 /// Open the deferral window. Caller (the epoch protocol) owes the
 /// publication handshake before it snapshots — see the module doc.
-// Wired by the epoch protocol (build step 3, commit 4); until then only
-// tests drive the window, so the non-test build sees it dead.
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn begin_epoch() {
     let was = ACTIVE.swap(true, Ordering::Relaxed);
     debug_assert!(!was, "epochs do not nest (one verdict in flight, ever)");
@@ -80,7 +77,6 @@ pub(crate) fn begin_epoch() {
 
 /// Close the deferral window. Frees after this recycle immediately;
 /// the parked backlog waits for [`flush`] on each owning thread.
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn end_epoch() {
     let was = ACTIVE.swap(false, Ordering::Relaxed);
     debug_assert!(was, "end_epoch without begin_epoch");
@@ -108,7 +104,6 @@ pub(crate) unsafe fn park(ptr: *mut u8) {
 /// # Safety
 /// Must run on the thread that parked the allocations (the list and
 /// the underlying frees are both thread-bound).
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) unsafe fn flush() -> usize {
     debug_assert!(!active(), "flush runs only between epochs");
     let mut cursor = PARKED_HEAD.with(|head| head.replace(std::ptr::null_mut()));
@@ -121,6 +116,13 @@ pub(crate) unsafe fn flush() -> usize {
     }
     PARKED_COUNT.with(|c| c.set(c.get() - freed));
     freed
+}
+
+/// A closed epoch left parked memory on this thread: the checkpoint's
+/// flush trigger. Two cheap reads (one global, one thread-local cell).
+#[inline]
+pub(crate) fn flush_due() -> bool {
+    !active() && PARKED_HEAD.with(|head| !head.get().is_null())
 }
 
 /// This thread's parked backlog size (stats, tests).

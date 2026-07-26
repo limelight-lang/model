@@ -30,6 +30,12 @@ versions live in `docs/history/`, marked at the top.
 
 ## Entry points
 
+- rc-walk collector side (`rc-walk` builds): `src/collector.rs` — the
+  epoch state machine (Phases 1–3: snapshot, walk with the three-way
+  classification, judge, condemn, snapshot-compare re-check, verdict
+  posting), steppable for the forcing harness; `run_epoch` is the
+  threaded driver. Block snapshots: `heap::snapshot_entity_blocks`.
+  Trigger is an explicit call — thresholds are unmeasured.
 - rc-walk epoch protocol, mutator side (`rc-walk` builds):
   `src/epoch.rs` — the soft-handshake ack, the verdict message queue
   (confirm + acquit), and the non-reentrant checkpoint; checkpoints

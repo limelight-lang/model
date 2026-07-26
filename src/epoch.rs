@@ -34,8 +34,6 @@ use crate::refcount::RcHeader;
 use crate::walk;
 
 /// What the collector concluded about one component.
-// Constructed by the collector thread (commit 4); tests drive it until then.
-#[cfg_attr(not(test), expect(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Verdict {
     /// Phase 3 confirmed: drain verifies (exact test) and frees.
@@ -73,13 +71,15 @@ thread_local! {
     static MID_DRAIN: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The checkpoint test: two relaxed loads and a predicted branch, taken
-/// only when the collector wants attention. Callers are the allocation
-/// paths named in the module doc.
+/// The checkpoint test: three cheap loads and a predicted branch, taken
+/// only when the collector wants attention or a closed epoch left
+/// parked memory to flush. Callers are the allocation paths named in
+/// the module doc.
 #[inline]
 pub(crate) fn checkpoint() {
     if HANDSHAKE_REQUESTED.load(Ordering::Relaxed)
         || OUTSTANDING_VERDICTS.load(Ordering::Relaxed) != 0
+        || crate::memory::deferred_free::flush_due()
     {
         checkpoint_attend();
     }
@@ -115,6 +115,12 @@ fn checkpoint_attend() {
         OUTSTANDING_VERDICTS.fetch_sub(1, Ordering::Release);
     }
     MID_DRAIN.with(|d| d.set(false));
+    // A closed epoch's parked memory returns at the owning thread's
+    // next checkpoint — this one. Never mid-epoch (the queue's identity
+    // job), and never mid-drain (the frees above parked while active).
+    if crate::memory::deferred_free::flush_due() {
+        unsafe { crate::memory::deferred_free::flush() };
+    }
 }
 
 // --- Collector-side surface (the collector thread of commit 4; tests
@@ -122,14 +128,12 @@ fn checkpoint_attend() {
 
 /// Raise the handshake flag. The collector then waits for
 /// [`handshake_acks`] to move past its snapshot.
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn request_handshake() {
     HANDSHAKE_REQUESTED.store(true, Ordering::Release);
 }
 
 /// Monotonic handshake ack count (`Acquire`: pairs with the ack's
 /// release bump — mutator writes before the checkpoint are visible).
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn handshake_acks() -> u64 {
     HANDSHAKE_ACKS.load(Ordering::Acquire)
 }
@@ -137,7 +141,6 @@ pub(crate) fn handshake_acks() -> u64 {
 /// Post one component's verdict to the owning mutator. The outstanding
 /// count moves **before** the message becomes visible, so a concurrent
 /// drain can never drive the counter below zero.
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn post_verdict(verdict: Verdict, members: Vec<*mut RcHeader>) {
     OUTSTANDING_VERDICTS.fetch_add(1, Ordering::Relaxed);
     QUEUE
@@ -149,7 +152,6 @@ pub(crate) fn post_verdict(verdict: Verdict, members: Vec<*mut RcHeader>) {
 /// Verdicts posted and not yet drained. Zero (with `Acquire`) is the
 /// collector's licence to end the epoch: flush, retire blocks, walk
 /// again.
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn outstanding_verdicts() -> usize {
     OUTSTANDING_VERDICTS.load(Ordering::Acquire)
 }
