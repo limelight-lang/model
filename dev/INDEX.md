@@ -38,7 +38,10 @@ versions live in `docs/history/`, marked at the top.
   `rfc/model/gc/rc-walk.md`; decision entry 2026-07-26).
 - C ABI surface: `src/memory/context.rs` (arena + context),
   `src/object.rs` (`ll_object_new` factory, `ll_object_constructed` —
-  the end-of-construction hook that registers the destructor),
+  the end-of-construction hook that registers the destructor,
+  `ll_entity_die` — the kind-switched death for a bare entity pointer),
+  `src/reference.rs` (`ll_reference_new` — the `&` reference box,
+  kind 3),
   `src/memory/stdapi.rs` (`ll_malloc`/`ll_c_free`/aligned),
   `src/memory/barrier.rs` (`ll_store_ptr`/`ll_store_box`/`ll_drop`/
   `ll_ref_store`), `src/object.rs`

@@ -267,6 +267,14 @@ An `Object` is that header, a class pointer, then 16-byte `Value`
 property slots. `Class` descriptors are immortal and carry their vtable
 inline, after the fixed fields.
 
+Non-object entities carry no class pointer; the header's **kind field**
+(bits 12–14) is what makes a bare pointer self-describing at teardown —
+`ll_entity_die` switches on it (`rfc/model/classes.md`, "Entity kind and
+non-object teardown"). The first produced non-object kind is the
+**reference box** (`&`, kind 3): `RcHeader | Value`, 24 bytes
+(`src/reference.rs`) — dying, it releases its one Value and frees.
+Strings, arrays, `Box` and `WeakRef` arrive with their own subsystems.
+
 **Creation is two steps, and only the second owes a destructor.**
 `ll_object_new` is the factory: it allocates — `GcHeap`/`LongLived` from
 the entity population, arena and immortal from theirs — zero-fills the

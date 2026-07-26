@@ -200,7 +200,9 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 
 /// Decrement the reference count. Returns `true` when the entity died
 /// (count reached zero and it is lifetime-managed by counting) — the
-/// caller must then run teardown (`ll_object_die` for objects).
+/// caller must then run teardown: `ll_entity_die` for a bare pointer
+/// (the kind switch), or `ll_object_die` directly where the caller
+/// statically knows an object.
 ///
 /// # Safety
 /// `header` must point to a live heap entity beginning with `RcHeader`.

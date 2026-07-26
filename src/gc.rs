@@ -121,16 +121,20 @@ unsafe fn set_color(e: *mut RcHeader, c: u32) {
     unsafe { (*e).flags = ((*e).flags & !COLOR_MASK) | (c << CYCLE_COLLECTOR_COLOR_SHIFT) };
 }
 
-/// Heap-object children of a heap entity: the tracer's edge set. Only
-/// the general heap is traced — arenas and immortals are invisible to
-/// every strategy by contract.
+/// Counted heap children of a heap entity: the tracer's edge set,
+/// dispatched on the entity kind through the shared tracer
+/// (`walk::trace_entity`) — an object through `traced_runs`, a
+/// reference box through its one Value. Gating on `is_object` here used
+/// to be vacuously fine; once reference boxes became producible it made
+/// trial deletion stop at the box, so a `$a->next = &$a` ring read
+/// externally rooted forever (found by review, killed by
+/// `a_cycle_through_a_reference_box_is_reclaimed`). Only the general
+/// heap is traced — arenas and immortals are invisible to every
+/// strategy by contract.
 unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
-    if !is_object(unsafe { (*e).flags }) {
-        return Vec::new();
-    }
     let mut children = Vec::new();
     unsafe {
-        crate::object::for_each_counted_child(e as *mut Object, |c| {
+        crate::walk::trace_entity(e, |c| {
             if (*c).memory_category() == MemoryCategory::GcHeap {
                 children.push(c);
             }
@@ -362,9 +366,13 @@ unsafe fn collect_cycles_inner() -> usize {
         for &w in &whites {
             unsafe {
                 debug_assert_eq!((*w).refcount, 0, "white must have no external refs");
-                if is_object((*w).flags) {
-                    crate::object::release_arena_escapes(w as *mut Object);
-                }
+                // By kind, like the trace: a white reference box can hold
+                // an arena escapee in its Value just as an object slot can.
+                crate::walk::trace_entity(w, |child| {
+                    if (*child).memory_category() == MemoryCategory::RequestArena {
+                        crate::memory::barrier::escape_lose(child);
+                    }
+                });
                 crate::memory::stdapi::ll_free(w as *mut u8);
             }
         }
@@ -415,11 +423,10 @@ unsafe fn run_cyclic_destructors(whites: &[*mut RcHeader]) {
     }
     for &w in whites {
         if unsafe { ll_release(w) } {
-            if is_object(unsafe { (*w).flags }) {
-                unsafe { crate::object::ll_object_die(w as *mut Object) };
-            } else {
-                unsafe { crate::memory::stdapi::ll_free(w as *mut u8) };
-            }
+            // Ordinary death: the kind switch (a white is an object today
+            // — only objects buffer and trace here — but the dispatch is
+            // the uniform one).
+            unsafe { crate::object::ll_entity_die(w) };
         }
     }
 }
@@ -596,6 +603,33 @@ mod tests {
                 "the dead holder let go of its escapee"
             );
         }
+        arena.reset(|_| {});
+    }
+
+    /// A ring through a reference box (`$a->next = &$a`): trial deletion
+    /// must trace THROUGH the box by kind, or the box's back-edge is
+    /// invisible, the object reads externally rooted, and the ring leaks
+    /// silently forever.
+    #[test]
+    fn a_cycle_through_a_reference_box_is_reclaimed() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = node_class();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let r = unsafe { crate::reference::ll_reference_new(&mut ctx, MemoryCategory::GcHeap) };
+        unsafe {
+            // a.next owns the box's initial ref; the box owns a's second.
+            Object::prop_at(a, 16).write(Value::entity(Tag::Reference, r as *mut RcHeader));
+            crate::refcount::ll_retain(a as *mut RcHeader);
+            (*r).value = Value::entity(Tag::Object, a as *mut RcHeader);
+            // The frame's reference dies: a is buffered as a candidate.
+            assert!(!ll_release(a as *mut RcHeader));
+        }
+
+        let freed = unsafe { collect_cycles() };
+        assert_eq!(freed, 2, "object + box are one garbage ring");
         arena.reset(|_| {});
     }
 

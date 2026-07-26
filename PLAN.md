@@ -60,10 +60,15 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   `traced_runs` as two typed lists (pointer runs stride-8 skip-NULL, Box
   runs stride-16 skip-by-flag). Foundation for the rest. `rfc/model/classes.md`,
   `lowering.md`.
-- [ ] **A2. Entity kinds + bare-pointer teardown switch** — actually
-  produce non-object kinds (string / array / reference / Box / WeakRef /
-  lazy) and switch `die` on the kind field; today `die` handles objects
-  only. Strings and arrays are non-objects (no class pointer).
+- [~] **A2. Entity kinds + bare-pointer teardown switch** — *the switch
+  and the first non-object kind landed 2026-07-26*: `ll_entity_die`
+  dispatches every bare-pointer death on the kind field (barrier
+  `drop_ref`, gc un-guard, walk un-guard all go through it), and the
+  **reference box** (kind 3, `RcHeader | Value`, `src/reference.rs`) is
+  produced, traced, severed and collected — the `$a->r = &$a` ring test.
+  Still open: string/array (their layouts are Phase C), Box/WeakRef
+  (FFI / weak-reference machinery), lazy (compiler), and the typed
+  slot-reference variant (type system).
 - [x] **A4. Store-barrier micro-ops** (2026-07-25) — `store_ptr` /
   `store_box` (publish) + `drop_ref` (release old, slot-kind-independent);
   `owner_cat` is a compiler parameter, not a load from owner flags, so a

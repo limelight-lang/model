@@ -338,27 +338,6 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
     true
 }
 
-/// Drop this object's escape hold-counts on the request-arena entities
-/// it references (`lose`, `rfc/model/memory/arenas.md`). A holder going
-/// away is the same event as a slot being overwritten, and it has to
-/// happen however the holder dies.
-///
-/// Split out for the cycle collector, which frees its white set directly
-/// and never enters [`ll_object_die`]'s phase 2 — where this is done
-/// inline, alongside the child releases the collector must *not* repeat.
-///
-/// # Safety
-/// `obj` must be a live object whose slots are still readable.
-pub(crate) unsafe fn release_arena_escapes(obj: *mut Object) {
-    unsafe {
-        for_each_counted_child(obj, |child| {
-            if (*child).memory_category() == MemoryCategory::RequestArena {
-                crate::memory::barrier::escape_lose(child);
-            }
-        });
-    }
-}
-
 /// The class's internal destructor `dispose(obj)`
 /// (`rfc/model/classes.md`, "dispose — the internal destructor"), as a
 /// function-pointer type. It runs the user `__destruct` under the
@@ -450,6 +429,33 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     // buffer was already cleared inside `dispose`, before its child drops.
     if unsafe { (*obj).rc.memory_category() } == MemoryCategory::GcHeap {
         unsafe { crate::memory::stdapi::ll_free(obj as *mut u8) };
+    }
+}
+
+/// Teardown for a **bare entity pointer**: the kind field selects the
+/// free routine (`rfc/model/classes.md`, "Entity kind and non-object
+/// teardown") — one flags load and a small switch. Object and lazy
+/// carry a class pointer and dispatch through its `dispose`; a
+/// reference box releases its one Value and frees; string, array, Box
+/// and WeakRef gain arms when the crate can produce them (Phase C /
+/// FFI), and reaching them today is a bug, not a leak policy.
+///
+/// # Safety
+/// `entity` must be a live entity whose count just reached zero (or a
+/// collector owns it).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
+    use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
+    const OBJECT: u32 = EntityKind::Object as u32;
+    const LAZY: u32 = EntityKind::Lazy as u32;
+    const REFERENCE: u32 = EntityKind::Reference as u32;
+    let kind = (unsafe { (*entity).flags } & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
+    match kind {
+        OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },
+        REFERENCE => unsafe {
+            crate::reference::reference_die(entity as *mut crate::reference::LLReference)
+        },
+        _ => debug_assert!(false, "teardown for an entity kind the crate cannot produce yet"),
     }
 }
 

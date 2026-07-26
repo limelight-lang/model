@@ -13,6 +13,16 @@
 use crate::memory::heap::for_each_entity_slot;
 use crate::object::{Object, for_each_counted_child};
 use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind, RcHeader};
+use crate::value::Value;
+
+/// The kind bits of a live entity's header.
+///
+/// # Safety
+/// `e` must point to a live entity header.
+#[inline]
+unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
+    (unsafe { (*e).flags } & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT
+}
 
 /// Visit every counted child of `entity`, dispatching on the kind bits
 /// **before** touching `+8`: only Object (0) and Lazy (6) carry a class
@@ -20,22 +30,29 @@ use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind, RcHeader}
 /// does not exist is a wild read (`rfc/model/gc/rc-walk.md`, "What the
 /// walker traces").
 ///
-/// Kinds this crate does not yet produce (String, Array, Reference, Box,
-/// WeakRef — A2) are skipped, which is conservative: an omitted source
-/// only removes in-edges, so its targets are pinned as roots. Array and
-/// Reference tracing must land with A2, before the collector ships —
-/// String, WeakRef and Box stay skipped by design (no out-edge can close
-/// a ring / untraceable C payload).
+/// A reference box (kind 3) is traced through its one Value. Kinds this
+/// crate does not yet produce (String, Array, Box, WeakRef) are skipped,
+/// which is conservative: an omitted source only removes in-edges, so
+/// its targets are pinned as roots. Array tracing must land with
+/// Phase C, before the collector ships — String, WeakRef and Box stay
+/// skipped by design (no out-edge can close a ring / untraceable C
+/// payload).
 ///
 /// # Safety
 /// `entity` must point to a live entity whose slots are still readable.
-pub unsafe fn trace_entity(entity: *mut RcHeader, visit: impl FnMut(*mut RcHeader)) {
-    let flags = unsafe { (*entity).flags };
-    let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
+pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcHeader)) {
+    let kind = unsafe { entity_kind(entity) };
     const OBJECT: u32 = EntityKind::Object as u32;
     const LAZY: u32 = EntityKind::Lazy as u32;
+    const REFERENCE: u32 = EntityKind::Reference as u32;
     match kind {
         OBJECT | LAZY => unsafe { for_each_counted_child(entity as *mut Object, visit) },
+        REFERENCE => {
+            let v = unsafe { (*(entity as *mut crate::reference::LLReference)).value };
+            if v.is_refcounted() {
+                visit(v.entity_ptr());
+            }
+        }
         _ => {}
     }
 }
@@ -62,8 +79,7 @@ pub unsafe fn heap_census() -> Census {
     unsafe {
         for_each_entity_slot(|entity| {
             census.entities += 1;
-            let kind = ((*entity).flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
-            census.by_kind[kind as usize] += 1;
+            census.by_kind[entity_kind(entity) as usize] += 1;
             trace_entity(entity, |_child| census.edges += 1);
         });
     }
@@ -319,6 +335,14 @@ unsafe fn collect_cycles_inner() -> CollectStats {
         for &m in &members {
             if is_object(unsafe { (*m).flags }) {
                 unsafe { crate::object::sever_counted_children(m as *mut Object, &mut displaced) };
+            } else if unsafe { entity_kind(m) } == EntityKind::Reference as u32 {
+                // A reference member severs its one Value the same way.
+                let r = m as *mut crate::reference::LLReference;
+                let v = unsafe { (*r).value };
+                if v.is_refcounted() {
+                    unsafe { (*r).value = Value::null() };
+                    displaced.push(v.entity_ptr());
+                }
             }
         }
         let mut external: Vec<*mut RcHeader> = Vec::new();
@@ -376,11 +400,7 @@ unsafe fn exact_test(members: &[*mut RcHeader], discount: u32) -> bool {
 unsafe fn unguard(members: &[*mut RcHeader], stats: &mut CollectStats) {
     for &m in members {
         if unsafe { ll_release(m) } {
-            if is_object(unsafe { (*m).flags }) {
-                unsafe { crate::object::ll_object_die(m as *mut Object) };
-            } else {
-                unsafe { crate::memory::stdapi::ll_free(m as *mut u8) };
-            }
+            unsafe { crate::object::ll_entity_die(m) };
             stats.collected += 1;
         }
     }
@@ -683,6 +703,39 @@ mod tests {
             assert!(ll_release(v as *mut RcHeader));
             crate::object::ll_object_die(v);
         }
+        arena.reset(|_| {});
+    }
+
+    /// The `$a->r = &$a` ring: object → reference box → object. The
+    /// first non-object kind inside a collected component — the
+    /// tracer's reference arm, the drain's reference sever and the kind
+    /// switch at death all fire.
+    #[test]
+    fn a_cycle_through_a_reference_box_is_collected() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("RefRingHolder")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let r = unsafe { crate::reference::ll_reference_new(&mut ctx, MemoryCategory::GcHeap) };
+        unsafe {
+            // a.child owns the box's initial ref; the box owns a's.
+            Object::prop_at(a, 16).write(Value::entity(Tag::Reference, r as *mut RcHeader));
+            (*r).value = Value::entity(Tag::Object, a as *mut RcHeader);
+        }
+        let census = unsafe { heap_census() };
+        assert!(census.by_kind[EntityKind::Reference as usize] >= 1, "the box is walked");
+
+        unsafe { collect_cycles() };
+        let seen = walked_addresses();
+        assert!(!seen.contains(&(a as usize)), "the object died");
+        assert!(!seen.contains(&(r as usize)), "the box died");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "a's destructor ran");
         arena.reset(|_| {});
     }
 

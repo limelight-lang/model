@@ -34,7 +34,7 @@
 
 use crate::memory::arena::Arena;
 use crate::memory::context::{LLContext, resolve_arena};
-use crate::refcount::{COW, IS_ESCAPEE, MemoryCategory, RcHeader, is_object, ll_release, ll_retain};
+use crate::refcount::{COW, IS_ESCAPEE, MemoryCategory, RcHeader, ll_release, ll_retain};
 use crate::value::Value;
 
 /// A longer-lived container took a reference to request-arena object
@@ -213,11 +213,10 @@ pub(crate) unsafe fn drop_ref(owner_cat: MemoryCategory, old: *mut RcHeader) {
 
     if !old_is_log_owned && unsafe { ll_release(old) } {
         // Last reference gone: tear it down (destructor, release children,
-        // free). Dispatch on entity kind — only objects have teardown
-        // today; strings/arrays claim their own kind bits later.
-        if is_object(unsafe { (*old).flags }) {
-            unsafe { crate::object::ll_object_die(old as *mut crate::object::Object) };
-        }
+        // free), dispatched on the entity kind (`ll_entity_die`) — an
+        // object through its class's dispose, a reference box by
+        // releasing its Value.
+        unsafe { crate::object::ll_entity_die(old) };
     }
 }
 
