@@ -686,7 +686,83 @@ mod tests {
         arena.reset(|_| {});
     }
 
-    /// The smallest cycle: an object holding itself.
+    /// DC1's arithmetic seed (`rfc/model/gc/rc-walk-danger-cases.md`):
+    /// self-edges inflate IN, and the diff must still see the frame
+    /// reference. Two self-edges + one external ref: `rc 3 > in 2` —
+    /// root, survives; drop the external ref and `rc 2 = in 2` —
+    /// collected. (The full DC1 kill needs stale concurrent reads and
+    /// the `byte_only` broken variant — build step 3 material; the TLC
+    /// battery already kills it at the model level.)
+    #[test]
+    fn self_edges_do_not_mask_an_external_reference() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("SelfLooper")
+            .prop("child", true)
+            .prop("link", true)
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let s = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        unsafe {
+            tie(s, 16, s); // self-edge 1 owns the initial ref
+            crate::refcount::ll_retain(s as *mut RcHeader);
+            tie(s, 32, s); // self-edge 2 owns the second
+            crate::refcount::ll_retain(s as *mut RcHeader); // the frame ref
+        }
+
+        unsafe { collect_cycles() };
+        assert!(
+            walked_addresses().contains(&(s as usize)),
+            "rc 3 > in 2: the frame reference must root it"
+        );
+
+        assert!(!unsafe { ll_release(s as *mut RcHeader) });
+        unsafe { collect_cycles() };
+        assert!(!walked_addresses().contains(&(s as usize)), "rc 2 = in 2: garbage");
+        arena.reset(|_| {});
+    }
+
+    /// The corollary of the central identity, DC2's sound half: an
+    /// un-walked holder (here LongLived — no `rc[]` row, no recorded
+    /// edge) pins its GcHeap child as a root. Skipping costs recall,
+    /// never correctness.
+    #[test]
+    fn an_unwalked_holder_roots_its_gc_heap_child() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("UnwalkedHolder").prop("child", true).build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let holder = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::LongLived) };
+        let child = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        unsafe { tie(holder, 16, child) }; // holder's slot owns child's ref
+
+        unsafe { collect_cycles() };
+        assert!(
+            walked_addresses().contains(&(child as usize)),
+            "the holder's edge is in RC and never in IN: child is a computed root"
+        );
+
+        // Cleanup. LongLived has no teardown policy yet; free the pair by
+        // hand, keeping the entity-block invariant that a slot is freed
+        // only at refcount zero (bytes 0–7 survive the free and ARE the
+        // occupancy test — a nonzero header in a freed slot would fake a
+        // live entity to every later walk).
+        unsafe {
+            assert!(ll_release(child as *mut RcHeader));
+            crate::object::ll_object_die(child);
+            (*holder).rc.refcount = 0;
+            crate::memory::stdapi::ll_free(holder as *mut u8);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The smallest cycle: an object holding itself. Doubles as DC5's
+    /// runtime-side witness: the test body's raw pointer is exactly an
+    /// uncounted borrow, and it does not root — the compiler obligation
+    /// (`rfc/model/memory/static-lifetimes.md`, "What may own a borrow")
+    /// is the only thing that makes such borrows legal.
     #[test]
     fn a_self_loop_is_collected() {
         let _g = crate::memory::block_pool::test_guard();
