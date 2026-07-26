@@ -13,8 +13,8 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 Done, per RFC:
 
 - **Memory manager**, end to end: arenas, the reset/promote fixpoint,
-  immortal region, buffers / buffer-arena, block pool, the Immix-shaped
-  heap, the store-barrier log reserve, the store barrier + remembered set
+  immortal region, buffers / buffer-arena, block pool, the size-class
+  heap (mimalloc model), the store-barrier log reserve, the store barrier + remembered set
   + release-at-reset list, stats layer 1. Audit closed, clean under Miri.
 - **Object model**: `value` (16-byte Box), `intern`, `class` (inline
   vtable, itables, Cohen display), `object` (`ll_object_new`, three-phase
@@ -117,10 +117,14 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   the exact test's correctness harness. Next rung: step 3 (collector
   thread, epoch/condemned bytes, handshake filter, message queue,
   deferred-free bit).
-- [ ] Immix-shaped `GcHeap` allocator → line recycling of retained blocks
-  + sparse-block evacuation at reset (`arena-reset.md`). **Stale**: Immix
-  was dropped from the plan 2026-07-25; this line awaits the arena-reset
-  redesign write-up.
+- ~~Immix-shaped `GcHeap` allocator~~ — **dropped entirely 2026-07-25**
+  (confirmed 2026-07-27): no line recycling, no reuse of retained-block
+  holes. Segregated entity blocks solved what Immix was drafted for;
+  retained blocks stay out of circulation while their survivors live
+  (`arena-reset.md`, Retention). Small future mechanism: return a
+  fully-emptied retained block to the pool. Sparse-block **evacuation**
+  at reset remains a real open item, gated on the escapee-reference
+  fixup (`arena-reset.md`, "Evacuation is now-or-never").
 - [x] Run `__destruct` of cyclically-dead objects (2026-07-25) — Zend-style
   discipline (`run_cyclic_destructors`): restore the white set's real
   counts, guard, run each `__destruct` once through the ordinary teardown,
