@@ -42,6 +42,7 @@ enum Log {
     Larges,
     Escapees,
     ReleaseAtReset,
+    Weak,
 }
 
 pub struct Arena {
@@ -69,6 +70,14 @@ pub struct Arena {
     /// does NOT release a displaced value on overwrite
     /// (`rfc/model/memory/arenas.md`, "Why no release on overwrite").
     release_at_reset: *mut LogSegment,
+    /// Arena-resident objects that took a weak reference while alive
+    /// here. Reset walks the list after the destructor fixpoint, nulling
+    /// each dying entry's weak cell before the pages are reused —
+    /// otherwise `$weak->get()` would return a pointer into recycled bump
+    /// memory (`rfc/model/weak-references.md`, "Death notification").
+    /// Append-only; duplicates and promoted survivors are tolerated by
+    /// the walk's own tests.
+    weak: *mut LogSegment,
     /// Carving cursor for log segments cut from a reserve block, kept
     /// apart from `bump` on purpose: a reserve block must never become
     /// the arena's allocation front, or the next ordinary `alloc` would
@@ -94,6 +103,7 @@ impl Arena {
             larges: std::ptr::null_mut(),
             escapees: std::ptr::null_mut(),
             release_at_reset: std::ptr::null_mut(),
+            weak: std::ptr::null_mut(),
             log_bump: std::ptr::null_mut(),
             log_limit: std::ptr::null_mut(),
         }
@@ -247,6 +257,26 @@ impl Arena {
         );
     }
 
+    /// Weak-machinery hook: `obj` (arena-resident) took its first weak
+    /// reference. Reset's weak walk nulls its cell before the pages are
+    /// reused. A lost record would dangle — the cell would keep
+    /// resolving into recycled memory — so refusal aborts like the
+    /// escapee log's.
+    pub fn log_weak(&mut self, obj: *mut RcHeader) {
+        assert!(
+            self.log_push(Log::Weak, obj as usize),
+            "out of memory recording an arena weak referent — the record cannot \n             be dropped without a weak cell dangling at reset"
+        );
+    }
+
+    /// One-shot drain of the weak log (same take semantics): yields each
+    /// recorded weakly-referenced arena entity.
+    pub fn drain_weak_log(&mut self, mut f: impl FnMut(*mut RcHeader)) {
+        let head = self.weak;
+        self.weak = std::ptr::null_mut();
+        Self::drain_log(head, |rec| f(rec as *mut RcHeader));
+    }
+
     /// End of request: run pre-destructors via the callback, then
     /// return every block to the pool. O(blocks + log records), not
     /// O(objects). The full promotion discipline (validation, trace,
@@ -285,6 +315,12 @@ impl Arena {
                 // promote path dispatches real entity teardown.
             }
         });
+        // The weak walk — after the destructor fixpoint, before the pages
+        // go back. Unlike teardown, this is not optional mechanics: a
+        // skipped walk leaves cells resolving into recycled memory. The
+        // call into `weak` is the same kind of peer-service call as
+        // `ll_release` above.
+        unsafe { crate::weak::drain_arena_weak_log(self) };
         self.finish_reset(|_| false);
     }
 
@@ -325,7 +361,8 @@ impl Arena {
         debug_assert!(
             self.destructors.is_null()
                 && self.escapees.is_null()
-                && self.release_at_reset.is_null(),
+                && self.release_at_reset.is_null()
+                && self.weak.is_null(),
             "logs must be drained before finish_reset"
         );
 
@@ -376,6 +413,7 @@ impl Arena {
             Log::Larges => self.larges,
             Log::Escapees => self.escapees,
             Log::ReleaseAtReset => self.release_at_reset,
+            Log::Weak => self.weak,
         };
 
         let head = if head.is_null() || unsafe { (*head).count } == LOG_SEG_RECORDS {
@@ -399,6 +437,7 @@ impl Arena {
             Log::Larges => self.larges = head,
             Log::Escapees => self.escapees = head,
             Log::ReleaseAtReset => self.release_at_reset = head,
+            Log::Weak => self.weak = head,
         }
         true
     }

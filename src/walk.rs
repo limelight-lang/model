@@ -31,12 +31,12 @@ unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
 /// walker traces").
 ///
 /// A reference box (kind 3) is traced through its one Value. Kinds this
-/// crate does not yet produce (String, Array, Box, WeakRef) are skipped,
-/// which is conservative: an omitted source only removes in-edges, so
-/// its targets are pinned as roots. Array tracing must land with
-/// Phase C, before the collector ships — String, WeakRef and Box stay
-/// skipped by design (no out-edge can close a ring / untraceable C
-/// payload).
+/// crate does not yet produce (String, Array, Box) are skipped, which
+/// is conservative: an omitted source only removes in-edges, so its
+/// targets are pinned as roots. Array tracing must land with Phase C,
+/// before the collector ships — String, WeakRef and Box stay skipped by
+/// design (no out-edge can close a ring / untraceable C payload; a weak
+/// cell's target is deliberately uncounted, `src/weak.rs`).
 ///
 /// # Safety
 /// `entity` must point to a live entity whose slots are still readable.
@@ -216,6 +216,13 @@ unsafe fn collect_cycles_inner() -> CollectStats {
         for &m in members {
             unsafe { (*m).refcount += 1 };
         }
+    }
+    // Null every confirmed member's weak cell BEFORE any destructor runs
+    // — the binding obligation of `rfc/model/gc/rc-walk.md`: a weak load
+    // is the one channel that could hand a destructor a member the exact
+    // test cannot account for. Irrevocable if the re-verify acquits.
+    for members in &confirmed {
+        unsafe { crate::weak::notify_members(members) };
     }
     // Run each pending `__destruct` exactly once. PHP code: it may store,
     // release, allocate, resurrect — a store retains normally.
@@ -483,6 +490,9 @@ pub(crate) unsafe fn drain_confirmed(members: &[*mut RcHeader]) -> DrainOutcome 
     for &m in members {
         unsafe { (*m).refcount += 1 }; // the guard; a dead member goes 0 → 1
     }
+    // Weak cells nulled before any destructor — same obligation and
+    // ordering as `collect_cycles` (`rfc/model/weak-references.md`).
+    unsafe { crate::weak::notify_members(members) };
     let mut any_destructor_ran = false;
     for &m in members {
         if is_object(unsafe { (*m).flags }) {

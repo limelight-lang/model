@@ -18,6 +18,7 @@ pub mod refcount;
 pub mod reference;
 pub mod value;
 pub mod walk;
+pub mod weak;
 
 pub use class::{Class, ClassBuilder};
 pub use intern::{LLString, intern, intern_str};
@@ -25,3 +26,4 @@ pub use memory::{Arena, BlockPool, Heap, LLContext, LimelightAlloc};
 pub use object::Object;
 pub use refcount::{MemoryCategory, RcHeader};
 pub use value::{Tag, Value};
+pub use weak::LLWeakRef;

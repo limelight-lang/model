@@ -48,6 +48,12 @@ versions live in `docs/history/`, marked at the top.
   over `memory::heap::for_each_entity_slot`; entity blocks and the
   region registry are in `heap.rs`/`block_pool.rs` (design:
   `rfc/model/gc/rc-walk.md`; decision entry 2026-07-26).
+- Weak references (rc-walk step 4): `src/weak.rs` — the kind-5 weak
+  cell, the per-thread weak table, death notification (`notify_death` /
+  `notify_members` / `drain_arena_weak_log`) and the
+  `ll_weakref_create` / `ll_weakref_get` ABI. Notification sites live
+  in `object.rs` (dispose phase 2, first act), both collectors, and
+  arena reset. Design: `rfc/model/weak-references.md`.
 - C ABI surface: `src/memory/context.rs` (arena + context),
   `src/object.rs` (`ll_object_new` factory, `ll_object_constructed` —
   the end-of-construction hook that registers the destructor,

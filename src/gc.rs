@@ -53,8 +53,8 @@ use std::cell::RefCell;
 use crate::object::Object;
 use crate::refcount::{
     CANDIDATE_INDEX_MASK, CANDIDATE_INDEX_MAX, CANDIDATE_INDEX_SHIFT, CYCLE_COLLECTOR_BUFFERED,
-    CYCLE_COLLECTOR_COLOR_SHIFT, DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHeader,
-    is_object, ll_release,
+    CYCLE_COLLECTOR_COLOR_SHIFT, DESTRUCTOR_PENDING, DESTRUCTOR_RAN, ENTITY_KIND_MASK, EntityKind,
+    MemoryCategory, RcHeader, is_object, ll_release,
 };
 #[cfg(all(test, not(feature = "rc-walk")))]
 use crate::value::Value;
@@ -349,6 +349,14 @@ unsafe fn collect_cycles_inner() -> usize {
             unsafe { collect_white(r, &mut whites) };
         }
 
+        // Null the whites' weak cells BEFORE any destructor runs — the
+        // obligation `rfc/model/weak-references.md` binds on every cycle
+        // teardown — and before the raw frees below, which bypass
+        // `dispose` and would otherwise leave a cell dangling. Runs every
+        // round, so destructor-recreated weak state on a still-garbage
+        // white is cleared by the next round's pass.
+        unsafe { crate::weak::notify_members(&whites) };
+
         // Any cyclic garbage still owing a `__destruct` cannot be freed yet:
         // run the destructors (`run_cyclic_destructors`) and re-collect. A
         // resurrected subgraph survives the re-trace; the rest returns as
@@ -378,6 +386,11 @@ unsafe fn collect_cycles_inner() -> usize {
         for &w in &whites {
             unsafe {
                 debug_assert_eq!((*w).refcount, 0, "white must have no external refs");
+                debug_assert_eq!(
+                    (*w).flags & crate::refcount::HAS_WEAK_REFERENCES,
+                    0,
+                    "the weak pass above ran this round, before any user code"
+                );
                 // By kind, like the trace: a white reference box can hold
                 // an arena escapee in its Value just as an object slot can.
                 crate::walk::trace_entity(w, |child| {
@@ -385,7 +398,18 @@ unsafe fn collect_cycles_inner() -> usize {
                         crate::memory::barrier::escape_lose(child);
                     }
                 });
-                crate::memory::stdapi::ll_free(w as *mut u8);
+                // A white weak cell has state OUTSIDE the traced graph: a
+                // still-live target's weak-table row maps to it, and its
+                // target's bit 7 is set. The raw free below would leave
+                // both dangling — the next create() on that target would
+                // return this freed cell. Its die-arm unregisters and
+                // frees; it never touches counts, so trial-deleted
+                // siblings are safe.
+                if (*w).flags & ENTITY_KIND_MASK == EntityKind::WeakRef.to_flags() {
+                    crate::weak::weakref_die(w as *mut crate::weak::LLWeakRef);
+                } else {
+                    crate::memory::stdapi::ll_free(w as *mut u8);
+                }
             }
         }
         reclaimed += whites.len();
@@ -435,9 +459,9 @@ unsafe fn run_cyclic_destructors(whites: &[*mut RcHeader]) {
     }
     for &w in whites {
         if unsafe { ll_release(w) } {
-            // Ordinary death: the kind switch (a white is an object today
-            // — only objects buffer and trace here — but the dispatch is
-            // the uniform one).
+            // Ordinary death: the kind switch — a white may be an object,
+            // a reference box or a weak cell (only objects buffer, but the
+            // trace pulls the other kinds in as their holders' children).
             unsafe { crate::object::ll_entity_die(w) };
         }
     }

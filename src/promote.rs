@@ -172,16 +172,24 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         assert!(rounds <= ARENA_RESET_MAX_ROUNDS, "arena reset did not converge");
     }
 
+    // The weak walk — after every destructor has settled and the
+    // survivors' categories are rewritten, before the pages go back:
+    // dying entries get their cells nulled, promoted survivors are
+    // recognized by their new category and keep resolving
+    // (`rfc/model/weak-references.md`, "Death notification"). Runs no
+    // user code, so it cannot grow the logs behind the settled fixpoint.
+    unsafe { crate::weak::drain_arena_weak_log(arena) };
+
     unsafe { (*arena).finish_reset(|block| retained.contains(&(block as usize))) };
 }
 
-/// Entity teardown dispatch from a bare header (the Box tag is not
-/// available here). Strings/arrays claim their own kind bits later.
+/// Entity teardown dispatch from a bare header — the uniform kind
+/// switch. Went through `ll_object_die` directly until weak cells and
+/// reference boxes could land in the release log; the kind switch frees
+/// them correctly (a bare `ll_object_die` on a kind-3/5 entity would
+/// read a class pointer that is not there).
 unsafe fn die(entity: *mut RcHeader) {
-    if is_object(unsafe { (*entity).flags }) {
-        unsafe { crate::object::ll_object_die(entity as *mut Object) };
-    }
-    // Non-object entities have no teardown yet.
+    unsafe { crate::object::ll_entity_die(entity) };
 }
 
 #[inline]

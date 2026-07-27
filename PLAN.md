@@ -66,9 +66,9 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   `drop_ref`, gc un-guard, walk un-guard all go through it), and the
   **reference box** (kind 3, `RcHeader | Value`, `src/reference.rs`) is
   produced, traced, severed and collected — the `$a->r = &$a` ring test.
-  Still open: string/array (their layouts are Phase C), Box/WeakRef
-  (FFI / weak-reference machinery), lazy (compiler), and the typed
-  slot-reference variant (type system).
+  Still open: string/array (their layouts are Phase C), Box (FFI),
+  lazy (compiler), and the typed slot-reference variant (type system).
+  WeakRef (kind 5) landed with rc-walk step 4 (`src/weak.rs`, below).
 - [x] **A4. Store-barrier micro-ops** (2026-07-25) — `store_ptr` /
   `store_box` (publish) + `drop_ref` (release old, slot-kind-independent);
   `owner_cat` is a compiler parameter, not a load from owner flags, so a
@@ -154,8 +154,20 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   rejected, BENCHMARKS), a quadratic re-check fixed, and the
   free-running stress test (Miri-ignored; stepped tests carry Miri).
   **Step 3 is complete.** Next rungs stay per rc-walk.md build order:
-  weak references (4), the escalation ladder if measurement shows
-  starvation (5); trigger thresholds remain measurements.
+  the escalation ladder if measurement shows starvation (5); trigger
+  thresholds remain measurements.
+- [x] **rc-walk build step 4 — weak references** (2026-07-27,
+  `src/weak.rs`; design `rfc/model/weak-references.md`). The canonical
+  `WeakReference` entity (kind 5, 16 bytes, always GC-heap) doubles as
+  the weak cell; a per-thread weak table (target address → cell) lets
+  the dying target null it. Notification wired at all death sites:
+  first act of dispose phase 2 (before child releases — the ordering a
+  cascading child `__destruct` needs), pre-destructor passes in
+  `walk::collect_cycles` / `drain_confirmed` / `gc::collect_cycles`
+  (the PEP-442 obligation), and the arena reset weak walk (after the
+  destructor fixpoint; promoted survivors keep their cells). ABI:
+  `ll_weakref_create` / `ll_weakref_get`. `WeakMap` waits for maps;
+  the table row widens to a subscriber list then.
 - ~~Immix-shaped `GcHeap` allocator~~ — **dropped entirely 2026-07-25**
   (confirmed 2026-07-27): no line recycling, no reuse of retained-block
   holes. Segregated entity blocks solved what Immix was drafted for;

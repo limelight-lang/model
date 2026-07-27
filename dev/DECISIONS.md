@@ -8,7 +8,31 @@ never edited or deleted.
 
 ---
 
-## 2026-07-27 — the mutator's racy stores go relaxed-atomic; the cursor snapshot dies for it (rc-walk step 3, commit 6)
+## 2026-07-27 — weak references: the cell is the canonical WeakRef entity; one table row, not a subscriber list yet (rc-walk step 4)
+
+**Decided:** `src/weak.rs` implements `rfc/model/weak-references.md`
+as designed — no separate side entry, per-thread table, notification
+at every death site — with one narrowing: the table row is a single
+canonical-cell pointer, not the design's tagged subscriber list. The
+list exists for `WeakMap`, which the crate cannot represent yet;
+building the enum for one live variant is abstraction ahead of its
+third case. The row widens when maps land; nothing else changes.
+
+**Also decided here:** the weak walk hangs off arena reset in *both*
+reset paths — `Arena::reset_with` (bare mechanics) and
+`promote::arena_reset_full` — because a skipped walk is not a missing
+feature but a dangling cell; the memory layer calling `weak` is the
+same peer-service shape as its existing `ll_release` call. And
+`promote::die` now dispatches through `ll_entity_die` (it read the
+class pointer of any entity — wrong for kinds 3/5, which have none;
+a released reference box in the release log leaked its Value).
+
+**Rejected:** a `Subscriber` enum now (one variant, no consumer);
+notification from the collector thread (the table would need locks —
+every site already runs on the owning thread).
+
+**Cost:** none measured; the hot paths gain one masked test on an
+already-loaded flags word, teardown only.
 
 **Decided:** under `rc-walk`, every mutator store a free-running
 collector can race compiles as a relaxed atomic: object-field stores

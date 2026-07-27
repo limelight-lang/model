@@ -441,6 +441,20 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
         }
     }
 
+    // Phase 2, first act — weak notification, BEFORE any child release:
+    // the drops below cascade into user code, and a child's `__destruct`
+    // calling `get()` on this refcount-zero object would receive a strong
+    // reference that outlives the free (`rfc/model/weak-references.md`;
+    // regression: `weak::tests::own_destructor_still_sees_the_object_...`).
+    // Read the flags fresh: the `__destruct` above may itself have created
+    // the weak state.
+    if unsafe { crate::refcount::header_flags(obj as *const RcHeader) }
+        & crate::refcount::HAS_WEAK_REFERENCES
+        != 0
+    {
+        unsafe { crate::weak::notify_death(obj as *mut RcHeader) };
+    }
+
     // Phase 2 — drop each counted child through the barrier's `drop`
     // micro-op: escape-lose for a held arena escapee, release + cascade
     // otherwise. `owner_cat` is this object's category — always GcHeap on
@@ -487,22 +501,19 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
 /// access during an epoch), a plain read otherwise.
 #[inline]
 pub(crate) unsafe fn header_category(header: *const RcHeader) -> MemoryCategory {
-    #[cfg(not(feature = "rc-walk"))]
-    return unsafe { (*header).memory_category() };
-    #[cfg(feature = "rc-walk")]
-    {
-        let (_, flags) = unsafe { crate::refcount::mutator_load_header(header) };
-        MemoryCategory::from_flags(flags)
-    }
+    MemoryCategory::from_flags(unsafe { crate::refcount::header_flags(header) })
 }
 
 /// Teardown for a **bare entity pointer**: the kind field selects the
 /// free routine (`rfc/model/classes.md`, "Entity kind and non-object
 /// teardown") — one flags load and a small switch. Object and lazy
 /// carry a class pointer and dispatch through its `dispose`; a
-/// reference box releases its one Value and frees; string, array, Box
-/// and WeakRef gain arms when the crate can produce them (Phase C /
-/// FFI), and reaching them today is a bug, not a leak policy.
+/// reference box releases its one Value and frees; a weak cell
+/// unregisters from the weak table; string, array and Box gain arms
+/// when the crate can produce them (Phase C / FFI), and reaching them
+/// today is a bug, not a leak policy. The future Box arm owes the
+/// bit-7 weak-notify test — a Box is a legal `WeakReference` target
+/// (`rfc/model/weak-references.md`, "every entity kind honours bit 7").
 ///
 /// # Safety
 /// `entity` must be a live entity whose count just reached zero (or a
@@ -513,16 +524,15 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     const OBJECT: u32 = EntityKind::Object as u32;
     const LAZY: u32 = EntityKind::Lazy as u32;
     const REFERENCE: u32 = EntityKind::Reference as u32;
-    #[cfg(not(feature = "rc-walk"))]
-    let flags = unsafe { (*entity).flags };
-    #[cfg(feature = "rc-walk")]
-    let flags = unsafe { crate::refcount::mutator_load_header(entity) }.1;
+    const WEAKREF: u32 = EntityKind::WeakRef as u32;
+    let flags = unsafe { crate::refcount::header_flags(entity) };
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },
         REFERENCE => unsafe {
             crate::reference::reference_die(entity as *mut crate::reference::LLReference)
         },
+        WEAKREF => unsafe { crate::weak::weakref_die(entity as *mut crate::weak::LLWeakRef) },
         _ => debug_assert!(false, "teardown for an entity kind the crate cannot produce yet"),
     }
 }
