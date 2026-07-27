@@ -236,6 +236,40 @@ mod tests {
         assert_eq!(handshake_acks(), before + 1, "the explicit call serves the run");
     }
 
+    /// `ll_release_vector` serves the checkpoint once at entry — one
+    /// ack for the whole batch — and runs the destructors in vector
+    /// order (`rfc/model/memory/bulk-operations.md`).
+    #[test]
+    fn a_vector_release_checkpoints_once_and_dies_in_order() {
+        use std::sync::Mutex;
+        static ORDER: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+        unsafe extern "C" fn recording(obj: *mut Object) {
+            ORDER.lock().unwrap().push(obj as usize);
+        }
+
+        let _g = crate::memory::block_pool::test_guard();
+        ORDER.lock().unwrap().clear();
+        let cls = ClassBuilder::new("VectorRelease")
+            .destructor(recording as *const ())
+            .build();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let objects: Vec<*mut RcHeader> = (0..3)
+            .map(|_| unsafe {
+                new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) as *mut RcHeader
+            })
+            .collect();
+
+        let before = handshake_acks();
+        request_handshake();
+        unsafe { crate::object::ll_release_vector(objects.as_ptr(), objects.len()) };
+        assert_eq!(handshake_acks(), before + 1, "one ack for the whole vector");
+
+        let order = ORDER.lock().unwrap();
+        let expected: Vec<usize> = objects.iter().map(|&p| p as usize).collect();
+        assert_eq!(*order, expected, "destructors in vector order");
+    }
+
     #[test]
     fn a_requested_handshake_is_acked_at_the_next_checkpoint() {
         let _g = crate::memory::block_pool::test_guard();

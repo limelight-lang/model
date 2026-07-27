@@ -641,6 +641,38 @@ mod tests {
         arena.reset(|_| {});
     }
 
+    /// Reserved cells are invisible to the walker until construction
+    /// publishes a header (`rfc/model/memory/bulk-operations.md`): a
+    /// cell's slot still reads its final `rc 0` (or virgin zero), the
+    /// same occupancy answer as a free slot.
+    #[test]
+    fn a_reserved_cell_is_walker_invisible_until_constructed() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("CellReserved").prop("child", true).build();
+        let size = unsafe { (*cls).object_size } as usize;
+
+        let mut cells = [std::ptr::null_mut::<u8>(); 4];
+        let mut contiguous = 0usize;
+        let n = unsafe {
+            crate::memory::heap::ll_entity_reserve(size, 4, cells.as_mut_ptr(), &mut contiguous)
+        };
+        assert!(n >= 2, "the probe needs at least two cells; got {n}");
+
+        let seen = walked_addresses();
+        for &c in &cells[..n] {
+            assert!(!seen.contains(&(c as usize)), "an unconstructed cell was walked");
+        }
+
+        let obj = unsafe { crate::object::ll_object_new_in(cells[0], cls) };
+        assert!(walked_addresses().contains(&(obj as usize)), "constructed: walked");
+
+        unsafe {
+            crate::memory::heap::ll_entity_cells_return(cells.as_ptr().add(1), n - 1)
+        };
+        assert!(unsafe { ll_release(obj as *mut RcHeader) });
+        unsafe { crate::object::ll_object_die(obj) };
+    }
+
     #[test]
     fn walk_sees_gc_objects_and_not_raw_buffers() {
         let _g = crate::memory::block_pool::test_guard();

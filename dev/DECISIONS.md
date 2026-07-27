@@ -8,6 +8,24 @@ never edited or deleted.
 
 ---
 
+## 2026-07-27 — bulk object operations: vector release and cell reservation (rfc bulk-operations.md)
+
+**Decided:** two compiler-facing ABI groups. `ll_release_vector` — one
+call per release batch, checkpoint served once at entry, destructors
+in vector order (physical recycling order stays the manager's).
+`ll_entity_reserve` / `ll_entity_cells_return` + `ll_object_new_in` —
+best-effort-contiguous runs of GcHeap entity cells, keyed by size
+class, consumed by a construct-into-cell factory. The parameters are a
+request; the manager decides — it may refuse or serve short, and v1
+policy is tame: blocks on hand first (virgin bump tail, then free
+list), at most one pool draw, never region growth. **Why (Edmond):**
+no per-object ABI call on statically-known batches, and deliberate
+co-location of object graphs. **Rejected:** an arena reservation ABI —
+one bump allocation of `count x size` already is the contiguous run
+there. **Cost:** reservation flips the tail-first order (ordinary
+alloc pops the free list first) — reserved runs prefer virgin memory;
+contiguity is best effort in every category and never spans blocks.
+
 ## 2026-07-27 — the narrow mutator: hot paths store only the counter half; the condemned byte is three-valued
 
 **Decided:** rc-walk's `ll_retain` and non-final `ll_release` store

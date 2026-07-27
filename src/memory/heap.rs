@@ -557,6 +557,96 @@ impl Heap {
         p
     }
 
+    /// Reserve up to `count` cells of `size`, best-effort contiguous
+    /// (`rfc/model/memory/bulk-operations.md`). The request is a wish;
+    /// this method decides: it serves from blocks already on hand —
+    /// each block's virgin bump tail first (the contiguous part), then
+    /// its free list — and draws at most **one** fresh block through
+    /// the ordinary cold path. It never forces region growth for a
+    /// speculative reservation. Returns how many cells were reserved;
+    /// zero is an answer, not an error.
+    ///
+    /// A reserved cell is accounted exactly like an allocation
+    /// (`used`, unlink-when-full, the empty-reserve fix-up), so a block
+    /// carrying reserved cells can never look empty. The cell's header
+    /// still reads its final `rc 0` (or virgin zero), so the walker's
+    /// occupancy test skips it until construction publishes a header.
+    /// Unused cells go back through the ordinary free path.
+    ///
+    /// Returns `(reserved, contiguous_len)`: how many cells were
+    /// reserved, and how many of the *leading* ones form one adjacent
+    /// run at the class's slot stride.
+    pub fn reserve_cells(
+        &mut self,
+        size: usize,
+        count: usize,
+        out: &mut [*mut u8],
+    ) -> (usize, usize) {
+        if size > MAX_SMALL || count == 0 || out.len() < count {
+            return (0, 0);
+        }
+        let ci = unsafe { *CLASS_LUT.get_unchecked((size + 15) >> 4) as usize };
+        let class_size = unsafe { *SIZE_CLASSES.get_unchecked(ci) };
+        let mut n = 0;
+        let mut drew_fresh_block = false;
+        while n < count {
+            let block = unsafe { *self.available.get_unchecked(ci) };
+            if block.is_null() {
+                // The one permitted draw, through the ordinary cold
+                // path (collect, adopt, or one pool block); its single
+                // cell joins the reservation and the loop continues on
+                // whatever block it installed.
+                if drew_fresh_block {
+                    break;
+                }
+                drew_fresh_block = true;
+                let p = self.alloc(size);
+                if p.is_null() {
+                    break;
+                }
+                out[n] = p;
+                n += 1;
+                continue;
+            }
+            let b = unsafe { &mut (*block).private };
+            if b.used == 0 && self.empty_reserve[ci] == block {
+                self.empty_reserve[ci] = std::ptr::null_mut();
+            }
+            // Virgin tail first — the adjacent run.
+            while n < count && b.bump < b.slots {
+                let idx = b.bump as usize;
+                b.bump += 1;
+                let base = (block as *mut u8).wrapping_add(LINE_SIZE);
+                out[n] = base.wrapping_add(idx * class_size);
+                b.used += 1;
+                n += 1;
+            }
+            // Then the block's free list.
+            while n < count {
+                let slot = b.free;
+                if slot.is_null() {
+                    break;
+                }
+                b.free = unsafe { (*slot).next };
+                out[n] = slot as *mut u8;
+                b.used += 1;
+                n += 1;
+            }
+            if b.free.is_null() && b.bump >= b.slots {
+                self.unlink(ci, block);
+            } else {
+                break; // room remains: the request is satisfied
+            }
+        }
+        let mut contiguous_len = usize::from(n > 0);
+        while contiguous_len < n
+            && out[contiguous_len] == out[contiguous_len - 1].wrapping_add(class_size)
+        {
+            contiguous_len += 1;
+        }
+        (n, contiguous_len)
+    }
+
     /// Cold tail: this class has no block with room. Reclaim cross-thread
     /// frees, else take a fresh block from the pool, then retry.
     #[cold]
@@ -1580,6 +1670,56 @@ pub unsafe fn entity_alloc(size: usize) -> *mut u8 {
     }
 }
 
+/// Reserve up to `count` GcHeap entity cells of `size` from this
+/// thread's entity heap (`rfc/model/memory/bulk-operations.md`). Writes
+/// the cells into `out_cells`, the leading adjacent-run length into
+/// `contiguous_len`, and returns how many cells were reserved — any
+/// number from 0 to `count`; the caller's fallback is the ordinary
+/// factory. Cells are consumed by `ll_object_new_in` and unused ones
+/// are owed back via [`ll_entity_cells_return`].
+///
+/// # Safety
+/// `out_cells` must have room for `count` pointers; `contiguous_len`
+/// must be valid to write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_entity_reserve(
+    size: usize,
+    count: usize,
+    out_cells: *mut *mut u8,
+    contiguous_len: *mut usize,
+) -> usize {
+    let h = thread_entity_heap();
+    let h = if h.is_null() {
+        ll_thread_init();
+        let h = thread_entity_heap();
+        if h.is_null() {
+            unsafe { *contiguous_len = 0 };
+            return 0;
+        }
+        h
+    } else {
+        h
+    };
+    let out = unsafe { std::slice::from_raw_parts_mut(out_cells, count) };
+    let (n, contiguous) = unsafe { (*h).reserve_cells(size, count, out) };
+    unsafe { *contiguous_len = contiguous };
+    n
+}
+
+/// Return unused reserved cells (`rfc/model/memory/bulk-operations.md`):
+/// each goes back through the ordinary size-less free path, which routes
+/// it to its block's free list — or parks it while an rc-walk epoch is
+/// in flight, exactly like any other free.
+///
+/// # Safety
+/// Every element must be an unconsumed cell from [`ll_entity_reserve`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_entity_cells_return(cells: *const *mut u8, count: usize) {
+    for i in 0..count {
+        unsafe { crate::memory::stdapi::ll_free(*cells.add(i)) };
+    }
+}
+
 /// Cold tail: first entity allocation on this thread.
 ///
 /// # Safety
@@ -1739,6 +1879,42 @@ pub unsafe fn with_thread_heap<R>(f: impl FnOnce(&mut Heap) -> R) -> R {
 mod tests {
     use super::*;
     use crate::memory::block_pool::BLOCK_PAYLOAD;
+
+    /// Cell reservation (`rfc/model/memory/bulk-operations.md`): the
+    /// manager answers with 0..=count cells, reports the leading
+    /// adjacent run honestly, accounts reserved cells as live, and
+    /// takes returned cells back into ordinary circulation.
+    #[test]
+    fn reserved_cells_are_accounted_returned_cells_recirculate() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut cells = [std::ptr::null_mut::<u8>(); 8];
+        let mut contiguous = 0usize;
+        let n = unsafe { ll_entity_reserve(48, 8, cells.as_mut_ptr(), &mut contiguous) };
+        assert!(n >= 1 && n <= 8, "an answer between 0 and count; got {n}");
+        assert!(contiguous <= n);
+        // The reported run is honest: adjacent at the class stride.
+        let stride = cells[1] as usize - cells[0] as usize;
+        for i in 1..contiguous {
+            assert_eq!(
+                cells[i] as usize - cells[i - 1] as usize,
+                stride,
+                "cell {i} breaks the reported run"
+            );
+        }
+        // Ordinary allocation must not hand out a reserved cell.
+        let p = unsafe { entity_alloc(48) };
+        assert!(!cells[..n].contains(&p), "a reserved cell was double-issued");
+        unsafe { crate::memory::stdapi::ll_free(p) };
+        // Returned cells recirculate: the free-list is LIFO, so the
+        // next allocation is the last cell returned.
+        unsafe { ll_entity_cells_return(cells.as_ptr(), n) };
+        let reused = unsafe { entity_alloc(48) };
+        assert!(
+            cells[..n].contains(&reused),
+            "a returned cell did not recirculate"
+        );
+        unsafe { crate::memory::stdapi::ll_free(reused) };
+    }
 
     /// A process with no TLS slot left cannot give this thread a heap.
     /// That is reported the same way as any other exhaustion — the

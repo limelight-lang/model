@@ -100,6 +100,24 @@ pub unsafe fn ll_object_new(
     if mem.is_null() {
         return std::ptr::null_mut();
     }
+
+    // The destructor is NOT registered here. The factory only produces
+    // the object; `__destruct` is owed only once the user constructor has
+    // returned successfully (`rfc/runtime/object-lifecycle.md`, "Two
+    // constructors"), and registering earlier would demand a `__destruct`
+    // for exactly the objects whose constructor threw.
+    unsafe { stamp_into(mem, class, size, category) }
+}
+
+/// The factory's initialization half, shared with the construct-into-cell
+/// path (`rfc/model/memory/bulk-operations.md`): zero the body, set the
+/// class word, publish the header last.
+unsafe fn stamp_into(
+    mem: *mut u8,
+    class: *const Class,
+    size: usize,
+    category: MemoryCategory,
+) -> *mut Object {
     let obj = mem as *mut Object;
 
     // No `DESTRUCTOR_PENDING` here: the flag is set by `object_constructed`.
@@ -123,13 +141,44 @@ pub unsafe fn ll_object_new(
         // than reading a half-built entity.
         crate::refcount::publish_header(obj as *mut RcHeader, RcHeader::new(category, extra));
     }
-
-    // The destructor is NOT registered here. The factory only produces
-    // the object; `__destruct` is owed only once the user constructor has
-    // returned successfully (`rfc/runtime/object-lifecycle.md`, "Two
-    // constructors"), and registering earlier would demand a `__destruct`
-    // for exactly the objects whose constructor threw.
     obj
+}
+
+/// Construct an instance of `class` into a reserved entity cell
+/// (`rfc/model/memory/bulk-operations.md`): the cell came from
+/// `ll_entity_reserve` for this class's object size, so there is no
+/// allocation here — zero-fill, class word, header published last, the
+/// same steps as [`ll_object_new`]. Cells are GcHeap entities by
+/// construction; a cell is single-use.
+///
+/// # Safety
+/// `cell` must be an unconsumed cell reserved for at least
+/// `class.object_size` bytes; `class` must be a linked descriptor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_object_new_in(cell: *mut u8, class: *const Class) -> *mut Object {
+    let size = unsafe { (*class).object_size } as usize;
+    unsafe { stamp_into(cell, class, size, MemoryCategory::GcHeap) }
+}
+
+/// Release a vector of references in one call
+/// (`rfc/model/memory/bulk-operations.md`): the epoch checkpoint is
+/// served once at entry — before any death, so every free the batch
+/// performs observes an in-flight epoch in program order — then each
+/// entry is a batched release; destructors run in vector order. In an
+/// rc-trace build this is plain releases behind one call boundary.
+///
+/// # Safety
+/// Every element must point to a live heap entity beginning with
+/// `RcHeader`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_release_vector(entities: *const *mut RcHeader, count: usize) {
+    unsafe { crate::gc::ll_gc_checkpoint() };
+    for i in 0..count {
+        let entity = unsafe { *entities.add(i) };
+        if unsafe { crate::refcount::ll_release_batch(entity) } {
+            unsafe { ll_entity_die(entity) };
+        }
+    }
 }
 
 /// The user constructor returned successfully: from here on the object

@@ -49,9 +49,13 @@ versions live in `docs/history/`, marked at the top.
   in `object.rs` (dispose phase 2, first act), both collectors, and
   arena reset. Design: `rfc/model/weak-references.md`.
 - C ABI surface: `src/memory/context.rs` (arena + context),
-  `src/object.rs` (`ll_object_new` factory, `ll_object_constructed` —
+  `src/object.rs` (`ll_object_new` factory, `ll_object_new_in` —
+  construct into a reserved cell, `ll_object_constructed` —
   the end-of-construction hook that registers the destructor,
-  `ll_entity_die` — the kind-switched death for a bare entity pointer),
+  `ll_entity_die` — the kind-switched death for a bare entity pointer,
+  `ll_release_vector` — one call per release batch),
+  `src/memory/heap.rs` (`ll_entity_reserve` / `ll_entity_cells_return`
+  — bulk cell reservation, `rfc/model/memory/bulk-operations.md`),
   `src/reference.rs` (`ll_reference_new` — the `&` reference box,
   kind 3),
   `src/memory/stdapi.rs` (`ll_malloc`/`ll_c_free`/aligned),
