@@ -465,6 +465,97 @@ mod tests {
         stats
     }
 
+    /// Measurement probe, not a correctness test: collector-side cost
+    /// of one epoch by live-set size and shape (`dev/BENCHMARKS.md`,
+    /// 2026-07-27 session). Ignored so ordinary runs stay fast; run
+    /// explicitly, release mode:
+    ///
+    /// ```
+    /// cargo test --release --lib -- --ignored measure_epoch_cost --nocapture
+    /// ```
+    ///
+    /// Two shapes per size: `singletons` (rows only, no edges) and
+    /// `chain` (one traced edge per entity, every node externally
+    /// retained so nothing is condemned). Four epochs each; the first
+    /// is warm-up — read the later ones.
+    #[test]
+    #[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
+    fn measure_epoch_cost() {
+        use std::time::Instant;
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("EpochCost").prop("child", true).build();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+
+        for &n in &[1_000usize, 10_000, 100_000] {
+            for chained in [false, true] {
+                let mut objects: Vec<*mut Object> = Vec::with_capacity(n);
+                for i in 0..n {
+                    let obj =
+                        unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+                    if chained {
+                        // Slot ref + our handle: rc 2, externally live,
+                        // never condemned; the walk still chases the edge.
+                        unsafe { ll_retain(obj as *mut RcHeader) };
+                        if i > 0 {
+                            unsafe { tie(objects[i - 1], 16, obj) };
+                        }
+                    }
+                    objects.push(obj);
+                }
+
+                for round in 0..4 {
+                    let t0 = Instant::now();
+                    let mut e = Epoch::open();
+                    checkpoint();
+                    let t1 = Instant::now();
+                    e.snapshot();
+                    let t2 = Instant::now();
+                    e.walk();
+                    let t3 = Instant::now();
+                    e.judge();
+                    let t4 = Instant::now();
+                    assert_eq!(e.stats.candidates, 0, "probe set must stay live");
+                    let _ = e.close();
+                    checkpoint();
+                    let t5 = Instant::now();
+                    println!(
+                        "epoch_cost n={n} shape={} round={round}: handshake={:?} \
+                         snapshot={:?} walk={:?} judge={:?} close+flush={:?} total={:?}",
+                        if chained { "chain" } else { "singletons" },
+                        t1 - t0,
+                        t2 - t1,
+                        t3 - t2,
+                        t4 - t3,
+                        t5 - t4,
+                        t5 - t0,
+                    );
+                }
+
+                // Teardown without a 100k-deep drop cascade: null every
+                // slot first (raw writes — the counts the slots held are
+                // settled by hand below), then every node dies childless
+                // with a uniform two releases: {constructed-or-slot ref,
+                // the probe's retain} for chained, one for singletons.
+                if chained {
+                    for &obj in &objects {
+                        unsafe {
+                            Object::prop_at(obj, 16).write(Value::null());
+                        }
+                    }
+                }
+                for &obj in objects.iter().rev() {
+                    if chained {
+                        unsafe { ll_release(obj as *mut RcHeader) };
+                    }
+                    if unsafe { ll_release(obj as *mut RcHeader) } {
+                        unsafe { crate::object::ll_object_die(obj) };
+                    }
+                }
+            }
+        }
+    }
+
     /// F3 made concrete: a ring created before its first epoch is
     /// stamped new there (allocate-black) and collected only by the
     /// second epoch — destructors, memory and all.

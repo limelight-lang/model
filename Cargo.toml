@@ -66,6 +66,10 @@ name = "alloc"
 harness = false
 
 [[bench]]
+name = "lifecycle"
+harness = false
+
+[[bench]]
 name = "standard"
 harness = false
 

@@ -100,6 +100,64 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-07-27 — rc-walk mutator tax measured on the factory lifecycle; epoch cost per entity
+
+The two gaps the architecture review named: the object-lifecycle path
+had never been timed (all benches ran `ll_malloc`), and the
+collector's epoch cost had never been measured at all. Taken the same
+day the checkpoint moved to `ll_release`'s death branch and rc-walk
+became the default build.
+
+**Mutator side** — new `cargo bench --bench lifecycle` (create →
+constructed → release-to-zero → die through the public ABI, 16-byte
+class, no destructor). A (rc-walk) → B (rc-trace,
+`--no-default-features`) → A-control, plus two more rc-walk runs to
+settle one load-spiked arm:
+
+| bench | rc-walk | rc-trace | delta |
+|---|---|---|---|
+| create_release_die | 19.1–19.7 ns | 16.8 ns | **+14–17%** |
+| batch_64, plain `ll_release` | ~1.25 µs | ~1.07 µs | +17% |
+| batch_64, `ll_gc_checkpoint` + `ll_release_batch` | ~1.15–1.20 µs | ~1.06 µs (same fn) | — |
+
+- The full rc-walk tax on a create+die lifecycle is **~2.5–2.9 ns**
+  (+14–17%): checkpoint test + relaxed header atomics + the parking
+  branch together. It rides the death branch only — the factory
+  allocation itself carries no test since the 2026-07-27 move.
+- The batched form saves **~1.1 ns per death** (~5% on a 64-death
+  run) — consistent with the checkpoint test costing ~1 ns each.
+  In the rc-trace build the two arms measure identical, as expected
+  (same function).
+- Caveat: feature switching forces a rebuild between arms, so the
+  build-both-binaries-first rule could not be followed literally; the
+  bias direction (a post-build run measures slow) works *against* the
+  winning rc-trace arm, so the delta is a floor, not an artefact.
+  One rc-walk `batched` arm read 1.385 µs and its A-control voided
+  it; three further runs clustered at 1.15–1.20 µs.
+
+**Collector side** — new probe
+`cargo test --release --lib -- --ignored measure_epoch_cost
+--nocapture` (stepped epoch on a live set that stays live; round 0 is
+the allocate-black stamping pass, rounds 1–3 are the mature-heap
+steady state):
+
+| live set | shape | epoch total (steady) | per entity |
+|---|---|---|---|
+| 10 000 | singletons | ~430–530 µs | ~45 ns |
+| 10 000 | chain (1 edge/entity) | ~750–830 µs | ~78 ns |
+| 100 000 | singletons | ~4.9–5.1 ms | ~50 ns |
+| 100 000 | chain | ~7.4–8.1 ms | ~78 ns |
+
+- Scaling 10k → 100k is **linear** — no superlinear term in walk,
+  judge or the census `HashMap` at these sizes.
+- The split: walk ≈ 70%, judge ≈ 25%, handshake + snapshot + close ≈
+  µs-scale noise. Any future collector-side optimisation (dense
+  slot-indexed census instead of the `HashMap`, cursor hints at ack)
+  should attack walk first and be re-measured against these numbers.
+- Verdict: **recorded as the baseline**; nothing rejected. The
+  economics question that stays open is the epoch *duty cycle* —
+  trigger thresholds still need real workloads (Phase D).
+
 ## 2026-07-26 — the rc-walk build vs default; an atomic bump cursor rejected
 
 First measurement of the `rc-walk` configuration against the default,

@@ -63,8 +63,11 @@ versions live in `docs/history/`, marked at the top.
 - Crate root: `src/lib.rs`. Built as `rlib` + `staticlib` for the
   C++/LLVM layer.
 - Tests: inline `#[cfg(test)]` per module, no `tests/` directory.
-- Benches: `benches/alloc.rs`, `benches/standard.rs`; external probes
-  in `bench-external/`.
+- Benches: `benches/alloc.rs`, `benches/standard.rs`,
+  `benches/lifecycle.rs` (object create/release GC-protocol tax, both
+  configs); collector-side epoch cost probe:
+  `collector::tests::measure_epoch_cost` (ignored, run with
+  `--ignored`, release mode); external probes in `bench-external/`.
 
 `src/memory/reserve.rs` — the per-thread block reserve that keeps the
 store barrier's log growth from failing; drawn in `Arena::grow_log`,
