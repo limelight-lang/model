@@ -135,6 +135,25 @@ settle one load-spiked arm:
   One rc-walk `batched` arm read 1.385 µs and its A-control voided
   it; three further runs clustered at 1.15–1.20 µs.
 
+**Where the mutator tax comes from** (same session, follow-up): a
+`retain_release_nonfinal` bench (retain + release pair on one live
+object, count never zero) measures rc-walk ~3.3–3.55 ns vs rc-trace
+2.87 ns — **+0.5–0.6 ns per pair**. Disassembly of both `ll_release`
+builds pins it: rc-trace's fast path is a 4-byte flags load plus a
+narrow `decl [mem]`; rc-walk must load the whole 8-byte header word,
+decrement in a register, clear the condemned byte (`movabsq` mask +
+and/or) and store the full word back — the protocol's
+"every retain/release clears the byte in the word it already loaded"
+turned a one-instruction decrement into a load-modify-store chain.
+Notable: on steady churn rc-walk does **not** win — rc-trace's
+candidate machinery after the first buffering is a single masked test
+(`testl` + skip). Decomposition of the 2.7 ns lifecycle tax:
+~1.1 ns checkpoint test + ~0.5 ns word-protocol on the two header ops
++ ~1 ns spread over factory/free (kind release-store, parking branch).
+Optimisation lead, unmeasured: narrow relaxed byte ops (4-byte
+refcount decrement + 1-byte condemned clear) instead of the word RMW —
+needs the rfc's two-header-bytes reasoning re-checked first.
+
 **Collector side** — new probe
 `cargo test --release --lib -- --ignored measure_epoch_cost
 --nocapture` (stepped epoch on a live set that stays live; round 0 is

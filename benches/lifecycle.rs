@@ -101,11 +101,34 @@ fn batch_batched(c: &mut Criterion, cls: *const Class) {
     });
 }
 
+/// Non-final release churn: retain + release on one live object, the
+/// count never reaching zero. This is the path where rc-trace pays its
+/// candidate machinery (first decrement buffers, later ones test the
+/// buffered bit) and rc-walk pays only its whole-word header protocol.
+fn retain_release(c: &mut Criterion, cls: *const Class) {
+    let obj = unsafe {
+        let obj = ll_object_new_abi(
+            std::ptr::null_mut(),
+            cls,
+            MemoryCategory::GcHeap as u32,
+        );
+        ll_object_constructed(std::ptr::null_mut(), obj);
+        obj
+    };
+    c.bench_function("lifecycle/retain_release_nonfinal", |b| {
+        b.iter(|| unsafe {
+            ll_model::refcount::ll_retain(black_box(obj) as *mut RcHeader);
+            ll_release(black_box(obj) as *mut RcHeader);
+        })
+    });
+}
+
 fn benches(c: &mut Criterion) {
     let cls = class();
     create_release_die(c, cls);
     batch_plain(c, cls);
     batch_batched(c, cls);
+    retain_release(c, cls);
 }
 
 criterion_group!(lifecycle, benches);
