@@ -38,10 +38,13 @@ checked-refcount = []
 # (`rfc/model/gc/strategies.md`): the two collectors claim the same top
 # half of the header flags word — rc-trace stores its candidate index in
 # bits 15-31, rc-walk its epoch byte (16-23) and condemned byte (24-31) —
-# and rc-walk obliges every retain/release to clear the condemned byte,
-# which would corrupt a live candidate index. With this feature on, the
+# and rc-walk's collector writes both bytes from its own thread, which
+# would corrupt a live candidate index. With this feature on, the
 # candidate buffer is never fed and header accesses compile as relaxed
-# atomics (another thread — the collector — reads them).
+# atomics (another thread — the collector — reads them). Since the
+# narrow-mutator amendment (2026-07-27) the mutator's hot paths do not
+# touch the condemned byte at all; the collision is the collector's
+# writes, not the mutator's.
 rc-walk = []
 
 [dependencies]
