@@ -15,7 +15,8 @@
 //! flow into inherited interfaces), Cohen display for O(1)
 //! `instanceof`, and property layout with machine-typed slots (scalar /
 //! bare pointer / Box, grouped into three runs) plus the two typed trace
-//! lists (`ptr_runs` / `box_runs`) the GC and teardown stride.
+//! lists (`ptr_runs` / `box_runs`) the GC and teardown stride, and the
+//! tail byte block carrying the init bitmap (A5).
 //!
 //! **Dispatch tables are pure code-pointer arrays** — the invariant:
 //! no headers inside any table (C++-style offset-to-top/RTTI prefixes
@@ -42,6 +43,9 @@ pub const CLASS_HAS_DESTRUCTOR: u32 = 1 << 3;
 /// No `__destruct`.
 pub const NO_DESTRUCT_SLOT: u32 = u32::MAX;
 
+/// The property is not bitmap-tracked ([`PropSlot::init_bit`]).
+pub const NO_INIT_BIT: u32 = u32::MAX;
+
 /// The machine representation of a declared property's type — what the
 /// slot physically *is*, chosen at link time (`rfc/model/classes.md`,
 /// "Slot kinds"). Traced-ness and stride both follow from the kind, so
@@ -53,7 +57,9 @@ pub enum SlotKind {
     /// traced.
     Scalar = 0,
     /// A bare 8-byte pointer to a counted entity — a declared class type,
-    /// `string` or `array`. `NULL` means uninitialized. Traced as a
+    /// `string` or `array`. For the non-nullable declaration `NULL` means
+    /// uninitialized; a nullable `?T` rides the same niche with `NULL` as
+    /// PHP null, and tracks uninitialized in the init bitmap. Traced as a
     /// pointer run (stride 8, skip `NULL`).
     Pointer = 1,
     /// A 16-byte [`crate::value::Value`] Box — the one boxed slot form,
@@ -117,6 +123,12 @@ pub struct PropSlot {
     pub offset: u32,
     pub kind: SlotKind,
     pub declaration_index: u32,
+    /// Absolute bit position of the slot's init-bitmap bit in the byte
+    /// block, or [`NO_INIT_BIT`]. Only raw slots with no marker of their
+    /// own carry one — a defaultless `?T` pointer (`NULL` is PHP null
+    /// there) or a defaultless scalar/bool (`rfc/model/values.md`,
+    /// "Uninitialized properties"); clear = uninitialized.
+    pub init_bit: u32,
 }
 
 /// Slow-path method table entry: interned name → vtable slot. Hot
@@ -301,10 +313,12 @@ pub struct ClassBuilder {
     name: *const LLString,
     parent: *const Class,
     flags: u32,
-    /// `(name, kind, starts_undef)` — `starts_undef` is the declaration
-    /// criterion of `rfc/model/values.md`: a Boxed property with no
-    /// default starts uninitialized. Meaningful only for `Boxed` until
-    /// the init bitmap (A5 commit 2) tracks the raw kinds.
+    /// `(name, kind, tracked_uninitialized)` — the declaration criterion
+    /// of `rfc/model/values.md`: declared without an initializer AND
+    /// needing explicit tracking. Boxed → the factory's undef stamp;
+    /// Scalar/Bool, and Pointer for a nullable `?T` → an init-bitmap
+    /// bit. A defaultless non-nullable pointer stays untracked: `NULL`
+    /// itself is its marker.
     props: Vec<(*const LLString, SlotKind, bool)>,
     methods: Vec<(*const LLString, *const ())>,
     interfaces: Vec<(u32, Vec<u32>)>,
@@ -386,13 +400,34 @@ impl ClassBuilder {
         self.prop_with(name, SlotKind::Boxed, true)
     }
 
+    /// Declare a nullable pointer property (`?Foo`/`?string`/`?array`)
+    /// **without a default**: the same bare-pointer slot (`NULL` is PHP
+    /// null, the niche), so its uninitialized state is an init-bitmap
+    /// bit. The defaulted form is [`Self::prop_pointer`]-shaped and
+    /// untracked.
+    pub fn prop_nullable_pointer_without_default(self, name: &str) -> Self {
+        self.prop_with(name, SlotKind::Pointer, true)
+    }
+
+    /// Declare an `int`/`float` property **without a default**: `0` is a
+    /// real value, so uninitialized is an init-bitmap bit.
+    pub fn prop_scalar_without_default(self, name: &str) -> Self {
+        self.prop_with(name, SlotKind::Scalar, true)
+    }
+
+    /// Declare a `bool` property **without a default**: same rule as the
+    /// scalar, `false` is a real value.
+    pub fn prop_bool_without_default(self, name: &str) -> Self {
+        self.prop_with(name, SlotKind::Bool, true)
+    }
+
     fn prop_of(self, name: &str, kind: SlotKind) -> Self {
         self.prop_with(name, kind, false)
     }
 
-    fn prop_with(mut self, name: &str, kind: SlotKind, starts_undef: bool) -> Self {
+    fn prop_with(mut self, name: &str, kind: SlotKind, tracked_uninitialized: bool) -> Self {
         self.props
-            .push((crate::intern::intern_str(name), kind, starts_undef));
+            .push((crate::intern::intern_str(name), kind, tracked_uninitialized));
         self
     }
 
@@ -483,9 +518,10 @@ impl ClassBuilder {
         // Property layout (`rfc/model/classes.md`, "Slot order"). Parent
         // slots keep their offsets; this class lays its own out in three
         // runs — counted pointers, then Boxes, then the rest in
-        // declaration order — starting at the parent's `layout_end`, so an
-        // own field may land in the parent's tail padding (JDK-15 rule).
-        // Hole-filling and bit-packing are deferred optimizations (A5/A7).
+        // declaration order — then the byte block (the init bitmap),
+        // starting at the parent's `layout_end`, so an own field may land
+        // in the parent's tail padding (JDK-15 rule). Hole-filling and
+        // bool bit-packing are deferred optimizations (A7 / rfc backlog).
         let parent_layout_end = parent.map_or(16, |p| p.layout_end);
         let parent_prop_count = parent.map_or(0, |p| p.prop_count);
 
@@ -500,24 +536,26 @@ impl ClassBuilder {
         // undef stamp is one contiguous sub-run at the box run's tail —
         // physical order is free to differ (`declaration_index` keeps the
         // observable one).
-        let mut own_pointers: Vec<(*const LLString, u32)> = Vec::new();
+        let mut own_pointers: Vec<(*const LLString, u32, bool)> = Vec::new();
         let mut own_boxes: Vec<(*const LLString, u32)> = Vec::new();
         let mut own_undef_boxes: Vec<(*const LLString, u32)> = Vec::new();
-        let mut own_rest: Vec<(*const LLString, SlotKind, u32)> = Vec::new();
-        for (i, &(name, kind, starts_undef)) in self.props.iter().enumerate() {
+        let mut own_rest: Vec<(*const LLString, SlotKind, u32, bool)> = Vec::new();
+        for (i, &(name, kind, tracked)) in self.props.iter().enumerate() {
             let declaration_index = parent_prop_count + i as u32;
             match kind {
-                SlotKind::Pointer => own_pointers.push((name, declaration_index)),
-                SlotKind::Boxed if starts_undef => {
-                    own_undef_boxes.push((name, declaration_index))
-                }
+                SlotKind::Pointer => own_pointers.push((name, declaration_index, tracked)),
+                SlotKind::Boxed if tracked => own_undef_boxes.push((name, declaration_index)),
                 SlotKind::Boxed => own_boxes.push((name, declaration_index)),
-                _ => own_rest.push((name, kind, declaration_index)),
+                _ => own_rest.push((name, kind, declaration_index, tracked)),
             }
         }
 
         let align_up = |cursor: u32, align: u32| (cursor + align - 1) & !(align - 1);
         let mut cursor = parent_layout_end;
+        // Bitmap-tracked own slots, as (index into `props`,
+        // declaration_index): bits are handed out after the layout, when
+        // the byte block's offset is known.
+        let mut bitmap_slots: Vec<(usize, u32)> = Vec::new();
 
         // Counted pointers: one contiguous run, stride 8.
         if !own_pointers.is_empty() {
@@ -526,12 +564,16 @@ impl ClassBuilder {
                 offset: cursor,
                 count: own_pointers.len() as u32,
             });
-            for &(name, declaration_index) in &own_pointers {
+            for &(name, declaration_index, tracked) in &own_pointers {
+                if tracked {
+                    bitmap_slots.push((props.len(), declaration_index));
+                }
                 props.push(PropSlot {
                     name,
                     offset: cursor,
                     kind: SlotKind::Pointer,
                     declaration_index,
+                    init_bit: NO_INIT_BIT,
                 });
                 cursor += 8;
             }
@@ -556,20 +598,38 @@ impl ClassBuilder {
                     offset: cursor,
                     kind: SlotKind::Boxed,
                     declaration_index,
+                    init_bit: NO_INIT_BIT,
                 });
                 cursor += 16;
             }
         }
         // The rest, in declaration order: scalars and bools, never traced.
-        for &(name, kind, declaration_index) in &own_rest {
+        for &(name, kind, declaration_index, tracked) in &own_rest {
             cursor = align_up(cursor, kind.align());
+            if tracked {
+                bitmap_slots.push((props.len(), declaration_index));
+            }
             props.push(PropSlot {
                 name,
                 offset: cursor,
                 kind,
                 declaration_index,
+                init_bit: NO_INIT_BIT,
             });
             cursor += kind.size();
+        }
+        // The byte block (`rfc/model/classes.md`): this class's init
+        // bitmap, one bit per bitmap-tracked own slot in declaration
+        // order, appended at the layout tail. `init_bit` is an absolute
+        // bit position from the object base; a subclass block is its own,
+        // so parent bits never move. The factory's zero-fill clears the
+        // block — every tracked slot starts uninitialized for free.
+        if !bitmap_slots.is_empty() {
+            bitmap_slots.sort_by_key(|&(_, declaration_index)| declaration_index);
+            for (bit, &(prop_index, _)) in bitmap_slots.iter().enumerate() {
+                props[prop_index].init_bit = cursor * 8 + bit as u32;
+            }
+            cursor += bitmap_slots.len().div_ceil(8) as u32;
         }
 
         let layout_end = cursor;
@@ -849,6 +909,92 @@ mod tests {
             sub.undef_runs(),
             &[Run { offset: 32, count: 1 }, Run { offset: 48, count: 1 }]
         );
+    }
+
+    /// Bitmap-tracked raw slots (a defaultless `?T` pointer, scalar,
+    /// bool) get one init bit each in the byte block at the layout tail,
+    /// numbered in declaration order; slots with a marker of their own
+    /// (a default, or a non-nullable pointer's `NULL`) carry the sentinel.
+    #[test]
+    fn bitmap_tracked_slots_get_bits_in_a_tail_byte_block() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls_ptr = ClassBuilder::new("RawUninit")
+            .prop_scalar_without_default("n") // decl 0 → bit 0
+            .prop_nullable_pointer_without_default("p") // decl 1 → bit 1
+            .prop("defaulted", false) // decl 2, untracked
+            .prop_bool_without_default("b") // decl 3 → bit 2
+            .prop_pointer("q") // decl 4, non-nullable: NULL is its marker
+            .build();
+        let cls = unsafe { &*cls_ptr };
+
+        // Physical: the pointer run p,q at 16,24; then n@32, defaulted@40,
+        // b@48; the byte block is the tail byte 49.
+        assert_eq!(cls.find_prop(intern_str("p")).unwrap().offset, 16);
+        assert_eq!(cls.find_prop(intern_str("q")).unwrap().offset, 24);
+        assert_eq!(cls.find_prop(intern_str("n")).unwrap().offset, 32);
+        assert_eq!(cls.find_prop(intern_str("b")).unwrap().offset, 48);
+        assert_eq!(cls.layout_end, 50, "one bitmap byte after the bool");
+        assert_eq!(cls.object_size, 56);
+
+        // Bits in declaration order, as absolute positions in byte 49.
+        assert_eq!(cls.find_prop(intern_str("n")).unwrap().init_bit, 49 * 8);
+        assert_eq!(cls.find_prop(intern_str("p")).unwrap().init_bit, 49 * 8 + 1);
+        assert_eq!(cls.find_prop(intern_str("b")).unwrap().init_bit, 49 * 8 + 2);
+        assert_eq!(cls.find_prop(intern_str("defaulted")).unwrap().init_bit, NO_INIT_BIT);
+        assert_eq!(cls.find_prop(intern_str("q")).unwrap().init_bit, NO_INIT_BIT);
+
+        // The nullable pointer is an ordinary member of the pointer trace
+        // run — the bit is metadata beside the slot, not a representation.
+        assert_eq!(cls.ptr_runs(), &[Run { offset: 16, count: 2 }]);
+    }
+
+    /// A subclass's own tracked slots get their own byte block: the
+    /// parent's bits do not move (parent offsets are compiled into parent
+    /// code), and a small block lands in the parent's tail padding.
+    #[test]
+    fn subclass_appends_its_own_byte_block() {
+        let _g = crate::memory::block_pool::test_guard();
+        let parent_ptr = ClassBuilder::new("RawUninitParent")
+            .prop_scalar_without_default("n") // @16, bit in byte 25
+            .prop_bool("flag") // @24: leaves the layout mid-word
+            .build();
+        let sub_ptr = ClassBuilder::new("RawUninitSub")
+            .parent(parent_ptr)
+            .prop_bool_without_default("b")
+            .build();
+        let (parent, sub) = unsafe { (&*parent_ptr, &*sub_ptr) };
+
+        assert_eq!(parent.find_prop(intern_str("n")).unwrap().init_bit, 25 * 8);
+        assert_eq!(parent.layout_end, 26);
+        assert_eq!(parent.object_size, 32);
+
+        // The subclass resumes at 26: its bool, then its own bitmap byte.
+        assert_eq!(sub.find_prop(intern_str("n")).unwrap().init_bit, 25 * 8, "parent bit unmoved");
+        assert_eq!(sub.find_prop(intern_str("b")).unwrap().offset, 26);
+        assert_eq!(sub.find_prop(intern_str("b")).unwrap().init_bit, 27 * 8);
+        assert_eq!(sub.layout_end, 28);
+        assert_eq!(sub.object_size, 32, "slot and block fit in the parent's tail padding");
+    }
+
+    /// Nine tracked slots need two bitmap bytes; `init_bit` is an
+    /// absolute bit position, so the ninth lands in the second byte.
+    #[test]
+    fn a_ninth_tracked_slot_crosses_into_a_second_bitmap_byte() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut builder = ClassBuilder::new("WideBitmap");
+        for i in 0..9 {
+            builder = builder.prop_scalar_without_default(&format!("s{i}"));
+        }
+        let cls = unsafe { &*builder.build() };
+
+        // Scalars at 16..88, block bytes 88-89.
+        assert_eq!(cls.find_prop(intern_str("s0")).unwrap().init_bit, 88 * 8);
+        assert_eq!(
+            cls.find_prop(intern_str("s8")).unwrap().init_bit,
+            88 * 8 + 8,
+            "byte 89, bit 0"
+        );
+        assert_eq!(cls.layout_end, 90, "two bitmap bytes");
     }
 
     /// The full slot-kind spread: a bare pointer (traced, stride-8 run), a

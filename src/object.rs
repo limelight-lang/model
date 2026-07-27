@@ -56,6 +56,49 @@ impl Object {
         unsafe { (obj as *mut u8).add(offset as usize) as *mut Value }
     }
 
+    /// Test the init-bitmap bit of a bitmap-tracked raw slot: clear =
+    /// uninitialized (`rfc/model/values.md`, "Uninitialized properties").
+    /// `init_bit` is the slot's [`crate::class::PropSlot::init_bit`], an
+    /// absolute bit position in the object's byte block. Generated code
+    /// emits these beside the slot access: a read tests and throws on
+    /// clear, a write stores the value and sets the bit, `unset` clears
+    /// it (a pointer slot's `unset` also stores `NULL` through the
+    /// barrier). Plain byte accesses are sound: the byte block is
+    /// mutator-only data — no walker reads outside the traced runs.
+    ///
+    /// # Safety
+    /// `obj` per [`Self::prop_at`]; `init_bit` must come from the class's
+    /// layout (never [`crate::class::NO_INIT_BIT`]).
+    #[inline]
+    pub unsafe fn init_bit_test(obj: *const Object, init_bit: u32) -> bool {
+        debug_assert_ne!(init_bit, crate::class::NO_INIT_BIT);
+        let byte = unsafe { (obj as *const u8).add((init_bit / 8) as usize) };
+        (unsafe { byte.read() } & (1u8 << (init_bit % 8))) != 0
+    }
+
+    /// Set the bit: the slot was written. See [`Self::init_bit_test`].
+    ///
+    /// # Safety
+    /// As [`Self::init_bit_test`], with the object writable.
+    #[inline]
+    pub unsafe fn init_bit_set(obj: *mut Object, init_bit: u32) {
+        debug_assert_ne!(init_bit, crate::class::NO_INIT_BIT);
+        let byte = unsafe { (obj as *mut u8).add((init_bit / 8) as usize) };
+        unsafe { byte.write(byte.read() | 1u8 << (init_bit % 8)) };
+    }
+
+    /// Clear the bit: `unset()` returns the slot to uninitialized. See
+    /// [`Self::init_bit_test`].
+    ///
+    /// # Safety
+    /// As [`Self::init_bit_set`].
+    #[inline]
+    pub unsafe fn init_bit_clear(obj: *mut Object, init_bit: u32) {
+        debug_assert_ne!(init_bit, crate::class::NO_INIT_BIT);
+        let byte = unsafe { (obj as *mut u8).add((init_bit / 8) as usize) };
+        unsafe { byte.write(byte.read() & !(1u8 << (init_bit % 8))) };
+    }
+
     /// Stable for the object's lifetime (non-moving heap), so the id
     /// is derived from the address; retained arena survivors keep it,
     /// evacuated ones get the lazy stored id (`arena-reset.md`).
@@ -127,8 +170,9 @@ unsafe fn stamp_into(
     unsafe {
         // Zero-fill the property region in one pass: a null pointer is
         // uninitialized, an all-zero Box is `null` (tag 0, refcounted
-        // clear), a zero scalar is 0, a clear bool is false — every
-        // uninitialized slot's correct start at once.
+        // clear), a zero scalar is 0, a clear bool is false, a clear
+        // init-bitmap bit is uninitialized — every slot's correct start
+        // at once.
         // `size >= size_of::<Object>()` always (16-byte header).
         let body = (obj as *mut u8).add(size_of::<Object>());
         core::ptr::write_bytes(body, 0, size - size_of::<Object>());
@@ -746,6 +790,84 @@ mod tests {
 
             // Teardown strides the same runs: the undef slot releases
             // nothing, and both die cleanly.
+            for entity in [child as *mut RcHeader, obj as *mut RcHeader] {
+                assert!(crate::refcount::ll_release(entity));
+                ll_entity_die(entity);
+            }
+        }
+        arena.reset(|_| {});
+    }
+
+    /// A5 commit 2: raw slots with no marker of their own — a defaultless
+    /// `?T` pointer (`NULL` is PHP null there) and a defaultless scalar —
+    /// are tracked by the init bitmap in the byte block. The factory's
+    /// zero-fill starts every bit clear (uninitialized); a write sets the
+    /// bit beside the value store; `unset()` clears it, for the pointer
+    /// slot together with the NULL store + drop of the displaced entity.
+    #[test]
+    fn bitmap_tracked_raw_slots_live_the_init_lifecycle() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("A5Bitmap")
+            .prop_nullable_pointer_without_default("p") // @16, run member
+            .prop_scalar_without_default("n") // @24; block byte 32
+            .build();
+        let child_cls = ClassBuilder::new("A5BitmapChild").build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        unsafe {
+            let obj = new_constructed(&mut ctx, cls, MemoryCategory::GcHeap);
+            let p_bit = (*cls).find_prop(crate::intern::intern_str("p")).unwrap().init_bit;
+            let n_bit = (*cls).find_prop(crate::intern::intern_str("n")).unwrap().init_bit;
+
+            // The zero-fill made both uninitialized, no explicit store.
+            assert!(!Object::init_bit_test(obj, p_bit));
+            assert!(!Object::init_bit_test(obj, n_bit));
+
+            // $obj->n = 42: the value store plus the bit set.
+            let n_slot = (obj as *mut u8).add(24) as *mut i64;
+            n_slot.write(42);
+            Object::init_bit_set(obj, n_bit);
+            assert!(Object::init_bit_test(obj, n_bit));
+            assert!(!Object::init_bit_test(obj, p_bit), "bits are independent");
+
+            // $obj->p = $child: the barrier's pointer store + the bit set.
+            let child = new_constructed(&mut ctx, child_cls, MemoryCategory::GcHeap);
+            let p_slot = (obj as *mut u8).add(16) as *mut *mut RcHeader;
+            crate::memory::barrier::store_ptr(
+                &mut arena,
+                MemoryCategory::GcHeap,
+                p_slot,
+                child as *mut RcHeader,
+            );
+            Object::init_bit_set(obj, p_bit);
+            assert_eq!((*child).rc.refcount, 2, "creation + the slot");
+
+            // A walked child now; the bitmap never affects the trace.
+            let mut children = 0;
+            for_each_counted_child(obj, |_| children += 1);
+            assert_eq!(children, 1);
+
+            // $obj->p = null: a real null for `?T` — the slot goes back to
+            // NULL, the displaced child is dropped, and the bit STAYS set:
+            // the bit, not the pointer, answers isset.
+            crate::memory::barrier::store_ptr(
+                &mut arena,
+                MemoryCategory::GcHeap,
+                p_slot,
+                std::ptr::null_mut(),
+            );
+            crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, child as *mut RcHeader);
+            assert!(Object::init_bit_test(obj, p_bit), "null is a value, still initialized");
+            assert_eq!((*child).rc.refcount, 1, "the slot's reference released");
+
+            // unset($obj->p) / unset($obj->n): back to uninitialized. The
+            // pointer slot is already NULL; a raw slot has only the bit.
+            Object::init_bit_clear(obj, p_bit);
+            Object::init_bit_clear(obj, n_bit);
+            assert!(!Object::init_bit_test(obj, p_bit));
+            assert!(!Object::init_bit_test(obj, n_bit));
+
             for entity in [child as *mut RcHeader, obj as *mut RcHeader] {
                 assert!(crate::refcount::ll_release(entity));
                 ll_entity_die(entity);
