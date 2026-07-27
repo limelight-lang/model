@@ -100,6 +100,35 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-07-27 — bulk operations vs per-object: reservation wins ~12–15%, vector release within noise
+
+The 2x2 on 64-object batches (`cargo bench --bench lifecycle -- bulk/`,
+rc-walk default build, destructorless 16-byte class, two runs; the
+box drifted ~5–9% between runs after a day of benching, but the
+*ordering* held in both):
+
+| arm | run 1 | run 2 |
+|---|---|---|
+| factory create + loop release | 1.30 µs | 1.19 µs |
+| **reserved create** + loop release | 1.10 µs | 1.04 µs |
+| factory create + **vector release** | 1.26 µs | 1.23 µs |
+| reserved + vector | 1.15 µs | 1.15 µs |
+
+- **Cell reservation beats the factory by ~12–15%** on the whole
+  64-lifecycle (~2–3 ns per object): one `ll_entity_reserve` call and
+  a stamp per object against an allocator entry per object.
+- **Vector release measures within noise of the loop** — expected
+  after the narrow mutator: the per-object release path has nothing
+  left to amortise except the ~1 ns checkpoint test, which was already
+  sub-noise in the batch_64 comparison. Its value is code size and the
+  manager's future freedom (prefetch, block-sorted frees), not
+  present-day speed.
+- Caveat: after the virgin tail of the class's block is exhausted
+  (~32 iterations here), reservations serve from the free list —
+  non-contiguous — so this measures the *call-shape* win, not the
+  locality win; the locality claim stays unmeasured until a consumer
+  with real pointer-chasing exists.
+
 ## 2026-07-27 — the narrow mutator lands: retain/release reach parity with rc-trace (and past it)
 
 Implementation of the rfc's narrow-mutator amendment (same day, after

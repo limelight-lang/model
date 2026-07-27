@@ -123,12 +123,94 @@ fn retain_release(c: &mut Criterion, cls: *const Class) {
     });
 }
 
+/// The bulk-operations 2x2 (`rfc/model/memory/bulk-operations.md`):
+/// creation by factory vs by reserved cells, teardown by per-object
+/// release vs one vector call. 64 objects per iteration, destructorless
+/// class (the compiler emits no `constructed` call for those), all four
+/// arms in one binary — no configuration juggling.
+fn bulk(c: &mut Criterion, cls: *const Class) {
+    use ll_model::memory::heap::ll_entity_reserve;
+    use ll_model::object::{ll_object_new_in, ll_release_vector};
+
+    const N: usize = 64;
+
+    unsafe fn create_factory(cls: *const Class, out: &mut Vec<*mut Object>) {
+        for _ in 0..N {
+            out.push(unsafe {
+                ll_object_new_abi(std::ptr::null_mut(), cls, MemoryCategory::GcHeap as u32)
+            });
+        }
+    }
+
+    unsafe fn create_reserved(cls: *const Class, out: &mut Vec<*mut Object>) {
+        let mut cells = [std::ptr::null_mut::<u8>(); N];
+        let mut contiguous = 0usize;
+        let size = unsafe { (*cls).object_size } as usize;
+        let n = unsafe { ll_entity_reserve(size, N, cells.as_mut_ptr(), &mut contiguous) };
+        for &cell in &cells[..n] {
+            out.push(unsafe { ll_object_new_in(cell, cls) });
+        }
+        for _ in n..N {
+            // The manager served short: the ordinary factory is the
+            // contract's fallback.
+            out.push(unsafe {
+                ll_object_new_abi(std::ptr::null_mut(), cls, MemoryCategory::GcHeap as u32)
+            });
+        }
+    }
+
+    unsafe fn release_loop(objects: &mut Vec<*mut Object>) {
+        for &obj in objects.iter() {
+            if unsafe { ll_release(obj as *mut RcHeader) } {
+                unsafe { ll_object_die(obj) };
+            }
+        }
+        objects.clear();
+    }
+
+    unsafe fn release_vector(objects: &mut Vec<*mut Object>) {
+        unsafe {
+            ll_release_vector(objects.as_ptr() as *const *mut RcHeader, objects.len())
+        };
+        objects.clear();
+    }
+
+    let mut objects: Vec<*mut Object> = Vec::with_capacity(N);
+    let _ = &mut objects; // reused across arms; criterion runs them serially
+
+    c.bench_function("bulk/factory_create_loop_release", |b| {
+        b.iter(|| unsafe {
+            create_factory(black_box(cls), &mut objects);
+            release_loop(&mut objects);
+        })
+    });
+    c.bench_function("bulk/reserved_create_loop_release", |b| {
+        b.iter(|| unsafe {
+            create_reserved(black_box(cls), &mut objects);
+            release_loop(&mut objects);
+        })
+    });
+    c.bench_function("bulk/factory_create_vector_release", |b| {
+        b.iter(|| unsafe {
+            create_factory(black_box(cls), &mut objects);
+            release_vector(&mut objects);
+        })
+    });
+    c.bench_function("bulk/reserved_create_vector_release", |b| {
+        b.iter(|| unsafe {
+            create_reserved(black_box(cls), &mut objects);
+            release_vector(&mut objects);
+        })
+    });
+}
+
 fn benches(c: &mut Criterion) {
     let cls = class();
     create_release_die(c, cls);
     batch_plain(c, cls);
     batch_batched(c, cls);
     retain_release(c, cls);
+    bulk(c, cls);
 }
 
 criterion_group!(lifecycle, benches);
