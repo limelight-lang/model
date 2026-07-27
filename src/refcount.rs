@@ -317,8 +317,10 @@ pub(crate) unsafe fn collector_stamp_epoch(header: *mut RcHeader, epoch_number: 
 #[inline]
 pub(crate) unsafe fn collector_condemn(header: *mut RcHeader) {
     unsafe {
-        (*((header as *mut u8).add(7) as *const core::sync::atomic::AtomicU8))
-            .store(1, core::sync::atomic::Ordering::Relaxed)
+        (*((header as *mut u8).add(7) as *const core::sync::atomic::AtomicU8)).store(
+            (CONDEMNED_MARK >> CONDEMNED_BYTE_SHIFT) as u8,
+            core::sync::atomic::Ordering::Relaxed,
+        )
     };
 }
 

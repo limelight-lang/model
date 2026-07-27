@@ -87,10 +87,14 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   `thread_clone` / `thread_move`** (multi-threading-future, "reserved" in
   the RFC). "Only the GC reads `traced_runs` as data" holds once generated
   disposes replace the stand-in. `rfc/runtime/object-lifecycle.md`.
-- [ ] **A5. `VALUE_UNDEF` semantics + `WRITING` lock bit** — uninitialized
-  state per `values.md`; the `WRITING` Box-flags lock bit for rc-satb
-  `store_box` (torn-16-byte-read fix, C3). `rfc/model/values.md`,
-  `gc/satb.md`.
+- [~] **A5. `VALUE_UNDEF` semantics + `WRITING` lock bit** — *Box half
+  landed 2026-07-27*: `VALUE_WRITING` pinned (bit 2, mechanism waits for
+  rc-satb), `Value::undef()`/`is_undef()`, the descriptor's `undef_runs`
+  (defaultless Boxes regrouped to the box run's tail) stamped by the
+  factory after the zero-fill, `unset` as the undef-store + `drop_ref`
+  composition — all pinned by tests (undef never traced, any store
+  clears). Still open: the init bitmap in the byte block for raw
+  slots (commit 2). `rfc/model/values.md`, `gc/satb.md`.
 - [ ] **A6. Static-block teardown at thread exit** — per-thread registry,
   walked LIFO, each ref slot dropped via the barrier's `drop`; counterpart
   of the static initializer. Closes audit H3. `rfc/model/classes.md`

@@ -128,12 +128,23 @@ unsafe fn stamp_into(
         // Zero-fill the property region in one pass: a null pointer is
         // uninitialized, an all-zero Box is `null` (tag 0, refcounted
         // clear), a zero scalar is 0, a clear bool is false — every
-        // uninitialized slot's correct start at once. The `undef` flag on
-        // a defaultless `mixed`/untyped Box, and non-zero defaults, are
-        // stamped by the compiler at the `new` site (A5); the factory only
-        // zeroes. `size >= size_of::<Object>()` always (16-byte header).
+        // uninitialized slot's correct start at once.
+        // `size >= size_of::<Object>()` always (16-byte header).
         let body = (obj as *mut u8).add(size_of::<Object>());
         core::ptr::write_bytes(body, 0, size - size_of::<Object>());
+        // A defaultless `mixed`/untyped Box slot starts *undefined*, and
+        // an all-zero Box is `null` — stamp those few slots from the
+        // descriptor's undef runs (`rfc/model/values.md`, Construction).
+        // Non-zero property defaults stay the compiler's explicit stores
+        // at the `new` site; this generic factory is the out-of-line path
+        // and reads the descriptor. Plain stores are sound here: the
+        // header is not yet published, so no walker reads these slots.
+        for run in (*class).undef_runs() {
+            for i in 0..run.count {
+                let slot = (obj as *mut u8).add((run.offset + i * 16) as usize) as *mut Value;
+                slot.write(Value::undef());
+            }
+        }
         (*obj).class = class;
         // The header is published LAST (`publish_header`: one 8-byte
         // store, relaxed atomic under rc-walk). Until it lands the slot
@@ -668,6 +679,105 @@ mod tests {
             let x = unsafe { Object::prop_at(obj, 16).read() };
             assert_eq!(x.tag(), Tag::Null);
         });
+    }
+
+    /// A5: a defaultless `mixed` Box slot starts *undefined* — the factory
+    /// stamps `VALUE_UNDEF` from the descriptor's undef runs after the
+    /// zero-fill — while a defaulted one starts `null`. Undef is invisible
+    /// to the trace walk (the refcounted flag is clear), any store clears
+    /// it (the barrier writes all 16 bytes), and `unset()` is the
+    /// undef-store + `drop_ref` composition, which restores the state and
+    /// releases the displaced entity.
+    #[test]
+    fn defaultless_box_slot_lives_the_undef_lifecycle() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("A5Undef")
+            .prop("defaulted", true) // Boxed with a default: starts null
+            .prop_boxed_without_default("bare") // starts undef
+            .build();
+        let child_cls = ClassBuilder::new("A5Child").build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        unsafe {
+            let obj = new_constructed(&mut ctx, cls, MemoryCategory::GcHeap);
+            let defaulted = Object::prop_at(obj, 16);
+            let bare = Object::prop_at(obj, 32);
+
+            assert!(!defaulted.read().is_undef(), "a default means never tracked");
+            assert_eq!(defaulted.read().tag(), Tag::Null);
+            assert!(bare.read().is_undef(), "stamped by the factory");
+
+            // Undef is not traced: the walk sees no children yet.
+            let mut children = 0;
+            for_each_counted_child(obj, |_| children += 1);
+            assert_eq!(children, 0, "an undef slot must not be walked");
+
+            // Any store clears undef — the whole 16 bytes are written.
+            let child = new_constructed(&mut ctx, child_cls, MemoryCategory::GcHeap);
+            crate::memory::barrier::ref_store(
+                &mut arena,
+                obj as *mut RcHeader,
+                bare,
+                std::ptr::null_mut(),
+                Value::entity(crate::value::Tag::Object, child as *mut RcHeader),
+            );
+            assert!(!bare.read().is_undef());
+            assert_eq!((*child).rc.refcount, 2, "creation + the slot");
+            let mut children = 0;
+            for_each_counted_child(obj, |_| children += 1);
+            assert_eq!(children, 1, "a stored entity is walked again");
+
+            // `unset($obj->bare)`: store undef back, drop the displaced
+            // entity — the same publish-then-release order as any
+            // overwriting store.
+            crate::memory::barrier::ref_store(
+                &mut arena,
+                obj as *mut RcHeader,
+                bare,
+                child as *mut RcHeader,
+                Value::undef(),
+            );
+            assert!(bare.read().is_undef(), "unset returns the slot to undef");
+            assert_eq!((*child).rc.refcount, 1, "the slot's reference released");
+            let mut children = 0;
+            for_each_counted_child(obj, |_| children += 1);
+            assert_eq!(children, 0);
+
+            // Teardown strides the same runs: the undef slot releases
+            // nothing, and both die cleanly.
+            for entity in [child as *mut RcHeader, obj as *mut RcHeader] {
+                assert!(crate::refcount::ll_release(entity));
+                ll_entity_die(entity);
+            }
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The construct-into-a-reserved-cell path shares `stamp_into`, so it
+    /// stamps undef the same way the allocating factory does.
+    #[test]
+    fn object_new_in_a_reserved_cell_stamps_undef_too() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("A5UndefInCell")
+            .prop_boxed_without_default("bare")
+            .build();
+
+        unsafe {
+            let mut cell: *mut u8 = std::ptr::null_mut();
+            let mut contiguous = 0usize;
+            let got = crate::memory::heap::ll_entity_reserve(
+                (*cls).object_size as usize,
+                1,
+                &mut cell,
+                &mut contiguous,
+            );
+            assert_eq!(got, 1, "one cell for the test object");
+            let obj = ll_object_new_in(cell, cls);
+            assert!(Object::prop_at(obj, 16).read().is_undef());
+            assert!(crate::refcount::ll_release(obj as *mut RcHeader));
+            ll_entity_die(obj as *mut RcHeader);
+        }
     }
 
     #[test]

@@ -34,14 +34,25 @@ pub const VALUE_REFCOUNTED: u8 = 1 << 0;
 
 /// Box flag: this is an **uninitialized** property slot (`mixed` /
 /// untyped, declared without a default). Reading it throws `Error`, per
-/// PHP's uninitialized-typed-property semantics; a write clears it. It
-/// is confined to property slots and never set on a Box in a local,
-/// parameter, return, array element or reference box, so it cannot flow
-/// into a value context — unlike Zend's `IS_UNDEF` (`rfc/model/values.md`).
-/// Raw typed slots have no room for it and use the per-object init
-/// bitmap instead. Reserved here; the read/write semantics land with the
-/// object-layout rework.
+/// PHP's uninitialized-typed-property semantics; any store clears it,
+/// because the barrier writes all 16 bytes ([`crate::memory::barrier`]);
+/// `unset()` restores it (a [`Value::undef`] store, then `drop_ref` of
+/// the displaced entity). It is confined to property slots and never set
+/// on a Box in a local, parameter, return, array element or reference
+/// box, so it cannot flow into a value context — unlike Zend's
+/// `IS_UNDEF` (`rfc/model/values.md`). Raw typed slots have no room for
+/// it and use the per-object init bitmap instead. The factory stamps it
+/// over the class's `undef_runs` after the zero-fill
+/// ([`crate::class::Class::undef_runs`]).
 pub const VALUE_UNDEF: u8 = 1 << 1;
+
+/// Box flag: the slot is mid-write — the `rc-satb` concurrent marker's
+/// torn-16-byte-read lock (`rfc/model/gc/satb.md`). `store_box` on that
+/// strategy sets it before the payload store and clears it with the
+/// final tag store; the marker skips a slot whose flag is set. Every
+/// other build leaves the bit permanently clear. Reserved here until
+/// rc-satb lands; pinned now so the flags byte's assignments are fixed.
+pub const VALUE_WRITING: u8 = 1 << 2;
 
 /// The Box. `#[repr(C)]`: generated code addresses the fields by
 /// offset (payload +0, tag +8, flags +9).
@@ -67,6 +78,13 @@ impl Value {
 
     pub const fn null() -> Self {
         Self::raw(0, Tag::Null, 0)
+    }
+
+    /// The uninitialized property slot: all-zero but for [`VALUE_UNDEF`]
+    /// (an all-zero Box is `null`, not undefined). This is what the
+    /// factory stamps and what an `unset()` stores back.
+    pub const fn undef() -> Self {
+        Self::raw(0, Tag::Null, VALUE_UNDEF)
     }
 
     pub const fn bool(v: bool) -> Self {
@@ -96,6 +114,14 @@ impl Value {
     #[inline]
     pub fn is_refcounted(&self) -> bool {
         self.flags & VALUE_REFCOUNTED != 0
+    }
+
+    /// Uninitialized property slot? Generated code tests this on a
+    /// tracked property read and throws `Error` when set; `isset()`
+    /// reads it inverted.
+    #[inline]
+    pub fn is_undef(&self) -> bool {
+        self.flags & VALUE_UNDEF != 0
     }
 
     #[inline]
@@ -164,6 +190,20 @@ mod tests {
         assert_eq!(core::mem::offset_of!(Value, payload), 0);
         assert_eq!(core::mem::offset_of!(Value, tag), 8);
         assert_eq!(core::mem::offset_of!(Value, flags), 9);
+    }
+
+    /// The flags byte's bit assignments are ABI (generated code tests
+    /// them by constant), so the values are pinned, not just the names.
+    #[test]
+    fn flag_bits_are_pinned_and_undef_is_not_null() {
+        assert_eq!(VALUE_REFCOUNTED, 1);
+        assert_eq!(VALUE_UNDEF, 2);
+        assert_eq!(VALUE_WRITING, 4);
+
+        let u = Value::undef();
+        assert!(u.is_undef());
+        assert!(!u.is_refcounted(), "undef is never traced or counted");
+        assert!(!Value::null().is_undef(), "an all-zero Box is null, not undef");
     }
 
     #[test]

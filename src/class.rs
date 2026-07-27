@@ -165,6 +165,7 @@ pub struct Class {
     pub vtbl_len: u32,
     pub ptr_run_count: u32,
     pub box_run_count: u32,
+    pub undef_run_count: u32,
     pub parent: *const Class,
     pub name: *const LLString,
     /// Ancestors root→self, indexed by depth: `instanceof` is one load
@@ -182,6 +183,13 @@ pub struct Class {
     pub ptr_runs: *const Run,
     /// Box trace runs (stride 16, skip when the refcounted flag is clear).
     pub box_runs: *const Run,
+    /// Box slots declared **without** a default (stride 16): the factory
+    /// stamps [`crate::value::VALUE_UNDEF`] over these after the
+    /// zero-fill, since an all-zero Box is `null`, not undefined
+    /// (`rfc/model/values.md`, Construction). Always a sub-range of a
+    /// box run; construction is the only consumer — the GC and teardown
+    /// never read it.
+    pub undef_runs: *const Run,
     // vtbl: [*const (); vtbl_len] — inline trailing array.
 }
 
@@ -225,6 +233,13 @@ impl Class {
     #[inline]
     pub fn box_runs(&self) -> &[Run] {
         unsafe { std::slice::from_raw_parts(self.box_runs, self.box_run_count as usize) }
+    }
+
+    /// Box slots declared without a default (stride 16) — the factory's
+    /// undef-stamp list, a sub-range of [`Self::box_runs`].
+    #[inline]
+    pub fn undef_runs(&self) -> &[Run] {
+        unsafe { std::slice::from_raw_parts(self.undef_runs, self.undef_run_count as usize) }
     }
 
     /// Slow-path lookup: interned name → vtable slot. Name equality is
@@ -286,7 +301,11 @@ pub struct ClassBuilder {
     name: *const LLString,
     parent: *const Class,
     flags: u32,
-    props: Vec<(*const LLString, SlotKind)>,
+    /// `(name, kind, starts_undef)` — `starts_undef` is the declaration
+    /// criterion of `rfc/model/values.md`: a Boxed property with no
+    /// default starts uninitialized. Meaningful only for `Boxed` until
+    /// the init bitmap (A5 commit 2) tracks the raw kinds.
+    props: Vec<(*const LLString, SlotKind, bool)>,
     methods: Vec<(*const LLString, *const ())>,
     interfaces: Vec<(u32, Vec<u32>)>,
     dispose: *const (),
@@ -334,10 +353,10 @@ impl ClassBuilder {
     }
 
     /// Declare a property, in the boolean compatibility shim over the two
-    /// common kinds: `true` → a [`SlotKind::Boxed`] slot (a counted
-    /// reference stored as a 16-byte Value — the form the store barrier can
-    /// write until A4's `store_ptr`), `false` → a [`SlotKind::Scalar`]
-    /// slot. Bare-pointer and `bool` slots have their own declarations.
+    /// common kinds: `true` → a [`SlotKind::Boxed`] slot **with a
+    /// default** (starts `null` from the zero-fill, never undef-tracked),
+    /// `false` → a [`SlotKind::Scalar`] slot. Bare-pointer, `bool` and
+    /// defaultless-Box slots have their own declarations.
     pub fn prop(self, name: &str, refcounted: bool) -> Self {
         let kind = if refcounted {
             SlotKind::Boxed
@@ -358,8 +377,22 @@ impl ClassBuilder {
         self.prop_of(name, SlotKind::Bool)
     }
 
-    fn prop_of(mut self, name: &str, kind: SlotKind) -> Self {
-        self.props.push((crate::intern::intern_str(name), kind));
+    /// Declare a `mixed`/untyped property **without a default**: a Boxed
+    /// slot that starts uninitialized — the factory stamps its
+    /// [`crate::value::VALUE_UNDEF`] flag via the class's `undef_runs`.
+    /// [`Self::prop`]'s Boxed form models the defaulted declaration,
+    /// which starts `null` (the zero-fill) and is never tracked.
+    pub fn prop_boxed_without_default(self, name: &str) -> Self {
+        self.prop_with(name, SlotKind::Boxed, true)
+    }
+
+    fn prop_of(self, name: &str, kind: SlotKind) -> Self {
+        self.prop_with(name, kind, false)
+    }
+
+    fn prop_with(mut self, name: &str, kind: SlotKind, starts_undef: bool) -> Self {
+        self.props
+            .push((crate::intern::intern_str(name), kind, starts_undef));
         self
     }
 
@@ -398,7 +431,7 @@ impl ClassBuilder {
         // way. A null here means one of them was refused earlier, and a
         // class with a nameless property is not worth building.
         if self.name.is_null()
-            || self.props.iter().any(|(n, _)| n.is_null())
+            || self.props.iter().any(|(n, _, _)| n.is_null())
             || self.methods.iter().any(|(n, _)| n.is_null())
         {
             return std::ptr::null();
@@ -460,15 +493,24 @@ impl ClassBuilder {
         // A subclass appends at most one run per kind for its own slots.
         let mut ptr_runs: Vec<Run> = parent.map_or(Vec::new(), |p| p.ptr_runs().to_vec());
         let mut box_runs: Vec<Run> = parent.map_or(Vec::new(), |p| p.box_runs().to_vec());
+        let mut undef_runs: Vec<Run> = parent.map_or(Vec::new(), |p| p.undef_runs().to_vec());
 
         // Classify own props, in declaration order, into the three runs.
+        // Defaultless Boxes go behind the defaulted ones so the factory's
+        // undef stamp is one contiguous sub-run at the box run's tail —
+        // physical order is free to differ (`declaration_index` keeps the
+        // observable one).
         let mut own_pointers: Vec<(*const LLString, u32)> = Vec::new();
         let mut own_boxes: Vec<(*const LLString, u32)> = Vec::new();
+        let mut own_undef_boxes: Vec<(*const LLString, u32)> = Vec::new();
         let mut own_rest: Vec<(*const LLString, SlotKind, u32)> = Vec::new();
-        for (i, &(name, kind)) in self.props.iter().enumerate() {
+        for (i, &(name, kind, starts_undef)) in self.props.iter().enumerate() {
             let declaration_index = parent_prop_count + i as u32;
             match kind {
                 SlotKind::Pointer => own_pointers.push((name, declaration_index)),
+                SlotKind::Boxed if starts_undef => {
+                    own_undef_boxes.push((name, declaration_index))
+                }
                 SlotKind::Boxed => own_boxes.push((name, declaration_index)),
                 _ => own_rest.push((name, kind, declaration_index)),
             }
@@ -494,14 +536,21 @@ impl ClassBuilder {
                 cursor += 8;
             }
         }
-        // Boxes: one contiguous run, stride 16.
-        if !own_boxes.is_empty() {
+        // Boxes: one contiguous run, stride 16; the defaultless tail is
+        // additionally the factory's undef run.
+        if !own_boxes.is_empty() || !own_undef_boxes.is_empty() {
             cursor = align_up(cursor, 8);
             box_runs.push(Run {
                 offset: cursor,
-                count: own_boxes.len() as u32,
+                count: (own_boxes.len() + own_undef_boxes.len()) as u32,
             });
-            for &(name, declaration_index) in &own_boxes {
+            if !own_undef_boxes.is_empty() {
+                undef_runs.push(Run {
+                    offset: cursor + own_boxes.len() as u32 * 16,
+                    count: own_undef_boxes.len() as u32,
+                });
+            }
+            for &(name, declaration_index) in own_boxes.iter().chain(&own_undef_boxes) {
                 props.push(PropSlot {
                     name,
                     offset: cursor,
@@ -559,10 +608,12 @@ impl ClassBuilder {
         );
         let ptr_runs_mem = alloc_array(&ptr_runs);
         let box_runs_mem = alloc_array(&box_runs);
+        let undef_runs_mem = alloc_array(&undef_runs);
         if props_mem.is_null()
             || methods_mem.is_null()
             || ptr_runs_mem.is_null()
             || box_runs_mem.is_null()
+            || undef_runs_mem.is_null()
         {
             return std::ptr::null();
         }
@@ -624,6 +675,7 @@ impl ClassBuilder {
                 vtbl_len: vtbl.len() as u32,
                 ptr_run_count: ptr_runs.len() as u32,
                 box_run_count: box_runs.len() as u32,
+                undef_run_count: undef_runs.len() as u32,
                 parent: self.parent,
                 name: self.name,
                 display: std::ptr::null(), // set below (self-referential)
@@ -633,6 +685,7 @@ impl ClassBuilder {
                 dispose: self.dispose,
                 ptr_runs: ptr_runs_mem,
                 box_runs: box_runs_mem,
+                undef_runs: undef_runs_mem,
             });
             display.push(cls);
             (*cls).display = alloc_array(&display);
@@ -754,6 +807,48 @@ mod tests {
             "age is scalar-shaped, not traced"
         );
         assert!(dog.ptr_runs().is_empty());
+    }
+
+    /// A defaultless Box slot is regrouped behind the defaulted ones so
+    /// the factory's undef stamp is one contiguous sub-run at the box
+    /// run's tail, and a subclass appends its own undef run beside the
+    /// inherited one — the same shape as the trace runs.
+    #[test]
+    fn defaultless_boxes_group_at_the_box_runs_tail_and_inherit() {
+        let _g = crate::memory::block_pool::test_guard();
+        let base_ptr = ClassBuilder::new("UndefBase")
+            .prop_boxed_without_default("bare") // declared first,
+            .prop("defaulted", true) // laid out last: defaulted@16, bare@32
+            .build();
+        let sub_ptr = ClassBuilder::new("UndefSub")
+            .parent(base_ptr)
+            .prop_boxed_without_default("own_bare")
+            .build();
+        let (base, sub) = unsafe { (&*base_ptr, &*sub_ptr) };
+
+        assert_eq!(base.find_prop(intern_str("defaulted")).unwrap().offset, 16);
+        assert_eq!(base.find_prop(intern_str("bare")).unwrap().offset, 32);
+        assert_eq!(base.box_runs(), &[Run { offset: 16, count: 2 }]);
+        assert_eq!(
+            base.undef_runs(),
+            &[Run { offset: 32, count: 1 }],
+            "the defaultless tail of the box run"
+        );
+
+        // Declaration order survives the regrouping.
+        assert_eq!(base.find_prop(intern_str("bare")).unwrap().declaration_index, 0);
+        assert_eq!(base.find_prop(intern_str("defaulted")).unwrap().declaration_index, 1);
+
+        // The subclass inherits the parent's undef run and appends its own.
+        assert_eq!(sub.find_prop(intern_str("own_bare")).unwrap().offset, 48);
+        assert_eq!(
+            sub.box_runs(),
+            &[Run { offset: 16, count: 2 }, Run { offset: 48, count: 1 }]
+        );
+        assert_eq!(
+            sub.undef_runs(),
+            &[Run { offset: 32, count: 1 }, Run { offset: 48, count: 1 }]
+        );
     }
 
     /// The full slot-kind spread: a bare pointer (traced, stride-8 run), a

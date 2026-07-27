@@ -8,6 +8,23 @@ never edited or deleted.
 
 ---
 
+## 2026-07-27 — undef stamping is the factory's, from descriptor `undef_runs` (A5)
+
+**Decided:** the class descriptor carries `undef_runs` — the Box slots
+declared without a default, as `(offset, count)` runs, and the generic
+factory stamps `VALUE_UNDEF` over them after the zero-fill (a
+compiler-known `new` site emits the same stores straight-line). The
+layout regroups a class's defaultless Boxes behind its defaulted ones,
+so the undef run is one contiguous tail of the box trace run.
+**Why:** an all-zero Box is `null`, not undefined, so somebody must
+stamp; the out-of-line factory is the dynamic-class path and can only
+read the descriptor. **Rejected:** a per-`PropSlot` flag — the factory
+would scan every property to find the few defaultless ones; runs make
+the stamp a stride, the crate's existing trace-map idiom.
+**Cost:** physical order diverges further from declaration order
+(already true of the run grouping; `declaration_index` carries the
+observable order). Construction is the field's only consumer.
+
 ## 2026-07-27 — bulk object operations: vector release and cell reservation (rfc bulk-operations.md)
 
 **Decided:** two compiler-facing ABI groups. `ll_release_vector` — one
