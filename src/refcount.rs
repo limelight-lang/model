@@ -602,6 +602,18 @@ pub(crate) unsafe fn header_flags(header: *const RcHeader) -> u32 {
     }
 }
 
+/// Read the refcount of a **published** header, same dispatch rule —
+/// the counter twin of [`header_flags`].
+#[inline]
+pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
+    #[cfg(not(feature = "rc-walk"))]
+    return unsafe { (*header).refcount };
+    #[cfg(feature = "rc-walk")]
+    unsafe {
+        mutator_load_header(header).0
+    }
+}
+
 /// Rewrite the flags of a **published** header, same dispatch rule —
 /// the write twin of [`header_flags`]. Post-publish flag writes on a
 /// walked header must not be plain stores under `rc-walk`.

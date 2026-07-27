@@ -407,9 +407,10 @@ unsafe fn exact_test(members: &[*mut RcHeader], discount: u32) -> bool {
     // its stop-the-thread collection and this test.
     #[cfg(feature = "rc-walk")]
     if discount == 0
-        && members.iter().any(|&m| unsafe {
-            (*m).refcount == 0
-                && (*m).flags & crate::refcount::CONDEMNED_BYTE_MASK
+        && members.iter().any(|&m| {
+            let (rc, flags) = unsafe { crate::refcount::mutator_load_header(m) };
+            rc == 0
+                && flags & crate::refcount::CONDEMNED_BYTE_MASK
                     != crate::refcount::DEFERRED_DEATH_MARK
         })
     {
@@ -433,7 +434,7 @@ unsafe fn exact_test(members: &[*mut RcHeader], discount: u32) -> bool {
     members
         .iter()
         .enumerate()
-        .all(|(i, &m)| unsafe { (*m).refcount } == in_degree[i] + discount)
+        .all(|(i, &m)| unsafe { crate::refcount::header_refcount(m) } == in_degree[i] + discount)
 }
 
 /// Drop the Phase 4 guards through `ll_release` — never a raw `-= 1`: a
@@ -502,18 +503,25 @@ pub(crate) unsafe fn drain_confirmed(members: &[*mut RcHeader]) -> DrainOutcome 
     // reference from outside the component exists. Clear the condemned
     // bytes **before any release**: the drain's own un-guards must reach
     // real deaths, not re-defer them to a drain that will never come.
+    //
+    // Header accesses throughout the drain go through the relaxed
+    // helpers like every other post-publish access, although the drain
+    // window is provably free of collector interference
+    // (rfc/model/gc/drain-window.md, TLC-checked): the rule stays
+    // absolute so no reader needs the proof to trust the site.
     for &m in members {
-        unsafe { (*m).flags &= !CONDEMNED_BYTE_MASK };
+        unsafe { crate::refcount::update_header_flags(m, |f| f & !CONDEMNED_BYTE_MASK) };
     }
     for &m in members {
-        unsafe { (*m).refcount += 1 }; // the guard; a dead member goes 0 → 1
+        // The guard; a dead member goes 0 → 1.
+        unsafe { crate::refcount::mutator_guard_retain(m) };
     }
     // Weak cells nulled before any destructor — same obligation and
     // ordering as `collect_cycles` (`rfc/model/weak-references.md`).
     unsafe { crate::weak::notify_members(members) };
     let mut any_destructor_ran = false;
     for &m in members {
-        if is_object(unsafe { (*m).flags }) {
+        if is_object(unsafe { crate::refcount::header_flags(m) }) {
             any_destructor_ran |= unsafe { crate::object::run_pre_destructor(m as *mut Object) };
         }
     }
@@ -563,10 +571,16 @@ pub(crate) unsafe fn acquit_condemned(members: &[*mut RcHeader]) -> usize {
     let deferred_deaths: Vec<*mut RcHeader> = members
         .iter()
         .copied()
-        .filter(|&m| unsafe { (*m).flags } & CONDEMNED_BYTE_MASK == DEFERRED_DEATH_MARK)
+        .filter(|&m| {
+            let flags = unsafe { crate::refcount::header_flags(m) };
+            flags & CONDEMNED_BYTE_MASK == DEFERRED_DEATH_MARK
+        })
         .collect();
+    // Relaxed helpers as in `drain_confirmed` — the rule is absolute
+    // even inside the proven-exclusive drain window
+    // (rfc/model/gc/drain-window.md).
     for &m in members {
-        unsafe { (*m).flags &= !CONDEMNED_BYTE_MASK };
+        unsafe { crate::refcount::update_header_flags(m, |f| f & !CONDEMNED_BYTE_MASK) };
     }
     for &m in &deferred_deaths {
         unsafe { crate::object::ll_entity_die(m) };

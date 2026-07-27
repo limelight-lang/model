@@ -8,6 +8,25 @@ never edited or deleted.
 
 ---
 
+## 2026-07-27 — the drain goes through the relaxed header helpers; the exclusivity window is proven separately
+
+**Decided:** every header access in the verdict drains
+(`drain_confirmed` / `acquit_condemned` / `exact_test`) uses the
+relaxed helpers (`update_header_flags`, `mutator_guard_retain`, the new
+`header_refcount` twin), although the drain window is provably free of
+collector interference. The proof — three links: post follows the last
+read (queue mutex), no return after post, ack follows the drain with
+Release/Acquire on the close gate — lives in `rfc/model/gc/`
+`drain-window.md` with a dedicated TLC spec (`DrainWindow.tla`: sound
+run exhausts in 23 states; three kill variants, one per link, each
+violates the invariant). **Why:** the plain accesses were flagged by an
+independent review as violating the crate's own rule; the soundness
+argument was real but written nowhere, which is a trap for every future
+reader. **Rejected:** keeping plain accesses and documenting the
+exception — the relaxed forms are the same x86 instructions, so an
+absolute rule costs nothing. **Cost:** none (cold path, identical
+codegen).
+
 ## 2026-07-27 — undef stamping is the factory's, from descriptor `undef_runs` (A5)
 
 **Decided:** the class descriptor carries `undef_runs` — the Box slots
