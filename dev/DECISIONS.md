@@ -8,6 +8,55 @@ never edited or deleted.
 
 ---
 
+## 2026-07-27 — eager death: the condemned byte is retired, deaths never defer, the drain drops on a corpse
+
+Edmond's redesign (rfc `c2f91b1`, `model/gc/rc-walk.md`). A release
+reaching zero mid-epoch now runs full teardown at the natural point —
+`__destruct` on the owner thread, weak notify, sever, free — with only
+the memory parked. Deleted wholesale: the F5 deferral branch, the
+deferred-death marker, the shared condemned byte (bits 24–31 return to
+the free pool), `collector_condemn`, `acquit_condemned` and the
+acquittal message kind, `Epoch::drop`'s owed acquittals. Condemnation
+is collector-private (the candidate list); acquittals are dropped in
+private; only confirmations post. `drain_confirmed` opens with the
+**corpse rule**: any member reading `rc 0` drops the message whole
+before a field is traced or a guard written — DC0 closed by refusing
+the message instead of preventing the corpse.
+
+Two pre-existing BLOCKERs surfaced by the adversarial review of the
+amendment, fixed in the same change (causally dependent — the eager
+path makes both universal):
+
+- **The death-branch checkpoint acks only** (`epoch::checkpoint_ack`);
+  message pickup and the parked flush ride the outermost dispose's
+  exit (`teardown_enter/exit`, bracketed in `ll_object_die` /
+  `ll_entity_die`) and are refused mid-teardown by the full
+  checkpoint. Between the committing zero store and dispose the dying
+  entity's weak cell is live, and a drain destructor's
+  `WeakRef::get()` returned a strong reference to the corpse
+  (regression `the_drain_never_sees_an_entity_between_commit_and_
+  dispose`, verified failing on the old order).
+- **Parking is out-of-band** (`deferred_free` keeps a thread-local
+  vector; a parked slot is never written until the flush). The old
+  in-slot park link overwrote the class word at bytes 8–15 under the
+  walker, which dereferences `+8` one pass after reading the header
+  (regression `parking_leaves_the_corpse_bytes_intact`, verified
+  failing on the in-slot write). Cost: the park path may allocate —
+  cold, epoch-only. Flush frees in reverse park order to keep the
+  LIFO free-list behaviour.
+- `Epoch::drop` now **waits for posted confirmations** before
+  releasing the deferral window (two epochs' verdicts must never be
+  in flight).
+
+**Why:** the deferral traded destructor timeliness — the one
+userland-visible semantic, and design principle 1 — for drain
+simplicity; the parked slot already guarantees corpse identity, so
+refusing the message is as safe as preventing the corpse, and the
+mutator's death path drops its last collector test. **Cost:** a
+component that partially dies between posting and drain waits an
+epoch for its survivors; the rfc's TLA+ battery models the
+pre-amendment protocol until re-derived (banner notes in the rfc).
+
 ## 2026-07-27 — the drain goes through the relaxed header helpers; the exclusivity window is proven separately
 
 **Decided:** every header access in the verdict drains

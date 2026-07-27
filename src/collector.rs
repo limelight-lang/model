@@ -25,7 +25,7 @@ use crate::memory::deferred_free;
 use crate::memory::heap::{EntityBlockSnapshot, snapshot_entity_blocks};
 use crate::refcount::{
     ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EPOCH_BYTE_MASK, EPOCH_BYTE_SHIFT, EntityKind,
-    MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, collector_condemn, collector_load_header,
+    MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, collector_load_header,
     collector_stamp_epoch,
 };
 use crate::walk::garbage_components;
@@ -64,7 +64,9 @@ pub(crate) struct EpochStats {
     pub dropped_edges: usize,
     /// Candidate components Phase 2 produced.
     pub candidates: usize,
-    /// Components acquitted by the Phase 3 re-check (message posted).
+    /// Components acquitted by the Phase 3 re-check — dropped in the
+    /// collector's private tables; nothing is posted (eager-death
+    /// amendment, 2026-07-27).
     pub acquitted: usize,
     /// Components confirmed and posted.
     pub confirmed: usize,
@@ -82,11 +84,11 @@ pub(crate) struct Epoch {
     /// Flags as read with each row — the kind bits steer pass 2.
     flags: Vec<u32>,
     edges: Vec<Edge>,
-    /// Candidate components as indices into `entities`.
+    /// Candidate components as indices into `entities`. Condemnation
+    /// is this list and nothing else — collector-private since the
+    /// eager-death amendment (2026-07-27); the heap never learns a
+    /// verdict exists.
     candidates: Vec<Vec<u32>>,
-    /// `condemn()` ran: bytes are set and every candidate component is
-    /// owed a message — by `recheck_and_post`, or by `Drop`.
-    condemned: bool,
     /// Handshake ack level that must be passed before the phase that
     /// recorded it may proceed.
     acks_needed: u64,
@@ -95,24 +97,21 @@ pub(crate) struct Epoch {
 
 impl Drop for Epoch {
     /// An epoch abandoned without [`Epoch::close`] (a panic on the
-    /// collector side) still releases the deferral window — a stuck
-    /// activity bit would park every free in the process forever — and
-    /// still pays the message every condemned component is owed: with
-    /// the narrow mutator there is no hot-path clear to self-heal a
-    /// stranded condemnation, and an entity left at byte 1 defers its
-    /// eventual death to a drain that would never come (review finding,
-    /// 2026-07-27). The acquittals post first: the drain and the parked
-    /// flush share the mutator's next checkpoint, in that order.
+    /// collector side) owes no acquittals since the eager-death
+    /// amendment — condemnation is collector-private, so there is no
+    /// mutator-side state to heal — but it must still **wait for its
+    /// posted confirmations to be acked** before releasing the deferral
+    /// window: releasing early lets the next epoch open over an
+    /// undrained queue, putting two epochs' verdicts in flight (review
+    /// finding, 2026-07-27, `rfc/model/gc/rc-walk.md`). The wait may
+    /// block until the owning thread's next checkpoint — the one place
+    /// this design accepts a wait, on a dying collector thread. Then
+    /// the window is released; a stuck activity bit would park every
+    /// free in the process forever.
     fn drop(&mut self) {
         if !self.closed {
-            if self.condemned {
-                for component in self.candidates.iter().filter(|c| !c.is_empty()) {
-                    let members: Vec<*mut RcHeader> = component
-                        .iter()
-                        .map(|&i| self.entities[i as usize])
-                        .collect();
-                    protocol::post_verdict(protocol::Verdict::Acquit, members);
-                }
+            while protocol::outstanding_verdicts() != 0 {
+                std::thread::yield_now();
             }
             deferred_free::end_epoch();
         }
@@ -143,7 +142,6 @@ impl Epoch {
             flags: Vec::new(),
             edges: Vec::new(),
             candidates: Vec::new(),
-            condemned: false,
             acks_needed,
             closed: false,
         }
@@ -242,28 +240,23 @@ impl Epoch {
         self.stats.candidates = self.candidates.len();
     }
 
-    /// Phase 3, first half — condemn every candidate member, then
-    /// request the handshake whose ack makes the mutator's prior writes
-    /// visible to the re-check.
+    /// Phase 3, first half — condemn every candidate component (a mark
+    /// in this epoch's private tables and nothing else: the shared
+    /// condemned byte is retired, eager-death amendment 2026-07-27),
+    /// then request the handshake whose ack makes the mutator's prior
+    /// writes visible to the re-check.
     pub fn condemn(&mut self) {
-        self.condemned = true;
-        for component in &self.candidates {
-            for &i in component {
-                unsafe { collector_condemn(self.entities[i as usize]) };
-            }
-        }
         self.acks_needed = protocol::handshake_acks() + 1;
         protocol::request_handshake();
     }
 
     /// Phase 3, second half — the snapshot-comparison filter, then one
-    /// message per component. **Any difference acquits the whole
-    /// component**: a changed count, a moved edge, a cleared byte — and
-    /// the bytes are read last, so a touch that landed after the
-    /// condemnation cannot be missed by reading its byte too early
+    /// message per **confirmed** component. **Any difference acquits
+    /// the whole component**: a changed count, a moved edge
     /// (`rfc/model/gc/rc-walk.md`, Phase 3; comparison, not
-    /// recomputation — canonised 2026-07-26). An acquittal is a message
-    /// too: the duties are mutator work.
+    /// recomputation — canonised 2026-07-26). An acquittal posts
+    /// nothing: the hypothesis is dropped here, in private, and the
+    /// component is re-judged next epoch (eager-death amendment).
     pub fn recheck_and_post(&mut self) {
         debug_assert!(self.acked(), "re-check before the handshake ack");
         // Distribute the recorded edges to their candidate components
@@ -286,10 +279,10 @@ impl Epoch {
                 }
             }
         }
-        // Components are taken one at a time, not wholesale: whatever a
-        // panic leaves unposted stays in `self.candidates`, and `Drop`
-        // owes those components an acquittal (the narrow mutator has no
-        // hot-path clear to self-heal a stranded condemnation).
+        // Components are taken one at a time, not wholesale: posting is
+        // the point of no return per component, and whatever a panic
+        // leaves unposted simply dies with the epoch — an unposted
+        // condemnation is private state, nothing owes it anything.
         for id in 0..self.candidates.len() {
             let component = std::mem::take(&mut self.candidates[id]);
             let mut clean = true;
@@ -315,24 +308,13 @@ impl Epoch {
                     }
                 }
             }
-            // Bytes last.
-            if clean {
-                for &i in &component {
-                    let word = unsafe { collector_load_header(self.entities[i as usize]) };
-                    if (word >> 32) as u32 & crate::refcount::CONDEMNED_BYTE_MASK == 0 {
-                        clean = false;
-                        break;
-                    }
-                }
-            }
-            let members: Vec<*mut RcHeader> =
-                component.iter().map(|&i| self.entities[i as usize]).collect();
             if clean {
                 self.stats.confirmed += 1;
-                protocol::post_verdict(protocol::Verdict::Confirm, members);
+                let members: Vec<*mut RcHeader> =
+                    component.iter().map(|&i| self.entities[i as usize]).collect();
+                protocol::post_confirmation(members);
             } else {
                 self.stats.acquitted += 1;
-                protocol::post_verdict(protocol::Verdict::Acquit, members);
             }
         }
     }
@@ -651,10 +633,10 @@ mod tests {
     }
 
     /// The Phase 3 filter: a mutator touch between condemn and re-check
-    /// (here a borrow — retain then release, which also clears the
-    /// bytes) acquits the whole component by snapshot difference; the
-    /// acquittal message performs the duties, and the untouched ring is
-    /// collected by the next epoch.
+    /// (here a borrow, still held) acquits the whole component by
+    /// snapshot difference. The acquittal is collector-private — no
+    /// message, no duties — and the untouched ring is collected by the
+    /// next epoch.
     #[test]
     fn a_touch_between_condemn_and_recheck_acquits() {
         let _g = crate::memory::block_pool::test_guard();
@@ -683,15 +665,18 @@ mod tests {
         e.condemn();
         // The mutator borrows a member and still holds it at re-check
         // time: the count difference against the snapshot acquits.
-        // (Under the narrow mutator the borrow no longer clears the
-        // byte, so a touch-and-restore acquits nothing — that case is
-        // the sibling test below.)
+        // (A touch-and-restore acquits nothing — that case is the
+        // sibling test below.)
         unsafe { ll_retain(a as *mut RcHeader) };
         checkpoint(); // ack
         e.recheck_and_post();
         assert_eq!(e.stats.acquitted, 1, "the held borrow acquits by difference");
         assert_eq!(e.stats.confirmed, 0);
-        checkpoint(); // drain the acquittal (duties)
+        assert_eq!(
+            crate::epoch::outstanding_verdicts(),
+            0,
+            "an acquittal posts nothing — it is dropped in private"
+        );
         let _ = e.close();
         checkpoint(); // flush
         assert!(!unsafe { ll_release(a as *mut RcHeader) }); // borrow ends
@@ -706,12 +691,12 @@ mod tests {
         arena.reset(|_| {});
     }
 
-    /// The narrow-mutator ABA case: a borrow taken and returned between
-    /// condemn and re-check restores the snapshot exactly, the byte
-    /// stays set, and the component **confirms** — correctly: the Phase
-    /// 4 exact test proves every reference is in-component at drain
-    /// time, so the transiently borrowed ring is garbage and is freed
-    /// one epoch earlier than the old clear-on-touch filter allowed.
+    /// The ABA case: a borrow taken and returned between condemn and
+    /// re-check restores the snapshot exactly and the component
+    /// **confirms** — correctly: the Phase 4 exact test proves every
+    /// reference is in-component at drain time, so the transiently
+    /// borrowed ring is garbage and is freed one epoch earlier than
+    /// the old clear-on-touch filter allowed.
     #[test]
     fn a_touch_and_restore_between_condemn_and_recheck_confirms_and_frees() {
         let _g = crate::memory::block_pool::test_guard();
@@ -752,13 +737,14 @@ mod tests {
         arena.reset(|_| {});
     }
 
-    /// Review finding, 2026-07-27: a collector that condemns and dies
-    /// before posting owes the acquittals — with the narrow mutator no
-    /// hot-path clear self-heals a stranded byte, and a later ordinary
-    /// death would defer to a drain that never comes. `Drop` posts
-    /// them; the mutator's next checkpoint performs the duties.
+    /// Since the eager-death amendment a collector that condemns and
+    /// dies before posting strands nothing: condemnation is private
+    /// state and dies with the epoch — no stranded bytes, no owed
+    /// acquittals. `Drop` releases the deferral window (a stuck
+    /// activity bit would park every free forever) and the ring is
+    /// collected cleanly next epoch.
     #[test]
-    fn an_abandoned_epoch_posts_acquittals_for_condemned_components() {
+    fn an_abandoned_epoch_strands_nothing() {
         let _g = crate::memory::block_pool::test_guard();
         DESTRUCTS.store(0, Ordering::Relaxed);
         let cls = ClassBuilder::new("CollectorAbandoned")
@@ -786,12 +772,15 @@ mod tests {
         checkpoint(); // ack
         drop(e); // the collector dies before recheck_and_post
 
-        assert!(
-            crate::epoch::outstanding_verdicts() > 0,
-            "the abandoned epoch posted the acquittal it owed"
+        assert_eq!(
+            crate::epoch::outstanding_verdicts(),
+            0,
+            "nothing was posted, nothing is owed"
         );
-        checkpoint(); // the duties: bytes cleared, nothing torn
-        assert_eq!(crate::epoch::outstanding_verdicts(), 0);
+        assert!(
+            !crate::memory::deferred_free::active(),
+            "the deferral window was released by the unwind"
+        );
         assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "the ring lives");
 
         let stats = stepped_epoch();
@@ -951,16 +940,14 @@ mod tests {
         e.recheck_and_post();
         assert_eq!(e.stats.acquitted, 1, "gate 1: the count re-read sees 3 ≠ 2");
         assert_eq!(e.stats.confirmed, 0);
-        checkpoint(); // the acquittal duties
         let _ = e.close();
         checkpoint();
         assert!(walked_addresses().contains(&(s2 as usize)), "s2 lives");
         assert_eq!(unsafe { (*s2).rc.refcount }, 3, "fr2 + two self-loops, intact");
 
         // Gate 2, independently: drive the same verdict PAST the filter,
-        // exactly what a byte-only confirm would post.
-        unsafe { (*s2).rc.flags |= 1 << crate::refcount::CONDEMNED_BYTE_SHIFT };
-        crate::epoch::post_verdict(crate::epoch::Verdict::Confirm, vec![s2 as *mut RcHeader]);
+        // exactly what a filterless confirm would post.
+        crate::epoch::post_confirmation(vec![s2 as *mut RcHeader]);
         checkpoint();
         assert!(walked_addresses().contains(&(s2 as usize)), "exact test: 3 ≠ indeg 2");
         assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "no destructor ran on s2");

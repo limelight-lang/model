@@ -111,9 +111,9 @@ commit (`WORKFLOW.md`).
 | Module | Responsible for | Knows | Does not know | Depends on |
 |---|---|---|---|---|
 | `gc` | the rc-trace Bacon–Rajan cycle collector: TLS candidate buffer, arm-vs-fire, `mark_gray` / `scan` / white collection, cyclic destructors with re-collect; `ll_gc_collect_cycles` and the `ll_gc_maybe_collect` poll (reserve refill + rc-walk checkpoint) | the color bits (flags 4–5, buffered bit 6); the clean-point rule | the arming policy (compiler's); other strategies' internals | `refcount`, `object`, `walk`, `weak`, `barrier`, `reserve`, `stdapi`; (rc-walk) `epoch` |
-| `walk` | the kind-dispatched tracer and heap census; `collect_cycles` (synchronous whole-heap collection); the Phase-4 drains (`drain_confirmed`, `acquit_condemned`) | entity kinds and each kind's out-edges | slots, blocks, occupancy — the heap's side of the split | `heap`, `refcount`, `object`, `value`, `reference`, `weak`, `barrier` |
-| `epoch` (rc-walk) | the mutator side of the epoch protocol: soft-handshake ack, the verdict queue (global mutex), the non-reentrant checkpoint riding `ll_release`'s death branch and the poll (batched runs: `ll_gc_checkpoint` + `ll_release_batch`) | the message kinds and their drain dispatch | the collector's phases; what a verdict means (the drains decide) | `refcount`, `walk`, `deferred_free` |
-| `collector` (rc-walk) | the collector-side epoch state machine, Phases 1–3: snapshot, walk / three-way classify, judge, condemn, snapshot-compare re-check, verdict posting; steppable for forcing, `run_epoch` as the threaded driver | that its only shared-memory writes are epoch stamps and condemnation bytes | freeing — it never frees; the weak table; mutator TLS | `epoch`, `walk`, `heap` (snapshots), `refcount`, `class`, `value`, `deferred_free` |
+| `walk` | the kind-dispatched tracer and heap census; `collect_cycles` (synchronous whole-heap collection); the Phase-4 drain (`drain_confirmed`, opening with the corpse rule) | entity kinds and each kind's out-edges | slots, blocks, occupancy — the heap's side of the split | `heap`, `refcount`, `object`, `value`, `reference`, `weak`, `barrier` |
+| `epoch` (rc-walk) | the mutator side of the epoch protocol: soft-handshake ack, the confirmation queue (global mutex), the non-reentrant checkpoint — ack-only on `ll_release`'s death branch, full pickup at the outermost dispose's exit (`teardown_enter/exit`), the poll and the explicit batched checkpoint (`ll_gc_checkpoint` + `ll_release_batch`) | the message queue and its drain dispatch | the collector's phases; what a confirmation means (the drain decides) | `refcount`, `walk`, `deferred_free` |
+| `collector` (rc-walk) | the collector-side epoch state machine, Phases 1–3: snapshot, walk / three-way classify, judge, condemn (private), snapshot-compare re-check, confirmation posting; steppable for forcing, `run_epoch` as the threaded driver | that its only shared-memory writes are epoch stamps (condemnation is private since the eager-death amendment, 2026-07-27) | freeing — it never frees; the weak table; mutator TLS | `epoch`, `walk`, `heap` (snapshots), `refcount`, `class`, `value`, `deferred_free` |
 | `promote` | arena death with promotion (retention only): the destructor/escapee fixpoint, internal-edge counting, in-place category rewrite to GcHeap, `BLOCK_KIND_RETAINED` stamping, the release-at-reset log | escapee hold-count semantics; the retained block kind | copying / evacuation (future); who mounted the arena | `arena`, `block_pool`, `object`, `refcount`, `weak` |
 
 ## Shared resources
@@ -128,7 +128,7 @@ commit (`WORKFLOW.md`).
 | Intern table | process-global mutex, Rust-owned | `intern` | `class` looks names up |
 | rc-trace candidate buffer + pending flag | TLS | `gc` | `refcount` arms it on non-zero decrements |
 | Weak table | TLS | `weak` | death sites call in, gated by bit 7; the collector thread never touches it |
-| Verdict queue + handshake state (rc-walk) | global mutex + global atomic ack (TLS holds only the mid-drain bit) | `epoch` | `collector` posts verdicts; checkpoints drain |
+| Confirmation queue + handshake state (rc-walk) | global mutex + global atomic ack (TLS holds the mid-drain bit and the teardown depth) | `epoch` | `collector` posts confirmations; checkpoints drain |
 | GC activity flag + parked lists (rc-walk) | global atomic + TLS lists | `deferred_free` | the `ll_free` funnel parks; each owning thread flushes after the epoch |
 
 **The header flag word is itself a shared resource.** `refcount` owns
@@ -154,10 +154,11 @@ field is lent to):
   `walk` and `ll_entity_die`;
 - bits 15–31, the top of the word — **contested**: rc-trace stores the
   candidate index there (O(1) `forget_candidate`); rc-walk instead
-  claims bits 16–23 as the epoch byte and 24–31 as the condemned byte.
-  The two strategies cannot share the top half, which is *why*
-  selection is a build-time cargo feature and both configurations must
-  stay green (`WORKFLOW.md`).
+  claims bits 16–23 as the epoch byte (bits 24–31 freed by the
+  eager-death amendment, 2026-07-27 — condemnation is
+  collector-private). The two strategies cannot share the top half,
+  which is *why* selection is a build-time cargo feature and both
+  configurations must stay green (`WORKFLOW.md`).
 
 ## End-to-end paths
 
@@ -212,11 +213,13 @@ soft handshake *before* snapshotting (a mutator that has not observed
 it could still recycle a snapshotted slot) → Phase 1: snapshot entity
 blocks (`heap`, no bump cursor — zeroed slot headers make full-block
 scans sound) and walk with the three-way classification → Phase 2:
-judge → Phase 3: condemn, snapshot-compare re-check, verdicts posted
-to the queue (`epoch`) → mutator checkpoints drain: confirm runs the
-Phase-4 exact test and kills (`walk::drain_confirmed`), acquittal
-tears rc 0 + condemned byte only (`acquit_condemned`) → the epoch
-closes; each owning thread flushes its parked frees (`deferred_free`).
+judge → Phase 3: condemn (collector-private), snapshot-compare
+re-check, confirmations posted to the queue (`epoch`; acquittals are
+dropped in private) → the mutator picks up at the outermost dispose's
+exit, the poll or the explicit batched checkpoint (the death branch
+acks only): the drain opens with the corpse rule and runs the Phase-4
+exact test and kills (`walk::drain_confirmed`) → the epoch closes;
+each owning thread flushes its parked frees (`deferred_free`).
 
 ## Cross-module invariants
 
@@ -264,13 +267,16 @@ write them. Each is load-bearing for at least two modules.
 11. **Strategy is a build-time feature.** rc-trace and rc-walk claim
     overlapping header bits; the crate has two real configurations and
     verification runs both (`WORKFLOW.md`).
-12. **A deferred death mints the marker** (condemned byte → 2 on the
-    F5 branch); the acquittal duties tear exactly the marked members —
-    never a slot at `rc 0` with the byte still at 1, which died
-    ordinarily before the condemnation landed and may already be
-    parked. The dispose un-guard is condemned-aware. The mutator's hot
-    paths never touch the byte (the narrow-mutator amendment,
-    2026-07-27): it is a filter, the Phase 4 exact test is the gate.
+12. **Every death is eager and the drain drops on a corpse**
+    (eager-death amendment, 2026-07-27, superseding the F5
+    deferral/marker scheme): a release reaching zero always tears
+    down at the natural point, with only the memory parked
+    (out-of-band — a parked slot is never written until the flush);
+    `drain_confirmed` header-scans first and drops the whole message
+    on any member reading `rc 0`, before tracing a field or writing a
+    guard. No message pickup runs between a death's committing store
+    and its dispose's exit (`epoch::teardown_enter/exit` — the weak
+    cell is still live in that window).
 13. **An interned name *is* a valid immortal string entity** — the
     future string machinery reads it as-is; immortal + COW makes
     retain/release no-ops on it.

@@ -397,22 +397,19 @@ pub(crate) fn garbage_components(n: usize, rc: &[u32], edges: &[(u32, u32)]) -> 
 /// `refcount == in-component in-degree + discount` for every member
 /// (`discount` is 1 while the Phase 4 guard is outstanding, else 0).
 unsafe fn exact_test(members: &[*mut RcHeader], discount: u32) -> bool {
-    // Corpse gate, before any tracing (review finding, 2026-07-27): a
-    // member at rc 0 without the deferred-death marker died ordinarily
-    // before the condemnation landed — its slot may be parked, the
-    // bytes past the header repurposed as the park link. Tracing it
-    // would read that link as a class pointer. Drop the message whole;
-    // the acquittal duties skip such a corpse by the same marker.
+    // The corpse rule, before any tracing (eager-death amendment,
+    // 2026-07-27, `rfc/model/gc/rc-walk.md` Phase 4): a member at rc 0
+    // is a corpse — it died ordinarily since the verdict was posted,
+    // its teardown is complete and its free is parked. Its fields are
+    // teardown residue; the message is dropped whole before any field
+    // of any member is traced and before any guard is written.
     // rc-trace has no condemnation and no epoch: nothing dies between
     // its stop-the-thread collection and this test.
     #[cfg(feature = "rc-walk")]
     if discount == 0
-        && members.iter().any(|&m| {
-            let (rc, flags) = unsafe { crate::refcount::mutator_load_header(m) };
-            rc == 0
-                && flags & crate::refcount::CONDEMNED_BYTE_MASK
-                    != crate::refcount::DEFERRED_DEATH_MARK
-        })
+        && members
+            .iter()
+            .any(|&m| unsafe { crate::refcount::header_refcount(m) } == 0)
     {
         return false;
     }
@@ -460,49 +457,43 @@ unsafe fn unguard(members: &[*mut RcHeader]) -> usize {
 #[cfg(feature = "rc-walk")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DrainOutcome {
-    /// Members (and deferred deaths) torn down.
+    /// Members torn down.
     pub collected: usize,
-    /// The message was dropped — exact-test mismatch or a destructor
-    /// resurrection. The acquittal duties ran either way.
+    /// The message was dropped — a corpse in the component, an
+    /// exact-test mismatch, or a destructor resurrection. A drop
+    /// leaves nothing behind to clean: acquittal carries no duties
+    /// since the eager-death amendment (2026-07-27).
     pub acquitted: bool,
 }
 
 /// Drain one **confirmed** component posted by the collector — Phase 4
 /// of `rfc/model/gc/rc-walk.md`, on the owning mutator thread, trusting
-/// nothing it was told. Unlike [`collect_cycles`]'s batch (which guards
-/// every confirmed component before any destructor runs, because
-/// nothing else protects a sibling component there), this processes one
-/// component alone: a destructor's release into a *different* condemned
-/// component stops at that component's condemned byte — the death
-/// defers to its own drain — so the per-message shape is sound only
-/// with the bytes in play.
-///
-/// A member that died while condemned arrives with `refcount 0`, fields
-/// and destructor intact (its ordinary death was skipped wholesale, the
-/// F5 rule): it reads `0 = 0`, confirms, and is torn down exactly once
-/// here.
+/// nothing it was told. The exact test opens with the corpse rule: a
+/// member reading `rc 0` died ordinarily since the verdict was posted
+/// (eager death — teardown complete, free parked) and drops the
+/// message whole before any field is traced or guard written. A
+/// destructor's release into a *different* posted component dies
+/// ordinarily too; that component's own drain then drops on the
+/// corpse — one epoch of latency, the collector's currency.
 ///
 /// # Safety
 /// Members must be entities of one posted component, on their owning
 /// thread; no other drain may hold guards on them.
 #[cfg(feature = "rc-walk")]
 pub(crate) unsafe fn drain_confirmed(members: &[*mut RcHeader]) -> DrainOutcome {
-    use crate::refcount::CONDEMNED_BYTE_MASK;
-
-    // The exact test first, against current fields, race-free on this
-    // thread. Any mismatch drops the message whole; the drop still owes
-    // the acquittal duties.
+    // The exact test first (corpse rule included), against current
+    // fields, race-free on this thread. Any mismatch drops the message
+    // whole; a drop does nothing else — there are no bytes to clear
+    // and no deferred deaths to tear.
     if !unsafe { exact_test(members, 0) } {
         return DrainOutcome {
-            collected: unsafe { acquit_condemned(members) },
+            collected: 0,
             acquitted: true,
         };
     }
 
     // Confirmed: the members are ours — the equality just proved no
-    // reference from outside the component exists. Clear the condemned
-    // bytes **before any release**: the drain's own un-guards must reach
-    // real deaths, not re-defer them to a drain that will never come.
+    // reference from outside the component exists.
     //
     // Header accesses throughout the drain go through the relaxed
     // helpers like every other post-publish access, although the drain
@@ -510,10 +501,7 @@ pub(crate) unsafe fn drain_confirmed(members: &[*mut RcHeader]) -> DrainOutcome 
     // (rfc/model/gc/drain-window.md, TLC-checked): the rule stays
     // absolute so no reader needs the proof to trust the site.
     for &m in members {
-        unsafe { crate::refcount::update_header_flags(m, |f| f & !CONDEMNED_BYTE_MASK) };
-    }
-    for &m in members {
-        // The guard; a dead member goes 0 → 1.
+        // The guard.
         unsafe { crate::refcount::mutator_guard_retain(m) };
     }
     // Weak cells nulled before any destructor — same obligation and
@@ -546,48 +534,6 @@ pub(crate) unsafe fn drain_confirmed(members: &[*mut RcHeader]) -> DrainOutcome 
     }
 }
 
-/// The acquittal duties (`rfc/model/gc/rc-walk.md`, Phase 3): clear the
-/// members' condemned bytes, then tear down every member carrying the
-/// **deferred-death marker** — its ordinary death was deferred to
-/// exactly this drain, and no other hand is left to run it. The marker,
-/// not `rc == 0`, is the discriminator (review finding, 2026-07-27): a
-/// member at zero with the byte still at the condemned value died
-/// ordinarily before the condemnation landed — its slot is already
-/// freed or parked, the bytes past the header repurposed — and must not
-/// be touched.
-///
-/// The marked set is snapshotted before the bytes are cleared and
-/// before any teardown: a teardown below may release another member to
-/// zero, and with its byte still set that death would defer to a drain
-/// that is no longer coming — a permanent zombie. Bytes first, then the
-/// tears.
-///
-/// # Safety
-/// As [`drain_confirmed`].
-#[cfg(feature = "rc-walk")]
-pub(crate) unsafe fn acquit_condemned(members: &[*mut RcHeader]) -> usize {
-    use crate::refcount::{CONDEMNED_BYTE_MASK, DEFERRED_DEATH_MARK};
-
-    let deferred_deaths: Vec<*mut RcHeader> = members
-        .iter()
-        .copied()
-        .filter(|&m| {
-            let flags = unsafe { crate::refcount::header_flags(m) };
-            flags & CONDEMNED_BYTE_MASK == DEFERRED_DEATH_MARK
-        })
-        .collect();
-    // Relaxed helpers as in `drain_confirmed` — the rule is absolute
-    // even inside the proven-exclusive drain window
-    // (rfc/model/gc/drain-window.md).
-    for &m in members {
-        unsafe { crate::refcount::update_header_flags(m, |f| f & !CONDEMNED_BYTE_MASK) };
-    }
-    for &m in &deferred_deaths {
-        unsafe { crate::object::ll_entity_die(m) };
-    }
-    deferred_deaths.len()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,15 +554,15 @@ mod tests {
         seen
     }
 
-    /// Review finding, 2026-07-27: the acquittal duties tear by the
-    /// deferred-death marker, never by `rc == 0` alone. A slot whose
-    /// entity died ordinarily *before* the condemnation landed reads
-    /// `rc 0, byte 1` — it is already parked, its bytes past the header
-    /// repurposed as the park link — and the duties must skip it: no
-    /// second teardown, no destructor re-run.
+    /// The corpse rule (eager-death amendment, 2026-07-27): the drain
+    /// header-scans before it trusts — any member reading `rc 0` died
+    /// ordinarily since the verdict was posted, and the message is
+    /// dropped whole before any field is traced or guard written. No
+    /// second teardown, no destructor re-run, and the live peer is
+    /// untouched.
     #[cfg(feature = "rc-walk")]
     #[test]
-    fn an_acquittal_skips_a_corpse_that_died_before_the_condemnation_landed() {
+    fn a_corpse_in_a_posted_component_drops_the_message_whole() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
         unsafe extern "C" fn counting(_o: *mut crate::object::Object) {
@@ -625,33 +571,40 @@ mod tests {
 
         let _g = crate::memory::block_pool::test_guard();
         DESTRUCTS.store(0, Ordering::Relaxed);
-        let cls = ClassBuilder::new("AcquittedCorpse")
+        let cls = ClassBuilder::new("PostedCorpse")
             .destructor(counting as *const ())
             .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
         let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let peer = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         let ptr = obj as *mut RcHeader;
 
         // Epoch active: the ordinary death parks the slot instead of
-        // recycling it — the corpse the finding is about.
+        // recycling it — identity holds from walk to drain.
         crate::memory::deferred_free::begin_epoch();
         assert!(unsafe { ll_release(ptr) });
         unsafe { crate::object::ll_object_die(obj) };
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "died ordinarily, once");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "died ordinarily, eagerly, once");
 
-        // The condemnation lands late, onto the parked corpse.
-        unsafe { crate::refcount::collector_condemn(ptr) };
-
-        // The duties must skip it: byte is the condemned value, not the
-        // deferred-death marker.
-        let torn = unsafe { acquit_condemned(&[ptr]) };
-        assert_eq!(torn, 0, "a pre-condemnation corpse is not torn");
+        // The stale message arrives naming the corpse and a live peer.
+        let outcome = unsafe { drain_confirmed(&[ptr, peer as *mut RcHeader]) };
+        assert!(outcome.acquitted, "the corpse drops the message whole");
+        assert_eq!(outcome.collected, 0, "nothing is torn by a drop");
         assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "no destructor re-run");
+        assert_eq!(
+            unsafe { crate::refcount::header_refcount(peer as *mut RcHeader) },
+            1,
+            "the live peer is untouched — no guard was written"
+        );
 
         crate::memory::deferred_free::end_epoch();
         assert!(unsafe { crate::memory::deferred_free::flush() } >= 1);
+        unsafe {
+            assert!(ll_release(peer as *mut RcHeader));
+            crate::object::ll_object_die(peer);
+        }
         arena.reset(|_| {});
     }
 

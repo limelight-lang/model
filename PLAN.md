@@ -167,6 +167,20 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   **Step 3 is complete.** Next rungs stay per rc-walk.md build order:
   the escalation ladder if measurement shows starvation (5); trigger
   thresholds remain measurements.
+- [x] **rc-walk eager death** (2026-07-27, Edmond's redesign; rfc
+  `c2f91b1`, `model/gc/rc-walk.md`) — every refcount death tears down
+  at the natural point, only the memory parks. Deleted: the condemned
+  byte (bits 24–31 freed), the F5 deferral + marker, `acquit_condemned`
+  and the acquittal message, `Epoch::drop`'s owed acquittals.
+  Condemnation is collector-private; `drain_confirmed` opens with the
+  corpse rule (any `rc 0` member drops the message whole). Two
+  pre-existing BLOCKERs from the adversarial review fixed in the same
+  change: the death-branch checkpoint acks only (pickup rides the
+  outermost dispose's exit — the commit-to-dispose window has a live
+  weak cell), and parking is out-of-band (the in-slot park link
+  overwrote the class word under the walker). Both pinned by
+  verified-failing regressions. The rfc's TLA+ battery models the
+  pre-amendment protocol until re-derived (banner notes).
 - [x] **rc-walk build step 4 — weak references** (2026-07-27,
   `src/weak.rs`; design `rfc/model/weak-references.md`). The canonical
   `WeakReference` entity (kind 5, 16 bytes, always GC-heap) doubles as

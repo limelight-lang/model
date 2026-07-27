@@ -15,13 +15,18 @@
 //!
 //! Mechanics: one process-global flag, tested with a relaxed load and a
 //! predicted branch in `ll_free` after the block-kind dispatch — the
-//! single funnel every ordinary local free passes. A parked allocation
-//! is threaded onto a **thread-local intrusive list through its own
-//! bytes 8–15**: every freeable allocation is ≥ 16 bytes (the smallest
-//! size class), the memory is dead, and an entity slot's bytes 0–7 must
-//! keep the final refcount-0 header — the walker's occupancy test —
-//! which is exactly why the link does not live at offset 0. Parking
-//! allocates nothing, so the free path gains no failure mode.
+//! single funnel every ordinary local free passes. Parking is
+//! **out-of-band**: a thread-local vector of parked pointers, and the
+//! parked memory itself is **never written until the flush** (review
+//! finding, 2026-07-27, `rfc/model/gc/rc-walk.md`). The first draft
+//! threaded an intrusive link through the allocation's bytes 8–15 —
+//! which in an entity slot is exactly the class word the walker
+//! dereferences one pass after reading the header: a wild read under
+//! the walker's feet. Out-of-band, a corpse stays intact — header
+//! reading refcount 0 (occupancy), class word live, fields nulled —
+//! so a walker chasing a stale pointer lands on readable bytes. The
+//! cost: the park path may allocate (a `Vec` push, cold, epoch-only),
+//! which the in-slot draft avoided.
 //!
 //! What rides the queue: all four freeable block kinds (heap raw
 //! buffers, entity slots, pooled large, OS-direct runs). The walker
@@ -44,23 +49,17 @@
 //! the parked list is thread-local and the underlying frees are
 //! owner-bound.
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The GC activity bit: an epoch is in flight, park instead of freeing.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
-    /// Head of this thread's parked list (link at bytes 8–15 of each
-    /// parked allocation), null when empty.
-    static PARKED_HEAD: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
-    /// Parked count, for stats and tests.
-    static PARKED_COUNT: Cell<usize> = const { Cell::new(0) };
+    /// This thread's parked allocations, in park order. Out-of-band:
+    /// the parked memory itself is never touched (module doc).
+    static PARKED: RefCell<Vec<*mut u8>> = const { RefCell::new(Vec::new()) };
 }
-
-/// Byte offset of the intrusive link inside a parked allocation: past
-/// the entity header's bytes 0–7, which must keep reading refcount 0.
-const LINK_OFFSET: usize = 8;
 
 /// The free-path test: one relaxed load, a predicted branch.
 #[inline]
@@ -82,53 +81,47 @@ pub(crate) fn end_epoch() {
     debug_assert!(was, "end_epoch without begin_epoch");
 }
 
-/// Park a freed allocation instead of recycling it.
+/// Park a freed allocation instead of recycling it. Writes nothing
+/// into the allocation — a walker may still be reading it.
 ///
 /// # Safety
 /// `ptr` must be a just-freed allocation of a freeable block kind,
-/// ≥ 16 bytes, owned by this call (nothing else may touch it until
-/// [`flush`] releases it for real).
+/// owned by this call (nothing may recycle it until [`flush`]
+/// releases it for real).
 pub(crate) unsafe fn park(ptr: *mut u8) {
-    PARKED_HEAD.with(|head| {
-        unsafe { (ptr.add(LINK_OFFSET) as *mut *mut u8).write(head.get()) };
-        head.set(ptr);
-    });
-    PARKED_COUNT.with(|c| c.set(c.get() + 1));
+    PARKED.with(|parked| parked.borrow_mut().push(ptr));
 }
 
 /// Release this thread's parked backlog through the real free path.
 /// Returns how many allocations were flushed. Runs only between
 /// epochs: flushing mid-epoch would recycle the very slots the queue
-/// exists to pin.
+/// exists to pin. Frees in reverse park order, so the free lists come
+/// out as the intrusive-list draft left them (LIFO — tests and cache
+/// behaviour rely on last-freed-first-reused).
 ///
 /// # Safety
 /// Must run on the thread that parked the allocations (the list and
 /// the underlying frees are both thread-bound).
 pub(crate) unsafe fn flush() -> usize {
     debug_assert!(!active(), "flush runs only between epochs");
-    let mut cursor = PARKED_HEAD.with(|head| head.replace(std::ptr::null_mut()));
-    let mut freed = 0;
-    while !cursor.is_null() {
-        let next = unsafe { *(cursor.add(LINK_OFFSET) as *const *mut u8) };
-        unsafe { crate::memory::stdapi::ll_free(cursor) };
-        freed += 1;
-        cursor = next;
+    let backlog = PARKED.with(|parked| parked.take());
+    for &ptr in backlog.iter().rev() {
+        unsafe { crate::memory::stdapi::ll_free(ptr) };
     }
-    PARKED_COUNT.with(|c| c.set(c.get() - freed));
-    freed
+    backlog.len()
 }
 
 /// A closed epoch left parked memory on this thread: the checkpoint's
-/// flush trigger. Two cheap reads (one global, one thread-local cell).
+/// flush trigger. Two cheap reads (one global, one thread-local).
 #[inline]
 pub(crate) fn flush_due() -> bool {
-    !active() && PARKED_HEAD.with(|head| !head.get().is_null())
+    !active() && PARKED.with(|parked| !parked.borrow().is_empty())
 }
 
 /// This thread's parked backlog size (stats, tests).
 #[cfg(test)]
 pub(crate) fn parked_count() -> usize {
-    PARKED_COUNT.with(|c| c.get())
+    PARKED.with(|parked| parked.borrow().len())
 }
 
 #[cfg(test)]
@@ -214,6 +207,43 @@ mod tests {
             assert!(ll_release(reused as *mut RcHeader));
             crate::object::ll_object_die(reused);
         }
+        arena.reset(|_| {});
+    }
+
+    /// Review finding (2026-07-27): parking must not write the parked
+    /// memory. The walker reads a slot's header in one pass and
+    /// dereferences the class word at bytes 8–15 in the next; the
+    /// in-slot park link of the first draft landed exactly there. A
+    /// corpse must stay intact until the flush: header reading 0,
+    /// class word live.
+    #[test]
+    fn parking_leaves_the_corpse_bytes_intact() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("IntactCorpse").build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let addr = obj as usize;
+        let class_word = unsafe { *((addr + 8) as *const usize) };
+        assert_eq!(class_word, cls as usize, "the class word sits at bytes 8-15");
+
+        begin_epoch();
+        unsafe {
+            assert!(ll_release(obj as *mut RcHeader));
+            crate::object::ll_object_die(obj);
+        }
+        assert_eq!(parked_count(), 1);
+        unsafe {
+            assert_eq!((*(addr as *const RcHeader)).refcount, 0, "header: reads free");
+            assert_eq!(
+                *((addr + 8) as *const usize),
+                class_word,
+                "the class word survives parking — nothing wrote the corpse"
+            );
+        }
+        end_epoch();
+        assert_eq!(unsafe { flush() }, 1);
         arena.reset(|_| {});
     }
 

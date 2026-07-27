@@ -526,17 +526,11 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
         }
         let ran = unsafe { run_pre_destructor(obj) };
         if counted {
-            let (refcount, deferred) =
+            // Eager death (2026-07-27): a condemnation landing while
+            // the destructor ran changes nothing — teardown always
+            // finishes, and the component's drain drops on the corpse.
+            let refcount =
                 unsafe { crate::refcount::mutator_unguard_release(obj as *mut RcHeader) };
-            if deferred {
-                // Condemned while the destructor ran: the un-guard
-                // reached zero under a live verdict, so the rest of
-                // teardown — child releases and the free — belongs to
-                // the drain, which finds `DESTRUCTOR_RAN` set and the
-                // fields intact, and tears exactly once. Finishing here
-                // would put a freed slot inside a posted component.
-                return false;
-            }
             if ran && refcount > 0 {
                 return false; // resurrected
             }
@@ -587,17 +581,27 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
 /// `obj` a live object whose count just reached zero (or a collector owns).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
-    let dispose: DisposeFn = unsafe { std::mem::transmute((*(*obj).class).dispose) };
-    if !unsafe { dispose(obj) } {
-        return; // resurrected: kept alive, not freed
-    }
+    // Teardown bracket (rc-walk): no epoch-message pickup between the
+    // death's committing store and this dispose's completion — a drain
+    // destructor's `WeakRef::get` could reach the committed-dead
+    // entity (review finding 2026-07-27, `rfc/model/gc/rc-walk.md`).
+    // The exit of the outermost bracket runs the full checkpoint.
+    #[cfg(feature = "rc-walk")]
+    crate::epoch::teardown_enter();
 
-    // Phase 3 — memory, by category. Arenas reclaim at reset; the
-    // long-lived policy is TBD; only the GC heap frees here. The candidate
-    // buffer was already cleared inside `dispose`, before its child drops.
-    if unsafe { header_category(obj as *const RcHeader) } == MemoryCategory::GcHeap {
-        unsafe { crate::memory::stdapi::ll_free(obj as *mut u8) };
-    }
+    let dispose: DisposeFn = unsafe { std::mem::transmute((*(*obj).class).dispose) };
+    if unsafe { dispose(obj) } {
+        // Phase 3 — memory, by category. Arenas reclaim at reset; the
+        // long-lived policy is TBD; only the GC heap frees here. The
+        // candidate buffer was already cleared inside `dispose`, before
+        // its child drops.
+        if unsafe { header_category(obj as *const RcHeader) } == MemoryCategory::GcHeap {
+            unsafe { crate::memory::stdapi::ll_free(obj as *mut u8) };
+        }
+    } // else resurrected: kept alive, not freed
+
+    #[cfg(feature = "rc-walk")]
+    crate::epoch::teardown_exit();
 }
 
 /// The category of a possibly-walked header: a relaxed read under
@@ -631,6 +635,11 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     const WEAKREF: u32 = EntityKind::WeakRef as u32;
     let flags = unsafe { crate::refcount::header_flags(entity) };
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
+    // Teardown bracket (rc-walk) — see `ll_object_die`; nesting is
+    // fine, the depth is a counter and only the outermost exit picks
+    // up messages.
+    #[cfg(feature = "rc-walk")]
+    crate::epoch::teardown_enter();
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },
         REFERENCE => unsafe {
@@ -639,6 +648,8 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
         WEAKREF => unsafe { crate::weak::weakref_die(entity as *mut crate::weak::LLWeakRef) },
         _ => debug_assert!(false, "teardown for an entity kind the crate cannot produce yet"),
     }
+    #[cfg(feature = "rc-walk")]
+    crate::epoch::teardown_exit();
 }
 
 /// `instanceof`: Cohen display for classes, itable presence for

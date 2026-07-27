@@ -1,9 +1,10 @@
 //! The mutator side of the rc-walk epoch protocol: the soft-handshake
-//! ack, the verdict message queue, and the checkpoint that serves both
-//! (`rfc/model/gc/rc-walk.md`, Phases 3–4). The collector never frees
-//! anything itself — every verdict, confirmation or acquittal, ends in
-//! exactly one message drained here, on the owning mutator thread,
-//! race-free.
+//! ack, the confirmation message queue, and the checkpoint that serves
+//! both (`rfc/model/gc/rc-walk.md`, Phases 3–4). The collector never
+//! frees anything itself — every confirmed component ends in exactly
+//! one message drained here, on the owning mutator thread, race-free.
+//! Acquittals post nothing since the eager-death amendment
+//! (2026-07-27): they are dropped in the collector's private tables.
 //!
 //! **Checkpoints ride the death branch of `ll_release`, not a
 //! compiler-inserted poll** (decision 2026-07-27; formerly the entity
@@ -17,9 +18,22 @@
 //! reshaped: once a message is posted, the epoch waits for the
 //! thread's next death or poll; deliberately no fallback).
 //!
+//! **The death branch acks only; pickup rides teardown's exit**
+//! (review finding, 2026-07-27, `rfc/model/gc/rc-walk.md`). Between
+//! the committing zero store and dispose, the dying entity is
+//! committed-dead with a live weak cell — no user code may run there.
+//! A message picked up at that checkpoint runs drain destructors, and
+//! one holding a `WeakRef` to the dying entity would `get()` a strong
+//! reference to it: resurrection after commit, or a double teardown.
+//! So [`checkpoint_ack`] (the death branch) acks the handshake and
+//! nothing else, and the full [`checkpoint`] picks up messages only
+//! when no teardown is in flight on this thread
+//! ([`TEARDOWN_DEPTH`]) — it runs at the outermost dispose's exit, at
+//! the poll, and at the explicit batched checkpoint.
+//!
 //! **The drain is not re-entrant** (finding F8): a destructor run by
-//! the drain releases references, and a release hitting zero is a
-//! checkpoint inside the drain. One thread-local bit closes the
+//! the drain releases references, and a release hitting zero
+//! checkpoints inside the drain. One thread-local bit closes the
 //! recursion — the nested entry acks a pending handshake, but never
 //! picks up a message.
 //!
@@ -35,26 +49,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use crate::refcount::RcHeader;
 use crate::walk;
 
-/// What the collector concluded about one component.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Verdict {
-    /// Phase 3 confirmed: drain verifies (exact test) and frees.
-    Confirm,
-    /// Phase 3 acquitted: drain clears the bytes and tears the deaths
-    /// that were deferred while condemned.
-    Acquit,
-}
-
-/// One posted component. Raw entity pointers cross from the collector
-/// thread back to the mutator that owns them — the drain runs where the
-/// entities live.
-struct VerdictMessage {
-    verdict: Verdict,
+/// One posted confirmed component. Raw entity pointers cross from the
+/// collector thread back to the mutator that owns them — the drain runs
+/// where the entities live.
+struct ConfirmationMessage {
     members: Vec<*mut RcHeader>,
 }
 // Safety: the pointers are only ever dereferenced by the owning mutator
 // thread, in the drain; the collector treats them as opaque ids.
-unsafe impl Send for VerdictMessage {}
+unsafe impl Send for ConfirmationMessage {}
 
 /// Collector raised it; the next checkpoint acks and lowers it.
 static HANDSHAKE_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -66,18 +69,65 @@ static HANDSHAKE_ACKS: AtomicU64 = AtomicU64::new(0);
 /// is non-zero — that ordering is what keeps ids naming one entity from
 /// walk to drain, and at most one epoch's verdicts in flight, ever.
 static OUTSTANDING_VERDICTS: AtomicUsize = AtomicUsize::new(0);
-static QUEUE: Mutex<VecDeque<VerdictMessage>> = Mutex::new(VecDeque::new());
+static QUEUE: Mutex<VecDeque<ConfirmationMessage>> = Mutex::new(VecDeque::new());
 
 thread_local! {
     /// The one bit of allocator state that closes the drain recursion.
     static MID_DRAIN: Cell<bool> = const { Cell::new(false) };
+    /// Teardowns in flight on this thread. While non-zero, some entity
+    /// on this thread is between its committing zero store and the end
+    /// of its dispose — no message pickup (module doc).
+    static TEARDOWN_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-/// The checkpoint test: three cheap loads and a predicted branch, taken
+/// The death-branch checkpoint: ack the handshake, nothing else. Its
+/// before-teardown position is what orders the epoch's activity bit
+/// before this death's frees; pickup would run user code against a
+/// committed-dead entity (module doc).
+#[inline]
+pub(crate) fn checkpoint_ack() {
+    if HANDSHAKE_REQUESTED.load(Ordering::Relaxed) {
+        ack_handshake();
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn ack_handshake() {
+    if HANDSHAKE_REQUESTED.swap(false, Ordering::AcqRel) {
+        HANDSHAKE_ACKS.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// Bracket a teardown: no message pickup between a death's committing
+/// store and the end of its dispose. Nests (child deaths inside a
+/// parent's dispose); the exit of the **outermost** teardown runs the
+/// full checkpoint — dead and disposed, or resurrected and live, the
+/// entity is whole again there.
+#[inline]
+pub(crate) fn teardown_enter() {
+    TEARDOWN_DEPTH.with(|d| d.set(d.get() + 1));
+}
+
+/// See [`teardown_enter`].
+#[inline]
+pub(crate) fn teardown_exit() {
+    let depth = TEARDOWN_DEPTH.with(|d| {
+        let depth = d.get() - 1;
+        d.set(depth);
+        depth
+    });
+    if depth == 0 {
+        checkpoint();
+    }
+}
+
+/// The full checkpoint test: cheap loads and a predicted branch, taken
 /// only when the collector wants attention or a closed epoch left
-/// parked memory to flush. Callers: the death branch of `ll_release`,
-/// the `ll_gc_maybe_collect` poll, and the explicit `ll_gc_checkpoint`
-/// that fronts a batched-release run (module doc).
+/// parked memory to flush. Callers: the outermost teardown's exit, the
+/// `ll_gc_maybe_collect` poll, and the explicit `ll_gc_checkpoint`
+/// that fronts a batched-release run (module doc). The death branch of
+/// `ll_release` calls [`checkpoint_ack`] instead.
 #[inline]
 pub(crate) fn checkpoint() {
     if HANDSHAKE_REQUESTED.load(Ordering::Relaxed)
@@ -94,24 +144,23 @@ fn checkpoint_attend() {
     if HANDSHAKE_REQUESTED.swap(false, Ordering::AcqRel) {
         HANDSHAKE_ACKS.fetch_add(1, Ordering::AcqRel);
     }
-    // Nested entry (an allocation inside a draining destructor): memory
-    // served, handshake acked, message left where it is.
-    if MID_DRAIN.with(|d| d.get()) {
+    // Nested entry (an allocation inside a draining destructor, a poll
+    // inside a running `__destruct`): memory served, handshake acked,
+    // message left where it is. `TEARDOWN_DEPTH` covers the poll — a
+    // destructor that allocates may checkpoint mid-dispose, and the
+    // entity being disposed must not meet drain user code until its
+    // teardown completes.
+    if MID_DRAIN.with(|d| d.get()) || TEARDOWN_DEPTH.with(|d| d.get()) != 0 {
         return;
     }
     MID_DRAIN.with(|d| d.set(true));
     loop {
         let message = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
         let Some(message) = message else { break };
-        match message.verdict {
-            // Safety: the message names entities this thread owns; the
-            // drain functions uphold their own contracts.
-            Verdict::Confirm => unsafe {
-                walk::drain_confirmed(&message.members);
-            },
-            Verdict::Acquit => unsafe {
-                walk::acquit_condemned(&message.members);
-            },
+        // Safety: the message names entities this thread owns; the
+        // drain upholds its own contract.
+        unsafe {
+            walk::drain_confirmed(&message.members);
         }
         // The ack: released so a collector seeing zero (Acquire) also
         // sees every effect of the drain.
@@ -141,15 +190,17 @@ pub(crate) fn handshake_acks() -> u64 {
     HANDSHAKE_ACKS.load(Ordering::Acquire)
 }
 
-/// Post one component's verdict to the owning mutator. The outstanding
+/// Post one confirmed component to the owning mutator. The outstanding
 /// count moves **before** the message becomes visible, so a concurrent
-/// drain can never drive the counter below zero.
-pub(crate) fn post_verdict(verdict: Verdict, members: Vec<*mut RcHeader>) {
+/// drain can never drive the counter below zero. Acquittals post
+/// nothing (eager-death amendment): the collector drops them in its
+/// own tables.
+pub(crate) fn post_confirmation(members: Vec<*mut RcHeader>) {
     OUTSTANDING_VERDICTS.fetch_add(1, Ordering::Relaxed);
     QUEUE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push_back(VerdictMessage { verdict, members });
+        .push_back(ConfirmationMessage { members });
 }
 
 /// Verdicts posted and not yet drained. Zero (with `Acquire`) is the
@@ -167,7 +218,7 @@ mod tests {
     use crate::memory::context::LLContext;
     use crate::memory::heap::for_each_entity_slot;
     use crate::object::{Object, new_constructed};
-    use crate::refcount::{CONDEMNED_BYTE_SHIFT, MemoryCategory, ll_release, ll_retain};
+    use crate::refcount::{MemoryCategory, ll_release, ll_retain};
     use crate::value::{Tag, Value};
     use std::sync::atomic::AtomicUsize;
 
@@ -184,9 +235,9 @@ mod tests {
         }
     }
 
-    unsafe fn condemn(e: *mut RcHeader) {
-        unsafe { (*e).flags |= 1 << CONDEMNED_BYTE_SHIFT };
-    }
+    // No condemn helper: condemnation is collector-private since the
+    // eager-death amendment — posting the confirmation IS the
+    // collector's whole footprint on these tests.
 
     static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
     unsafe extern "C" fn counting_destructor(_obj: *mut Object) {
@@ -303,11 +354,9 @@ mod tests {
         unsafe {
             tie(a, 16, b);
             tie(b, 16, a);
-            condemn(a as *mut RcHeader);
-            condemn(b as *mut RcHeader);
         }
 
-        post_verdict(Verdict::Confirm, vec![a as *mut RcHeader, b as *mut RcHeader]);
+        post_confirmation(vec![a as *mut RcHeader, b as *mut RcHeader]);
         assert_eq!(outstanding_verdicts(), 1);
         checkpoint();
         assert_eq!(outstanding_verdicts(), 0, "the drain acked the message");
@@ -318,7 +367,8 @@ mod tests {
     }
 
     /// A false post dies at the exact test: message dropped whole, no
-    /// destructor, bytes cleared (the acquittal duty), ring intact.
+    /// destructor, ring intact. A drop leaves nothing behind to clean —
+    /// acquittal carries no duties since the eager-death amendment.
     #[test]
     fn a_false_post_is_dropped_and_the_live_ring_survives() {
         let _g = crate::memory::block_pool::test_guard();
@@ -336,21 +386,14 @@ mod tests {
             tie(a, 16, b);
             tie(b, 16, a);
             ll_retain(a as *mut RcHeader); // the frame reference
-            condemn(a as *mut RcHeader);
-            condemn(b as *mut RcHeader);
         }
 
-        post_verdict(Verdict::Confirm, vec![a as *mut RcHeader, b as *mut RcHeader]);
+        post_confirmation(vec![a as *mut RcHeader, b as *mut RcHeader]);
         checkpoint();
         assert_eq!(outstanding_verdicts(), 0);
         assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "no destructor on a live ring");
         let seen = walked_addresses();
         assert!(seen.contains(&(a as usize)) && seen.contains(&(b as usize)));
-        unsafe {
-            use crate::refcount::CONDEMNED_BYTE_MASK;
-            assert_eq!((*a).rc.flags & CONDEMNED_BYTE_MASK, 0, "byte cleared on the drop");
-            assert_eq!((*b).rc.flags & CONDEMNED_BYTE_MASK, 0);
-        }
 
         // The ring is genuinely garbage once the frame lets go.
         assert!(!unsafe { ll_release(a as *mut RcHeader) });
@@ -360,66 +403,18 @@ mod tests {
         arena.reset(|_| {});
     }
 
-    /// DC0's rule side (`rfc/model/gc/rc-walk-danger-cases.md`): a
-    /// release reaching zero on a condemned entity defers its death, and
-    /// the acquittal message tears it down exactly once — while a live
-    /// condemned peer just gets its byte cleared.
+    /// DC0 under eager death (`rfc/model/gc/rc-walk-danger-cases.md`,
+    /// fix of 2026-07-27): a member that dies after its component was
+    /// posted dies **whole, at the natural point** — destructor
+    /// included — and the drain drops the message on the corpse
+    /// without touching it. Exactly-once is probed through the free
+    /// list after the flush: a twice-enqueued slot would be handed to
+    /// two allocations.
     #[test]
-    fn an_acquittal_tears_deferred_deaths_and_clears_the_rest() {
+    fn dc0_a_death_since_posting_drops_the_message_untouched() {
         let _g = crate::memory::block_pool::test_guard();
         DESTRUCTS.store(0, Ordering::Relaxed);
-        let cls = ClassBuilder::new("EpochAcquitted")
-            .prop("child", true)
-            .destructor(counting_destructor as *const ())
-            .build();
-
-        let mut arena = Arena::new();
-        let mut ctx = LLContext { arena: &mut arena };
-        let dead = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        let live = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        let dead_addr = dead as usize;
-        unsafe {
-            condemn(dead as *mut RcHeader);
-            condemn(live as *mut RcHeader);
-            // The last reference goes away while condemned: death is
-            // deferred — reported as no-death, count zero, destructor
-            // still owed (the F5 rule, pinned in refcount.rs tests too).
-            assert!(!ll_release(dead as *mut RcHeader), "condemned: no ordinary death");
-            assert_eq!((*dead).rc.refcount, 0);
-        }
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "destructor deferred with the death");
-
-        post_verdict(
-            Verdict::Acquit,
-            vec![dead as *mut RcHeader, live as *mut RcHeader],
-        );
-        checkpoint();
-        assert_eq!(outstanding_verdicts(), 0);
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "the deferred death ran exactly once");
-        let seen = walked_addresses();
-        assert!(!seen.contains(&dead_addr), "torn down and freed");
-        assert!(seen.contains(&(live as usize)), "the live peer survives");
-        unsafe {
-            use crate::refcount::CONDEMNED_BYTE_MASK;
-            assert_eq!((*live).rc.flags & CONDEMNED_BYTE_MASK, 0, "duty: byte cleared");
-            assert!(ll_release(live as *mut RcHeader), "byte clear: ordinary death again");
-            crate::object::ll_object_die(live);
-        }
-        arena.reset(|_| {});
-    }
-
-    /// DC0's confirm side (`rfc/model/gc/rc-walk-danger-cases.md`): a
-    /// member that died while condemned arrives at the drain with
-    /// `rc 0`, fields and destructor intact, balances `0 = 0`, and is
-    /// torn down **exactly once** — the double-enqueue of the old
-    /// design is what the F5 rule made unreachable. The exactly-once
-    /// is probed through the free list: a twice-enqueued slot would be
-    /// handed to two allocations.
-    #[test]
-    fn dc0_a_death_while_condemned_confirms_balanced_and_tears_once() {
-        let _g = crate::memory::block_pool::test_guard();
-        DESTRUCTS.store(0, Ordering::Relaxed);
-        let cls = ClassBuilder::new("Dc0Deferred")
+        let cls = ClassBuilder::new("Dc0Corpse")
             .prop("child", true)
             .destructor(counting_destructor as *const ())
             .build();
@@ -428,71 +423,141 @@ mod tests {
         let mut ctx = LLContext { arena: &mut arena };
         let x = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         let x_addr = x as usize;
-        unsafe {
-            condemn(x as *mut RcHeader);
-            assert!(!ll_release(x as *mut RcHeader), "death deferred to the drain");
-        }
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0);
 
-        post_verdict(Verdict::Confirm, vec![x as *mut RcHeader]);
+        // The epoch is in flight: deaths park, identity holds from
+        // walk to drain — the corpse rule's precondition.
+        crate::memory::deferred_free::begin_epoch();
+        post_confirmation(vec![x as *mut RcHeader]);
+
+        // The stale hypothesis is overtaken by an ordinary death:
+        // eager — destructor NOW, free parked.
+        unsafe {
+            assert!(ll_release(x as *mut RcHeader), "eager: the death is reported");
+            crate::object::ll_object_die(x);
+        }
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "destructor at the natural point");
+
+        // The drain meets the corpse: message dropped whole, nothing
+        // touched — the destructor count must not move.
         checkpoint();
-        assert_eq!(outstanding_verdicts(), 0);
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "torn exactly once, merely later");
-        assert!(!walked_addresses().contains(&x_addr));
+        assert_eq!(outstanding_verdicts(), 0, "dropped counts as drained");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "the corpse is not torn again");
+
+        // Mid-epoch the slot stays out of circulation (parked).
+        let y = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        assert_ne!(y as usize, x_addr, "parked: no reuse before the flush");
+
+        crate::memory::deferred_free::end_epoch();
+        checkpoint(); // flushes the parked slot
 
         // The free-list probe: one enqueue → the slot serves one
         // allocation, and the next one gets different memory.
         let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        assert_eq!(a as usize, x_addr, "LIFO: the torn slot is back in circulation");
+        assert_eq!(a as usize, x_addr, "LIFO: the flushed slot is back in circulation");
         assert_ne!(b as usize, x_addr, "and was enqueued exactly once");
         unsafe {
-            assert!(ll_release(a as *mut RcHeader));
-            crate::object::ll_object_die(a);
-            assert!(ll_release(b as *mut RcHeader));
-            crate::object::ll_object_die(b);
+            for &e in &[y, a, b] {
+                assert!(ll_release(e as *mut RcHeader));
+                crate::object::ll_object_die(e);
+            }
         }
         arena.reset(|_| {});
     }
 
-    /// DC3's premise made unreachable: a condemned entity's deferred
-    /// death never touches the free list before its drain, so no drain
-    /// action can ever write into a free or recycled slot — the two
-    /// owners of one slot cannot arise.
+    /// Review finding (2026-07-27): between a death's committing zero
+    /// store and its dispose the entity is committed-dead with a live
+    /// weak cell. A message picked up at the death-branch checkpoint
+    /// runs drain destructors — user code — and one holding a
+    /// `WeakRef` to the dying entity would `get()` a strong reference
+    /// to it (resurrection after commit, or a double teardown). The
+    /// death branch acks only; pickup rides the outermost dispose's
+    /// exit, by which point the cell reads null.
     #[test]
-    fn dc3_a_deferred_death_keeps_its_slot_out_of_circulation() {
+    fn the_drain_never_sees_an_entity_between_commit_and_dispose() {
         let _g = crate::memory::block_pool::test_guard();
+        static RING_DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
+        static GOT: AtomicUsize = AtomicUsize::new(usize::MAX);
+        static CELL: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn probing_destructor(_obj: *mut Object) {
+            RING_DESTRUCTS.fetch_add(1, Ordering::Relaxed);
+            let cell = CELL.load(Ordering::Relaxed) as *mut crate::weak::LLWeakRef;
+            if GOT.load(Ordering::Relaxed) == usize::MAX {
+                let got = unsafe { crate::weak::ll_weakref_get(cell) };
+                GOT.store(got as usize, Ordering::Relaxed);
+                if !got.is_null() {
+                    // Drop the strong reference `get` handed out; on
+                    // the broken interleaving this very release is the
+                    // second teardown the fix removes.
+                    unsafe {
+                        if ll_release(got) {
+                            crate::object::ll_entity_die(got);
+                        }
+                    }
+                }
+            }
+        }
+
+        RING_DESTRUCTS.store(0, Ordering::Relaxed);
+        GOT.store(usize::MAX, Ordering::Relaxed);
         DESTRUCTS.store(0, Ordering::Relaxed);
-        let cls = ClassBuilder::new("Dc3Parked")
+        let ring_cls = ClassBuilder::new("CommitWindowRing")
             .prop("child", true)
+            .destructor(probing_destructor as *const ())
+            .build();
+        let target_cls = ClassBuilder::new("CommitWindowTarget")
             .destructor(counting_destructor as *const ())
             .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let x = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let r1 = unsafe { new_constructed(&mut ctx, ring_cls, MemoryCategory::GcHeap) };
+        let r2 = unsafe { new_constructed(&mut ctx, ring_cls, MemoryCategory::GcHeap) };
+        let x = unsafe { new_constructed(&mut ctx, target_cls, MemoryCategory::GcHeap) };
         let x_addr = x as usize;
         unsafe {
-            condemn(x as *mut RcHeader);
-            assert!(!ll_release(x as *mut RcHeader));
+            tie(r1, 16, r2);
+            tie(r2, 16, r1);
         }
+        let cell = unsafe { crate::weak::ll_weakref_create(&mut ctx, x as *mut RcHeader) };
+        CELL.store(cell as usize, Ordering::Relaxed);
 
-        // The slot is dead to the walk (rc 0) but NOT on the free list:
-        // an allocation must not land on it while the drain is owed.
-        let y = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        assert_ne!(y as usize, x_addr, "the deferred death's slot is out of circulation");
+        // Epoch in flight (identity holds), the ring posted confirmed.
+        crate::memory::deferred_free::begin_epoch();
+        post_confirmation(vec![r1 as *mut RcHeader, r2 as *mut RcHeader]);
 
-        post_verdict(Verdict::Acquit, vec![x as *mut RcHeader]);
-        checkpoint();
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1);
-        // Only now is the slot free — and reusable.
-        let z = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        assert_eq!(z as usize, x_addr, "freed by the drain, LIFO hands it out next");
+        // X's final release: the death branch must NOT pick the ring
+        // up here — X is committed-dead, its cell still live.
         unsafe {
-            assert!(ll_release(y as *mut RcHeader));
-            crate::object::ll_object_die(y);
-            assert!(ll_release(z as *mut RcHeader));
-            crate::object::ll_object_die(z);
+            assert!(ll_release(x as *mut RcHeader));
+            crate::object::ll_object_die(x);
+            // The dispose's exit picked up and drained the ring.
+        }
+        assert_eq!(outstanding_verdicts(), 0, "the ring drained at the dispose's exit");
+        assert_eq!(RING_DESTRUCTS.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            GOT.load(Ordering::Relaxed),
+            0,
+            "the drain destructor's get() read a nulled cell, never the corpse"
+        );
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "X torn exactly once");
+
+        crate::memory::deferred_free::end_epoch();
+        checkpoint(); // flush
+
+        // Exactly-once through the free list, as in DC0.
+        let a = unsafe { new_constructed(&mut ctx, target_cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, target_cls, MemoryCategory::GcHeap) };
+        assert_eq!(a as usize, x_addr, "LIFO: X's slot back in circulation");
+        assert_ne!(b as usize, x_addr, "and was enqueued exactly once");
+        unsafe {
+            for &e in &[a, b] {
+                assert!(ll_release(e as *mut RcHeader));
+                crate::object::ll_object_die(e);
+            }
+            assert!(ll_release(cell as *mut RcHeader));
+            crate::object::ll_entity_die(cell as *mut RcHeader);
         }
         arena.reset(|_| {});
     }
@@ -540,13 +605,10 @@ mod tests {
             tie(a2, 16, a1);
             tie(b1, 16, b2);
             tie(b2, 16, b1);
-            for &e in &[a1, a2, b1, b2] {
-                condemn(e as *mut RcHeader);
-            }
         }
 
-        post_verdict(Verdict::Confirm, vec![a1 as *mut RcHeader, a2 as *mut RcHeader]);
-        post_verdict(Verdict::Confirm, vec![b1 as *mut RcHeader, b2 as *mut RcHeader]);
+        post_confirmation(vec![a1 as *mut RcHeader, a2 as *mut RcHeader]);
+        post_confirmation(vec![b1 as *mut RcHeader, b2 as *mut RcHeader]);
         checkpoint();
 
         // Both messages still count as outstanding inside the first
