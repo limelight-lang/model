@@ -8,6 +8,20 @@ never edited or deleted.
 
 ---
 
+## 2026-07-27 — rc-walk is the default build; rc-trace moves behind --no-default-features
+
+**Decided:** `default = ["rc-walk"]` in `Cargo.toml`. rc-walk is the
+primary GC strategy (Edmond, 2026-07-27); the default build must be
+the one that ships. **Why:** the opt-in feature made rc-trace look
+primary and every plain `cargo` command exercised the secondary
+collector. **Rejected:** keeping rc-walk opt-in until its collector-side
+economics are measured — measurement gates step 5, not the default.
+**Cost:** plain `cargo bench` now measures the rc-walk configuration —
+existing baselines in `benches/RESULTS.md` were taken on rc-trace-default
+builds and comparisons must name the configuration; Cargo feature
+unification now switches any workspace consumer to rc-walk unless it
+opts out.
+
 ## 2026-07-27 — weak references: the cell is the canonical WeakRef entity; one table row, not a subscriber list yet (rc-walk step 4)
 
 **Decided:** `src/weak.rs` implements `rfc/model/weak-references.md`

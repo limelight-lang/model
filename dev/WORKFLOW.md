@@ -30,19 +30,20 @@ this one is reasoning from practice, not a stated rule)*
 
 ```
 cargo test --lib
-cargo test --lib -- --test-threads=16     # three times
-cargo test --lib --features rc-walk -- --test-threads=16   # three times
+cargo test --lib -- --test-threads=16     # three times (rc-walk, the default)
+cargo test --lib --no-default-features -- --test-threads=16   # three times (rc-trace)
 cargo build --release
-cargo build --release --features rc-walk
+cargo build --release --no-default-features
 ```
 
 The three threaded runs are not ceremony: several defects here only
 appear under contention, and one flake took three runs to surface.
 
-The `rc-walk` runs exist because GC strategy selection is a build-time
+Both configurations run because GC strategy selection is a build-time
 feature (the two collectors claim the same header bits — see the
-feature's note in `Cargo.toml`), so the crate has two real
-configurations and both must be green. Strategy-bound tests are gated
+feature's note in `Cargo.toml`). Since 2026-07-27 **rc-walk is the
+default build**; rc-trace is `--no-default-features`. Both must be
+green. Strategy-bound tests are gated
 to their configuration (`cfg(not(feature = "rc-walk"))` on rc-trace
 tests); that gating is selection, not muting — the default runs keep
 executing them.

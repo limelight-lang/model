@@ -9,6 +9,11 @@ description = "Limelight runtime data model: classes, memory manager, GC"
 crate-type = ["rlib", "staticlib"]
 
 [features]
+# rc-walk is the primary GC strategy and the default build
+# (decision 2026-07-27, dev/DECISIONS.md). The rc-trace configuration
+# is selected with --no-default-features.
+default = ["rc-walk"]
+
 # Counters read by the bench-external probes (`walk_probe.cpp`,
 # `churn_probe.cpp`) via `ll_probe_counters`. Off by default: each one is a
 # store on the allocation hot path, which is exactly what those probes are
