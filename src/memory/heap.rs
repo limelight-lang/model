@@ -1568,7 +1568,7 @@ pub fn thread_entity_heap() -> *mut Heap {
 /// the slot's first 8 bytes (header last — see `ll_object_new`).
 #[inline]
 pub unsafe fn entity_alloc(size: usize) -> *mut u8 {
-    let p = if size <= MAX_SMALL {
+    if size <= MAX_SMALL {
         let h = thread_entity_heap();
         if h.is_null() {
             unsafe { entity_alloc_init(size) }
@@ -1577,15 +1577,7 @@ pub unsafe fn entity_alloc(size: usize) -> *mut u8 {
         }
     } else {
         unsafe { crate::memory::stdapi::ll_alloc(size, 16) }
-    };
-    // The factory allocation is an rc-walk checkpoint (`crate::epoch`):
-    // handshake ack and verdict drain ride the memory manager, not a
-    // compiler poll. After the heap call, so no `&mut Heap` is live when
-    // a draining destructor re-enters the allocator (finding F8's nested
-    // entry, which this placement makes plain reentrancy).
-    #[cfg(feature = "rc-walk")]
-    crate::epoch::checkpoint();
-    p
+    }
 }
 
 /// Cold tail: first entity allocation on this thread.

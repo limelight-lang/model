@@ -392,6 +392,12 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 /// observed in the word this release already loaded, before its own
 /// masking clears it.
 ///
+/// Under `rc-walk` the death branch is also the **epoch checkpoint**
+/// (handshake ack, verdict drain, parked-memory flush) — see
+/// [`release_word`] and the module `epoch`. Compiler-emitted runs of
+/// releases use [`ll_release_batch`] plus one explicit
+/// [`ll_gc_checkpoint`](crate::gc::ll_gc_checkpoint) instead.
+///
 /// # Safety
 /// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
@@ -448,41 +454,116 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
 
     #[cfg(feature = "rc-walk")]
     {
-        let word = unsafe { header_word_load(entity) };
-        let refcount = word as u32;
-        let flags = (word >> 32) as u32;
-
-        if flags & MEMORY_CATEGORY_MASK != 0 && flags & COW == 0 {
-            return false;
+        let (tear, hit_zero) = unsafe { release_word(entity) };
+        if hit_zero {
+            // The death branch is the epoch checkpoint (decision
+            // 2026-07-27, `rfc/model/gc/rc-walk.md`, "Both ride the
+            // death branch"): after this release's own header store,
+            // before any teardown, so every free this death performs
+            // observes the epoch in program order. The fast paths —
+            // allocation, free, non-final release — carry no test.
+            crate::epoch::checkpoint();
         }
-
-        if MemoryCategory::from_flags(flags) == MemoryCategory::Immortal {
-            return false;
-        }
-
-        debug_assert!(refcount > 0, "release of dead entity");
-        let refcount = refcount - 1;
-        let dying = refcount == 0
-            && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap;
-        let condemned = flags & CONDEMNED_BYTE_MASK != 0;
-        // The masking clear — except on the deferred-death store, where
-        // the byte STAYS SET as the drain's marker: the acquittal duties
-        // tear exactly the members reading `rc 0, byte 1`, and must not
-        // touch a slot that died ordinarily (byte cleared by the very
-        // touch that acquitted it) and was already freed.
-        let stored = if dying && condemned {
-            flags as u64
-        } else {
-            (flags & !CONDEMNED_BYTE_MASK) as u64
-        };
-        unsafe { header_word_store(entity, stored << 32 | refcount as u64) };
-
-        if dying {
-            // Condemned: this death belongs to the drain (doc above).
-            return !condemned;
-        }
-        false
+        tear
     }
+}
+
+/// The rc-walk decrement: the shared core of [`ll_release`] and
+/// [`ll_release_batch`]. Returns `(tear, hit_zero)`: `tear` is the ABI
+/// verdict (caller must run teardown), `hit_zero` marks the death
+/// branch — where the checkpoint lives — including the deferred
+/// (condemned) death, whose teardown belongs to the drain but whose
+/// checkpoint duty is the same.
+#[cfg(feature = "rc-walk")]
+#[inline]
+unsafe fn release_word(entity: *mut RcHeader) -> (bool, bool) {
+    let word = unsafe { header_word_load(entity) };
+    let refcount = word as u32;
+    let flags = (word >> 32) as u32;
+
+    if flags & MEMORY_CATEGORY_MASK != 0 && flags & COW == 0 {
+        return (false, false);
+    }
+
+    if MemoryCategory::from_flags(flags) == MemoryCategory::Immortal {
+        return (false, false);
+    }
+
+    debug_assert!(refcount > 0, "release of dead entity");
+    let refcount = refcount - 1;
+    let dying =
+        refcount == 0 && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap;
+    let condemned = flags & CONDEMNED_BYTE_MASK != 0;
+    // The masking clear — except on the deferred-death store, where
+    // the byte STAYS SET as the drain's marker: the acquittal duties
+    // tear exactly the members reading `rc 0, byte 1`, and must not
+    // touch a slot that died ordinarily (byte cleared by the very
+    // touch that acquitted it) and was already freed.
+    let stored = if dying && condemned {
+        flags as u64
+    } else {
+        (flags & !CONDEMNED_BYTE_MASK) as u64
+    };
+    unsafe { header_word_store(entity, stored << 32 | refcount as u64) };
+
+    if dying {
+        // Condemned: this death belongs to the drain (doc above).
+        return (!condemned, true);
+    }
+    (false, false)
+}
+
+/// [`ll_release`] without the epoch checkpoint, for compiler-emitted
+/// runs of releases (a scope exit): lowering emits one
+/// [`ll_gc_checkpoint`](crate::gc::ll_gc_checkpoint) for the run, then
+/// releases each reference with this variant, so the run pays the
+/// checkpoint test once instead of per death
+/// (`rfc/model/gc/rc-walk.md`, "Batched releases"). Identical to
+/// [`ll_release`] in every other respect; in an rc-trace build the two
+/// are the same function.
+///
+/// # Safety
+/// As [`ll_release`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_release_batch(entity: *mut RcHeader) -> bool {
+    #[cfg(not(feature = "rc-walk"))]
+    return unsafe { ll_release(entity) };
+
+    #[cfg(feature = "rc-walk")]
+    {
+        let (tear, _) = unsafe { release_word(entity) };
+        tear
+    }
+}
+
+/// The flags word of a possibly-walked header: a relaxed read under
+/// `rc-walk` (the collector's byte stores race every plain header
+/// access during an epoch), a plain read otherwise. The one
+/// build-dispatching read helper — teardown paths and the weak
+/// machinery share it rather than owning private copies.
+#[inline]
+pub(crate) unsafe fn header_flags(header: *const RcHeader) -> u32 {
+    #[cfg(not(feature = "rc-walk"))]
+    return unsafe { (*header).flags };
+    #[cfg(feature = "rc-walk")]
+    unsafe {
+        mutator_load_header(header).1
+    }
+}
+
+/// Rewrite the flags of a **published** header, same dispatch rule —
+/// the write twin of [`header_flags`]. Post-publish flag writes on a
+/// walked header must not be plain stores under `rc-walk`.
+#[inline]
+pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
+    #[cfg(not(feature = "rc-walk"))]
+    unsafe {
+        (*header).flags = f((*header).flags)
+    };
+    #[cfg(feature = "rc-walk")]
+    unsafe {
+        mutator_update_flags(header, f)
+    };
 }
 
 /// Mutator-side relaxed header read; pair of the mutator's word store.

@@ -32,8 +32,9 @@ versions live in `docs/history/`, marked at the top.
 - rc-walk epoch protocol, mutator side (`rc-walk` builds):
   `src/epoch.rs` — the soft-handshake ack, the verdict message queue
   (confirm + acquit), and the non-reentrant checkpoint; checkpoints
-  ride `heap::entity_alloc` and `ll_gc_maybe_collect`. The drains it
-  dispatches to live in `walk.rs` (`drain_confirmed`,
+  ride the death branch of `ll_release` and `ll_gc_maybe_collect`;
+  batched runs use `ll_gc_checkpoint` + `ll_release_batch`. The drains
+  it dispatches to live in `walk.rs` (`drain_confirmed`,
   `acquit_condemned`).
 - Entity walking (rc-walk build steps 1–2): `src/walk.rs` —
   kind-dispatched tracer, heap census, and `walk::collect_cycles` (the

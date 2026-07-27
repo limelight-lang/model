@@ -37,8 +37,8 @@ LB -down-> L2
 L2 -down-> L1
 L1 -down-> L0
 
-L1 .up.> L4 #red : ""refcount -> gc""\narm cycle candidate
-L2 .up.> L4 #red : ""heap -> epoch"" checkpoint\n""context -> promote"" ll_arena_reset
+L1 .up.> L4 #red : ""refcount -> gc"" arm candidate (rc-trace)\n""refcount -> epoch"" death-branch checkpoint (rc-walk)
+L2 .up.> L4 #red : ""context -> promote"" ll_arena_reset
 L2 .up.> L3 #red : ""arena -> weak""\nreset drains the weak log
 LB .up.> L3 #red : ""barrier -> object""\ndrop_ref cascade
 L3 .up.> L4 #red : ""object -> gc""\nforget candidate at death
@@ -162,7 +162,7 @@ P1 -[hidden]down-> P0
 
 ' the seven sanctioned upward edges
 refcount .up.> gc #red : arm candidate
-heap .up.> epoch #red : checkpoint
+refcount .up.> epoch #red : death checkpoint
 arena .up.> weak #red : reset drain
 context .up.> promote #red : ll_arena_reset
 object .up.> gc #red : forget candidate
@@ -226,8 +226,7 @@ alt category = RequestArena
   object -> arena : bump alloc
 else category = GcHeap
   object -> heap : entity_alloc
-  note right : entity blocks only —\nnever ll_malloc's raw blocks
-  heap --> epoch : checkpoint (rc-walk)
+  note right : entity blocks only —\nnever ll_malloc's raw blocks;\nno GC test on this path
 else category = Immortal
   object -> immortal : immortal_alloc
 end
@@ -291,6 +290,7 @@ alt refcount still > 0 (GcHeap object, rc-trace)
   refcount -> gc : buffer_candidate — arm only
   note right : collection fires later,\nat a clean point
 else refcount reached 0
+  note over refcount : rc-walk: the 1 -> 0 branch is the epoch\ncheckpoint (ack, verdict drain, flush),\nserved before any teardown; batched\nruns: ll_gc_checkpoint + ll_release_batch
   site -> object : ll_entity_die (kind switch)
   object -> object : phase 1 — pre-destructor,\nresurrection check
   object -> gc : forget_candidate (rc-trace)\nbefore any child drops

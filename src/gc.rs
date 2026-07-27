@@ -572,6 +572,23 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     }
 }
 
+/// ABI: serve the rc-walk epoch protocol now — handshake ack, verdict
+/// drain, parked-memory flush. The compiler emits it once before a run
+/// of [`ll_release_batch`](crate::refcount::ll_release_batch) calls (a
+/// scope exit), so the run pays the checkpoint test once instead of per
+/// death (`rfc/model/gc/rc-walk.md`, "Batched releases"). A no-op in an
+/// rc-trace build, kept exported so lowering is
+/// configuration-independent.
+///
+/// # Safety
+/// Callable at a safepoint of the mutator: a drained verdict runs
+/// destructors on this thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_gc_checkpoint() {
+    #[cfg(feature = "rc-walk")]
+    crate::epoch::checkpoint();
+}
+
 // The whole module is the rc-trace strategy, and these are its tests:
 // they feed the candidate buffer through `ll_release`, which an `rc-walk`
 // build compiles without the buffering tail — there the collector is the

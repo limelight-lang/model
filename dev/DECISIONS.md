@@ -8,6 +8,27 @@ never edited or deleted.
 
 ---
 
+## 2026-07-27 — the epoch checkpoint rides the death branch of ll_release, not the entity factory; batched releases pay it once
+
+**Decided:** `epoch::checkpoint()` moves from the end of
+`heap::entity_alloc` to the `1 → 0` branch of `ll_release`, entered
+after the release's own header store and before any teardown. New ABI
+pair for lowering: `ll_gc_checkpoint` (serve the protocol now) +
+`ll_release_batch` (`ll_release` minus the test), so a compiler-emitted
+run of releases pays one checkpoint test instead of one per death.
+**Why (Edmond):** the factory taxed every object creation with a test
+that has nothing to do with creation; death is the one event the
+protocol cares about — only deaths recycle memory — and the death
+branch is already cold and expensive, so the test drowns there. Every
+fast path (alloc, free, factory, non-final release) now carries
+nothing. **Rejected:** ack riding `ll_free`'s existing parking branch —
+drains and flushes cannot live inside free (free-in-free reentrancy),
+and splitting the three duties across two sites bought nothing over
+one cold home. **Cost:** epoch liveness is now tied to deaths — a
+workload with no entity deaths starves the epoch until the poll
+(finding F2 reshaped, recorded in the rfc); `ll_release`'s death
+branch grew the test, unmeasured like its predecessor.
+
 ## 2026-07-27 — rc-walk is the default build; rc-trace moves behind --no-default-features
 
 **Decided:** `default = ["rc-walk"]` in `Cargo.toml`. rc-walk is the

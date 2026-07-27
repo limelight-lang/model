@@ -5,21 +5,23 @@
 //! exactly one message drained here, on the owning mutator thread,
 //! race-free.
 //!
-//! **Checkpoints ride the memory manager, not a compiler-inserted
-//! poll**: the test lives at the end of `entity_alloc` (the factory
-//! allocation path) and in `ll_gc_maybe_collect` (the existing poll the
-//! reserve already refills at). The raw `ll_malloc` C-ABI path is
-//! deliberately not a checkpoint — it is the benchmarked hot path, and
-//! a buffer-only workload starves the epoch no worse than the
-//! accepted no-allocation limit (finding F2: once a message is posted,
-//! the epoch waits for the thread's next checkpoint; deliberately no
-//! fallback).
+//! **Checkpoints ride the death branch of `ll_release`, not a
+//! compiler-inserted poll** (decision 2026-07-27; formerly the entity
+//! factory): the test lives in the `1 → 0` branch — already cold and
+//! about to run teardown — and in `ll_gc_maybe_collect` (the poll the
+//! reserve already refills at). Compiler-emitted runs of releases pay
+//! the test once via `ll_gc_checkpoint` + `ll_release_batch`. The raw
+//! `ll_malloc`/`ll_free` C-ABI paths and the factory carry no test —
+//! they are the hot paths, and a workload with no entity deaths
+//! starves the epoch no worse than the accepted limit (finding F2,
+//! reshaped: once a message is posted, the epoch waits for the
+//! thread's next death or poll; deliberately no fallback).
 //!
 //! **The drain is not re-entrant** (finding F8): a destructor run by
-//! the drain may allocate, and that allocation is a checkpoint inside
-//! the drain. One thread-local bit closes the recursion — the nested
-//! entry serves memory and acks a pending handshake, but never picks up
-//! a message.
+//! the drain releases references, and a release hitting zero is a
+//! checkpoint inside the drain. One thread-local bit closes the
+//! recursion — the nested entry acks a pending handshake, but never
+//! picks up a message.
 //!
 //! The queue is a mutex, not a lock-free structure: verdicts are a
 //! cold, per-epoch trickle, and cold concurrent structures take a lock
@@ -73,8 +75,9 @@ thread_local! {
 
 /// The checkpoint test: three cheap loads and a predicted branch, taken
 /// only when the collector wants attention or a closed epoch left
-/// parked memory to flush. Callers are the allocation paths named in
-/// the module doc.
+/// parked memory to flush. Callers: the death branch of `ll_release`,
+/// the `ll_gc_maybe_collect` poll, and the explicit `ll_gc_checkpoint`
+/// that fronts a batched-release run (module doc).
 #[inline]
 pub(crate) fn checkpoint() {
     if HANDSHAKE_REQUESTED.load(Ordering::Relaxed)
@@ -188,6 +191,49 @@ mod tests {
     static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
     unsafe extern "C" fn counting_destructor(_obj: *mut Object) {
         DESTRUCTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The checkpoint rides the death branch of `ll_release` (decision
+    /// 2026-07-27): a non-final release carries no test, the `1 → 0`
+    /// release acks a pending handshake.
+    #[test]
+    fn a_release_hitting_zero_is_a_checkpoint_and_a_non_final_one_is_not() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("DeathCheckpoint").build();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        unsafe { ll_retain(obj as *mut RcHeader) }; // rc 2
+
+        let before = handshake_acks();
+        request_handshake();
+        assert!(!unsafe { ll_release(obj as *mut RcHeader) }); // rc 2 → 1
+        assert_eq!(handshake_acks(), before, "non-final release: no checkpoint");
+
+        assert!(unsafe { ll_release(obj as *mut RcHeader) }); // rc 1 → 0
+        assert_eq!(handshake_acks(), before + 1, "the death branch acks");
+        unsafe { crate::object::ll_object_die(obj) };
+    }
+
+    /// The batched form defers the test: `ll_release_batch` never
+    /// checkpoints, the explicit `ll_gc_checkpoint` in front of the run
+    /// does (`rfc/model/gc/rc-walk.md`, "Batched releases").
+    #[test]
+    fn a_batched_release_defers_the_checkpoint_to_the_explicit_call() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("BatchedRelease").build();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+
+        let before = handshake_acks();
+        request_handshake();
+        assert!(unsafe { crate::refcount::ll_release_batch(obj as *mut RcHeader) });
+        assert_eq!(handshake_acks(), before, "batched death: no checkpoint");
+        unsafe { crate::object::ll_object_die(obj) };
+
+        unsafe { crate::gc::ll_gc_checkpoint() };
+        assert_eq!(handshake_acks(), before + 1, "the explicit call serves the run");
     }
 
     #[test]

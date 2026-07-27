@@ -51,7 +51,7 @@ point:
 | Edge | Point of entry | Why |
 |---|---|---|
 | `refcount → gc` | non-zero decrement in `ll_release` (rc-trace builds) | buffer a cycle candidate — *arm*, never fire |
-| `heap → epoch` (rc-walk) | end of `entity_alloc` | the mutator checkpoint rides the factory allocation path |
+| `refcount → epoch` (rc-walk) | the `1 → 0` branch of `ll_release` | the mutator checkpoint rides the death branch — after the header store, before teardown (decision 2026-07-27; formerly `heap → epoch` at `entity_alloc`) |
 | `arena → weak` | `reset` | draining the arena weak log is part of arena death |
 | `context → promote` | `ll_arena_reset` | the reset ABI drives the full discipline — `promote::arena_reset_full` consumes the arena's logs through arena's own drain primitives, not the reverse |
 | `object → gc` | dispose, before children drop (rc-trace builds) | leave the candidate buffer at refcount 0 — a child release below may fire a collection that would trace the still-buffered corpse as a root (double free) |
@@ -78,7 +78,7 @@ commit (`WORKFLOW.md`).
 |---|---|---|---|---|
 | `memory/block_pool` | 2 MB OS regions carved into size-aligned 64 KB blocks; global free chain (mutex) + per-thread cache; region registry | OS allocation; the `BlockHeader` base fields | what any payload contains; entities, classes, GC | — (bottom; its `heap`/`reserve` references are the shared test-lock harness only) |
 | `memory/arena` (hot: bump) | request arena: bump allocation; self-contained bookkeeping — block list through block headers, destructor / escapee / release-at-reset logs as segment chains in its own memory; the log-drain primitives promote drives at reset | block pool; drawing the reserve for log growth; the `RcHeader`s its logs point at | object layout, classes, GC strategy; which escapees survive (promote's); the reset discipline itself — promote drives it from above | `block_pool`, `reserve`, `refcount`, `stdapi` (OS-direct payloads); upward at reset: `weak` |
-| `memory/heap` (hot) | small-object heap, mimalloc model: one block per size class, intrusive free list + bump cursor, per-block MPSC remote-free, thread-exit abandonment / adoption; runs twice per thread (raw + entity heaps); `for_each_entity_slot`, entity-block snapshots | block pool; slot occupancy (the header word at bytes 0–7); the checkpoint site (rc-walk) | entity kinds and out-edges; verdicts; classes | `block_pool`, `reserve` (filled at thread init), `refcount`, `stdapi` (OS-direct runs); upward (rc-walk): `epoch` |
+| `memory/heap` (hot) | small-object heap, mimalloc model: one block per size class, intrusive free list + bump cursor, per-block MPSC remote-free, thread-exit abandonment / adoption; runs twice per thread (raw + entity heaps); `for_each_entity_slot`, entity-block snapshots | block pool; slot occupancy (the header word at bytes 0–7) | entity kinds and out-edges; verdicts; classes; the epoch protocol | `block_pool`, `reserve` (filled at thread init), `refcount`, `stdapi` (OS-direct runs) |
 | `memory/immortal` | global bump region: class metadata, interned strings; nothing is ever freed | block pool | the contents of what it hosts | `block_pool` (+ `arena::round_up_8`) |
 | `memory/buffer` | growable `{data, len, capacity}` payload, no header; extend-in-place at the arena bump top, else copy; OS-direct above block payload | the mounted arena's bump; context resolution | entity lifecycle, headers; the long-lived buffer arena | `arena`, `context`, `block_pool` |
 | `memory/buffer_arena` | long-lived buffer blocks (`BLOCK_KIND_BUFFER`): bump + per-block intrusive LIFO free list, pressure modes, per-block live count returning empty blocks | block pool; the buffer pressure protocol | the object heap; entities; GC | `block_pool`, `buffer`, `context`, `stdapi`, `arena` (`round_up_8`) |
@@ -93,7 +93,7 @@ commit (`WORKFLOW.md`).
 | Module | Responsible for | Knows | Does not know | Depends on |
 |---|---|---|---|---|
 | `memory/barrier` (hot) | store-barrier micro-ops: `store_ptr` / `store_box` (retain + category barrier + write), `drop_ref` (release + cascade), `ref_store`; escape and release-at-reset recording into the mounted arena's logs | header category bits; `Value`; that `owner_cat` is a parameter, never a load | the per-site composition (lowering's); SATB hooks (A5, future) | `refcount`, `value`, `arena`, `context`; upward: `object` |
-| `refcount` | the 8-byte `RcHeader` at offset 0 of every entity: refcount + flag word (category, entity kind, GC bits); `ll_retain` / `ll_release`; relaxed-atomic header accessors under rc-walk | its own bit layout, and which bits are lent to whom (see the ledger below) | entity bodies past 8 bytes; blocks; when to collect | upward: `gc` (candidate buffering) |
+| `refcount` | the 8-byte `RcHeader` at offset 0 of every entity: refcount + flag word (category, entity kind, GC bits); `ll_retain` / `ll_release` / `ll_release_batch`; relaxed-atomic header accessors under rc-walk | its own bit layout, and which bits are lent to whom (see the ledger below) | entity bodies past 8 bytes; blocks; when to collect | upward: `gc` (candidate buffering, rc-trace), `epoch` (death-branch checkpoint, rc-walk) |
 | `value` | the 16-byte Box: payload + type tag + flags; `VALUE_UNDEF` as a flags bit, deliberately not a tag | the tags; which tags are counted | unboxed representations (compiler contract) | `refcount` |
 
 ### L3 — object model
@@ -112,7 +112,7 @@ commit (`WORKFLOW.md`).
 |---|---|---|---|---|
 | `gc` | the rc-trace Bacon–Rajan cycle collector: TLS candidate buffer, arm-vs-fire, `mark_gray` / `scan` / white collection, cyclic destructors with re-collect; `ll_gc_collect_cycles` and the `ll_gc_maybe_collect` poll (reserve refill + rc-walk checkpoint) | the color bits (flags 4–5, buffered bit 6); the clean-point rule | the arming policy (compiler's); other strategies' internals | `refcount`, `object`, `walk`, `weak`, `barrier`, `reserve`, `stdapi`; (rc-walk) `epoch` |
 | `walk` | the kind-dispatched tracer and heap census; `collect_cycles` (synchronous whole-heap collection); the Phase-4 drains (`drain_confirmed`, `acquit_condemned`) | entity kinds and each kind's out-edges | slots, blocks, occupancy — the heap's side of the split | `heap`, `refcount`, `object`, `value`, `reference`, `weak`, `barrier` |
-| `epoch` (rc-walk) | the mutator side of the epoch protocol: soft-handshake ack, the verdict queue (global mutex), the non-reentrant checkpoint riding `entity_alloc` and the poll | the message kinds and their drain dispatch | the collector's phases; what a verdict means (the drains decide) | `refcount`, `walk`, `deferred_free` |
+| `epoch` (rc-walk) | the mutator side of the epoch protocol: soft-handshake ack, the verdict queue (global mutex), the non-reentrant checkpoint riding `ll_release`'s death branch and the poll (batched runs: `ll_gc_checkpoint` + `ll_release_batch`) | the message kinds and their drain dispatch | the collector's phases; what a verdict means (the drains decide) | `refcount`, `walk`, `deferred_free` |
 | `collector` (rc-walk) | the collector-side epoch state machine, Phases 1–3: snapshot, walk / three-way classify, judge, condemn, snapshot-compare re-check, verdict posting; steppable for forcing, `run_epoch` as the threaded driver | that its only shared-memory writes are epoch stamps and condemnation bytes | freeing — it never frees; the weak table; mutator TLS | `epoch`, `walk`, `heap` (snapshots), `refcount`, `class`, `value`, `deferred_free` |
 | `promote` | arena death with promotion (retention only): the destructor/escapee fixpoint, internal-edge counting, in-place category rewrite to GcHeap, `BLOCK_KIND_RETAINED` stamping, the release-at-reset log | escapee hold-count semantics; the retained block kind | copying / evacuation (future); who mounted the arena | `arena`, `block_pool`, `object`, `refcount`, `weak` |
 
@@ -166,11 +166,10 @@ field is lent to):
 (`heap`, entity population) / `immortal` → body zero-filled, header
 stamped (`refcount`) → `ll_object_constructed` records the owed
 destructor: for arena objects in the mounted arena's log, for
-heap/immortal objects as `DESTRUCTOR_PENDING` alone. Under rc-walk,
-the end of
-`entity_alloc` is a checkpoint (`epoch`). The compiler inlines the
-bump-pointer version when class and category are statically known;
-both perform the same steps.
+heap/immortal objects as `DESTRUCTOR_PENDING` alone. The compiler
+inlines the bump-pointer version when class and category are
+statically known; both perform the same steps. No GC test rides this
+path (the checkpoint moved to the death branch, 2026-07-27).
 
 **2. Reference store.** The compiler composes micro-ops per site
 (`barrier`): `store_ptr`/`store_box` = retain (`refcount`) + category
@@ -181,7 +180,11 @@ poll turns into a raise) — + the write. An overwriting store then
 `drop_ref`s the displaced entity: release, and at zero the cascade
 into path 3. Publish before teardown, always in that order.
 
-**3. Entity death (refcount path).** `ll_release` hits zero →
+**3. Entity death (refcount path).** `ll_release` hits zero — under
+rc-walk this branch is the epoch checkpoint (`epoch`): handshake ack,
+verdict drain and parked-memory flush run here, before the teardown
+below; compiler-batched release runs pay the test once via
+`ll_gc_checkpoint` + `ll_release_batch` →
 `ll_entity_die` kind-switch (`object`) → for objects, three-phase
 `ll_object_die`: dispose (pre-destructor with resurrection check; weak
 notification is the *first act* of phase 2, before children drop via
