@@ -397,6 +397,24 @@ pub(crate) fn garbage_components(n: usize, rc: &[u32], edges: &[(u32, u32)]) -> 
 /// `refcount == in-component in-degree + discount` for every member
 /// (`discount` is 1 while the Phase 4 guard is outstanding, else 0).
 unsafe fn exact_test(members: &[*mut RcHeader], discount: u32) -> bool {
+    // Corpse gate, before any tracing (review finding, 2026-07-27): a
+    // member at rc 0 without the deferred-death marker died ordinarily
+    // before the condemnation landed — its slot may be parked, the
+    // bytes past the header repurposed as the park link. Tracing it
+    // would read that link as a class pointer. Drop the message whole;
+    // the acquittal duties skip such a corpse by the same marker.
+    // rc-trace has no condemnation and no epoch: nothing dies between
+    // its stop-the-thread collection and this test.
+    #[cfg(feature = "rc-walk")]
+    if discount == 0
+        && members.iter().any(|&m| unsafe {
+            (*m).refcount == 0
+                && (*m).flags & crate::refcount::CONDEMNED_BYTE_MASK
+                    != crate::refcount::DEFERRED_DEATH_MARK
+        })
+    {
+        return false;
+    }
     let local: HashMap<usize, u32> = members
         .iter()
         .enumerate()
@@ -521,33 +539,35 @@ pub(crate) unsafe fn drain_confirmed(members: &[*mut RcHeader]) -> DrainOutcome 
 }
 
 /// The acquittal duties (`rfc/model/gc/rc-walk.md`, Phase 3): clear the
-/// members' condemned bytes, then tear down every member whose count
-/// reached zero **while condemned** — its ordinary death was deferred to
-/// exactly this drain, and no other hand is left to run it. Bytes first,
-/// all of them: a teardown below may release another member to zero, and
-/// with its byte still set that death would defer to a drain that is no
-/// longer coming — a permanent zombie. Returns the deferred deaths torn.
+/// members' condemned bytes, then tear down every member carrying the
+/// **deferred-death marker** — its ordinary death was deferred to
+/// exactly this drain, and no other hand is left to run it. The marker,
+/// not `rc == 0`, is the discriminator (review finding, 2026-07-27): a
+/// member at zero with the byte still at the condemned value died
+/// ordinarily before the condemnation landed — its slot is already
+/// freed or parked, the bytes past the header repurposed — and must not
+/// be touched.
 ///
-/// The pre-dead set is snapshotted before any teardown: no counted
-/// reference to a dead member exists (a field pointing at it would be
-/// one), so a teardown here can never add to the set — but it can free a
-/// *live* member it holds, and re-reading counts mid-loop would then
-/// touch a freed slot.
+/// The marked set is snapshotted before the bytes are cleared and
+/// before any teardown: a teardown below may release another member to
+/// zero, and with its byte still set that death would defer to a drain
+/// that is no longer coming — a permanent zombie. Bytes first, then the
+/// tears.
 ///
 /// # Safety
 /// As [`drain_confirmed`].
 #[cfg(feature = "rc-walk")]
 pub(crate) unsafe fn acquit_condemned(members: &[*mut RcHeader]) -> usize {
-    use crate::refcount::CONDEMNED_BYTE_MASK;
+    use crate::refcount::{CONDEMNED_BYTE_MASK, DEFERRED_DEATH_MARK};
 
-    for &m in members {
-        unsafe { (*m).flags &= !CONDEMNED_BYTE_MASK };
-    }
     let deferred_deaths: Vec<*mut RcHeader> = members
         .iter()
         .copied()
-        .filter(|&m| unsafe { (*m).refcount } == 0)
+        .filter(|&m| unsafe { (*m).flags } & CONDEMNED_BYTE_MASK == DEFERRED_DEATH_MARK)
         .collect();
+    for &m in members {
+        unsafe { (*m).flags &= !CONDEMNED_BYTE_MASK };
+    }
     for &m in &deferred_deaths {
         unsafe { crate::object::ll_entity_die(m) };
     }
@@ -572,6 +592,53 @@ mod tests {
         let mut seen = Vec::new();
         unsafe { for_each_entity_slot(|e| seen.push(e as usize)) };
         seen
+    }
+
+    /// Review finding, 2026-07-27: the acquittal duties tear by the
+    /// deferred-death marker, never by `rc == 0` alone. A slot whose
+    /// entity died ordinarily *before* the condemnation landed reads
+    /// `rc 0, byte 1` — it is already parked, its bytes past the header
+    /// repurposed as the park link — and the duties must skip it: no
+    /// second teardown, no destructor re-run.
+    #[cfg(feature = "rc-walk")]
+    #[test]
+    fn an_acquittal_skips_a_corpse_that_died_before_the_condemnation_landed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn counting(_o: *mut crate::object::Object) {
+            DESTRUCTS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("AcquittedCorpse")
+            .destructor(counting as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let ptr = obj as *mut RcHeader;
+
+        // Epoch active: the ordinary death parks the slot instead of
+        // recycling it — the corpse the finding is about.
+        crate::memory::deferred_free::begin_epoch();
+        assert!(unsafe { ll_release(ptr) });
+        unsafe { crate::object::ll_object_die(obj) };
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "died ordinarily, once");
+
+        // The condemnation lands late, onto the parked corpse.
+        unsafe { crate::refcount::collector_condemn(ptr) };
+
+        // The duties must skip it: byte is the condemned value, not the
+        // deferred-death marker.
+        let torn = unsafe { acquit_condemned(&[ptr]) };
+        assert_eq!(torn, 0, "a pre-condemnation corpse is not torn");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "no destructor re-run");
+
+        crate::memory::deferred_free::end_epoch();
+        assert!(unsafe { crate::memory::deferred_free::flush() } >= 1);
+        arena.reset(|_| {});
     }
 
     #[test]

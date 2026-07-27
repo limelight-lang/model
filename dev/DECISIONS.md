@@ -8,6 +8,30 @@ never edited or deleted.
 
 ---
 
+## 2026-07-27 — the narrow mutator: hot paths store only the counter half; the condemned byte is three-valued
+
+**Decided:** rc-walk's `ll_retain` and non-final `ll_release` store
+only the 4-byte refcount half — no flags store, no condemned-byte
+clear (rfc, "The narrow mutator"). The F5 branch mints a
+deferred-death marker (byte value 2); the acquittal duties and the
+exact test discriminate by it. `Epoch::drop` posts acquittals for
+condemned-but-unposted components. **Why:** measurement showed the
+clear-on-touch filter forced a whole-word RMW chain onto every counted
+operation (+0.5–0.6 ns per retain/release pair); the filter was never
+the safety gate — the Phase 4 exact test is. Adversarial review
+(Fable, fresh context): SOUND WITH CONDITIONS; both conditions are in
+this change, one of them fixing a pre-existing defect — the acquittal
+duties keyed on `rc == 0` alone and could tear a corpse that died
+ordinarily before its condemnation landed (parked slot, class word
+already a park link; regression test seen failing at `object.rs:486`).
+**Rejected:** collector-side byte clears (the zombie-minting race,
+already rejected in the rfc); keeping the hot-path clear for its one
+epoch of earlier acquittal on transient borrows. **Cost:** stale
+verdicts survive to Phase 4 and are dropped there (cold);
+transiently-borrowed garbage rings die one epoch earlier (observable
+in destructor timing); mixed-size atomics remain Miri-invisible, as
+before.
+
 ## 2026-07-27 — the epoch checkpoint rides the death branch of ll_release, not the entity factory; batched releases pay it once
 
 **Decided:** `epoch::checkpoint()` moves from the end of

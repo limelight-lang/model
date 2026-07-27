@@ -264,9 +264,13 @@ write them. Each is load-bearing for at least two modules.
 11. **Strategy is a build-time feature.** rc-trace and rc-walk claim
     overlapping header bits; the crate has two real configurations and
     verification runs both (`WORKFLOW.md`).
-12. **A deferred death keeps its condemned byte** (the drain's
-    marker); acquittal tears only refcount 0 + condemned byte, and the
-    dispose un-guard is condemned-aware.
+12. **A deferred death mints the marker** (condemned byte → 2 on the
+    F5 branch); the acquittal duties tear exactly the marked members —
+    never a slot at `rc 0` with the byte still at 1, which died
+    ordinarily before the condemnation landed and may already be
+    parked. The dispose un-guard is condemned-aware. The mutator's hot
+    paths never touch the byte (the narrow-mutator amendment,
+    2026-07-27): it is a filter, the Phase 4 exact test is the gate.
 13. **An interned name *is* a valid immortal string entity** — the
     future string machinery reads it as-is; immortal + COW makes
     retain/release no-ops on it.

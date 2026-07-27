@@ -84,6 +84,9 @@ pub(crate) struct Epoch {
     edges: Vec<Edge>,
     /// Candidate components as indices into `entities`.
     candidates: Vec<Vec<u32>>,
+    /// `condemn()` ran: bytes are set and every candidate component is
+    /// owed a message — by `recheck_and_post`, or by `Drop`.
+    condemned: bool,
     /// Handshake ack level that must be passed before the phase that
     /// recorded it may proceed.
     acks_needed: u64,
@@ -93,9 +96,24 @@ pub(crate) struct Epoch {
 impl Drop for Epoch {
     /// An epoch abandoned without [`Epoch::close`] (a panic on the
     /// collector side) still releases the deferral window — a stuck
-    /// activity bit would park every free in the process forever.
+    /// activity bit would park every free in the process forever — and
+    /// still pays the message every condemned component is owed: with
+    /// the narrow mutator there is no hot-path clear to self-heal a
+    /// stranded condemnation, and an entity left at byte 1 defers its
+    /// eventual death to a drain that would never come (review finding,
+    /// 2026-07-27). The acquittals post first: the drain and the parked
+    /// flush share the mutator's next checkpoint, in that order.
     fn drop(&mut self) {
         if !self.closed {
+            if self.condemned {
+                for component in self.candidates.iter().filter(|c| !c.is_empty()) {
+                    let members: Vec<*mut RcHeader> = component
+                        .iter()
+                        .map(|&i| self.entities[i as usize])
+                        .collect();
+                    protocol::post_verdict(protocol::Verdict::Acquit, members);
+                }
+            }
             deferred_free::end_epoch();
         }
     }
@@ -125,6 +143,7 @@ impl Epoch {
             flags: Vec::new(),
             edges: Vec::new(),
             candidates: Vec::new(),
+            condemned: false,
             acks_needed,
             closed: false,
         }
@@ -227,6 +246,7 @@ impl Epoch {
     /// request the handshake whose ack makes the mutator's prior writes
     /// visible to the re-check.
     pub fn condemn(&mut self) {
+        self.condemned = true;
         for component in &self.candidates {
             for &i in component {
                 unsafe { collector_condemn(self.entities[i as usize]) };
@@ -250,14 +270,13 @@ impl Epoch {
         // once — one pass over `edges[]`, not one per component (the
         // per-component scan was quadratic, and a churning mutator
         // makes the edge list large).
-        let candidates = std::mem::take(&mut self.candidates);
         let mut component_of = vec![u32::MAX; self.entities.len()];
-        for (id, component) in candidates.iter().enumerate() {
+        for (id, component) in self.candidates.iter().enumerate() {
             for &i in component {
                 component_of[i as usize] = id as u32;
             }
         }
-        let mut component_edges: Vec<Vec<u32>> = vec![Vec::new(); candidates.len()];
+        let mut component_edges: Vec<Vec<u32>> = vec![Vec::new(); self.candidates.len()];
         for (k, edge) in self.edges.iter().enumerate() {
             for member in [edge.src, edge.dst] {
                 let c = component_of[member as usize];
@@ -267,7 +286,12 @@ impl Epoch {
                 }
             }
         }
-        for (id, component) in candidates.into_iter().enumerate() {
+        // Components are taken one at a time, not wholesale: whatever a
+        // panic leaves unposted stays in `self.candidates`, and `Drop`
+        // owes those components an acquittal (the narrow mutator has no
+        // hot-path clear to self-heal a stranded condemnation).
+        for id in 0..self.candidates.len() {
+            let component = std::mem::take(&mut self.candidates[id]);
             let mut clean = true;
             // Counts against the walk snapshot.
             for &i in &component {
@@ -657,18 +681,20 @@ mod tests {
         e.judge();
         assert_eq!(e.stats.candidates, 1);
         e.condemn();
-        // The mutator touches a member before the ack: a short borrow.
-        unsafe {
-            ll_retain(a as *mut RcHeader);
-            assert!(!ll_release(a as *mut RcHeader));
-        }
+        // The mutator borrows a member and still holds it at re-check
+        // time: the count difference against the snapshot acquits.
+        // (Under the narrow mutator the borrow no longer clears the
+        // byte, so a touch-and-restore acquits nothing — that case is
+        // the sibling test below.)
+        unsafe { ll_retain(a as *mut RcHeader) };
         checkpoint(); // ack
         e.recheck_and_post();
-        assert_eq!(e.stats.acquitted, 1, "the touch acquits by difference");
+        assert_eq!(e.stats.acquitted, 1, "the held borrow acquits by difference");
         assert_eq!(e.stats.confirmed, 0);
         checkpoint(); // drain the acquittal (duties)
         let _ = e.close();
         checkpoint(); // flush
+        assert!(!unsafe { ll_release(a as *mut RcHeader) }); // borrow ends
 
         assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "acquitted: nothing died");
         let seen = walked_addresses();
@@ -676,6 +702,100 @@ mod tests {
 
         let stats = stepped_epoch();
         assert_eq!(stats.confirmed, 1, "untouched next epoch: collected");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2);
+        arena.reset(|_| {});
+    }
+
+    /// The narrow-mutator ABA case: a borrow taken and returned between
+    /// condemn and re-check restores the snapshot exactly, the byte
+    /// stays set, and the component **confirms** — correctly: the Phase
+    /// 4 exact test proves every reference is in-component at drain
+    /// time, so the transiently borrowed ring is garbage and is freed
+    /// one epoch earlier than the old clear-on-touch filter allowed.
+    #[test]
+    fn a_touch_and_restore_between_condemn_and_recheck_confirms_and_frees() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("CollectorAba")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        unsafe {
+            tie(a, 16, b);
+            tie(b, 16, a);
+        }
+        stepped_epoch(); // mature
+
+        let mut e = Epoch::open();
+        checkpoint();
+        e.snapshot();
+        e.walk();
+        e.judge();
+        assert_eq!(e.stats.candidates, 1);
+        e.condemn();
+        unsafe {
+            ll_retain(a as *mut RcHeader);
+            assert!(!ll_release(a as *mut RcHeader)); // restored: ABA
+        }
+        checkpoint(); // ack
+        e.recheck_and_post();
+        assert_eq!(e.stats.confirmed, 1, "the restored count confirms");
+        checkpoint(); // drain: exact test passes, the ring dies here
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "freed this epoch");
+        let _ = e.close();
+        checkpoint(); // flush
+        arena.reset(|_| {});
+    }
+
+    /// Review finding, 2026-07-27: a collector that condemns and dies
+    /// before posting owes the acquittals — with the narrow mutator no
+    /// hot-path clear self-heals a stranded byte, and a later ordinary
+    /// death would defer to a drain that never comes. `Drop` posts
+    /// them; the mutator's next checkpoint performs the duties.
+    #[test]
+    fn an_abandoned_epoch_posts_acquittals_for_condemned_components() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("CollectorAbandoned")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        unsafe {
+            tie(a, 16, b);
+            tie(b, 16, a);
+        }
+        stepped_epoch(); // mature
+
+        let mut e = Epoch::open();
+        checkpoint();
+        e.snapshot();
+        e.walk();
+        e.judge();
+        assert_eq!(e.stats.candidates, 1);
+        e.condemn();
+        checkpoint(); // ack
+        drop(e); // the collector dies before recheck_and_post
+
+        assert!(
+            crate::epoch::outstanding_verdicts() > 0,
+            "the abandoned epoch posted the acquittal it owed"
+        );
+        checkpoint(); // the duties: bytes cleared, nothing torn
+        assert_eq!(crate::epoch::outstanding_verdicts(), 0);
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "the ring lives");
+
+        let stats = stepped_epoch();
+        assert_eq!(stats.confirmed, 1, "and is collected cleanly next epoch");
         assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2);
         arena.reset(|_| {});
     }

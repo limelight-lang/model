@@ -156,17 +156,28 @@ pub const EPOCH_BYTE_SHIFT: u32 = 16;
 #[cfg(feature = "rc-walk")]
 pub const EPOCH_BYTE_MASK: u32 = 0xFF << EPOCH_BYTE_SHIFT;
 
-/// rc-walk's **condemned byte** — header byte 7, flags bits 24-31. The
-/// collector writes 1 to condemn; every mutator `retain`/`release`
-/// clears it with one masking operation on the word it already loads and
-/// stores. Different addresses from the refcount, plain stores on both
-/// sides — no atomic read-modify-write anywhere. The byte is Phase 3's
-/// filter, not the safety gate: a lost update in either direction costs
-/// a wasted message or a missed epoch, never a live entity.
+/// rc-walk's **condemned byte** — header byte 7, flags bits 24-31,
+/// three-valued (`rfc/model/gc/rc-walk.md`, "The two header bytes" and
+/// "The narrow mutator", 2026-07-27). The collector writes
+/// [`CONDEMNED_MARK`] to condemn; the mutator's hot paths never touch
+/// the byte — it is a filter, not the safety gate (the Phase 4 exact
+/// test is). The F5 reaching-zero branch overwrites it with
+/// [`DEFERRED_DEATH_MARK`], the discriminator the acquittal duties tear
+/// by: a slot reading `rc 0` with the byte at 1 died ordinarily before
+/// the condemnation landed and must not be touched — its slot may
+/// already be parked, the bytes past the header repurposed. Different
+/// addresses from the refcount, no atomic read-modify-write anywhere.
 #[cfg(feature = "rc-walk")]
 pub const CONDEMNED_BYTE_SHIFT: u32 = 24;
 #[cfg(feature = "rc-walk")]
 pub const CONDEMNED_BYTE_MASK: u32 = 0xFF << CONDEMNED_BYTE_SHIFT;
+/// The collector's verdict value in the condemned byte.
+#[cfg(feature = "rc-walk")]
+pub(crate) const CONDEMNED_MARK: u32 = 1 << CONDEMNED_BYTE_SHIFT;
+/// The F5 deferral marker: this member's ordinary death was deferred to
+/// the drain, which is the only hand allowed to tear it.
+#[cfg(feature = "rc-walk")]
+pub(crate) const DEFERRED_DEATH_MARK: u32 = 2 << CONDEMNED_BYTE_SHIFT;
 
 #[cfg(all(feature = "rc-walk", not(target_endian = "little")))]
 compile_error!(
@@ -295,9 +306,10 @@ pub(crate) unsafe fn collector_stamp_epoch(header: *mut RcHeader, epoch_number: 
     };
 }
 
-/// The collector's verdict: 1 into the condemned byte (header byte 7).
-/// Every mutator retain/release clears it; the byte is Phase 3's filter,
-/// not the safety gate.
+/// The collector's verdict: [`CONDEMNED_MARK`] into the condemned byte
+/// (header byte 7). The mutator's hot paths never touch it (narrow-
+/// mutator amendment); the byte is Phase 3's filter, not the safety
+/// gate — the Phase 4 exact test is.
 ///
 /// # Safety
 /// `header` must point to an occupied entity-block slot.
@@ -316,9 +328,10 @@ pub(crate) unsafe fn collector_condemn(header: *mut RcHeader) {
 /// bits covers arenas and immortals. COW entities always count
 /// (`rfc/model/values.md`) — their category is checked only on release.
 ///
-/// Under `rc-walk` the whole header is loaded and stored as one relaxed
-/// atomic word and the store clears the condemned byte — the mutator's
-/// entire per-operation obligation to that collector
+/// Under `rc-walk` the header is loaded once as a relaxed atomic word
+/// (the category tests need the flags anyway) and only the 4-byte
+/// counter half is stored back — the narrow-mutator amendment: no flags
+/// store, no condemned-byte clear, nothing beyond the counter itself
 /// (`rfc/model/gc/rc-walk.md`, "What the mutator pays").
 ///
 /// # Safety
@@ -352,9 +365,7 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 
     #[cfg(feature = "rc-walk")]
     {
-        let word = unsafe { header_word_load(header) };
-        let refcount = word as u32;
-        let flags = (word >> 32) as u32;
+        let flags = unsafe { flags_load(header) };
 
         if flags & MEMORY_CATEGORY_MASK != 0 && flags & COW == 0 {
             return; // arena or immortal, not COW: not counted
@@ -364,14 +375,56 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
             return; // immortal COW entities are no-ops too
         }
 
+        let refcount = unsafe { refcount_load(header) };
         // Saturation rationale as in the rc-trace arm above.
         #[cfg(feature = "checked-refcount")]
         if refcount == u32::MAX {
             return;
         }
 
-        let flags = (flags & !CONDEMNED_BYTE_MASK) as u64;
-        unsafe { header_word_store(header, flags << 32 | (refcount + 1) as u64) };
+        // Narrow-mutator amendment (rfc, 2026-07-27): narrow loads,
+        // narrow counter store. No flags store, no condemned clear —
+        // the byte is a filter, Phase 4 is the gate — and the
+        // collector's concurrent byte stamps can no longer be buried
+        // by this path.
+        unsafe { refcount_store(header, refcount + 1) };
+    }
+}
+
+/// Store only the 4-byte refcount half, relaxed — the narrow-mutator
+/// store (`rfc/model/gc/rc-walk.md`, "The narrow mutator"). Must stay an
+/// aligned atomic store: the collector reads the containing word
+/// concurrently.
+#[cfg(feature = "rc-walk")]
+#[inline]
+unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
+    unsafe {
+        (*(header as *const core::sync::atomic::AtomicU32))
+            .store(value, core::sync::atomic::Ordering::Relaxed)
+    };
+}
+
+/// The narrow 4-byte loads matching [`refcount_store`]. The hot paths
+/// must not mix a narrow store with the 8-byte word load: the next
+/// operation's wide load over a fresh narrow store defeats
+/// store-to-load forwarding — measured at ~3x on the retain/release
+/// pair (`dev/BENCHMARKS.md`, 2026-07-27). Narrow stores demand narrow
+/// loads.
+#[cfg(feature = "rc-walk")]
+#[inline]
+unsafe fn refcount_load(header: *const RcHeader) -> u32 {
+    unsafe {
+        (*(header as *const core::sync::atomic::AtomicU32))
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[cfg(feature = "rc-walk")]
+#[inline]
+unsafe fn flags_load(header: *const RcHeader) -> u32 {
+    unsafe {
+        (*((header as *const u8).add(4) as *const core::sync::atomic::AtomicU32))
+            .load(core::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -389,8 +442,8 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 /// entity belongs to the Phase 4 drain, which finds it balanced
 /// (`0 = 0`), runs its still-unrun destructor and frees it exactly once
 /// (`rfc/model/gc/rc-walk.md`, Phase 4; finding F5). The byte is
-/// observed in the word this release already loaded, before its own
-/// masking clears it.
+/// observed in the word this release already loaded; the F5 branch
+/// overwrites it with the deferred-death marker the drain tears by.
 ///
 /// Under `rc-walk` the death branch is also the **epoch checkpoint**
 /// (handshake ack, verdict drain, parked-memory flush) — see
@@ -477,9 +530,7 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
 #[cfg(feature = "rc-walk")]
 #[inline]
 unsafe fn release_word(entity: *mut RcHeader) -> (bool, bool) {
-    let word = unsafe { header_word_load(entity) };
-    let refcount = word as u32;
-    let flags = (word >> 32) as u32;
+    let flags = unsafe { flags_load(entity) };
 
     if flags & MEMORY_CATEGORY_MASK != 0 && flags & COW == 0 {
         return (false, false);
@@ -489,28 +540,26 @@ unsafe fn release_word(entity: *mut RcHeader) -> (bool, bool) {
         return (false, false);
     }
 
+    let refcount = unsafe { refcount_load(entity) };
     debug_assert!(refcount > 0, "release of dead entity");
     let refcount = refcount - 1;
     let dying =
         refcount == 0 && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap;
     let condemned = flags & CONDEMNED_BYTE_MASK != 0;
-    // The masking clear — except on the deferred-death store, where
-    // the byte STAYS SET as the drain's marker: the acquittal duties
-    // tear exactly the members reading `rc 0, byte 1`, and must not
-    // touch a slot that died ordinarily (byte cleared by the very
-    // touch that acquitted it) and was already freed.
-    let stored = if dying && condemned {
-        flags as u64
-    } else {
-        (flags & !CONDEMNED_BYTE_MASK) as u64
-    };
-    unsafe { header_word_store(entity, stored << 32 | refcount as u64) };
-
-    if dying {
-        // Condemned: this death belongs to the drain (doc above).
-        return (!condemned, true);
+    if dying && condemned {
+        // The F5 deferred death, and the one cold place the mutator
+        // writes the flags half: mint the deferred-death marker the
+        // acquittal duties tear by (narrow-mutator amendment). The
+        // count goes to zero in the same word store.
+        let flags = (flags & !CONDEMNED_BYTE_MASK) | DEFERRED_DEATH_MARK;
+        unsafe { header_word_store(entity, (flags as u64) << 32) };
+        return (false, true);
     }
-    (false, false)
+    // Narrow-mutator store: counter half only, flags never touched —
+    // an ordinary death leaves them as loaded (byte 0 by the branch
+    // above), a non-final release leaves everything but the count.
+    unsafe { refcount_store(entity, refcount) };
+    (dying, dying)
 }
 
 /// [`ll_release`] without the epoch checkpoint, for compiler-emitted
@@ -770,22 +819,24 @@ mod tests {
         assert_eq!(h.refcount, 1, "the refcount bytes are untouched");
     }
 
-    /// The mutator's whole obligation to rc-walk: retain and release
-    /// clear the condemned byte and leave the epoch byte alone.
+    /// The narrow mutator (rfc amendment, 2026-07-27): retain and a
+    /// non-final release store only the counter half — the condemned
+    /// byte and the epoch stamp pass through untouched. The byte is a
+    /// filter; the Phase 4 exact test is the gate.
     #[cfg(feature = "rc-walk")]
     #[test]
-    fn retain_and_release_clear_the_condemned_byte_only() {
+    fn retain_and_release_leave_the_flags_half_alone() {
         let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
-        h.flags |= (7 << EPOCH_BYTE_SHIFT) | (1 << CONDEMNED_BYTE_SHIFT);
+        h.flags |= (7 << EPOCH_BYTE_SHIFT) | CONDEMNED_MARK;
 
         retain(&mut h);
         assert_eq!(h.refcount, 2);
-        assert_eq!(h.flags & CONDEMNED_BYTE_MASK, 0, "retain clears the verdict");
+        assert_eq!(h.flags & CONDEMNED_BYTE_MASK, CONDEMNED_MARK, "the verdict survives a retain");
         assert_eq!(h.flags & EPOCH_BYTE_MASK, 7 << EPOCH_BYTE_SHIFT, "the stamp survives");
 
-        h.flags |= 1 << CONDEMNED_BYTE_SHIFT;
         assert!(!release(&mut h));
-        assert_eq!(h.flags & CONDEMNED_BYTE_MASK, 0, "release clears it too");
+        assert_eq!(h.refcount, 1);
+        assert_eq!(h.flags & CONDEMNED_BYTE_MASK, CONDEMNED_MARK, "and a non-final release");
         assert_eq!(h.flags & EPOCH_BYTE_MASK, 7 << EPOCH_BYTE_SHIFT);
     }
 

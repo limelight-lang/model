@@ -100,6 +100,36 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-07-27 — the narrow mutator lands: retain/release reach parity with rc-trace (and past it)
+
+Implementation of the rfc's narrow-mutator amendment (same day, after
+the adversarial review returned SOUND WITH CONDITIONS — see
+`DECISIONS.md`). Clean A → B → A after the Miri run finished; the
+retain/release controls came back identical (2.777 / 2.777 ns).
+
+| bench | rc-walk before | rc-walk narrow | rc-trace |
+|---|---|---|---|
+| retain_release_nonfinal (pair) | 3.33 ns | **2.78 ns** | 2.89 ns |
+| create_release_die | 19.1–19.7 ns | 19.3–20.7 ns¹ | 17.0 ns |
+| batch_64 plain vs batched | −1.1 ns/death | within noise² | — |
+
+- **The counted hot path now pays nothing** — rc-walk's retain/release
+  pair measures *below* rc-trace (no candidate machinery at all,
+  narrow 4-byte loads and store). −17% against the word-RMW version.
+- ¹ The die-cycle keeps its ~+15%: the death-branch checkpoint and the
+  parking branch are the residue, as designed; its A/A2 controls
+  disagreed by 7%, so quote the range, not a point.
+- ² With the death branch this cheap, the batched form's advantage is
+  no longer resolvable on this box; the ABI stays for lowering.
+- **Trap for the record**: the first narrow-store attempt kept the
+  8-byte word load and measured the pair at **10.2 ns — 3x worse**: a
+  wide load over a fresh narrow store defeats store-to-load
+  forwarding. Narrow stores demand narrow loads (comment on
+  `refcount::refcount_load`).
+- A contaminated session preceded the clean one: benches run while
+  Miri ground in the background produced 16% control divergence —
+  discarded whole.
+
 ## 2026-07-27 — rc-walk mutator tax measured on the factory lifecycle; epoch cost per entity
 
 The two gaps the architecture review named: the object-lifecycle path
