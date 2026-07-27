@@ -54,6 +54,7 @@ point:
 | `heap → epoch` (rc-walk) | end of `entity_alloc` | the mutator checkpoint rides the factory allocation path |
 | `arena → weak` | `reset` | draining the arena weak log is part of arena death |
 | `context → promote` | `ll_arena_reset` | the reset ABI drives the full discipline — `promote::arena_reset_full` consumes the arena's logs through arena's own drain primitives, not the reverse |
+| `object → gc` | dispose, before children drop (rc-trace builds) | leave the candidate buffer at refcount 0 — a child release below may fire a collection that would trace the still-buffered corpse as a root (double free) |
 | `barrier → object` | `drop_ref` | the release cascade ends in `ll_entity_die`; `header_category` reads |
 | `class → object` | descriptor construction | carries `ll_default_dispose` as the default dispose pointer (data, not a call) |
 
