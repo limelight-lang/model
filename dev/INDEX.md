@@ -119,6 +119,11 @@ creation; the store barrier is funded by a per-thread reserve.
 
 ## Diagrams
 
+`docs/architecture.md` — the visual companion to `dev/ARCHITECTURE.md`
+(which stays the source of truth): PlantUML layer picture, full wiring
+graph, and the five end-to-end paths as sequence diagrams. Rendered on
+demand; no images committed.
+
 `dev/design/debug-modes.md` — observability and debug levels: object
 registry, lifetimes, shadow metadata, integrity checks, metrics export.
 Design only, nothing implemented.
