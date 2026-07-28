@@ -33,9 +33,11 @@ versions live in `docs/history/`, marked at the top.
   `src/epoch.rs` — the soft-handshake ack, the verdict message queue
   (confirm + acquit), and the non-reentrant checkpoint; checkpoints
   ride the death branch of `ll_release` and `ll_gc_maybe_collect`;
-  batched runs use `ll_gc_checkpoint` + `ll_release_batch`. The drains
-  it dispatches to live in `walk.rs` (`drain_confirmed`,
-  `acquit_condemned`).
+  batched runs split the checkpoint — `ll_gc_checkpoint_ack` before
+  the run, `ll_release_batch` per reference, `ll_gc_checkpoint` after
+  it (decision 2026-07-28; `ll_release_vector` same). The drain it
+  dispatches to is `walk.rs`'s `drain_confirmed` (confirmations only —
+  acquittals post nothing since eager death, 2026-07-27).
 - Entity walking (rc-walk build steps 1–2): `src/walk.rs` —
   kind-dispatched tracer, heap census, and `walk::collect_cycles` (the
   synchronous whole-heap collection with the Phase-4 exact-test drain)

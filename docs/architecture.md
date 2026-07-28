@@ -290,7 +290,7 @@ alt refcount still > 0 (GcHeap object, rc-trace)
   refcount -> gc : buffer_candidate — arm only
   note right : collection fires later,\nat a clean point
 else refcount reached 0
-  note over refcount : rc-walk: the 1 -> 0 branch is the epoch\ncheckpoint (ack, verdict drain, flush),\nserved before any teardown; batched\nruns: ll_gc_checkpoint + ll_release_batch
+  note over refcount : rc-walk: the 1 -> 0 branch acks the\nepoch handshake before any teardown;\npickup rides the outermost dispose's exit.\nBatched runs (2026-07-28 split):\nll_gc_checkpoint_ack, then ll_release_batch\nper reference, ll_gc_checkpoint after
   site -> object : ll_entity_die (kind switch)
   object -> object : phase 1 — pre-destructor,\nresurrection check
   object -> gc : forget_candidate (rc-trace)\nbefore any child drops
@@ -362,16 +362,12 @@ note right : flag observed before\nany snapshot is taken
 collector -> heap : snapshot_entity_blocks\n(no bump cursor)
 collector -> collector : phase 1 — walk,\nthree-way classification
 collector -> collector : phase 2 — judge
-collector -> collector : phase 3 — condemn (byte),\nsnapshot-compare re-check
-collector -> epoch : post verdicts
+collector -> collector : phase 3 — condemn (collector-private),\nsnapshot-compare re-check
+collector -> epoch : post confirmations\n(acquittals are dropped in private —\neager death, 2026-07-27)
 mutator -> epoch : next checkpoint drains
-alt verdict = confirm
-  epoch -> walk : drain_confirmed —\nphase 4 exact test, then die
-else verdict = acquit
-  epoch -> walk : acquit_condemned —\ntear rc 0 + condemned byte only
-end
+epoch -> walk : drain_confirmed —\ncorpse rule, phase 4 exact test,\nthen die
 collector -> deferred : epoch closes —\nclear activity flag
 mutator -> deferred : flush parked frees\n(owning thread only)
-note over collector, deferred : the collector never frees;\nits only shared writes are epoch\nstamps and condemnation bytes
+note over collector, deferred : the collector never frees;\nits only shared writes\nare epoch stamps
 @enduml
 ```

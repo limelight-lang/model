@@ -573,11 +573,14 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
 }
 
 /// ABI: serve the rc-walk epoch protocol now — handshake ack, verdict
-/// drain, parked-memory flush. The compiler emits it once before a run
-/// of [`ll_release_batch`](crate::refcount::ll_release_batch) calls (a
-/// scope exit), so the run pays the checkpoint test once instead of per
-/// death (`rfc/model/gc/rc-walk.md`, "Batched releases"). A no-op in an
-/// rc-trace build, kept exported so lowering is
+/// drain, parked-memory flush. The compiler emits it once **after** a
+/// run of [`ll_release_batch`](crate::refcount::ll_release_batch)
+/// calls (a scope exit), paired with one [`ll_gc_checkpoint_ack`]
+/// before the run: the trailing position is load-bearing — a pre-run
+/// pickup judges the scope's still-counted transients, the phase-lock
+/// shape (`rfc/model/gc/rc-walk.md`, "Batched releases", amendment
+/// 2026-07-28; the full argument lives in [`crate::epoch`]'s module
+/// doc). A no-op in an rc-trace build, kept exported so lowering is
 /// configuration-independent.
 ///
 /// # Safety
@@ -587,6 +590,23 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
 pub unsafe extern "C" fn ll_gc_checkpoint() {
     #[cfg(feature = "rc-walk")]
     crate::epoch::checkpoint();
+}
+
+/// ABI: ack a pending epoch handshake, nothing else — no message
+/// pickup, no flush. The compiler emits it once **before** a run of
+/// [`ll_release_batch`](crate::refcount::ll_release_batch) calls, so
+/// the epoch's activity bit is observed before any free the run
+/// performs — the same ordering the death branch of `ll_release` buys
+/// with its own ack (`rfc/model/gc/rc-walk.md`, "Batched releases").
+/// The full [`ll_gc_checkpoint`] trails the run. A no-op in an
+/// rc-trace build.
+///
+/// # Safety
+/// Callable anywhere on a mutator thread: it runs no user code.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_gc_checkpoint_ack() {
+    #[cfg(feature = "rc-walk")]
+    crate::epoch::checkpoint_ack();
 }
 
 // The whole module is the rc-trace strategy, and these are its tests:

@@ -100,6 +100,33 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-07-28 — the batched-checkpoint split: within noise
+
+The split (`rfc/model/gc/rc-walk.md` "Batched releases", amendment
+2026-07-28) replaces the one pre-run `ll_gc_checkpoint` with
+`ll_gc_checkpoint_ack` before the run and a full `ll_gc_checkpoint`
+after it, in both the batched bench shape and `ll_release_vector`.
+Correctness-driven (pre-run pickup = the phase-lock shape); measured
+only to confirm the extra trailing test costs nothing.
+
+`cargo bench --bench lifecycle -- batch_64` / `-- vector`, rc-walk
+default build, 64-object iterations. First pass discarded as warm-up
+per protocol; arms then old → new (medians):
+
+| arm | old (single pre-run) | new (split) |
+|---|---|---|
+| batch_64_batched_release | 1.54 µs | 1.53 µs |
+| batch_64_plain_release (control) | 1.49 µs | 1.51 µs |
+| factory + vector release | 1.61 µs | 1.45 µs |
+| reserved + vector release | 1.44 µs | 1.36 µs |
+
+**Verdict: accepted — no measurable cost.** Batched and control within
+the 1.5–3% floor. Both vector arms measured *faster* with the split
+(5–10%); direction only, single pass, not claimed as a win — the
+warm-up pass had already produced similar vector numbers for the new
+form, so the honest statement is "not slower".
+
+
 ## 2026-07-27 — bulk operations vs per-object: reservation wins ~12–15%, vector release within noise
 
 The 2x2 on 64-object batches (`cargo bench --bench lifecycle -- bulk/`,

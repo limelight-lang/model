@@ -4,8 +4,9 @@
 //! the cost of create → release-to-zero → die through the public ABI,
 //! and what the death-branch checkpoint costs there — plain
 //! `ll_release` (one checkpoint test per death) against the batched
-//! form (`ll_gc_checkpoint` once per run + `ll_release_batch` per
-//! death).
+//! form (`ll_gc_checkpoint_ack` fronting the run, `ll_release_batch`
+//! per death, one full `ll_gc_checkpoint` trailing it — the split of
+//! 2026-07-28).
 //!
 //! Run in BOTH configurations, A→B→A per `dev/BENCHMARKS.md`:
 //!
@@ -19,9 +20,9 @@
 //! hottest size class.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use ll_model::gc::{ll_gc_checkpoint, ll_gc_checkpoint_ack};
 use ll_model::object::{ll_object_constructed, ll_object_die, ll_object_new_abi};
 use ll_model::refcount::{MemoryCategory, RcHeader, ll_release, ll_release_batch};
-use ll_model::gc::ll_gc_checkpoint;
 use ll_model::{Class, ClassBuilder, Object};
 
 const BATCH: usize = 64;
@@ -74,9 +75,11 @@ fn batch_plain(c: &mut Criterion, cls: *const Class) {
     });
 }
 
-/// The compiler-emitted shape: one `ll_gc_checkpoint` fronting the
-/// run, `ll_release_batch` per death. The delta against
-/// `batch_64_plain_release` is the checkpoint test times 63.
+/// The compiler-emitted shape (the 2026-07-28 split):
+/// `ll_gc_checkpoint_ack` fronting the run, `ll_release_batch` per
+/// death, one full `ll_gc_checkpoint` trailing it. The delta against
+/// `batch_64_plain_release` is the checkpoint test times 63, minus
+/// the trailing full test.
 fn batch_batched(c: &mut Criterion, cls: *const Class) {
     let mut objects: Vec<*mut Object> = Vec::with_capacity(BATCH);
     c.bench_function("lifecycle/batch_64_batched_release", |b| {
@@ -90,12 +93,13 @@ fn batch_batched(c: &mut Criterion, cls: *const Class) {
                 ll_object_constructed(std::ptr::null_mut(), obj);
                 objects.push(obj);
             }
-            ll_gc_checkpoint();
+            ll_gc_checkpoint_ack();
             for &obj in &objects {
                 if ll_release_batch(black_box(obj) as *mut RcHeader) {
                     ll_object_die(obj);
                 }
             }
+            ll_gc_checkpoint();
             objects.clear();
         })
     });

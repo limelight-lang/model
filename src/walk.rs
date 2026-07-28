@@ -96,7 +96,20 @@ thread_local! {
     /// somehow reaches `collect_cycles` again becomes a no-op instead of
     /// re-walking a heap whose guards are outstanding (the drain is not
     /// re-entrant by design — finding F8, `rfc/model/gc/rc-walk-proof.md`).
+    /// Second duty since 2026-07-28: the epoch pickup gate reads it
+    /// ([`walk_active`]) — while set, checkpoints on this thread refuse
+    /// verdict messages, so it must stay set until every guard this
+    /// walk placed is gone (the `Drop` clear below covers that).
     static WALK_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a synchronous collection is running on this thread. The
+/// epoch pickup gate refuses messages while it is set: the collection
+/// is drain-class — it holds guards on members an epoch message may
+/// name (`rfc/model/gc/rc-walk.md`, "When the collector runs", step 4).
+#[cfg(feature = "rc-walk")]
+pub(crate) fn walk_active() -> bool {
+    WALK_ACTIVE.with(|a| a.get())
 }
 
 /// Statistics of one synchronous collection.
@@ -133,6 +146,13 @@ pub struct CollectStats {
 /// As [`for_each_entity_slot`], and it must fire at a clean point — where
 /// refcounts and physical edges agree, never mid-store or mid-teardown
 /// (the arm/fire rule of `rfc/model/gc/strategies.md`).
+///
+/// The reverse of the epoch pickup gate — refusing to *start* mid-drain
+/// or mid-teardown — is deliberately not built: today's callers are
+/// tests and the explicit ABI, and a mid-drain call is conservative
+/// anyway (the drain's guards inflate rc, so guarded members classify
+/// live). The entry gate belongs to the pressure ladder
+/// (`rfc/model/gc/rc-walk.md`, "When the collector runs", unbuilt).
 pub unsafe fn collect_cycles() -> CollectStats {
     if WALK_ACTIVE.with(|a| a.get()) {
         return CollectStats::default();

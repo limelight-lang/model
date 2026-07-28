@@ -182,10 +182,11 @@ poll turns into a raise) — + the write. An overwriting store then
 into path 3. Publish before teardown, always in that order.
 
 **3. Entity death (refcount path).** `ll_release` hits zero — under
-rc-walk this branch is the epoch checkpoint (`epoch`): handshake ack,
-verdict drain and parked-memory flush run here, before the teardown
-below; compiler-batched release runs pay the test once via
-`ll_gc_checkpoint` + `ll_release_batch` →
+rc-walk this branch acks the epoch handshake (`epoch`), before the
+teardown below; verdict drain and parked-memory flush wait for the
+outermost dispose's exit. Compiler-batched release runs pay the test
+once, split around the run (2026-07-28): `ll_gc_checkpoint_ack`
+before, `ll_release_batch` per reference, `ll_gc_checkpoint` after →
 `ll_entity_die` kind-switch (`object`) → for objects, three-phase
 `ll_object_die`: dispose (pre-destructor with resurrection check; weak
 notification is the *first act* of phase 2, before children drop via
@@ -216,9 +217,11 @@ scans sound) and walk with the three-way classification → Phase 2:
 judge → Phase 3: condemn (collector-private), snapshot-compare
 re-check, confirmations posted to the queue (`epoch`; acquittals are
 dropped in private) → the mutator picks up at the outermost dispose's
-exit, the poll or the explicit batched checkpoint (the death branch
-acks only): the drain opens with the corpse rule and runs the Phase-4
-exact test and kills (`walk::drain_confirmed`) → the epoch closes;
+exit, the poll or the trailing batched checkpoint (the death branch
+acks only; pickup is refused mid-drain, mid-teardown and while a
+synchronous collection runs): the drain opens with the corpse rule
+and runs the Phase-4 exact test and kills (`walk::drain_confirmed`)
+→ the epoch closes;
 each owning thread flushes its parked frees (`deferred_free`).
 
 ## Cross-module invariants

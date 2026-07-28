@@ -181,6 +181,17 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   overwrote the class word under the walker). Both pinned by
   verified-failing regressions. The rfc's TLA+ battery models the
   pre-amendment protocol until re-derived (banner notes).
+- [x] **rc-walk batched-checkpoint split** (2026-07-28; rfc `3faf110`,
+  "Batched releases" amendment) — the run's checkpoint splits:
+  `ll_gc_checkpoint_ack` (new ABI) before the run, full
+  `ll_gc_checkpoint` after it; `ll_release_vector` same; the pickup
+  gate additionally refuses messages while `walk::collect_cycles`
+  runs (drain-class). Four regressions, each verified failing:
+  the ack-only front, the ack-before-first-death position, the
+  phase-lock shape on the vector form, the walk-active gate. Cost
+  within noise (`dev/BENCHMARKS.md`). The
+  forced-verdict machinery and the pressure ladder stay design-only
+  (build order 5, measurement-gated).
 - [x] **rc-walk build step 4 — weak references** (2026-07-27,
   `src/weak.rs`; design `rfc/model/weak-references.md`). The canonical
   `WeakReference` entity (kind 5, 16 bytes, always GC-heap) doubles as

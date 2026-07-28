@@ -413,8 +413,10 @@ unsafe fn flags_load(header: *const RcHeader) -> u32 {
 /// the outermost dispose's exit, because between this release's zero
 /// store and the dispose no user code may observe the entity
 /// (review finding, 2026-07-27). Compiler-emitted runs of releases use
-/// [`ll_release_batch`] plus one explicit
-/// [`ll_gc_checkpoint`](crate::gc::ll_gc_checkpoint) instead.
+/// [`ll_release_batch`] bracketed by one
+/// [`ll_gc_checkpoint_ack`](crate::gc::ll_gc_checkpoint_ack) before
+/// the run and one [`ll_gc_checkpoint`](crate::gc::ll_gc_checkpoint)
+/// after it instead.
 ///
 /// # Safety
 /// `header` must point to a live heap entity beginning with `RcHeader`.
@@ -518,12 +520,14 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
 
 /// [`ll_release`] without the epoch checkpoint, for compiler-emitted
 /// runs of releases (a scope exit): lowering emits one
-/// [`ll_gc_checkpoint`](crate::gc::ll_gc_checkpoint) for the run, then
-/// releases each reference with this variant, so the run pays the
-/// checkpoint test once instead of per death
-/// (`rfc/model/gc/rc-walk.md`, "Batched releases"). Identical to
-/// [`ll_release`] in every other respect; in an rc-trace build the two
-/// are the same function.
+/// [`ll_gc_checkpoint_ack`](crate::gc::ll_gc_checkpoint_ack) before
+/// the run, releases each reference with this variant, then one full
+/// [`ll_gc_checkpoint`](crate::gc::ll_gc_checkpoint) after it — the
+/// run pays the test once, and the pickup lands where the run's
+/// transients are back at their true counts
+/// (`rfc/model/gc/rc-walk.md`, "Batched releases", amendment
+/// 2026-07-28). Identical to [`ll_release`] in every other respect;
+/// in an rc-trace build the two are the same function.
 ///
 /// # Safety
 /// As [`ll_release`].

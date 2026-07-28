@@ -217,8 +217,11 @@ pub unsafe extern "C" fn ll_object_new_in(cell: *mut u8, class: *const Class) ->
 
 /// Release a vector of references in one call
 /// (`rfc/model/memory/bulk-operations.md`): the epoch checkpoint is
-/// served once at entry — before any death, so every free the batch
-/// performs observes an in-flight epoch in program order — then each
+/// split around the run (amendment 2026-07-28) — the ack at entry,
+/// before any death, so every free the batch performs observes an
+/// in-flight epoch in program order; the full pickup after the last
+/// release, when the run's transients are back at their true counts
+/// (the phase-lock argument — [`crate::epoch`]'s module doc). Each
 /// entry is a batched release; destructors run in vector order. In an
 /// rc-trace build this is plain releases behind one call boundary.
 ///
@@ -227,13 +230,14 @@ pub unsafe extern "C" fn ll_object_new_in(cell: *mut u8, class: *const Class) ->
 /// `RcHeader`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_release_vector(entities: *const *mut RcHeader, count: usize) {
-    unsafe { crate::gc::ll_gc_checkpoint() };
+    unsafe { crate::gc::ll_gc_checkpoint_ack() };
     for i in 0..count {
         let entity = unsafe { *entities.add(i) };
         if unsafe { crate::refcount::ll_release_batch(entity) } {
             unsafe { ll_entity_die(entity) };
         }
     }
+    unsafe { crate::gc::ll_gc_checkpoint() };
 }
 
 /// The user constructor returned successfully: from here on the object

@@ -11,7 +11,12 @@
 //! factory): the test lives in the `1 → 0` branch — already cold and
 //! about to run teardown — and in `ll_gc_maybe_collect` (the poll the
 //! reserve already refills at). Compiler-emitted runs of releases pay
-//! the test once via `ll_gc_checkpoint` + `ll_release_batch`. The raw
+//! the test once, split around the run (amendment 2026-07-28): one
+//! `ll_gc_checkpoint_ack` before it, `ll_release_batch` per reference,
+//! one full `ll_gc_checkpoint` after it — a pre-run pickup would judge
+//! while the scope's transients are still counted, and a loop whose
+//! only checkpoints are scope exits would then phase-lock every pickup
+//! against the same held borrow. The raw
 //! `ll_malloc`/`ll_free` C-ABI paths and the factory carry no test —
 //! they are the hot paths, and a workload with no entity deaths
 //! starves the epoch no worse than the accepted limit (finding F2,
@@ -27,9 +32,10 @@
 //! reference to it: resurrection after commit, or a double teardown.
 //! So [`checkpoint_ack`] (the death branch) acks the handshake and
 //! nothing else, and the full [`checkpoint`] picks up messages only
-//! when no teardown is in flight on this thread
-//! ([`TEARDOWN_DEPTH`]) — it runs at the outermost dispose's exit, at
-//! the poll, and at the explicit batched checkpoint.
+//! when no teardown is in flight on this thread ([`TEARDOWN_DEPTH`])
+//! and no synchronous collection runs (`walk_active` — drain-class,
+//! it holds guards a message may name) — it runs at the outermost
+//! dispose's exit, at the poll, and trailing a batched-release run.
 //!
 //! **The drain is not re-entrant** (finding F8): a destructor run by
 //! the drain releases references, and a release hitting zero
@@ -80,10 +86,12 @@ thread_local! {
     static TEARDOWN_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-/// The death-branch checkpoint: ack the handshake, nothing else. Its
-/// before-teardown position is what orders the epoch's activity bit
-/// before this death's frees; pickup would run user code against a
-/// committed-dead entity (module doc).
+/// The ack-only checkpoint: serve the handshake, nothing else. Two
+/// callers: the death branch of `ll_release` — its before-teardown
+/// position is what orders the epoch's activity bit before this
+/// death's frees, and pickup would run user code against a
+/// committed-dead entity (module doc) — and `ll_gc_checkpoint_ack`,
+/// the ABI front of a batched-release run.
 #[inline]
 pub(crate) fn checkpoint_ack() {
     if HANDSHAKE_REQUESTED.load(Ordering::Relaxed) {
@@ -126,8 +134,9 @@ pub(crate) fn teardown_exit() {
 /// only when the collector wants attention or a closed epoch left
 /// parked memory to flush. Callers: the outermost teardown's exit, the
 /// `ll_gc_maybe_collect` poll, and the explicit `ll_gc_checkpoint`
-/// that fronts a batched-release run (module doc). The death branch of
-/// `ll_release` calls [`checkpoint_ack`] instead.
+/// that trails a batched-release run (module doc). The death branch of
+/// `ll_release` and the front of a batched run call [`checkpoint_ack`]
+/// instead.
 #[inline]
 pub(crate) fn checkpoint() {
     if HANDSHAKE_REQUESTED.load(Ordering::Relaxed)
@@ -141,16 +150,21 @@ pub(crate) fn checkpoint() {
 #[cold]
 #[inline(never)]
 fn checkpoint_attend() {
-    if HANDSHAKE_REQUESTED.swap(false, Ordering::AcqRel) {
-        HANDSHAKE_ACKS.fetch_add(1, Ordering::AcqRel);
-    }
+    ack_handshake();
     // Nested entry (an allocation inside a draining destructor, a poll
     // inside a running `__destruct`): memory served, handshake acked,
     // message left where it is. `TEARDOWN_DEPTH` covers the poll — a
     // destructor that allocates may checkpoint mid-dispose, and the
     // entity being disposed must not meet drain user code until its
-    // teardown completes.
-    if MID_DRAIN.with(|d| d.get()) || TEARDOWN_DEPTH.with(|d| d.get()) != 0 {
+    // teardown completes. The synchronous collection is drain-class
+    // too (`walk_active`): it holds guards on members a message may
+    // name, and a pickup inside one of its destructors would violate
+    // the drain's no-other-guards contract (rc-walk.md, "When the
+    // collector runs", step 4).
+    if MID_DRAIN.with(|d| d.get())
+        || TEARDOWN_DEPTH.with(|d| d.get()) != 0
+        || walk::walk_active()
+    {
         return;
     }
     MID_DRAIN.with(|d| d.set(true));
@@ -266,40 +280,76 @@ mod tests {
         unsafe { crate::object::ll_object_die(obj) };
     }
 
-    /// The batched form defers the test: `ll_release_batch` never
-    /// checkpoints, the explicit `ll_gc_checkpoint` in front of the run
-    /// does (`rfc/model/gc/rc-walk.md`, "Batched releases").
+    /// The batched contract splits the checkpoint around the run
+    /// (`rfc/model/gc/rc-walk.md`, "Batched releases", amendment
+    /// 2026-07-28): `ll_gc_checkpoint_ack` fronts the run — ack only,
+    /// never a pickup — `ll_release_batch` carries no test, and the
+    /// trailing `ll_gc_checkpoint` picks up. Pinned on a death-free
+    /// run: those are exactly the runs where a pre-run pickup would
+    /// judge against transients the run is about to return
+    /// (the phase-lock shape).
     #[test]
-    fn a_batched_release_defers_the_checkpoint_to_the_explicit_call() {
+    fn a_batched_run_acks_at_entry_and_picks_up_after_it() {
         let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let ring_cls = ClassBuilder::new("BatchedRunRing")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
         let cls = ClassBuilder::new("BatchedRelease").build();
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
+        let a = unsafe { new_constructed(&mut ctx, ring_cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, ring_cls, MemoryCategory::GcHeap) };
+        unsafe {
+            tie(a, 16, b);
+            tie(b, 16, a);
+        }
         let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        unsafe { ll_retain(obj as *mut RcHeader) }; // rc 2: the run's release is non-final
 
+        post_confirmation(vec![a as *mut RcHeader, b as *mut RcHeader]);
         let before = handshake_acks();
         request_handshake();
-        assert!(unsafe { crate::refcount::ll_release_batch(obj as *mut RcHeader) });
-        assert_eq!(handshake_acks(), before, "batched death: no checkpoint");
-        unsafe { crate::object::ll_object_die(obj) };
+
+        unsafe { crate::gc::ll_gc_checkpoint_ack() };
+        assert_eq!(handshake_acks(), before + 1, "the front acks");
+        assert_eq!(outstanding_verdicts(), 1, "ack only: no pickup before the run");
+
+        assert!(!unsafe { crate::refcount::ll_release_batch(obj as *mut RcHeader) });
+        assert_eq!(outstanding_verdicts(), 1, "the run itself never picks up");
 
         unsafe { crate::gc::ll_gc_checkpoint() };
-        assert_eq!(handshake_acks(), before + 1, "the explicit call serves the run");
+        assert_eq!(outstanding_verdicts(), 0, "the trailing call picks up");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "the posted ring drained");
+
+        unsafe {
+            assert!(ll_release(obj as *mut RcHeader));
+            crate::object::ll_object_die(obj);
+        }
+        arena.reset(|_| {});
     }
 
-    /// `ll_release_vector` serves the checkpoint once at entry — one
+    /// `ll_release_vector` acks once at entry — before any death, one
     /// ack for the whole batch — and runs the destructors in vector
-    /// order (`rfc/model/memory/bulk-operations.md`).
+    /// order (`rfc/model/memory/bulk-operations.md`). The entry
+    /// position is pinned from inside the first destructor: it runs
+    /// before any teardown-exit checkpoint could ack in entry's stead.
     #[test]
-    fn a_vector_release_checkpoints_once_and_dies_in_order() {
+    fn a_vector_release_acks_once_and_dies_in_order() {
         use std::sync::Mutex;
         static ORDER: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+        static ACKS_AT_FIRST_DEATH: AtomicUsize = AtomicUsize::new(usize::MAX);
         unsafe extern "C" fn recording(obj: *mut Object) {
+            if ORDER.lock().unwrap().is_empty() {
+                ACKS_AT_FIRST_DEATH.store(handshake_acks() as usize, Ordering::Relaxed);
+            }
             ORDER.lock().unwrap().push(obj as usize);
         }
 
         let _g = crate::memory::block_pool::test_guard();
         ORDER.lock().unwrap().clear();
+        ACKS_AT_FIRST_DEATH.store(usize::MAX, Ordering::Relaxed);
         let cls = ClassBuilder::new("VectorRelease")
             .destructor(recording as *const ())
             .build();
@@ -315,10 +365,126 @@ mod tests {
         request_handshake();
         unsafe { crate::object::ll_release_vector(objects.as_ptr(), objects.len()) };
         assert_eq!(handshake_acks(), before + 1, "one ack for the whole vector");
+        assert_eq!(
+            ACKS_AT_FIRST_DEATH.load(Ordering::Relaxed),
+            (before + 1) as usize,
+            "the ack preceded the first death"
+        );
 
         let order = ORDER.lock().unwrap();
         let expected: Vec<usize> = objects.iter().map(|&p| p as usize).collect();
         assert_eq!(*order, expected, "destructors in vector order");
+    }
+
+    /// The vector pickup trails the run (amendment 2026-07-28). The
+    /// phase-lock shape: a component is posted while the vector still
+    /// holds the reference keeping it alive. A pre-run pickup judges
+    /// against that transient — exact-test mismatch, message dropped,
+    /// garbage survives; and a loop whose only checkpoints are scope
+    /// exits presents *every* pickup with the same held borrow. The
+    /// trailing pickup judges after the release and collects.
+    #[test]
+    fn a_vector_release_picks_up_after_the_run_not_before() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("VectorPhaseLock")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        unsafe {
+            tie(a, 16, b);
+            tie(b, 16, a);
+            ll_retain(a as *mut RcHeader); // the vector's transient
+        }
+
+        post_confirmation(vec![a as *mut RcHeader, b as *mut RcHeader]);
+        let transients = [a as *mut RcHeader];
+        unsafe { crate::object::ll_release_vector(transients.as_ptr(), transients.len()) };
+
+        assert_eq!(outstanding_verdicts(), 0, "the trailing pickup served the message");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "judged after the release: collected");
+        let seen = walked_addresses();
+        assert!(!seen.contains(&(a as usize)) && !seen.contains(&(b as usize)));
+        arena.reset(|_| {});
+    }
+
+    /// The pickup gate refuses messages while a synchronous collection
+    /// runs (`rfc/model/gc/rc-walk.md`, "When the collector runs",
+    /// step 4): the collection is drain-class — it holds guards on
+    /// members an epoch message may name. Checkpoints fire inside
+    /// `walk::collect_cycles` (a destructor reaching the poll, every
+    /// teardown exit on the sever path); each must leave the message
+    /// pending.
+    #[test]
+    fn a_synchronous_collection_refuses_message_pickup() {
+        let _g = crate::memory::block_pool::test_guard();
+        static SEEN_OUTSTANDING_IN_WALK: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+        unsafe extern "C" fn checkpointing_probe(_obj: *mut Object) {
+            // A checkpoint fires inside the walk — the shape of a
+            // destructor reaching the compiler's poll. The pending
+            // message must still be pending afterwards.
+            checkpoint();
+            SEEN_OUTSTANDING_IN_WALK.store(outstanding_verdicts(), Ordering::Relaxed);
+        }
+
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        SEEN_OUTSTANDING_IN_WALK.store(usize::MAX, Ordering::Relaxed);
+        let live_cls = ClassBuilder::new("WalkGateLiveRing")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+        let dying_cls = ClassBuilder::new("WalkGateDyingRing")
+            .prop("child", true)
+            .destructor(checkpointing_probe as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        // The posted component stays live through the walk (external
+        // reference): only pickup timing is under test, not a verdict.
+        let c1 = unsafe { new_constructed(&mut ctx, live_cls, MemoryCategory::GcHeap) };
+        let c2 = unsafe { new_constructed(&mut ctx, live_cls, MemoryCategory::GcHeap) };
+        let d1 = unsafe { new_constructed(&mut ctx, dying_cls, MemoryCategory::GcHeap) };
+        let d2 = unsafe { new_constructed(&mut ctx, dying_cls, MemoryCategory::GcHeap) };
+        unsafe {
+            tie(c1, 16, c2);
+            tie(c2, 16, c1);
+            ll_retain(c1 as *mut RcHeader); // keeps the posted ring live
+            tie(d1, 16, d2);
+            tie(d2, 16, d1);
+        }
+
+        post_confirmation(vec![c1 as *mut RcHeader, c2 as *mut RcHeader]);
+        // The d-ring is garbage: the walk collects it, running the
+        // probing destructors while the walk-active bit is set.
+        unsafe { crate::walk::collect_cycles() };
+
+        assert_eq!(
+            SEEN_OUTSTANDING_IN_WALK.load(Ordering::Relaxed),
+            1,
+            "the checkpoint inside the walk left the message pending"
+        );
+        assert_eq!(outstanding_verdicts(), 1, "still pending after the walk");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "the live ring untouched");
+
+        // Outside the walk the pickup proceeds: the live ring fails the
+        // exact test and the message is dropped whole.
+        checkpoint();
+        assert_eq!(outstanding_verdicts(), 0);
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "dropped, not torn");
+        let seen = walked_addresses();
+        assert!(seen.contains(&(c1 as usize)) && seen.contains(&(c2 as usize)));
+
+        // Cleanup: drop the external reference, the ring is garbage.
+        assert!(!unsafe { ll_release(c1 as *mut RcHeader) });
+        unsafe { crate::walk::collect_cycles() };
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2);
+        arena.reset(|_| {});
     }
 
     #[test]
@@ -574,12 +740,14 @@ mod tests {
 
         unsafe extern "C" fn allocating_destructor(_obj: *mut Object) {
             DESTRUCTS.fetch_add(1, Ordering::Relaxed);
-            // This allocation is a checkpoint inside the drain (the
-            // entity_alloc tail calls it). The pending second message
-            // must still be pending afterwards.
+            // Memory is served mid-drain (the factory itself carries
+            // no checkpoint since the death-branch move, 2026-07-27),
+            // and a checkpoint firing here — the compiler's poll — must
+            // not pick up the pending second message.
             let p = unsafe { crate::memory::heap::entity_alloc(24) };
             assert!(!p.is_null(), "the nested entry still serves memory");
             unsafe { crate::memory::stdapi::ll_free(p) };
+            checkpoint();
             SEEN_OUTSTANDING_INSIDE.store(outstanding_verdicts(), Ordering::Relaxed);
             PEER_DESTRUCTS_INSIDE.store(DESTRUCTS.load(Ordering::Relaxed), Ordering::Relaxed);
         }

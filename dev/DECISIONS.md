@@ -8,7 +8,25 @@ never edited or deleted.
 
 ---
 
-## 2026-07-27 — eager death: the condemned byte is retired, deaths never defer, the drain drops on a corpse
+## 2026-07-28 — the batched checkpoint splits: ack before the run, pickup after it
+
+The lowering contract for a release run changes (rfc `3faf110`,
+`model/gc/rc-walk.md` "Batched releases"): one `ll_gc_checkpoint_ack`
+(new ABI) fronts the run — the activity bit is observed before any
+free, as on the death branch — and the full `ll_gc_checkpoint` trails
+it. `ll_release_vector` carries the same split. **Why:** a pre-run
+pickup judges posted components while the run's transients are still
+counted — a scope-exit loop then presents every pickup with the same
+held borrow, the phase-lock that would defeat the forced verdict.
+Rejected: keeping the single pre-run checkpoint (the phase-lock),
+pickup on both sides (a second full test buys nothing after eager
+death — any death in the run already picks up at its dispose's exit).
+The synchronous collection also joins the pickup gate (`walk_active`
+beside mid-drain and teardown depth): it is drain-class and holds
+guards a message may name. Cost: none measured (`BENCHMARKS.md`
+2026-07-28); four regressions pin the shape — the ack-only front, the
+ack-before-first-death position, the vector phase-lock, the walk-active
+gate — each verified failing.
 
 Edmond's redesign (rfc `c2f91b1`, `model/gc/rc-walk.md`). A release
 reaching zero mid-epoch now runs full teardown at the natural point —
