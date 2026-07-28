@@ -17,7 +17,6 @@
 //! the last epoch) are measurements nobody has taken
 //! (`rfc/model/gc/rc-walk.md`, "Open questions").
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::epoch as protocol;
@@ -78,6 +77,12 @@ pub(crate) struct Epoch {
     pub number: u8,
     pub stats: EpochStats,
     blocks: Vec<EntityBlockSnapshot>,
+    /// The dense census: `slot_rows[first_slot[b] + s]` is the walked
+    /// row of block `b`'s slot `s`, `u32::MAX` for none. Sized by the
+    /// snapshot (virgin tails included), filled by pass 1 as rows are
+    /// recorded, consumed by pass 2's child lookup ([`census_row`]).
+    first_slot: Vec<u32>,
+    slot_rows: Vec<u32>,
     /// Walked mature GcHeap entities, their snapshot rows, and edges.
     entities: Vec<*mut RcHeader>,
     rows: Vec<u32>,
@@ -137,6 +142,8 @@ impl Epoch {
             number,
             stats: EpochStats::default(),
             blocks: Vec::new(),
+            first_slot: Vec::new(),
+            slot_rows: Vec::new(),
             entities: Vec::new(),
             rows: Vec::new(),
             flags: Vec::new(),
@@ -159,14 +166,27 @@ impl Epoch {
     pub fn snapshot(&mut self) {
         debug_assert!(self.acked(), "snapshot before the activity bit was published");
         self.blocks = snapshot_entity_blocks();
+        let mut total: u32 = 0;
+        self.first_slot = self
+            .blocks
+            .iter()
+            .map(|b| {
+                let first = total;
+                total = total
+                    .checked_add(b.slots as u32)
+                    .expect("census slot ids overflow u32");
+                first
+            })
+            .collect();
+        self.slot_rows = vec![u32::MAX; total as usize];
     }
 
     /// Phase 1 — WALK: per slot, the three-way classification (free /
     /// new / mature), a row and out-edges for every mature GcHeap
     /// entity. Reads are relaxed atomics, stale by design; the child
-    /// test is one lookup in the walked-row map, which subsumes the
-    /// occupancy, boundary and epoch-byte validation — an id that maps
-    /// to no row contributes to its target's RC and never to IN.
+    /// test is one dense census lookup ([`census_row`]), which subsumes
+    /// the occupancy, boundary and epoch-byte validation — an id that
+    /// maps to no row contributes to its target's RC and never to IN.
     ///
     /// Two passes, separately steppable ([`Epoch::walk_rows`] then
     /// [`Epoch::walk_edges`]): a count can be read long before the
@@ -181,7 +201,7 @@ impl Epoch {
     /// Phase 1, pass 1: classify every snapshotted slot and record a
     /// refcount row per mature GcHeap entity.
     pub fn walk_rows(&mut self) {
-        for b in &self.blocks {
+        for (block_index, b) in self.blocks.iter().enumerate() {
             for s in 0..b.slots {
                 let slot = (b.payload + s * b.class_size) as *mut RcHeader;
                 let word = unsafe { collector_load_header(slot) };
@@ -202,6 +222,8 @@ impl Epoch {
                 if flags & MEMORY_CATEGORY_MASK != MemoryCategory::GcHeap as u32 {
                     continue; // mature but unwalked: a root source
                 }
+                self.slot_rows[self.first_slot[block_index] as usize + s] =
+                    self.entities.len() as u32;
                 self.entities.push(slot);
                 self.rows.push(refcount);
                 self.flags.push(flags);
@@ -211,22 +233,19 @@ impl Epoch {
     }
 
     /// Phase 1, pass 2: out-edges of every row, through the collector
-    /// tracer.
+    /// tracer; the child test is [`census_row`].
     pub fn walk_edges(&mut self) {
-        let ids: HashMap<usize, u32> = self
-            .entities
-            .iter()
-            .enumerate()
-            .map(|(i, &e)| (e as usize, i as u32))
-            .collect();
         for i in 0..self.entities.len() {
             let entity = self.entities[i];
             let kind = (self.flags[i] & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
+            let blocks = &self.blocks;
+            let first_slot = &self.first_slot;
+            let slot_rows = &self.slot_rows;
             let edges = &mut self.edges;
             let dropped = &mut self.stats.dropped_edges;
             trace_mature(entity, kind, |field, raw, child| {
-                match ids.get(&(child as usize)) {
-                    Some(&dst) => edges.push(Edge { src: i as u32, dst, field, raw }),
+                match census_row(blocks, first_slot, slot_rows, child as usize) {
+                    Some(dst) => edges.push(Edge { src: i as u32, dst, field, raw }),
                     None => *dropped += 1,
                 }
             });
@@ -334,6 +353,38 @@ impl Epoch {
         deferred_free::end_epoch();
         self.stats
     }
+}
+
+/// The walked-row id of a child address, or `None` — the dense census
+/// lookup of Phase 1's pass 2: block by the alignment mask
+/// (`heap::block_payload_of`) matched against the snapshot's sorted
+/// payloads, slot by division, row by the per-slot array pass 1 filled.
+/// A garbage word can point anywhere, so an address off a slot start is
+/// rejected by the remainder test, and a block absent from the snapshot
+/// — heap, arena, mid-commission — finds no payload match. Replaced a
+/// HashMap keyed by entity address: same verdicts, no hashing and no
+/// build pass over the walked set (`dev/BENCHMARKS.md`, 2026-07-28).
+fn census_row(
+    blocks: &[EntityBlockSnapshot],
+    first_slot: &[u32],
+    slot_rows: &[u32],
+    child: usize,
+) -> Option<u32> {
+    let payload = crate::memory::heap::block_payload_of(child);
+    if child < payload {
+        return None; // inside the block's header line
+    }
+    let block_index = blocks.binary_search_by_key(&payload, |b| b.payload).ok()?;
+    let b = &blocks[block_index];
+    // In-block offsets fit u32 (blocks are 64 KiB): divide narrow.
+    let offset = (child - payload) as u32;
+    let class_size = b.class_size as u32;
+    let slot = offset / class_size;
+    if slot as usize >= b.slots || slot * class_size != offset {
+        return None; // the tail fragment, or off a slot start
+    }
+    let row = slot_rows[first_slot[block_index] as usize + slot as usize];
+    (row != u32::MAX).then_some(row)
 }
 
 /// Trace one mature entity's counted children with relaxed-atomic cell
@@ -870,6 +921,49 @@ mod tests {
         unsafe {
             assert!(ll_release(holder as *mut RcHeader));
             crate::object::ll_object_die(holder);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// A garbage word can point anywhere; one aimed at the interior of
+    /// a live slot must be dropped, not snapped to that slot's row —
+    /// the census division validates slot alignment, exactly as the
+    /// address map it replaced did by exact-key match.
+    #[test]
+    fn an_edge_into_a_slot_interior_is_dropped() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("CollectorInterior").prop("child", true).build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let holder = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let target = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        stepped_epoch(); // both mature
+        // A raw store of an interior address wearing an object tag — the
+        // torn-ValueBox shape the walker must absorb by validation.
+        unsafe {
+            Object::prop_at(holder, 16).write(Value::entity(
+                Tag::Object,
+                (target as usize + 8) as *mut RcHeader,
+            ));
+        }
+
+        let mut e = Epoch::open();
+        checkpoint();
+        e.snapshot();
+        e.walk();
+        e.judge();
+        assert!(e.stats.dropped_edges >= 1, "the interior edge was dropped");
+        assert_eq!(e.stats.candidates, 0);
+        let _ = e.close();
+        checkpoint();
+
+        unsafe {
+            Object::prop_at(holder, 16).write(Value::null());
+            assert!(ll_release(holder as *mut RcHeader));
+            crate::object::ll_object_die(holder);
+            assert!(ll_release(target as *mut RcHeader));
+            crate::object::ll_object_die(target);
         }
         arena.reset(|_| {});
     }

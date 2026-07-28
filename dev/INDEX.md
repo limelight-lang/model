@@ -27,7 +27,8 @@ versions live in `docs/history/`, marked at the top.
   epoch state machine (Phases 1–3: snapshot, walk with the three-way
   classification, judge, condemn, snapshot-compare re-check, verdict
   posting), steppable for the forcing harness; `run_epoch` is the
-  threaded driver. Block snapshots: `heap::snapshot_entity_blocks`.
+  threaded driver. Block snapshots: `heap::snapshot_entity_blocks`;
+  the walk's child test is the dense census (`collector::census_row`).
   Trigger is an explicit call — thresholds are unmeasured.
 - rc-walk epoch protocol, mutator side (`rc-walk` builds):
   `src/epoch.rs` — the soft-handshake ack, the verdict message queue

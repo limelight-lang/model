@@ -1843,6 +1843,18 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
     blocks
 }
 
+/// The payload address of the block that would contain `addr` — pure
+/// geometry (blocks are `BLOCK_SIZE`-aligned, payload starts one line
+/// in), no header read, no validity claim. The collector matches the
+/// result against its snapshot's sorted payload list; an address in no
+/// snapshotted entity block simply finds nothing (`collector.rs`, the
+/// dense census).
+#[cfg(feature = "rc-walk")]
+#[inline]
+pub(crate) fn block_payload_of(addr: usize) -> usize {
+    (addr & !BLOCK_MASK) + LINE_SIZE
+}
+
 /// Post `ptr` to its block's cross-thread stack, without needing a heap of
 /// our own — for a thread that frees something it never could have allocated.
 ///

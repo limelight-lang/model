@@ -8,6 +8,20 @@ never edited or deleted.
 
 ---
 
+## 2026-07-28 — the epoch walk's child test is a dense census, not a map
+
+The collector's walked-row lookup is a per-slot `u32` array laid out
+from the block snapshot, indexed by (block via 64 KiB alignment mask +
+binary search over sorted payloads, slot via division with a remainder
+validity test). **Why:** the per-epoch `HashMap<address, row>` hashed
+every child and cost a build pass over the walked set — measured 2–3×
+of the whole walk step (`BENCHMARKS.md` 2026-07-28). Rejected: hashing
+with a cheaper function (still a probe per child, still a build pass);
+a region-indexed table (more machinery, only pays if the binary search
+ever shows up in profiles). Cost: the snapshot allocates and fills
+4 bytes per snapshotted slot, virgin tails included — collector-side,
+transient, two orders below the win.
+
 ## 2026-07-28 — the batched checkpoint splits: ack before the run, pickup after it
 
 The lowering contract for a release run changes (rfc `3faf110`,

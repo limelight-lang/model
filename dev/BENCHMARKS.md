@@ -100,6 +100,41 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-07-28 — dense census in the epoch walk: 2–3× on the walk step
+
+`walk_edges`' child test was one `HashMap<address, row>` lookup, and
+building that map was a full pass over the walked set. Replaced with
+the dense census: a per-slot `u32` row array laid out from the block
+snapshot (prefix sums per block, virgin tails included), filled by
+pass 1 as rows are recorded; pass 2 finds a child's block by the
+64 KiB alignment mask + binary search over the snapshot's sorted
+payloads, its slot by one narrow division, and rejects interior
+addresses by the remainder — the exact-key match the map gave for
+free, now pinned by a verified-failing regression
+(`an_edge_into_a_slot_interior_is_dropped`).
+
+`measure_epoch_cost` probe, release, rc-walk default; A → B → A, round
+0 (allocate-black stamping, no walk) discarded, medians of rounds 1–3;
+control A re-run agreed with the first A throughout:
+
+| scenario | walk A (HashMap) | walk B (census) | speedup |
+|---|---|---|---|
+| 100k singletons | 3.42 ms | 1.22 ms | 2.8× |
+| 100k chain | 5.19 ms | 2.52 ms | 2.1× |
+| 10k singletons | 0.35 ms | 0.17 ms | ~2× |
+| 10k chain | 0.48 ms | 0.33 ms | ~1.5× |
+
+Per entity the walk drops from ~34 ns to ~12 ns (rows only) and from
+~52 ns to ~25 ns (one edge each). The cost moved to `snapshot`: the
+slot array's allocation + `u32::MAX` fill, ~2–5 µs → ~15–90 µs at
+100k — two orders below the walk win, and collector-side. `judge` and
+the mutator are untouched.
+
+**Verdict: accepted.** Possible further squeeze on record, unmeasured:
+replace the per-edge division with a precomputed reciprocal multiply,
+and the binary search with a region-indexed table — both matter only
+if the walk shows up again in profiles.
+
 ## 2026-07-28 — the batched-checkpoint split: within noise
 
 The split (`rfc/model/gc/rc-walk.md` "Batched releases", amendment
