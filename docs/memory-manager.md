@@ -438,6 +438,19 @@ dropping the unsettled tail would dangle.
 **No holder slot is ever dereferenced** anywhere in this. Survival is
 decided from counts carried in the objects themselves.
 
+**Thread exit is now a sequence, not a single act.** Before A6 it only
+gave blocks back; since 2026-08-03 it first releases what the thread's
+*static blocks* held (`static_block.rs`), which is the only step that
+runs user code and therefore goes first, while every structure a
+`__destruct` may touch is still alive. Then the rc-trace candidate
+buffer, then the parked-free backlog, then the weak table, and only
+then the heaps. The order is explicit because it cannot be delegated:
+`ll_thread_exit` runs from a TLS destructor, TLS destructor order is
+unspecified, and on glibc it is reverse registration order — which
+destroys the exit guard last precisely because it registers first. Every
+per-thread structure on this path is therefore a pointer cell with no
+drop glue, freed by hand (`dev/DECISIONS.md`, 2026-08-03).
+
 **The survivor list outlives the reset.** It is grouped per block and
 registered as each retained block's object index (`memory/retained.rs`,
 2026-08-03). That inventory is the only way those occupants can be

@@ -17,7 +17,8 @@ is built.
 
 ```
 L4  collectors        gc (rc-trace) · walk · epoch, collector (rc-walk) · promote
-L3  object model      object · class · reference · weak · intern
+L3  object model      object · class · reference · weak · intern ·
+                      static_block
 LB  mutation          memory/barrier — model-level code living in memory/
 L2  memory manager    context · arena · heap · immortal · buffer ·
                       buffer_arena · reserve · retained · stats · stdapi ·
@@ -58,6 +59,7 @@ point:
 | `object → gc` | dispose, before children drop (rc-trace builds) | leave the candidate buffer at refcount 0 — a child release below may fire a collection that would trace the still-buffered corpse as a root (double free) |
 | `barrier → object` | `drop_ref` | the release cascade ends in `ll_entity_die`; `header_category` reads |
 | `class → object` | descriptor construction | carries `ll_default_dispose` as the default dispose pointer (data, not a call) |
+| `heap → static_block`, `gc`, `weak`, `deferred_free` | `ll_thread_exit` | thread exit owns the order its per-thread state dies in, because TLS destructor order is unspecified and puts the exit guard last (decision 2026-08-03). These are disposal calls only: `heap` learns nothing about candidates, cells or verdicts, it names four `dispose`-shaped functions in a fixed sequence |
 
 Any new upward edge is a design event: stop, discuss, record in
 `DECISIONS.md` — do not just add it to this table.
@@ -106,6 +108,7 @@ commit (`WORKFLOW.md`).
 | `class` | class descriptors: the inline vtable train (`[Class][vtbl][itables…]`, pure code-pointer arrays), method table, Cohen display; property layout as three typed runs; the trace lists (`ptr_runs` / `box_runs`); link-time construction | immortal allocation; interned names; the default dispose pointer | instance state; memory categories; GC; who calls the methods | `immortal`, `intern`; upward: `object` (dispose default) |
 | `object` | `ll_object_new` factory; `ll_object_constructed` (destructor registration); three-phase `ll_object_die`; the kind-switched `ll_entity_die`; `for_each_counted_child` | class runs; every category's allocator; the weak gate bit; the destructor-debt protocol | collector internals; block internals; per-site barrier composition | `class`, `refcount`, `value`, `context`, `heap`, `immortal`, `stdapi`, `barrier`, `reference`, `gc` (forget candidate), `weak` (notify) |
 | `reference` | the `&` reference box, entity kind 3: `RcHeader \| Value` — the model's only extra indirection, self-describing at teardown via the kind field | its own kind | classes; typed slot references (future) | `refcount`, `value`, `context`, `heap`, `immortal`, `stdapi`, `barrier`, `object` |
+| `static_block` | the per-thread registry of static blocks and the teardown pass that releases their roots at thread exit (A6): registration in first-touch order, drained in reverse | that a static block is headerless and laid out by a descriptor; that a `__destruct` may register another block mid-pass | how a static block is allocated; what its slots mean — the release policy is the barrier's, the teardown `object`'s | `class`, `refcount`, `object`, `barrier` |
 | `weak` | the kind-5 weak cell (the canonical `WeakReference` *is* the cell); the per-thread weak table; every notification rule (`notify_death` / `notify_members` / `drain_arena_weak_log`); `ll_weakref_create` / `ll_weakref_get` | the bit-7 gate; that cells always live in the GC heap; that only the owning thread touches the table | *when* to call in — that duty belongs to the death sites (dispose phase 2 first act, both collectors, arena reset) | `refcount`, `arena`, `context`, `heap`, `stdapi`, `object` |
 
 ### L4 — collectors
@@ -129,10 +132,11 @@ commit (`WORKFLOW.md`).
 | Immortal region | process-global mutex | `immortal` | `class`, `intern`, `object` (immortal category) |
 | Intern table | process-global mutex, Rust-owned | `intern` | `class` looks names up |
 | Retained-block object indexes | process-global mutex, Rust-owned | `retained` | `promote` registers at reset; both of `heap`'s enumerators clone the `Arc` under the lock and read it outside |
-| rc-trace candidate buffer + pending flag | TLS | `gc` | `refcount` arms it on non-zero decrements |
-| Weak table | TLS | `weak` | death sites call in, gated by bit 7; the collector thread never touches it |
+| rc-trace candidate buffer + pending flag | TLS, no drop glue | `gc` | `refcount` arms it on non-zero decrements |
+| Static-block registry | TLS, no drop glue | `static_block` | the static initializer registers; `heap`'s `ll_thread_exit` drains |
+| Weak table | TLS, no drop glue | `weak` | death sites call in, gated by bit 7; the collector thread never touches it |
 | Confirmation queue + handshake state (rc-walk) | global mutex + global atomic ack (TLS holds the mid-drain bit and the teardown depth) | `epoch` | `collector` posts confirmations; checkpoints drain |
-| GC activity flag + parked lists (rc-walk) | global atomic + TLS lists | `deferred_free` | the `ll_free` funnel parks; each owning thread flushes after the epoch |
+| GC activity flag + parked lists (rc-walk) | global atomic + TLS lists, no drop glue | `deferred_free` | the `ll_free` funnel parks; each owning thread flushes after the epoch |
 
 **The header flag word is itself a shared resource.** `refcount` owns
 the layout (its constants are normative; this ledger records who each
@@ -213,6 +217,17 @@ object indexes (`retained`), which is what makes their occupants
 walkable at all → every other block, the reserve-drawn ones included,
 returns to the pool.
 
+**4a. Thread exit.** `ll_thread_exit` (`heap`), reached explicitly or
+from the TLS guard → the static-block pass (`static_block`) releases
+each registered block's roots in reverse registration order through the
+barrier's `drop`, which is the only step here that runs user code →
+`gc::dispose` (rc-trace) returns the candidate buffer, clearing the
+buffered bit of anything still in it → `deferred_free::dispose`
+(rc-walk) flushes the parked backlog when no epoch is in flight →
+`weak::dispose` returns the weak table, last, after every death that
+could still need a row → the thread's heaps are dropped and their
+blocks are abandoned or returned.
+
 **5. rc-walk collection epoch.** Explicit trigger (`collector`;
 thresholds are unmeasured) → the activity flag is published through a
 soft handshake *before* snapshotting (a mutator that has not observed
@@ -273,6 +288,17 @@ write them. Each is load-bearing for at least two modules.
    A retained index is frozen because nothing allocates into a dead
    arena, and a stale entry is harmless because a dead survivor reads
    refcount 0 — invariant 4 again.
+7b. **No `thread_local!` the exit path can reach may have drop glue.**
+   `ll_thread_exit` runs from a TLS destructor and, since A6, runs user
+   code; TLS destructor order is unspecified, and on glibc it is reverse
+   registration order, which destroys the exit guard last precisely
+   because it registers first. A key with drop glue is therefore
+   reliably already gone, `with` panics with `AccessError`, and a panic
+   in a destructor cannot unwind — the process aborts. Every such
+   structure is a `Cell<*mut T>` freed by an explicit `dispose` in the
+   order `ll_thread_exit` fixes. `block_pool`'s cache and `reserve` are
+   the sanctioned exceptions: they use `try_with`, and there failure
+   means "go to the global tier", which is sound.
 8. **Publish before teardown**: the barrier owns the whole slot; an
    overwriting store is `store_*` then `drop_ref`, never the reverse.
 9. **Death is owner-bound.** Every free, verdict drain, weak-table

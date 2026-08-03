@@ -16,6 +16,7 @@ pub mod object;
 pub mod promote;
 pub mod refcount;
 pub mod reference;
+pub mod static_block;
 pub mod value;
 pub mod walk;
 pub mod weak;

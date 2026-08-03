@@ -20,7 +20,6 @@
 //! design's tagged subscriber list when `WeakMap` lands and maps start
 //! subscribing (`rfc/model/weak-references.md`, "The weak table").
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::memory::context::{LLContext, resolve_arena};
@@ -46,10 +45,56 @@ thread_local! {
     ///
     /// Discarded at thread exit without notification — the thread's
     /// entities die with its heap, and nothing outlives them to read a
-    /// cell (cross-thread movement is reserved; the design doc pins the
-    /// table's disposal last once static-block teardown exists).
-    static WEAK_TABLE: RefCell<HashMap<usize, *mut LLWeakRef>> =
-        RefCell::new(HashMap::new());
+    /// cell (cross-thread movement is reserved). The disposal is **last**
+    /// in `ll_thread_exit`'s order, which is what the design doc pinned
+    /// against the arrival of static-block teardown; that arrived
+    /// 2026-08-03 (A6) and this is the ordering it asked for.
+    ///
+    /// A raw pointer in a `Cell`, not a `RefCell<HashMap<_, _>>`, and
+    /// for soundness. A `HashMap` has drop glue, so its key is
+    /// registered for TLS destruction; this table is reached **from** a
+    /// TLS destructor, because thread exit runs the static-block
+    /// teardown whose deaths call [`notify_death`]. TLS destructor order
+    /// is unspecified — on glibc reverse registration order, which puts
+    /// the exit guard last exactly because it registers first — so the
+    /// table is reliably already destroyed, `with` panics with
+    /// `AccessError` inside a destructor, and a panic there cannot
+    /// unwind: the process aborts. `try_with` would be worse than the
+    /// abort, not better: a swallowed `notify_death` leaves the cell's
+    /// target dangling, and the next `__destruct` calling `get()`
+    /// receives a retained pointer into freed memory. A `Cell<*mut _>`
+    /// has no drop glue, is never registered, and stays readable for the
+    /// whole life of the thread; [`dispose`] frees it explicitly. The
+    /// initializer is `const` for the same reason: a lazily initialized
+    /// key can otherwise be first-initialized mid-destruction.
+    static WEAK_TABLE: std::cell::Cell<*mut HashMap<usize, *mut LLWeakRef>> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// This thread's weak table, allocated on first use.
+fn weak_table() -> *mut HashMap<usize, *mut LLWeakRef> {
+    WEAK_TABLE.with(|cell| {
+        let mut table = cell.get();
+        if table.is_null() {
+            table = Box::into_raw(Box::new(HashMap::new()));
+            cell.set(table);
+        }
+        table
+    })
+}
+
+/// Give this thread's weak table back at thread exit, after every death
+/// that could still need a row — so, last (see the `WEAK_TABLE` doc).
+///
+/// No notification: the rows that remain name targets that are dying
+/// with this thread's heap, and nothing outlives them to read a cell.
+///
+/// Null-tolerant and idempotent.
+pub(crate) fn dispose() {
+    let table = WEAK_TABLE.with(|cell| cell.replace(std::ptr::null_mut()));
+    if !table.is_null() {
+        unsafe { drop(Box::from_raw(table)) };
+    }
 }
 
 /// `WeakReference::create(target)`: return the canonical cell, creating
@@ -87,7 +132,7 @@ pub unsafe extern "C" fn ll_weakref_create(
     );
 
     if flags & HAS_WEAK_REFERENCES != 0 {
-        let cell = WEAK_TABLE.with(|t| t.borrow().get(&(target as usize)).copied());
+        let cell = unsafe { (*weak_table()).get(&(target as usize)).copied() };
         // Bit set ⇔ row exists, on this thread; a miss would mean the
         // invariant broke somewhere else. Recover by rebuilding in
         // release rather than handing out a null.
@@ -110,7 +155,7 @@ pub unsafe extern "C" fn ll_weakref_create(
             RcHeader::new(MemoryCategory::GcHeap, EntityKind::WeakRef.to_flags()),
         );
     }
-    WEAK_TABLE.with(|t| t.borrow_mut().insert(target as usize, cell));
+    unsafe { (*weak_table()).insert(target as usize, cell) };
     unsafe { update_header_flags(target, |f| f | HAS_WEAK_REFERENCES) };
     if MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena {
         unsafe { (*resolve_arena(ctx)).log_weak(target) };
@@ -140,7 +185,7 @@ pub unsafe extern "C" fn ll_weakref_get(cell: *mut LLWeakRef) -> *mut RcHeader {
 /// # Safety
 /// `target` must be a live entity on its owning thread, bit 7 set.
 pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
-    let cell = WEAK_TABLE.with(|t| t.borrow_mut().remove(&(target as usize)));
+    let cell = unsafe { (*weak_table()).remove(&(target as usize)) };
     debug_assert!(cell.is_some(), "HAS_WEAK_REFERENCES set with no weak-table row");
     if let Some(cell) = cell {
         unsafe { (*cell).target = std::ptr::null_mut() };
@@ -176,7 +221,7 @@ pub(crate) unsafe fn notify_members(members: &[*mut RcHeader]) {
 pub(crate) unsafe fn weakref_die(cell: *mut LLWeakRef) {
     let target = unsafe { (*cell).target };
     if !target.is_null() {
-        let removed = WEAK_TABLE.with(|t| t.borrow_mut().remove(&(target as usize)));
+        let removed = unsafe { (*weak_table()).remove(&(target as usize)) };
         debug_assert_eq!(removed, Some(cell), "the weak table row must be this cell");
         unsafe { update_header_flags(target, |f| f & !HAS_WEAK_REFERENCES) };
     }

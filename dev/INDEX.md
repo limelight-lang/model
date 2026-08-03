@@ -30,6 +30,14 @@ versions live in `docs/history/`, marked at the top.
   threaded driver. Block snapshots: `heap::snapshot_entity_blocks`;
   the walk's child test is the dense census (`collector::census_row`).
   Trigger is an explicit call — thresholds are unmeasured.
+- Static blocks and thread exit: `src/static_block.rs` — the per-thread
+  registry and the teardown pass that releases each block's roots at
+  exit (A6, `rfc/model/classes.md` "Teardown at thread exit"). The order
+  the whole exit sequence runs in is fixed in `heap::ll_thread_exit`,
+  and the reason it must be fixed there — TLS destructor order is
+  unspecified — is `dev/DECISIONS.md`, 2026-08-03. **Rule for anything
+  new on that path:** no `thread_local!` it can reach may have drop
+  glue.
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted. Registered by `promote` at reset,
   read by both of `heap`'s enumerators. This is what makes a

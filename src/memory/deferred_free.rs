@@ -49,7 +49,7 @@
 //! the parked list is thread-local and the underlying frees are
 //! owner-bound.
 
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The GC activity bit: an epoch is in flight, park instead of freeing.
@@ -58,7 +58,33 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 thread_local! {
     /// This thread's parked allocations, in park order. Out-of-band:
     /// the parked memory itself is never touched (module doc).
-    static PARKED: RefCell<Vec<*mut u8>> = const { RefCell::new(Vec::new()) };
+    ///
+    /// A raw pointer in a `Cell`, not a `RefCell<Vec<_>>`, and the
+    /// reason is soundness rather than speed: a `Vec` has drop glue, so
+    /// its key is registered for TLS destruction, and this list is
+    /// reached **from** a TLS destructor — thread exit runs the
+    /// static-block teardown (`static_block.rs`), whose deaths reach
+    /// `flush_due` through the epoch checkpoint. TLS destructor order
+    /// is unspecified and on glibc is reverse registration order, which
+    /// puts the exit guard last precisely because it registers first,
+    /// so this list is reliably already gone. `with` would then panic
+    /// with `AccessError` inside a destructor, and a panic there cannot
+    /// unwind: the process aborts. A `Cell<*mut _>` has no drop glue,
+    /// is never registered, and stays readable for the whole life of
+    /// the thread; [`dispose`] frees it explicitly.
+    static PARKED: Cell<*mut Vec<*mut u8>> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// This thread's list, allocated on first use.
+fn parked_list() -> *mut Vec<*mut u8> {
+    PARKED.with(|cell| {
+        let mut list = cell.get();
+        if list.is_null() {
+            list = Box::into_raw(Box::new(Vec::new()));
+            cell.set(list);
+        }
+        list
+    })
 }
 
 /// The free-path test: one relaxed load, a predicted branch.
@@ -89,7 +115,7 @@ pub(crate) fn end_epoch() {
 /// owned by this call (nothing may recycle it until [`flush`]
 /// releases it for real).
 pub(crate) unsafe fn park(ptr: *mut u8) {
-    PARKED.with(|parked| parked.borrow_mut().push(ptr));
+    unsafe { (*parked_list()).push(ptr) };
 }
 
 /// Release this thread's parked backlog through the real free path.
@@ -104,7 +130,11 @@ pub(crate) unsafe fn park(ptr: *mut u8) {
 /// the underlying frees are both thread-bound).
 pub(crate) unsafe fn flush() -> usize {
     debug_assert!(!active(), "flush runs only between epochs");
-    let backlog = PARKED.with(|parked| parked.take());
+    let list = PARKED.with(|cell| cell.get());
+    if list.is_null() {
+        return 0;
+    }
+    let backlog = unsafe { std::mem::take(&mut *list) };
     for &ptr in backlog.iter().rev() {
         unsafe { crate::memory::stdapi::ll_free(ptr) };
     }
@@ -115,13 +145,41 @@ pub(crate) unsafe fn flush() -> usize {
 /// flush trigger. Two cheap reads (one global, one thread-local).
 #[inline]
 pub(crate) fn flush_due() -> bool {
-    !active() && PARKED.with(|parked| !parked.borrow().is_empty())
+    if active() {
+        return false;
+    }
+    let list = PARKED.with(|cell| cell.get());
+    !list.is_null() && unsafe { !(*list).is_empty() }
+}
+
+/// Give this thread's list back at thread exit, after the last flush.
+///
+/// Called from `ll_thread_exit` rather than from a TLS destructor,
+/// which is the whole point (see the `PARKED` doc). Flushes what is
+/// still parked when no epoch is in flight; when one is, the backlog
+/// leaks, which is the known limit the module doc already declares —
+/// freeing mid-epoch would recycle the very slots the queue pins.
+///
+/// Null-tolerant and idempotent: a thread that never parked, and a
+/// second call, both find nothing.
+pub(crate) fn dispose() {
+    let list = PARKED.with(|cell| cell.replace(std::ptr::null_mut()));
+    if list.is_null() {
+        return;
+    }
+    let backlog = unsafe { Box::from_raw(list) };
+    if !active() {
+        for &ptr in backlog.iter().rev() {
+            unsafe { crate::memory::stdapi::ll_free(ptr) };
+        }
+    }
 }
 
 /// This thread's parked backlog size (stats, tests).
 #[cfg(test)]
 pub(crate) fn parked_count() -> usize {
-    PARKED.with(|parked| parked.borrow().len())
+    let list = PARKED.with(|cell| cell.get());
+    if list.is_null() { 0 } else { unsafe { (*list).len() } }
 }
 
 #[cfg(test)]

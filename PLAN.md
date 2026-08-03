@@ -102,9 +102,21 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   zero-fill starting every bit clear for free. Hole-filling the byte
   block into padding stays deferred (A7 / rfc backlog).
   `rfc/model/values.md`, `gc/satb.md`.
-- [ ] **A6. Static-block teardown at thread exit** — per-thread registry,
-  walked LIFO, each ref slot dropped via the barrier's `drop`; counterpart
-  of the static initializer. Closes audit H3. `rfc/model/classes.md`
+- [x] **A6. Static-block teardown at thread exit** (2026-08-03) —
+  `static_block.rs`: a per-thread registry appended in first-touch
+  order, drained in reverse, each reference slot severed and dropped
+  through the barrier's `drop` so the three cases (arena escapee, heap
+  reference, immortal) come out right without a branch. Registration is
+  `ll_static_block_register(block, layout)`; a compiler-emitted
+  straight-line teardown does **not** replace the registry, because
+  which blocks a thread touched and in what order is a runtime fact —
+  statics initialize lazily per thread, exactly as C++ function-local
+  statics do. `PLAN.md` recorded this as closing audit H3; `AUDIT.md` is
+  untracked and was not read here, so that is what the plan says rather
+  than a claim about the audit entry itself. Forced a second change:
+  thread exit runs user code for the first time, so every per-thread
+  structure it can reach lost its drop glue and `ll_thread_exit` now
+  fixes the disposal order (`dev/DECISIONS.md`). `rfc/model/classes.md`
   "Teardown at thread exit".
 - [ ] **A7. No zeroing by default** — the factory decides which slots need
   a defined initial state (`rfc/BACKLOG.md` deferred-optimizations).

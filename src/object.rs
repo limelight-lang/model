@@ -392,14 +392,32 @@ pub(crate) unsafe fn for_each_counted_child(obj: *mut Object, mut visit: impl Fn
 /// [`for_each_counted_child`], deliberately not folded into it: the
 /// walker exposes children and hides slot lvalues by contract (a store
 /// goes through the barrier); this is teardown machinery and needs the
-/// lvalue. A third occurrence is the point to abstract.
+/// lvalue.
 ///
 /// # Safety
 /// `obj` must be a live object whose slots are readable and writable.
 pub(crate) unsafe fn sever_counted_children(obj: *mut Object, displaced: &mut Vec<*mut RcHeader>) {
     let cls = unsafe { (*obj).class() };
-    let base = obj as *mut u8;
+    unsafe { sever_counted_slots(obj as *mut u8, cls, displaced) };
+}
 
+/// [`sever_counted_children`] over a bare base address and a descriptor,
+/// for a region that carries no header to read a class from — a static
+/// block (A6). Same contract: every counted slot is nulled and its
+/// former occupant collected, and the caller owes one drop per entry.
+///
+/// This is where the slot stride lives now. It had three callers —
+/// object teardown, the drain's sever, and the thread-exit pass — and
+/// the third was the point the duplicate was meant to be abstracted at.
+///
+/// # Safety
+/// `base` must address a live region laid out by `cls`, with its slots
+/// readable and writable.
+pub(crate) unsafe fn sever_counted_slots(
+    base: *mut u8,
+    cls: &crate::class::Class,
+    displaced: &mut Vec<*mut RcHeader>,
+) {
     for run in cls.ptr_runs() {
         for i in 0..run.count {
             let slot = unsafe { base.add((run.offset + i * 8) as usize) } as *mut *mut RcHeader;

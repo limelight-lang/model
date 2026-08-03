@@ -1486,6 +1486,41 @@ mod tls {
 /// Idempotent, and safe to call on a thread that never allocated.
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_exit() {
+    // Thread exit owns the order in which this thread's runtime state
+    // goes away, and owns it *explicitly*, because the alternative does
+    // not work: TLS destructor order is unspecified, and on glibc it is
+    // reverse registration order — which puts the exit guard that calls
+    // this function last, precisely because `ll_thread_init` registers
+    // it first. Anything reached from here through a `thread_local!`
+    // with drop glue would already be destroyed, and the panic that
+    // follows cannot unwind out of a destructor: the process aborts.
+    // So every structure below is a no-drop-glue cell freed by hand
+    // (`dev/DECISIONS.md`, 2026-08-03).
+
+    // 1. Static blocks let go of their roots (A6). The only step that
+    //    runs user code, so it goes first, while every structure the
+    //    `__destruct` bodies below it may touch is still alive — heaps,
+    //    context, candidate buffer, parked list, weak table.
+    crate::static_block::run_thread_exit_teardown();
+
+    // 2. The rc-trace candidate buffer, whose entries' buffered bits are
+    //    cleared on the way out (an entity can outlive this thread in an
+    //    abandoned block, and a stale bit suppresses re-buffering).
+    #[cfg(not(feature = "rc-walk"))]
+    crate::gc::dispose();
+
+    // 3. The parked backlog: flushed when no epoch is in flight, left to
+    //    leak when one is — that is the limit `deferred_free`'s module
+    //    doc already declares, and freeing mid-epoch would recycle the
+    //    slots the queue exists to pin.
+    #[cfg(feature = "rc-walk")]
+    crate::memory::deferred_free::dispose();
+
+    // 4. The weak table last, after every death that could still need a
+    //    row. `weak.rs` pinned this position against the day static-block
+    //    teardown existed; this is that day.
+    crate::weak::dispose();
+
     let p = tls::get_raw();
     if p.is_null() {
         return;

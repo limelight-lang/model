@@ -224,6 +224,14 @@ impl Drop for BufferArena {
     }
 }
 
+// NOTE (2026-08-03): this key has drop glue and is read with a plain
+// `with`. It is safe only because nothing on the thread-exit path
+// reaches it yet. The moment a teardown frees a long-lived buffer —
+// which strings and arrays will do (Phase C) — it joins the hazard
+// `gc::CANDIDATES`, `deferred_free::PARKED` and `weak::WEAK_TABLE` were
+// converted out of on 2026-08-03: reached from a TLS destructor whose
+// order is unspecified, `with` panics with `AccessError`, and a panic
+// there cannot unwind. Convert it the same way before that happens.
 thread_local! {
     static THREAD_BUFFER_ARENA: std::cell::RefCell<BufferArena> =
         const { std::cell::RefCell::new(BufferArena::new()) };

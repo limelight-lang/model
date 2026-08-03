@@ -8,6 +8,122 @@ never edited or deleted.
 
 ---
 
+## 2026-08-03 — thread exit owns the order its per-thread state dies in
+
+A6 made thread exit run user code for the first time: the static-block
+teardown runs `__destruct` bodies, and those cascade into the candidate
+buffer, the parked-free list and the weak table. All three were
+`thread_local!`s holding a `Vec` or a `HashMap` — drop glue, therefore
+registered for TLS destruction. `ll_thread_exit` is itself reached from
+a TLS destructor (the guard `ll_thread_init` installs), and glibc runs
+destructors in reverse registration order, which puts that guard
+**last** exactly because it registers first. So the structures it needs
+are reliably already destroyed, `LocalKey::with` panics with
+`AccessError`, and a panic inside a TLS destructor cannot unwind: the
+process aborts.
+
+**Decided:** every per-thread structure the exit path can reach is a
+`Cell<*mut T>` — no drop glue, never registered for destruction,
+readable for the whole life of the thread — freed by an explicit
+`dispose` that `ll_thread_exit` calls in an order it chooses:
+static blocks (the only user code) → candidate buffer → parked list →
+weak table → the heaps. `weak.rs` had already written down that its
+table must go last once static-block teardown existed; this is that day.
+
+**Rejected: `try_with`.** For the weak table it is not a smaller fix but
+an unsound one — a swallowed death notification leaves the cell's target
+dangling, and the next `__destruct` calling `get()` receives a retained
+pointer into freed memory. `try_with` is right only where failure means
+"fall back to the global tier", which is why `block_pool` and `reserve`
+already use it and keep it.
+
+**Rejected: making the exit pass run before any TLS destructor.** There
+is no such hook in Rust for a thread that simply ends, and the ordering
+cannot be arranged: registration order is first-access order, the guard
+is registered at `ll_thread_init`, and "last first access" is
+data-dependent. Windows order is unspecified too.
+
+**Rejected: one consolidated per-thread state block** behind a single
+TLS pointer. It would put a gc candidate buffer (L4) and a weak table
+(L3) inside a structure owned by `heap` (L2) — an upward-knowledge
+violation and a design event by this file's own rule — for no
+correctness gain over per-module cells. It stays available later,
+behind the same accessors, if a measurement ever justifies collapsing
+the TLS reads; on Windows it would replace three dependent loads with
+the one-instruction `gs` read.
+
+**Cost:** none on `ll_release`, which is untouched instruction for
+instruction — the buffered-bit test reads flags already in a register
+and `buffer_candidate` is `#[inline(never)]`. Inside the moved bodies a
+`RefCell` borrow-flag load/store pair becomes one dependent load plus a
+null check that is cold after first use: not a new cost class, and
+**not** claimed as a speedup, because this box's noise floor is 1.5–3%
+and nobody measured it.
+
+**Found by the same review, closed here:** `ll_static_block_register`
+could abort on a refused growth, where this crate refuses instead
+(`try_reserve`, and a hand-rolled allocation as in `ll_thread_init`).
+`buffer_arena`'s key has the same drop-glue shape and no caller on the
+exit path yet; it carries a note rather than a change.
+
+**One suggestion from that review was tried and reverted, by Miri.**
+Candidates still buffered at thread death keep their buffered bit while
+their blocks go to the abandoned list, so an adopted object released
+later can never be re-buffered — a silent cycle leak. Clearing those
+bits during disposal looked free, since the drain walks them anyway.
+It is not: a candidate can already be **gone**. An arena entity dies
+with its arena without individual teardown, so nothing calls
+`forget_candidate` for it and its buffer entry outlives its memory;
+Miri reported a write through exactly such an entry (`gc.rs`, in-bounds
+pointer arithmetic on a dangling address). The disposal now frees the
+buffer and touches nothing in it, and the stale-bit leak is recorded as
+a known limit on `gc::dispose` — closing it needs a liveness test the
+buffer cannot provide, which is a design question rather than a
+cleanup. Cross-thread entity survival is reserved today, so nothing
+reaches the case.
+
+## 2026-08-03 — a static block registers its layout, not a teardown function
+
+A6 needs each thread to release its static blocks' roots at exit, and
+`rfc/model/classes.md` describes the pass as a **compiler-emitted**
+per-block teardown striding the block's reference slots. No compiler
+emits one, so the registration ABI had to be chosen now and survive the
+generated version later.
+
+**Decided:** `ll_static_block_register(block, layout)` — a bare pointer
+to the headerless block and the descriptor whose `ptr_runs`/`box_runs`
+give its reference slots. The runtime strides them generically, exactly
+as `ll_default_dispose` stands in for a generated dispose (A3).
+
+**Why not a function pointer now.** `register(block, teardown_fn)` reads
+like the eventual shape, but the only function it could carry today is a
+generic one that still needs the descriptor — so the descriptor would
+travel anyway, as a bound argument, and the ABI would carry two things
+where one suffices. When the compiler does emit straight-line teardowns,
+`ll_static_block_register_fn(block, fn)` is **additive**: a second entry
+point, no change to this one, and blocks registered either way tear down
+in one LIFO order because the registry holds the two forms in one list.
+
+**Order is LIFO**, as C++ tears down function-local statics: a block
+initialized later may have been initialized against an earlier one, so
+the earlier one has to outlive it.
+
+**Drops go through the barrier's `drop_ref` with `owner_cat =
+LongLived`**, not a bespoke release. That is what makes the three cases
+come out right without a branch here: a request-arena escapee loses its
+escape hold-count (thread exit is the only decrement point besides an
+overwrite mid-request), a heap reference releases and cascades into
+teardown, an immortal one is a no-op. The block being headerless does
+not matter, because `drop_ref` acts on the displaced entity and
+`owner_cat` is a parameter rather than a load from owner flags — which
+is why the barrier was built that way (A4).
+
+**Cost:** a thread that never registers a static block pays one null
+check at exit. The slot stride now has its third occurrence, so it is
+abstracted rather than copied: `sever_counted_slots` takes a base and a
+descriptor, and object teardown, the drain's sever and this pass all
+call it.
+
 ## 2026-08-03 — retained blocks are walked through a per-block object index
 
 Retained former-arena blocks were unwalkable because an arena's bump

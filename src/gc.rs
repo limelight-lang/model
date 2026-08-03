@@ -48,7 +48,6 @@
 //! survives — the Zend-style discipline, with no new mechanism (no retain
 //! hook, no GC-window flag).
 
-use std::cell::RefCell;
 
 use crate::object::Object;
 use crate::refcount::{
@@ -102,7 +101,21 @@ pub(crate) static FORCE_BUFFER_REFUSAL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 thread_local! {
-    static CANDIDATES: RefCell<Vec<*mut RcHeader>> = const { RefCell::new(Vec::new()) };
+    /// A raw pointer in a `Cell`, not a `RefCell<Vec<_>>`, and for
+    /// soundness rather than speed. A `Vec` has drop glue, so its key is
+    /// registered for TLS destruction; this buffer is reached **from** a
+    /// TLS destructor, because thread exit runs the static-block
+    /// teardown (`static_block.rs`) whose releases cascade into
+    /// `buffer_candidate` and `forget_candidate`. TLS destructor order
+    /// is unspecified — on glibc it is reverse registration order, which
+    /// puts the exit guard last exactly because it registers first — so
+    /// the buffer is reliably already destroyed, `with` panics with
+    /// `AccessError` inside a destructor, and a panic there cannot
+    /// unwind: the process aborts. A `Cell<*mut _>` has no drop glue, is
+    /// never registered, and stays readable for the whole life of the
+    /// thread; [`dispose`] frees it explicitly.
+    static CANDIDATES: std::cell::Cell<*mut Vec<*mut RcHeader>> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
     /// A collection has been armed (the candidate buffer crossed the
     /// threshold) but deferred. It fires only at a clean point, never
     /// inline — see `buffer_candidate` and `ll_gc_maybe_collect`.
@@ -199,8 +212,10 @@ pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
     if unsafe { (*entity).flags } & CYCLE_COLLECTOR_BUFFERED != 0 {
         return;
     }
-    let recorded = CANDIDATES.with(|c| {
-        let mut c = c.borrow_mut();
+    // An immediately-invoked closure, so the two refusal paths below
+    // keep saying "no record" rather than returning from the function.
+    let recorded = (|| {
+        let c = unsafe { &mut *candidate_buffer() };
         // Fault injection, tests only: a refused `Vec` growth cannot be
         // provoked on demand, and an untested failure path is a guess
         // (same reasoning as `block_pool::FORCE_OOM`).
@@ -213,7 +228,7 @@ pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
         }
         c.push(entity);
         Some((c.len() - 1, c.len() >= candidate_threshold()))
-    });
+    })();
     let (index, full) = match recorded {
         Some(v) => v,
         None => {
@@ -267,8 +282,8 @@ pub(crate) unsafe fn forget_candidate(entity: *mut RcHeader) {
     }
     let at = unsafe { decode_index(entity) };
     unsafe { (*entity).flags &= !(CYCLE_COLLECTOR_BUFFERED | CANDIDATE_INDEX_MASK) };
-    CANDIDATES.with(|c| {
-        let mut c = c.borrow_mut();
+    {
+        let c = unsafe { &mut *candidate_buffer() };
         // A recorded position is trusted only if the slot really holds
         // this entity; anything else falls back to the scan rather than
         // removing an innocent candidate.
@@ -288,7 +303,51 @@ pub(crate) unsafe fn forget_candidate(entity: *mut RcHeader) {
                 }
             }
         }
-    });
+    }
+}
+
+/// This thread's candidate buffer, allocated on first use.
+#[cfg_attr(feature = "rc-walk", allow(dead_code))]
+fn candidate_buffer() -> *mut Vec<*mut RcHeader> {
+    CANDIDATES.with(|cell| {
+        let mut buf = cell.get();
+        if buf.is_null() {
+            buf = Box::into_raw(Box::new(Vec::new()));
+            cell.set(buf);
+        }
+        buf
+    })
+}
+
+/// Give this thread's candidate buffer back at thread exit.
+///
+/// Called from `ll_thread_exit`, not from a TLS destructor, which is the
+/// point (see the `CANDIDATES` doc).
+///
+/// **The buffered entities are not touched**, and that is deliberate: a
+/// candidate can already be gone. An arena entity dies with its arena
+/// without individual teardown, so nothing calls [`forget_candidate`]
+/// for it and its buffer entry outlives its memory — Miri caught a
+/// write through exactly such an entry when this function tried to
+/// clear buffered bits on the way out (2026-08-03). A pointer in this
+/// buffer is not evidence that anything is still there.
+///
+/// **Known limit, and it is the reason the clearing looked worth
+/// doing**: an entity that is genuinely alive and still buffered when
+/// its thread dies keeps `CYCLE_COLLECTOR_BUFFERED` set while its block
+/// goes to the abandoned list. If an adopting thread ever releases it,
+/// the stale bit suppresses re-buffering forever and its cycle leaks.
+/// Cross-thread entity survival is reserved today, so nothing reaches
+/// that case; closing it needs a liveness test this buffer cannot
+/// provide, which is a design question and not a cleanup.
+///
+/// Null-tolerant and idempotent.
+#[cfg_attr(feature = "rc-walk", allow(dead_code))]
+pub(crate) fn dispose() {
+    let buf = CANDIDATES.with(|cell| cell.replace(std::ptr::null_mut()));
+    if !buf.is_null() {
+        unsafe { drop(Box::from_raw(buf)) };
+    }
 }
 
 /// Bacon–Rajan synchronous cycle collection over the candidate buffer.
@@ -326,7 +385,8 @@ pub unsafe fn collect_cycles() -> usize {
 unsafe fn collect_cycles_inner() -> usize {
     let mut reclaimed = 0;
     loop {
-        let roots: Vec<*mut RcHeader> = CANDIDATES.with(|c| c.borrow_mut().drain(..).collect());
+        let roots: Vec<*mut RcHeader> =
+            unsafe { std::mem::take(&mut *candidate_buffer()) };
         if roots.is_empty() {
             return reclaimed;
         }
@@ -957,7 +1017,7 @@ mod tests {
             assert!(!ll_release(a as *mut RcHeader)); // deduplicated
         }
         let buffered = CANDIDATES.with(|c| {
-            c.borrow()
+            unsafe { &*candidate_buffer() }
                 .iter()
                 .filter(|&&p| p == a as *mut RcHeader)
                 .count()
@@ -989,7 +1049,7 @@ mod tests {
             crate::object::ll_object_die(a);
         }
         assert_eq!(
-            CANDIDATES.with(|c| c.borrow().len()),
+            unsafe { (*candidate_buffer()).len() },
             0,
             "straight-line deaths never buffer"
         );
@@ -1102,13 +1162,13 @@ mod tests {
         unsafe { buffer_candidate(p) };
         FORCE_BUFFER_REFUSAL.store(false, Ordering::Relaxed);
 
-        assert!(CANDIDATES.with(|c| c.borrow().is_empty()), "nothing was recorded");
+        assert!(unsafe { (*candidate_buffer()).is_empty() }, "nothing was recorded");
         assert_eq!(e.flags & CYCLE_COLLECTOR_BUFFERED, 0, "and nothing was claimed");
         assert!(COLLECT_PENDING.with(|f| f.get()), "a refusal arms instead");
 
         // Still bufferable once there is room again.
         unsafe { buffer_candidate(p) };
-        assert_eq!(CANDIDATES.with(|c| c.borrow().len()), 1);
+        assert_eq!(unsafe { (*candidate_buffer()).len() }, 1);
         unsafe { forget_candidate(p) };
         COLLECT_PENDING.with(|f| f.set(false));
     }
@@ -1121,7 +1181,7 @@ mod tests {
     fn forgetting_a_candidate_keeps_the_moved_one_findable() {
         let mut h: Vec<RcHeader> = (0..4).map(|_| RcHeader::new(MemoryCategory::GcHeap, 0)).collect();
         let p: Vec<*mut RcHeader> = h.iter_mut().map(|e| e as *mut RcHeader).collect();
-        let buffer = || CANDIDATES.with(|c| c.borrow().clone());
+        let buffer = || unsafe { (*candidate_buffer()).clone() };
 
         unsafe {
             for &e in &p {
