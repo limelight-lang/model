@@ -1119,4 +1119,69 @@ mod tests {
         }
         arena.reset(|_| {});
     }
+
+    /// A ring that survived an arena reset lives in retained blocks,
+    /// which an arena's bump allocator left with mixed sizes and no
+    /// stride. Until the reset kept its survivor list as the block's
+    /// object index, those occupants were never enumerated: they were
+    /// root sources by the derived-roots corollary, their out-edges
+    /// landed in `RC` and never in `IN`, and the ring was uncollectable
+    /// forever (`rfc/model/gc/retained-block-walk.md`).
+    #[test]
+    fn a_ring_among_promoted_survivors_is_collected() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let node = ClassBuilder::new("PromotedRing")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+        let holder_cls = ClassBuilder::new("PromotedRingHolder").prop("head", true).build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let holder = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, node, MemoryCategory::RequestArena) };
+        let b = unsafe { new_constructed(&mut ctx, node, MemoryCategory::RequestArena) };
+
+        unsafe {
+            tie(a, 16, b); // arena→arena, no log
+            tie(b, 16, a);
+            // The escape that promotes `a`, and `b` behind it.
+            let slot = Object::prop_at(holder, 16);
+            crate::memory::barrier::ref_store(
+                &mut arena,
+                holder as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Object, a as *mut RcHeader),
+            );
+        }
+
+        unsafe { crate::promote::arena_reset_full(&mut arena) };
+
+        let block = crate::memory::block_pool::BlockHeader::of_ptr(a as *const u8);
+        assert_eq!(
+            unsafe { (*block).kind },
+            crate::memory::block_pool::BLOCK_KIND_RETAINED,
+            "the survivors' block is retained, not returned"
+        );
+
+        // Drop the last external hold. The ring is now pure garbage
+        // that no refcount path can reach — and it is not in an entity
+        // block, which is the whole point of the test.
+        unsafe {
+            assert!(ll_release(holder as *mut RcHeader));
+            crate::object::ll_object_die(holder);
+        }
+
+        let seen = walked_addresses();
+        assert!(
+            seen.contains(&(a as usize)) && seen.contains(&(b as usize)),
+            "a retained block's occupants must be enumerable"
+        );
+
+        let stats = unsafe { collect_cycles() };
+        assert!(stats.collected >= 2, "the promoted ring is garbage");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "__destruct ran for both");
+    }
 }

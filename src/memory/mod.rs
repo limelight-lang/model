@@ -14,6 +14,7 @@ pub(crate) mod deferred_free;
 pub mod heap;
 pub mod immortal;
 pub(crate) mod reserve;
+pub(crate) mod retained;
 pub mod stats;
 pub mod stdapi;
 

@@ -8,6 +8,53 @@ never edited or deleted.
 
 ---
 
+## 2026-08-03 — retained blocks are walked through a per-block object index
+
+Retained former-arena blocks were unwalkable because an arena's bump
+allocator leaves mixed sizes and no stride to divide by, so their
+occupants were root sources and a ring living entirely among promoted
+survivors was never collected (`rfc/model/gc/retained-block-walk.md`).
+The reset already builds the inventory — `promote`'s fixpoint collects
+every survivor into a vector and then drops it. It is now kept, split
+per block and sorted by address, as that block's object index. Three
+properties make it cheap: the set is frozen because nothing allocates
+into a dead arena, a dead entry validates itself by reading refcount 0
+(the walk's own occupancy test), and a retained slot is never reissued
+because the block leaves the pool only when all its survivors are gone.
+
+**Granularity: one index per retained block, not one per retained set.**
+Both enumerators reach a block first — one by the 64 KiB alignment mask,
+the other by scanning the region registry — and need the index from a
+block address. A per-set index would need a second block→set map on the
+lookup path that the per-block one does not.
+
+**Totality: the census keeps one lookup.** rc-walk.md requires row
+omission and edge omission to be one decision taken at one test, and a
+census with two sources could have become two lookups with two answers.
+Instead the single sorted payload list carries both kinds of block, and
+only the slot derivation branches after the match: a strided block
+divides, an indexed block binary-searches its own index. One search,
+one answer, and an address in neither kind still finds nothing.
+
+**Lifetime: the index is owned by a registry keyed by block address**
+(`memory/retained.rs`), released by one call. Nothing calls it yet —
+retained blocks never return to the pool today — so the index lives
+exactly as long as the retention it describes, which is the correct
+lifetime and not a leak. The call exists so the hook is one line when
+"return a fully emptied retained block" lands.
+
+**Rejected: copying survivors into entity blocks at reset** so the
+existing strided walk covers them. That is the evacuation the RFC
+defers behind the escapee-reference fixup, it costs a copy per survivor
+where the index costs one pointer, and it would have made a placement
+choice out of a collectability requirement.
+
+**Cost:** one pointer per survivor for the life of the retention, and
+`EntityBlockSnapshot` stops being plain numbers — it now carries the
+index for a retained block. The collector still computes slot addresses
+itself and still touches slots only through the relaxed-atomic helpers;
+what it gained is data it reads, not slots it reaches into.
+
 ## 2026-07-28 — the epoch walk's child test is a dense census, not a map
 
 The collector's walked-row lookup is a per-slot `u32` array laid out

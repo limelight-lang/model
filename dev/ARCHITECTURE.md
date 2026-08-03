@@ -20,7 +20,8 @@ L4  collectors        gc (rc-trace) · walk · epoch, collector (rc-walk) · pro
 L3  object model      object · class · reference · weak · intern
 LB  mutation          memory/barrier — model-level code living in memory/
 L2  memory manager    context · arena · heap · immortal · buffer ·
-                      buffer_arena · reserve · stats · stdapi · deferred_free
+                      buffer_arena · reserve · retained · stats · stdapi ·
+                      deferred_free
 L1  entity substrate  refcount · value
 L0  block supply      memory/block_pool
 ```
@@ -78,11 +79,12 @@ commit (`WORKFLOW.md`).
 |---|---|---|---|---|
 | `memory/block_pool` | 2 MB OS regions carved into size-aligned 64 KB blocks; global free chain (mutex) + per-thread cache; region registry | OS allocation; the `BlockHeader` base fields | what any payload contains; entities, classes, GC | — (bottom; its `heap`/`reserve` references are the shared test-lock harness only) |
 | `memory/arena` (hot: bump) | request arena: bump allocation; self-contained bookkeeping — block list through block headers, destructor / escapee / release-at-reset logs as segment chains in its own memory; the log-drain primitives promote drives at reset | block pool; drawing the reserve for log growth; the `RcHeader`s its logs point at | object layout, classes, GC strategy; which escapees survive (promote's); the reset discipline itself — promote drives it from above | `block_pool`, `reserve`, `refcount`, `stdapi` (OS-direct payloads); upward at reset: `weak` |
-| `memory/heap` (hot) | small-object heap, mimalloc model: one block per size class, intrusive free list + bump cursor, per-block MPSC remote-free, thread-exit abandonment / adoption; runs twice per thread (raw + entity heaps); `for_each_entity_slot`, entity-block snapshots | block pool; slot occupancy (the header word at bytes 0–7) | entity kinds and out-edges; verdicts; classes; the epoch protocol | `block_pool`, `reserve` (filled at thread init), `refcount`, `stdapi` (OS-direct runs) |
+| `memory/heap` (hot) | small-object heap, mimalloc model: one block per size class, intrusive free list + bump cursor, per-block MPSC remote-free, thread-exit abandonment / adoption; runs twice per thread (raw + entity heaps); both enumerators — `for_each_entity_slot` and the block snapshots — which cover retained former-arena blocks through their index as well as entity blocks by striding | block pool; slot occupancy (the header word at bytes 0–7); that a retained block has no stride | entity kinds and out-edges; verdicts; classes; the epoch protocol; who built the index | `block_pool`, `reserve` (filled at thread init), `refcount`, `stdapi` (OS-direct runs), `retained` |
 | `memory/immortal` | global bump region: class metadata, interned strings; nothing is ever freed | block pool | the contents of what it hosts | `block_pool` (+ `arena::round_up_8`) |
 | `memory/buffer` | growable `{data, len, capacity}` payload, no header; extend-in-place at the arena bump top, else copy; OS-direct above block payload | the mounted arena's bump; context resolution | entity lifecycle, headers; the long-lived buffer arena | `arena`, `context`, `block_pool` |
 | `memory/buffer_arena` | long-lived buffer blocks (`BLOCK_KIND_BUFFER`): bump + per-block intrusive LIFO free list, pressure modes, per-block live count returning empty blocks | block pool; the buffer pressure protocol | the object heap; entities; GC | `block_pool`, `buffer`, `context`, `stdapi`, `arena` (`round_up_8`) |
 | `memory/reserve` | the two-block per-thread reserve funding store-barrier log growth; drawn only after ordinary refusal; sets the refill flag the poll checks | block pool | what a log records; barrier semantics | `block_pool` |
+| `memory/retained` | the object index of each retained former-arena block: block address → its occupants, sorted; registered by the reset, read by both enumerators | block addresses and arrays of addresses | what lives at those addresses — entities, classes, refcounts, verdicts; the occupancy test its readers apply | — (bottom; a `Mutex<BTreeMap>` and nothing else) |
 | `memory/stats` | block-granular telemetry computed at query time; counters only on pool get/put — zero hot-path tax | pool counters | per-object events (the opt-in event log, unbuilt); arena/heap internals | `block_pool` |
 | `memory/stdapi` | the size-less allocator front door: `ll_malloc`/`ll_free`/`calloc`/`realloc`/aligned + `GlobalAlloc`; routes `ptr & !BLOCK_MASK` → header `kind` | every block kind's free route; the heap's `MAX_SMALL`; the deferred-free parking check | entity semantics; who its callers are | `block_pool`, `heap`, `deferred_free` (rc-walk) |
 | `memory/deferred_free` (rc-walk) | the GC activity flag; the thread-local parked-free list threaded through bytes 8–15 of dead memory; the post-epoch flush | that bytes 0–7 must keep the dead header | which block kinds park (stdapi's filter decides before calling in); verdicts, entity kinds, epoch phases | `stdapi` |
@@ -114,7 +116,7 @@ commit (`WORKFLOW.md`).
 | `walk` | the kind-dispatched tracer and heap census; `collect_cycles` (synchronous whole-heap collection); the Phase-4 drain (`drain_confirmed`, opening with the corpse rule) | entity kinds and each kind's out-edges | slots, blocks, occupancy — the heap's side of the split | `heap`, `refcount`, `object`, `value`, `reference`, `weak`, `barrier` |
 | `epoch` (rc-walk) | the mutator side of the epoch protocol: soft-handshake ack, the confirmation queue (global mutex), the non-reentrant checkpoint — ack-only on `ll_release`'s death branch, full pickup at the outermost dispose's exit (`teardown_enter/exit`), the poll and the explicit batched checkpoint (`ll_gc_checkpoint` + `ll_release_batch`) | the message queue and its drain dispatch | the collector's phases; what a confirmation means (the drain decides) | `refcount`, `walk`, `deferred_free` |
 | `collector` (rc-walk) | the collector-side epoch state machine, Phases 1–3: snapshot, walk / three-way classify, judge, condemn (private), snapshot-compare re-check, confirmation posting; steppable for forcing, `run_epoch` as the threaded driver | that its only shared-memory writes are epoch stamps (condemnation is private since the eager-death amendment, 2026-07-27) | freeing — it never frees; the weak table; mutator TLS | `epoch`, `walk`, `heap` (snapshots), `refcount`, `class`, `value`, `deferred_free` |
-| `promote` | arena death with promotion (retention only): the destructor/escapee fixpoint, internal-edge counting, in-place category rewrite to GcHeap, `BLOCK_KIND_RETAINED` stamping, the release-at-reset log | escapee hold-count semantics; the retained block kind | copying / evacuation (future); who mounted the arena | `arena`, `block_pool`, `object`, `refcount`, `weak` |
+| `promote` | arena death with promotion (retention only): the destructor/escapee fixpoint, internal-edge counting, in-place category rewrite to GcHeap, `BLOCK_KIND_RETAINED` stamping, the survivor list handed on as each retained block's object index, the release-at-reset log | escapee hold-count semantics; the retained block kind | copying / evacuation (future); who mounted the arena; how the index is read | `arena`, `block_pool`, `object`, `refcount`, `weak`, `retained` |
 
 ## Shared resources
 
@@ -126,6 +128,7 @@ commit (`WORKFLOW.md`).
 | Log reserve (two blocks) | per thread | `reserve` | arena log growth draws; the `ll_gc_maybe_collect` poll refills |
 | Immortal region | process-global mutex | `immortal` | `class`, `intern`, `object` (immortal category) |
 | Intern table | process-global mutex, Rust-owned | `intern` | `class` looks names up |
+| Retained-block object indexes | process-global mutex, Rust-owned | `retained` | `promote` registers at reset; both of `heap`'s enumerators clone the `Arc` under the lock and read it outside |
 | rc-trace candidate buffer + pending flag | TLS | `gc` | `refcount` arms it on non-zero decrements |
 | Weak table | TLS | `weak` | death sites call in, gated by bit 7; the collector thread never touches it |
 | Confirmation queue + handshake state (rc-walk) | global mutex + global atomic ack (TLS holds the mid-drain bit and the teardown depth) | `epoch` | `collector` posts confirmations; checkpoints drain |
@@ -205,8 +208,10 @@ hence the loop) → internal-edge counting → survivor categories
 rewritten in place to GcHeap, their blocks stamped
 `BLOCK_KIND_RETAINED` and kept out of the pool → the release-at-reset
 log pays one release per record → the arena weak log drains (`weak`) →
-every other block, the reserve-drawn ones included, returns to the
-pool.
+the survivor list is grouped per block and registered as those blocks'
+object indexes (`retained`), which is what makes their occupants
+walkable at all → every other block, the reserve-drawn ones included,
+returns to the pool.
 
 **5. rc-walk collection epoch.** Explicit trigger (`collector`;
 thresholds are unmeasured) → the activity flag is published through a
@@ -257,6 +262,17 @@ write them. Each is load-bearing for at least two modules.
 7. **A reserve block never becomes an arena bump block** — otherwise
    ordinary allocation would eat the reserve and the barrier's
    no-failure conversion collapses.
+7a. **A walkable block is either strided or indexed, never both.** An
+   entity block has one size class, so a slot is `payload + s *
+   class_size` and an address divides back. A retained former-arena
+   block was bump-filled and has no stride at all: its slots are the
+   addresses in `retained`'s index, and an address is found by exact
+   match in it. Both enumerators and the census branch on exactly this,
+   and the census does so *after* one shared binary search, which is
+   what keeps row omission and edge omission one decision at one test.
+   A retained index is frozen because nothing allocates into a dead
+   arena, and a stale entry is harmless because a dead survivor reads
+   refcount 0 — invariant 4 again.
 8. **Publish before teardown**: the barrier owns the whole slot; an
    overwriting store is `store_*` then `drop_ref`, never the reverse.
 9. **Death is owner-bound.** Every free, verdict drain, weak-table

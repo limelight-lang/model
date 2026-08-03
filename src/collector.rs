@@ -203,7 +203,13 @@ impl Epoch {
     pub fn walk_rows(&mut self) {
         for (block_index, b) in self.blocks.iter().enumerate() {
             for s in 0..b.slots {
-                let slot = (b.payload + s * b.class_size) as *mut RcHeader;
+                // Entity block: stride. Retained block: the reset's
+                // object index, because a bump-filled block has none
+                // (`memory/retained.rs`).
+                let slot = match &b.index {
+                    Some(index) => index[s] as *mut RcHeader,
+                    None => (b.payload + s * b.class_size) as *mut RcHeader,
+                };
                 let word = unsafe { collector_load_header(slot) };
                 let refcount = word as u32;
                 let flags = (word >> 32) as u32;
@@ -376,13 +382,23 @@ fn census_row(
     }
     let block_index = blocks.binary_search_by_key(&payload, |b| b.payload).ok()?;
     let b = &blocks[block_index];
-    // In-block offsets fit u32 (blocks are 64 KiB): divide narrow.
-    let offset = (child - payload) as u32;
-    let class_size = b.class_size as u32;
-    let slot = offset / class_size;
-    if slot as usize >= b.slots || slot * class_size != offset {
-        return None; // the tail fragment, or off a slot start
-    }
+    let slot = match &b.index {
+        // Retained former-arena block: no stride to divide by, so the
+        // slot is the position of an exact match in the object index.
+        // A miss rejects interior and stale addresses for the same
+        // reason the remainder test does below.
+        Some(index) => index.binary_search(&child).ok()? as u32,
+        None => {
+            // In-block offsets fit u32 (blocks are 64 KiB): divide narrow.
+            let offset = (child - payload) as u32;
+            let class_size = b.class_size as u32;
+            let slot = offset / class_size;
+            if slot as usize >= b.slots || slot * class_size != offset {
+                return None; // the tail fragment, or off a slot start
+            }
+            slot
+        }
+    };
     let row = slot_rows[first_slot[block_index] as usize + slot as usize];
     (row != u32::MAX).then_some(row)
 }
@@ -647,6 +663,60 @@ mod tests {
         let seen = walked_addresses();
         assert!(!seen.contains(&(a as usize)) && !seen.contains(&(b as usize)));
         arena.reset(|_| {});
+    }
+
+    /// The epoch reaches a retained former-arena block the same way it
+    /// reaches an entity block, though neither the walk nor the census
+    /// can stride there: the reset's object index supplies the slot
+    /// addresses, and the census resolves a child inside one by
+    /// searching that index instead of dividing
+    /// (`rfc/model/gc/retained-block-walk.md`). The ring is built and
+    /// promoted before any epoch, so it matures in the first and dies
+    /// in the second, exactly as a heap-born ring does.
+    #[test]
+    fn a_ring_promoted_into_a_retained_block_is_collected() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let node = ClassBuilder::new("EpochPromotedRing")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+        let holder_cls = ClassBuilder::new("EpochPromotedHolder").prop("head", true).build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let holder = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let a = unsafe { new_constructed(&mut ctx, node, MemoryCategory::RequestArena) };
+        let b = unsafe { new_constructed(&mut ctx, node, MemoryCategory::RequestArena) };
+        unsafe {
+            tie(a, 16, b);
+            tie(b, 16, a);
+            crate::memory::barrier::ref_store(
+                &mut arena,
+                holder as *mut RcHeader,
+                Object::prop_at(holder, 16),
+                std::ptr::null_mut(),
+                Value::entity(Tag::Object, a as *mut RcHeader),
+            );
+        }
+
+        unsafe { crate::promote::arena_reset_full(&mut arena) };
+        assert_eq!(
+            unsafe { (*crate::memory::block_pool::BlockHeader::of_ptr(a as *const u8)).kind },
+            crate::memory::block_pool::BLOCK_KIND_RETAINED
+        );
+        unsafe {
+            assert!(ll_release(holder as *mut RcHeader));
+            crate::object::ll_object_die(holder);
+        }
+
+        let first = stepped_epoch();
+        assert!(first.stamped_new >= 2, "the promoted pair is new to the collector");
+        let second = stepped_epoch();
+        assert!(second.walked >= 2, "a retained block's occupants are walkable");
+        assert_eq!(second.confirmed, 1, "the promoted ring is one confirmed component");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2);
+        assert!(!walked_addresses().contains(&(a as usize)));
     }
 
     /// A frame-held ring is a computed root in every epoch — never a

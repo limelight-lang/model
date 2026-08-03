@@ -29,7 +29,7 @@
 //! 4. Release-at-reset log: one release per record, with real teardown
 //!    dispatch for entities that die of it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_KIND_RETAINED, BlockHeader};
@@ -180,7 +180,36 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // user code, so it cannot grow the logs behind the settled fixpoint.
     unsafe { crate::weak::drain_arena_weak_log(arena) };
 
+    // The survivor list becomes the retained blocks' object index. A
+    // bump-filled block has no stride to divide by, so this inventory
+    // is the only way the walk can enumerate its occupants — without it
+    // they are root sources and a ring among them never dies
+    // (`rfc/model/gc/retained-block-walk.md`). Registered after the
+    // fixpoint has settled and before the blocks are disposed of, so
+    // every entry describes a survivor that is staying.
+    index_retained_blocks(&survivors);
+
     unsafe { (*arena).finish_reset(|block| retained.contains(&(block as usize))) };
+}
+
+/// Group the settled survivors by the block holding them and hand each
+/// group to the retained-index registry.
+///
+/// One index per block rather than one per reset: both enumerators
+/// reach a block first — the census by the 64 KiB alignment mask, the
+/// synchronous walk by scanning the region registry — so an index found
+/// from a block address costs no second mapping (`dev/DECISIONS.md`,
+/// 2026-08-03). A survivor whose block was *not* retained cannot occur
+/// here: retention is decided from this same list.
+fn index_retained_blocks(survivors: &[*mut RcHeader]) {
+    let mut by_block: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &surv in survivors {
+        let block = BlockHeader::of_ptr(surv as *const u8) as usize;
+        by_block.entry(block).or_default().push(surv as usize);
+    }
+    for (block, occupants) in by_block {
+        crate::memory::retained::register(block, occupants);
+    }
 }
 
 /// Entity teardown dispatch from a bare header — the uniform kind

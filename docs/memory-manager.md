@@ -438,6 +438,18 @@ dropping the unsettled tail would dangle.
 **No holder slot is ever dereferenced** anywhere in this. Survival is
 decided from counts carried in the objects themselves.
 
+**The survivor list outlives the reset.** It is grouped per block and
+registered as each retained block's object index (`memory/retained.rs`,
+2026-08-03). That inventory is the only way those occupants can be
+enumerated: an arena's bump allocator left them mixed-size with no
+stride, so the walk cannot divide an offset by a size class the way it
+does in an entity block. Without it a retained block's occupants are
+root sources and a ring living entirely among promoted survivors is
+never collected. The index is frozen — nothing allocates into a dead
+arena — and a survivor that later dies leaves refcount 0 behind, which
+is the walk's own occupancy test, so a stale entry is skipped like a
+free slot.
+
 Not built yet, per RFC phasing: sparse-block evacuation, gated on the
 escapee-reference fixup. Promotion today is retention only, which the
 RFC calls the whole of the first implementation. The Immix-shaped

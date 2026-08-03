@@ -30,6 +30,12 @@ versions live in `docs/history/`, marked at the top.
   threaded driver. Block snapshots: `heap::snapshot_entity_blocks`;
   the walk's child test is the dense census (`collector::census_row`).
   Trigger is an explicit call — thresholds are unmeasured.
+- Retained-block object indexes: `src/memory/retained.rs` — block
+  address → its occupants, sorted. Registered by `promote` at reset,
+  read by both of `heap`'s enumerators. This is what makes a
+  bump-filled former-arena block walkable at all; without it its
+  occupants are root sources and a ring among them never dies
+  (`rfc/model/gc/retained-block-walk.md`, built 2026-08-03).
 - rc-walk epoch protocol, mutator side (`rc-walk` builds):
   `src/epoch.rs` — the soft-handshake ack, the verdict message queue
   (confirm + acquit), and the non-reentrant checkpoint; checkpoints

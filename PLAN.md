@@ -212,6 +212,18 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   fully-emptied retained block to the pool. Sparse-block **evacuation**
   at reset remains a real open item, gated on the escapee-reference
   fixup (`arena-reset.md`, "Evacuation is now-or-never").
+- [x] **Retained-block walk** (2026-08-03) — the reset keeps its survivor
+  list as each retained block's object index (`memory/retained.rs`), and
+  both enumerators go through it: `heap::for_each_entity_slot` for the
+  synchronous walk, `heap::snapshot_entity_blocks` for the epoch, with
+  the census resolving an address inside a retained block by searching
+  the index after the same single binary search that serves entity
+  blocks. Closes rc-walk.md's "cycles among promoted survivors" limit —
+  a ring living entirely among promoted survivors used to be
+  uncollectable forever. Design and the three settled obligations:
+  `rfc/model/gc/retained-block-walk.md`, `dev/DECISIONS.md` 2026-08-03.
+  Left open: `retained::release` has no caller until a fully emptied
+  retained block can return to the pool.
 - [x] Run `__destruct` of cyclically-dead objects (2026-07-25) — Zend-style
   discipline (`run_cyclic_destructors`): restore the white set's real
   counts, guard, run each `__destruct` once through the ordinary teardown,

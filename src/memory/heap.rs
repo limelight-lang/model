@@ -1778,18 +1778,42 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
             }
         }
     }
+
+    // Retained former-arena blocks carry no stride, so they are
+    // enumerated from the object index the reset left behind rather
+    // than by striding. The occupancy test is the same word: a survivor
+    // that has since died reads refcount 0 and is skipped exactly as a
+    // free slot is (`memory/retained.rs`).
+    for (_block, index) in crate::memory::retained::snapshot() {
+        for &addr in index.iter() {
+            let slot = addr as *mut crate::refcount::RcHeader;
+            if unsafe { (*slot).refcount } != 0 {
+                visit(slot);
+            }
+        }
+    }
 }
 
-/// One entity block as the rc-walk collector snapshotted it at epoch
-/// open (`rfc/model/gc/rc-walk.md`, Phase 1). Plain numbers, no
-/// pointers: the collector computes slot addresses itself and touches
-/// slots only through the relaxed-atomic header helpers.
+/// One walkable block as the rc-walk collector snapshotted it at epoch
+/// open (`rfc/model/gc/rc-walk.md`, Phase 1). The collector computes
+/// slot addresses itself and touches slots only through the
+/// relaxed-atomic header helpers; what it holds here is arithmetic and,
+/// for a retained block, the array of addresses that replaces it.
+///
+/// Two kinds of block are walkable and they differ only in how a slot
+/// index becomes an address. An **entity block** has one size class, so
+/// slot *s* is `payload + s * class_size` and an address divides back.
+/// A **retained** former-arena block was bump-filled with mixed sizes
+/// and has no stride at all: slot *s* is `index[s]`, and an address is
+/// found by searching the index (`memory/retained.rs`).
 #[cfg(feature = "rc-walk")]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct EntityBlockSnapshot {
     /// Address of the first slot (block payload).
     pub payload: usize,
-    /// Slot stride: the block's size class in bytes.
+    /// Slot stride: the block's size class in bytes. Meaningless for a
+    /// retained block, which has none — read it only when `index` is
+    /// `None`.
     pub class_size: usize,
     /// Every slot of the block, virgin tail included. The walker does
     /// NOT read the bump cursor: commissioning zeroes every slot's
@@ -1799,7 +1823,14 @@ pub(crate) struct EntityBlockSnapshot {
     /// +14% on larson, `dev/BENCHMARKS.md` 2026-07-26); the full-block
     /// scan is collector-side work, which is always the right side to
     /// pay on.
+    ///
+    /// For a retained block this is `index.len()` — the survivors the
+    /// reset recorded, which is the whole of that block's population
+    /// because nothing allocates into a dead arena.
     pub slots: usize,
+    /// The occupants, ascending, when this is a retained block. `None`
+    /// for an entity block, whose occupants are found by striding.
+    pub index: Option<std::sync::Arc<[usize]>>,
 }
 
 /// Snapshot every entity block for one collection epoch: the region
@@ -1836,9 +1867,26 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
                 payload: unsafe { (block as *mut u8).add(LINE_SIZE) } as usize,
                 class_size,
                 slots: BLOCK_PAYLOAD / class_size,
+                index: None,
             });
         }
     }
+
+    // Retained former-arena blocks join the same list, so the census's
+    // single binary search covers both kinds and row omission stays one
+    // decision at one test (`dev/DECISIONS.md`, 2026-08-03). Their
+    // indexes are frozen — nothing allocates into a dead arena — so a
+    // snapshot taken here is as stable for the epoch as an entity
+    // block's slot count is.
+    for (block, index) in crate::memory::retained::snapshot() {
+        blocks.push(EntityBlockSnapshot {
+            payload: block + LINE_SIZE,
+            class_size: 0,
+            slots: index.len(),
+            index: Some(index),
+        });
+    }
+
     blocks.sort_unstable_by_key(|b| b.payload);
     blocks
 }
