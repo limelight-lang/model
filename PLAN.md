@@ -8,6 +8,46 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
+## Next: strings (Phase C)
+
+Decided 2026-08-03, after A6 and the retained-block walk landed. Read
+this first in a fresh session; the detail is in Phase C below.
+
+**Take strings.** `rfc/model/strings.md` is written, A2's entity-kind
+switch is the thing that was blocking it, and it is the first real
+subsystem rather than a tail. It also unblocks arrays, which nothing
+else does.
+
+**Not arrays yet.** One array class with three storage strategies is
+designed, but the hashtable underneath it — bucket layout, collision
+strategy — is still called a future document in
+`rfc/model/arrays.md`. Design that before writing code, not after.
+
+Deliberately not next, each with its reason:
+
+- **A7, no zeroing by default** — the only Phase A item left, and small.
+  It is a performance change, so it needs a measurement, and the
+  expected effect is smaller than this box's 1.5–3% noise floor
+  (`dev/BENCHMARKS.md`). Worth doing on a machine that can resolve it.
+- **`domains`** (`rfc/model/gc/domains.md`) — rc-walk with more than one
+  mutator. A proposal with holes it names itself: no per-domain block
+  enumeration, the snapshot is global, and thread exit and adoption move
+  a block between domains while a walk may be in flight over it. Design
+  work, and large.
+- **`rc-satb`** — settled 2026-08-03: designed, deliberately unbuilt,
+  triggers named in `rfc/model/gc/satb.md`'s banner. Do not start it
+  without one of those triggers, and not at all until the FFI-root hole
+  recorded there is closed.
+- **Re-derive the TLA+ battery under eager death** — `rc-walk-model.md`
+  and the TLC configs still model the pre-amendment protocol (shared
+  condemned byte, F5 deferral, message acquittals), so the battery
+  currently proves a rule set that was retired 2026-07-27. Cheap, useful,
+  and the protocol has been still for a week. Take it if the appetite is
+  for correctness rather than features.
+- **rc-walk escalation rung 4 and every trigger threshold** — blocked on
+  measurement, which is blocked on real workloads, which are blocked on
+  the vertical slice (Phase D). Do not design further on paper.
+
 ## Status snapshot (2026-07-24, HEAD `bad9bd6`)
 
 Done, per RFC:
@@ -248,8 +288,13 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
 
 ### Phase C — new subsystems (not started; each its own RFC + code)
 
-- [ ] Strings — string-as-class, interpolated-template class
-  (`rfc/model/strings.md`). Enabled by A2, needs real implementation.
+- [ ] **Strings — the chosen next task** (decided 2026-08-03, see "Next"
+  at the top). String-as-class and the interpolated-template class
+  (`rfc/model/strings.md`). A2's entity-kind switch is what unblocked
+  it. Where to start: an interned name is already a valid immortal
+  string entity that the future machinery is meant to read as-is
+  (`dev/ARCHITECTURE.md`, invariant 13), so the layout is half-pinned
+  before a line is written.
 - [ ] Arrays — one `array` class, three storage strategies; the hashtable
   design (bucket layout, collision strategy) is still a future document
   (`rfc/model/arrays.md`).
