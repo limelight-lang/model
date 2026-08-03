@@ -30,14 +30,22 @@ this one is reasoning from practice, not a stated rule)*
 
 ```
 cargo test --lib
-cargo test --lib -- --test-threads=16     # three times (rc-walk, the default)
-cargo test --lib --no-default-features -- --test-threads=16   # three times (rc-trace)
+cargo test --lib -- --test-threads=4      # three times (rc-walk, the default)
+cargo test --lib --no-default-features -- --test-threads=4    # three times (rc-trace)
 cargo build --release
 cargo build --release --no-default-features
 ```
 
 The three threaded runs are not ceremony: several defects here only
 appear under contention, and one flake took three runs to surface.
+
+The width is capped at 4 because the development box is shared with
+interactive work (decision 2026-08-03). That weakens the gate: the two
+flakes on record were found at 16 and at 32 threads (`POSTMORTEM.md`,
+`heap.rs`, `buffer_arena.rs`), and a narrower run reaches those
+interleavings less often. A wider run on a machine that can spare the
+cores stays worth doing before a release; it is no longer the
+per-commit gate.
 
 Both configurations run because GC strategy selection is a build-time
 feature (the two collectors claim the same header bits — see the

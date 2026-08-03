@@ -288,7 +288,10 @@ Non-object entities carry no class pointer; the header's **kind field**
 non-object teardown"). The first produced non-object kind is the
 **reference box** (`&`, kind 3): `RcHeader | Value`, 24 bytes
 (`src/reference.rs`) — dying, it releases its one Value and frees.
-Strings, arrays, `Box` and `WeakRef` arrive with their own subsystems.
+The second is the **weak cell** (kind 5): the canonical `WeakReference`
+entity *is* the cell, 16 bytes, always in the GC heap (`src/weak.rs`,
+`rfc/model/weak-references.md`). Strings, arrays, `Box` and lazy objects
+arrive with their own subsystems.
 
 **Creation is two steps, and only the second owes a destructor.**
 `ll_object_new` is the factory: it allocates — `GcHeap`/`LongLived` from
@@ -435,22 +438,30 @@ dropping the unsettled tail would dangle.
 **No holder slot is ever dereferenced** anywhere in this. Survival is
 decided from counts carried in the objects themselves.
 
-Not built yet, per RFC phasing: sparse-block evacuation, line recycling
-of retained blocks, and the Immix-shaped `GcHeap` allocator. Promotion
-today is retention only, which the RFC calls the whole of the first
-implementation.
+Not built yet, per RFC phasing: sparse-block evacuation, gated on the
+escapee-reference fixup. Promotion today is retention only, which the
+RFC calls the whole of the first implementation. The Immix-shaped
+`GcHeap` allocator and the line recycling of retained blocks were
+listed here until 2026-07-25 and are now **dropped**, not deferred:
+segregated entity blocks solved what Immix was drafted for, and a
+retained block stays out of circulation while its survivors live
+(`rfc/model/memory/arena-reset.md`, Retention). The small mechanism
+left over is returning a fully emptied retained block to the pool.
 
 ## What is not here
 
-- **Strategy selection.** The RFC's four-interface contract is not
-  represented in code, and deliberately so: `refcount.rs` and
-  `object.rs` call `gc::*` directly, and the one composition built is
-  `rc-trace`. A `GcStrategy` trait with trivial impls used to stand in
-  for it and was removed — nothing constructed it, and being
-  dispatch-shaped it could not deliver the build-time choice the
-  contract asks for. When a `nogc` or pure-`rc` build is wanted, a
-  cargo feature around those call sites compiles the buffering away,
-  which is what "selected at build time" actually means.
+- **Strategy selection as an interface.** The RFC's four-interface
+  contract is not represented in code, and deliberately so:
+  `refcount.rs` and `object.rs` call `gc::*` directly. Two compositions
+  are built and both must stay green — `rc-walk` (the default since
+  2026-07-27) and `rc-trace` behind `--no-default-features`; they claim
+  overlapping header bits, which is why the choice is a cargo feature
+  rather than a runtime one. A `GcStrategy` trait with trivial impls
+  used to stand in for the contract and was removed — nothing
+  constructed it, and being dispatch-shaped it could not deliver the
+  build-time choice the contract asks for. When a `nogc` or pure-`rc`
+  build is wanted, a cargo feature around those call sites compiles the
+  buffering away, which is what "selected at build time" actually means.
 - **Telemetry beyond block granularity.** Aggregate stats are always on
   and cost nothing per object; the object registry, lifetimes and
   per-allocation metadata are designed in
