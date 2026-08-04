@@ -74,32 +74,60 @@ const MIN_CHUNK: usize = size_of::<FreeChunk>();
 /// sit on the first 64 bytes — a local free reads `owner` and then
 /// writes `live`/`free`, so they belong together — and `remote_free`,
 /// the only field a non-owner ever touches, sits alone on the next one.
+/// The owner-private half: only the thread named by
+/// [`BufferBlockShared::owner`] may touch these. `kind` stays at offset
+/// 0, shared with the pool's `BlockHeader`.
 #[repr(C)]
-struct BufferBlockHeader {
+struct BufferBlockPrivate {
     kind: u32,
     /// Live chunks in this block, **owner-written only**: a cross-thread
-    /// free posts to [`Self::remote_free`] and the owner accounts for it
-    /// at collect time. That is what makes zero safe to act on — a
-    /// posted chunk still counts as live, so the block cannot look empty
-    /// while another thread holds an address inside it.
+    /// free posts to [`BufferBlockRemote::remote_free`] and the owner
+    /// accounts for it when it collects. That is what makes zero safe to
+    /// act on — a posted chunk still counts as live, so the block cannot
+    /// look empty while another thread holds an address inside it.
     live: u32,
-    /// Head of the block-local free list (owner only).
+    /// Head of the block-local free list.
     free: *mut FreeChunk,
-    /// Next block in its owner's chain (owner only).
+    /// Next block in its owner's chain.
     owned_next: *mut BufferBlockHeader,
-    /// The arena that owns this block, or null while abandoned.
-    ///
-    /// **Read by any thread, never dereferenced by a non-owner** — it is
-    /// compared for identity and nothing else, which is what lets a
-    /// freeing thread read it while the owner is dying.
+}
+
+/// The half a non-owner reads: one word, and it is compared for identity
+/// rather than dereferenced, which is what lets a freeing thread read it
+/// while the owner is dying.
+///
+/// Separate from the private half **as a type**, not by discipline. The
+/// same shape in `heap.rs` was `&mut` over the whole header twice, and
+/// twice that was a Stacked Borrows violation the audit had to find
+/// (`dev/DECISIONS.md`, 2026-07-20: "making it a type rule was the only
+/// option that cannot be violated again"). An owner taking `&mut` over a
+/// header that contains an atomic another thread is reading pops that
+/// thread's tag.
+#[repr(C)]
+struct BufferBlockShared {
     owner: AtomicPtr<BufferArena>,
-    _line0: [u8; 32],
-    /// Chunks freed by threads that do not own this block: a lock-free
-    /// MPSC stack threaded through the freed chunks themselves. Per
-    /// block rather than per arena, which is what makes adoption
-    /// race-free — a message posted to a dying owner still lands in the
-    /// block, and whoever owns the block next drains it.
+}
+
+/// The contended half, alone on its own cache line by type rather than
+/// by a hand-counted pad: chunks freed by threads that do not own this
+/// block, as a lock-free MPSC stack threaded through the freed chunks
+/// themselves. Per block rather than per arena, which is what makes
+/// adoption race-free — a message posted to a dying owner still lands in
+/// the block, and whoever owns it next drains it.
+#[repr(C, align(64))]
+struct BufferBlockRemote {
     remote_free: AtomicPtr<FreeChunk>,
+}
+
+/// Per-block header, overlaying the block's first line (256 bytes, of
+/// which this uses 128). Split by **access rule**, not by topic, the way
+/// `heap.rs` splits its own: the owner's fields and `owner` itself on the
+/// first cache line, the stack every other thread writes on the second.
+#[repr(C)]
+struct BufferBlockHeader {
+    private: BufferBlockPrivate,
+    shared: BufferBlockShared,
+    remote: BufferBlockRemote,
 }
 
 impl BufferBlockHeader {
@@ -185,7 +213,7 @@ impl BufferArena {
 
         let p = self.bump;
         self.bump = p.wrapping_add(size);
-        unsafe { (*self.current).live += 1 };
+        unsafe { (*self.current).private.live += 1 };
         (p, size)
     }
 
@@ -198,7 +226,7 @@ impl BufferArena {
     pub unsafe fn free(&mut self, ptr: *mut u8, size: usize) {
         let size = round_up_8(size).max(MIN_CHUNK);
         let block = BufferBlockHeader::of_ptr(ptr);
-        debug_assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_BUFFER);
+        debug_assert_eq!(unsafe { (*block).private.kind }, BLOCK_KIND_BUFFER);
 
         // Not ours: post it and touch nothing else. Neither `live` nor
         // `free` may be written from here — they are the owner's, and an
@@ -209,11 +237,11 @@ impl BufferArena {
         // `free` may be written from here — they are the owner's, and an
         // emptied block returned from the wrong thread would go back to
         // the pool while the owner still bumps into it.
-        if unsafe { (*block).owner.load(Ordering::Relaxed) } != self.id() {
+        if unsafe { (*block).shared.owner.load(Ordering::Relaxed) } != self.id() {
             return unsafe { post_remote(block, ptr, size) };
         }
 
-        let b = unsafe { &mut *block };
+        let b = unsafe { &mut (*block).private };
         b.live -= 1;
 
         // A fully-empty non-current block goes home; the current block
@@ -238,7 +266,7 @@ impl BufferArena {
         if self.current.is_null() {
             return None;
         }
-        let b = unsafe { &mut *self.current };
+        let b = unsafe { &mut (*self.current).private };
 
         let mut prev: *mut *mut FreeChunk = &mut b.free;
         let mut walked = 0;
@@ -264,7 +292,7 @@ impl BufferArena {
 
     /// Link a block this arena now owns into its chain.
     fn own(&mut self, block: *mut BufferBlockHeader) {
-        unsafe { (*block).owned_next = self.owned };
+        unsafe { (*block).private.owned_next = self.owned };
         self.owned = block;
     }
 
@@ -273,18 +301,18 @@ impl BufferArena {
     /// handful of blocks, and the chain is touched only when one empties
     /// or the thread ends.
     fn retire(&mut self, block: *mut BufferBlockHeader) {
-        debug_assert!(unsafe { (*block).live } == 0);
+        debug_assert!(unsafe { (*block).private.live } == 0);
         let mut link = &raw mut self.owned;
         unsafe {
             while !(*link).is_null() {
                 if *link == block {
-                    *link = (*block).owned_next;
+                    *link = (*block).private.owned_next;
                     break;
                 }
-                link = &raw mut (**link).owned_next;
+                link = &raw mut (**link).private.owned_next;
             }
-            (*block).owner.store(std::ptr::null_mut(), Ordering::Release);
-            (*block).kind = 0;
+            (*block).shared.owner.store(std::ptr::null_mut(), Ordering::Release);
+            (*block).private.kind = 0;
         }
         BlockPool::global().put(block as *mut BlockHeader);
     }
@@ -299,13 +327,14 @@ impl BufferArena {
     fn collect_remote(&self, block: *mut BufferBlockHeader) -> bool {
         let head = unsafe {
             (*block)
+                .remote
                 .remote_free
                 .swap(std::ptr::null_mut(), Ordering::Acquire)
         };
         if head.is_null() {
-            return unsafe { (*block).live } == 0;
+            return unsafe { (*block).private.live } == 0;
         }
-        let b = unsafe { &mut *block };
+        let b = unsafe { &mut (*block).private };
         let mut n = 0u32;
         let mut last = head;
         unsafe {
@@ -332,7 +361,7 @@ impl BufferArena {
     fn collect_owned(&mut self) {
         let mut block = self.owned;
         while !block.is_null() {
-            let next = unsafe { (*block).owned_next };
+            let next = unsafe { (*block).private.owned_next };
             if self.collect_remote(block) && block != self.current {
                 self.retire(block);
             }
@@ -351,15 +380,15 @@ impl BufferArena {
             if head.is_null() {
                 return std::ptr::null_mut();
             }
-            list.head = unsafe { (*head).owned_next };
+            list.head = unsafe { (*head).private.owned_next };
             head
         };
         unsafe {
-            (*block).owned_next = std::ptr::null_mut();
+            (*block).private.owned_next = std::ptr::null_mut();
             // Claim it. A free racing this read either saw null or sees
             // us; both post into `remote_free`, which is now ours to
             // collect.
-            (*block).owner.store(self.id(), Ordering::Release);
+            (*block).shared.owner.store(self.id(), Ordering::Release);
         }
         self.own(block);
         if self.collect_remote(block) {
@@ -386,19 +415,19 @@ impl BufferArena {
         let mut list = ABANDONED.lock().unwrap();
         let mut block = self.owned;
         while !block.is_null() {
-            let next = unsafe { (*block).owned_next };
+            let next = unsafe { (*block).private.owned_next };
             // Collect first: a block that the posted frees have emptied
             // is worth more to the pool than to the abandoned list.
             let empty = self.collect_remote(block);
-            unsafe { (*block).owner.store(std::ptr::null_mut(), Ordering::Release) };
+            unsafe { (*block).shared.owner.store(std::ptr::null_mut(), Ordering::Release) };
             if empty {
                 unsafe {
-                    (*block).kind = 0;
-                    (*block).owned_next = std::ptr::null_mut();
+                    (*block).private.kind = 0;
+                    (*block).private.owned_next = std::ptr::null_mut();
                 }
                 BlockPool::global().put(block as *mut BlockHeader);
             } else {
-                unsafe { (*block).owned_next = list.head };
+                unsafe { (*block).private.owned_next = list.head };
                 list.head = block;
             }
             block = next;
@@ -418,7 +447,7 @@ impl BufferArena {
 
         // An old current that emptied while current can only go home
         // now, at rotation — `free` keeps it alive until this moment.
-        if !self.current.is_null() && unsafe { (*self.current).live } == 0 {
+        if !self.current.is_null() && unsafe { (*self.current).private.live } == 0 {
             let old = self.current;
             self.current = std::ptr::null_mut();
             self.retire(old);
@@ -444,13 +473,18 @@ impl BufferArena {
         let id = self.id();
         unsafe {
             block.write(BufferBlockHeader {
-                kind: BLOCK_KIND_BUFFER,
-                live: 0,
-                free: std::ptr::null_mut(),
-                owned_next: std::ptr::null_mut(),
-                owner: AtomicPtr::new(id),
-                _line0: [0; 32],
-                remote_free: AtomicPtr::new(std::ptr::null_mut()),
+                private: BufferBlockPrivate {
+                    kind: BLOCK_KIND_BUFFER,
+                    live: 0,
+                    free: std::ptr::null_mut(),
+                    owned_next: std::ptr::null_mut(),
+                },
+                shared: BufferBlockShared {
+                    owner: AtomicPtr::new(id),
+                },
+                remote: BufferBlockRemote {
+                    remote_free: AtomicPtr::new(std::ptr::null_mut()),
+                },
             });
         }
         self.own(block);
@@ -486,7 +520,7 @@ impl Drop for BufferArena {
 unsafe fn post_remote(block: *mut BufferBlockHeader, ptr: *mut u8, size: usize) {
     let chunk = ptr as *mut FreeChunk;
     unsafe { (*chunk).size = size };
-    let head = unsafe { &(*block).remote_free };
+    let head = unsafe { &(*block).remote.remote_free };
     let mut top = head.load(Ordering::Relaxed);
     loop {
         unsafe { (*chunk).next = top };
@@ -693,6 +727,30 @@ mod tests {
     use super::*;
     use crate::memory::buffer::set_pressure_mode;
 
+    /// The split is a contract, not a comment: `kind` at offset 0 because
+    /// the pool's `BlockHeader` shares it, and `remote_free` on its own
+    /// cache line because the owner writes `live` and `free` on every
+    /// local free while other threads write the stack. `heap.rs` pins the
+    /// same two facts for the same reasons; a field added to the private
+    /// half would otherwise push the stack back onto the owner's line
+    /// with nothing to notice.
+    #[test]
+    fn the_header_is_split_by_access_rule() {
+        assert_eq!(std::mem::offset_of!(BufferBlockHeader, private), 0);
+        assert_eq!(std::mem::offset_of!(BufferBlockPrivate, kind), 0);
+        let remote = std::mem::offset_of!(BufferBlockHeader, remote);
+        let shared = std::mem::offset_of!(BufferBlockHeader, shared);
+        assert_eq!(remote % 64, 0, "the contended half starts a cache line");
+        assert!(
+            remote / 64 > shared / 64,
+            "and shares no line with the owner's fields"
+        );
+        assert!(
+            size_of::<BufferBlockHeader>() <= LINE_SIZE,
+            "the whole header fits the block's header line"
+        );
+    }
+
     /// A chunk here is an entity's body, so whichever thread drops the
     /// last reference is the one that frees it. A free from a non-owner
     /// may touch only the block's posting stack: writing `live` and
@@ -719,17 +777,17 @@ mod tests {
         unsafe { other.free(chunk, size) };
         unsafe {
             assert_eq!(
-                (*block).kind,
+                (*block).private.kind,
                 BLOCK_KIND_BUFFER,
                 "a foreign free sent the owner's block home"
             );
             assert_eq!(
-                (*block).live,
+                (*block).private.live,
                 1,
                 "live is the owner's count, and a posted chunk still counts"
             );
             assert!(
-                !(*block).remote_free.load(Ordering::Relaxed).is_null(),
+                !(*block).remote.remote_free.load(Ordering::Relaxed).is_null(),
                 "the chunk belongs on the block's posting stack"
             );
         }
@@ -738,7 +796,7 @@ mod tests {
         // the block empty enough to go home.
         owner.collect_owned();
         unsafe {
-            assert_eq!((*block).kind, 0, "collected and returned to the pool");
+            assert_eq!((*block).private.kind, 0, "collected and returned to the pool");
             owner.free(big, big_size);
         }
     }
@@ -758,12 +816,12 @@ mod tests {
         let block = BufferBlockHeader::of_ptr(chunk);
         unsafe {
             assert_eq!(
-                (*block).kind,
+                (*block).private.kind,
                 BLOCK_KIND_BUFFER,
                 "the block was dropped on the floor with a live chunk in it"
             );
             assert!(
-                (*block).owner.load(Ordering::Relaxed).is_null(),
+                (*block).shared.owner.load(Ordering::Relaxed).is_null(),
                 "an abandoned block has no owner until one adopts it"
             );
         }
@@ -775,14 +833,14 @@ mod tests {
         let mut next = BufferArena::new();
         unsafe { next.free(chunk, size) };
         for _ in 0..16 {
-            if unsafe { (*block).kind } == 0 {
+            if unsafe { (*block).private.kind } == 0 {
                 break;
             }
             if next.adopt().is_null() && ABANDONED.lock().unwrap().head.is_null() {
                 break;
             }
         }
-        unsafe { assert_eq!((*block).kind, 0, "adopted, collected, and home") };
+        unsafe { assert_eq!((*block).private.kind, 0, "adopted, collected, and home") };
     }
 
     /// Follows the block itself rather than the process-global
