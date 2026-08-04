@@ -1056,7 +1056,18 @@ mod tests {
         );
         assert!(unsafe { ll_string_append(&mut ctx, s, b" and grown") });
         assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"scoped and grown");
+
+        let payload = unsafe { (*s).data };
         unsafe { string_die(s as *mut LLString) };
+        // The payload is still the arena's, and still intact. Handing it
+        // to the long-lived free routine instead would have written a
+        // free-list link — `{ next, size }`, 16 bytes — over the front of
+        // it, so reading the content back is what catches that.
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(payload, 16) },
+            b"scoped and grown",
+            "an arena payload belongs to the reset, and teardown left it alone"
+        );
         arena.reset(|_| {});
     }
 
@@ -1183,6 +1194,44 @@ mod tests {
                 s as *mut RcHeader,
             )
         };
+    }
+
+    /// Teardown returns a heap dynamic string's payload to the arena it
+    /// came from, and this is the assertion that says so — deleting the
+    /// payload half of `string_die` leaves every other test in this file
+    /// green. The proof is the buffer arena's own: in critical mode a
+    /// freed chunk goes on the block's free list and a fitting allocation
+    /// finds it, so the same address coming back means the chunk was
+    /// really returned.
+    #[test]
+    fn teardown_returns_a_heap_payload_to_the_buffer_arena() {
+        use crate::memory::buffer::{PressureMode, set_pressure_mode};
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+
+        let content = vec![b'p'; 64];
+        let s = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, &content, 0) };
+        let payload = unsafe { (*s).data };
+        let capacity = unsafe { (*s).capacity } as usize;
+        assert!(!payload.is_null());
+
+        unsafe {
+            assert!(ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+        }
+
+        set_pressure_mode(PressureMode::Critical);
+        let (reused, _) =
+            crate::memory::buffer_arena::with_buffer_arena(|a| a.alloc(capacity));
+        set_pressure_mode(PressureMode::Plenty);
+        assert_eq!(
+            reused, payload,
+            "the payload was not returned: the free list has no chunk of that size"
+        );
+
+        crate::memory::buffer_arena::with_buffer_arena(|a| unsafe { a.free(reused, capacity) });
+        arena.reset(|_| {});
     }
 
     #[test]

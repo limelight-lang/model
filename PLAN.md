@@ -64,8 +64,12 @@ string must route through epoch-deferred reclamation.
    counting a string as the leaf it is. Not here: the rapidhash port
    (its own step — it needs the reference test vectors in CI) and the
    dynamic layout.
-4. String teardown by layout: inline frees its own block, dynamic frees
-   the payload too. Both collector configurations.
+4. ~~String teardown by layout~~ — done 2026-08-04. Inline frees its own
+   block, dynamic frees the payload too, and an arena payload is left to
+   the reset. Both assertions are the kind that fail when the branch they
+   name is deleted: the heap payload has to reappear from the buffer
+   arena's free list, and the arena payload has to still read back as its
+   own content. Both collector configurations.
 5. Separation on write for inline strings, in the rule's order.
 6. ~~Dynamic string: buffer fields in the string's own order, growth in
    place, compiler-chosen at allocation~~ — done 2026-08-04. Payload
