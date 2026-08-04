@@ -50,7 +50,11 @@
 //!
 //! Known limit: a thread that parks and exits before flushing leaks its
 //! parked list until process end — bounded by what that thread freed
-//! inside one epoch window.
+//! inside one epoch window. **Measured in blocks, not bytes**, once
+//! buffer chunks ride it: a dropped 16-byte chunk record leaves `live`
+//! above zero on its block forever, and a block never empties, so it
+//! bounces between the abandoned list and its adopters instead of going
+//! home. One record can therefore pin 64 KiB.
 //!
 //! Two obligations on the epoch protocol (build step 3, commit 4):
 //! the collector must **publish the flag through a handshake before

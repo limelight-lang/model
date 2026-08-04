@@ -118,11 +118,18 @@ owner's fields sit on the first cache line with `owner`, and
 **Two departures from the heap's version**, both because a buffer block
 is bump-filled rather than slotted. The owner keeps a chain of its blocks
 — a block the bump has moved past is reachable no other way, and its
-posted frees would sit there forever. And an adopted block does not
-become current: its bump tail stays unused and the block comes home whole
-once its chunks are freed. Resuming a foreign bump would mean storing the
-cursor in the header and trusting it across an owner's death, for the
-tail of one block.
+posted frees would sit there forever. And **an adopted block is
+reclaimed, not reused**: it never becomes current, `pop_fit` only
+consults the current block, so neither its bump tail nor its inherited
+free list serves an allocation. A block abandoned with one live 16-byte
+chunk is held, swept on every rotation, and returns whole when that chunk
+is freed — while the adopter takes a fresh pool block for the allocation
+that triggered the adoption. That is the weaker half of what `heap.rs`
+gets from adoption, and it is stated here rather than as "the tail of one
+block", which is what an earlier version of this entry called it
+(corrected 2026-08-04 by the second critic pass). Resuming a foreign bump
+would mean storing the cursor in the header and trusting it across an
+owner's death.
 
 **Rejected:** moving GC-heap payloads to `ll_alloc`, which answers
 cross-thread free for free. It puts continuously varying, realloc-heavy

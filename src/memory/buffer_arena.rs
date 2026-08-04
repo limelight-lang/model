@@ -659,11 +659,33 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         if crate::memory::deferred_free::active() {
             return unsafe { crate::memory::deferred_free::park_buffer_chunk(ptr, capacity) };
         }
-        with_buffer_arena(|a| unsafe { a.free(ptr, capacity) });
+        unsafe { free_chunk(ptr, capacity) };
     } else {
         // OS-direct run: the standard path frees it by mask.
         unsafe { crate::memory::stdapi::ll_free(ptr) };
     }
+}
+
+/// Free a chunk without building this thread's arena to do it.
+///
+/// A thread that never allocated a buffer can still be the one that drops
+/// the last reference to a string another thread built — that is what the
+/// ownership protocol is for. Going through [`with_buffer_arena`] would
+/// allocate a `BufferArena` on the system allocator just to compute an
+/// identity that cannot match, and `Box::new` aborts the process when it
+/// refuses: an abort on a free path. `stdapi::ll_free` answers the same
+/// question the same way for an entity slot with no thread heap.
+///
+/// # Safety
+/// `(ptr, capacity)` must be exactly one live chunk of some arena.
+unsafe fn free_chunk(ptr: *mut u8, capacity: usize) {
+    let existing = THREAD_BUFFER_ARENA.with(|cell| cell.get());
+    if existing.is_null() {
+        let block = BufferBlockHeader::of_ptr(ptr);
+        let size = round_up_8(capacity).max(MIN_CHUNK);
+        return unsafe { post_remote(block, ptr, size) };
+    }
+    unsafe { (*existing).free(ptr, capacity) };
 }
 
 /// Give a parked chunk back for real, at the flush. Skips the kind
@@ -677,7 +699,7 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
 /// no epoch in flight.
 #[cfg(feature = "rc-walk")]
 pub(crate) unsafe fn free_parked_chunk(ptr: *mut u8, capacity: usize) {
-    with_buffer_arena(|a| unsafe { a.free(ptr, capacity) });
+    unsafe { free_chunk(ptr, capacity) };
 }
 
 /// Release a long-lived buffer: frees the payload, zeroes the struct.

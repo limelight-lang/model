@@ -10,7 +10,10 @@
 //!   barrier, write. No release: an initializing store is `store_*` alone.
 //! - [`drop_ref`] — **drop** the entity a slot held (overwrite, clear, or
 //!   holder teardown): release, cascade. Independent of the slot's kind.
-//!   An overwriting store is `store_*` then `drop_ref`, in that order.
+//!   An overwriting store is `store_*` and then, **only if it returned
+//!   true**, `drop_ref` — see the failure paragraph below: a refused
+//!   store leaves the slot holding the old entity, so dropping it anyway
+//!   dangles the slot.
 //! - [`ref_store`] — the convenience composition of `store_box` +
 //!   `drop_ref` for a Box-slot overwrite, kept for callers holding an
 //!   owner header and a whole `Value`.
@@ -23,10 +26,13 @@
 //! `store_box` and `ref_store` return whether the store happened, and
 //! the one thing that can refuse is the deep copy a COW value takes when
 //! it leaves the arena: the copy is an allocation. A refusal leaves the
-//! slot and every count exactly as they were, so the caller's only duty
-//! is to raise memory-exhausted — which generated code will do through
-//! the exceptions runtime (`rfc/runtime/exceptions.md`) once it exists.
-//! `drop_ref` cannot fail and returns nothing.
+//! slot and every count exactly as they were — which is exactly why the
+//! `drop_ref` that would have followed must not run: the slot still holds
+//! the old entity and still owns its reference. The caller's two duties
+//! are therefore to skip the drop and to raise memory-exhausted, which
+//! generated code will do through the exceptions runtime
+//! (`rfc/runtime/exceptions.md`) once it exists. `drop_ref` itself cannot
+//! fail and returns nothing.
 //!
 //! This is not the reserve's shape and could not be: the log reserve
 //! funds the barrier's *own* allocation because a log record is
@@ -132,13 +138,13 @@ unsafe fn store_category_barrier(
     owner_cat: MemoryCategory,
     new: *mut RcHeader,
 ) -> *mut RcHeader {
-    let new_cat = unsafe { (*new).memory_category() };
+    let new_cat = unsafe { crate::object::header_category(new) };
     let mut stored = new;
 
     // Dangerous direction: an arena reference stored into a longer-lived
     // container would dangle after reset.
     if new_cat == MemoryCategory::RequestArena && owner_cat != MemoryCategory::RequestArena {
-        if unsafe { (*new).flags } & COW != 0 {
+        if unsafe { crate::refcount::header_flags(new) } & COW != 0 {
             // A COW entity is value-like: its identity is not observable,
             // so the longer-lived holder takes a **copy** rather than a
             // hold on arena memory (`rfc/model/memory/arenas.md`, the deep
@@ -370,7 +376,7 @@ pub unsafe fn ref_store(
         "old must be the entity the slot holds"
     );
 
-    let owner_cat = unsafe { (*owner).memory_category() };
+    let owner_cat = unsafe { crate::object::header_category(owner) };
     // Publish first, and only drop what the slot held if the publish
     // happened: a refused store leaves the slot exactly as it was, which
     // includes the reference it still holds.

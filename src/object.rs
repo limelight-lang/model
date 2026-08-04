@@ -769,8 +769,13 @@ pub(crate) unsafe fn escape_copy(
             ) as *mut RcHeader
         },
         _ => {
-            debug_assert!(false, "no COW copy for this entity kind yet");
-            std::ptr::null_mut()
+            // Null is how this function says "out of memory", and an
+            // unimplemented kind is not that. There is nothing safe to
+            // return, and nothing safe to continue into: the caller would
+            // store a hold on arena memory into a longer-lived slot.
+            // Arrays are the kind that will arrive here (Phase C), and
+            // they will arrive with an arm.
+            unreachable!("no COW copy for this entity kind yet");
         }
     }
 }
