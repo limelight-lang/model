@@ -607,7 +607,11 @@ mod tests {
         crate::memory::deferred_free::begin_epoch();
         assert!(unsafe { ll_release(ptr) });
         unsafe { crate::object::ll_object_die(obj) };
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "died ordinarily, eagerly, once");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            1,
+            "died ordinarily, eagerly, once"
+        );
 
         // The stale message arrives naming the corpse and a live peer.
         let outcome = unsafe { drain_confirmed(&[ptr, peer as *mut RcHeader]) };
@@ -636,7 +640,9 @@ mod tests {
     #[test]
     fn a_reserved_cell_is_walker_invisible_until_constructed() {
         let _g = crate::memory::block_pool::test_guard();
-        let cls = ClassBuilder::new("CellReserved").prop("child", true).build();
+        let cls = ClassBuilder::new("CellReserved")
+            .prop("child", true)
+            .build();
         let size = unsafe { (*cls).object_size } as usize;
 
         let mut cells = [std::ptr::null_mut::<u8>(); 4];
@@ -648,15 +654,19 @@ mod tests {
 
         let seen = walked_addresses();
         for &c in &cells[..n] {
-            assert!(!seen.contains(&(c as usize)), "an unconstructed cell was walked");
+            assert!(
+                !seen.contains(&(c as usize)),
+                "an unconstructed cell was walked"
+            );
         }
 
         let obj = unsafe { crate::object::ll_object_new_in(cells[0], cls) };
-        assert!(walked_addresses().contains(&(obj as usize)), "constructed: walked");
+        assert!(
+            walked_addresses().contains(&(obj as usize)),
+            "constructed: walked"
+        );
 
-        unsafe {
-            crate::memory::heap::ll_entity_cells_return(cells.as_ptr().add(1), n - 1)
-        };
+        unsafe { crate::memory::heap::ll_entity_cells_return(cells.as_ptr().add(1), n - 1) };
         assert!(unsafe { ll_release(obj as *mut RcHeader) });
         unsafe { crate::object::ll_object_die(obj) };
     }
@@ -775,7 +785,11 @@ mod tests {
 
         let stats = unsafe { collect_cycles() };
         assert!(stats.collected >= 2, "the ring is garbage");
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "__destruct ran for both");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            2,
+            "__destruct ran for both"
+        );
         let seen = walked_addresses();
         assert!(!seen.contains(&(a as usize)) && !seen.contains(&(b as usize)));
         arena.reset(|_| {});
@@ -805,10 +819,20 @@ mod tests {
 
         unsafe { collect_cycles() };
         let seen = walked_addresses();
-        assert!(seen.contains(&(a as usize)) && seen.contains(&(b as usize)), "rooted: must survive");
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "no destructor on a live ring");
+        assert!(
+            seen.contains(&(a as usize)) && seen.contains(&(b as usize)),
+            "rooted: must survive"
+        );
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            0,
+            "no destructor on a live ring"
+        );
 
-        assert!(!unsafe { ll_release(a as *mut RcHeader) }, "ring still holds a");
+        assert!(
+            !unsafe { ll_release(a as *mut RcHeader) },
+            "ring still holds a"
+        );
         unsafe { collect_cycles() };
         let seen = walked_addresses();
         assert!(!seen.contains(&(a as usize)) && !seen.contains(&(b as usize)));
@@ -833,7 +857,13 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
         let mk = |ctx: &mut LLContext| unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) };
-        let (a, b, c, d, leaf) = (mk(&mut ctx), mk(&mut ctx), mk(&mut ctx), mk(&mut ctx), mk(&mut ctx));
+        let (a, b, c, d, leaf) = (
+            mk(&mut ctx),
+            mk(&mut ctx),
+            mk(&mut ctx),
+            mk(&mut ctx),
+            mk(&mut ctx),
+        );
         unsafe {
             tie(a, 16, b);
             tie(b, 16, a); // ring 1
@@ -884,11 +914,19 @@ mod tests {
         let stats = unsafe { collect_cycles() };
         assert_eq!(stats.collected, 0, "resurrection must acquit the component");
         assert!(stats.acquitted >= 1);
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "both destructors did run");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            2,
+            "both destructors did run"
+        );
         assert_eq!(RESURRECTED.load(Ordering::Relaxed), a as usize);
         let seen = walked_addresses();
         assert!(seen.contains(&(a as usize)) && seen.contains(&(b as usize)));
-        assert_eq!(unsafe { (*a).rc.refcount }, 2, "slot + resurrection, guards off");
+        assert_eq!(
+            unsafe { (*a).rc.refcount },
+            2,
+            "slot + resurrection, guards off"
+        );
 
         // The lasting reference goes away; the ring is garbage again, its
         // destructors already behind it.
@@ -896,7 +934,11 @@ mod tests {
         unsafe { collect_cycles() };
         let seen = walked_addresses();
         assert!(!seen.contains(&(a as usize)) && !seen.contains(&(b as usize)));
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "__destruct exactly once per object");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            2,
+            "__destruct exactly once per object"
+        );
         arena.reset(|_| {});
     }
 
@@ -930,9 +972,20 @@ mod tests {
         unsafe { collect_cycles() };
         let seen = walked_addresses();
         assert!(!seen.contains(&(a as usize)) && !seen.contains(&(b as usize)));
-        assert!(seen.contains(&(v as usize)), "externally held: must survive");
-        assert_eq!(unsafe { (*v).rc.refcount }, 1, "the ring's reference was dropped");
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "only the ring destructed");
+        assert!(
+            seen.contains(&(v as usize)),
+            "externally held: must survive"
+        );
+        assert_eq!(
+            unsafe { (*v).rc.refcount },
+            1,
+            "the ring's reference was dropped"
+        );
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            2,
+            "only the ring destructed"
+        );
 
         unsafe {
             assert!(ll_release(v as *mut RcHeader));
@@ -964,7 +1017,10 @@ mod tests {
             (*r).value = Value::entity(Tag::Object, a as *mut RcHeader);
         }
         let census = unsafe { heap_census() };
-        assert!(census.by_kind[EntityKind::Reference as usize] >= 1, "the box is walked");
+        assert!(
+            census.by_kind[EntityKind::Reference as usize] >= 1,
+            "the box is walked"
+        );
 
         unsafe { collect_cycles() };
         let seen = walked_addresses();
@@ -1007,7 +1063,10 @@ mod tests {
 
         assert!(!unsafe { ll_release(s as *mut RcHeader) });
         unsafe { collect_cycles() };
-        assert!(!walked_addresses().contains(&(s as usize)), "rc 2 = in 2: garbage");
+        assert!(
+            !walked_addresses().contains(&(s as usize)),
+            "rc 2 = in 2: garbage"
+        );
         arena.reset(|_| {});
     }
 
@@ -1018,7 +1077,9 @@ mod tests {
     #[test]
     fn an_unwalked_holder_roots_its_gc_heap_child() {
         let _g = crate::memory::block_pool::test_guard();
-        let cls = ClassBuilder::new("UnwalkedHolder").prop("child", true).build();
+        let cls = ClassBuilder::new("UnwalkedHolder")
+            .prop("child", true)
+            .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
@@ -1136,7 +1197,9 @@ mod tests {
             .prop("child", true)
             .destructor(counting_destructor as *const ())
             .build();
-        let holder_cls = ClassBuilder::new("PromotedRingHolder").prop("head", true).build();
+        let holder_cls = ClassBuilder::new("PromotedRingHolder")
+            .prop("head", true)
+            .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
@@ -1183,6 +1246,10 @@ mod tests {
 
         let stats = unsafe { collect_cycles() };
         assert!(stats.collected >= 2, "the promoted ring is garbage");
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "__destruct ran for both");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            2,
+            "__destruct ran for both"
+        );
     }
 }

@@ -330,7 +330,10 @@ pub(crate) unsafe fn collector_load_header(header: *mut RcHeader) -> u64 {
 #[cfg(feature = "rc-walk")]
 #[inline]
 pub(crate) unsafe fn collector_stamp_epoch(header: *mut RcHeader, epoch_number: u8) {
-    debug_assert_ne!(epoch_number, 0, "0 means never-stamped; numbers cycle 1-255");
+    debug_assert_ne!(
+        epoch_number, 0,
+        "0 means never-stamped; numbers cycle 1-255"
+    );
     unsafe {
         (*((header as *mut u8).add(6) as *const core::sync::atomic::AtomicU8))
             .store(epoch_number, core::sync::atomic::Ordering::Relaxed)
@@ -753,7 +756,10 @@ mod tests {
         // And it stays alive: a release from the ceiling must not be able
         // to reach zero in one step either.
         let died = unsafe { ll_release(&mut h) };
-        assert!(!died, "an entity at the ceiling does not die of one release");
+        assert!(
+            !died,
+            "an entity at the ceiling does not die of one release"
+        );
     }
 
     #[test]
@@ -774,7 +780,11 @@ mod tests {
     fn flags_layout_is_the_compacted_design() {
         assert_eq!(MEMORY_CATEGORY_MASK, 0b11, "category: bits 0-1");
         assert_eq!(GC_STATE_MASK, 0b11 << 2, "gc state: bits 2-3");
-        assert_eq!(ARENA_RESET_MARK, 1 << 2, "reset mark borrows gc-state bit 2");
+        assert_eq!(
+            ARENA_RESET_MARK,
+            1 << 2,
+            "reset mark borrows gc-state bit 2"
+        );
         assert_eq!(CYCLE_COLLECTOR_BUFFERED, 1 << 6);
         assert_eq!(HAS_WEAK_REFERENCES, 1 << 7);
         assert_eq!(DESTRUCTOR_PENDING, 1 << 8);
@@ -784,14 +794,30 @@ mod tests {
         assert_eq!(ENTITY_KIND_SHIFT, 12);
         assert_eq!(ENTITY_KIND_MASK, 0b111 << 12, "entity kind: bits 12-14");
         assert_eq!(CANDIDATE_INDEX_SHIFT, 15);
-        assert_eq!(CANDIDATE_INDEX_MASK, 0x0001_FFFF << 15, "candidate index: bits 15-31, 17 wide");
+        assert_eq!(
+            CANDIDATE_INDEX_MASK,
+            0x0001_FFFF << 15,
+            "candidate index: bits 15-31, 17 wide"
+        );
         assert_eq!(CANDIDATE_INDEX_MAX, 131_070);
 
         // The kind field and the candidate index must not overlap, and the
         // whole word must stay 32 bits wide.
-        assert_eq!(ENTITY_KIND_MASK & CANDIDATE_INDEX_MASK, 0, "kind and index are disjoint");
-        assert_eq!(CANDIDATE_INDEX_MASK >> 15 << 15, CANDIDATE_INDEX_MASK, "index reaches the top bit");
-        assert_eq!(0x8000_0000u32 & CANDIDATE_INDEX_MASK, 0x8000_0000, "and includes bit 31");
+        assert_eq!(
+            ENTITY_KIND_MASK & CANDIDATE_INDEX_MASK,
+            0,
+            "kind and index are disjoint"
+        );
+        assert_eq!(
+            CANDIDATE_INDEX_MASK >> 15 << 15,
+            CANDIDATE_INDEX_MASK,
+            "index reaches the top bit"
+        );
+        assert_eq!(
+            0x8000_0000u32 & CANDIDATE_INDEX_MASK,
+            0x8000_0000,
+            "and includes bit 31"
+        );
     }
 
     /// The collector's one header claim: the epoch byte at header
@@ -839,7 +865,11 @@ mod tests {
 
         retain(&mut h);
         assert_eq!(h.refcount, 2);
-        assert_eq!(h.flags & EPOCH_BYTE_MASK, 7 << EPOCH_BYTE_SHIFT, "the stamp survives");
+        assert_eq!(
+            h.flags & EPOCH_BYTE_MASK,
+            7 << EPOCH_BYTE_SHIFT,
+            "the stamp survives"
+        );
 
         assert!(!release(&mut h));
         assert_eq!(h.refcount, 1);
@@ -857,7 +887,11 @@ mod tests {
         h.flags |= 7 << EPOCH_BYTE_SHIFT;
         assert!(release(&mut h), "the death is reported, stamped or not");
         assert_eq!(h.refcount, 0);
-        assert_eq!(h.flags & EPOCH_BYTE_MASK, 7 << EPOCH_BYTE_SHIFT, "flags untouched");
+        assert_eq!(
+            h.flags & EPOCH_BYTE_MASK,
+            7 << EPOCH_BYTE_SHIFT,
+            "flags untouched"
+        );
     }
 
     /// `Object` is the zero kind field, so a header built with no kind bits
@@ -867,7 +901,10 @@ mod tests {
     fn object_is_the_zero_kind() {
         assert_eq!(EntityKind::Object.to_flags(), 0);
         assert!(is_object(0));
-        assert!(is_object(MemoryCategory::GcHeap as u32 | COW), "non-kind bits do not confuse it");
+        assert!(
+            is_object(MemoryCategory::GcHeap as u32 | COW),
+            "non-kind bits do not confuse it"
+        );
 
         for kind in [
             EntityKind::String,
@@ -879,7 +916,11 @@ mod tests {
         ] {
             let bits = kind.to_flags();
             assert_ne!(bits, 0, "{kind:?} is a non-zero kind");
-            assert_eq!(bits & !ENTITY_KIND_MASK, 0, "{kind:?} lands inside the kind field");
+            assert_eq!(
+                bits & !ENTITY_KIND_MASK,
+                0,
+                "{kind:?} lands inside the kind field"
+            );
             assert!(!is_object(bits), "{kind:?} is not an object");
         }
     }

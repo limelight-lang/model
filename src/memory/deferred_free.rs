@@ -253,7 +253,11 @@ pub(crate) fn dispose() {
 #[cfg(test)]
 pub(crate) fn parked_count() -> usize {
     let list = PARKED.with(|cell| cell.get());
-    if list.is_null() { 0 } else { unsafe { (*list).len() } }
+    if list.is_null() {
+        0
+    } else {
+        unsafe { (*list).len() }
+    }
 }
 
 #[cfg(test)]
@@ -342,7 +346,11 @@ mod tests {
         }
         assert_eq!(parked_count(), 1);
         unsafe {
-            assert_eq!((*(addr as *const RcHeader)).refcount, 0, "occupancy: reads free");
+            assert_eq!(
+                (*(addr as *const RcHeader)).refcount,
+                0,
+                "occupancy: reads free"
+            );
         }
         let mut seen = Vec::new();
         unsafe { crate::memory::heap::for_each_entity_slot(|e| seen.push(e as usize)) };
@@ -383,7 +391,10 @@ mod tests {
         let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         let addr = obj as usize;
         let class_word = unsafe { *((addr + 8) as *const usize) };
-        assert_eq!(class_word, cls as usize, "the class word sits at bytes 8-15");
+        assert_eq!(
+            class_word, cls as usize,
+            "the class word sits at bytes 8-15"
+        );
 
         begin_epoch();
         unsafe {
@@ -392,7 +403,11 @@ mod tests {
         }
         assert_eq!(parked_count(), 1);
         unsafe {
-            assert_eq!((*(addr as *const RcHeader)).refcount, 0, "header: reads free");
+            assert_eq!(
+                (*(addr as *const RcHeader)).refcount,
+                0,
+                "header: reads free"
+            );
             assert_eq!(
                 *((addr + 8) as *const usize),
                 class_word,

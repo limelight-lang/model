@@ -196,16 +196,16 @@ mod tests {
     /// `static` properties.
     fn static_block(layout: *const Class) -> *mut u8 {
         let size = unsafe { (*layout).object_size } as usize;
-        let p = unsafe { std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align(size, 16).unwrap()) };
+        let p = unsafe {
+            std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align(size, 16).unwrap())
+        };
         assert!(!p.is_null());
         p
     }
 
     unsafe fn free_static_block(p: *mut u8, layout: *const Class) {
         let size = unsafe { (*layout).object_size } as usize;
-        unsafe {
-            std::alloc::dealloc(p, std::alloc::Layout::from_size_align(size, 16).unwrap())
-        };
+        unsafe { std::alloc::dealloc(p, std::alloc::Layout::from_size_align(size, 16).unwrap()) };
     }
 
     /// The heap case: a static's reference is the object's last one, so
@@ -217,7 +217,9 @@ mod tests {
         let cls = ClassBuilder::new("StaticHeld")
             .destructor(counting_destructor as *const ())
             .build();
-        let holder_layout = ClassBuilder::new("StaticsOfStaticHeld").prop("kept", true).build();
+        let holder_layout = ClassBuilder::new("StaticsOfStaticHeld")
+            .prop("kept", true)
+            .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
@@ -237,9 +239,17 @@ mod tests {
         // The static's store took the second reference; the local one goes.
         unsafe { assert!(!crate::refcount::ll_release(obj as *mut RcHeader)) };
 
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "still held by the static");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            0,
+            "still held by the static"
+        );
         run_thread_exit_teardown();
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "the static let go at exit");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            1,
+            "the static let go at exit"
+        );
 
         unsafe { free_static_block(block, holder_layout) };
         arena.reset(|_| {});
@@ -253,7 +263,9 @@ mod tests {
     fn an_arena_escapee_loses_its_hold_count_at_thread_exit() {
         let _g = crate::memory::block_pool::test_guard();
         let cls = ClassBuilder::new("StaticEscapee").build();
-        let holder_layout = ClassBuilder::new("StaticsOfEscapee").prop("kept", true).build();
+        let holder_layout = ClassBuilder::new("StaticsOfEscapee")
+            .prop("kept", true)
+            .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
@@ -301,7 +313,9 @@ mod tests {
         let cls = ClassBuilder::new("StaticOnAWorker")
             .destructor(record as *const ())
             .build();
-        let layout = ClassBuilder::new("StaticsOfAWorker").prop("kept", true).build();
+        let layout = ClassBuilder::new("StaticsOfAWorker")
+            .prop("kept", true)
+            .build();
         let cls = cls as usize;
         let layout = layout as usize;
 
@@ -439,7 +453,9 @@ mod tests {
         let second_cls = ClassBuilder::new("SecondStatic")
             .destructor(record_second as *const ())
             .build();
-        let layout = ClassBuilder::new("StaticsOfOrdering").prop("kept", true).build();
+        let layout = ClassBuilder::new("StaticsOfOrdering")
+            .prop("kept", true)
+            .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
@@ -493,7 +509,9 @@ mod tests {
         let cls = ClassBuilder::new("StaticWeakTarget")
             .destructor(record as *const ())
             .build();
-        let layout = ClassBuilder::new("StaticsOfWeakTarget").prop("kept", true).build();
+        let layout = ClassBuilder::new("StaticsOfWeakTarget")
+            .prop("kept", true)
+            .build();
         let cls = cls as usize;
         let layout = layout as usize;
 
@@ -527,9 +545,12 @@ mod tests {
         .join()
         .unwrap();
 
-        assert_eq!(SEEN.load(Ordering::Relaxed), 1, "the target died at thread exit");
+        assert_eq!(
+            SEEN.load(Ordering::Relaxed),
+            1,
+            "the target died at thread exit"
+        );
     }
-
 
     /// The reentrancy the pass's pop-one loop exists for: a
     /// `__destruct` reached mid-pass initializes a static block of its
@@ -573,7 +594,9 @@ mod tests {
 
         ORDER.lock().unwrap().clear();
         LATE.lock().unwrap().clear();
-        let layout = ClassBuilder::new("StaticsOfReentrant").prop("kept", true).build();
+        let layout = ClassBuilder::new("StaticsOfReentrant")
+            .prop("kept", true)
+            .build();
         let late_cls = ClassBuilder::new("LateStaticTarget")
             .destructor(late_target as *const ())
             .build();
@@ -611,5 +634,4 @@ mod tests {
         }
         arena.reset(|_| {});
     }
-
 }

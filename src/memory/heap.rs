@@ -90,8 +90,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::memory::block_pool::{
-    BLOCK_KIND_ENTITY, BLOCK_KIND_HEAP, BLOCK_MASK, BLOCK_PAYLOAD, BLOCK_SIZE,
-    BLOCKS_PER_REGION, BlockHeader, BlockPool, LINE_SIZE,
+    BLOCK_KIND_ENTITY, BLOCK_KIND_HEAP, BLOCK_MASK, BLOCK_PAYLOAD, BLOCK_SIZE, BLOCKS_PER_REGION,
+    BlockHeader, BlockPool, LINE_SIZE,
 };
 
 /// Size classes (bytes). Smallest class >= request is used. Chosen to
@@ -686,8 +686,13 @@ impl Heap {
         let mut found = false;
         while !block.is_null() {
             let next = unsafe { (*block).links.owned_next };
-            let pending =
-                unsafe { !(*block).remote.remote_free.load(Ordering::Relaxed).is_null() };
+            let pending = unsafe {
+                !(*block)
+                    .remote
+                    .remote_free
+                    .load(Ordering::Relaxed)
+                    .is_null()
+            };
             if pending && self.collect_remote(block) {
                 let b = unsafe { &mut (*block).private };
                 if b.used == 0 {
@@ -758,8 +763,14 @@ impl Heap {
         // borrow lasts exactly this call.
         self.collect_remote(unsafe { &mut *block });
 
-        let (used, free, bump, slots) =
-            unsafe { ((*block).private.used, (*block).private.free, (*block).private.bump, (*block).private.slots) };
+        let (used, free, bump, slots) = unsafe {
+            (
+                (*block).private.used,
+                (*block).private.free,
+                (*block).private.bump,
+                (*block).private.slots,
+            )
+        };
         // Counted after the collect above, so slots freed while the block
         // was ownerless are not mistaken for live ones. What remains
         // belongs to a thread that has already exited, so nothing will
@@ -829,7 +840,12 @@ impl Heap {
                 // and an empty block is worth more to the pool than to the
                 // abandoned list.
                 self.collect_remote_locked(block);
-                unsafe { (*block).shared.owner.store(std::ptr::null_mut(), Ordering::Release) };
+                unsafe {
+                    (*block)
+                        .shared
+                        .owner
+                        .store(std::ptr::null_mut(), Ordering::Release)
+                };
 
                 let b = unsafe { &mut (*block).private };
                 if b.used == 0 {
@@ -858,7 +874,12 @@ impl Heap {
         // Takes the raw block: it needs both halves, and they must be
         // reached separately — the atomic through a shared reference, the
         // private fields through an exclusive one.
-        let head = unsafe { (*block).remote.remote_free.swap(std::ptr::null_mut(), Ordering::Acquire) };
+        let head = unsafe {
+            (*block)
+                .remote
+                .remote_free
+                .swap(std::ptr::null_mut(), Ordering::Acquire)
+        };
         if head.is_null() {
             return;
         }
@@ -972,7 +993,12 @@ impl Heap {
     /// `_mi_page_thread_free_collect`.
     fn collect_remote(&mut self, block: *mut HeapBlockHeader) -> bool {
         // See [`collect_remote_locked`] on why this takes the raw block.
-        let head = unsafe { (*block).remote.remote_free.swap(std::ptr::null_mut(), Ordering::Acquire) };
+        let head = unsafe {
+            (*block)
+                .remote
+                .remote_free
+                .swap(std::ptr::null_mut(), Ordering::Acquire)
+        };
         if head.is_null() {
             return false;
         }
@@ -1815,8 +1841,7 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
             let class_size = SIZE_CLASSES[size_class as usize];
             let base = unsafe { (block as *mut u8).add(LINE_SIZE) };
             for s in 0..bump as usize {
-                let slot =
-                    unsafe { base.add(s * class_size) } as *mut crate::refcount::RcHeader;
+                let slot = unsafe { base.add(s * class_size) } as *mut crate::refcount::RcHeader;
                 if unsafe { (*slot).refcount } != 0 {
                     visit(slot);
                 }
@@ -2008,7 +2033,10 @@ mod tests {
         }
         // Ordinary allocation must not hand out a reserved cell.
         let p = unsafe { entity_alloc(48) };
-        assert!(!cells[..n].contains(&p), "a reserved cell was double-issued");
+        assert!(
+            !cells[..n].contains(&p),
+            "a reserved cell was double-issued"
+        );
         unsafe { crate::memory::stdapi::ll_free(p) };
         // Returned cells recirculate: the free-list is LIFO, so the
         // next allocation is the last cell returned.
@@ -2048,7 +2076,10 @@ mod tests {
         .join()
         .unwrap();
 
-        assert!(told, "installing into a slot that does not exist must report");
+        assert!(
+            told,
+            "installing into a slot that does not exist must report"
+        );
         assert!(heapless, "so the thread stays without a heap");
         assert!(refused, "and the allocation reports null");
     }
@@ -2336,7 +2367,10 @@ mod tests {
         let r = unsafe { crate::memory::stdapi::ll_malloc(40) };
         assert!(!e.is_null() && !r.is_null());
         unsafe {
-            assert_eq!((*HeapBlockHeader::of_ptr(e)).private.kind, BLOCK_KIND_ENTITY);
+            assert_eq!(
+                (*HeapBlockHeader::of_ptr(e)).private.kind,
+                BLOCK_KIND_ENTITY
+            );
             assert_eq!((*HeapBlockHeader::of_ptr(r)).private.kind, BLOCK_KIND_HEAP);
         }
         assert_ne!(
@@ -2504,7 +2538,6 @@ mod tests {
         const FREERS: usize = 4;
         const PER: usize = 500;
         const STAMP: u8 = 0xAB;
-
 
         let mut txs = Vec::with_capacity(FREERS);
         let mut freers = Vec::with_capacity(FREERS);

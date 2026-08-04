@@ -37,11 +37,7 @@ fn class() -> *const Class {
 fn create_release_die(c: &mut Criterion, cls: *const Class) {
     c.bench_function("lifecycle/create_release_die", |b| {
         b.iter(|| unsafe {
-            let obj = ll_object_new_abi(
-                std::ptr::null_mut(),
-                cls,
-                MemoryCategory::GcHeap as u32,
-            );
+            let obj = ll_object_new_abi(std::ptr::null_mut(), cls, MemoryCategory::GcHeap as u32);
             ll_object_constructed(std::ptr::null_mut(), obj);
             if ll_release(black_box(obj) as *mut RcHeader) {
                 ll_object_die(obj);
@@ -57,11 +53,8 @@ fn batch_plain(c: &mut Criterion, cls: *const Class) {
     c.bench_function("lifecycle/batch_64_plain_release", |b| {
         b.iter(|| unsafe {
             for _ in 0..BATCH {
-                let obj = ll_object_new_abi(
-                    std::ptr::null_mut(),
-                    cls,
-                    MemoryCategory::GcHeap as u32,
-                );
+                let obj =
+                    ll_object_new_abi(std::ptr::null_mut(), cls, MemoryCategory::GcHeap as u32);
                 ll_object_constructed(std::ptr::null_mut(), obj);
                 objects.push(obj);
             }
@@ -85,11 +78,8 @@ fn batch_batched(c: &mut Criterion, cls: *const Class) {
     c.bench_function("lifecycle/batch_64_batched_release", |b| {
         b.iter(|| unsafe {
             for _ in 0..BATCH {
-                let obj = ll_object_new_abi(
-                    std::ptr::null_mut(),
-                    cls,
-                    MemoryCategory::GcHeap as u32,
-                );
+                let obj =
+                    ll_object_new_abi(std::ptr::null_mut(), cls, MemoryCategory::GcHeap as u32);
                 ll_object_constructed(std::ptr::null_mut(), obj);
                 objects.push(obj);
             }
@@ -111,11 +101,7 @@ fn batch_batched(c: &mut Criterion, cls: *const Class) {
 /// buffered bit) and rc-walk pays only its whole-word header protocol.
 fn retain_release(c: &mut Criterion, cls: *const Class) {
     let obj = unsafe {
-        let obj = ll_object_new_abi(
-            std::ptr::null_mut(),
-            cls,
-            MemoryCategory::GcHeap as u32,
-        );
+        let obj = ll_object_new_abi(std::ptr::null_mut(), cls, MemoryCategory::GcHeap as u32);
         ll_object_constructed(std::ptr::null_mut(), obj);
         obj
     };
@@ -173,9 +159,7 @@ fn bulk(c: &mut Criterion, cls: *const Class) {
     }
 
     unsafe fn release_vector(objects: &mut Vec<*mut Object>) {
-        unsafe {
-            ll_release_vector(objects.as_ptr() as *const *mut RcHeader, objects.len())
-        };
+        unsafe { ll_release_vector(objects.as_ptr() as *const *mut RcHeader, objects.len()) };
         objects.clear();
     }
 

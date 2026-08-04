@@ -61,6 +61,25 @@ never pipe into a filter that can swallow a failure and let a commit
 through on a red suite (that happened once — see `ll-next-todo`'s
 flake note, 2026-07-27).
 
+## Formatting
+
+`rustfmt.toml` governs, and the tool decides — nothing here is formatted
+by hand. The catch is that **`rustfmt` is not installed on the default
+`stable` toolchain on this box**, so `cargo fmt` fails outright rather
+than reporting a clean tree, and it is easy to read that failure as "no
+formatting step exists here". It does:
+
+```
+cargo +1.94 fmt
+cargo +1.94 fmt --check      # what to run before a commit
+```
+
+The crate went unformatted from `3dd2d2a` (which added `rustfmt.toml`)
+until 2026-08-04 for exactly that reason. Re-formatting it was one
+mechanical commit touching 23 files; keeping it formatted costs nothing,
+and letting it drift again means the next such commit hides real changes
+inside it.
+
 ## Bugs first
 
 **A known bug is fixed before new work starts.** Not queued behind the

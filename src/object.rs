@@ -348,7 +348,10 @@ pub unsafe extern "C" fn ll_object_new_abi(
 /// # Safety
 /// `obj` must point to a live object whose slots are still readable.
 #[inline]
-pub(crate) unsafe fn for_each_counted_child(obj: *mut Object, mut visit: impl FnMut(*mut RcHeader)) {
+pub(crate) unsafe fn for_each_counted_child(
+    obj: *mut Object,
+    mut visit: impl FnMut(*mut RcHeader),
+) {
     let cls = unsafe { (*obj).class() };
     let base = obj as *mut u8;
 
@@ -670,7 +673,10 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
         },
         WEAKREF => unsafe { crate::weak::weakref_die(entity as *mut crate::weak::LLWeakRef) },
         STRING => unsafe { crate::string::string_die(entity as *mut crate::string::LLString) },
-        _ => debug_assert!(false, "teardown for an entity kind the crate cannot produce yet"),
+        _ => debug_assert!(
+            false,
+            "teardown for an entity kind the crate cannot produce yet"
+        ),
     }
     #[cfg(feature = "rc-walk")]
     crate::epoch::teardown_exit();
@@ -887,7 +893,10 @@ mod tests {
             let defaulted = Object::prop_at(obj, 16);
             let bare = Object::prop_at(obj, 32);
 
-            assert!(!defaulted.read().is_undef(), "a default means never tracked");
+            assert!(
+                !defaulted.read().is_undef(),
+                "a default means never tracked"
+            );
             assert_eq!(defaulted.read().tag(), Tag::Null);
             assert!(bare.read().is_undef(), "stamped by the factory");
 
@@ -956,8 +965,14 @@ mod tests {
         let mut ctx = LLContext { arena: &mut arena };
         unsafe {
             let obj = new_constructed(&mut ctx, cls, MemoryCategory::GcHeap);
-            let p_bit = (*cls).find_prop(crate::intern::intern_str("p")).unwrap().init_bit;
-            let n_bit = (*cls).find_prop(crate::intern::intern_str("n")).unwrap().init_bit;
+            let p_bit = (*cls)
+                .find_prop(crate::intern::intern_str("p"))
+                .unwrap()
+                .init_bit;
+            let n_bit = (*cls)
+                .find_prop(crate::intern::intern_str("n"))
+                .unwrap()
+                .init_bit;
 
             // The zero-fill made both uninitialized, no explicit store.
             assert!(!Object::init_bit_test(obj, p_bit));
@@ -997,7 +1012,10 @@ mod tests {
                 std::ptr::null_mut(),
             ));
             crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, child as *mut RcHeader);
-            assert!(Object::init_bit_test(obj, p_bit), "null is a value, still initialized");
+            assert!(
+                Object::init_bit_test(obj, p_bit),
+                "null is a value, still initialized"
+            );
             assert_eq!((*child).rc.refcount, 1, "the slot's reference released");
 
             // unset($obj->p) / unset($obj->n): back to uninitialized. The
@@ -1312,7 +1330,10 @@ mod tests {
             unsafe {
                 assert!(ll_instanceof(d, animal));
                 assert!(ll_instanceof(d, dog));
-                assert!(ll_instanceof(d, interface), "interface via inherited itable");
+                assert!(
+                    ll_instanceof(d, interface),
+                    "interface via inherited itable"
+                );
                 assert!(!ll_instanceof(r, animal));
                 assert!(!ll_instanceof(r, interface));
             }

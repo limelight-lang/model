@@ -48,7 +48,6 @@
 //! survives — the Zend-style discipline, with no new mechanism (no retain
 //! hook, no GC-window flag).
 
-
 use crate::object::Object;
 use crate::refcount::{
     CANDIDATE_INDEX_MASK, CANDIDATE_INDEX_MAX, CANDIDATE_INDEX_SHIFT, CYCLE_COLLECTOR_BUFFERED,
@@ -385,8 +384,7 @@ pub unsafe fn collect_cycles() -> usize {
 unsafe fn collect_cycles_inner() -> usize {
     let mut reclaimed = 0;
     loop {
-        let roots: Vec<*mut RcHeader> =
-            unsafe { std::mem::take(&mut *candidate_buffer()) };
+        let roots: Vec<*mut RcHeader> = unsafe { std::mem::take(&mut *candidate_buffer()) };
         if roots.is_empty() {
             return reclaimed;
         }
@@ -882,7 +880,11 @@ mod tests {
             assert!(!ll_release(a as *mut RcHeader));
             assert!(!ll_release(b as *mut RcHeader));
             collect_cycles();
-            assert_eq!(DTORS.load(Ordering::Relaxed), 2, "both ran once, no double free");
+            assert_eq!(
+                DTORS.load(Ordering::Relaxed),
+                2,
+                "both ran once, no double free"
+            );
         }
         set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
@@ -941,14 +943,28 @@ mod tests {
             let freed = collect_cycles();
             assert_eq!(DTORS.load(Ordering::Relaxed), 1);
             assert_eq!(freed, 0, "resurrected: nothing freed");
-            assert_eq!(Object::prop_at(l, 16).read().entity_ptr(), a as *mut RcHeader, "L keeps A");
-            assert_eq!(Object::prop_at(a, 16).read().entity_ptr(), b as *mut RcHeader, "A->B intact");
+            assert_eq!(
+                Object::prop_at(l, 16).read().entity_ptr(),
+                a as *mut RcHeader,
+                "L keeps A"
+            );
+            assert_eq!(
+                Object::prop_at(a, 16).read().entity_ptr(),
+                b as *mut RcHeader,
+                "A->B intact"
+            );
             assert_eq!((*a).rc.refcount, 2, "A: B->A + L->A");
             assert_eq!((*b).rc.refcount, 1, "B: A->B");
 
             // Drop the holder; the cycle is garbage again but __destruct
             // already ran, so it must not fire twice.
-            ref_store(arena_ptr, l as *mut RcHeader, Object::prop_at(l, 16), a as *mut RcHeader, Value::null());
+            ref_store(
+                arena_ptr,
+                l as *mut RcHeader,
+                Object::prop_at(l, 16),
+                a as *mut RcHeader,
+                Value::null(),
+            );
             assert!(ll_release(l as *mut RcHeader));
             crate::object::ll_object_die(l);
             assert_eq!(collect_cycles(), 2, "the un-held cycle is reclaimed");
@@ -1133,11 +1149,18 @@ mod tests {
             set_test_threshold(CANDIDATE_THRESHOLD);
 
             assert!(COLLECT_PENDING.with(|f| f.get()), "armed");
-            assert_eq!((*a).rc.refcount, 1, "cyclic garbage still live, not collected inline");
+            assert_eq!(
+                (*a).rc.refcount,
+                1,
+                "cyclic garbage still live, not collected inline"
+            );
 
             // Fire at a clean point: now the cycle is reclaimed.
             assert_eq!(ll_gc_maybe_collect(), 1);
-            assert!(!COLLECT_PENDING.with(|f| f.get()), "pending cleared after fire");
+            assert!(
+                !COLLECT_PENDING.with(|f| f.get()),
+                "pending cleared after fire"
+            );
         }
         arena.reset(|_| {});
     }
@@ -1162,8 +1185,15 @@ mod tests {
         unsafe { buffer_candidate(p) };
         FORCE_BUFFER_REFUSAL.store(false, Ordering::Relaxed);
 
-        assert!(unsafe { (*candidate_buffer()).is_empty() }, "nothing was recorded");
-        assert_eq!(e.flags & CYCLE_COLLECTOR_BUFFERED, 0, "and nothing was claimed");
+        assert!(
+            unsafe { (*candidate_buffer()).is_empty() },
+            "nothing was recorded"
+        );
+        assert_eq!(
+            e.flags & CYCLE_COLLECTOR_BUFFERED,
+            0,
+            "and nothing was claimed"
+        );
         assert!(COLLECT_PENDING.with(|f| f.get()), "a refusal arms instead");
 
         // Still bufferable once there is room again.
@@ -1179,7 +1209,9 @@ mod tests {
     /// scan — so this asserts the position itself, not just the outcome.
     #[test]
     fn forgetting_a_candidate_keeps_the_moved_one_findable() {
-        let mut h: Vec<RcHeader> = (0..4).map(|_| RcHeader::new(MemoryCategory::GcHeap, 0)).collect();
+        let mut h: Vec<RcHeader> = (0..4)
+            .map(|_| RcHeader::new(MemoryCategory::GcHeap, 0))
+            .collect();
         let p: Vec<*mut RcHeader> = h.iter_mut().map(|e| e as *mut RcHeader).collect();
         let buffer = || unsafe { (*candidate_buffer()).clone() };
 
@@ -1192,8 +1224,16 @@ mod tests {
             // Removes index 1 and moves p[3] into it.
             forget_candidate(p[1]);
             assert_eq!(buffer(), vec![p[0], p[3], p[2]]);
-            assert_eq!(decode_index(p[3]), Some(1), "the moved candidate knows where it is");
-            assert_eq!(decode_index(p[1]), None, "the removed one no longer claims a slot");
+            assert_eq!(
+                decode_index(p[3]),
+                Some(1),
+                "the moved candidate knows where it is"
+            );
+            assert_eq!(
+                decode_index(p[1]),
+                None,
+                "the removed one no longer claims a slot"
+            );
 
             forget_candidate(p[3]);
             assert_eq!(buffer(), vec![p[0], p[2]], "the moved candidate was found");

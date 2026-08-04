@@ -21,9 +21,9 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use crate::hash::hash_bytes;
 use crate::memory::immortal::immortal_alloc;
 use crate::refcount::MemoryCategory;
-use crate::hash::hash_bytes;
 use crate::string::{LLString, fits, init_at};
 
 /// Table value is a raw pointer; entries are immortal, so the pointers

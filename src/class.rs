@@ -31,8 +31,8 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::string::LLString;
 use crate::memory::immortal::immortal_alloc;
+use crate::string::LLString;
 
 pub const CLASS_FINAL: u32 = 1 << 0;
 pub const CLASS_ABSTRACT: u32 = 1 << 1;
@@ -863,7 +863,16 @@ mod tests {
         // no pointer runs. The scalar `age` is in neither — never traced.
         assert_eq!(
             dog.box_runs(),
-            &[Run { offset: 16, count: 1 }, Run { offset: 40, count: 1 }],
+            &[
+                Run {
+                    offset: 16,
+                    count: 1
+                },
+                Run {
+                    offset: 40,
+                    count: 1
+                }
+            ],
             "age is scalar-shaped, not traced"
         );
         assert!(dog.ptr_runs().is_empty());
@@ -888,26 +897,63 @@ mod tests {
 
         assert_eq!(base.find_prop(intern_str("defaulted")).unwrap().offset, 16);
         assert_eq!(base.find_prop(intern_str("bare")).unwrap().offset, 32);
-        assert_eq!(base.box_runs(), &[Run { offset: 16, count: 2 }]);
+        assert_eq!(
+            base.box_runs(),
+            &[Run {
+                offset: 16,
+                count: 2
+            }]
+        );
         assert_eq!(
             base.undef_runs(),
-            &[Run { offset: 32, count: 1 }],
+            &[Run {
+                offset: 32,
+                count: 1
+            }],
             "the defaultless tail of the box run"
         );
 
         // Declaration order survives the regrouping.
-        assert_eq!(base.find_prop(intern_str("bare")).unwrap().declaration_index, 0);
-        assert_eq!(base.find_prop(intern_str("defaulted")).unwrap().declaration_index, 1);
+        assert_eq!(
+            base.find_prop(intern_str("bare"))
+                .unwrap()
+                .declaration_index,
+            0
+        );
+        assert_eq!(
+            base.find_prop(intern_str("defaulted"))
+                .unwrap()
+                .declaration_index,
+            1
+        );
 
         // The subclass inherits the parent's undef run and appends its own.
         assert_eq!(sub.find_prop(intern_str("own_bare")).unwrap().offset, 48);
         assert_eq!(
             sub.box_runs(),
-            &[Run { offset: 16, count: 2 }, Run { offset: 48, count: 1 }]
+            &[
+                Run {
+                    offset: 16,
+                    count: 2
+                },
+                Run {
+                    offset: 48,
+                    count: 1
+                }
+            ]
         );
         assert_eq!(
             sub.undef_runs(),
-            &[Run { offset: 32, count: 1 }, Run { offset: 48, count: 1 }]
+            &[
+                Run {
+                    offset: 32,
+                    count: 1
+                },
+                Run {
+                    offset: 48,
+                    count: 1
+                }
+            ]
         );
     }
 
@@ -940,12 +986,24 @@ mod tests {
         assert_eq!(cls.find_prop(intern_str("n")).unwrap().init_bit, 49 * 8);
         assert_eq!(cls.find_prop(intern_str("p")).unwrap().init_bit, 49 * 8 + 1);
         assert_eq!(cls.find_prop(intern_str("b")).unwrap().init_bit, 49 * 8 + 2);
-        assert_eq!(cls.find_prop(intern_str("defaulted")).unwrap().init_bit, NO_INIT_BIT);
-        assert_eq!(cls.find_prop(intern_str("q")).unwrap().init_bit, NO_INIT_BIT);
+        assert_eq!(
+            cls.find_prop(intern_str("defaulted")).unwrap().init_bit,
+            NO_INIT_BIT
+        );
+        assert_eq!(
+            cls.find_prop(intern_str("q")).unwrap().init_bit,
+            NO_INIT_BIT
+        );
 
         // The nullable pointer is an ordinary member of the pointer trace
         // run — the bit is metadata beside the slot, not a representation.
-        assert_eq!(cls.ptr_runs(), &[Run { offset: 16, count: 2 }]);
+        assert_eq!(
+            cls.ptr_runs(),
+            &[Run {
+                offset: 16,
+                count: 2
+            }]
+        );
     }
 
     /// A subclass's own tracked slots get their own byte block: the
@@ -969,11 +1027,18 @@ mod tests {
         assert_eq!(parent.object_size, 32);
 
         // The subclass resumes at 26: its bool, then its own bitmap byte.
-        assert_eq!(sub.find_prop(intern_str("n")).unwrap().init_bit, 25 * 8, "parent bit unmoved");
+        assert_eq!(
+            sub.find_prop(intern_str("n")).unwrap().init_bit,
+            25 * 8,
+            "parent bit unmoved"
+        );
         assert_eq!(sub.find_prop(intern_str("b")).unwrap().offset, 26);
         assert_eq!(sub.find_prop(intern_str("b")).unwrap().init_bit, 27 * 8);
         assert_eq!(sub.layout_end, 28);
-        assert_eq!(sub.object_size, 32, "slot and block fit in the parent's tail padding");
+        assert_eq!(
+            sub.object_size, 32,
+            "slot and block fit in the parent's tail padding"
+        );
     }
 
     /// Nine tracked slots need two bitmap bytes; `init_bit` is an
@@ -1021,19 +1086,52 @@ mod tests {
 
         // One pointer run and one Box run; the scalar and the bool are in
         // neither.
-        assert_eq!(cls.ptr_runs(), &[Run { offset: 16, count: 1 }]);
-        assert_eq!(cls.box_runs(), &[Run { offset: 24, count: 1 }]);
+        assert_eq!(
+            cls.ptr_runs(),
+            &[Run {
+                offset: 16,
+                count: 1
+            }]
+        );
+        assert_eq!(
+            cls.box_runs(),
+            &[Run {
+                offset: 24,
+                count: 1
+            }]
+        );
 
         // Slot kinds are recorded per property.
-        assert_eq!(cls.find_prop(intern_str("next")).unwrap().kind, SlotKind::Pointer);
-        assert_eq!(cls.find_prop(intern_str("id")).unwrap().kind, SlotKind::Scalar);
-        assert_eq!(cls.find_prop(intern_str("ok")).unwrap().kind, SlotKind::Bool);
+        assert_eq!(
+            cls.find_prop(intern_str("next")).unwrap().kind,
+            SlotKind::Pointer
+        );
+        assert_eq!(
+            cls.find_prop(intern_str("id")).unwrap().kind,
+            SlotKind::Scalar
+        );
+        assert_eq!(
+            cls.find_prop(intern_str("ok")).unwrap().kind,
+            SlotKind::Bool
+        );
 
         // Declaration order is preserved though physical order regrouped.
-        assert_eq!(cls.find_prop(intern_str("next")).unwrap().declaration_index, 0);
-        assert_eq!(cls.find_prop(intern_str("data")).unwrap().declaration_index, 1);
-        assert_eq!(cls.find_prop(intern_str("id")).unwrap().declaration_index, 2);
-        assert_eq!(cls.find_prop(intern_str("ok")).unwrap().declaration_index, 3);
+        assert_eq!(
+            cls.find_prop(intern_str("next")).unwrap().declaration_index,
+            0
+        );
+        assert_eq!(
+            cls.find_prop(intern_str("data")).unwrap().declaration_index,
+            1
+        );
+        assert_eq!(
+            cls.find_prop(intern_str("id")).unwrap().declaration_index,
+            2
+        );
+        assert_eq!(
+            cls.find_prop(intern_str("ok")).unwrap().declaration_index,
+            3
+        );
 
         // The bool ends the layout mid-word: layout_end is unrounded (49),
         // object_size is it rounded up to 8 (56), leaving 7 bytes of tail.
@@ -1063,7 +1161,10 @@ mod tests {
         // stays 56 — the field cost nothing in allocation.
         assert_eq!(sub.find_prop(intern_str("flag")).unwrap().offset, 49);
         assert_eq!(sub.layout_end, 50);
-        assert_eq!(sub.object_size, 56, "own field fit in the parent's tail padding");
+        assert_eq!(
+            sub.object_size, 56,
+            "own field fit in the parent's tail padding"
+        );
     }
 
     #[test]

@@ -203,7 +203,10 @@ mod tests {
         let u = Value::undef();
         assert!(u.is_undef());
         assert!(!u.is_refcounted(), "undef is never traced or counted");
-        assert!(!Value::null().is_undef(), "an all-zero Box is null, not undef");
+        assert!(
+            !Value::null().is_undef(),
+            "an all-zero Box is null, not undef"
+        );
     }
 
     #[test]

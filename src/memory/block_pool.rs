@@ -473,7 +473,10 @@ mod tests {
             let base = r as usize;
             (block as usize) >= base && (block as usize) < base + REGION_SIZE
         });
-        assert!(covered, "a pooled block must fall inside a registered region");
+        assert!(
+            covered,
+            "a pooled block must fall inside a registered region"
+        );
 
         pool.put(block);
     }

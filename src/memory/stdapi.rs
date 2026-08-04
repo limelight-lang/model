@@ -170,10 +170,7 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
             });
             // Kind last (release under rc-walk): the collector snapshot
             // reads every block's kind concurrently.
-            crate::memory::block_pool::store_block_kind(
-                &raw mut (*block).kind,
-                BLOCK_KIND_LARGE,
-            );
+            crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, BLOCK_KIND_LARGE);
             (block as *mut u8).add(LINE_SIZE)
         }
     } else {

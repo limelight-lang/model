@@ -25,9 +25,9 @@ pub mod weak;
 
 pub use class::{Class, ClassBuilder};
 pub use intern::{intern, intern_str};
-pub use string::LLString;
 pub use memory::{Arena, BlockPool, Heap, LLContext, LimelightAlloc};
 pub use object::Object;
 pub use refcount::{MemoryCategory, RcHeader};
+pub use string::LLString;
 pub use value::{Tag, Value};
 pub use weak::LLWeakRef;

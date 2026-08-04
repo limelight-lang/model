@@ -419,7 +419,14 @@ pub unsafe extern "C" fn ll_store_ptr(
     slot: *mut *mut RcHeader,
     new: *mut RcHeader,
 ) -> bool {
-    unsafe { store_ptr(resolve_arena(ctx), MemoryCategory::from_flags(owner_cat), slot, new) }
+    unsafe {
+        store_ptr(
+            resolve_arena(ctx),
+            MemoryCategory::from_flags(owner_cat),
+            slot,
+            new,
+        )
+    }
 }
 
 /// C ABI: the `store_box` micro-op.
@@ -433,7 +440,14 @@ pub unsafe extern "C" fn ll_store_box(
     slot: *mut Value,
     new: Value,
 ) -> bool {
-    unsafe { store_box(resolve_arena(ctx), MemoryCategory::from_flags(owner_cat), slot, new) }
+    unsafe {
+        store_box(
+            resolve_arena(ctx),
+            MemoryCategory::from_flags(owner_cat),
+            slot,
+            new,
+        )
+    }
 }
 
 /// C ABI: the `drop` micro-op. `ctx` is unused in this composition — a
@@ -502,14 +516,18 @@ mod tests {
 
         unsafe { owner.store(&mut arena, pa) };
         assert_eq!(owner.entity_ptr(), pa);
-        assert_eq!(unsafe { (*pa).refcount }, 2, "initial + the slot's reference");
+        assert_eq!(
+            unsafe { (*pa).refcount },
+            2,
+            "initial + the slot's reference"
+        );
 
         unsafe { owner.store(&mut arena, pb) };
         assert_eq!(
             unsafe { (*pa).refcount },
             1,
             "displaced from a heap slot: released now"
-            );
+        );
         assert_eq!(unsafe { (*pb).refcount }, 2);
     }
 
@@ -528,14 +546,22 @@ mod tests {
         // Initializing store: publish only, no old to drop.
         assert!(unsafe { store_ptr(&mut arena, MemoryCategory::GcHeap, &mut slot, pa) });
         assert_eq!(slot, pa, "slot published as a bare 8-byte pointer");
-        assert_eq!(unsafe { (*pa).refcount }, 2, "initial + the slot's reference");
+        assert_eq!(
+            unsafe { (*pa).refcount },
+            2,
+            "initial + the slot's reference"
+        );
 
         // Overwriting store: publish the new pointer, then drop the old.
         let old = slot;
         assert!(unsafe { store_ptr(&mut arena, MemoryCategory::GcHeap, &mut slot, pb) });
         unsafe { drop_ref(MemoryCategory::GcHeap, old) };
         assert_eq!(slot, pb);
-        assert_eq!(unsafe { (*pa).refcount }, 1, "displaced from a heap slot: released");
+        assert_eq!(
+            unsafe { (*pa).refcount },
+            1,
+            "displaced from a heap slot: released"
+        );
         assert_eq!(unsafe { (*pb).refcount }, 2);
     }
 
@@ -550,7 +576,9 @@ mod tests {
     fn a_cow_value_leaving_the_arena_is_copied_rather_than_counted() {
         let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
-        let mut ctx = LLContext { arena: &raw mut arena };
+        let mut ctx = LLContext {
+            arena: &raw mut arena,
+        };
 
         let s = unsafe {
             crate::string::ll_string_new(&raw mut ctx, MemoryCategory::RequestArena, b"name")
@@ -570,7 +598,11 @@ mod tests {
             b"name",
             "and it is the same value"
         );
-        assert_eq!(unsafe { (*slot).refcount }, 1, "the slot is its only holder");
+        assert_eq!(
+            unsafe { (*slot).refcount },
+            1,
+            "the slot is its only holder"
+        );
         unsafe {
             assert_eq!((*s).flags & IS_ESCAPEE, 0, "a COW entity never escapes");
             assert_eq!((*s).refcount, 1, "the original keeps the count it had");
@@ -602,11 +634,19 @@ mod tests {
             0,
             "arena ref escaped into a long-lived slot"
         );
-        assert_eq!(unsafe { (*obj).refcount }, 1, "one holder, counted in the escapee");
+        assert_eq!(
+            unsafe { (*obj).refcount },
+            1,
+            "one holder, counted in the escapee"
+        );
 
         let mut escapees = Vec::new();
         arena.reset_with(|_| {}, |e| escapees.push(e));
-        assert_eq!(escapees, vec![obj], "the escapee itself, no slot dereferenced");
+        assert_eq!(
+            escapees,
+            vec![obj],
+            "the escapee itself, no slot dereferenced"
+        );
     }
 
     #[test]

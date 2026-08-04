@@ -161,10 +161,7 @@ fn checkpoint_attend() {
     // name, and a pickup inside one of its destructors would violate
     // the drain's no-other-guards contract (rc-walk.md, "When the
     // collector runs", step 4).
-    if MID_DRAIN.with(|d| d.get())
-        || TEARDOWN_DEPTH.with(|d| d.get()) != 0
-        || walk::walk_active()
-    {
+    if MID_DRAIN.with(|d| d.get()) || TEARDOWN_DEPTH.with(|d| d.get()) != 0 || walk::walk_active() {
         return;
     }
     MID_DRAIN.with(|d| d.set(true));
@@ -314,14 +311,22 @@ mod tests {
 
         unsafe { crate::gc::ll_gc_checkpoint_ack() };
         assert_eq!(handshake_acks(), before + 1, "the front acks");
-        assert_eq!(outstanding_verdicts(), 1, "ack only: no pickup before the run");
+        assert_eq!(
+            outstanding_verdicts(),
+            1,
+            "ack only: no pickup before the run"
+        );
 
         assert!(!unsafe { crate::refcount::ll_release_batch(obj as *mut RcHeader) });
         assert_eq!(outstanding_verdicts(), 1, "the run itself never picks up");
 
         unsafe { crate::gc::ll_gc_checkpoint() };
         assert_eq!(outstanding_verdicts(), 0, "the trailing call picks up");
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "the posted ring drained");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            2,
+            "the posted ring drained"
+        );
 
         unsafe {
             assert!(ll_release(obj as *mut RcHeader));
@@ -405,8 +410,16 @@ mod tests {
         let transients = [a as *mut RcHeader];
         unsafe { crate::object::ll_release_vector(transients.as_ptr(), transients.len()) };
 
-        assert_eq!(outstanding_verdicts(), 0, "the trailing pickup served the message");
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "judged after the release: collected");
+        assert_eq!(
+            outstanding_verdicts(),
+            0,
+            "the trailing pickup served the message"
+        );
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            2,
+            "judged after the release: collected"
+        );
         let seen = walked_addresses();
         assert!(!seen.contains(&(a as usize)) && !seen.contains(&(b as usize)));
         arena.reset(|_| {});
@@ -470,7 +483,11 @@ mod tests {
             "the checkpoint inside the walk left the message pending"
         );
         assert_eq!(outstanding_verdicts(), 1, "still pending after the walk");
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "the live ring untouched");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            0,
+            "the live ring untouched"
+        );
 
         // Outside the walk the pickup proceeds: the live ring fails the
         // exact test and the message is dropped whole.
@@ -557,7 +574,11 @@ mod tests {
         post_confirmation(vec![a as *mut RcHeader, b as *mut RcHeader]);
         checkpoint();
         assert_eq!(outstanding_verdicts(), 0);
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "no destructor on a live ring");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            0,
+            "no destructor on a live ring"
+        );
         let seen = walked_addresses();
         assert!(seen.contains(&(a as usize)) && seen.contains(&(b as usize)));
 
@@ -598,16 +619,27 @@ mod tests {
         // The stale hypothesis is overtaken by an ordinary death:
         // eager — destructor NOW, free parked.
         unsafe {
-            assert!(ll_release(x as *mut RcHeader), "eager: the death is reported");
+            assert!(
+                ll_release(x as *mut RcHeader),
+                "eager: the death is reported"
+            );
             crate::object::ll_object_die(x);
         }
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "destructor at the natural point");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            1,
+            "destructor at the natural point"
+        );
 
         // The drain meets the corpse: message dropped whole, nothing
         // touched — the destructor count must not move.
         checkpoint();
         assert_eq!(outstanding_verdicts(), 0, "dropped counts as drained");
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "the corpse is not torn again");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            1,
+            "the corpse is not torn again"
+        );
 
         // Mid-epoch the slot stays out of circulation (parked).
         let y = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
@@ -620,7 +652,10 @@ mod tests {
         // allocation, and the next one gets different memory.
         let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        assert_eq!(a as usize, x_addr, "LIFO: the flushed slot is back in circulation");
+        assert_eq!(
+            a as usize, x_addr,
+            "LIFO: the flushed slot is back in circulation"
+        );
         assert_ne!(b as usize, x_addr, "and was enqueued exactly once");
         unsafe {
             for &e in &[y, a, b] {
@@ -700,7 +735,11 @@ mod tests {
             crate::object::ll_object_die(x);
             // The dispose's exit picked up and drained the ring.
         }
-        assert_eq!(outstanding_verdicts(), 0, "the ring drained at the dispose's exit");
+        assert_eq!(
+            outstanding_verdicts(),
+            0,
+            "the ring drained at the dispose's exit"
+        );
         assert_eq!(RING_DESTRUCTS.load(Ordering::Relaxed), 2);
         assert_eq!(
             GOT.load(Ordering::Relaxed),
@@ -764,7 +803,8 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let mk = |ctx: &mut LLContext, cls| unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) };
+        let mk =
+            |ctx: &mut LLContext, cls| unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) };
         // Two independent condemned rings, one message each.
         let (a1, a2) = (mk(&mut ctx, alloc_cls), mk(&mut ctx, alloc_cls));
         let (b1, b2) = (mk(&mut ctx, plain_cls), mk(&mut ctx, plain_cls));
@@ -789,7 +829,11 @@ mod tests {
             2,
             "only the first ring's destructors had run at that point"
         );
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 4, "outer loop drained the rest");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            4,
+            "outer loop drained the rest"
+        );
         assert_eq!(outstanding_verdicts(), 0);
         let seen = walked_addresses();
         for &e in &[a1, a2, b1, b2] {

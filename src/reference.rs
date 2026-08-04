@@ -31,10 +31,7 @@ pub struct LLReference {
 ///
 /// # Safety
 /// `ctx` per [`crate::memory::context::ll_arena_alloc`].
-pub unsafe fn ll_reference_new(
-    ctx: *mut LLContext,
-    category: MemoryCategory,
-) -> *mut LLReference {
+pub unsafe fn ll_reference_new(ctx: *mut LLContext, category: MemoryCategory) -> *mut LLReference {
     let size = size_of::<LLReference>();
     let mem = match category {
         MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },

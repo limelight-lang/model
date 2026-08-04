@@ -135,7 +135,10 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 break;
             }
             rounds += 1;
-            assert!(rounds <= ARENA_RESET_MAX_ROUNDS, "arena reset did not converge");
+            assert!(
+                rounds <= ARENA_RESET_MAX_ROUNDS,
+                "arena reset did not converge"
+            );
         }
 
         // --- Count + retain the new survivors, BEFORE any release. Their
@@ -201,7 +204,10 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             }
         }
         rounds += 1;
-        assert!(rounds <= ARENA_RESET_MAX_ROUNDS, "arena reset did not converge");
+        assert!(
+            rounds <= ARENA_RESET_MAX_ROUNDS,
+            "arena reset did not converge"
+        );
     }
 
     // The weak walk — after every destructor has settled and the
@@ -262,8 +268,8 @@ unsafe fn carry_external_memory(arena: *mut Arena, surv: *mut RcHeader) -> bool 
 /// `surv` must be a live entity.
 unsafe fn external_payload(surv: *mut RcHeader) -> Option<*mut crate::string::LLStringDynamic> {
     let flags = unsafe { (*surv).flags };
-    let is_string = flags & crate::refcount::ENTITY_KIND_MASK
-        == crate::refcount::EntityKind::String.to_flags();
+    let is_string =
+        flags & crate::refcount::ENTITY_KIND_MASK == crate::refcount::EntityKind::String.to_flags();
     if is_string && flags & crate::refcount::COW == 0 {
         Some(surv as *mut crate::string::LLStringDynamic)
     } else {
@@ -411,10 +417,7 @@ unsafe fn mark_one(
 /// # Safety
 /// Every survivor is live, the fixpoint has settled, and no user code can
 /// run again before the blocks are disposed of.
-unsafe fn reconcile_cow_counts(
-    survivors: &[*mut RcHeader],
-    at_promotion: &[(*mut RcHeader, u32)],
-) {
+unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mut RcHeader, u32)]) {
     if at_promotion.is_empty() {
         return;
     }
@@ -442,7 +445,10 @@ unsafe fn reconcile_cow_counts(
     for &(s, _) in at_promotion {
         let (edges, delta) = settled[&(s as usize)];
         let settled_count = edges as i64 + delta;
-        debug_assert!(settled_count >= 0, "a COW survivor lost more references than it had");
+        debug_assert!(
+            settled_count >= 0,
+            "a COW survivor lost more references than it had"
+        );
         unsafe { (*s).refcount = settled_count.max(0) as u32 };
     }
 }
@@ -473,12 +479,10 @@ fn traceable_in_full(flags: u32) -> bool {
 /// (their release-at-reset record no longer matches a dying holder).
 unsafe fn count_children(surv: *mut RcHeader) {
     unsafe {
-        crate::walk::trace_entity(surv, |child| {
-            match (*child).memory_category() {
-                MemoryCategory::RequestArena => (*child).refcount += 1,
-                MemoryCategory::GcHeap => ll_retain(child),
-                _ => {}
-            }
+        crate::walk::trace_entity(surv, |child| match (*child).memory_category() {
+            MemoryCategory::RequestArena => (*child).refcount += 1,
+            MemoryCategory::GcHeap => ll_retain(child),
+            _ => {}
         });
     }
 }
@@ -554,9 +558,8 @@ mod tests {
         let mut ctx = LLContext { arena: &mut arena };
         let holder = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
         let target = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
-        let r = unsafe {
-            crate::reference::ll_reference_new(&mut ctx, MemoryCategory::RequestArena)
-        };
+        let r =
+            unsafe { crate::reference::ll_reference_new(&mut ctx, MemoryCategory::RequestArena) };
 
         unsafe {
             assert!(ref_store(
@@ -584,7 +587,7 @@ mod tests {
             unsafe { (*(target as *mut RcHeader)).memory_category() },
             MemoryCategory::GcHeap,
             "the referent stayed behind in the dying arena"
-            );
+        );
         assert_eq!(
             unsafe { (*(target as *mut RcHeader)).refcount },
             1,
@@ -849,7 +852,11 @@ mod tests {
 
             // A survived (H2 holds it), promoted with exactly one
             // reference, and no freed slot was ever dereferenced.
-            assert_eq!((*a).rc.memory_category(), MemoryCategory::GcHeap, "promoted");
+            assert_eq!(
+                (*a).rc.memory_category(),
+                MemoryCategory::GcHeap,
+                "promoted"
+            );
             assert_eq!((*a).rc.refcount, 1, "exactly H2's reference, not two");
 
             // H2 dies for real: A cascades to teardown.
@@ -870,7 +877,9 @@ mod tests {
             DTORS.fetch_add(1, Ordering::Relaxed);
         }
 
-        let val_cls = ClassBuilder::new("Val").destructor(dtor as *const ()).build();
+        let val_cls = ClassBuilder::new("Val")
+            .destructor(dtor as *const ())
+            .build();
         let holder_cls = ClassBuilder::new("Holder").prop("x", true).build();
 
         let mut arena = Arena::new();
@@ -887,7 +896,11 @@ mod tests {
             // its destructor runs. The old code released A but never tore it
             // down.
             store_prop(&mut arena, owner, 16, b);
-            assert_eq!(DTORS.load(Ordering::Relaxed), 1, "displaced A was torn down");
+            assert_eq!(
+                DTORS.load(Ordering::Relaxed),
+                1,
+                "displaced A was torn down"
+            );
 
             // cleanup: owner death releases b's slot reference (b.rc 2 → 1),
             // then drop b's creator reference.
@@ -945,7 +958,8 @@ mod tests {
         let holder = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
         let cache = unsafe { new_constructed(ctx_ptr, cache_cls, MemoryCategory::GcHeap) };
         let keeper = unsafe { new_constructed(ctx_ptr, keeper_cls, MemoryCategory::RequestArena) };
-        let container = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::RequestArena) };
+        let container =
+            unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::RequestArena) };
         let dying = unsafe { new_constructed(ctx_ptr, dying_cls, MemoryCategory::GcHeap) };
         CACHE.store(cache as usize, Ordering::Relaxed);
 
@@ -1004,7 +1018,13 @@ mod tests {
                 let slot = Object::prop_at(o, 16);
                 let old = entity_checked(&*slot);
                 let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
-                assert!(ref_store(arena, o as *mut RcHeader, slot, old, Value::null()));
+                assert!(ref_store(
+                    arena,
+                    o as *mut RcHeader,
+                    slot,
+                    old,
+                    Value::null()
+                ));
             }
         }
 
@@ -1023,7 +1043,8 @@ mod tests {
 
         let holder = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
         let keeper = unsafe { new_constructed(ctx_ptr, keeper_cls, MemoryCategory::RequestArena) };
-        let dropper = unsafe { new_constructed(ctx_ptr, dropper_cls, MemoryCategory::RequestArena) };
+        let dropper =
+            unsafe { new_constructed(ctx_ptr, dropper_cls, MemoryCategory::RequestArena) };
         DROPPER.store(dropper as usize, Ordering::Relaxed);
 
         let s = unsafe {
@@ -1058,7 +1079,7 @@ mod tests {
                 (*s).memory_category(),
                 MemoryCategory::GcHeap,
                 "the string survived with its keeper"
-                );
+            );
             assert_eq!(
                 (*s).refcount,
                 1,
@@ -1086,8 +1107,9 @@ mod tests {
             let s = SURVIVOR.load(Ordering::Relaxed) as *mut Object;
             // `$s->next = new Node();` — a fresh arena object stored into an
             // already-traced survivor (arena→arena: not an escape).
-            let node =
-                unsafe { new_constructed(std::ptr::null_mut(), node_cls, MemoryCategory::RequestArena) };
+            let node = unsafe {
+                new_constructed(std::ptr::null_mut(), node_cls, MemoryCategory::RequestArena)
+            };
             NEW_CHILD.store(node as usize, Ordering::Relaxed);
             unsafe {
                 let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
@@ -1113,7 +1135,8 @@ mod tests {
 
         let holder = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
         let s = unsafe { new_constructed(ctx_ptr, node_cls, MemoryCategory::RequestArena) };
-        let _trigger = unsafe { new_constructed(ctx_ptr, trigger_cls, MemoryCategory::RequestArena) };
+        let _trigger =
+            unsafe { new_constructed(ctx_ptr, trigger_cls, MemoryCategory::RequestArena) };
 
         NODE_CLS.store(node_cls as usize, Ordering::Relaxed);
         SURVIVOR.store(s as usize, Ordering::Relaxed);
@@ -1131,7 +1154,11 @@ mod tests {
         let node = NEW_CHILD.load(Ordering::Relaxed) as *mut Object;
         assert!(!node.is_null(), "the destructor created the child");
         unsafe {
-            assert_eq!((*s).rc.memory_category(), MemoryCategory::GcHeap, "survivor promoted");
+            assert_eq!(
+                (*s).rc.memory_category(),
+                MemoryCategory::GcHeap,
+                "survivor promoted"
+            );
             assert_eq!(
                 (*node).rc.memory_category(),
                 MemoryCategory::GcHeap,
@@ -1168,7 +1195,9 @@ mod tests {
         }
 
         let cont_cls = ClassBuilder::new("Container").prop("x", true).build();
-        let a_cls = ClassBuilder::new("A").destructor(a_dtor as *const ()).build();
+        let a_cls = ClassBuilder::new("A")
+            .destructor(a_dtor as *const ())
+            .build();
         let b_cls = ClassBuilder::new("B").build();
 
         // One raw pointer each, reused: `a_dtor` reenters and resolves
@@ -1199,7 +1228,11 @@ mod tests {
 
             // B was retained by the store and released once by the re-drained
             // log: back to the creator's single reference (not leaked at 2).
-            assert_eq!((*b).rc.refcount, 1, "B's late release-log entry was drained");
+            assert_eq!(
+                (*b).rc.refcount,
+                1,
+                "B's late release-log entry was drained"
+            );
 
             assert!(ll_release(b as *mut RcHeader));
             ll_object_die(b);

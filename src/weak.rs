@@ -136,7 +136,10 @@ pub unsafe extern "C" fn ll_weakref_create(
         // Bit set ⇔ row exists, on this thread; a miss would mean the
         // invariant broke somewhere else. Recover by rebuilding in
         // release rather than handing out a null.
-        debug_assert!(cell.is_some(), "HAS_WEAK_REFERENCES set with no weak-table row");
+        debug_assert!(
+            cell.is_some(),
+            "HAS_WEAK_REFERENCES set with no weak-table row"
+        );
         if let Some(cell) = cell {
             unsafe { ll_retain(cell as *mut RcHeader) };
             return cell;
@@ -186,7 +189,10 @@ pub unsafe extern "C" fn ll_weakref_get(cell: *mut LLWeakRef) -> *mut RcHeader {
 /// `target` must be a live entity on its owning thread, bit 7 set.
 pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
     let cell = unsafe { (*weak_table()).remove(&(target as usize)) };
-    debug_assert!(cell.is_some(), "HAS_WEAK_REFERENCES set with no weak-table row");
+    debug_assert!(
+        cell.is_some(),
+        "HAS_WEAK_REFERENCES set with no weak-table row"
+    );
     if let Some(cell) = cell {
         unsafe { (*cell).target = std::ptr::null_mut() };
     }
@@ -227,7 +233,8 @@ pub(crate) unsafe fn weakref_die(cell: *mut LLWeakRef) {
     }
     // Always GcHeap by construction; the category read keeps the
     // teardown shape uniform with `reference_die`.
-    if unsafe { crate::object::header_category(cell as *const RcHeader) } == MemoryCategory::GcHeap {
+    if unsafe { crate::object::header_category(cell as *const RcHeader) } == MemoryCategory::GcHeap
+    {
         unsafe { crate::memory::stdapi::ll_free(cell as *mut u8) };
     }
 }
@@ -317,7 +324,11 @@ mod tests {
 
             let got = unsafe { ll_weakref_get(w) };
             assert_eq!(got, obj as *mut RcHeader);
-            assert_eq!(unsafe { (*obj).rc.refcount }, 2, "get returned a strong reference");
+            assert_eq!(
+                unsafe { (*obj).rc.refcount },
+                2,
+                "get returned a strong reference"
+            );
             assert!(!unsafe { ll_release(got) });
 
             // Death notifies: the cell reads null, the flag is gone.
@@ -377,7 +388,10 @@ mod tests {
         let got = unsafe { ll_weakref_get(cell) };
         SEEN_BY_OWN_DESTRUCTOR.store(got as usize, Ordering::Relaxed);
         if !got.is_null() {
-            assert!(!unsafe { ll_release(got) }, "the object is alive mid-destructor");
+            assert!(
+                !unsafe { ll_release(got) },
+                "the object is alive mid-destructor"
+            );
         }
     }
 
@@ -460,7 +474,10 @@ mod tests {
                 "invalidation only after teardown commits: a resurrected \
                  object keeps resolving"
             );
-            assert!(!unsafe { ll_release(obj as *mut RcHeader) }, "the get retained");
+            assert!(
+                !unsafe { ll_release(obj as *mut RcHeader) },
+                "the get retained"
+            );
 
             // The second, final death nulls it.
             assert!(unsafe { ll_release(obj as *mut RcHeader) });
@@ -527,7 +544,9 @@ mod tests {
     #[test]
     fn rc_trace_cycle_collection_nulls_the_cell() {
         let _g = crate::memory::block_pool::test_guard();
-        let cls = ClassBuilder::new("WeakTraceRing").prop("next", true).build();
+        let cls = ClassBuilder::new("WeakTraceRing")
+            .prop("next", true)
+            .build();
 
         /// Real store through the barrier: retain + whole-value write.
         unsafe fn link(arena: *mut Arena, from: *mut Object, to: *mut Object) {
@@ -678,7 +697,10 @@ mod tests {
         let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
         let w = unsafe { ll_weakref_create(&mut ctx, obj as *mut RcHeader) };
         assert_eq!(unsafe { ll_weakref_get(w) }, obj as *mut RcHeader);
-        assert!(!unsafe { ll_release(obj as *mut RcHeader) }, "arena objects are not counted");
+        assert!(
+            !unsafe { ll_release(obj as *mut RcHeader) },
+            "arena objects are not counted"
+        );
 
         arena.reset(|_| {});
         assert!(
@@ -722,7 +744,10 @@ mod tests {
             obj as *mut RcHeader,
             "a promoted survivor is alive — reset must not null its cell"
         );
-        assert!(!unsafe { ll_release(obj as *mut RcHeader) }, "the get retained");
+        assert!(
+            !unsafe { ll_release(obj as *mut RcHeader) },
+            "the get retained"
+        );
 
         // The promoted object now dies the ordinary counted death.
         assert!(unsafe { ll_release(obj as *mut RcHeader) });

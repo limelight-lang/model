@@ -311,7 +311,10 @@ impl BufferArena {
                 }
                 link = &raw mut (**link).private.owned_next;
             }
-            (*block).shared.owner.store(std::ptr::null_mut(), Ordering::Release);
+            (*block)
+                .shared
+                .owner
+                .store(std::ptr::null_mut(), Ordering::Release);
             (*block).private.kind = 0;
         }
         BlockPool::global().put(block as *mut BlockHeader);
@@ -419,7 +422,12 @@ impl BufferArena {
             // Collect first: a block that the posted frees have emptied
             // is worth more to the pool than to the abandoned list.
             let empty = self.collect_remote(block);
-            unsafe { (*block).shared.owner.store(std::ptr::null_mut(), Ordering::Release) };
+            unsafe {
+                (*block)
+                    .shared
+                    .owner
+                    .store(std::ptr::null_mut(), Ordering::Release)
+            };
             if empty {
                 unsafe {
                     (*block).private.kind = 0;
@@ -809,7 +817,11 @@ mod tests {
                 "live is the owner's count, and a posted chunk still counts"
             );
             assert!(
-                !(*block).remote.remote_free.load(Ordering::Relaxed).is_null(),
+                !(*block)
+                    .remote
+                    .remote_free
+                    .load(Ordering::Relaxed)
+                    .is_null(),
                 "the chunk belongs on the block's posting stack"
             );
         }
@@ -818,7 +830,11 @@ mod tests {
         // the block empty enough to go home.
         owner.collect_owned();
         unsafe {
-            assert_eq!((*block).private.kind, 0, "collected and returned to the pool");
+            assert_eq!(
+                (*block).private.kind,
+                0,
+                "collected and returned to the pool"
+            );
             owner.free(big, big_size);
         }
     }

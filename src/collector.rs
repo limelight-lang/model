@@ -24,8 +24,7 @@ use crate::memory::deferred_free;
 use crate::memory::heap::{EntityBlockSnapshot, snapshot_entity_blocks};
 use crate::refcount::{
     ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EPOCH_BYTE_MASK, EPOCH_BYTE_SHIFT, EntityKind,
-    MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, collector_load_header,
-    collector_stamp_epoch,
+    MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, collector_load_header, collector_stamp_epoch,
 };
 use crate::walk::garbage_components;
 
@@ -164,7 +163,10 @@ impl Epoch {
     /// scans whole blocks and virgin slots skip on the occupancy test
     /// (`heap::EntityBlockSnapshot`).
     pub fn snapshot(&mut self) {
-        debug_assert!(self.acked(), "snapshot before the activity bit was published");
+        debug_assert!(
+            self.acked(),
+            "snapshot before the activity bit was published"
+        );
         self.blocks = snapshot_entity_blocks();
         let mut total: u32 = 0;
         self.first_slot = self
@@ -251,7 +253,12 @@ impl Epoch {
             let dropped = &mut self.stats.dropped_edges;
             trace_mature(entity, kind, |field, raw, child| {
                 match census_row(blocks, first_slot, slot_rows, child as usize) {
-                    Some(dst) => edges.push(Edge { src: i as u32, dst, field, raw }),
+                    Some(dst) => edges.push(Edge {
+                        src: i as u32,
+                        dst,
+                        field,
+                        raw,
+                    }),
                     None => *dropped += 1,
                 }
             });
@@ -335,8 +342,10 @@ impl Epoch {
             }
             if clean {
                 self.stats.confirmed += 1;
-                let members: Vec<*mut RcHeader> =
-                    component.iter().map(|&i| self.entities[i as usize]).collect();
+                let members: Vec<*mut RcHeader> = component
+                    .iter()
+                    .map(|&i| self.entities[i as usize])
+                    .collect();
                 protocol::post_confirmation(members);
             } else {
                 self.stats.acquitted += 1;
@@ -410,7 +419,11 @@ fn census_row(
 /// pointer at `+8` is safe to chase *because* the entity is mature: it
 /// was published epochs ago, and every handshake since ordered that
 /// store before this load.
-fn trace_mature(entity: *mut RcHeader, kind: u32, mut visit: impl FnMut(usize, u64, *mut RcHeader)) {
+fn trace_mature(
+    entity: *mut RcHeader,
+    kind: u32,
+    mut visit: impl FnMut(usize, u64, *mut RcHeader),
+) {
     use std::sync::atomic::AtomicU64;
     #[inline]
     fn load_cell(addr: usize) -> u64 {
@@ -564,8 +577,7 @@ mod tests {
             for chained in [false, true] {
                 let mut objects: Vec<*mut Object> = Vec::with_capacity(n);
                 for i in 0..n {
-                    let obj =
-                        unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+                    let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
                     if chained {
                         // Slot ref + our handle: rc 2, externally live,
                         // never condemned; the walk still chases the edge.
@@ -681,7 +693,9 @@ mod tests {
             .prop("child", true)
             .destructor(counting_destructor as *const ())
             .build();
-        let holder_cls = ClassBuilder::new("EpochPromotedHolder").prop("head", true).build();
+        let holder_cls = ClassBuilder::new("EpochPromotedHolder")
+            .prop("head", true)
+            .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
@@ -711,10 +725,19 @@ mod tests {
         }
 
         let first = stepped_epoch();
-        assert!(first.stamped_new >= 2, "the promoted pair is new to the collector");
+        assert!(
+            first.stamped_new >= 2,
+            "the promoted pair is new to the collector"
+        );
         let second = stepped_epoch();
-        assert!(second.walked >= 2, "a retained block's occupants are walkable");
-        assert_eq!(second.confirmed, 1, "the promoted ring is one confirmed component");
+        assert!(
+            second.walked >= 2,
+            "a retained block's occupants are walkable"
+        );
+        assert_eq!(
+            second.confirmed, 1,
+            "the promoted ring is one confirmed component"
+        );
         assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2);
         assert!(!walked_addresses().contains(&(a as usize)));
     }
@@ -791,7 +814,10 @@ mod tests {
         unsafe { ll_retain(a as *mut RcHeader) };
         checkpoint(); // ack
         e.recheck_and_post();
-        assert_eq!(e.stats.acquitted, 1, "the held borrow acquits by difference");
+        assert_eq!(
+            e.stats.acquitted, 1,
+            "the held borrow acquits by difference"
+        );
         assert_eq!(e.stats.confirmed, 0);
         assert_eq!(
             crate::epoch::outstanding_verdicts(),
@@ -802,7 +828,11 @@ mod tests {
         checkpoint(); // flush
         assert!(!unsafe { ll_release(a as *mut RcHeader) }); // borrow ends
 
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 0, "acquitted: nothing died");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            0,
+            "acquitted: nothing died"
+        );
         let seen = walked_addresses();
         assert!(seen.contains(&(a as usize)) && seen.contains(&(b as usize)));
 
@@ -916,7 +946,9 @@ mod tests {
     #[test]
     fn a_mid_epoch_newcomer_is_skipped_and_pins_its_target() {
         let _g = crate::memory::block_pool::test_guard();
-        let cls = ClassBuilder::new("CollectorNewcomer").prop("child", true).build();
+        let cls = ClassBuilder::new("CollectorNewcomer")
+            .prop("child", true)
+            .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
@@ -956,7 +988,9 @@ mod tests {
     #[test]
     fn an_edge_into_a_recycled_slot_is_dropped_not_recorded() {
         let _g = crate::memory::block_pool::test_guard();
-        let cls = ClassBuilder::new("CollectorRecycled").prop("child", true).build();
+        let cls = ClassBuilder::new("CollectorRecycled")
+            .prop("child", true)
+            .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
@@ -977,7 +1011,10 @@ mod tests {
         // Mid-epoch: the free list hands the victim's slot to a newcomer,
         // and the mature holder points at it.
         let newcomer = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        assert_eq!(newcomer as usize, victim_addr, "LIFO free list: slot reused");
+        assert_eq!(
+            newcomer as usize, victim_addr,
+            "LIFO free list: slot reused"
+        );
         unsafe { tie(holder, 16, newcomer) };
         e.walk();
         e.judge();
@@ -1002,7 +1039,9 @@ mod tests {
     #[test]
     fn an_edge_into_a_slot_interior_is_dropped() {
         let _g = crate::memory::block_pool::test_guard();
-        let cls = ClassBuilder::new("CollectorInterior").prop("child", true).build();
+        let cls = ClassBuilder::new("CollectorInterior")
+            .prop("child", true)
+            .build();
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
@@ -1079,12 +1118,13 @@ mod tests {
             // then drop the displaced s1: it dies, cascading s3.
             ll_retain(s2 as *mut RcHeader);
             tie(s2, 16, s2);
-            crate::memory::barrier::drop_ref(
-                MemoryCategory::GcHeap,
-                s1 as *mut RcHeader,
-            );
+            crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, s1 as *mut RcHeader);
         }
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "s1 and s3 died ordinarily");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            2,
+            "s1 and s3 died ordinarily"
+        );
         assert_eq!(unsafe { (*s2).rc.refcount }, 2, "fr2 + self-loop");
 
         let mut e = Epoch::open();
@@ -1098,7 +1138,10 @@ mod tests {
         }
         e.walk_edges(); // records BOTH self-edges: in[s2] = 2
         e.judge();
-        assert_eq!(e.stats.candidates, 1, "the mask worked: {{s2}} is a candidate");
+        assert_eq!(
+            e.stats.candidates, 1,
+            "the mask worked: {{s2}} is a candidate"
+        );
         e.condemn();
         checkpoint();
         e.recheck_and_post();
@@ -1107,14 +1150,25 @@ mod tests {
         let _ = e.close();
         checkpoint();
         assert!(walked_addresses().contains(&(s2 as usize)), "s2 lives");
-        assert_eq!(unsafe { (*s2).rc.refcount }, 3, "fr2 + two self-loops, intact");
+        assert_eq!(
+            unsafe { (*s2).rc.refcount },
+            3,
+            "fr2 + two self-loops, intact"
+        );
 
         // Gate 2, independently: drive the same verdict PAST the filter,
         // exactly what a filterless confirm would post.
         crate::epoch::post_confirmation(vec![s2 as *mut RcHeader]);
         checkpoint();
-        assert!(walked_addresses().contains(&(s2 as usize)), "exact test: 3 ≠ indeg 2");
-        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "no destructor ran on s2");
+        assert!(
+            walked_addresses().contains(&(s2 as usize)),
+            "exact test: 3 ≠ indeg 2"
+        );
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            2,
+            "no destructor ran on s2"
+        );
 
         // fr2 lets go: rc 2 = in 2, genuine garbage now.
         assert!(!unsafe { ll_release(s2 as *mut RcHeader) });
@@ -1236,7 +1290,10 @@ mod tests {
     /// The production shape: a real collector thread runs a full epoch
     /// while the mutator thread does nothing but reach checkpoints.
     #[test]
-    #[cfg_attr(miri, ignore = "spin-waits against a live thread; the stepped tests cover the logic under Miri")]
+    #[cfg_attr(
+        miri,
+        ignore = "spin-waits against a live thread; the stepped tests cover the logic under Miri"
+    )]
     fn a_threaded_epoch_collects_a_mature_ring() {
         let _g = crate::memory::block_pool::test_guard();
         DESTRUCTS.store(0, Ordering::Relaxed);

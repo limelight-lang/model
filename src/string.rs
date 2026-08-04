@@ -484,11 +484,7 @@ unsafe fn grow_payload(
 /// # Safety
 /// `s` must be a live dynamic string; `ctx` per
 /// [`crate::memory::context::ll_arena_alloc`].
-pub unsafe fn ll_string_append(
-    ctx: *mut LLContext,
-    s: *mut LLStringDynamic,
-    extra: &[u8],
-) -> bool {
+pub unsafe fn ll_string_append(ctx: *mut LLContext, s: *mut LLStringDynamic, extra: &[u8]) -> bool {
     debug_assert_eq!(
         unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW,
         0,
@@ -545,7 +541,10 @@ pub unsafe fn ll_string_append(
 ///
 /// # Safety
 /// `s` must be a live dynamic string in `arena`, mid-reset.
-pub(crate) unsafe fn carry_payload_out_of(arena: *mut crate::memory::arena::Arena, s: *mut LLStringDynamic) -> bool {
+pub(crate) unsafe fn carry_payload_out_of(
+    arena: *mut crate::memory::arena::Arena,
+    s: *mut LLStringDynamic,
+) -> bool {
     let (data, capacity) = unsafe { ((*s).data, (*s).capacity as usize) };
     if data.is_null() {
         return true; // an empty string has no payload to carry
@@ -809,9 +808,8 @@ mod tests {
         };
         assert_eq!(unsafe { (*original).rc.refcount }, 2);
 
-        let copy = unsafe {
-            crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, slot)
-        };
+        let copy =
+            unsafe { crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, slot) };
         assert_ne!(copy as usize, original as usize, "two holders, so a copy");
         unsafe {
             assert!(crate::memory::barrier::store_ptr(
@@ -859,7 +857,11 @@ mod tests {
             crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, s as *mut RcHeader)
         } as *mut LLString;
         assert_eq!(unsafe { (*copy).hash }, 0, "not carried over");
-        assert_eq!(unsafe { LLString::hash(copy) }, hash, "same bytes, so same value");
+        assert_eq!(
+            unsafe { LLString::hash(copy) },
+            hash,
+            "same bytes, so same value"
+        );
 
         unsafe {
             assert!(ll_release(copy as *mut RcHeader));
@@ -893,7 +895,11 @@ mod tests {
             MemoryCategory::GcHeap,
             "a heap holder gets a heap copy"
         );
-        assert_eq!(unsafe { LLString::bytes(name) }, b"Order", "the name is intact");
+        assert_eq!(
+            unsafe { LLString::bytes(name) },
+            b"Order",
+            "the name is intact"
+        );
 
         // The same interned name, written through an arena holder: the
         // copy is a bump in the arena the reset reclaims, not a heap
@@ -947,7 +953,11 @@ mod tests {
         }
         for category in [MemoryCategory::GcHeap, MemoryCategory::RequestArena] {
             let s = unsafe { ll_string_new(&mut ctx, category, b"owned") };
-            assert_eq!(unsafe { (*s).hash }, 0, "a single owner still hashes lazily");
+            assert_eq!(
+                unsafe { (*s).hash },
+                0,
+                "a single owner still hashes lazily"
+            );
         }
     }
 
@@ -1069,8 +1079,7 @@ mod tests {
             "the payload is allocated with its own capacity"
         );
         assert!(
-            !unsafe { (*s).data }.is_null()
-                && unsafe { (*s).data } as usize != s as usize + 24,
+            !unsafe { (*s).data }.is_null() && unsafe { (*s).data } as usize != s as usize + 24,
             "out of line, not inline"
         );
 
@@ -1097,7 +1106,11 @@ mod tests {
         assert!(unsafe { ll_string_append(&mut ctx, s, b"-two") });
         assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"one-two");
         assert_eq!(unsafe { (*s).len }, 7);
-        assert_eq!(unsafe { (*s).hash }, 0, "the old hash is not the new bytes'");
+        assert_eq!(
+            unsafe { (*s).hash },
+            0,
+            "the old hash is not the new bytes'"
+        );
         assert_eq!(
             unsafe { LLString::hash(s as *mut LLString) },
             hash_bytes(b"one-two"),
@@ -1177,13 +1190,11 @@ mod tests {
 
         // Two dynamic strings with equal content agree as well — they
         // would not if the hash were taken over the payload pointer.
-        let other =
-            unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, content, 0) };
+        let other = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, content, 0) };
         assert_ne!(unsafe { (*other).data }, unsafe { (*dynamic).data });
-        assert_eq!(
-            unsafe { LLString::hash(other as *mut LLString) },
-            unsafe { LLString::hash(dynamic as *mut LLString) }
-        );
+        assert_eq!(unsafe { LLString::hash(other as *mut LLString) }, unsafe {
+            LLString::hash(dynamic as *mut LLString)
+        });
 
         unsafe {
             for p in [
@@ -1212,7 +1223,10 @@ mod tests {
         assert!(unsafe { (*s).data }.is_null(), "nothing was allocated");
         assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"");
         assert_eq!(unsafe { string_bytes(s as *const LLString) }, b"");
-        assert_eq!(unsafe { LLString::hash(s as *mut LLString) }, hash_bytes(b""));
+        assert_eq!(
+            unsafe { LLString::hash(s as *mut LLString) },
+            hash_bytes(b"")
+        );
 
         assert!(unsafe { ll_string_append(&mut ctx, s, b"first") });
         assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"first");
@@ -1305,8 +1319,7 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
         let big = vec![b'z'; crate::memory::block_pool::BLOCK_PAYLOAD + 64];
-        let s =
-            unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::RequestArena, &big, 0) };
+        let s = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::RequestArena, &big, 0) };
         let os_direct = unsafe { (*s).data };
         assert!(unsafe { (*s).capacity } as usize > crate::memory::block_pool::BLOCK_PAYLOAD);
 
@@ -1360,8 +1373,7 @@ mod tests {
         }
 
         set_pressure_mode(PressureMode::Critical);
-        let (reused, _) =
-            crate::memory::buffer_arena::with_buffer_arena(|a| a.alloc(capacity));
+        let (reused, _) = crate::memory::buffer_arena::with_buffer_arena(|a| a.alloc(capacity));
         set_pressure_mode(PressureMode::Plenty);
         assert_eq!(
             reused, payload,

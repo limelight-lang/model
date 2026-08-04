@@ -110,7 +110,10 @@ pub unsafe extern "C" fn ll_arena_reserve(ctx: *mut LLContext, bytes: usize) {
 /// Same contract as [`ll_arena_alloc`]; `obj` must point to a live
 /// entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_arena_track_destructor(ctx: *mut LLContext, obj: *mut RcHeader) -> bool {
+pub unsafe extern "C" fn ll_arena_track_destructor(
+    ctx: *mut LLContext,
+    obj: *mut RcHeader,
+) -> bool {
     unsafe { (*resolve(ctx)).track_destructor(obj) }
 }
 
