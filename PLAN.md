@@ -50,8 +50,9 @@ the state of the work, not the design — for the design read the RFC.
 cross-thread slot memory model that decides whether freeing a displaced
 string must route through epoch-deferred reclamation.
 
-**Task list, in dependency order** (16 items; 1–8, 10, 11, 13 and 16 are
-closed, 9, 12, 14 and 15 open). This list *is* the task list — the session tool
+**Task list, in dependency order** (16 items; only 9 and 14 are open —
+the interpolated template, which waits on the RFC, and the rapidhash
+port). This list *is* the task list — the session tool
 that tracks it does not survive a cleared context, so it is rebuilt from
 here.
 
@@ -136,7 +137,16 @@ here.
     its default. Until it lands, `hash_bytes` is the FNV-1a that was
     already there. Decision: `rfc/model/strings.md`, "The hash function
     is a build-time choice".
-15. **Resolve `IS_ESCAPEE` against the COW count** — a design question,
+15. ~~**Resolve `IS_ESCAPEE` against the COW count**~~ — done
+    2026-08-04, Edmond's call: build the deep copy. The store barrier
+    copies a request-arena COW value into the GC heap when a longer-lived
+    slot takes it, so a COW entity never becomes an escapee and the two
+    invariants stop describing the same field. The rule's `IS_ESCAPEE`
+    arm is gone with it, and a publish now reports refusal, because the
+    copy is an allocation no reserve can fund (`dev/DECISIONS.md`; rfc
+    `2b94246`). What the task said before it was done:
+
+    **The old entry.** — a design question,
     not an implementation one, and it needs Edmond. `values.md` asserts
     two invariants over the same four bytes: on a COW entity the count
     equals the number of holders, always and in every category; and while
