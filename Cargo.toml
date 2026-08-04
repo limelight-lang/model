@@ -5,7 +5,12 @@ edition = "2024"
 description = "Limelight runtime data model: classes, memory manager, GC"
 
 [lib]
-# rlib for Rust consumers and tests, staticlib for the C++/LLVM layer
+# rlib for Rust consumers and tests, staticlib for the C++/LLVM layer.
+# Neither is how the hot paths reach compiled PHP code: the crate is also
+# emitted as LLVM bitcode and merged with compiler-generated IR, so
+# retain/release, bump allocation and the COW checks inline across the
+# boundary. How: README.md, "LLVM IR export". Why:
+# rfc/runtime/implementation-language.md.
 crate-type = ["rlib", "staticlib"]
 
 [features]

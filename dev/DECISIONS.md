@@ -8,6 +8,51 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — the string header follows the design, and the design is what the test pins
+
+`LLString` carried `hash` at +8 and `len` at +16; `rfc/model/strings.md`
+specifies the opposite, and names +8 and +16 explicitly because the
+dynamic layout has to put the same two fields in the same places. The
+code had matched `zend_string`'s order instead, which is where it
+presumably came from. Nothing was broken by it — one string kind exists,
+it is immortal, and only `intern.rs` reads those fields — and nothing
+would have been broken until the dynamic layout arrived and started
+reading a hash as a length.
+
+**Decided:** the fields are reordered to `len`, then `hash`, and
+`intern::tests::layout_matches_the_string_design` pins all four offsets
+plus the struct size. Verified by putting the old order back and
+watching the test fail (`left: 16, right: 8`); the module's other tests
+stay green through the swap, which is the reason the contract needs a
+test of its own rather than an assumption.
+
+**Rejected: amending `strings.md` to the code's order.** Either order
+works in isolation, but the document is authoritative here and its text
+leans on the specific offsets; changing the code is two lines and one
+comment, changing the design is a paragraph other documents cite.
+
+## 2026-08-04 — the runtime reaches compiled PHP code as bitcode, not across the C ABI
+
+`Cargo.toml` declared `rlib` + `staticlib` "for the C++/LLVM layer" and
+`dev/INDEX.md` repeated it, so the crate read as though its surface to
+generated code were the `ll_*` C ABI. It is not: the crate is also
+emitted as LLVM bitcode and merged with compiler-generated IR
+(`llvm::Linker::linkModules`), and the optimizer inlines across the
+boundary — `README.md`'s "LLVM IR export" records `ll_retain` fully
+inlining into its caller after `opt -O2`. The design behind it is
+`rfc/runtime/implementation-language.md`; the C ABI proper survives only
+between this crate and the thin C++ layer that holds LLVM.
+
+**Decided:** both places now say so and point at those two documents.
+The practical consequence for new work: a new entity kind does not need
+an `ll_*` entry point to be reachable from generated code, so one is
+added when a caller exists, not by convention. Strings are the first
+kind to be built under that reading (`PLAN.md`, task 3).
+
+**Cost:** a hot path is only fast in the builds that do the merge; a
+consumer linking the `staticlib` and calling across the real ABI gets
+the call, not the inlined body.
+
 ## 2026-08-03 — thread exit owns the order its per-thread state dies in
 
 A6 made thread exit run user code for the first time: the static-block

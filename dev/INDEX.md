@@ -82,7 +82,12 @@ versions live in `docs/history/`, marked at the top.
   `ll_default_dispose` the stand-in), `src/refcount.rs`
   (`ll_retain`/`ll_release`).
 - Crate root: `src/lib.rs`. Built as `rlib` + `staticlib` for the
-  C++/LLVM layer.
+  C++/LLVM layer, and emitted as LLVM bitcode to be merged with
+  compiler-generated IR — the route the hot paths take into compiled PHP
+  code, which is why a call across the C ABI is not the barrier it looks
+  like (`ll_retain` inlines away after `opt -O2`). Commands and what was
+  verified: `README.md`, "LLVM IR export". The decision behind it:
+  `rfc/runtime/implementation-language.md`.
 - Tests: inline `#[cfg(test)]` per module, no `tests/` directory.
 - Benches: `benches/alloc.rs`, `benches/standard.rs`,
   `benches/lifecycle.rs` (object create/release GC-protocol tax, both

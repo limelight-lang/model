@@ -5,8 +5,13 @@
 //! (`rfc/model/classes.md` "Interned Names"): equality is pointer
 //! compare, the hash is computed once and stored inline. The entity
 //! uses the string layout from `rfc/model/strings.md` —
-//! `RcHeader | hash | len | bytes inline` — so an interned name *is* a
+//! `RcHeader | len | hash | bytes inline` — so an interned name *is* a
 //! valid immortal string, usable by the future string machinery as-is.
+//! `len` at +8 and `hash` at +16 are the offsets the dynamic layout will
+//! share, which is what lets either be read without first deciding which
+//! layout this is; `layout_matches_the_string_design` pins them. `len` is
+//! 32 bits — a string is capped at 4 GiB so that the dynamic layout's
+//! capacity fits in the padding the hash's alignment creates anyway.
 //! Immortal + COW: retain/release are no-ops and a write always
 //! separates (`rfc/model/values.md`).
 //!
@@ -24,8 +29,10 @@ use crate::refcount::{COW, MemoryCategory, RcHeader};
 #[repr(C)]
 pub struct LLString {
     pub rc: RcHeader,
+    pub len: u32,
+    // +12: four bytes of padding before the 8-aligned `hash`. The dynamic
+    // layout spends them on its capacity; an inline string leaves them.
     pub hash: u64,
-    pub len: u64,
     // bytes follow inline
 }
 
@@ -68,9 +75,19 @@ static INTERN: Mutex<Option<InternTable>> = Mutex::new(None);
 
 /// Intern `bytes`: returns the unique immortal string entity for this
 /// content. Same content → same pointer, forever. **Null when the
-/// immortal region cannot grow**; nothing is recorded in that case, so
-/// the call can simply be retried.
+/// immortal region cannot grow**, and null for content past the 4 GiB
+/// string cap (`rfc/model/strings.md`); nothing is recorded in either
+/// case, so the call can simply be retried.
+///
+/// The cap cannot be reached by an interned name — they are
+/// compile-time-known identifiers — but the check is here rather than
+/// assumed away, because the failure it prevents is a length truncated
+/// to 32 bits and a subsequent write past the buffer.
 pub fn intern(bytes: &[u8]) -> *const LLString {
+    if bytes.len() > u32::MAX as usize {
+        return std::ptr::null();
+    }
+
     let mut guard = INTERN.lock().unwrap();
     let table = guard.get_or_insert_with(|| InternTable(HashMap::new()));
 
@@ -88,8 +105,8 @@ pub fn intern(bytes: &[u8]) -> *const LLString {
     unsafe {
         s.write(LLString {
             rc: RcHeader::new(MemoryCategory::Immortal, COW),
+            len: bytes.len() as u32,
             hash: hash_bytes(bytes),
-            len: bytes.len() as u64,
         });
         let dst = s.add(1) as *mut u8;
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
@@ -131,6 +148,34 @@ mod tests {
         assert_ne!(s.rc.flags & COW, 0, "immortal strings are COW-flagged");
         assert_eq!(s.hash, hash_bytes(b"hello"), "hash precomputed");
         assert_ne!(s.hash, 0);
+    }
+
+    /// The offsets the second layout has to match: a dynamic string
+    /// (`rfc/model/strings.md`) puts `len` and `hash` in the same places,
+    /// so reading either does not require deciding which layout this is.
+    /// Swapping the two fields still compiles and still passes every other
+    /// test in this module, which is why the contract is pinned here.
+    #[test]
+    fn layout_matches_the_string_design() {
+        assert_eq!(size_of::<RcHeader>(), 8, "header must stay 8 bytes");
+        assert_eq!(std::mem::offset_of!(LLString, rc), 0);
+        assert_eq!(std::mem::offset_of!(LLString, len), 8);
+        let probe = LLString {
+            rc: RcHeader::new(MemoryCategory::Immortal, COW),
+            len: 0,
+            hash: 0,
+        };
+        assert_eq!(
+            std::mem::size_of_val(&probe.len),
+            4,
+            "len is 32-bit: the 4 GiB cap"
+        );
+        assert_eq!(
+            std::mem::offset_of!(LLString, hash),
+            16,
+            "+12 stays free for the dynamic layout's capacity"
+        );
+        assert_eq!(size_of::<LLString>(), 24, "bytes start right after");
     }
 
     #[test]

@@ -19,8 +19,17 @@ the state of the work, not the design — for the design read the RFC.
 
 - Two layouts, one entity kind. `COW = 1` is inline
   (`RcHeader | len | hash | bytes`), `COW = 0` is dynamic
-  (`RcHeader | len | hash | data | capacity`). `len` and `hash` sit at
-  the same offsets in both, so only byte access and teardown branch.
+  (`RcHeader | len | capacity | hash | data`). `len` and `hash` sit at
+  the same offsets in both, +8 and +16, so only byte access and teardown
+  branch.
+- `len` is `u32` (2026-08-04), which caps a string at 4 GiB and buys the
+  dynamic layout its `capacity` inside the padding the 8-aligned `hash`
+  creates anyway: that header goes from 40 bytes to 32, the inline one
+  stays at 24. The cap is language-visible; every growth path checks it
+  through one choke point and raises rather than truncating. Strings
+  above it are a separate class later, not a third transparent form —
+  that would branch every string operation and spend the last free
+  `EntityKind` code.
 - The COW flag is set at allocation and never flips, which is what makes
   it readable as the layout. No sub-mode bit exists; the flags word has
   no free one.
@@ -42,7 +51,7 @@ string's payload (recorded in `rfc/model/memory/buffers.md`), and the
 cross-thread slot memory model that decides whether freeing a displaced
 string must route through epoch-deferred reclamation.
 
-**Task list, in dependency order** (13 minus the two closed):
+**Task list, in dependency order** (13 items, 10 of them open):
 
 1. ~~Sweep the contract and list the holes~~ — done 2026-08-03.
 2. ~~Find a home for a sub-mode bit~~ — dropped: the COW flag is the
@@ -55,6 +64,9 @@ string must route through epoch-deferred reclamation.
 5. Separation on write for inline strings, in the rule's order.
 6. Dynamic string: buffer fields in the string's own order, growth in
    place, compiler-chosen at allocation.
+7. ~~Freeze a builder into an immutable string~~ — dropped with the
+   builder/frozen sub-modes: there is no freeze operation and no runtime
+   promotion between layouts.
 8. `buffer_arena` on the thread-exit path — the A6 tail. Its TLS key has
    drop glue and is read with a plain `with`; the note in the source says
    Phase C is what makes that reachable.
