@@ -67,14 +67,20 @@ string must route through epoch-deferred reclamation.
 4. String teardown by layout: inline frees its own block, dynamic frees
    the payload too. Both collector configurations.
 5. Separation on write for inline strings, in the rule's order.
-6. Dynamic string: buffer fields in the string's own order, growth in
-   place, compiler-chosen at allocation.
+6. ~~Dynamic string: buffer fields in the string's own order, growth in
+   place, compiler-chosen at allocation~~ — done 2026-08-04. Payload
+   through the memory manager's buffer machinery, routed by category;
+   heap or request arena only. Left open behind it: an arena dynamic
+   string cannot escape until 13 lands (refused at `escape_gain`), and
+   buffer-arena frees do not park during an epoch — harmless for strings,
+   load-bearing before arrays (task 16 in the TaskList).
 7. ~~Freeze a builder into an immutable string~~ — dropped with the
    builder/frozen sub-modes: there is no freeze operation and no runtime
    promotion between layouts.
-8. `buffer_arena` on the thread-exit path — the A6 tail. Its TLS key has
-   drop glue and is read with a plain `with`; the note in the source says
-   Phase C is what makes that reachable.
+8. ~~`buffer_arena` on the thread-exit path~~ — done 2026-08-04, and it
+   was not a tail but a live abort the moment `string_die` began freeing
+   payloads. Converted to the no-drop-glue cell and disposed explicitly,
+   fifth in `ll_thread_exit`'s order (`dev/DECISIONS.md`).
 9. Interpolated template as its own class. Flattening point still TBD in
    the RFC.
 10. Documents move with behaviour, in the same commit; `rfc` stays in

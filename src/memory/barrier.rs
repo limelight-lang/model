@@ -52,6 +52,27 @@ pub(crate) unsafe fn escape_gain(arena: *mut Arena, entity: *mut RcHeader) {
         e.flags & COW == 0,
         "COW arena value escape takes the deepCopy path, not the counter (deferred)"
     );
+    // A dynamic string is the first arena-allocatable **non-COW** entity
+    // the crate produces, so the assert above admits it rather than
+    // excluding it — and it must not pass. Promotion keeps the entity's
+    // header and rewrites its category, but knows nothing about the
+    // payload, which is arena memory: the block goes back to the pool at
+    // the reset, so the survivor points into recycled memory, and the
+    // block is later re-stamped as a buffer block, which routes the
+    // eventual free into an arena that never granted that chunk. Carrying
+    // the payload at promotion is the design's answer
+    // (`rfc/model/strings.md`) and is scheduled; until it lands the
+    // escape is refused here, not documented. Not a `debug_assert`: the
+    // alternative in release is silent corruption several allocations
+    // later, and the compiler allocates a dynamic string only where it
+    // has proved a single owner, so reaching this is already a broken
+    // contract.
+    assert!(
+        !(e.flags & crate::refcount::ENTITY_KIND_MASK
+            == crate::refcount::EntityKind::String.to_flags()
+            && e.flags & COW == 0),
+        "a dynamic string cannot escape its arena until promotion carries its payload"
+    );
     if e.flags & IS_ESCAPEE == 0 {
         e.flags |= IS_ESCAPEE;
         e.refcount = 1;

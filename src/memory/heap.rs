@@ -1516,10 +1516,20 @@ pub extern "C" fn ll_thread_exit() {
     #[cfg(feature = "rc-walk")]
     crate::memory::deferred_free::dispose();
 
-    // 4. The weak table last, after every death that could still need a
-    //    row. `weak.rs` pinned this position against the day static-block
+    // 4. The weak table, after every death that could still need a row.
+    //    `weak.rs` pinned this position against the day static-block
     //    teardown existed; this is that day.
     crate::weak::dispose();
+
+    // 5. The buffer arena last of the five, because every step above can
+    //    still free a buffer into it: a static block's teardown reaches
+    //    `string_die`, which returns a dynamic string's payload here, and
+    //    the parked backlog's flush routes payload frees the same way.
+    //    Disposing earlier is not caught — a later free would build a
+    //    second arena through the lazy path and leak it. The blocks it
+    //    hands back go to the process-global pool, which outlives every
+    //    thread, so nothing below needs it.
+    crate::memory::buffer_arena::dispose();
 
     let p = tls::get_raw();
     if p.is_null() {

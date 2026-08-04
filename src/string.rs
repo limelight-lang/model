@@ -21,6 +21,7 @@
 //! [`init_at`] rather than laying out its own (`dev/ARCHITECTURE.md`,
 //! invariant 13).
 
+use crate::memory::buffer::Buffer;
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::memory::immortal::immortal_alloc;
 use crate::refcount::{COW, EntityKind, MemoryCategory, RcHeader, publish_header};
@@ -81,17 +82,80 @@ impl LLString {
     /// is exactly why `intern` hashes eagerly — nothing lazily writes to
     /// a string another thread can see.
     ///
+    /// **Reads the bytes through [`string_bytes`], which branches on the
+    /// layout.** The cached read does not have to — that is what the
+    /// shared offsets buy — but computing does, and taking the inline
+    /// accessor on a dynamic string would hash the `data` field and the
+    /// bytes after it: a hash of an address, so equal content would hash
+    /// differently and a payload that moved would rehash.
+    ///
     /// # Safety
-    /// `s` must point to a live string entity.
+    /// `s` must point to a live string entity of either layout.
     #[inline]
     pub unsafe fn hash(s: *mut LLString) -> u64 {
         let cached = unsafe { (*s).hash };
         if cached != 0 {
             return cached;
         }
-        let computed = hash_bytes(unsafe { LLString::bytes(s) });
+        let computed = hash_bytes(unsafe { string_bytes(s) });
         unsafe { (*s).hash = computed };
         computed
+    }
+}
+
+/// The dynamic layout, `COW = 0`: the same first three words as
+/// [`LLString`] — that is the point of the shared offsets — with the
+/// padding at +12 spent on `capacity` and the bytes reached through
+/// `data` (`rfc/model/strings.md`). 32 bytes.
+///
+/// Writes go in place and never separate: this is the non-COW form, and
+/// the compiler allocates one only where it has proved a single owner.
+/// Nothing promotes between the layouts at run time.
+#[repr(C)]
+pub struct LLStringDynamic {
+    pub rc: RcHeader,
+    pub len: u32,
+    pub capacity: u32,
+    pub hash: u64,
+    pub data: *mut u8,
+}
+
+impl LLStringDynamic {
+    /// The bytes, out of line.
+    ///
+    /// An empty dynamic string has no payload at all — the accumulator
+    /// case, `$s = ""` before the first append — so `data` is null there,
+    /// and `slice::from_raw_parts` requires a non-null pointer **even for
+    /// a zero-length slice**. The empty case returns an empty slice
+    /// without touching `data`.
+    ///
+    /// # Safety
+    /// `s` must be a live dynamic string, and must outlive the slice.
+    /// **An append may move the payload**, which invalidates any slice
+    /// taken before it — the inline layout has no such hazard, since its
+    /// bytes never move.
+    #[inline]
+    pub unsafe fn bytes<'a>(s: *const LLStringDynamic) -> &'a [u8] {
+        let len = unsafe { (*s).len } as usize;
+        if len == 0 {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts((*s).data, len) }
+    }
+}
+
+/// The bytes of a string in either layout, branching on the one bit that
+/// says which. Code that has proved the layout — the compiler's, mostly —
+/// calls the layout's own accessor and skips the branch.
+///
+/// # Safety
+/// `s` must be a live string entity, and must outlive the slice.
+#[inline]
+pub unsafe fn string_bytes<'a>(s: *const LLString) -> &'a [u8] {
+    if unsafe { (*s).rc.flags } & COW != 0 {
+        unsafe { LLString::bytes(s) }
+    } else {
+        unsafe { LLStringDynamic::bytes(s as *const LLStringDynamic) }
     }
 }
 
@@ -282,22 +346,200 @@ pub unsafe fn separate(
     unsafe { new_with_hash(ctx, separation_category(owner_cat), bytes, 0) }
 }
 
-/// Teardown for a string whose count reached zero (or that a collector
-/// owns): free the memory by category. A string holds no children, so
-/// there is nothing to release first and no destructor to run.
+/// Allocate a **dynamic** string holding `bytes`: the entity in
+/// `category`, the payload through the memory manager's buffer
+/// machinery, which routes it by size and hands back a block whose kind
+/// says who reclaims it (`memory/buffer_arena.rs`).
 ///
-/// This is the **inline** half. A dynamic string frees its payload too,
-/// and that arm arrives with the layout it belongs to.
+/// `hint` is a growth recommendation for the payload, 0 to let the
+/// pressure mode decide (`rfc/model/memory/buffers.md`).
+///
+/// **Only `GcHeap` and `RequestArena`.** A dynamic string is the freely
+/// mutable form, so it cannot be immortal — that would be a
+/// process-wide shared string written in place — and it cannot be
+/// long-lived, because [`string_die`] can only reclaim the GC heap.
+/// `strings.md` permits both layouts in every category in general; this
+/// is the exclusion that follows from the non-COW half of it.
+///
+/// **Null** when either allocation fails or the content is past
+/// [`MAX_LEN`], leaving nothing half-built.
+///
+/// # Safety
+/// `ctx` per [`crate::memory::context::ll_arena_alloc`].
+pub unsafe fn ll_string_new_dynamic(
+    ctx: *mut LLContext,
+    category: MemoryCategory,
+    bytes: &[u8],
+    hint: usize,
+) -> *mut LLStringDynamic {
+    if !fits(bytes.len()) {
+        return std::ptr::null_mut();
+    }
+    // Refused, not redirected. A `debug_assert` here would vanish in
+    // release into the catch-all arm below, which would put an
+    // immortal-flagged entity in a GC entity block — walked by the
+    // census, never released (retain and release no-op on immortal), and
+    // pinned for the life of the process.
+    let mem = match category {
+        MemoryCategory::RequestArena => unsafe {
+            (*resolve_arena(ctx)).alloc(size_of::<LLStringDynamic>())
+        },
+        MemoryCategory::GcHeap => unsafe {
+            crate::memory::heap::entity_alloc(size_of::<LLStringDynamic>())
+        },
+        MemoryCategory::LongLived | MemoryCategory::Immortal => std::ptr::null_mut(),
+    };
+    if mem.is_null() {
+        return std::ptr::null_mut();
+    }
+    let s = mem as *mut LLStringDynamic;
+
+    // A payload is allocated when there is content or a hint to honour.
+    // An empty string with no hint keeps a null `data`, which the byte
+    // accessor answers without dereferencing.
+    let mut payload = Buffer::new();
+    let want = bytes.len().max(hint.min(MAX_LEN));
+    if want > 0 && !unsafe { grow_payload(ctx, category, &mut payload, want, hint.min(MAX_LEN)) } {
+        // The entity's memory is left where it is: in the arena it dies
+        // with the reset, in the heap the slot came off the free list and
+        // stays out of circulation until the thread ends — a leak, not a
+        // corruption, and the same shape every other factory has on OOM.
+        return std::ptr::null_mut();
+    }
+    if !bytes.is_empty() {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), payload.data, bytes.len()) };
+    }
+
+    unsafe {
+        (&raw mut (*s).len).write(bytes.len() as u32);
+        (&raw mut (*s).capacity).write(stored_capacity(payload.capacity));
+        (&raw mut (*s).hash).write(0);
+        (&raw mut (*s).data).write(payload.data);
+        publish_header(
+            s as *mut RcHeader,
+            RcHeader::new(category, EntityKind::String.to_flags()),
+        );
+    }
+    s
+}
+
+/// What goes in the 32-bit `capacity` field when the buffer machinery
+/// granted more than the field can hold.
+///
+/// The growth policy doubles and honours the caller's hint, and neither
+/// is bounded by [`MAX_LEN`], so a string near the cap can be granted a
+/// payload above 4 GiB. Truncating the number would make `capacity < len`
+/// representable, which nothing else in the crate expects and which the
+/// next reader of these two fields — the spare-capacity path, or the
+/// array storage that reuses the same pair at the same offsets — would
+/// take as gospel. Recording the cap instead under-reports the payload,
+/// which costs one extra growth at worst and can never over-report.
+#[inline]
+fn stored_capacity(granted: usize) -> u32 {
+    granted.min(MAX_LEN) as u32
+}
+
+/// Grow `payload` to hold `min_capacity`, through whichever half of the
+/// buffer machinery the category calls for: the request arena extends at
+/// its bump top when it can, everything else is alloc-new, copy,
+/// free-old. False on refusal, with the buffer untouched.
+///
+/// # Safety
+/// `ctx` per [`crate::memory::context::ll_arena_alloc`].
+unsafe fn grow_payload(
+    ctx: *mut LLContext,
+    category: MemoryCategory,
+    payload: &mut Buffer,
+    min_capacity: usize,
+    hint: usize,
+) -> bool {
+    let grown = match category {
+        MemoryCategory::RequestArena => unsafe {
+            crate::memory::buffer::buffer_ensure(
+                &mut *resolve_arena(ctx),
+                payload,
+                min_capacity,
+                hint,
+            )
+        },
+        _ => crate::memory::buffer_arena::buffer_ensure_longlived(payload, min_capacity, hint),
+    };
+    !grown.is_null()
+}
+
+/// Append to a dynamic string, in place — no sharing test, no copy: the
+/// non-COW form is the one the compiler allocated because it proved a
+/// single owner (`rfc/model/strings.md`).
+///
+/// The cached hash is cleared, which is this function's job rather than
+/// the payload's: after this the bytes are different, and nothing
+/// recomputes a hash field that is not zero.
+///
+/// **False on refusal** — the 4 GiB cap or an allocation that failed —
+/// with the string exactly as it was.
+///
+/// # Safety
+/// `s` must be a live dynamic string; `ctx` per
+/// [`crate::memory::context::ll_arena_alloc`].
+pub unsafe fn ll_string_append(
+    ctx: *mut LLContext,
+    s: *mut LLStringDynamic,
+    extra: &[u8],
+) -> bool {
+    debug_assert_eq!(
+        unsafe { (*s).rc.flags } & COW,
+        0,
+        "an inline string separates instead of appending"
+    );
+    if extra.is_empty() {
+        return true;
+    }
+    let old_len = unsafe { (*s).len } as usize;
+    let Some(needed) = old_len.checked_add(extra.len()).filter(|n| fits(*n)) else {
+        return false;
+    };
+
+    let category = unsafe { (*s).rc.memory_category() };
+    let mut payload = Buffer {
+        data: unsafe { (*s).data },
+        len: old_len,
+        capacity: unsafe { (*s).capacity } as usize,
+    };
+    if !unsafe { grow_payload(ctx, category, &mut payload, needed, 0) } {
+        return false;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(extra.as_ptr(), payload.data.add(old_len), extra.len());
+        (*s).data = payload.data;
+        (*s).capacity = stored_capacity(payload.capacity);
+        (*s).len = needed as u32;
+        (*s).hash = 0;
+    }
+    true
+}
+
+/// Teardown for a string whose count reached zero (or that a collector
+/// owns): the payload first if the layout has one, then the entity's own
+/// memory by category. A string holds no children, so there is nothing
+/// to release first and no destructor to run.
+///
+/// The payload is freed only outside the request arena. An arena payload
+/// is arena garbage — in-block it dies with the reset, OS-direct it is
+/// tracked by the arena — and handing it to the long-lived free routine
+/// would offer a block of the wrong kind.
 ///
 /// # Safety
 /// `s` must be a live string entity.
 pub(crate) unsafe fn string_die(s: *mut LLString) {
     let owner_cat = unsafe { crate::object::header_category(s as *const RcHeader) };
-    debug_assert_ne!(
-        unsafe { (*s).rc.flags } & COW,
-        0,
-        "the dynamic layout's teardown is not written yet"
-    );
+    let inline = unsafe { (*s).rc.flags } & COW != 0;
+    if !inline && owner_cat != MemoryCategory::RequestArena {
+        let d = s as *mut LLStringDynamic;
+        let (data, capacity) = unsafe { ((*d).data, (*d).capacity as usize) };
+        if !data.is_null() {
+            unsafe { crate::memory::buffer_arena::buffer_free_longlived_payload(data, capacity) };
+        }
+    }
     if owner_cat == MemoryCategory::GcHeap {
         unsafe { crate::memory::stdapi::ll_free(s as *mut u8) };
     }
@@ -701,6 +943,270 @@ mod tests {
                 "a non-COW entity is never copied by the write barrier"
             );
         }
+    }
+
+    /// The second layout's offsets, and the half of them it shares with
+    /// the first: `len` at +8 and `hash` at +16 in both, which is what
+    /// lets either be read without deciding which layout this is.
+    #[test]
+    fn the_dynamic_layout_shares_the_offsets_that_matter() {
+        assert_eq!(std::mem::offset_of!(LLStringDynamic, rc), 0);
+        assert_eq!(
+            std::mem::offset_of!(LLStringDynamic, len),
+            std::mem::offset_of!(LLString, len)
+        );
+        assert_eq!(std::mem::offset_of!(LLStringDynamic, capacity), 12);
+        assert_eq!(
+            std::mem::offset_of!(LLStringDynamic, hash),
+            std::mem::offset_of!(LLString, hash)
+        );
+        assert_eq!(std::mem::offset_of!(LLStringDynamic, data), 24);
+        assert_eq!(size_of::<LLStringDynamic>(), 32);
+    }
+
+    #[test]
+    fn a_dynamic_heap_string_holds_its_bytes_out_of_line() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let s = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, b"grows", 0) };
+        assert!(!s.is_null());
+
+        let rc = unsafe { &(*s).rc };
+        assert_eq!(rc.flags & ENTITY_KIND_MASK, EntityKind::String.to_flags());
+        assert_eq!(rc.flags & COW, 0, "the dynamic layout is the non-COW form");
+        assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"grows");
+        assert_eq!(
+            unsafe { string_bytes(s as *const LLString) },
+            b"grows",
+            "and the layout-agnostic accessor agrees"
+        );
+        assert!(
+            unsafe { (*s).capacity } >= 5,
+            "the payload is allocated with its own capacity"
+        );
+        assert!(
+            !unsafe { (*s).data }.is_null()
+                && unsafe { (*s).data } as usize != s as usize + 24,
+            "out of line, not inline"
+        );
+
+        unsafe {
+            assert!(ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// A dynamic string is outside the COW rule, so an append writes in
+    /// place with no sharing test — even with a second holder, which for
+    /// an inline string would force a copy.
+    #[test]
+    fn an_append_grows_in_place_and_drops_the_cached_hash() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let s = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, b"one", 0) };
+        let hash = unsafe { LLString::hash(s as *mut LLString) };
+        assert_ne!(hash, 0);
+        unsafe { crate::refcount::ll_retain(s as *mut RcHeader) };
+
+        assert!(unsafe { ll_string_append(&mut ctx, s, b"-two") });
+        assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"one-two");
+        assert_eq!(unsafe { (*s).len }, 7);
+        assert_eq!(unsafe { (*s).hash }, 0, "the old hash is not the new bytes'");
+        assert_eq!(
+            unsafe { LLString::hash(s as *mut LLString) },
+            hash_bytes(b"one-two"),
+            "and recomputing gives the new content's — asserting merely \
+             that it differs would pass on a hash of the payload address"
+        );
+        assert_ne!(hash_bytes(b"one-two"), hash);
+
+        // Growth past the initial capacity: the payload may move, the
+        // entity may not.
+        let address = s as usize;
+        let long = vec![b'x'; 4096];
+        assert!(unsafe { ll_string_append(&mut ctx, s, &long) });
+        assert_eq!(unsafe { (*s).len } as usize, 7 + 4096);
+        assert_eq!(unsafe { LLStringDynamic::bytes(s) }[..7], *b"one-two");
+        assert_eq!(s as usize, address, "the entity never moves");
+
+        unsafe {
+            assert!(!ll_release(s as *mut RcHeader));
+            assert!(ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// An arena dynamic string takes its payload from the arena, so the
+    /// reset reclaims both halves and teardown must not hand the payload
+    /// to the long-lived free routine — a block of the wrong kind.
+    #[test]
+    fn an_arena_dynamic_string_leaves_both_halves_to_the_reset() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let s =
+            unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::RequestArena, b"scoped", 0) };
+        assert_eq!(
+            unsafe { (*s).rc.memory_category() },
+            MemoryCategory::RequestArena
+        );
+        assert!(unsafe { ll_string_append(&mut ctx, s, b" and grown") });
+        assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"scoped and grown");
+        unsafe { string_die(s as *mut LLString) };
+        arena.reset(|_| {});
+    }
+
+    /// The hash is a function of the content and of nothing else, so the
+    /// two layouts holding the same bytes hash the same. Computing it
+    /// through the inline accessor on a dynamic string would hash the
+    /// `data` field — an address — and this is the assertion that says so.
+    #[test]
+    fn the_two_layouts_hash_the_same_content_the_same() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let content = b"a string long enough to reach past the fixed fields";
+
+        let inline = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, content) };
+        let dynamic =
+            unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, content, 0) };
+        assert_eq!(
+            unsafe { LLString::hash(inline) },
+            unsafe { LLString::hash(dynamic as *mut LLString) },
+            "same bytes, same hash, whichever layout holds them"
+        );
+        assert_eq!(unsafe { LLString::hash(inline) }, hash_bytes(content));
+
+        // Two dynamic strings with equal content agree as well — they
+        // would not if the hash were taken over the payload pointer.
+        let other =
+            unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, content, 0) };
+        assert_ne!(unsafe { (*other).data }, unsafe { (*dynamic).data });
+        assert_eq!(
+            unsafe { LLString::hash(other as *mut LLString) },
+            unsafe { LLString::hash(dynamic as *mut LLString) }
+        );
+
+        unsafe {
+            for p in [
+                inline as *mut RcHeader,
+                dynamic as *mut RcHeader,
+                other as *mut RcHeader,
+            ] {
+                assert!(ll_release(p));
+                crate::object::ll_entity_die(p);
+            }
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The accumulator: `$s = ""` and then appends. An empty dynamic
+    /// string has no payload at all, so every read of it has to answer
+    /// without dereferencing `data` — `slice::from_raw_parts` requires a
+    /// non-null pointer even for a zero-length slice.
+    #[test]
+    fn an_empty_dynamic_string_has_no_payload_and_still_reads() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let s = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, b"", 0) };
+        assert!(!s.is_null());
+        assert!(unsafe { (*s).data }.is_null(), "nothing was allocated");
+        assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"");
+        assert_eq!(unsafe { string_bytes(s as *const LLString) }, b"");
+        assert_eq!(unsafe { LLString::hash(s as *mut LLString) }, hash_bytes(b""));
+
+        assert!(unsafe { ll_string_append(&mut ctx, s, b"first") });
+        assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"first");
+
+        // With a hint, the payload is there from the start — that is what
+        // the hint is for, and the empty case is where it matters most.
+        let hinted = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, b"", 4096) };
+        assert!(!unsafe { (*hinted).data }.is_null());
+        assert!(unsafe { (*hinted).capacity } >= 4096);
+        assert_eq!(unsafe { (*hinted).len }, 0);
+
+        unsafe {
+            for p in [s as *mut RcHeader, hinted as *mut RcHeader] {
+                assert!(ll_release(p));
+                crate::object::ll_entity_die(p);
+            }
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The two categories a dynamic string may not have are refused, not
+    /// redirected. A debug-only check would vanish in release into the
+    /// heap arm and put an immortal-flagged entity in a GC entity block:
+    /// walked by the census, never released, pinned for the life of the
+    /// process.
+    #[test]
+    fn a_dynamic_string_refuses_the_categories_it_cannot_live_in() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        for category in [MemoryCategory::Immortal, MemoryCategory::LongLived] {
+            assert!(
+                unsafe { ll_string_new_dynamic(&mut ctx, category, b"no", 0) }.is_null(),
+                "the mutable layout is heap or arena only"
+            );
+        }
+        arena.reset(|_| {});
+    }
+
+    /// An arena dynamic string may not escape into a longer-lived
+    /// holder. Promotion keeps the entity and rewrites its category but
+    /// knows nothing about the payload, which stays arena memory — the
+    /// block goes home at the reset and is later re-stamped as a buffer
+    /// block, so the survivor reads recycled memory and its eventual free
+    /// routes into an arena that never granted the chunk. Refused at the
+    /// escape, not documented, until promotion carries the payload.
+    #[test]
+    #[should_panic(expected = "cannot escape its arena")]
+    fn an_arena_dynamic_string_may_not_escape() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let s = unsafe {
+            ll_string_new_dynamic(&mut ctx, MemoryCategory::RequestArena, b"accumulator", 0)
+        };
+        let mut heap_slot: *mut RcHeader = std::ptr::null_mut();
+        unsafe {
+            crate::memory::barrier::store_ptr(
+                &raw mut arena,
+                MemoryCategory::GcHeap,
+                &raw mut heap_slot,
+                s as *mut RcHeader,
+            )
+        };
+    }
+
+    #[test]
+    fn an_append_past_the_cap_is_refused_with_the_string_untouched() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let s = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, b"near", 0) };
+        // Claim a length just under the cap without owning the bytes:
+        // the gate is arithmetic on `len`, and this is the only way to
+        // reach it without four gigabytes.
+        unsafe { (*s).len = MAX_LEN as u32 - 1 };
+        assert!(
+            !unsafe { ll_string_append(&mut ctx, s, b"xx") },
+            "4 GiB is a refusal, not a truncation"
+        );
+        assert_eq!(unsafe { (*s).len }, MAX_LEN as u32 - 1, "untouched");
+
+        unsafe {
+            (*s).len = 4;
+            assert!(ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+        }
+        arena.reset(|_| {});
     }
 
     #[test]

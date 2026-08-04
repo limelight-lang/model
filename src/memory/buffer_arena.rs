@@ -23,6 +23,8 @@
 //! (heap.rs remote-free) can be replicated when a real consumer needs
 //! it.
 
+use std::cell::Cell;
+
 use crate::memory::arena::round_up_8;
 use crate::memory::block_pool::{
     BLOCK_KIND_BUFFER, BLOCK_MASK, BLOCK_PAYLOAD, BlockHeader, BlockPool, LINE_SIZE,
@@ -224,22 +226,66 @@ impl Drop for BufferArena {
     }
 }
 
-// NOTE (2026-08-03): this key has drop glue and is read with a plain
-// `with`. It is safe only because nothing on the thread-exit path
-// reaches it yet. The moment a teardown frees a long-lived buffer —
-// which strings and arrays will do (Phase C) — it joins the hazard
-// `gc::CANDIDATES`, `deferred_free::PARKED` and `weak::WEAK_TABLE` were
-// converted out of on 2026-08-03: reached from a TLS destructor whose
-// order is unspecified, `with` panics with `AccessError`, and a panic
-// there cannot unwind. Convert it the same way before that happens.
 thread_local! {
-    static THREAD_BUFFER_ARENA: std::cell::RefCell<BufferArena> =
-        const { std::cell::RefCell::new(BufferArena::new()) };
+    /// This thread's persistent buffer arena, behind a raw pointer in a
+    /// `Cell` rather than a `RefCell<BufferArena>` — the shape
+    /// `gc::CANDIDATES`, `deferred_free::PARKED` and `weak::WEAK_TABLE`
+    /// were converted to on 2026-08-03, and for the same reason.
+    ///
+    /// The thread-exit path reaches this arena: static-block teardown
+    /// runs `__destruct` bodies, those release entities, and a dying
+    /// dynamic string frees its payload here
+    /// (`string::string_die`). `ll_thread_exit` is itself called from a
+    /// TLS destructor, glibc runs those in reverse registration order,
+    /// and that puts the exit guard **last** exactly because
+    /// `ll_thread_init` registers it first. A `RefCell<BufferArena>` has
+    /// drop glue, so its key would be registered and reliably already
+    /// destroyed by then; `with` would panic with `AccessError`, and a
+    /// panic inside a TLS destructor cannot unwind — the process aborts.
+    ///
+    /// A `Cell<*mut _>` has no drop glue, is never registered, and stays
+    /// readable for the whole life of the thread. [`dispose`] frees it
+    /// explicitly, at the position `ll_thread_exit` chooses.
+    static THREAD_BUFFER_ARENA: Cell<*mut BufferArena> = const { Cell::new(std::ptr::null_mut()) };
 }
 
-/// Run `f` with this thread's persistent long-lived buffer arena.
+/// Run `f` with this thread's persistent long-lived buffer arena,
+/// creating it on first use.
+///
+/// The `RefCell`'s borrow guard is gone with the conversion, and nothing
+/// needs it: no path inside `BufferArena` calls back out, so there is no
+/// reentrancy to catch.
 pub fn with_buffer_arena<R>(f: impl FnOnce(&mut BufferArena) -> R) -> R {
-    THREAD_BUFFER_ARENA.with(|a| f(&mut a.borrow_mut()))
+    let arena = THREAD_BUFFER_ARENA.with(|cell| {
+        let mut p = cell.get();
+        if p.is_null() {
+            p = Box::into_raw(Box::new(BufferArena::new()));
+            cell.set(p);
+        }
+        p
+    });
+    f(unsafe { &mut *arena })
+}
+
+/// Give this thread's buffer arena back, running its [`Drop`] by hand.
+///
+/// Called from `heap::ll_thread_exit` rather than from a TLS destructor,
+/// which is the whole point (see [`THREAD_BUFFER_ARENA`]). Its position
+/// there is **after** every step that can still free a buffer — the
+/// static blocks whose teardown runs user code, and the parked backlog
+/// whose flush routes payload frees back here — and the blocks it
+/// returns go to the process-global pool, which outlives every thread.
+///
+/// Null-tolerant and idempotent: a thread that never allocated a buffer,
+/// and a second call, both find nothing. Disposing too early is not
+/// caught: a later free would silently build a second arena through the
+/// lazy path above and leak it, which is why the position is stated
+/// rather than assumed.
+pub fn dispose() {
+    let p = THREAD_BUFFER_ARENA.with(|cell| cell.replace(std::ptr::null_mut()));
+    if !p.is_null() {
+        drop(unsafe { Box::from_raw(p) });
+    }
 }
 
 // --- Long-lived growth over the arena -------------------------------------

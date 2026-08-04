@@ -8,6 +8,71 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — the buffer arena joins the hand-freed structures, and the exit order gains a fifth step
+
+`buffer_arena.rs` carried a note from 2026-08-03: its `THREAD_BUFFER_ARENA`
+was a `RefCell<BufferArena>`, therefore had drop glue, therefore had a TLS
+destructor registered after the exit guard's and running before it — safe
+only while nothing on the thread-exit path reached it, and to be converted
+"the moment a teardown frees a long-lived buffer, which strings and arrays
+will do". The dynamic string is that moment: static-block teardown runs
+user code, that releases entities, and `string_die` returns a payload
+through `with_buffer_arena`. The panic would be an `AccessError` inside a
+TLS destructor, which cannot unwind — an abort of the whole process on a
+worker thread ending normally.
+
+**Decided:** the same shape as the other three conversions — a
+`Cell<*mut BufferArena>` with no drop glue, allocated on first use, freed
+by an explicit `dispose` that `ll_thread_exit` calls. `Drop` stays on
+`BufferArena` itself: stack-built arenas in tests still need it, and it is
+now run by hand rather than by TLS glue.
+
+**The order in `ll_thread_exit` becomes:** static blocks → candidate
+buffer → parked list → weak table → **buffer arena** → the heaps. The
+arena is fifth because every step above it can still free a buffer: the
+static blocks through user code, and the parked backlog's flush through
+the same payload route. It is before the heaps only because nothing after
+it needs an arena; the blocks it hands back go to the process-global
+pool, which outlives every thread. Disposing earlier is not detected — a
+later free would build a second arena through the lazy path and leak it —
+which is why the position is written down rather than inferred.
+
+**Regression:** `static_block::tests::`
+`a_thread_that_just_ends_frees_a_static_strings_payload`, a worker that
+puts a dynamic string in a static and simply ends. Verified by restoring
+the `RefCell` and watching the process abort.
+
+## 2026-08-04 — a dynamic string may not escape its arena, and the escape barrier says so out loud
+
+`escape_gain` asserts the escaping entity is **not** COW, an assert
+written to keep COW values out of the hold-count path. The dynamic string
+is the crate's first arena-allocatable non-COW entity, so that assert
+admits it by construction.
+
+It must not be admitted. Promotion keeps the survivor's header and
+rewrites its category but knows nothing about the payload, which is arena
+memory: retention keys on the block holding the *header*, so the
+payload's block goes back to the pool at the reset and the survivor reads
+recycled memory. Worse than the dangle, the block is later re-stamped
+`BLOCK_KIND_BUFFER`, and `buffer_free_longlived_payload` routes by
+reading that kind — so the eventual free decrements a live count and
+writes a free-list link into a chunk the buffer arena never granted.
+
+**Decided:** a real `assert!`, not a `debug_assert`, refusing an escaping
+entity of kind String with `COW` clear. In release the alternative is
+silent corruption several allocations later, and the compiler allocates a
+dynamic string only where it proved a single owner — so reaching this is
+already a broken contract, and an abort naming the cause beats a heap
+whose free lists disagree with it.
+
+**Rejected: banning `RequestArena` for dynamic strings.** That taxes the
+common and perfectly safe case — an accumulator that dies with the reset —
+to prevent the rare one.
+
+**Lifted when** promotion carries the payload (`rfc/model/strings.md`,
+"An arena string that survives the reset takes its payload with it";
+`PLAN.md` task 13).
+
 ## 2026-08-04 — a COW copy is sized by the holder's lifetime, and comes back at +1
 
 `values.md` gives the separation rule and says the holder stores what the

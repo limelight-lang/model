@@ -38,16 +38,26 @@ versions live in `docs/history/`, marked at the top.
   unspecified — is `dev/DECISIONS.md`, 2026-08-03. **Rule for anything
   new on that path:** no `thread_local!` it can reach may have drop
   glue.
-- Strings: `src/string.rs` — the string entity (kind 1),
-  `RcHeader | len (u32) | hash (u64) | bytes`, one allocation, bytes
-  inline. `ll_string_new` allocates in any category, `LLString::hash` is
-  the lazy cache (zero means not computed), `fits` is the single 4 GiB
-  length gate every creation and growth path passes, `hash_bytes` is the
-  build-time-chosen function (`rfc/model/strings.md` — rapidhash v3 is
-  the decided default, the port is its own step, FNV-1a until then).
-  The dynamic layout (`COW = 0`, bytes out of line) is not built yet, and
-  `string_die` says so. An interned name is one of these, built through
-  the same `init_at`: `src/intern.rs` is the table, not a second layout.
+- Strings: `src/string.rs` — both layouts of the string entity (kind 1).
+  Inline (`COW = 1`): `RcHeader | len (u32) | hash (u64) | bytes`, one
+  allocation, fixed size, `ll_string_new`. Dynamic (`COW = 0`):
+  `… | capacity (u32) | … | data`, payload through the memory manager's
+  buffer machinery, `ll_string_new_dynamic` and `ll_string_append`, heap
+  or request arena only. `len` at +8 and `hash` at +16 in both, so only
+  byte access and teardown branch — `string_bytes` is the accessor that
+  does, and `LLString::hash` goes through it, since hashing the inline
+  offset on a dynamic string would hash the payload's address.
+  `fits` is the single 4 GiB length gate every creation and growth path
+  passes; `hash_bytes` is the build-time-chosen function
+  (`rfc/model/strings.md` — rapidhash v3 is the decided default, the port
+  is its own step, FNV-1a until then). The COW write barrier is
+  `object::ll_cow_separate` (whether to copy) plus `string::separate`
+  (how): the copy's category comes from the holder, and it comes back
+  at +1. An interned name is an inline string built through the same
+  `init_at`: `src/intern.rs` is the table, not a second layout.
+  **An arena dynamic string cannot escape** until promotion carries its
+  payload — `barrier::escape_gain` refuses it (`dev/DECISIONS.md`,
+  2026-08-04; `PLAN.md` task 13).
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted. Registered by `promote` at reset,
   read by both of `heap`'s enumerators. This is what makes a
