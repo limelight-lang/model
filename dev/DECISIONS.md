@@ -8,6 +8,49 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — the reset traces through one tracer, and a COW count is settled after the fixpoint
+
+Promotion kept its own idea of which entities have children: `is_object`
+on the flags, then `object::for_each_counted_child`. Every other kind was
+a leaf. A reference box (kind 3) has one counted child and `walk.rs` has
+known it since A2 — so a surviving arena `&` was promoted with its
+referent left in the dying arena. `ll_reference_new` accepts
+`RequestArena`, so the shape is producible today.
+
+**Decided:** the three traversals of the reset — `mark_subgraph`,
+`retrace_survivors` and `count_children` — go through
+`walk::trace_entity`. One tracer, one place for the array kind to arrive
+in, and no second authority to drift from the first.
+
+**The count model splits on the COW bit.** For a non-COW arena entity the
+count field is idle — retain and release return early on it — so the
+reset's zero-at-mark and rebuild-from-edges is free to use it as scratch.
+A COW entity is counted in every memory category (`values.md`), and the
+fixpoint is where destructors run: `unset($this->s)` reaches `ll_release`
+on the same string a survivor holds, and a count zeroed at mark time
+underflows there. Marking now leaves a COW count alone, and
+`reconcile_cow_counts` settles every COW survivor once, after the last
+destructor, from the edges that remain.
+
+**It assigns rather than adjusts.** The holders that die with the arena
+never release, so the count carried out of the fixpoint is too high by
+exactly their number and there is no list of them to subtract. The
+surviving edges are enumerable, and they are the answer. Between the mark
+and the reconciliation the count is too high, which is the safe
+direction: it can only cause a separation that was not strictly needed.
+
+**Rejected:** keeping the true count and subtracting the dying holders —
+that needs a walk of the whole dying population, and the trace is bounded
+by the escaped subgraph on purpose (`arena-reset.md`). Also rejected: a
+private kind switch inside `promote`, which is the second authority the
+first paragraph is about.
+
+**Regressions**, both seen failing first:
+`promote::tests::a_surviving_reference_box_carries_its_referent` (the
+referent still reads `RequestArena` after the reset) and
+`promote::tests::a_destructor_may_release_a_cow_survivor_during_the_fixpoint`
+(a subtract overflow inside the reset, which aborts rather than unwinds).
+
 ## 2026-08-04 — the buffer arena joins the hand-freed structures, and the exit order gains a fifth step
 
 `buffer_arena.rs` carried a note from 2026-08-03: its `THREAD_BUFFER_ARENA`
