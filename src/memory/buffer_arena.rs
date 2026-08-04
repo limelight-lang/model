@@ -18,12 +18,33 @@
 //! Payloads larger than a block payload are OS-direct (`ll_alloc` /
 //! `ll_free`), invisible to this machinery.
 //!
-//! Phase 1 limit, same as the early heap: the arena is thread-local
-//! and frees must come from the owning thread. The cross-thread story
-//! (heap.rs remote-free) can be replicated when a real consumer needs
-//! it.
+//! ## Cross-thread free
+//!
+//! A buffer here holds the body of an entity — a string's bytes today,
+//! an array's storage next — and an entity dies wherever its last
+//! reference is dropped. So this heap obeys the same ownership rules as
+//! the object heap (`heap.rs`), for the same reason and in the same
+//! shape: each block carries an `owner` and its own lock-free MPSC
+//! stack, a free from another thread posts to **that block's** stack and
+//! touches nothing else, and the owner accounts for the posted chunks
+//! when it collects. `live` is written only by the owner, so a block
+//! holding a posted chunk can never look empty and be recycled under
+//! its real holder.
+//!
+//! At thread exit blocks are handed over rather than dropped: empty ones
+//! to the pool, ones still holding chunks onto a global abandoned list,
+//! from which the next thread that needs a block adopts one. Without
+//! that, every block a thread still owned when it died was stranded, and
+//! so was every later cross-thread free posted into it.
+//!
+//! This arrived on 2026-08-04 with the first entity body that lives
+//! here. Until then the module carried a Phase-1 note deferring it until
+//! "a real consumer needs it", and the note outlived its own trigger by
+//! one task (`dev/DECISIONS.md`).
 
 use std::cell::Cell;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::memory::arena::round_up_8;
 use crate::memory::block_pool::{
@@ -46,13 +67,39 @@ const MIN_CHUNK: usize = size_of::<FreeChunk>();
 
 /// Per-block header, overlaying the block's first line. Shares offset 0
 /// (`kind`) with the pool's `BlockHeader`.
+///
+/// Split across two cache lines the way `heap.rs` splits its own, and
+/// for free: the block's header line is [`LINE_SIZE`] = 256 bytes and
+/// this uses under a third of it. The owner's fields and `owner` itself
+/// sit on the first 64 bytes — a local free reads `owner` and then
+/// writes `live`/`free`, so they belong together — and `remote_free`,
+/// the only field a non-owner ever touches, sits alone on the next one.
 #[repr(C)]
 struct BufferBlockHeader {
     kind: u32,
-    /// Live chunks in this block; back to the pool at 0.
+    /// Live chunks in this block, **owner-written only**: a cross-thread
+    /// free posts to [`Self::remote_free`] and the owner accounts for it
+    /// at collect time. That is what makes zero safe to act on — a
+    /// posted chunk still counts as live, so the block cannot look empty
+    /// while another thread holds an address inside it.
     live: u32,
-    /// Head of the block-local free list.
+    /// Head of the block-local free list (owner only).
     free: *mut FreeChunk,
+    /// Next block in its owner's chain (owner only).
+    owned_next: *mut BufferBlockHeader,
+    /// The arena that owns this block, or null while abandoned.
+    ///
+    /// **Read by any thread, never dereferenced by a non-owner** — it is
+    /// compared for identity and nothing else, which is what lets a
+    /// freeing thread read it while the owner is dying.
+    owner: AtomicPtr<BufferArena>,
+    _line0: [u8; 32],
+    /// Chunks freed by threads that do not own this block: a lock-free
+    /// MPSC stack threaded through the freed chunks themselves. Per
+    /// block rather than per arena, which is what makes adoption
+    /// race-free — a message posted to a dying owner still lands in the
+    /// block, and whoever owns the block next drains it.
+    remote_free: AtomicPtr<FreeChunk>,
 }
 
 impl BufferBlockHeader {
@@ -62,11 +109,31 @@ impl BufferBlockHeader {
     }
 }
 
+/// Blocks whose owning thread exited while they still held live chunks.
+/// A lock rather than a CAS loop, per the 2026-07-20 decision: the list
+/// is touched at thread exit and on the refill path, both cold.
+struct Abandoned {
+    head: *mut BufferBlockHeader,
+}
+
+/// Safe for the same reason the heap's list is: the pointers are block
+/// headers, and a block on this list has no owner, so nothing but the
+/// adopting thread will touch its private half.
+unsafe impl Send for Abandoned {}
+
+static ABANDONED: Mutex<Abandoned> = Mutex::new(Abandoned {
+    head: std::ptr::null_mut(),
+});
+
 /// Thread-local long-lived buffer arena.
 pub struct BufferArena {
     bump: *mut u8,
     limit: *mut u8,
     current: *mut BufferBlockHeader,
+    /// Every block this arena owns, `current` included. The owner needs
+    /// the chain to collect posted frees: a block it has bumped past is
+    /// reachable no other way, and its posted chunks would sit forever.
+    owned: *mut BufferBlockHeader,
 }
 
 impl Default for BufferArena {
@@ -81,7 +148,16 @@ impl BufferArena {
             bump: std::ptr::null_mut(),
             limit: std::ptr::null_mut(),
             current: std::ptr::null_mut(),
+            owned: std::ptr::null_mut(),
         }
+    }
+
+    /// This arena's identity, as stored in `BufferBlockHeader::owner`.
+    /// The pointer is compared, never dereferenced, by anyone but the
+    /// owner itself.
+    #[inline]
+    fn id(&mut self) -> *mut BufferArena {
+        self as *mut BufferArena
     }
 
     /// Allocate at least `size` bytes; returns `(ptr, granted)` where
@@ -124,14 +200,26 @@ impl BufferArena {
         let block = BufferBlockHeader::of_ptr(ptr);
         debug_assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_BUFFER);
 
+        // Not ours: post it and touch nothing else. Neither `live` nor
+        // `free` may be written from here — they are the owner's, and an
+        // emptied block returned from the wrong thread would go back to
+        // the pool while the owner still bumps into it.
+
+        // Not ours: post it and touch nothing else. Neither `live` nor
+        // `free` may be written from here — they are the owner's, and an
+        // emptied block returned from the wrong thread would go back to
+        // the pool while the owner still bumps into it.
+        if unsafe { (*block).owner.load(Ordering::Relaxed) } != self.id() {
+            return unsafe { post_remote(block, ptr, size) };
+        }
+
         let b = unsafe { &mut *block };
         b.live -= 1;
 
         // A fully-empty non-current block goes home; the current block
         // stays (its bump is still advancing).
         if b.live == 0 && block != self.current {
-            b.kind = 0;
-            BlockPool::global().put(block as *mut BlockHeader);
+            self.retire(block);
             return;
         }
 
@@ -174,17 +262,175 @@ impl BufferArena {
         self.limit as usize - self.bump as usize
     }
 
+    /// Link a block this arena now owns into its chain.
+    fn own(&mut self, block: *mut BufferBlockHeader) {
+        unsafe { (*block).owned_next = self.owned };
+        self.owned = block;
+    }
+
+    /// Unlink an owned block and give it back to the pool. The unlink is
+    /// a walk rather than a doubly-linked splice: a buffer arena holds a
+    /// handful of blocks, and the chain is touched only when one empties
+    /// or the thread ends.
+    fn retire(&mut self, block: *mut BufferBlockHeader) {
+        debug_assert!(unsafe { (*block).live } == 0);
+        let mut link = &raw mut self.owned;
+        unsafe {
+            while !(*link).is_null() {
+                if *link == block {
+                    *link = (*block).owned_next;
+                    break;
+                }
+                link = &raw mut (**link).owned_next;
+            }
+            (*block).owner.store(std::ptr::null_mut(), Ordering::Release);
+            (*block).kind = 0;
+        }
+        BlockPool::global().put(block as *mut BlockHeader);
+    }
+
+    /// Take the chunks other threads posted into `block` onto its own
+    /// free list and account for them. Returns true when the block is
+    /// empty afterwards.
+    ///
+    /// The count is what makes `live` truthful again: a posted chunk was
+    /// never subtracted, exactly so that the block could not look empty
+    /// while the posting thread still held its address.
+    fn collect_remote(&self, block: *mut BufferBlockHeader) -> bool {
+        let head = unsafe {
+            (*block)
+                .remote_free
+                .swap(std::ptr::null_mut(), Ordering::Acquire)
+        };
+        if head.is_null() {
+            return unsafe { (*block).live } == 0;
+        }
+        let b = unsafe { &mut *block };
+        let mut n = 0u32;
+        let mut last = head;
+        unsafe {
+            loop {
+                n += 1;
+                let next = (*last).next;
+                if next.is_null() {
+                    break;
+                }
+                last = next;
+            }
+            (*last).next = b.free;
+        }
+        b.free = head;
+        b.live -= n;
+        b.live == 0
+    }
+
+    /// Collect every owned block and return the ones that emptied. The
+    /// sweep is not optional: a block the bump has moved past is
+    /// reachable only through this chain, so without it the chunks other
+    /// threads posted into it would sit there for the life of the
+    /// thread and the block would never go home.
+    fn collect_owned(&mut self) {
+        let mut block = self.owned;
+        while !block.is_null() {
+            let next = unsafe { (*block).owned_next };
+            if self.collect_remote(block) && block != self.current {
+                self.retire(block);
+            }
+            block = next;
+        }
+    }
+
+    /// Take over one block from a thread that exited holding chunks, so
+    /// its memory comes back into circulation and the frees still being
+    /// posted into it have a collector again. Returns the block, already
+    /// owned and collected, or null when the list is empty.
+    fn adopt(&mut self) -> *mut BufferBlockHeader {
+        let block = {
+            let mut list = ABANDONED.lock().unwrap();
+            let head = list.head;
+            if head.is_null() {
+                return std::ptr::null_mut();
+            }
+            list.head = unsafe { (*head).owned_next };
+            head
+        };
+        unsafe {
+            (*block).owned_next = std::ptr::null_mut();
+            // Claim it. A free racing this read either saw null or sees
+            // us; both post into `remote_free`, which is now ours to
+            // collect.
+            (*block).owner.store(self.id(), Ordering::Release);
+        }
+        self.own(block);
+        if self.collect_remote(block) {
+            // Everything it held was freed while it was ownerless.
+            self.retire(block);
+            return std::ptr::null_mut();
+        }
+        block
+    }
+
+    /// Hand this arena's blocks over at thread exit: the empty ones to
+    /// the pool, the ones still holding chunks to the abandoned list.
+    ///
+    /// Dropping them instead is what the old `Drop` did, and it was only
+    /// safe while every chunk was freed by the thread that allocated it:
+    /// a block with live chunks was called the owner's bug. With entity
+    /// bodies living here the holder can be any thread, so the block has
+    /// to stay findable.
+    fn hand_over(&mut self) {
+        self.current = std::ptr::null_mut();
+        self.bump = std::ptr::null_mut();
+        self.limit = std::ptr::null_mut();
+
+        let mut list = ABANDONED.lock().unwrap();
+        let mut block = self.owned;
+        while !block.is_null() {
+            let next = unsafe { (*block).owned_next };
+            // Collect first: a block that the posted frees have emptied
+            // is worth more to the pool than to the abandoned list.
+            let empty = self.collect_remote(block);
+            unsafe { (*block).owner.store(std::ptr::null_mut(), Ordering::Release) };
+            if empty {
+                unsafe {
+                    (*block).kind = 0;
+                    (*block).owned_next = std::ptr::null_mut();
+                }
+                BlockPool::global().put(block as *mut BlockHeader);
+            } else {
+                unsafe { (*block).owned_next = list.head };
+                list.head = block;
+            }
+            block = next;
+        }
+        self.owned = std::ptr::null_mut();
+    }
+
     /// False when the OS refuses. The arena is left empty rather than
     /// half-rotated: the previous current block has already gone home by
     /// then, so it must not stay referenced.
     #[must_use]
     fn rotate_block(&mut self) -> bool {
+        // Posted frees first: they may have emptied blocks this arena
+        // bumped past, and an emptied block is worth more to the pool
+        // than a fresh one is to this thread.
+        self.collect_owned();
+
         // An old current that emptied while current can only go home
         // now, at rotation — `free` keeps it alive until this moment.
         if !self.current.is_null() && unsafe { (*self.current).live } == 0 {
-            unsafe { (*self.current).kind = 0 };
-            BlockPool::global().put(self.current as *mut BlockHeader);
+            let old = self.current;
+            self.current = std::ptr::null_mut();
+            self.retire(old);
         }
+
+        // Take a block back from a thread that exited holding chunks,
+        // before asking the pool for a new one. It does not become
+        // current: its bump tail stays unused, and the block comes home
+        // whole once its chunks are freed. What adoption buys is that
+        // they *can* be freed — a block with no owner has nobody to
+        // collect the frees still being posted into it.
+        self.adopt();
 
         let block = BlockPool::global().get() as *mut BufferBlockHeader;
         if block.is_null() {
@@ -195,13 +441,19 @@ impl BufferArena {
             self.limit = std::ptr::null_mut();
             return false;
         }
+        let id = self.id();
         unsafe {
             block.write(BufferBlockHeader {
                 kind: BLOCK_KIND_BUFFER,
                 live: 0,
                 free: std::ptr::null_mut(),
+                owned_next: std::ptr::null_mut(),
+                owner: AtomicPtr::new(id),
+                _line0: [0; 32],
+                remote_free: AtomicPtr::new(std::ptr::null_mut()),
             });
         }
+        self.own(block);
         self.current = block;
         self.bump = (block as *mut u8).wrapping_add(LINE_SIZE);
         self.limit = (block as *mut u8).wrapping_add(crate::memory::block_pool::BLOCK_SIZE);
@@ -210,18 +462,37 @@ impl BufferArena {
 }
 
 impl Drop for BufferArena {
-    /// A dying thread must not take its buffer block with it. `free` never
-    /// returns the *current* block (only rotation does), so an arena whose
-    /// last chunk was freed would still leak that block at thread exit.
-    /// Return it if it holds no live chunks. A block with live chunks means
-    /// the owner never freed those buffers — its bug — and the data cannot
-    /// be reclaimed here; nothing else this arena owns is reachable (rotated
-    /// blocks return themselves when their last chunk frees).
+    /// A dying thread must not take its blocks with it, and since
+    /// 2026-08-04 it must not drop the ones still holding chunks either:
+    /// a chunk here is an entity's body and its holder may be any
+    /// thread. [`BufferArena::hand_over`] gives the empty blocks to the
+    /// pool and the rest to the abandoned list.
     fn drop(&mut self) {
-        if !self.current.is_null() && unsafe { (*self.current).live } == 0 {
-            unsafe { (*self.current).kind = 0 };
-            BlockPool::global().put(self.current as *mut BlockHeader);
-            self.current = std::ptr::null_mut();
+        self.hand_over();
+    }
+}
+
+/// Post a chunk to the block's cross-thread stack: one CAS loop, and
+/// nothing else in the block is touched.
+///
+/// The link is written into the freed chunk itself, which is sound for
+/// the same reason the owner's free list is — the chunk is dead, and its
+/// first 16 bytes are the arena's by contract. Under `rc-walk` a chunk
+/// the collector may still be reading never reaches here: the epoch test
+/// in `buffer_free_longlived_payload` parks the whole call first.
+///
+/// # Safety
+/// `(ptr, size)` is a live chunk of `block`, freed by this call.
+unsafe fn post_remote(block: *mut BufferBlockHeader, ptr: *mut u8, size: usize) {
+    let chunk = ptr as *mut FreeChunk;
+    unsafe { (*chunk).size = size };
+    let head = unsafe { &(*block).remote_free };
+    let mut top = head.load(Ordering::Relaxed);
+    loop {
+        unsafe { (*chunk).next = top };
+        match head.compare_exchange_weak(top, chunk, Ordering::Release, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(now) => top = now,
         }
     }
 }
@@ -421,6 +692,98 @@ pub unsafe extern "C" fn ll_buffer_release_longlived(
 mod tests {
     use super::*;
     use crate::memory::buffer::set_pressure_mode;
+
+    /// A chunk here is an entity's body, so whichever thread drops the
+    /// last reference is the one that frees it. A free from a non-owner
+    /// may touch only the block's posting stack: writing `live` and
+    /// `free` from there raced the owner, and an emptied block returned
+    /// from the wrong thread went to the pool while the owner was still
+    /// bumping into it.
+    ///
+    /// Two arenas on one thread rather than two threads, because the
+    /// ownership test is arena identity and a second thread would only
+    /// add scheduling to the same code path.
+    #[test]
+    fn a_foreign_free_leaves_the_owners_block_alone() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut owner = BufferArena::new();
+        let mut other = BufferArena::new();
+
+        // A chunk, then a rotation past its block: the current block is
+        // kept whatever happens, so the case worth testing is the other.
+        let (chunk, size) = owner.alloc(32);
+        let block = BufferBlockHeader::of_ptr(chunk);
+        let (big, big_size) = owner.alloc(BLOCK_PAYLOAD);
+        assert_ne!(owner.current, block, "rotated past it");
+
+        unsafe { other.free(chunk, size) };
+        unsafe {
+            assert_eq!(
+                (*block).kind,
+                BLOCK_KIND_BUFFER,
+                "a foreign free sent the owner's block home"
+            );
+            assert_eq!(
+                (*block).live,
+                1,
+                "live is the owner's count, and a posted chunk still counts"
+            );
+            assert!(
+                !(*block).remote_free.load(Ordering::Relaxed).is_null(),
+                "the chunk belongs on the block's posting stack"
+            );
+        }
+
+        // The owner accounts for it when it collects, and only then is
+        // the block empty enough to go home.
+        owner.collect_owned();
+        unsafe {
+            assert_eq!((*block).kind, 0, "collected and returned to the pool");
+            owner.free(big, big_size);
+        }
+    }
+
+    /// An arena that dies still holding chunks hands its blocks over
+    /// instead of dropping them: the memory comes back, and the frees
+    /// other threads are still posting into those blocks get a collector
+    /// again when someone adopts them.
+    #[test]
+    fn a_block_outlives_the_arena_that_owned_it() {
+        let _g = crate::memory::block_pool::test_guard();
+
+        let (chunk, size) = {
+            let mut dying = BufferArena::new();
+            dying.alloc(48)
+        };
+        let block = BufferBlockHeader::of_ptr(chunk);
+        unsafe {
+            assert_eq!(
+                (*block).kind,
+                BLOCK_KIND_BUFFER,
+                "the block was dropped on the floor with a live chunk in it"
+            );
+            assert!(
+                (*block).owner.load(Ordering::Relaxed).is_null(),
+                "an abandoned block has no owner until one adopts it"
+            );
+        }
+
+        // Someone else frees the chunk — no owner, so it posts — and
+        // then adopts the block, which collects the post and finds it
+        // empty. Adoption is one block per call and the list is global,
+        // so blocks another test abandoned may come first.
+        let mut next = BufferArena::new();
+        unsafe { next.free(chunk, size) };
+        for _ in 0..16 {
+            if unsafe { (*block).kind } == 0 {
+                break;
+            }
+            if next.adopt().is_null() && ABANDONED.lock().unwrap().head.is_null() {
+                break;
+            }
+        }
+        unsafe { assert_eq!((*block).kind, 0, "adopted, collected, and home") };
+    }
 
     /// Follows the block itself rather than the process-global
     /// `blocks_out`. That counter is shared with every other test, so a

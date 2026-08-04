@@ -46,8 +46,7 @@ the state of the work, not the design — for the design read the RFC.
 - Arena promotion becomes layout-aware — the header stays, the payload is
   reallocated into the heap, an OS-direct payload transfers ownership.
 
-**Open, and blocking nothing yet:** which allocator owns a heap dynamic
-string's payload (recorded in `rfc/model/memory/buffers.md`), and the
+**Open, and blocking nothing yet:** the
 cross-thread slot memory model that decides whether freeing a displaced
 string must route through epoch-deferred reclamation.
 

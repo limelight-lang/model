@@ -132,6 +132,14 @@ carries `(pointer, size)` (`dev/DECISIONS.md`, 2026-08-04). Design:
 `rfc/model/gc/rc-walk.md`, "Deferred physical release";
 `rfc/model/gc/heap-design.md`.
 
+Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's
+out-of-line body lives: a string's payload today, an array's storage
+next. Bump allocation with a per-block free list, and **the object
+heap's ownership rules**: per-block `owner`, per-block lock-free stack
+for frees from other threads, owner-written `live`, hand-over to a global
+abandoned list at thread exit, adoption on the refill path
+(`dev/DECISIONS.md`, 2026-08-04; `rfc/model/memory/buffers.md`).
+
 Arena reset and promotion: `src/promote.rs` — the fixpoint, the counting
 pass and block retention. Children come from `walk::trace_entity`, so a
 reference box's referent is promoted with it; a COW survivor's count is

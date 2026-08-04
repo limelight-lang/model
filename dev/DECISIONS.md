@@ -8,6 +8,46 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — the buffer arena is a heap like the other one, and gets the same ownership rules
+
+A string is an object of reduced form, and an array will be one too
+(Edmond, this date). Its payload is therefore an entity's **body**, and a
+body is freed by whichever thread drops the last reference — the rule the
+object heap already implements. The buffer arena implemented the opposite
+one: thread-local, frees from the owning thread only, a Phase-1 note
+deferring the rest until "a real consumer needs it". The consumer arrived
+with the GC-heap dynamic string and the note was not revisited, so a
+string created on one thread and released on another decremented a live
+count and pushed a free-list link across threads, and could hand a block
+to the pool while its real owner was still bumping into it.
+
+**Decided:** the buffer arena carries what `heap.rs` carries — a
+per-block `owner`, a per-block lock-free MPSC stack for foreign frees,
+`live` written only by the owner, hand-over at thread exit with a global
+abandoned list, and adoption on the refill path. The header had room: the
+block's header line is 256 bytes and the old header used 16, so the
+owner's fields sit on the first cache line with `owner`, and
+`remote_free` alone on the second.
+
+**Two departures from the heap's version**, both because a buffer block
+is bump-filled rather than slotted. The owner keeps a chain of its blocks
+— a block the bump has moved past is reachable no other way, and its
+posted frees would sit there forever. And an adopted block does not
+become current: its bump tail stays unused and the block comes home whole
+once its chunks are freed. Resuming a foreign bump would mean storing the
+cursor in the header and trusting it across an owner's death, for the
+tail of one block.
+
+**Rejected:** moving GC-heap payloads to `ll_alloc`, which answers
+cross-thread free for free. It puts continuously varying, realloc-heavy
+churn into size classes and back into the object heap, which is the
+isolation `buffers.md` exists to state. One protocol is cheaper than two
+ownership rules.
+
+**Regressions**, both seen failing: a foreign free that sent the owner's
+block home, and a block dropped on the floor by an arena that died
+holding a chunk.
+
 ## 2026-08-04 — the epoch test moves to the free that does not pass `ll_free`
 
 `ll_free` is described as the single funnel every ordinary local free
