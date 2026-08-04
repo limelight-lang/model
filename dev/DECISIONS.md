@@ -8,6 +8,33 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — the epoch test moves to the free that does not pass `ll_free`
+
+`ll_free` is described as the single funnel every ordinary local free
+passes, and the deferral window's test sits there. A buffer-arena chunk
+does not pass it: `buffer_free_longlived_payload` reads the block kind
+and calls `BufferArena::free` directly.
+
+**Decided:** the branch makes the test itself, rather than routing the
+call through `ll_free` to reach the existing one. `ll_free` cannot free a
+chunk anyway — `BufferArena::free` needs the granted capacity, and a live
+chunk carries no metadata to read it from.
+
+**The whole call parks, not the link write.** `free` writes
+`{ next, size }` into the chunk *and* decrements the block's live count,
+and an emptied non-current block goes back to the global pool, where it
+is re-stamped as another kind. Parking only the write would leave the
+second half live.
+
+**The parked record widens to `(pointer, size)`**, with size zero meaning
+the `ll_free` route. The alternative — reading the capacity back at flush
+time — has nowhere to read it from, which is the same zero-metadata
+contract that makes `free` size-carrying in the first place.
+
+**Regression:** `deferred_free::tests::`
+`a_buffer_chunk_parks_instead_of_being_written_into` — a pattern written
+into the chunk survives a free made while the epoch is open.
+
 ## 2026-08-04 — the reset traces through one tracer, and a COW count is settled after the fixpoint
 
 Promotion kept its own idea of which entities have children: `is_object`

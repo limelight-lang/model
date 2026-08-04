@@ -125,8 +125,18 @@ refilled at `ll_gc_maybe_collect`. Design in
 `src/memory/deferred_free.rs` (`rc-walk` builds) — the GC activity bit
 and the parked-free list: while an epoch is in flight, `ll_free` parks
 instead of recycling (slot identity for the walker); the owning thread
-flushes after the epoch. Design: `rfc/model/gc/rc-walk.md`, "Deferred
-physical release"; `rfc/model/gc/heap-design.md`.
+flushes after the epoch. A **buffer-arena chunk** never passes `ll_free`,
+so `buffer_arena::buffer_free_longlived_payload` makes the same test in
+its own branch and parks the whole call; that is why a parked record
+carries `(pointer, size)` (`dev/DECISIONS.md`, 2026-08-04). Design:
+`rfc/model/gc/rc-walk.md`, "Deferred physical release";
+`rfc/model/gc/heap-design.md`.
+
+Arena reset and promotion: `src/promote.rs` — the fixpoint, the counting
+pass and block retention. Children come from `walk::trace_entity`, so a
+reference box's referent is promoted with it; a COW survivor's count is
+left alone during the fixpoint (destructors read it) and settled once
+afterwards by `reconcile_cow_counts` (`dev/DECISIONS.md`, 2026-08-04).
 
 ## Hot paths
 
