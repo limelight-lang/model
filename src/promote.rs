@@ -75,6 +75,11 @@ const ARENA_RESET_MAX_ROUNDS: usize = 10_000;
 /// live stack); destructors invoked here may still allocate into it.
 pub unsafe fn arena_reset_full(arena: *mut Arena) {
     let mut survivors: Vec<*mut RcHeader> = Vec::new();
+    // Each COW survivor's count at the instant it was promoted, which is
+    // the last instant the reset can attribute it to arena holders. What
+    // happens to the count after that belongs to whoever changed it, and
+    // the reconciliation keeps it as a delta.
+    let mut cow_at_promotion: Vec<(*mut RcHeader, u32)> = Vec::new();
     let mut retained: HashSet<usize> = HashSet::new();
     // `survivors[..counted]` have already been counted and retained. New
     // survivors past it are the current round's delta.
@@ -158,6 +163,9 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 }
             }
             unsafe {
+                if (*surv).flags & COW != 0 {
+                    cow_at_promotion.push((surv, (*surv).refcount));
+                }
                 // 00 = GcHeap; drop the transient arena-reset mark and
                 // IS_ESCAPEE. The mark lives in the GC-state field, so
                 // clearing it also leaves the promoted object's GC state at
@@ -205,7 +213,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // COW counts last, for the reason they were left alone until now: the
     // fixpoint is where mutator code runs, and on a COW entity the count
     // is what that code reads to decide whether a write may go in place.
-    unsafe { reconcile_cow_counts(&survivors) };
+    unsafe { reconcile_cow_counts(&survivors, &cow_at_promotion) };
 
     unsafe { crate::weak::drain_arena_weak_log(arena) };
 
@@ -379,43 +387,85 @@ unsafe fn mark_one(
     stack.push(e);
 }
 
-/// Make every COW survivor's count describe the survivors and nothing
-/// else. Runs once, after the settling loop, and it has to be after: the
-/// count is a value on a COW entity, mutator code reads it as the
-/// sharing test, and the fixpoint is where the last mutator code runs.
+/// Settle every COW survivor's count now that the fixpoint is over and
+/// no user code can run again.
 ///
-/// Assigns rather than adjusts. The holders that die with the arena never
-/// release, so the count carried out of the fixpoint is too high by
-/// exactly their number and there is no list of them to subtract; the
-/// edges that remain are enumerable, and they are the answer. Whatever
-/// [`count_children`] added for a COW child during the loop is overwritten
-/// here for the same reason.
+/// Two contributions, and the split is the whole design. **Edges** — the
+/// references surviving entities hold — replace what the count said at
+/// promotion time, because the holders that died with the arena never
+/// released and there is no list of them to subtract. **The delta** —
+/// whatever changed the count after promotion — is carried across
+/// untouched, because promotion happens inside the settling loop and the
+/// release-log drain runs `__destruct` bodies after it: a destructor may
+/// hand an already-promoted string to a heap object that outlives the
+/// request, and that reference belongs to nobody the edge walk can see.
 ///
-/// A COW escapee keeps its hold-count and gains the internal edges on top,
-/// the same shape a non-COW root gets — the state itself is one the
-/// barrier forbids (`barrier::escape_gain`) and `PLAN.md` task 15 owes an
-/// answer for.
+/// The earlier version assigned the edge count outright, which erased
+/// exactly those holders and left the string with one count and two
+/// holders (`dev/DECISIONS.md`, 2026-08-04).
+///
+/// `at_promotion` is each COW survivor's count at the instant its
+/// category was rewritten — the last instant the reset can attribute it
+/// to arena holders.
 ///
 /// # Safety
 /// Every survivor is live, the fixpoint has settled, and no user code can
 /// run again before the blocks are disposed of.
-unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader]) {
-    let members: HashSet<usize> = survivors.iter().map(|&s| s as usize).collect();
-    for &s in survivors {
-        let flags = unsafe { (*s).flags };
-        if flags & COW != 0 && flags & IS_ESCAPEE == 0 {
-            unsafe { (*s).refcount = 0 };
-        }
+unsafe fn reconcile_cow_counts(
+    survivors: &[*mut RcHeader],
+    at_promotion: &[(*mut RcHeader, u32)],
+) {
+    if at_promotion.is_empty() {
+        return;
     }
+    // Address → (edges seen so far, delta since promotion).
+    let mut settled: HashMap<usize, (u32, i64)> = HashMap::with_capacity(at_promotion.len());
+    for &(s, at) in at_promotion {
+        let now = unsafe { (*s).refcount } as i64;
+        settled.insert(s as usize, (0, now - at as i64));
+    }
+
     for &s in survivors {
+        debug_assert!(
+            traceable_in_full(unsafe { (*s).flags }),
+            "a survivor of a kind `trace_entity` skips would have its              references erased here, not conservatively ignored"
+        );
         unsafe {
             crate::walk::trace_entity(s, |child| {
-                if (*child).flags & COW != 0 && members.contains(&(child as usize)) {
-                    (*child).refcount += 1;
+                if let Some(entry) = settled.get_mut(&(child as usize)) {
+                    entry.0 += 1;
                 }
             });
         }
     }
+
+    for &(s, _) in at_promotion {
+        let (edges, delta) = settled[&(s as usize)];
+        let settled_count = edges as i64 + delta;
+        debug_assert!(settled_count >= 0, "a COW survivor lost more references than it had");
+        unsafe { (*s).refcount = settled_count.max(0) as u32 };
+    }
+}
+
+/// True when `walk::trace_entity` enumerates **all** of this entity's
+/// counted children rather than skipping it.
+///
+/// The tracer's own skips are conservative for the collector — an omitted
+/// source only removes in-edges, so its targets stay pinned — and they
+/// are the opposite of conservative for a pass that decides a count from
+/// the edges it finds. Arrays are the kind this will catch (Phase C):
+/// they hold counted children and the tracer has no arm for them yet.
+fn traceable_in_full(flags: u32) -> bool {
+    use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
+    let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
+    const OBJECT: u32 = EntityKind::Object as u32;
+    const LAZY: u32 = EntityKind::Lazy as u32;
+    const REFERENCE: u32 = EntityKind::Reference as u32;
+    const STRING: u32 = EntityKind::String as u32;
+    const WEAKREF: u32 = EntityKind::WeakRef as u32;
+    // String and WeakRef are leaves, so "skipped" and "enumerated in
+    // full" are the same answer for them.
+    matches!(kind, OBJECT | LAZY | REFERENCE | STRING | WEAKREF)
 }
 
 /// One counting pass over a survivor's reference slots: +1 to arena
@@ -845,6 +895,94 @@ mod tests {
             ll_object_die(owner);
             assert!(crate::refcount::ll_release(b as *mut RcHeader));
             ll_object_die(b);
+        }
+    }
+
+    /// A holder acquired **after** the survivor was promoted must survive
+    /// the reconciliation. Promotion happens inside the settling loop and
+    /// the release-log drain runs user destructors after it, so a
+    /// destructor can store an already-promoted string into a heap object
+    /// that outlives the request — a legitimate `+1` that no edge between
+    /// survivors accounts for. Assigning the count from those edges alone
+    /// erased it, which left the string with one count and two holders.
+    #[test]
+    fn a_holder_acquired_after_promotion_keeps_its_count() {
+        let _g = crate::memory::block_pool::test_guard();
+        static CACHE: AtomicUsize = AtomicUsize::new(0);
+        static STRING: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn cache_the_string_dtor(_o: *mut Object) {
+            // A dying heap entity, torn down by the release drain, puts the
+            // string into a heap object: `Cache::$last = $s`.
+            let cache = CACHE.load(Ordering::Relaxed) as *mut Object;
+            let s = STRING.load(Ordering::Relaxed) as *mut RcHeader;
+            unsafe {
+                let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
+                let slot = Object::prop_at(cache, 16);
+                assert!(ref_store(
+                    arena,
+                    cache as *mut RcHeader,
+                    slot,
+                    std::ptr::null_mut(),
+                    Value::entity(Tag::String, s),
+                ));
+            }
+        }
+
+        let keeper_cls = ClassBuilder::new("Keeper").prop("s", true).build();
+        let holder_cls = ClassBuilder::new("Holder").prop("keep", true).build();
+        let cache_cls = ClassBuilder::new("Cache").prop("last", true).build();
+        let dying_cls = ClassBuilder::new("Dying")
+            .destructor(cache_the_string_dtor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+        let ctx_ptr: *mut LLContext = &mut ctx;
+        set_current_context(ctx_ptr);
+
+        let holder = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
+        let cache = unsafe { new_constructed(ctx_ptr, cache_cls, MemoryCategory::GcHeap) };
+        let keeper = unsafe { new_constructed(ctx_ptr, keeper_cls, MemoryCategory::RequestArena) };
+        let container = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::RequestArena) };
+        let dying = unsafe { new_constructed(ctx_ptr, dying_cls, MemoryCategory::GcHeap) };
+        CACHE.store(cache as usize, Ordering::Relaxed);
+
+        let s = unsafe {
+            crate::string::ll_string_new(ctx_ptr, MemoryCategory::RequestArena, b"cached")
+        } as *mut RcHeader;
+        STRING.store(s as usize, Ordering::Relaxed);
+
+        unsafe {
+            // The keeper holds the string and escapes, so both survive.
+            let slot = Object::prop_at(keeper, 16);
+            assert!(ref_store(
+                arena_ptr,
+                keeper as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::String, s),
+            ));
+            assert!(!crate::refcount::ll_release(s), "the creation reference");
+            store_prop(arena_ptr, holder, 16, keeper);
+
+            // The dying heap entity sits in an arena container, so the
+            // release log tears it down — after the promotion pass.
+            store_prop(arena_ptr, container, 16, dying);
+            assert!(!crate::refcount::ll_release(dying as *mut RcHeader));
+
+            arena_reset_full(arena_ptr);
+        }
+        set_current_context(std::ptr::null_mut());
+
+        unsafe {
+            assert_eq!(
+                (*s).refcount,
+                2,
+                "the keeper's slot and the one the destructor added"
+            );
+            assert_eq!((*s).memory_category(), MemoryCategory::GcHeap);
         }
     }
 

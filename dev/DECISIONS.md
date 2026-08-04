@@ -8,6 +8,47 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — the COW reconciliation carries a delta, because promotion is not the end of the reset
+
+`reconcile_cow_counts` assigned each COW survivor's count from the edges
+between survivors, on the argument that the holders dying with the arena
+never release and there is no list of them to subtract. The argument
+covers holders that existed at mark time and no others, and the reset
+does not stop there: promotion rewrites categories **inside** the
+settling loop, and the release-log drain runs `__destruct` bodies after
+it. A destructor that hands an already-promoted string to a heap object
+adds a legitimate reference that no edge between survivors can see —
+and it takes the ordinary store path, since the string reads `GcHeap` by
+then and the barrier has nothing to copy.
+
+Found by the critic pass on this day's own work, with the failing
+sequence spelled out. Both outcomes are silent: the cache dies first and
+the string is torn down under a live holder, or the keeper dies first and
+`ll_release` runs at zero.
+
+**Decided:** each COW survivor's count is recorded at the instant its
+category is rewritten, and the reconciliation settles it as
+`edges + (count_now − count_at_promotion)`. Edges replace what the count
+said about arena holders; the delta carries across whatever happened
+after, whoever did it.
+
+**A second finding closed with it:** `walk::trace_entity` documents its
+skipped kinds as conservative, which is true for the collector — an
+omitted source only removes in-edges and pins its targets — and false for
+a pass that decides a count from the edges it finds. An array survivor
+(Phase C) would have its elements' references erased rather than ignored.
+`traceable_in_full` asserts the survivor's kind is one the tracer
+enumerates completely.
+
+**And a third:** the escapee branch of the old reconciliation was
+unreachable — every survivor passes the promotion loop first, which
+clears `IS_ESCAPEE` unconditionally. The delta form has no such branch.
+
+**Regression:** `promote::tests::`
+`a_holder_acquired_after_promotion_keeps_its_count` — a heap entity torn
+down by the release drain stores the promoted string into a cache, and
+the count has to come out 2.
+
 ## 2026-08-04 — a COW value is copied out of the arena, and the store barrier can say no
 
 `values.md` asserted two invariants over the same four bytes: on a COW
