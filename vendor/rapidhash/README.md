@@ -1,7 +1,8 @@
 # rapidhash
 
 Upstream copy of the reference implementation, kept here so the Rust port
-in `src/hash.rs` can be checked against it constant for constant. Nothing
+in `src/hash/rapidhash.rs` can be checked against it constant for
+constant. Nothing
 in the crate compiles this header; it is read by people and by the vector
 generator (`vendor/rapidhash/generate_vectors.c`).
 
@@ -16,6 +17,14 @@ generator (`vendor/rapidhash/generate_vectors.c`).
 `rapidhash.h` is unmodified. Replacing it means re-running the generator
 and committing the new table — the port is defined by this file, not by
 the port's own tests.
+
+**That the file here is the one the table came from is checked**, by
+`hash::tests::the_vendored_reference_is_the_one_the_table_came_from`,
+which pins the crate's own hash of the header rather than the sha256
+above (computing sha256 would mean carrying an implementation of it for
+one assertion). The sha256 identifies the upstream file; the test's
+digest identifies the local one. Updating the header means changing
+both, plus `seed::FUNCTION_REVISION`.
 
 ## Why a copy and not a dependency
 

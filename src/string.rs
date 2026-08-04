@@ -196,6 +196,15 @@ pub(crate) unsafe fn init_at(
     hash: u64,
 ) -> *mut LLString {
     debug_assert!(fits(bytes.len()));
+    // A supplied hash is taken on trust and never recomputed, so a caller
+    // that hands over one this build does not produce writes a string that
+    // will never be found by content. The only such caller is `intern`,
+    // which passes `hash_bytes` of the same bytes; this is where both
+    // operands exist at once, so this is where the trust is checked.
+    debug_assert!(
+        hash == 0 || hash == hash_bytes(bytes),
+        "init_at was given a hash this build does not compute"
+    );
     let shared = matches!(
         category,
         MemoryCategory::Immortal | MemoryCategory::LongLived
@@ -1171,6 +1180,49 @@ mod tests {
     /// two layouts holding the same bytes hash the same. Computing it
     /// through the inline accessor on a dynamic string would hash the
     /// `data` field — an address — and this is the assertion that says so.
+    /// The empty string is the one content on which the two layouts do not
+    /// merely differ in where the bytes live — the dynamic one has no
+    /// payload at all and returns its slice without reading `data`, which
+    /// is null. Both must still reach the same hash as each other and as
+    /// `hash_bytes` of no bytes.
+    ///
+    /// It is also the content most likely to expose a lazy field that never
+    /// settles: the cached hash means "not computed" when it is zero, so a
+    /// hash function returning zero for the empty input would recompute on
+    /// every read forever. The remap in `hash::hash_bytes` is what makes
+    /// that unreachable rather than unlikely, and the second read below is
+    /// what would catch it.
+    #[test]
+    fn an_empty_string_hashes_alike_in_both_layouts_and_caches() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+
+        let inline = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"") };
+        let dynamic = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, b"", 0) };
+        assert!(unsafe { (*dynamic).data }.is_null(), "no payload at all");
+
+        let from_inline = unsafe { LLString::hash(inline) };
+        assert_eq!(from_inline, hash_bytes(b""));
+        assert_eq!(from_inline, unsafe {
+            LLString::hash(dynamic as *mut LLString)
+        });
+        assert_ne!(from_inline, 0, "zero would mean the field is not computed");
+
+        // Computed once and kept: the field now reads back as itself rather
+        // than as the sentinel.
+        assert_ne!(unsafe { (*inline).hash }, 0);
+        assert_eq!(unsafe { LLString::hash(inline) }, from_inline);
+
+        unsafe {
+            for p in [inline as *mut RcHeader, dynamic as *mut RcHeader] {
+                if ll_release(p) {
+                    crate::object::ll_entity_die(p);
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_two_layouts_hash_the_same_content_the_same() {
         let _g = crate::memory::block_pool::test_guard();

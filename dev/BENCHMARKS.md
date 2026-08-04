@@ -115,15 +115,22 @@ defaults, release, rc-walk (the default configuration).
 
 | benchmark | median |
 |---|---|
-| `hash/8` | 3.71 ns |
-| `hash/16` | 3.64 ns |
-| `hash/17` | 4.34 ns |
-| `hash/64` | 5.42 ns |
-| `hash/113` | 10.39 ns |
-| `hash/1024` | 53.6 ns (17.8 GiB/s) |
-| `new_inline_gcheap_hash_die` | 16.7 ns |
-| `append_256x16_arena` | 1.311 µs |
-| `append_256x16_gcheap` | 1.418 µs |
+| `hash/8` | 3.59 ns |
+| `hash/16` | 3.57 ns |
+| `hash/17` | 4.39 ns |
+| `hash/64` | 5.44 ns |
+| `hash/113` | 10.16 ns |
+| `hash/1024` | 52.6 ns (18.1 GiB/s) |
+| `new_inline_gcheap_hash_die` | 17.1 ns |
+| `append_256x16_arena` | 1.295 µs |
+| `append_256x16_gcheap` | 1.419 µs |
+
+An earlier pass, before the harness checked creation and append for
+refusal, gave 3.71 / 3.64 / 4.34 / 5.42 / 10.39 / 53.6 ns, 16.7 ns, and
+1.311 / 1.418 µs. Every one of those agrees with the table above inside
+this box's noise floor — but the two passes were **not** run back to back,
+so that agreement is not a measurement of what the checks cost. It is a
+reason not to have bothered measuring it.
 
 What the shape says, and it is only what the numbers say: the hash is
 flat from 8 to 16 bytes, which is the reference's single short arm doing
@@ -138,14 +145,28 @@ reset against a refcount death. The pair exists so the optimization can
 be measured as `append_256x16_gcheap` against itself, with the arena arm
 beside it as the control that should not move.
 
-**Two defects in the harness itself, found by running it and fixed
-before these numbers were taken.** The create-and-hash arm first built
-arena strings without ever resetting, so it grew the arena for the whole
-run — gigabytes at criterion's iteration counts, and a 60% spread that
-looked like machine noise. The append arms first leaked their payloads
-for the same reason. Both now reclaim inside the timed region. A
-benchmark that allocates without bound measures the allocator's
-behaviour under a condition no program produces.
+**Three defects in the harness itself, found by running it and by being
+asked about it, all fixed before these numbers were taken.** The
+create-and-hash arm first built arena strings without ever resetting, so
+it grew the arena for the whole run — gigabytes at criterion's iteration
+counts, and a 60% spread that looked like machine noise. The append arms
+first leaked their payloads for the same reason. Both now reclaim inside
+the timed region. A benchmark that allocates without bound measures the
+allocator's behaviour under a condition no program produces.
+
+The third: nothing checked for refusal. `ll_string_new` and
+`ll_string_new_dynamic` return null when memory runs out or the 4 GiB cap
+is reached and `ll_string_append` returns false, and three sites
+dereferenced or ignored them — so the harness would have crashed on the
+one condition it is most likely to reach, instead of reporting it.
+
+**A fourth number was taken and thrown away**, which is worth recording
+because the rule that catches it is easy to forget: a re-measurement run
+while a Miri job occupied the box gave 1.42 and 1.78 µs for the two
+append arms. Nothing about the code had changed by 25%. Load arriving
+mid-session is what the A→B→A control exists for
+(`POSTMORTEM.md`, 2026-07-20), and here there was no control — only the
+knowledge that the box was busy.
 
 ## 2026-07-28 — dense census in the epoch walk: 2–3× on the walk step
 

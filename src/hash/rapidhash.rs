@@ -76,7 +76,7 @@ fn read32(bytes: &[u8], offset: usize) -> u64 {
 /// Bytes consumed per iteration of the bulk loop, and the length above
 /// which that loop runs at all. Both are the reference's, and the second
 /// is the first: the loop is entered only when it can run once.
-const BULK_STRIDE: usize = 112;
+pub(super) const BULK_STRIDE: usize = 112;
 
 /// Hash `bytes` under `seed` and `secret`.
 ///
@@ -121,9 +121,12 @@ pub fn hash_expanded(bytes: &[u8], expanded: u64, secret: &[u64; 8]) -> u64 {
     let a: u64;
     let b: u64;
 
-    // Bytes not yet folded into `seed`. It stays equal to `len` on every
-    // path except the bulk loop, and the finalizer mixes it in, so two
-    // inputs of different lengths cannot finish alike by accident.
+    // The reference's `i`: bytes not yet consumed by the bulk loop, which
+    // is `len` on every path that does not enter it and the residue
+    // afterwards. **Not the length**, and the finalizer mixes in this
+    // rather than the length — 113 and 225 both arrive here with 1. What
+    // separates two long inputs of different lengths is the accumulated
+    // `seed`, not this.
     let mut remaining = len;
 
     if len <= 16 {
@@ -267,12 +270,15 @@ pub fn hash_expanded(bytes: &[u8], expanded: u64, secret: &[u64; 8]) -> u64 {
 mod tests {
     use super::*;
 
-    /// The bulk loop's exit condition is `> 112`, not `>= 112`, so an
-    /// input of exactly one stride never enters it and one byte more
-    /// enters it once. Both sides are transcribed rather than derived,
-    /// and an off-by-one here changes the hash of every long input
-    /// without changing any short one — the vector table catches it,
-    /// this names it.
+    /// The bulk loop is entered on `> 112`, not `>= 112`, so an input of
+    /// exactly one stride never enters it and one byte more enters it once.
+    ///
+    /// **This names the boundary; the vector table is what defends it.**
+    /// Each of the two off-by-ones available here is narrow, not broad:
+    /// `>=` at the entry changes the hash of exactly one length, 112, and
+    /// `<` at the exit changes only lengths whose residue is exactly a
+    /// stride — 224, 336, 448. `filled_lengths` in the generator covers
+    /// 112, 224 and 336 for that reason.
     #[test]
     fn the_bulk_loop_boundary_is_where_the_reference_puts_it() {
         let input = vec![0x5au8; BULK_STRIDE + 1];
@@ -283,17 +289,25 @@ mod tests {
         assert_ne!(at_stride, over_stride);
     }
 
-    /// The length is folded in twice — into `seed` for short inputs, into
-    /// the finalizer always — so two inputs that share a prefix and
-    /// differ in length do not collide through the tail read, which for
-    /// both would cover the same final sixteen bytes.
+    /// The short arm folds the length into the seed, so two inputs that
+    /// share a prefix and differ in length do not collide through the tail
+    /// read — which for both covers overlapping bytes.
+    ///
+    /// Both inputs here are 16 bytes or under, which is where that fold
+    /// happens; above 16 the finalizer receives the bulk-loop residue
+    /// rather than the length, and separation comes from the accumulated
+    /// seed instead.
     #[test]
-    fn length_separates_inputs_that_share_a_tail() {
-        let long = vec![0u8; 64];
+    fn length_separates_short_inputs_that_share_a_tail() {
+        let short = vec![0u8; 16];
 
         assert_ne!(
-            hash(&long, 0, &DEFAULT_SECRET),
-            hash(&long[..48], 0, &DEFAULT_SECRET)
+            hash(&short, 0, &DEFAULT_SECRET),
+            hash(&short[..8], 0, &DEFAULT_SECRET)
+        );
+        assert_ne!(
+            hash(&short[..7], 0, &DEFAULT_SECRET),
+            hash(&short[..4], 0, &DEFAULT_SECRET)
         );
     }
 

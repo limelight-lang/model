@@ -8,6 +8,85 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — the critic pass on the hash stage: the stamp did not separate the pair it existed for
+
+Seven findings against the entry below, all above the hash function
+itself — the transcription was checked against the vendored header line
+by line and holds, including the cascade's non-obvious `2,2,1,1,2,1`
+secret sequence and the `position + remaining == len` identity the tail
+read depends on.
+
+**The one that mattered.** `STAMP` mixed in the seed only under folding,
+and an unset `LL_HASH_SEED` made that seed zero — so a folding build
+without a seed and a non-folding build produced **the same stamp**. A
+program folded under seed zero, run against a runtime drawing per
+process, passed the check and missed every folded lookup. Verified by
+building both and printing the stamp: `0x8418e9313e109773` from each. The
+stamp failed at precisely the pair it was built to catch, and the only
+thing standing in front of it was a `#[cfg(test)]` assertion that
+`cargo build --features hash-folding` never runs.
+
+**Closed twice over**, because one fix leaves the class open. A `const`
+assertion beside `BUILD_SEED` refuses a seedless folding build at compile
+time; and `FOLDS` puts the arm itself into the stamp, so even an explicit
+`LL_HASH_SEED=0` — legal as a bit pattern — cannot alias.
+
+**`FUNCTION_VERSION` was a promise nobody could keep.** It had to be
+bumped by hand for a changed secret, a changed zero remap or a changed
+vendored version; nothing checked. Regenerating `vectors.rs` against a
+header with one different secret word left the suite green, the stamp
+unchanged, and a shipped folded program silently wrong. It is now
+`FUNCTION_IDENTITY`, derived in a `const` block from the secret array,
+the zero remap and the bulk stride, with a hand-bumped `FUNCTION_REVISION`
+left for the one case constants cannot show — a different upstream
+version with identical constants.
+
+**The vendored header was checked by nothing.** `README.md` records a
+sha256 that no test and no build step compared against anything, and the
+generator and the port both read that same file, so an edited header
+yields a self-consistent table and a green suite. A test now pins the
+crate's own hash of the header — a weaker digest than sha256, and the
+right question ("is this the same file") without carrying a sha256
+implementation for one assertion.
+
+**`parse_seed` accepted four inputs it documented as build failures**,
+and all four evaluated to zero: `_`, `___`, `0x_`, and `2^64` wrapping
+around. `0x_` is the shape a typo in a CI file takes. It now requires at
+least one digit and rejects anything past 64 bits; the earlier argument
+for wrapping — "refusing a large seed refuses half the space" — was
+wrong, since the whole space is expressible.
+
+**Two tests asserted things they could not observe.** `raw() != 0` cannot
+fail, because the draw remaps zero away. And two `RandomState::new()`
+calls on one thread differ because std bumps a thread-local counter
+between them, whatever the entropy source did — so the test that "a stub
+returning a constant fails here" would have passed on a platform whose
+randomness was fixed, which is the failure that arm exists to prevent.
+The draw is now compared across threads, where the keys really are
+initialized from the source.
+
+**`build.rs` is gone and its stated reason was false.** It claimed cargo
+cannot see `option_env!`. Cargo can: rustc records `# env-dep:LL_HASH_SEED`
+in dep-info and cargo consumes it. Verified on this toolchain across
+every transition including unset→set — the seed changed, the artifact
+rebuilt, with no build script present.
+
+**Also:** `ll_hash_stamp_matches` returns `u32` rather than `bool`, since
+Rust lowers `extern "C" -> bool` to `i1 zeroext` and this crate is
+*merged* with compiler-generated IR rather than linked, where a
+declaration saying `i8` would take a wrong answer from the one function
+whose job is to be right. `ll_hash_seed_init` lets runtime startup draw
+the seed instead of leaving a `getrandom` syscall at whichever
+`LLString::hash` happens to run first; the lazy path stays as the
+backstop, because a late seed is silent and a late init is not. `init_at`
+gained a `debug_assert` that a supplied hash is one this build computes —
+`intern` is the only caller and it is right, but nothing checked.
+
+**Left open, named rather than fixed:** a thread inside `LazyLock::force`
+at `fork` time leaves the child blocked on a `Once` nobody will wake.
+Structural rather than demonstrated, and it needs a runtime that forks
+with threads live, which does not exist yet.
+
 ## 2026-08-04 — folding a literal key's hash is a build option, and it is off by default
 
 `rfc/model/strings.md` left it open whether the compiler folds the hash of

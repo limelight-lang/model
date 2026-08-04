@@ -19,6 +19,13 @@
 //!   and the seed may come from a static rather than a constant
 //!   (`src/hash/seed.rs`). Nothing here had a hash bench before.
 //!
+//! **Every refusal is checked, inside the timed region.** Creation returns
+//! null and append returns false when memory runs out or the 4 GiB cap is
+//! reached; a bench that ignored either would dereference the null, and one
+//! that skipped quietly would report the timing of work it did not do. The
+//! branches are perfectly predicted and cost nothing measurable here — far
+//! below the 3% this box can resolve.
+//!
 //! Read `dev/BENCHMARKS.md` before believing any number from this file.
 //! The rules that bite hardest: measure both arms back to back in one
 //! sitting, run A→B→A and void the run if the two A's disagree, discard
@@ -93,6 +100,7 @@ fn create_and_hash(c: &mut Criterion) {
                 MemoryCategory::GcHeap,
                 black_box(&input),
             );
+            assert!(!s.is_null(), "string creation refused: out of memory");
             let h = LLString::hash(s);
 
             if ll_release(s as *mut RcHeader) {
@@ -120,8 +128,12 @@ fn append_in_arena(c: &mut Criterion) {
     c.bench_function("strings/append_256x16_arena", |b| {
         b.iter(|| unsafe {
             let s = ll_string_new_dynamic(&mut ctx, MemoryCategory::RequestArena, &[], 0);
+            assert!(!s.is_null(), "string creation refused: out of memory");
             for _ in 0..APPEND_COUNT {
-                ll_string_append(&mut ctx, s, black_box(&chunk));
+                assert!(
+                    ll_string_append(&mut ctx, s, black_box(&chunk)),
+                    "append refused: out of memory"
+                );
             }
             let len = string_bytes(s as *const LLString).len();
 
@@ -142,8 +154,12 @@ fn append_in_heap(c: &mut Criterion) {
     c.bench_function("strings/append_256x16_gcheap", |b| {
         b.iter(|| unsafe {
             let s = ll_string_new_dynamic(std::ptr::null_mut(), MemoryCategory::GcHeap, &[], 0);
+            assert!(!s.is_null(), "string creation refused: out of memory");
             for _ in 0..APPEND_COUNT {
-                ll_string_append(std::ptr::null_mut(), s, black_box(&chunk));
+                assert!(
+                    ll_string_append(std::ptr::null_mut(), s, black_box(&chunk)),
+                    "append refused: out of memory"
+                );
             }
             let len = string_bytes(s as *const LLString).len();
 

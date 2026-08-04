@@ -93,8 +93,9 @@ mod tests {
     /// rest compare `hash_bytes` against itself. This one compares it
     /// against the same input hashed under the reference's default seed of
     /// zero, which is what an unseeded build produces. It holds in both
-    /// arms, since neither installs a zero seed —
-    /// `hash::seed::tests` is what enforces that.
+    /// arms because neither can install a zero seed: the folding arm is
+    /// refused at compile time by the `const` assertion beside
+    /// `seed::BUILD_SEED`, and the drawn seed is remapped away from zero.
     #[test]
     fn the_installed_seed_reaches_hash_bytes() {
         let unseeded = rapidhash::hash(b"limelight", 0, &rapidhash::DEFAULT_SECRET);
@@ -143,6 +144,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The vendored reference is the one the table was generated from.
+    ///
+    /// Everything else here is circular and cannot see this: the generator
+    /// reads `vendor/rapidhash/rapidhash.h`, the port was transcribed from
+    /// the same file, so a header that was edited — patched by hand,
+    /// swapped for another version, corrupted in transit — yields a
+    /// self-consistent table, a self-consistent port and a green suite.
+    /// `vendor/rapidhash/README.md` records a sha256 for it, and until now
+    /// nothing compared anything against that record.
+    ///
+    /// The digest below is this crate's own hash of the file rather than
+    /// its sha256, because computing sha256 would mean carrying an
+    /// implementation of it for one assertion. It answers a weaker
+    /// question — "is this the same file" — which is the question being
+    /// asked. A port broken badly enough to fake it fails every vector
+    /// first.
+    ///
+    /// **When the header is deliberately updated**, regenerate `vectors.rs`,
+    /// update the sha256 in the README, bump `seed::FUNCTION_REVISION`, and
+    /// put the new value here.
+    #[test]
+    fn the_vendored_reference_is_the_one_the_table_came_from() {
+        const HEADER: &[u8] = include_bytes!("../../vendor/rapidhash/rapidhash.h");
+        const DIGEST: u64 = 0x8b1c_c8ce_ca82_fff7;
+
+        assert_eq!(
+            rapidhash::hash(HEADER, 0, &rapidhash::DEFAULT_SECRET),
+            DIGEST,
+            "vendor/rapidhash/rapidhash.h is not the file src/hash/vectors.rs was \
+             generated from; regenerate the table rather than adjust this number"
+        );
     }
 
     /// The vector table covers the branches it exists to cover. A table that

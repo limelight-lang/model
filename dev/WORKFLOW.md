@@ -58,9 +58,11 @@ different `cfg` branches and each carries a test the other does not:
 LL_HASH_SEED=<any> cargo test --lib --features hash-folding -- --test-threads=4
 ```
 
-Run it once, in the default GC configuration. Without `LL_HASH_SEED` that
-command is *supposed* to fail — that is the arm's own test firing, not a
-broken gate.
+Run it once, in the default GC configuration. Without `LL_HASH_SEED` it
+does not fail, it does not compile: a folding build with no seed is
+refused by a `const` assertion in `hash/seed.rs`, because
+`cargo build --features hash-folding` runs no tests and an artifact from
+such a build hashes identically to every other one.
 
 Both GC configurations run because GC strategy selection is a build-time
 feature (the two collectors claim the same header bits — see the
