@@ -676,6 +676,61 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     crate::epoch::teardown_exit();
 }
 
+/// The copy-on-write write barrier: takes the pointer a holder has,
+/// returns the pointer it must store before writing
+/// (`rfc/model/values.md`, "Copy-on-Write Protocol"). A no-op unless
+/// [`crate::refcount::cow_separation_needed`] fires, in which case the
+/// entity is copied and the copy comes back.
+///
+/// **A separated copy comes back at +1, owned by the caller**, and the
+/// full composition — store, drop the displaced original, release the
+/// creation reference — is written out in [`crate::string::separate`].
+/// Getting it wrong does not merely leak: a copy left at two reads as
+/// shared on every later write and separates forever.
+///
+/// `owner_cat` is the **holder's** category, supplied by the compiler as
+/// it is to every other store-side barrier (`memory/barrier.rs`), and
+/// here it decides where the copy lives. A holder that outlives the
+/// request cannot be handed an arena copy.
+///
+/// An FFI handle cannot perform the write-back at all, which is why a
+/// borrowed `const char*` into string bytes is invalidated by any
+/// mutation of that string (`rfc/model/memory/ffi.md`).
+///
+/// Kind-dispatched, like [`ll_entity_die`]: whether to separate is a
+/// property of the header, how to copy is a property of the layout.
+/// Strings are the only COW entity the crate produces so far; arrays
+/// join with Phase C.
+///
+/// **Null on allocation failure** — see [`crate::string::separate`].
+///
+/// # Safety
+/// `entity` must be live; `ctx` per
+/// [`crate::memory::context::ll_arena_alloc`].
+pub unsafe fn ll_cow_separate(
+    ctx: *mut LLContext,
+    owner_cat: MemoryCategory,
+    entity: *mut RcHeader,
+) -> *mut RcHeader {
+    use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
+    let flags = unsafe { crate::refcount::header_flags(entity) };
+    let count = unsafe { crate::refcount::header_refcount(entity) };
+    if !crate::refcount::cow_separation_needed(flags, count) {
+        return entity;
+    }
+    const STRING: u32 = EntityKind::String as u32;
+    match (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT {
+        STRING => unsafe {
+            crate::string::separate(ctx, owner_cat, entity as *mut crate::string::LLString)
+                as *mut RcHeader
+        },
+        _ => {
+            debug_assert!(false, "no COW copy for this entity kind yet");
+            entity
+        }
+    }
+}
+
 /// `instanceof`: Cohen display for classes, itable presence for
 /// interfaces (`rfc/model/lowering.md`).
 ///

@@ -83,6 +83,47 @@ pub const COW: u32 = 1 << 10;
 /// category is rewritten at promotion.
 pub const IS_ESCAPEE: u32 = 1 << 11;
 
+/// The copy-on-write barrier's test, in the order `rfc/model/values.md`
+/// fixes it and for the reasons it gives:
+///
+/// 1. **Not COW at all → write in place.** The compiler only emits the
+///    barrier for entities it typed as COW, and a dynamic string carries
+///    `COW = 0` precisely to be outside this rule
+///    (`rfc/model/strings.md`) — so the flag is tested first rather than
+///    third, and a non-COW entity arriving here writes in place as its
+///    layout demands.
+/// 2. **Immortal or long-lived → separate.** Category before count, and
+///    for a different reason in each half. **Immortal**: `ll_retain` and
+///    `ll_release` return early on it, so its count sits at 1 forever,
+///    and reading that 1 as "sole owner" would overwrite an interned
+///    string shared by the whole process. **Long-lived**: its count *is*
+///    maintained (a COW entity takes neither early return above), so
+///    `values.md`'s "the count is pinned" does not describe it — the
+///    reason is instead that the count is non-atomic while the entity is
+///    reachable from more than one request context, which makes it no
+///    kind of sharing signal, and that `string_die` frees only `GcHeap`,
+///    so an in-place write would land in something nothing can reclaim.
+/// 3. **`IS_ESCAPEE` → separate.** Same reason in the other direction:
+///    while bit 11 is set the count field holds the arena escape
+///    hold-count, so there is no reference count in it to read.
+/// 4. **Count above one → separate**, otherwise the holder is alone and
+///    writes in place.
+///
+/// Takes the header word's two halves rather than a pointer so a caller
+/// that already has the flags in a register spends nothing.
+#[inline]
+pub fn cow_separation_needed(flags: u32, refcount: u32) -> bool {
+    if flags & COW == 0 {
+        return false;
+    }
+    match MemoryCategory::from_flags(flags) {
+        MemoryCategory::Immortal | MemoryCategory::LongLived => true,
+        MemoryCategory::GcHeap | MemoryCategory::RequestArena => {
+            flags & IS_ESCAPEE != 0 || refcount > 1
+        }
+    }
+}
+
 /// Entity kind (bits 12-14): what makes a bare heap pointer
 /// self-describing for freeing and for a `mixed` conversion. `0` object is
 /// the zero default, so an entity built with no kind bits is an object;

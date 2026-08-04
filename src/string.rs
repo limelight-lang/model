@@ -167,6 +167,21 @@ pub unsafe fn ll_string_new(
     category: MemoryCategory,
     bytes: &[u8],
 ) -> *mut LLString {
+    unsafe { new_with_hash(ctx, category, bytes, 0) }
+}
+
+/// [`ll_string_new`] with the hash already known — the interning path and
+/// separation, where the bytes were hashed a moment ago or copied from an
+/// entity that had hashed them. Zero leaves it lazy.
+///
+/// # Safety
+/// As [`ll_string_new`].
+pub(crate) unsafe fn new_with_hash(
+    ctx: *mut LLContext,
+    category: MemoryCategory,
+    bytes: &[u8],
+    hash: u64,
+) -> *mut LLString {
     if !fits(bytes.len()) {
         return std::ptr::null_mut();
     }
@@ -181,7 +196,90 @@ pub unsafe fn ll_string_new(
     if mem.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe { init_at(mem, category, bytes, 0) }
+    unsafe { init_at(mem, category, bytes, hash) }
+}
+
+/// Where a separated copy lands — decided by **the holder's** category,
+/// not the original's and not the writing context's.
+///
+/// The copy is a fresh entity nothing has registered anywhere, so the
+/// only thing that can go wrong is a holder outliving it. An arena
+/// holder can hold anything, since it dies at the reset itself; every
+/// other holder needs something that outlives the request, so the copy
+/// goes to the GC heap. That also keeps a copy out of the two categories
+/// that cannot own a written string at all: immortal is shared
+/// process-wide, and `string_die` frees only `GcHeap`, so a long-lived
+/// copy could never be reclaimed.
+///
+/// The original's category does not enter into it. An arena holder
+/// writing to an interned string gets an arena copy — a bump and a reset,
+/// rather than a heap allocation plus a release-at-reset record for a
+/// value that dies at the reset regardless.
+#[inline]
+fn separation_category(owner_cat: MemoryCategory) -> MemoryCategory {
+    match owner_cat {
+        MemoryCategory::RequestArena => MemoryCategory::RequestArena,
+        _ => MemoryCategory::GcHeap,
+    }
+}
+
+/// Copy an inline string into a fresh entity — the string half of the
+/// COW write barrier (`rfc/model/values.md`, "Copy-on-Write Protocol").
+///
+/// **Returns a +1 reference the caller owns**, like every other factory
+/// in the crate, and that matters here because the caller is a store
+/// site that retains again. The whole composition, counts in brackets:
+///
+/// ```text
+/// let copy = ll_cow_separate(ctx, owner_cat, old);  // copy[1]
+/// store_ptr(arena, owner_cat, slot, copy);          // copy[2], slot registered
+/// drop_ref(owner_cat, old);                         // old loses this holder
+/// ll_release(copy);                                 // copy[1] — the creation
+///                                                   //   reference, now spent
+/// ```
+///
+/// Skipping that last release leaves the copy at two for one holder: it
+/// never reaches zero, and — worse than the leak — the sharing test reads
+/// `2 > 1` on every later write, so the value separates forever and COW
+/// is off for the rest of its life. Skipping the `store_ptr` instead, and
+/// writing the slot raw to "transfer" the reference, loses the escape
+/// registration that store performs.
+///
+/// **The original is not released here.** That is the holder's
+/// `drop_ref` above: the copy's creation reference and the original's
+/// displaced reference are two different obligations, and only the first
+/// belongs to this function.
+///
+/// The copy's hash is left unset. Carrying the original's would be
+/// correct for the instant the copy exists unwritten, and wrong from the
+/// first byte of the write that separation exists to serve; and since a
+/// separation copies whatever the original holds, one missed
+/// invalidation would propagate into every later copy of that value and
+/// never be recomputed ([`LLString::hash`] short-circuits on any non-zero
+/// field). Recomputing costs one pass over bytes the caller is about to
+/// walk anyway.
+///
+/// **Null on allocation failure**, propagated from [`new_with_hash`]: the
+/// caller must raise rather than store it, since NULL in a non-nullable
+/// pointer slot is the uninitialized marker and would turn an
+/// out-of-memory into "must not be accessed before initialization" on the
+/// next read.
+///
+/// # Safety
+/// `s` must be a live **inline** string; `ctx` per
+/// [`crate::memory::context::ll_arena_alloc`].
+pub unsafe fn separate(
+    ctx: *mut LLContext,
+    owner_cat: MemoryCategory,
+    s: *mut LLString,
+) -> *mut LLString {
+    debug_assert_ne!(
+        unsafe { (*s).rc.flags } & COW,
+        0,
+        "a dynamic string is outside the COW rule and writes in place"
+    );
+    let bytes = unsafe { LLString::bytes(s) };
+    unsafe { new_with_hash(ctx, separation_category(owner_cat), bytes, 0) }
 }
 
 /// Teardown for a string whose count reached zero (or that a collector
@@ -359,6 +457,250 @@ mod tests {
         let freed = unsafe { crate::walk::heap_census() };
         assert_eq!(freed.by_kind[k], before.by_kind[k], "and it goes away");
         arena.reset(|_| {});
+    }
+
+    /// The four branches of the COW rule, in the order
+    /// `rfc/model/values.md` fixes them. Each is checked through the
+    /// generic barrier rather than through `separate`, because the order
+    /// of the tests is the part that matters: a count read before the
+    /// category would call an interned string a sole owner.
+    #[test]
+    fn a_sole_owner_in_the_heap_writes_in_place() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"mine") };
+        let after = unsafe {
+            crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, s as *mut RcHeader)
+        };
+        assert_eq!(after as usize, s as usize, "no copy for a lone holder");
+        unsafe {
+            assert!(ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The whole composition a holder performs, with the counts checked
+    /// at the end — separation, the store that retains, the drop of what
+    /// the slot displaced, and the release of the copy's creation
+    /// reference. That last one is the step whose absence leaves the copy
+    /// at two for one holder: not merely leaked, but reading as shared on
+    /// every later write, so the value would separate forever.
+    #[test]
+    fn separating_then_storing_leaves_exactly_one_holder_on_each_side() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+
+        // Two holders of one string: a slot, and the local that made it.
+        let original = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"shared") };
+        let mut slot: *mut RcHeader = std::ptr::null_mut();
+        unsafe {
+            crate::memory::barrier::store_ptr(
+                &raw mut arena,
+                MemoryCategory::GcHeap,
+                &raw mut slot,
+                original as *mut RcHeader,
+            )
+        };
+        assert_eq!(unsafe { (*original).rc.refcount }, 2);
+
+        let copy = unsafe {
+            crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, slot)
+        };
+        assert_ne!(copy as usize, original as usize, "two holders, so a copy");
+        unsafe {
+            crate::memory::barrier::store_ptr(
+                &raw mut arena,
+                MemoryCategory::GcHeap,
+                &raw mut slot,
+                copy,
+            );
+            crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, original as *mut RcHeader);
+            assert!(!ll_release(copy), "the creation reference, spent");
+        }
+
+        assert_eq!(unsafe { (*copy).refcount }, 1, "the slot alone holds it");
+        assert_eq!(
+            unsafe { (*original).rc.refcount },
+            1,
+            "and the local alone holds the original"
+        );
+        assert_eq!(unsafe { LLString::bytes(copy as *mut LLString) }, b"shared");
+
+        unsafe {
+            crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, slot);
+            assert!(ll_release(original as *mut RcHeader));
+            crate::object::ll_entity_die(original as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The copy's hash starts unset even though its bytes are the
+    /// original's: the write that separation exists to serve is about to
+    /// invalidate it, and a carried hash that someone forgets to clear
+    /// would propagate into every later copy of that value — nothing
+    /// recomputes a non-zero one.
+    #[test]
+    fn a_copy_starts_without_a_hash() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"hashed") };
+        let hash = unsafe { LLString::hash(s) };
+        assert_ne!(hash, 0);
+        unsafe { crate::refcount::ll_retain(s as *mut RcHeader) };
+
+        let copy = unsafe {
+            crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, s as *mut RcHeader)
+        } as *mut LLString;
+        assert_eq!(unsafe { (*copy).hash }, 0, "not carried over");
+        assert_eq!(unsafe { LLString::hash(copy) }, hash, "same bytes, so same value");
+
+        unsafe {
+            assert!(ll_release(copy as *mut RcHeader));
+            crate::object::ll_entity_die(copy as *mut RcHeader);
+            assert!(!ll_release(s as *mut RcHeader));
+            assert!(ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The reason the category is read before the count: retain and
+    /// release return early on an immortal entity, so its count sits at 1
+    /// forever. Read as "sole owner", that would rewrite an interned name
+    /// shared by the whole process.
+    #[test]
+    fn an_immortal_string_separates_although_its_count_says_one() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let name = crate::intern::intern_str("Order") as *mut LLString;
+        assert_eq!(unsafe { (*name).rc.refcount }, 1);
+
+        let copy = unsafe {
+            crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, name as *mut RcHeader)
+        } as *mut LLString;
+        assert_ne!(copy as usize, name as usize);
+        assert_eq!(unsafe { LLString::bytes(copy) }, b"Order");
+        assert_eq!(
+            unsafe { (*copy).rc.memory_category() },
+            MemoryCategory::GcHeap,
+            "a heap holder gets a heap copy"
+        );
+        assert_eq!(unsafe { LLString::bytes(name) }, b"Order", "the name is intact");
+
+        // The same interned name, written through an arena holder: the
+        // copy is a bump in the arena the reset reclaims, not a heap
+        // allocation with a release-at-reset record behind it.
+        let local = unsafe {
+            crate::object::ll_cow_separate(
+                &mut ctx,
+                MemoryCategory::RequestArena,
+                name as *mut RcHeader,
+            )
+        } as *mut LLString;
+        assert_eq!(
+            unsafe { (*local).rc.memory_category() },
+            MemoryCategory::RequestArena,
+            "the holder's category decides, not the original's"
+        );
+
+        unsafe {
+            assert!(ll_release(copy as *mut RcHeader));
+            crate::object::ll_entity_die(copy as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// A long-lived string separates although its count is maintained
+    /// and may read as one. `values.md` justifies the category test with
+    /// "the count is pinned", which is true of immortal and false here —
+    /// `ll_retain` takes neither early return for a COW entity. The
+    /// reasons that do hold: the count is non-atomic while the entity is
+    /// reachable from more than one request, and `string_die` frees only
+    /// `GcHeap`, so an in-place write would land somewhere nothing
+    /// reclaims.
+    #[test]
+    fn a_long_lived_string_separates_although_its_count_is_real() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::LongLived, b"cached") };
+        assert_eq!(unsafe { (*s).rc.refcount }, 1);
+        unsafe { crate::refcount::ll_retain(s as *mut RcHeader) };
+        assert_eq!(
+            unsafe { (*s).rc.refcount },
+            2,
+            "counted, unlike an immortal entity"
+        );
+        unsafe { assert!(!ll_release(s as *mut RcHeader)) };
+
+        let copy = unsafe {
+            crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, s as *mut RcHeader)
+        } as *mut LLString;
+        assert_ne!(copy as usize, s as usize, "sole holder and still a copy");
+        assert_eq!(unsafe { LLString::bytes(copy) }, b"cached");
+        assert_eq!(
+            unsafe { (*copy).rc.memory_category() },
+            MemoryCategory::GcHeap
+        );
+
+        unsafe {
+            assert!(ll_release(copy as *mut RcHeader));
+            crate::object::ll_entity_die(copy as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The two branches no entity in the crate can currently reach, so
+    /// they are checked on the predicate rather than on a fabricated
+    /// header: flipping `COW` on a live string would break the design's
+    /// central invariant (the flag is the layout, set at allocation and
+    /// never changed) and, under `rc-walk`, race the collector's byte
+    /// stores.
+    ///
+    /// **`IS_ESCAPEE`**: `barrier::escape_gain` overwrites the count with
+    /// the escape hold-count and asserts the entity is not COW, so a COW
+    /// escapee cannot be produced today — the arena design routes value-
+    /// like data through a deep copy at the barrier instead, and that is
+    /// unbuilt. The arm stays because the rule has it and because the
+    /// hold-count is genuinely not a reference count.
+    ///
+    /// **`COW = 0`**: the dynamic layout has no constructor yet.
+    #[test]
+    fn the_rule_reads_the_flag_before_the_category_and_the_count() {
+        use crate::refcount::{IS_ESCAPEE, cow_separation_needed};
+        let cow = COW | MemoryCategory::GcHeap as u32;
+
+        assert!(!cow_separation_needed(cow, 1), "sole owner writes in place");
+        assert!(cow_separation_needed(cow, 2), "a second holder copies");
+        assert!(
+            cow_separation_needed(cow | IS_ESCAPEE, 1),
+            "an escapee copies: that 1 is a hold-count, not a reference count"
+        );
+        assert!(
+            cow_separation_needed(COW | MemoryCategory::Immortal as u32, 1),
+            "immortal copies at any count"
+        );
+        assert!(
+            cow_separation_needed(COW | MemoryCategory::LongLived as u32, 1),
+            "long-lived copies at any count"
+        );
+
+        // Not COW: outside the rule entirely, whatever else is set.
+        for flags in [
+            MemoryCategory::GcHeap as u32,
+            MemoryCategory::Immortal as u32,
+            MemoryCategory::RequestArena as u32 | IS_ESCAPEE,
+        ] {
+            assert!(
+                !cow_separation_needed(flags, 9),
+                "a non-COW entity is never copied by the write barrier"
+            );
+        }
     }
 
     #[test]

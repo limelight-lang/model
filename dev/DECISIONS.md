@@ -8,6 +8,55 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — a COW copy is sized by the holder's lifetime, and comes back at +1
+
+`values.md` gives the separation rule and says the holder stores what the
+barrier returns, but leaves two things to the implementation, and both
+are the kind that corrupt quietly when guessed wrong.
+
+**Where the copy lives.** `ll_cow_separate` takes `owner_cat` — the
+**holder's** category, supplied by the compiler as it is to every other
+store-side barrier — and the copy goes to the request arena when the
+holder is arena-category, to the GC heap otherwise. The original's
+category does not enter into it. A copy is a fresh entity nothing has
+registered anywhere, so the only way it goes wrong is a holder outliving
+it; an arena holder cannot, and every other holder needs something that
+survives the reset. This also keeps a copy out of the two categories that
+cannot own a written string at all — immortal is shared process-wide, and
+`string_die` frees only `GcHeap`, so a long-lived copy could never be
+reclaimed.
+
+**Rejected: deriving the category from the original**, which is what the
+first version did. Arena original plus longer-lived holder then produces
+an arena copy under a heap slot — a cross-lifetime reference the barrier
+was called to prevent — and interned original plus arena holder produces
+a heap allocation and a release-at-reset record for a value the reset
+would have reclaimed for free.
+
+**The reference the copy comes back with is +1, owned by the caller**,
+like every other factory here, and the composition is written out in
+`string::separate`: separate, store (which retains), drop the displaced
+original, release the creation reference. The last step is the one worth
+naming — skipping it leaves the copy at two for one holder, and that is
+worse than a leak: the sharing test reads `2 > 1` on every later write,
+so the value separates forever and COW is off for the rest of its life.
+
+**The COW flag is tested before the category**, although `values.md`
+lists the category first and mentions the flag only in its third line.
+For every entity this crate produces the answer is the same, since every
+string is COW; the reorder buys two things. A dynamic string
+(`COW = 0`, bytes out of line) that reached the barrier by mistake writes
+in place as its layout demands instead of having its header read as
+inline bytes. And a **non-COW plain object** that is immortal or escaped
+is no longer copied — under the document's order it would be, and copying
+a plain object breaks reference identity.
+
+**Found while reviewing this, not fixed here:** `values.md` justifies the
+category test with "the count is pinned", which describes immortal and
+not long-lived — a COW entity takes neither early return in `ll_retain`,
+so its long-lived count is fully maintained. The arm is kept for the two
+reasons that do hold, recorded at `cow_separation_needed`.
+
 ## 2026-08-04 — the string header follows the design, and the design is what the test pins
 
 `LLString` carried `hash` at +8 and `len` at +16; `rfc/model/strings.md`
