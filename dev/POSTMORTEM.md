@@ -7,6 +7,49 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-04 — an assertion about a global flag, read twice, from two threads
+
+**What happened.** `cargo test --lib -- --test-threads=4` aborted on
+about one run in twelve — five times in sixty, measured — always with
+the same signature: `flush runs only between epochs`, from
+`deferred_free::flush`, inside
+`collector::tests::a_free_running_mutator_survives_concurrent_epochs`.
+A `debug_assert` failing in a function that cannot unwind aborts the
+process, so the whole suite died and took its passing tests with it.
+
+**Root cause.** Check-then-act across threads. `flush_due()` reads the
+process-global activity bit and returns; the caller then calls
+`flush()`, which asserted the same bit was still clear. Between the two
+reads the collector thread runs `Epoch::open`, whose first statement
+raises that bit. The assertion states an invariant that holds at the
+moment of the check and is not owed for the length of the call — and
+nothing in the protocol ever promised it would be.
+
+**What was decisive.** A temporary probe rather than more reading: one
+thread flipping the bit, another performing the same two reads, counting
+the disagreements. 1,194,869 of 10,188,918 checks — one in nine. That
+turned "narrow race, probably" into a measurement, and it took a minute.
+
+**Why it was not caught.** The window is real but the path into it is
+rare: it needs parked memory, a checkpoint, and an epoch opening in the
+same breath. Nothing but the free-running stress test produces all
+three, and it is the newest test in the crate. The assertion had also
+been true of every single-threaded caller since it was written.
+
+**The fix, and the shape of it.** `flush` now returns zero and leaves
+the backlog alone when the bit is set, because an epoch that opened in
+that window has not been acked by this thread — `Epoch::open` raises the
+bit before requesting the handshake, and the snapshot waits for the ack
+— so nothing has read those slots and the backlog is free to wait for
+the next checkpoint. The regression test is deterministic: park, open an
+epoch under the call, assert nothing was recycled.
+
+**The general lesson.** An assertion is a claim about an invariant, and
+an invariant over shared mutable state has to name the window it holds
+in. `debug_assert!(!active())` inside a function whose caller already
+checked `active()` is not a second opinion — it is the same read, taken
+later, with a race in between.
+
 ## 2026-07-21 — a test oracle read global state and blamed the runtime
 
 **What happened.** `many_threads_freeing_into_one_owner_lose_no_slots`

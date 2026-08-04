@@ -119,9 +119,11 @@ pub(crate) unsafe fn park(ptr: *mut u8) {
 }
 
 /// Release this thread's parked backlog through the real free path.
-/// Returns how many allocations were flushed. Runs only between
-/// epochs: flushing mid-epoch would recycle the very slots the queue
-/// exists to pin. Frees in reverse park order, so the free lists come
+/// Returns how many allocations were flushed, and **zero without
+/// touching the backlog if an epoch is in flight**: flushing mid-epoch
+/// would recycle the very slots the queue exists to pin, and the caller
+/// cannot rule that out on its own (below). Frees in reverse park order,
+/// so the free lists come
 /// out as the intrusive-list draft left them (LIFO — tests and cache
 /// behaviour rely on last-freed-first-reused).
 ///
@@ -129,7 +131,18 @@ pub(crate) unsafe fn park(ptr: *mut u8) {
 /// Must run on the thread that parked the allocations (the list and
 /// the underlying frees are both thread-bound).
 pub(crate) unsafe fn flush() -> usize {
-    debug_assert!(!active(), "flush runs only between epochs");
+    // Not an assertion, because the caller's [`flush_due`] cannot hold:
+    // the bit is global, the collector raises it from its own thread, and
+    // it flips between that read and this one often enough to be measured
+    // (the regression test below). An epoch that opened in that window has
+    // not been acked by this thread yet — `Epoch::open` raises the bit
+    // before requesting the handshake, and the snapshot waits for the ack
+    // — so nothing has read the slots yet and skipping is free: the
+    // backlog goes at the next checkpoint. Recycling anyway would be the
+    // one thing this queue exists to prevent.
+    if active() {
+        return 0;
+    }
     let list = PARKED.with(|cell| cell.get());
     if list.is_null() {
         return 0;
@@ -185,6 +198,31 @@ pub(crate) fn parked_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The activity bit is global and the collector runs on another
+    /// thread, so it can be raised between a caller's [`flush_due`] and
+    /// the flush itself. Measured under contention: the flag flipped
+    /// inside that window on roughly one check in nine. The flush must
+    /// leave the backlog alone when that happens rather than assert.
+    #[test]
+    fn an_epoch_opening_under_the_flush_leaves_the_backlog_parked() {
+        let _g = crate::memory::block_pool::test_guard();
+        let a = unsafe { crate::memory::stdapi::ll_malloc(64) };
+        begin_epoch();
+        unsafe { crate::memory::stdapi::ll_free(a) };
+        assert_eq!(parked_count(), 1, "parked while the epoch is in flight");
+        end_epoch();
+
+        // The caller's `flush_due()` said yes here; the collector opens
+        // the next epoch before the flush runs.
+        assert!(flush_due());
+        begin_epoch();
+        assert_eq!(unsafe { flush() }, 0, "nothing recycled mid-epoch");
+        assert_eq!(parked_count(), 1, "and the backlog is still there");
+
+        end_epoch();
+        assert_eq!(unsafe { flush() }, 1, "released at the next checkpoint");
+    }
     use crate::class::ClassBuilder;
     use crate::memory::arena::Arena;
     use crate::memory::context::LLContext;
