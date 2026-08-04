@@ -19,6 +19,19 @@
 //! barrier (`rfc/model/memory/arenas.md`). Strategy hooks (SATB) plug
 //! into `drop_ref` later (A5).
 //!
+//! **A publish can fail, and says so** (2026-08-04). `store_ptr`,
+//! `store_box` and `ref_store` return whether the store happened, and
+//! the one thing that can refuse is the deep copy a COW value takes when
+//! it leaves the arena: the copy is an allocation. A refusal leaves the
+//! slot and every count exactly as they were, so the caller's only duty
+//! is to raise memory-exhausted — which generated code will do through
+//! the exceptions runtime (`rfc/runtime/exceptions.md`) once it exists.
+//! `drop_ref` cannot fail and returns nothing.
+//!
+//! This is not the reserve's shape and could not be: the log reserve
+//! funds the barrier's *own* allocation because a log record is
+//! fixed-size, and a copy is the size of the value.
+//!
 //! `owner_cat` is a **parameter, not a load from the owner**: the compiler
 //! knows the destination's category, so it is passed. A slot has no header
 //! of its own, which is why this works even for a headerless destination
@@ -50,14 +63,14 @@ pub(crate) unsafe fn escape_gain(arena: *mut Arena, entity: *mut RcHeader) {
     let e = unsafe { &mut *entity };
     debug_assert!(
         e.flags & COW == 0,
-        "COW arena value escape takes the deepCopy path, not the counter (deferred)"
+        "a COW value is copied out of the arena, never counted into it"
     );
-    // A dynamic string is the first arena-allocatable **non-COW** entity
-    // the crate produces, so the assert above admits it rather than
-    // excluding it. That is now correct: promotion carries a survivor's
-    // payload out of the arena before its category stops describing where
-    // that payload lives (`promote::carry_external_memory`). Between
-    // 2026-08-04 and that landing, this escape was refused outright.
+    // The assert is an invariant now rather than a wish: the caller
+    // ([`store_category_barrier`]) copies a COW entity instead of calling
+    // this, so the hold-count and the exact COW count never claim the
+    // same four bytes. A dynamic string reaches here and should: it is
+    // the non-COW form, it has real identity, and promotion carries its
+    // payload out of the arena (`promote::carry_external_memory`).
     if e.flags & IS_ESCAPEE == 0 {
         e.flags |= IS_ESCAPEE;
         e.refcount = 1;
@@ -105,19 +118,44 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 ///
 /// # Safety
 /// `new` a live entity; `arena` the live mounted arena.
+/// Returns **the entity the slot must hold**, which is `new` itself in
+/// every case but one: a COW entity leaving the arena is copied, and the
+/// copy is what the holder gets. Null means the copy could not be made
+/// and the store must not happen.
+///
+/// The returned entity carries a reference for the slot either way — the
+/// caller retains `new` before calling, and a copy arrives at `+1` from
+/// its factory, so the caller releases `new` when they differ.
 #[inline]
 unsafe fn store_category_barrier(
     arena: *mut Arena,
     owner_cat: MemoryCategory,
     new: *mut RcHeader,
-) {
+) -> *mut RcHeader {
     let new_cat = unsafe { (*new).memory_category() };
+    let mut stored = new;
 
     // Dangerous direction: an arena reference stored into a longer-lived
-    // container would dangle after reset. Count the escape (`gain`); its
-    // fate is decided at arena death from the count, never by reading the
-    // slot back.
+    // container would dangle after reset.
     if new_cat == MemoryCategory::RequestArena && owner_cat != MemoryCategory::RequestArena {
+        if unsafe { (*new).flags } & COW != 0 {
+            // A COW entity is value-like: its identity is not observable,
+            // so the longer-lived holder takes a **copy** rather than a
+            // hold on arena memory (`rfc/model/memory/arenas.md`, the deep
+            // copy). That is also what keeps `IS_ESCAPEE` and the exact
+            // COW count from claiming the same four bytes — a COW entity
+            // never becomes an escapee at all.
+            stored = unsafe { crate::object::escape_copy(owner_cat, new) };
+            if stored.is_null() {
+                return std::ptr::null_mut();
+            }
+            // The copy is a fresh heap entity, so the reverse direction
+            // below cannot apply to it: its owner is longer-lived by
+            // construction.
+            return stored;
+        }
+        // Count the escape (`gain`); its fate is decided at arena death
+        // from the count, never by reading the slot back.
         unsafe { escape_gain(arena, new) };
     }
 
@@ -127,6 +165,7 @@ unsafe fn store_category_barrier(
     if new_cat == MemoryCategory::GcHeap && owner_cat == MemoryCategory::RequestArena {
         unsafe { (*arena).log_release_at_reset(new) };
     }
+    stored
 }
 
 /// The `store_ptr` micro-op (`rfc/model/gc/strategies.md` §1): **publish** a
@@ -140,17 +179,31 @@ unsafe fn store_category_barrier(
 /// # Safety
 /// `slot` a live 8-byte pointer slot; `new` null or a live entity; `arena`
 /// the live mounted arena; `owner_cat` the slot owner's category.
+#[must_use]
 pub(crate) unsafe fn store_ptr(
     arena: *mut Arena,
     owner_cat: MemoryCategory,
     slot: *mut *mut RcHeader,
     new: *mut RcHeader,
-) {
+) -> bool {
+    let mut stored = new;
     if !new.is_null() {
         unsafe { ll_retain(new) };
-        unsafe { store_category_barrier(arena, owner_cat, new) };
+        stored = unsafe { store_category_barrier(arena, owner_cat, new) };
+        if stored.is_null() {
+            // Only the copy path reports, and it reports out of memory.
+            // The slot is untouched and `new` keeps the count it had.
+            unsafe { ll_release(new) };
+            return false;
+        }
+        if stored != new {
+            // The slot took the copy, so the reference retained above is
+            // the caller's to give back.
+            unsafe { ll_release(new) };
+        }
     }
-    unsafe { write_ptr_slot(slot, new) };
+    unsafe { write_ptr_slot(slot, stored) };
+    true
 }
 
 /// Write an 8-byte pointer slot of a (possibly) walked object. Under
@@ -200,22 +253,35 @@ pub(crate) unsafe fn write_value_slot(slot: *mut Value, new: Value) {
 /// # Safety
 /// `slot` a live `Value` slot; `new`'s entity null or live; `arena` the
 /// live mounted arena; `owner_cat` the slot owner's category.
+#[must_use]
 pub(crate) unsafe fn store_box(
     arena: *mut Arena,
     owner_cat: MemoryCategory,
     slot: *mut Value,
     new: Value,
-) {
+) -> bool {
     let new_ptr = if new.is_refcounted() {
         new.entity_ptr()
     } else {
         std::ptr::null_mut()
     };
+    let mut written = new;
     if !new_ptr.is_null() {
         unsafe { ll_retain(new_ptr) };
-        unsafe { store_category_barrier(arena, owner_cat, new_ptr) };
+        let stored = unsafe { store_category_barrier(arena, owner_cat, new_ptr) };
+        if stored.is_null() {
+            unsafe { ll_release(new_ptr) };
+            return false;
+        }
+        if stored != new_ptr {
+            // Copied out of the arena: the tag is the value's, the
+            // payload is the copy's.
+            written = Value::entity(new.tag(), stored);
+            unsafe { ll_release(new_ptr) };
+        }
     }
-    unsafe { write_value_slot(slot, new) };
+    unsafe { write_value_slot(slot, written) };
+    true
 }
 
 /// The `drop` micro-op: **release** the entity a slot held after an
@@ -282,13 +348,14 @@ pub(crate) unsafe fn drop_ref(owner_cat: MemoryCategory, old: *mut RcHeader) {
 /// `owner` a live entity containing `slot`; `old` the entity the slot
 /// currently holds (null when a non-entity); `old`/`new`'s entity each
 /// null or live; `arena` the live mounted arena.
+#[must_use]
 pub unsafe fn ref_store(
     arena: *mut Arena,
     owner: *mut RcHeader,
     slot: *mut Value,
     old: *mut RcHeader,
     new: Value,
-) {
+) -> bool {
     debug_assert!(!owner.is_null(), "a slot always has an owner");
     debug_assert_eq!(
         {
@@ -304,8 +371,14 @@ pub unsafe fn ref_store(
     );
 
     let owner_cat = unsafe { (*owner).memory_category() };
-    unsafe { store_box(arena, owner_cat, slot, new) };
+    // Publish first, and only drop what the slot held if the publish
+    // happened: a refused store leaves the slot exactly as it was, which
+    // includes the reference it still holds.
+    if !unsafe { store_box(arena, owner_cat, slot, new) } {
+        return false;
+    }
     unsafe { drop_ref(owner_cat, old) };
+    true
 }
 
 /// The unified store barrier (`rfc/model/gc/strategies.md`): the single
@@ -322,7 +395,7 @@ pub unsafe extern "C" fn ll_ref_store(
     slot: *mut Value,
     old: *mut RcHeader,
     new: Value,
-) {
+) -> bool {
     unsafe { ref_store(resolve_arena(ctx), owner, slot, old, new) }
 }
 
@@ -339,7 +412,7 @@ pub unsafe extern "C" fn ll_store_ptr(
     owner_cat: u32,
     slot: *mut *mut RcHeader,
     new: *mut RcHeader,
-) {
+) -> bool {
     unsafe { store_ptr(resolve_arena(ctx), MemoryCategory::from_flags(owner_cat), slot, new) }
 }
 
@@ -353,7 +426,7 @@ pub unsafe extern "C" fn ll_store_box(
     owner_cat: u32,
     slot: *mut Value,
     new: Value,
-) {
+) -> bool {
     unsafe { store_box(resolve_arena(ctx), MemoryCategory::from_flags(owner_cat), slot, new) }
 }
 
@@ -406,7 +479,7 @@ mod tests {
             } else {
                 Value::entity(crate::value::Tag::Object, new)
             };
-            unsafe { ref_store(arena, &mut self.header, &mut self.slot, old, value) };
+            assert!(unsafe { ref_store(arena, &mut self.header, &mut self.slot, old, value) });
         }
     }
 
@@ -430,7 +503,7 @@ mod tests {
             unsafe { (*pa).refcount },
             1,
             "displaced from a heap slot: released now"
-        );
+            );
         assert_eq!(unsafe { (*pb).refcount }, 2);
     }
 
@@ -447,17 +520,61 @@ mod tests {
         let mut slot: *mut RcHeader = std::ptr::null_mut();
 
         // Initializing store: publish only, no old to drop.
-        unsafe { store_ptr(&mut arena, MemoryCategory::GcHeap, &mut slot, pa) };
+        assert!(unsafe { store_ptr(&mut arena, MemoryCategory::GcHeap, &mut slot, pa) });
         assert_eq!(slot, pa, "slot published as a bare 8-byte pointer");
         assert_eq!(unsafe { (*pa).refcount }, 2, "initial + the slot's reference");
 
         // Overwriting store: publish the new pointer, then drop the old.
         let old = slot;
-        unsafe { store_ptr(&mut arena, MemoryCategory::GcHeap, &mut slot, pb) };
+        assert!(unsafe { store_ptr(&mut arena, MemoryCategory::GcHeap, &mut slot, pb) });
         unsafe { drop_ref(MemoryCategory::GcHeap, old) };
         assert_eq!(slot, pb);
         assert_eq!(unsafe { (*pa).refcount }, 1, "displaced from a heap slot: released");
         assert_eq!(unsafe { (*pb).refcount }, 2);
+    }
+
+    /// The most ordinary string store in the language: `$o->name = $s`,
+    /// a heap object taking an arena string. A COW entity is value-like,
+    /// so the holder takes a **copy** in the heap rather than a hold on
+    /// arena memory. Before this, the store went down the escape counter
+    /// and overwrote a live holder count with a hold-count of one —
+    /// caught by a `debug_assert` in debug and silently wrong in release
+    /// (`PLAN.md` task 15).
+    #[test]
+    fn a_cow_value_leaving_the_arena_is_copied_rather_than_counted() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &raw mut arena };
+
+        let s = unsafe {
+            crate::string::ll_string_new(&raw mut ctx, MemoryCategory::RequestArena, b"name")
+        } as *mut RcHeader;
+        let mut slot: *mut RcHeader = std::ptr::null_mut();
+
+        assert!(unsafe { store_ptr(&raw mut arena, MemoryCategory::GcHeap, &mut slot, s) });
+
+        assert_ne!(slot, s, "the heap slot must not hold arena memory");
+        assert_eq!(
+            unsafe { crate::object::header_category(slot) },
+            MemoryCategory::GcHeap,
+            "the copy lands where its holder lives"
+        );
+        assert_eq!(
+            unsafe { crate::string::LLString::bytes(slot as *const crate::string::LLString) },
+            b"name",
+            "and it is the same value"
+        );
+        assert_eq!(unsafe { (*slot).refcount }, 1, "the slot is its only holder");
+        unsafe {
+            assert_eq!((*s).flags & IS_ESCAPEE, 0, "a COW entity never escapes");
+            assert_eq!((*s).refcount, 1, "the original keeps the count it had");
+        }
+
+        let mut escapees = Vec::new();
+        arena.reset_with(|_| {}, |e| escapees.push(e));
+        assert!(escapees.is_empty(), "nothing was logged as an escapee");
+
+        unsafe { drop_ref(MemoryCategory::GcHeap, slot) };
     }
 
     /// `owner_cat` is passed, not read from an owner header — so a
@@ -473,7 +590,7 @@ mod tests {
         unsafe { obj.write(entity(MemoryCategory::RequestArena)) };
         let mut slot: *mut RcHeader = std::ptr::null_mut();
 
-        unsafe { store_ptr(&mut arena, MemoryCategory::LongLived, &mut slot, obj) };
+        assert!(unsafe { store_ptr(&mut arena, MemoryCategory::LongLived, &mut slot, obj) });
         assert_ne!(
             unsafe { (*obj).flags } & IS_ESCAPEE,
             0,
@@ -608,22 +725,22 @@ mod tests {
 
             // owner --mine--> owner: a self-cycle, so the owner is garbage
             // held up only by its own edge.
-            ref_store(
+            assert!(ref_store(
                 &mut arena,
                 owner as *mut RcHeader,
                 mine,
                 std::ptr::null_mut(),
                 Value::entity(Tag::Object, owner as *mut RcHeader),
-            );
+            ));
             // owner --next--> old, then drop the creation reference: the
             // slot holds the only one left.
-            ref_store(
+            assert!(ref_store(
                 &mut arena,
                 owner as *mut RcHeader,
                 next,
                 std::ptr::null_mut(),
                 Value::entity(Tag::Object, old as *mut RcHeader),
-            );
+            ));
             assert!(!ll_release(old as *mut RcHeader));
 
             // Drop the owner's external reference too: now it is a

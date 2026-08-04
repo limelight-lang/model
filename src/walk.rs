@@ -1149,13 +1149,13 @@ mod tests {
             tie(b, 16, a);
             // The escape that promotes `a`, and `b` behind it.
             let slot = Object::prop_at(holder, 16);
-            crate::memory::barrier::ref_store(
+            assert!(crate::memory::barrier::ref_store(
                 &mut arena,
                 holder as *mut RcHeader,
                 slot,
                 std::ptr::null_mut(),
                 Value::entity(Tag::Object, a as *mut RcHeader),
-            );
+            ));
         }
 
         unsafe { crate::promote::arena_reset_full(&mut arena) };

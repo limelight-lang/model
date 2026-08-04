@@ -691,13 +691,13 @@ mod tests {
         unsafe {
             tie(a, 16, b);
             tie(b, 16, a);
-            crate::memory::barrier::ref_store(
+            assert!(crate::memory::barrier::ref_store(
                 &mut arena,
                 holder as *mut RcHeader,
                 Object::prop_at(holder, 16),
                 std::ptr::null_mut(),
                 Value::entity(Tag::Object, a as *mut RcHeader),
-            );
+            ));
         }
 
         unsafe { crate::promote::arena_reset_full(&mut arena) };

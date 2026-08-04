@@ -103,11 +103,17 @@ pub const IS_ESCAPEE: u32 = 1 << 11;
 ///    reachable from more than one request context, which makes it no
 ///    kind of sharing signal, and that `string_die` frees only `GcHeap`,
 ///    so an in-place write would land in something nothing can reclaim.
-/// 3. **`IS_ESCAPEE` → separate.** Same reason in the other direction:
-///    while bit 11 is set the count field holds the arena escape
-///    hold-count, so there is no reference count in it to read.
-/// 4. **Count above one → separate**, otherwise the holder is alone and
+/// 3. **Count above one → separate**, otherwise the holder is alone and
 ///    writes in place.
+///
+/// The `IS_ESCAPEE` arm `values.md` used to print between 2 and 3 is
+/// gone (2026-08-04). It existed because bit 11 makes the count field
+/// hold an escape hold-count rather than a reference count, and a COW
+/// entity can no longer carry that bit at all: the store barrier copies
+/// a COW value out of the arena instead of counting an escape into it
+/// (`memory/barrier::store_category_barrier`). Testing a bit that cannot
+/// be set is a branch on the write path and a claim in the rule that
+/// nothing can produce.
 ///
 /// Takes the header word's two halves rather than a pointer so a caller
 /// that already has the flags in a register spends nothing.
@@ -116,11 +122,13 @@ pub fn cow_separation_needed(flags: u32, refcount: u32) -> bool {
     if flags & COW == 0 {
         return false;
     }
+    debug_assert!(
+        flags & IS_ESCAPEE == 0,
+        "a COW entity is copied out of the arena, so it never holds an escape count"
+    );
     match MemoryCategory::from_flags(flags) {
         MemoryCategory::Immortal | MemoryCategory::LongLived => true,
-        MemoryCategory::GcHeap | MemoryCategory::RequestArena => {
-            flags & IS_ESCAPEE != 0 || refcount > 1
-        }
+        MemoryCategory::GcHeap | MemoryCategory::RequestArena => refcount > 1,
     }
 }
 

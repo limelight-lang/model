@@ -731,6 +731,50 @@ pub unsafe fn ll_cow_separate(
     }
 }
 
+/// Copy a COW entity **out of the arena** because a longer-lived holder
+/// is taking it: the deep copy `rfc/model/memory/arenas.md` names for
+/// value-like data, built into the store barrier
+/// (`memory/barrier::store_category_barrier`).
+///
+/// Unconditional where [`ll_cow_separate`] is conditional — the caller
+/// has already established that an arena COW entity is crossing into a
+/// longer-lived slot, and the sharing test has nothing to say about it:
+/// the copy is owed even when the count is 1, because the holder outlives
+/// the arena and not because the value is shared.
+///
+/// The copy lands by [`crate::string::separation_category`], which for
+/// every `owner_cat` this path admits is the GC heap. It arrives at `+1`,
+/// which is the reference the slot takes.
+///
+/// **Null on allocation failure**, which the barrier turns into a refused
+/// store. No context is needed: the destination is never the arena.
+///
+/// # Safety
+/// `entity` is a live COW entity in the request arena, and `owner_cat`
+/// belongs to a holder that outlives it.
+pub(crate) unsafe fn escape_copy(
+    owner_cat: MemoryCategory,
+    entity: *mut RcHeader,
+) -> *mut RcHeader {
+    use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
+    debug_assert_ne!(owner_cat, MemoryCategory::RequestArena);
+    let flags = unsafe { crate::refcount::header_flags(entity) };
+    const STRING: u32 = EntityKind::String as u32;
+    match (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT {
+        STRING => unsafe {
+            crate::string::separate(
+                std::ptr::null_mut(),
+                owner_cat,
+                entity as *mut crate::string::LLString,
+            ) as *mut RcHeader
+        },
+        _ => {
+            debug_assert!(false, "no COW copy for this entity kind yet");
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// `instanceof`: Cohen display for classes, itable presence for
 /// interfaces (`rfc/model/lowering.md`).
 ///
@@ -849,13 +893,13 @@ mod tests {
 
             // Any store clears undef — the whole 16 bytes are written.
             let child = new_constructed(&mut ctx, child_cls, MemoryCategory::GcHeap);
-            crate::memory::barrier::ref_store(
+            assert!(crate::memory::barrier::ref_store(
                 &mut arena,
                 obj as *mut RcHeader,
                 bare,
                 std::ptr::null_mut(),
                 Value::entity(crate::value::Tag::Object, child as *mut RcHeader),
-            );
+            ));
             assert!(!bare.read().is_undef());
             assert_eq!((*child).rc.refcount, 2, "creation + the slot");
             let mut children = 0;
@@ -865,13 +909,13 @@ mod tests {
             // `unset($obj->bare)`: store undef back, drop the displaced
             // entity — the same publish-then-release order as any
             // overwriting store.
-            crate::memory::barrier::ref_store(
+            assert!(crate::memory::barrier::ref_store(
                 &mut arena,
                 obj as *mut RcHeader,
                 bare,
                 child as *mut RcHeader,
                 Value::undef(),
-            );
+            ));
             assert!(bare.read().is_undef(), "unset returns the slot to undef");
             assert_eq!((*child).rc.refcount, 1, "the slot's reference released");
             let mut children = 0;
@@ -924,12 +968,12 @@ mod tests {
             // $obj->p = $child: the barrier's pointer store + the bit set.
             let child = new_constructed(&mut ctx, child_cls, MemoryCategory::GcHeap);
             let p_slot = (obj as *mut u8).add(16) as *mut *mut RcHeader;
-            crate::memory::barrier::store_ptr(
+            assert!(crate::memory::barrier::store_ptr(
                 &mut arena,
                 MemoryCategory::GcHeap,
                 p_slot,
                 child as *mut RcHeader,
-            );
+            ));
             Object::init_bit_set(obj, p_bit);
             assert_eq!((*child).rc.refcount, 2, "creation + the slot");
 
@@ -941,12 +985,12 @@ mod tests {
             // $obj->p = null: a real null for `?T` — the slot goes back to
             // NULL, the displaced child is dropped, and the bit STAYS set:
             // the bit, not the pointer, answers isset.
-            crate::memory::barrier::store_ptr(
+            assert!(crate::memory::barrier::store_ptr(
                 &mut arena,
                 MemoryCategory::GcHeap,
                 p_slot,
                 std::ptr::null_mut(),
-            );
+            ));
             crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, child as *mut RcHeader);
             assert!(Object::init_bit_test(obj, p_bit), "null is a value, still initialized");
             assert_eq!((*child).rc.refcount, 1, "the slot's reference released");

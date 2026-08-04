@@ -823,12 +823,12 @@ mod tests {
         let original = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"shared") };
         let mut slot: *mut RcHeader = std::ptr::null_mut();
         unsafe {
-            crate::memory::barrier::store_ptr(
+            assert!(crate::memory::barrier::store_ptr(
                 &raw mut arena,
                 MemoryCategory::GcHeap,
                 &raw mut slot,
                 original as *mut RcHeader,
-            )
+            ));
         };
         assert_eq!(unsafe { (*original).rc.refcount }, 2);
 
@@ -837,12 +837,12 @@ mod tests {
         };
         assert_ne!(copy as usize, original as usize, "two holders, so a copy");
         unsafe {
-            crate::memory::barrier::store_ptr(
+            assert!(crate::memory::barrier::store_ptr(
                 &raw mut arena,
                 MemoryCategory::GcHeap,
                 &raw mut slot,
                 copy,
-            );
+            ));
             crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, original as *mut RcHeader);
             assert!(!ll_release(copy), "the creation reference, spent");
         }
@@ -1013,12 +1013,13 @@ mod tests {
     /// never changed) and, under `rc-walk`, race the collector's byte
     /// stores.
     ///
-    /// **`IS_ESCAPEE`**: `barrier::escape_gain` overwrites the count with
-    /// the escape hold-count and asserts the entity is not COW, so a COW
-    /// escapee cannot be produced today — the arena design routes value-
-    /// like data through a deep copy at the barrier instead, and that is
-    /// unbuilt. The arm stays because the rule has it and because the
-    /// hold-count is genuinely not a reference count.
+    /// **`IS_ESCAPEE`**: no longer an arm of the rule (2026-08-04). The
+    /// store barrier copies a COW value out of the arena rather than
+    /// counting an escape into it, so bit 11 and the exact COW count can
+    /// no longer claim the same four bytes and the combination cannot
+    /// occur. What used to be asserted here is now asserted where it is
+    /// produced:
+    /// `barrier::tests::a_cow_value_leaving_the_arena_is_copied_rather_than_counted`.
     ///
     /// **`COW = 0`**: the dynamic layout has no constructor yet.
     #[test]
@@ -1028,10 +1029,6 @@ mod tests {
 
         assert!(!cow_separation_needed(cow, 1), "sole owner writes in place");
         assert!(cow_separation_needed(cow, 2), "a second holder copies");
-        assert!(
-            cow_separation_needed(cow | IS_ESCAPEE, 1),
-            "an escapee copies: that 1 is a hold-count, not a reference count"
-        );
         assert!(
             cow_separation_needed(COW | MemoryCategory::Immortal as u32, 1),
             "immortal copies at any count"
@@ -1294,12 +1291,12 @@ mod tests {
 
         let mut heap_slot: *mut RcHeader = std::ptr::null_mut();
         unsafe {
-            crate::memory::barrier::store_ptr(
+            assert!(crate::memory::barrier::store_ptr(
                 &raw mut arena,
                 MemoryCategory::GcHeap,
                 &raw mut heap_slot,
                 s as *mut RcHeader,
-            );
+            ));
             crate::promote::arena_reset_full(&raw mut arena);
         }
 
@@ -1338,12 +1335,12 @@ mod tests {
 
         let mut heap_slot: *mut RcHeader = std::ptr::null_mut();
         unsafe {
-            crate::memory::barrier::store_ptr(
+            assert!(crate::memory::barrier::store_ptr(
                 &raw mut arena,
                 MemoryCategory::GcHeap,
                 &raw mut heap_slot,
                 s as *mut RcHeader,
-            );
+            ));
             crate::promote::arena_reset_full(&raw mut arena);
         }
 

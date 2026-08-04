@@ -226,12 +226,12 @@ mod tests {
         let block = static_block(holder_layout);
         unsafe {
             let slot = block.add(16) as *mut Value;
-            crate::memory::barrier::store_box(
+            assert!(crate::memory::barrier::store_box(
                 &mut arena,
                 MemoryCategory::LongLived,
                 slot,
                 Value::entity(Tag::Object, obj as *mut RcHeader),
-            );
+            ));
             ll_static_block_register(block, holder_layout);
         }
         // The static's store took the second reference; the local one goes.
@@ -262,12 +262,12 @@ mod tests {
         let block = static_block(holder_layout);
         unsafe {
             let slot = block.add(16) as *mut Value;
-            crate::memory::barrier::store_box(
+            assert!(crate::memory::barrier::store_box(
                 &mut arena,
                 MemoryCategory::LongLived,
                 slot,
                 Value::entity(Tag::Object, obj as *mut RcHeader),
-            );
+            ));
             ll_static_block_register(block, holder_layout);
         }
         let held = unsafe { (*(obj as *mut RcHeader)).refcount };
@@ -329,12 +329,12 @@ mod tests {
             let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
             let block = static_block(layout);
             unsafe {
-                crate::memory::barrier::store_box(
+                assert!(crate::memory::barrier::store_box(
                     &mut arena,
                     MemoryCategory::LongLived,
                     block.add(16) as *mut Value,
                     Value::entity(Tag::Object, obj as *mut RcHeader),
-                );
+                ));
                 ll_static_block_register(block, layout);
                 assert!(!crate::refcount::ll_release(obj as *mut RcHeader));
             }
@@ -402,12 +402,12 @@ mod tests {
             };
             let block = static_block(layout);
             unsafe {
-                crate::memory::barrier::store_box(
+                assert!(crate::memory::barrier::store_box(
                     &mut arena,
                     MemoryCategory::LongLived,
                     block.add(16) as *mut Value,
                     Value::entity(Tag::String, s as *mut RcHeader),
-                );
+                ));
                 ll_static_block_register(block, layout);
                 assert!(!crate::refcount::ll_release(s as *mut RcHeader));
             }
@@ -448,12 +448,12 @@ mod tests {
             let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
             let block = static_block(layout);
             unsafe {
-                crate::memory::barrier::store_box(
+                assert!(crate::memory::barrier::store_box(
                     &mut arena,
                     MemoryCategory::LongLived,
                     block.add(16) as *mut Value,
                     Value::entity(Tag::Object, obj as *mut RcHeader),
-                );
+                ));
                 ll_static_block_register(block, layout);
                 assert!(!crate::refcount::ll_release(obj as *mut RcHeader));
             }
@@ -509,12 +509,12 @@ mod tests {
 
             let block = static_block(layout);
             unsafe {
-                crate::memory::barrier::store_box(
+                assert!(crate::memory::barrier::store_box(
                     &mut arena,
                     MemoryCategory::LongLived,
                     block.add(16) as *mut Value,
                     Value::entity(Tag::Object, obj as *mut RcHeader),
-                );
+                ));
                 ll_static_block_register(block, layout);
                 assert!(!crate::refcount::ll_release(obj as *mut RcHeader));
                 // Let the cell go too; the static is the last holder of
@@ -558,12 +558,12 @@ mod tests {
             let mut ctx = LLContext { arena: &mut arena };
             let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
             unsafe {
-                crate::memory::barrier::store_box(
+                assert!(crate::memory::barrier::store_box(
                     &mut arena,
                     MemoryCategory::LongLived,
                     block.add(16) as *mut Value,
                     Value::entity(Tag::Object, obj as *mut RcHeader),
-                );
+                ));
                 ll_static_block_register(block, layout);
                 assert!(!crate::refcount::ll_release(obj as *mut RcHeader));
             }
@@ -588,12 +588,12 @@ mod tests {
         let obj = unsafe { new_constructed(&mut ctx, first_cls, MemoryCategory::GcHeap) };
         let block = static_block(layout);
         unsafe {
-            crate::memory::barrier::store_box(
+            assert!(crate::memory::barrier::store_box(
                 &mut arena,
                 MemoryCategory::LongLived,
                 block.add(16) as *mut Value,
                 Value::entity(Tag::Object, obj as *mut RcHeader),
-            );
+            ));
             ll_static_block_register(block, layout);
             assert!(!crate::refcount::ll_release(obj as *mut RcHeader));
         }

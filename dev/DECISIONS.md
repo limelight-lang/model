@@ -8,6 +8,51 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — a COW value is copied out of the arena, and the store barrier can say no
+
+`values.md` asserted two invariants over the same four bytes: on a COW
+entity the refcount equals the number of holders, in every category; and
+while `IS_ESCAPEE` is set, the field holds the arena escape hold-count.
+Both applied to a request-arena COW entity taken by a longer-lived
+holder — `$o->name = $s` with `$o` in the heap, the most ordinary string
+store in the language. A `debug_assert` in `escape_gain` hid it in debug
+builds; release builds overwrote a live holder count with a hold-count of
+one.
+
+**Decided (Edmond):** the store barrier copies. A COW value has no
+identity a program can observe, so a longer-lived slot takes a copy in
+the GC heap rather than a hold on arena memory — the deep copy
+`arenas.md` already named for value-like data, and the reason an object
+is promoted instead: an object's identity *is* observable. A COW entity
+therefore never becomes an escapee, and the collision disappears rather
+than being arbitrated.
+
+**The COW write rule loses its `IS_ESCAPEE` arm.** It tested a bit that
+nothing can now set, on the write path.
+
+**A publish can fail, and says so.** The copy is an allocation, so
+`store_ptr`, `store_box` and `ref_store` — and the three C ABI entries —
+return whether the store happened. A refusal leaves the slot and every
+count exactly as they were, which is what makes it reportable rather than
+a broken invariant: generated code raises memory-exhausted where it
+already checks a factory's null. `exceptions.md` is amended, because its
+"the barrier is funded, not checked" paragraph was written when the
+barrier's only failure was a fixed-size log record. A reserve cannot fund
+a copy the size of the value.
+
+**Rejected:** emitting the copy in generated code before the store, so
+the barrier could stay `void`. It works and it was the recommendation
+here; Edmond chose the channel, and it is the better half of the two —
+the runtime keeps the decision about what a store means, and the compiler
+keeps only the raise.
+
+**Regression:** `barrier::tests::`
+`a_cow_value_leaving_the_arena_is_copied_rather_than_counted`, seen
+failing on the old `debug_assert`. The old predicate test that asserted
+the dead arm moved with the contract rather than being weakened:
+`string::tests::the_rule_reads_the_flag_before_the_category_and_the_count`
+now records where the invariant is enforced.
+
 ## 2026-08-04 — the buffer arena is a heap like the other one, and gets the same ownership rules
 
 A string is an object of reduced form, and an array will be one too

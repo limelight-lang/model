@@ -465,7 +465,7 @@ mod tests {
             } else {
                 Value::entity(Tag::Object, value as *mut RcHeader)
             };
-            ref_store(arena, holder as *mut RcHeader, slot, old, new);
+            assert!(ref_store(arena, holder as *mut RcHeader, slot, old, new));
         }
     }
 
@@ -509,23 +509,23 @@ mod tests {
         };
 
         unsafe {
-            ref_store(
+            assert!(ref_store(
                 &mut arena,
                 r as *mut RcHeader,
                 &raw mut (*r).value,
                 std::ptr::null_mut(),
                 Value::entity(Tag::Object, target as *mut RcHeader),
-            );
+            ));
             // The heap holder takes the box: the escape that makes it
             // survive, and the only reason the referent is reachable.
             let slot = Object::prop_at(holder, 16);
-            ref_store(
+            assert!(ref_store(
                 &mut arena,
                 holder as *mut RcHeader,
                 slot,
                 std::ptr::null_mut(),
                 Value::entity(Tag::Reference, r as *mut RcHeader),
-            );
+            ));
         }
 
         unsafe { arena_reset_full(&mut arena) };
@@ -534,7 +534,7 @@ mod tests {
             unsafe { (*(target as *mut RcHeader)).memory_category() },
             MemoryCategory::GcHeap,
             "the referent stayed behind in the dying arena"
-        );
+            );
         assert_eq!(
             unsafe { (*(target as *mut RcHeader)).refcount },
             1,
@@ -688,13 +688,13 @@ mod tests {
             unsafe {
                 let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
                 let slot = Object::prop_at(holder, 16);
-                ref_store(
+                assert!(ref_store(
                     arena,
                     holder as *mut RcHeader,
                     slot,
                     std::ptr::null_mut(),
                     Value::entity(Tag::Object, obj as *mut RcHeader),
-                );
+                ));
             }
         }
 
@@ -866,7 +866,7 @@ mod tests {
                 let slot = Object::prop_at(o, 16);
                 let old = entity_checked(&*slot);
                 let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
-                ref_store(arena, o as *mut RcHeader, slot, old, Value::null());
+                assert!(ref_store(arena, o as *mut RcHeader, slot, old, Value::null()));
             }
         }
 
@@ -895,13 +895,13 @@ mod tests {
         unsafe {
             for owner in [keeper, dropper] {
                 let slot = Object::prop_at(owner, 16);
-                ref_store(
+                assert!(ref_store(
                     arena_ptr,
                     owner as *mut RcHeader,
                     slot,
                     std::ptr::null_mut(),
                     Value::entity(Tag::String, s),
-                );
+                ));
             }
             // The creation reference goes, as it would at the end of the
             // statement that built the string.
@@ -920,7 +920,7 @@ mod tests {
                 (*s).memory_category(),
                 MemoryCategory::GcHeap,
                 "the string survived with its keeper"
-            );
+                );
             assert_eq!(
                 (*s).refcount,
                 1,
