@@ -37,8 +37,10 @@ the state of the work, not the design — for the design read the RFC.
   go in place, no sharing test. The compiler allocates one only where it
   proved a single owner.
 - An inline string obeys the barrier rule in `rfc/model/values.md`, which
-  now reads **category, then `IS_ESCAPEE`, then the count** — an immortal
-  entity's count is pinned at 1 by the retain/release early-outs.
+  reads **category, then the count** — an immortal entity's count is
+  pinned at 1 by the retain/release early-outs, and the `IS_ESCAPEE` arm
+  is gone (2026-08-04): a COW value is copied out of the arena at the
+  store, so it never carries an escape count.
 - On a COW entity the count equals the number of holders; deferred ARC
   does not apply to them at any tier.
 - No freeze operation, and no runtime promotion between layouts: both
@@ -115,8 +117,14 @@ here.
     about the four defects the critic found the same day — a mixed-width
     race is invisible to both tools, and the promotion count defect is
     masked by the retained block.
-12. Critic on the finished stage, then Fable on whatever the critic
-    finds.
+12. ~~Critic on the finished stage, then Fable on whatever the critic
+    finds~~ — done 2026-08-04. Seven findings, each verified against the
+    code before acting. Three mechanical ones fixed in `f1ea847`; the two
+    structural ones went to Fable for the fix shape and landed as
+    `49be716` (the reset's tracer and the COW count) and `b5781d9` (the
+    buffer arena's ownership rules). Fable also corrected the critic on
+    one point: the reset has no live stack, so the frame-slot half of its
+    scenario cannot occur — the defect was real by two other routes.
 13. ~~Layout-aware arena promotion: carry the payload~~ — done
     2026-08-04. One kind-dispatched call in the survivor pass, so
     promotion still knows nothing about any layout. An OS-direct payload
