@@ -133,6 +133,21 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             unsafe { count_children(surv) };
         }
         for &surv in &survivors[counted..] {
+            // Out-of-line memory comes with the survivor, before the
+            // category stops describing where it lives. Asked through one
+            // kind-dispatched call so promotion keeps knowing nothing
+            // about any layout (`rfc/model/strings.md`).
+            if !unsafe { carry_external_memory(arena, surv) } {
+                // Refused. The bytes stay where they are and the block
+                // holding them stays out of circulation with the
+                // survivors' blocks — the same mechanism, for the same
+                // reason. Reset has no caller left to report to, which is
+                // why there is a fallback here at all.
+                let payload_block = unsafe { external_memory_block(surv) };
+                if payload_block != 0 && retained.insert(payload_block) {
+                    unsafe { (*(payload_block as *mut BlockHeader)).kind = BLOCK_KIND_RETAINED };
+                }
+            }
             unsafe {
                 // 00 = GcHeap; drop the transient arena-reset mark and
                 // IS_ESCAPEE. The mark lives in the GC-state field, so
@@ -201,6 +216,56 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
 /// from a block address costs no second mapping (`dev/DECISIONS.md`,
 /// 2026-08-03). A survivor whose block was *not* retained cannot occur
 /// here: retention is decided from this same list.
+/// Bring a survivor's out-of-line memory with it, if its kind has any.
+/// One call, kind-dispatched, so nothing about any layout leaks into the
+/// reset: promotion holds a block by the address of a header and does
+/// not otherwise look inside an entity.
+///
+/// False when the carry was refused; the caller keeps the memory alive
+/// instead. Kinds with nothing out of line answer true.
+///
+/// # Safety
+/// `surv` is a live survivor of `arena`, mid-reset.
+unsafe fn carry_external_memory(arena: *mut Arena, surv: *mut RcHeader) -> bool {
+    match unsafe { external_payload(surv) } {
+        Some(s) => unsafe { crate::string::carry_payload_out_of(arena, s) },
+        None => true,
+    }
+}
+
+/// The survivor as a dynamic string, or `None` — the only kind with
+/// memory of its own outside its entity today. Arrays join it.
+///
+/// # Safety
+/// `surv` must be a live entity.
+unsafe fn external_payload(surv: *mut RcHeader) -> Option<*mut crate::string::LLStringDynamic> {
+    let flags = unsafe { (*surv).flags };
+    let is_string = flags & crate::refcount::ENTITY_KIND_MASK
+        == crate::refcount::EntityKind::String.to_flags();
+    if is_string && flags & crate::refcount::COW == 0 {
+        Some(surv as *mut crate::string::LLStringDynamic)
+    } else {
+        None
+    }
+}
+
+/// The block holding a survivor's out-of-line memory, or 0 — the address
+/// the caller retains when [`carry_external_memory`] refused. An
+/// OS-direct payload has no block of the arena's and never refuses.
+///
+/// # Safety
+/// As [`carry_external_memory`].
+unsafe fn external_memory_block(surv: *mut RcHeader) -> usize {
+    let Some(s) = (unsafe { external_payload(surv) }) else {
+        return 0;
+    };
+    let data = unsafe { (*s).data };
+    if data.is_null() {
+        return 0;
+    }
+    BlockHeader::of_ptr(data as *const u8) as usize
+}
+
 fn index_retained_blocks(survivors: &[*mut RcHeader]) {
     let mut by_block: HashMap<usize, Vec<usize>> = HashMap::new();
     for &surv in survivors {

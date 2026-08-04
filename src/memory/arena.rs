@@ -216,6 +216,36 @@ impl Arena {
         p
     }
 
+    /// Give up ownership of an OS-direct run this arena allocated: the
+    /// reset will not free it, and the caller becomes responsible for it.
+    ///
+    /// This exists for one caller — promotion carrying a surviving
+    /// entity's out-of-line payload out of the arena
+    /// (`rfc/model/strings.md`, "An arena string that survives the reset
+    /// takes its payload with it"). For a payload above `BLOCK_PAYLOAD`
+    /// the transfer is what the design asks for and is also what removes
+    /// the failure mode: nothing is allocated, so nothing can be refused
+    /// at a point where there is no caller left to report to.
+    ///
+    /// The record is zeroed rather than unlinked; [`drain_log`] skips
+    /// zeros. Returns false when `ptr` was not one of this arena's runs.
+    pub fn forget_large(&mut self, ptr: *mut u8) -> bool {
+        let mut seg = self.larges;
+        while !seg.is_null() {
+            unsafe {
+                for i in 0..(*seg).count {
+                    let slot = (*seg).records.as_mut_ptr().add(i);
+                    if slot.read() == ptr as usize {
+                        slot.write(0);
+                        return true;
+                    }
+                }
+                seg = (*seg).next;
+            }
+        }
+        false
+    }
+
     /// Objects with side-effect destructors register here; `reset`
     /// hands them back to the caller (the object-lifecycle layer owns
     /// the actual `__destruct` protocol).
@@ -505,12 +535,18 @@ impl Arena {
     }
 
     /// Visit every record of a segment chain (newest segment first).
+    /// Zero records are skipped: [`forget_large`](Self::forget_large)
+    /// zeroes a run it hands to someone else, and no log's payload can
+    /// legitimately be a null pointer.
     fn drain_log(head: *mut LogSegment, mut f: impl FnMut(usize)) {
         let mut seg = head;
         while !seg.is_null() {
             unsafe {
                 for i in 0..(*seg).count {
-                    f((*seg).records.as_ptr().add(i).read());
+                    let record = (*seg).records.as_ptr().add(i).read();
+                    if record != 0 {
+                        f(record);
+                    }
                 }
                 seg = (*seg).next;
             }

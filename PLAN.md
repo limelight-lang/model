@@ -51,7 +51,10 @@ string's payload (recorded in `rfc/model/memory/buffers.md`), and the
 cross-thread slot memory model that decides whether freeing a displaced
 string must route through epoch-deferred reclamation.
 
-**Task list, in dependency order** (13 items, 10 of them open):
+**Task list, in dependency order** (16 items; 1–8 and 13 are closed,
+9–12 and 14–16 open). This list *is* the task list — the session tool
+that tracks it does not survive a cleared context, so it is rebuilt from
+here.
 
 1. ~~Sweep the contract and list the holes~~ — done 2026-08-03.
 2. ~~Find a home for a sub-mode bit~~ — dropped: the COW flag is the
@@ -88,13 +91,69 @@ string must route through epoch-deferred reclamation.
 9. Interpolated template as its own class. Flattening point still TBD in
    the RFC.
 10. Documents move with behaviour, in the same commit; `rfc` stays in
-    sync.
+    sync. Two corrections are owed to the RFC and were deliberately not
+    made while the code was moving, so they are named here rather than
+    forgotten. `values.md` justifies the COW rule's category test with
+    "the count is pinned", which describes immortal and not long-lived —
+    a COW entity takes neither early return in `ll_retain`, so its
+    long-lived count is fully maintained; the arm is right for other
+    reasons, recorded at `refcount::cow_separation_needed`. And
+    `strings.md` says both layouts occur in every memory category, while
+    the code now refuses a dynamic string outside `GcHeap` and
+    `RequestArena` — the exclusion follows from the non-COW half of the
+    design and should be written where the design is.
 11. The verification gate in `dev/WORKFLOW.md`, plus Miri in both
     configurations.
 12. Critic on the finished stage, then Fable on whatever the critic
     finds.
-13. Layout-aware arena promotion: carry the payload. Arrays will need the
-    same.
+13. ~~Layout-aware arena promotion: carry the payload~~ — done
+    2026-08-04. One kind-dispatched call in the survivor pass, so
+    promotion still knows nothing about any layout. An OS-direct payload
+    transfers (the arena forgets the run, nothing is allocated, so the
+    reset cannot be refused at a point with no caller left to report to);
+    an in-block one is copied, bounded by a block payload. On refusal the
+    payload's block joins the retained set, and a retained block is the
+    one route `buffer_free_longlived_payload` leaves alone. The escape
+    ban this replaced lasted a day. Arrays will need the same.
+
+14. **Port rapidhash v3** into `string::hash_bytes`, vendored, constants
+    pinned, with the author's reference test vectors run in CI. That last
+    part is the task: a one-constant divergence between the hash the
+    compiler folds and the one the runtime computes does not crash, it
+    misses. Comes with the seed's home (per process under JIT, per build
+    under AOT), the build-time selection of the function the way the GC
+    strategy is selected, and a test that fails when a seed is left at
+    its default. Until it lands, `hash_bytes` is the FNV-1a that was
+    already there. Decision: `rfc/model/strings.md`, "The hash function
+    is a build-time choice".
+15. **Resolve `IS_ESCAPEE` against the COW count** — a design question,
+    not an implementation one, and it needs Edmond. `values.md` asserts
+    two invariants over the same four bytes: on a COW entity the count
+    equals the number of holders, always and in every category; and while
+    bit 11 is set, the field holds the arena escape hold-count. Both
+    cannot hold for a COW arena entity, which is the class the separation
+    rule's third line exists for. Today the contradiction is suppressed by
+    an assert in `barrier::escape_gain` forbidding a COW entity to escape
+    at all, so that arm of the rule is unreachable by construction.
+    `arenas.md` names the intended route — a deep copy at the barrier for
+    value-like data — and it is unbuilt. Three ways out: build the deep
+    copy; declare the arm dead for COW and take it out of the rule; or
+    give COW escapees a second field. The present state, a live test for
+    an arm the barrier forbids, is the worst of the three.
+16. **Park buffer-arena frees during a collector epoch.** The parking
+    test lives in `stdapi::ll_free`, and a buffer-arena chunk never
+    reaches it: `buffer_free_longlived_payload` branches on the block
+    kind and calls `BufferArena::free` directly, which writes a
+    `{ next, size }` link into the freed chunk and can return a whole
+    block to the pool mid-epoch. Harmless for strings — a payload is
+    bytes and the walker never reads it — and load-bearing before array
+    storage arrives, which the walker will chase. Park in that branch,
+    not in `ll_free`; park the whole call, not just the link write, so
+    the block cannot empty and be re-stamped; widen the parked record to
+    `(pointer, size)`, since the arena's free is size-carrying. Two
+    adjacent repairs: `ll_free_large`'s default arm silently ignores
+    `BLOCK_KIND_BUFFER`, and `deferred_free`'s module doc claims the door
+    was closed in advance for arrays, which is false while this stands.
 
 **Why strings and not something else** (decided 2026-08-03, before the
 design work): `rfc/model/strings.md` is written, A2's entity-kind switch

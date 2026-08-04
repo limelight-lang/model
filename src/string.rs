@@ -518,6 +518,53 @@ pub unsafe fn ll_string_append(
     true
 }
 
+/// Carry a surviving dynamic string's payload out of the arena that is
+/// about to reset (`rfc/model/strings.md`, "An arena string that survives
+/// the reset takes its payload with it").
+///
+/// The entity's header stays where it is — the block holding it is
+/// retained — but the payload is arena memory and would go back to the
+/// pool at the reset, so the survivor would read recycled bytes. Two
+/// routes, and which one applies is decided by where the payload came
+/// from:
+///
+/// - **OS-direct** (over a block payload): ownership transfers. The
+///   arena forgets the run, the string keeps the same pointer, nothing is
+///   allocated and nothing can be refused — which matters, because a
+///   reset has no caller left to report a refusal to.
+/// - **In-block**: a fresh heap payload, copied. Bounded by a block
+///   payload, so the copy is bounded too.
+///
+/// **False when the copy was refused.** The caller keeps the payload's
+/// arena block out of circulation instead; the string then reads its old
+/// bytes for the rest of its life, and [`string_die`] finds a retained
+/// block and leaves it alone.
+///
+/// # Safety
+/// `s` must be a live dynamic string in `arena`, mid-reset.
+pub(crate) unsafe fn carry_payload_out_of(arena: *mut crate::memory::arena::Arena, s: *mut LLStringDynamic) -> bool {
+    let (data, capacity) = unsafe { ((*s).data, (*s).capacity as usize) };
+    if data.is_null() {
+        return true; // an empty string has no payload to carry
+    }
+    if capacity > crate::memory::block_pool::BLOCK_PAYLOAD {
+        let forgotten = unsafe { (*arena).forget_large(data) };
+        debug_assert!(forgotten, "an OS-direct payload the arena never logged");
+        return forgotten;
+    }
+
+    let mut carried = Buffer::new();
+    if crate::memory::buffer_arena::buffer_ensure_longlived(&mut carried, capacity, 0).is_null() {
+        return false;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(data, carried.data, (*s).len as usize);
+        (*s).data = carried.data;
+        (*s).capacity = stored_capacity(carried.capacity);
+    }
+    true
+}
+
 /// Teardown for a string whose count reached zero (or that a collector
 /// owns): the payload first if the layout has one, then the entity's own
 /// memory by category. A string holds no children, so there is nothing
@@ -1169,22 +1216,20 @@ mod tests {
         arena.reset(|_| {});
     }
 
-    /// An arena dynamic string may not escape into a longer-lived
-    /// holder. Promotion keeps the entity and rewrites its category but
-    /// knows nothing about the payload, which stays arena memory — the
-    /// block goes home at the reset and is later re-stamped as a buffer
-    /// block, so the survivor reads recycled memory and its eventual free
-    /// routes into an arena that never granted the chunk. Refused at the
-    /// escape, not documented, until promotion carries the payload.
+    /// An accumulator built in the arena and stored into a heap holder:
+    /// the entity survives the reset and its payload comes with it. An
+    /// in-block payload is copied, because the block it sits in goes back
+    /// to the pool.
     #[test]
-    #[should_panic(expected = "cannot escape its arena")]
-    fn an_arena_dynamic_string_may_not_escape() {
+    fn an_escaped_arena_string_carries_its_payload_through_the_reset() {
         let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
         let s = unsafe {
-            ll_string_new_dynamic(&mut ctx, MemoryCategory::RequestArena, b"accumulator", 0)
+            ll_string_new_dynamic(&mut ctx, MemoryCategory::RequestArena, b"accumulated", 0)
         };
+        let arena_payload = unsafe { (*s).data };
+
         let mut heap_slot: *mut RcHeader = std::ptr::null_mut();
         unsafe {
             crate::memory::barrier::store_ptr(
@@ -1192,8 +1237,65 @@ mod tests {
                 MemoryCategory::GcHeap,
                 &raw mut heap_slot,
                 s as *mut RcHeader,
-            )
-        };
+            );
+            crate::promote::arena_reset_full(&raw mut arena);
+        }
+
+        let s = heap_slot as *mut LLStringDynamic;
+        assert_eq!(
+            unsafe { (*s).rc.memory_category() },
+            MemoryCategory::GcHeap,
+            "promoted"
+        );
+        assert_ne!(
+            unsafe { (*s).data },
+            arena_payload,
+            "an in-block payload is copied: its block went back to the pool"
+        );
+        assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"accumulated");
+
+        unsafe {
+            crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, s as *mut RcHeader);
+        }
+    }
+
+    /// The same, with a payload too large for a block. There the arena
+    /// only owns an OS-direct run, so ownership transfers instead of
+    /// being copied — the pointer does not move, nothing is allocated,
+    /// and the reset therefore has no way to refuse.
+    #[test]
+    fn an_os_direct_payload_transfers_instead_of_being_copied() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let big = vec![b'z'; crate::memory::block_pool::BLOCK_PAYLOAD + 64];
+        let s =
+            unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::RequestArena, &big, 0) };
+        let os_direct = unsafe { (*s).data };
+        assert!(unsafe { (*s).capacity } as usize > crate::memory::block_pool::BLOCK_PAYLOAD);
+
+        let mut heap_slot: *mut RcHeader = std::ptr::null_mut();
+        unsafe {
+            crate::memory::barrier::store_ptr(
+                &raw mut arena,
+                MemoryCategory::GcHeap,
+                &raw mut heap_slot,
+                s as *mut RcHeader,
+            );
+            crate::promote::arena_reset_full(&raw mut arena);
+        }
+
+        let s = heap_slot as *mut LLStringDynamic;
+        assert_eq!(
+            unsafe { (*s).data },
+            os_direct,
+            "the run is handed over, not copied"
+        );
+        assert_eq!(unsafe { LLStringDynamic::bytes(s) }, &big[..]);
+
+        unsafe {
+            crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, s as *mut RcHeader);
+        }
     }
 
     /// Teardown returns a heap dynamic string's payload to the arena it

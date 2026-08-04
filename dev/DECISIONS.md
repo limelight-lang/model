@@ -42,6 +42,33 @@ which is why the position is written down rather than inferred.
 puts a dynamic string in a static and simply ends. Verified by restoring
 the `RefCell` and watching the process abort.
 
+## 2026-08-04 — promotion carries a survivor's payload, and the two routes are not the same route
+
+A dynamic string that survives an arena reset keeps its entity — the
+block holding the header is retained — but its payload is arena memory
+and would go back to the pool. Promotion now asks one kind-dispatched
+question, `carry_external_memory`, so the reset still knows nothing about
+any layout: it holds blocks by the address of a header and does not
+otherwise look inside an entity.
+
+**An OS-direct payload transfers; an in-block payload is copied.** Not
+symmetry for its own sake — the difference is what removes the failure
+mode. A reset runs at the end of a request, where there is no caller left
+to report a refusal to, and a transfer allocates nothing: `forget_large`
+zeroes the arena's record of the run and the drain skips zeros. The
+in-block route has to copy, since the block itself is going home, but it
+is bounded by a block payload.
+
+**When the copy is refused**, the payload's block joins the retained set
+— the same mechanism that keeps the survivors' own blocks out of
+circulation, for the same reason — and the string reads its old bytes for
+the rest of its life. `buffer_free_longlived_payload` gained a
+`BLOCK_KIND_RETAINED` arm that does nothing, which is that fallback's
+other half. **Rejected: failing the reset**, which would introduce a
+class of failure nothing above it can handle.
+
+**Superseded:** the escape ban of the entry below, which lasted a day.
+
 ## 2026-08-04 — a dynamic string may not escape its arena, and the escape barrier says so out loud
 
 `escape_gain` asserts the escaping entity is **not** COW, an assert

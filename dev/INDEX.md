@@ -55,9 +55,11 @@ versions live in `docs/history/`, marked at the top.
   (how): the copy's category comes from the holder, and it comes back
   at +1. An interned name is an inline string built through the same
   `init_at`: `src/intern.rs` is the table, not a second layout.
-  **An arena dynamic string cannot escape** until promotion carries its
-  payload — `barrier::escape_gain` refuses it (`dev/DECISIONS.md`,
-  2026-08-04; `PLAN.md` task 13).
+  An arena dynamic string that survives the reset **takes its payload
+  with it**: `promote::carry_external_memory` asks one kind-dispatched
+  question and `string::carry_payload_out_of` answers it — an OS-direct
+  run transfers, an in-block payload is copied, and a refused copy
+  retains the block instead (`dev/DECISIONS.md`, 2026-08-04).
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted. Registered by `promote` at reset,
   read by both of `heap`'s enumerators. This is what makes a

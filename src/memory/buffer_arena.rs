@@ -338,7 +338,12 @@ pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usiz
 /// [`buffer_ensure_longlived`] on this thread, not freed yet.
 pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
     let kind = unsafe { *(((ptr as usize) & !BLOCK_MASK) as *const u32) };
-    if kind == BLOCK_KIND_BUFFER {
+    if kind == crate::memory::block_pool::BLOCK_KIND_RETAINED {
+        // A payload promotion could not carry: the reset kept its block
+        // out of circulation instead, so the bytes outlive the entity and
+        // the block goes home only when the retained block itself does
+        // (`string::carry_payload_out_of`).
+    } else if kind == BLOCK_KIND_BUFFER {
         with_buffer_arena(|a| unsafe { a.free(ptr, capacity) });
     } else {
         // OS-direct run: the standard path frees it by mask.
