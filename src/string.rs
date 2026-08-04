@@ -21,6 +21,7 @@
 //! [`init_at`] rather than laying out its own (`dev/ARCHITECTURE.md`,
 //! invariant 13).
 
+use crate::hash::hash_bytes;
 use crate::memory::buffer::Buffer;
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::memory::immortal::immortal_alloc;
@@ -168,32 +169,6 @@ pub unsafe fn string_bytes<'a>(s: *const LLString) -> &'a [u8] {
     } else {
         unsafe { LLStringDynamic::bytes(s as *const LLStringDynamic) }
     }
-}
-
-/// The value a genuine zero hash is mapped to, so that zero can mean
-/// "not computed" without the sentinel ever colliding with a real hash.
-/// Part of the frozen definition of the hash rather than the caller's
-/// job: the compiler folds the same value the runtime computes.
-const ZERO_REPLACEMENT: u64 = 1;
-
-/// The string hash. FNV-1a for now.
-///
-/// **The function is a build-time choice** — the same axis the GC
-/// strategy uses — and the decision (`rfc/model/strings.md`, "The hash
-/// function is a build-time choice") names rapidhash v3 as the default.
-/// Porting it is its own step: it has to match the reference
-/// implementation constant for constant, checked against the author's
-/// test vectors, because a one-constant divergence between the
-/// compiler's folded hash and the runtime's produces no crash, only
-/// wrong misses in a hash table. Until then this is the function that
-/// was already here, behind the name everything else calls.
-pub fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    if h == 0 { ZERO_REPLACEMENT } else { h }
 }
 
 /// Lay a string out at `mem`, which must have room for the fixed fields
@@ -732,14 +707,16 @@ mod tests {
         arena.reset(|_| {});
     }
 
-    /// `hash_bytes` maps a genuine zero away, so the sentinel stays
-    /// unambiguous. FNV-1a reaches zero on inputs nobody will type, so
-    /// the mapping is checked directly rather than through a search.
+    /// The lazy field's sentinel survives whatever the hash returns: the
+    /// string side needs a hash that is never zero, and checking that it
+    /// never is belongs to the hash module (`hash::tests`). What is
+    /// checked here is the string's own reading of the field — a freshly
+    /// hashed string reports a non-zero value, so the next read hits the
+    /// cache instead of recomputing.
     #[test]
-    fn a_genuine_zero_hash_is_mapped_away() {
-        assert_eq!(hash_bytes(&[]), 0xcbf2_9ce4_8422_2325);
+    fn a_hashed_string_never_reads_back_as_unhashed() {
         assert_ne!(hash_bytes(b"anything"), 0);
-        assert_eq!(ZERO_REPLACEMENT, 1);
+        assert_ne!(hash_bytes(&[]), 0);
     }
 
     /// A string that lives in the request arena is reclaimed by the

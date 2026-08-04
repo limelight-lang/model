@@ -8,6 +8,48 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — the rapidhash port is checked against vectors we generate, because the author publishes none
+
+`rfc/model/strings.md` makes the hash a compiler/runtime contract: the
+runtime computes a string's hash and the compiler is meant to fold the
+same value for a literal key. A single constant transcribed wrong
+breaks that contract without breaking anything a test would normally
+notice — the result is still a well-distributed 64-bit hash, stable
+within the process, never zero, and every existing test in this crate
+passes on it. The symptom appears later and elsewhere, as table lookups
+that miss.
+
+The plan's task said to run the author's reference test vectors in CI.
+He has none: `github.com/Nicoshev/rapidhash` holds `rapidhash.h`,
+`secret.h`, `bench/`, `collisions/` and `old_version/`, and nothing that
+pins an expected value.
+
+**Decided (Edmond's call):** vendor the reference header at one pinned
+commit and generate the vectors from it once —
+`vendor/rapidhash/generate_vectors.c` compiles the header, hashes a
+fixed input list under four seeds, and prints `src/hash/vectors.rs`.
+The table is committed, so running the suite needs no C compiler;
+regenerating it does.
+
+**Rejected: building the C reference at test time** through `build.rs`
+or a `cc` dev-dependency and comparing live. It proves the same thing
+and demands a C toolchain everywhere the suite runs — the position the
+`mimalloc` dev-dependency is already in, which is why it sits behind
+`cfg(not(miri))` in `Cargo.toml`.
+
+The inputs are chosen at the reference's branch boundaries, not for
+realism, and the long ones are not written out byte by byte: the
+generator fills them from `index * 167 + 13` and the consuming test
+reproduces that. The two definitions are a pair, and the file that
+holds each says so.
+
+**What the table cannot check:** that the vendored header is the one
+the compiler side will use. Nothing enforces that yet, because the
+compiler side does not exist; when it does, the pin in
+`vendor/rapidhash/README.md` is what both sides have to name.
+
+---
+
 ## 2026-08-04 — the COW reconciliation carries a delta, because promotion is not the end of the reset
 
 `reconcile_cow_counts` assigned each COW survivor's count from the edges

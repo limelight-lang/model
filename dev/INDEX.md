@@ -48,9 +48,8 @@ versions live in `docs/history/`, marked at the top.
   does, and `LLString::hash` goes through it, since hashing the inline
   offset on a dynamic string would hash the payload's address.
   `fits` is the single 4 GiB length gate every creation and growth path
-  passes; `hash_bytes` is the build-time-chosen function
-  (`rfc/model/strings.md` — rapidhash v3 is the decided default, the port
-  is its own step, FNV-1a until then). The COW write barrier is
+  passes; the hash the field caches is `hash::hash_bytes`, below. The COW
+  write barrier is
   `object::ll_cow_separate` (whether to copy) plus `string::separate`
   (how): the copy's category comes from the holder, and it comes back
   at +1. An interned name is an inline string built through the same
@@ -60,6 +59,21 @@ versions live in `docs/history/`, marked at the top.
   question and `string::carry_payload_out_of` answers it — an OS-direct
   run transfers, an in-block payload is copied, and a refused copy
   retains the block instead (`dev/DECISIONS.md`, 2026-08-04).
+- The hash of a byte string: `src/hash/` — `hash_bytes` is what every
+  hashed thing in the runtime goes through (a string's cached hash now,
+  array keys later), and it is **rapidhash V3**, ported in
+  `hash/rapidhash.rs` from the reference header vendored at
+  `vendor/rapidhash/`. Which function hashes is a build-time choice
+  (`rfc/model/strings.md`), because the compiler is meant to fold the
+  hash of a literal key and the two sides agree only if built from one
+  definition. The author publishes no test vectors, so
+  `vendor/rapidhash/generate_vectors.c` compiles his header and prints
+  `src/hash/vectors.rs`; that table is the only thing separating a port
+  from a hash of its own invention, since a mistranscribed constant
+  still hashes well and fails nothing else. Zero is never returned —
+  it is the string field's "not computed" sentinel. Still open: the
+  seed (zero today, `rfc/model/strings.md` "Seeding") and the cargo
+  feature that selects the function.
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted. Registered by `promote` at reset,
   read by both of `heap`'s enumerators. This is what makes a

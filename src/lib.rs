@@ -10,6 +10,7 @@ pub(crate) mod collector;
 #[cfg(feature = "rc-walk")]
 pub(crate) mod epoch;
 pub mod gc;
+pub mod hash;
 pub mod intern;
 pub mod memory;
 pub mod object;

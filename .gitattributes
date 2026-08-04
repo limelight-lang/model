@@ -1,0 +1,7 @@
+# Vendored third-party sources are stored byte for byte, so that the
+# checksum recorded beside them still identifies the upstream file after a
+# clone. rapidhash.h ships with CRLF line endings; normalising them would
+# change its hash and quietly turn the pin in vendor/rapidhash/README.md
+# into a number that matches nothing.
+vendor/rapidhash/rapidhash.h -text
+vendor/rapidhash/LICENSE -text
