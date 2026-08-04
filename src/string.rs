@@ -77,10 +77,13 @@ impl LLString {
     /// name arrives with the field already filled and never reaches the
     /// computing branch.
     ///
-    /// The store is plain, not atomic: a lazily hashed string is written
-    /// by the thread that owns it. An immortal string is shared, and that
-    /// is exactly why `intern` hashes eagerly — nothing lazily writes to
-    /// a string another thread can see.
+    /// The store is plain, not atomic, which is why a string in a shared
+    /// category never reaches the computing branch: [`init_at`] hashes an
+    /// immortal or long-lived string at creation, so the only strings
+    /// left lazy are the ones a single thread owns. `intern` supplies the
+    /// hash it already has; every other caller gets the same guarantee
+    /// without knowing it exists, which is the point — the invariant used
+    /// to be a convention `intern` happened to keep.
     ///
     /// **Reads the bytes through [`string_bytes`], which branches on the
     /// layout.** The cached read does not have to — that is what the
@@ -148,11 +151,19 @@ impl LLStringDynamic {
 /// says which. Code that has proved the layout — the compiler's, mostly —
 /// calls the layout's own accessor and skips the branch.
 ///
+/// The flags come from [`crate::refcount::header_flags`] rather than a
+/// plain field read: under `rc-walk` the collector byte-stores into the
+/// same word during an epoch, and a plain load races it. The helper is
+/// the same instruction with the race made defined, so this costs
+/// nothing; the reason it matters here is the licence a plain load gives
+/// the optimiser to keep the header in a register across a loop of byte
+/// accesses.
+///
 /// # Safety
 /// `s` must be a live string entity, and must outlive the slice.
 #[inline]
 pub unsafe fn string_bytes<'a>(s: *const LLString) -> &'a [u8] {
-    if unsafe { (*s).rc.flags } & COW != 0 {
+    if unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW != 0 {
         unsafe { LLString::bytes(s) }
     } else {
         unsafe { LLStringDynamic::bytes(s as *const LLStringDynamic) }
@@ -193,7 +204,12 @@ pub fn hash_bytes(bytes: &[u8]) -> u64 {
 /// entity-block slot reads refcount 0 until the string is fully formed
 /// (`rfc/model/gc/rc-walk.md`, Phase 1).
 ///
-/// `hash` is the precomputed hash, or zero to leave it lazy.
+/// `hash` is the precomputed hash, or zero to leave it lazy — except in
+/// the two categories a second thread can reach, where a zero is computed
+/// here instead. The lazy store in [`LLString::hash`] is plain, so
+/// leaving a shared string unhashed makes two readers race on the same
+/// field; hashing at creation costs one pass over bytes that were being
+/// copied anyway.
 ///
 /// # Safety
 /// `mem` must be 8-aligned and own `size_of::<LLString>() + bytes.len()`
@@ -205,6 +221,15 @@ pub(crate) unsafe fn init_at(
     hash: u64,
 ) -> *mut LLString {
     debug_assert!(fits(bytes.len()));
+    let shared = matches!(
+        category,
+        MemoryCategory::Immortal | MemoryCategory::LongLived
+    );
+    let hash = if hash == 0 && shared {
+        hash_bytes(bytes)
+    } else {
+        hash
+    };
     let s = mem as *mut LLString;
     unsafe {
         (&raw mut (*s).len).write(bytes.len() as u32);
@@ -268,7 +293,10 @@ pub(crate) unsafe fn new_with_hash(
 ///
 /// The copy is a fresh entity nothing has registered anywhere, so the
 /// only thing that can go wrong is a holder outliving it. An arena
-/// holder can hold anything, since it dies at the reset itself; every
+/// holder can hold an arena copy, and not because the holder dies at the
+/// reset — it may escape and be promoted. It is safe because the reset's
+/// survivor trace reaches the copy through the holder's slot and promotes
+/// it too, the same way it reaches any other arena child; every
 /// other holder needs something that outlives the request, so the copy
 /// goes to the GC heap. That also keeps a copy out of the two categories
 /// that cannot own a written string at all: immortal is shared
@@ -338,7 +366,7 @@ pub unsafe fn separate(
     s: *mut LLString,
 ) -> *mut LLString {
     debug_assert_ne!(
-        unsafe { (*s).rc.flags } & COW,
+        unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW,
         0,
         "a dynamic string is outside the COW rule and writes in place"
     );
@@ -487,7 +515,7 @@ pub unsafe fn ll_string_append(
     extra: &[u8],
 ) -> bool {
     debug_assert_eq!(
-        unsafe { (*s).rc.flags } & COW,
+        unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW,
         0,
         "an inline string separates instead of appending"
     );
@@ -499,7 +527,7 @@ pub unsafe fn ll_string_append(
         return false;
     };
 
-    let category = unsafe { (*s).rc.memory_category() };
+    let category = unsafe { crate::object::header_category(s as *const RcHeader) };
     let mut payload = Buffer {
         data: unsafe { (*s).data },
         len: old_len,
@@ -548,9 +576,18 @@ pub(crate) unsafe fn carry_payload_out_of(arena: *mut crate::memory::arena::Aren
         return true; // an empty string has no payload to carry
     }
     if capacity > crate::memory::block_pool::BLOCK_PAYLOAD {
+        // True whatever the log says, because the two outcomes of
+        // `forget_large` are both carries. It found the record: the run
+        // transfers, which is the whole point of the OS-direct branch. It
+        // did not: nothing will free the run, so the payload keeps its
+        // address and leaks — the safe direction, and the only other one
+        // available. Returning the miss as a refusal would send the
+        // caller into the copy's fallback, which stamps
+        // `BLOCK_KIND_RETAINED` over the run's `LargeHeader` at offset 0
+        // and leaves `ll_free` reading a kind the run does not have.
         let forgotten = unsafe { (*arena).forget_large(data) };
         debug_assert!(forgotten, "an OS-direct payload the arena never logged");
-        return forgotten;
+        return true;
     }
 
     let mut carried = Buffer::new();
@@ -579,7 +616,7 @@ pub(crate) unsafe fn carry_payload_out_of(arena: *mut crate::memory::arena::Aren
 /// `s` must be a live string entity.
 pub(crate) unsafe fn string_die(s: *mut LLString) {
     let owner_cat = unsafe { crate::object::header_category(s as *const RcHeader) };
-    let inline = unsafe { (*s).rc.flags } & COW != 0;
+    let inline = unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW != 0;
     if !inline && owner_cat != MemoryCategory::RequestArena {
         let d = s as *mut LLStringDynamic;
         let (data, capacity) = unsafe { ((*d).data, (*d).capacity as usize) };
@@ -912,6 +949,31 @@ mod tests {
     /// reachable from more than one request, and `string_die` frees only
     /// `GcHeap`, so an in-place write would land somewhere nothing
     /// reclaims.
+    /// A string in a category a second thread can reach arrives already
+    /// hashed, so no reader ever takes the lazy branch's plain store.
+    /// The field is read directly rather than through `LLString::hash`,
+    /// which would compute one and hide the difference. The two
+    /// single-owner categories stay lazy, which is what makes this a
+    /// property of the category rather than a hash on every creation.
+    #[test]
+    fn a_string_two_threads_can_reach_is_hashed_at_creation() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        for category in [MemoryCategory::Immortal, MemoryCategory::LongLived] {
+            let s = unsafe { ll_string_new(&mut ctx, category, b"shared") };
+            assert_eq!(
+                unsafe { (*s).hash },
+                hash_bytes(b"shared"),
+                "left to whichever thread reads first"
+            );
+        }
+        for category in [MemoryCategory::GcHeap, MemoryCategory::RequestArena] {
+            let s = unsafe { ll_string_new(&mut ctx, category, b"owned") };
+            assert_eq!(unsafe { (*s).hash }, 0, "a single owner still hashes lazily");
+        }
+    }
+
     #[test]
     fn a_long_lived_string_separates_although_its_count_is_real() {
         let _g = crate::memory::block_pool::test_guard();
