@@ -51,8 +51,8 @@ string's payload (recorded in `rfc/model/memory/buffers.md`), and the
 cross-thread slot memory model that decides whether freeing a displaced
 string must route through epoch-deferred reclamation.
 
-**Task list, in dependency order** (16 items; 1–8 and 13 are closed,
-9–12 and 14–16 open). This list *is* the task list — the session tool
+**Task list, in dependency order** (16 items; 1–8, 10, 11 and 13 are
+closed, 9, 12 and 14–16 open). This list *is* the task list — the session tool
 that tracks it does not survive a cleared context, so it is rebuilt from
 here.
 
@@ -73,7 +73,16 @@ here.
    name is deleted: the heap payload has to reappear from the buffer
    arena's free list, and the arena payload has to still read back as its
    own content. Both collector configurations.
-5. Separation on write for inline strings, in the rule's order.
+5. ~~Separation on write for inline strings, in the rule's order~~ —
+   done 2026-08-04. `refcount::cow_separation_needed` decides,
+   `string::separate` copies, and `object::ll_cow_separate` dispatches by
+   kind, so whether to separate is a property of the header and how to
+   copy a property of the layout. The copy's category comes from the
+   holder, not from the original; it returns at +1 like every other
+   factory here; its hash starts unset. The COW flag is tested before the
+   category, which `values.md`'s order does not do — that order would
+   copy a non-COW plain object when immortal or escaped and break
+   reference identity.
 6. ~~Dynamic string: buffer fields in the string's own order, growth in
    place, compiler-chosen at allocation~~ — done 2026-08-04. Payload
    through the memory manager's buffer machinery, routed by category;
@@ -90,20 +99,22 @@ here.
    fifth in `ll_thread_exit`'s order (`dev/DECISIONS.md`).
 9. Interpolated template as its own class. Flattening point still TBD in
    the RFC.
-10. Documents move with behaviour, in the same commit; `rfc` stays in
-    sync. Two corrections are owed to the RFC and were deliberately not
-    made while the code was moving, so they are named here rather than
-    forgotten. `values.md` justifies the COW rule's category test with
-    "the count is pinned", which describes immortal and not long-lived —
-    a COW entity takes neither early return in `ll_retain`, so its
-    long-lived count is fully maintained; the arm is right for other
-    reasons, recorded at `refcount::cow_separation_needed`. And
-    `strings.md` says both layouts occur in every memory category, while
-    the code now refuses a dynamic string outside `GcHeap` and
-    `RequestArena` — the exclusion follows from the non-COW half of the
-    design and should be written where the design is.
-11. The verification gate in `dev/WORKFLOW.md`, plus Miri in both
-    configurations.
+10. ~~Documents move with behaviour, in the same commit; `rfc` stays in
+    sync~~ — the two corrections owed to the RFC landed 2026-08-04 in
+    `rfc` `1fa621c`. `values.md`'s COW rule now separates the immortal
+    and long-lived arms and gives each its own reason, since "the count
+    is pinned" described immortal only. `strings.md` no longer permits
+    both layouts in every memory category: it names the two the dynamic
+    layout is refused in, and why `ll_string_new_dynamic` refuses rather
+    than redirects.
+11. ~~The verification gate in `dev/WORKFLOW.md`, plus Miri in both
+    configurations~~ — run 2026-08-04 on the stage as it stands. The gate
+    is green: 223 tests under `rc-walk` and 207 under `rc-trace`, three
+    threaded runs each at the 4-thread width, both release builds. Miri is
+    silent in both configurations (218 and 204 tests). Neither is evidence
+    about the four defects the critic found the same day — a mixed-width
+    race is invisible to both tools, and the promotion count defect is
+    masked by the retained block.
 12. Critic on the finished stage, then Fable on whatever the critic
     finds.
 13. ~~Layout-aware arena promotion: carry the payload~~ — done
