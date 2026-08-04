@@ -8,12 +8,50 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: strings (Phase C) — design settled 2026-08-03, code not started
+## Next: two string tasks, and one measurement
 
-Read this first in a fresh session. The design was re-derived on
-2026-08-03 after a critic pass and is recorded in `rfc/dev/DECISIONS.md`
-(three entries, newest first) and `rfc/model/strings.md`. What follows is
-the state of the work, not the design — for the design read the RFC.
+Read this first in a fresh session. The string stage is built: 14 of the
+16 tasks below are closed, both critic passes are done and their findings
+fixed, and the gate and Miri are green in both configurations as of
+2026-08-04. The design lives in `rfc/model/strings.md` and
+`rfc/dev/DECISIONS.md`; what follows is the state of the work, not the
+design.
+
+**What to pick up, in the order they are ready:**
+
+1. **Task 14, the rapidhash v3 port** — the only unblocked one. It needs
+   the author's reference implementation and his test vectors fetched
+   from upstream, because the constants must not be written from memory:
+   a one-constant divergence between the hash the compiler folds and the
+   one the runtime computes does not crash, it misses. It also carries
+   the seed's home (per process under JIT, per build under AOT) and the
+   build-time selection of the function, the way the GC strategy is
+   selected. Full statement at task 14 below.
+2. **Grow a buffer payload in place off the bump top** — `buffers.md`
+   already gives the request arena this trick and
+   `buffer_ensure_longlived` does not have it: it reallocates and copies
+   even when the payload is the last chunk bumped in the current block.
+   The condition is `ptr + capacity == arena.bump` with room left. An
+   append loop on the newest string hits it every time. **This is a
+   speed change**, so it does not land on reasoning: it needs a criterion
+   benchmark for string append, which does not exist yet, both arms
+   measured back to back in one session, and a line in
+   `dev/BENCHMARKS.md`.
+3. **Task 9, the interpolated template** — blocked on the RFC, not on
+   code: where the template flattens is still TBD in
+   `rfc/model/strings.md`. That is a design question for Edmond.
+
+**What today changed underneath everything else**, worth knowing before
+touching any of it (all four entries are in `dev/DECISIONS.md`,
+2026-08-04): a COW value leaving the arena is now **copied** by the store
+barrier rather than counted as an escapee, and a publish can therefore
+refuse — `store_ptr` / `store_box` / `ref_store` return whether the store
+happened, and the `drop_ref` that follows an overwriting store must not
+run when it refused. The buffer arena is a heap with the object heap's
+ownership rules (per-block owner, MPSC stack for foreign frees, hand-over
+and adoption at thread exit). The arena reset traces through
+`walk::trace_entity` and settles a COW survivor's count as
+`edges + delta`. Buffer chunks park during a collector epoch.
 
 **Settled, and not to be re-derived:**
 
@@ -54,9 +92,11 @@ string must route through epoch-deferred reclamation.
 
 **Task list, in dependency order** (16 items; only 9 and 14 are open —
 the interpolated template, which waits on the RFC, and the rapidhash
-port). This list *is* the task list — the session tool
-that tracks it does not survive a cleared context, so it is rebuilt from
-here.
+port). This list *is* the task list — the session tool that tracks it
+does not survive a cleared context, so it is rebuilt from here. The
+bump-top growth above is not in this list because it is not a string
+task; it belongs to the memory manager and is written up under
+"Residual".
 
 1. ~~Sweep the contract and list the holes~~ — done 2026-08-03.
 2. ~~Find a home for a sub-mode bit~~ — dropped: the COW flag is the
@@ -499,6 +539,20 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
 
 Memory manager, still open:
 
+- [ ] **Grow a long-lived buffer in place off the bump top** — the one
+  optimization the buffer arena is missing, and the second item in the
+  list at the top of this file. `buffer_ensure_longlived` reallocates and
+  copies even when the payload is the last chunk bumped in the current
+  block, while the request arena's `buffer_ensure` extends in place in
+  exactly that case (`rfc/model/memory/buffers.md`). Blocked on a
+  benchmark, not on design: this crate does not land a speed change
+  without one, and there is no string-append bench yet.
+- [ ] **Reuse an adopted block, not just reclaim it** — an adopted buffer
+  block never becomes current and its free list is never consulted, so a
+  block abandoned with one live chunk holds ~64 KiB out of circulation
+  until that chunk dies (`dev/DECISIONS.md`, 2026-08-04). `heap.rs`
+  serves allocations from an adopted block's free list; this is the
+  weaker half of what adoption is for.
 - [ ] Buffer *K* and memory-pressure mode thresholds — **blocked on D**:
   need real workloads. Do not design further on paper (`buffers.md`).
 - [ ] Cross-thread free of long-lived buffers — deferred until a consumer
