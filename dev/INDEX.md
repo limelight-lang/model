@@ -137,7 +137,10 @@ versions live in `docs/history/`, marked at the top.
 - Tests: inline `#[cfg(test)]` per module, no `tests/` directory.
 - Benches: `benches/alloc.rs`, `benches/standard.rs`,
   `benches/lifecycle.rs` (object create/release GC-protocol tax, both
-  configs); collector-side epoch cost probe:
+  configs), `benches/strings.rs` (hash across the function's branch
+  boundaries, create-hash-die, and the append loop in both memory
+  categories — the harness the bump-top growth optimization was blocked
+  on); collector-side epoch cost probe:
   `collector::tests::measure_epoch_cost` (ignored, run with
   `--ignored`, release mode); external probes in `bench-external/`.
 

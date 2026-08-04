@@ -15,11 +15,15 @@
 //!   key. The seed is then inside the artifact, and anyone holding the
 //!   artifact can compute a set of colliding keys in advance.
 //!
-//! What the runtime costs either way is one load: a literal's hash is
+//! What the option buys is small and unmeasured. A literal's hash is
 //! already computed once per process at intern time (`crate::intern`), so
-//! folding replaces a load from a permanently hot address with an
-//! immediate, and generated code needs the interned pointer regardless.
-//! That is the whole of what the option buys, and it has not been measured.
+//! folding does not remove a hash from the access — it replaces reading one
+//! field of a permanently hot immortal entity with an immediate, and
+//! generated code needs that entity's pointer regardless, for the identity
+//! compare. On the runtime's own side the difference is a compile-time
+//! constant against a static read behind [`std::sync::LazyLock`]'s
+//! initialization check. Neither has been measured or read in the emitted
+//! IR.
 //!
 //! **Neither arm defends against hash flooding.** A per-process seed raises
 //! the cost of the attack from reading a constant out of a binary to
@@ -27,6 +31,17 @@
 //! to key recovery from observed collisions. Bounding the worst case is the
 //! hash table's job — a probe-length counter with an escape hatch
 //! (`rfc/model/strings.md`, "Seeding") — and that table is not designed yet.
+//!
+//! **"Per process" is per address space, and a pre-forking server has one.**
+//! A seed established before `fork` is inherited by every worker, so in the
+//! deployment shape this language is aimed at — a master process that forks
+//! workers, as php-fpm does — the guarantee degrades from per-process to
+//! per-deployment: one recovered seed serves every worker for the life of
+//! the master. Drawing on first use rather than at startup does not fix it,
+//! since the master hashes at least the interned names before it forks.
+//! Fixing it means redrawing after `fork` and rehashing everything already
+//! cached, which no caller can do today; the honest position is that this
+//! is a limit of the arm, not a defect in it.
 //!
 //! ## The stamp
 //!

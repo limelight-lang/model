@@ -99,6 +99,10 @@ harness = false
 name = "standard"
 harness = false
 
+[[bench]]
+name = "strings"
+harness = false
+
 [profile.release]
 # One codegen unit -> one clean LLVM module per crate for IR export
 codegen-units = 1

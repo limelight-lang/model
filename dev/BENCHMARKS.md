@@ -100,6 +100,53 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-04 — first string benchmark: a baseline, not a comparison
+
+`benches/strings.rs`, new. The crate had no string or hash benchmark at
+all, which is why `PLAN.md` records the bump-top growth optimization as
+blocked on measurement rather than on design, and why the rapidhash port
+landed with its cost unstated.
+
+**Nothing is compared here.** These are first numbers for a harness that
+did not exist; there is no arm B and no A→B→A. They are recorded so that
+the next change to hashing or to append has something to be measured
+against, taken in one sitting on an otherwise idle box, criterion
+defaults, release, rc-walk (the default configuration).
+
+| benchmark | median |
+|---|---|
+| `hash/8` | 3.71 ns |
+| `hash/16` | 3.64 ns |
+| `hash/17` | 4.34 ns |
+| `hash/64` | 5.42 ns |
+| `hash/113` | 10.39 ns |
+| `hash/1024` | 53.6 ns (17.8 GiB/s) |
+| `new_inline_gcheap_hash_die` | 16.7 ns |
+| `append_256x16_arena` | 1.311 µs |
+| `append_256x16_gcheap` | 1.418 µs |
+
+What the shape says, and it is only what the numbers say: the hash is
+flat from 8 to 16 bytes, which is the reference's single short arm doing
+the same work for both; 17 bytes costs a step more, which is the 16-byte
+cascade opening; and 113 is where the bulk loop starts and the per-byte
+rate settles.
+
+**The two append arms are not a measurement of the bump-top gap**, and
+the 8% between them must not be quoted as one. They differ in the
+allocator serving the payload *and* in how it is reclaimed — an arena
+reset against a refcount death. The pair exists so the optimization can
+be measured as `append_256x16_gcheap` against itself, with the arena arm
+beside it as the control that should not move.
+
+**Two defects in the harness itself, found by running it and fixed
+before these numbers were taken.** The create-and-hash arm first built
+arena strings without ever resetting, so it grew the arena for the whole
+run — gigabytes at criterion's iteration counts, and a 60% spread that
+looked like machine noise. The append arms first leaked their payloads
+for the same reason. Both now reclaim inside the timed region. A
+benchmark that allocates without bound measures the allocator's
+behaviour under a condition no program produces.
+
 ## 2026-07-28 — dense census in the epoch walk: 2–3× on the walk step
 
 `walk_edges`' child test was one `HashMap<address, row>` lookup, and
