@@ -8,15 +8,71 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: strings (Phase C)
+## Next: strings (Phase C) — design settled 2026-08-03, code not started
 
-Decided 2026-08-03, after A6 and the retained-block walk landed. Read
-this first in a fresh session; the detail is in Phase C below.
+Read this first in a fresh session. The design was re-derived on
+2026-08-03 after a critic pass and is recorded in `rfc/dev/DECISIONS.md`
+(three entries, newest first) and `rfc/model/strings.md`. What follows is
+the state of the work, not the design — for the design read the RFC.
 
-**Take strings.** `rfc/model/strings.md` is written, A2's entity-kind
-switch is the thing that was blocking it, and it is the first real
-subsystem rather than a tail. It also unblocks arrays, which nothing
-else does.
+**Settled, and not to be re-derived:**
+
+- Two layouts, one entity kind. `COW = 1` is inline
+  (`RcHeader | len | hash | bytes`), `COW = 0` is dynamic
+  (`RcHeader | len | hash | data | capacity`). `len` and `hash` sit at
+  the same offsets in both, so only byte access and teardown branch.
+- The COW flag is set at allocation and never flips, which is what makes
+  it readable as the layout. No sub-mode bit exists; the flags word has
+  no free one.
+- A dynamic string never copies on write: it is the non-COW form, writes
+  go in place, no sharing test. The compiler allocates one only where it
+  proved a single owner.
+- An inline string obeys the barrier rule in `rfc/model/values.md`, which
+  now reads **category, then `IS_ESCAPEE`, then the count** — an immortal
+  entity's count is pinned at 1 by the retain/release early-outs.
+- On a COW entity the count equals the number of holders; deferred ARC
+  does not apply to them at any tier.
+- No freeze operation, and no runtime promotion between layouts: both
+  would rewrite the body under a header `rc-walk` may be reading.
+- Arena promotion becomes layout-aware — the header stays, the payload is
+  reallocated into the heap, an OS-direct payload transfers ownership.
+
+**Open, and blocking nothing yet:** which allocator owns a heap dynamic
+string's payload (recorded in `rfc/model/memory/buffers.md`), and the
+cross-thread slot memory model that decides whether freeing a displaced
+string must route through epoch-deferred reclamation.
+
+**Task list, in dependency order** (13 minus the two closed):
+
+1. ~~Sweep the contract and list the holes~~ — done 2026-08-03.
+2. ~~Find a home for a sub-mode bit~~ — dropped: the COW flag is the
+   layout.
+3. Inline string in the GC heap: allocation, header, lazy hash. Field
+   order is `len` then `hash`, pinned by a layout test. Hash zero means
+   "not computed"; `hash_bytes` must not return a real zero.
+4. String teardown by layout: inline frees its own block, dynamic frees
+   the payload too. Both collector configurations.
+5. Separation on write for inline strings, in the rule's order.
+6. Dynamic string: buffer fields in the string's own order, growth in
+   place, compiler-chosen at allocation.
+8. `buffer_arena` on the thread-exit path — the A6 tail. Its TLS key has
+   drop glue and is read with a plain `with`; the note in the source says
+   Phase C is what makes that reachable.
+9. Interpolated template as its own class. Flattening point still TBD in
+   the RFC.
+10. Documents move with behaviour, in the same commit; `rfc` stays in
+    sync.
+11. The verification gate in `dev/WORKFLOW.md`, plus Miri in both
+    configurations.
+12. Critic on the finished stage, then Fable on whatever the critic
+    finds.
+13. Layout-aware arena promotion: carry the payload. Arrays will need the
+    same.
+
+**Why strings and not something else** (decided 2026-08-03, before the
+design work): `rfc/model/strings.md` is written, A2's entity-kind switch
+is what was blocking it, and it is the first real subsystem rather than a
+tail. It also unblocks arrays, which nothing else does.
 
 **Not arrays yet.** One array class with three storage strategies is
 designed, but the hashtable underneath it — bucket layout, collision
