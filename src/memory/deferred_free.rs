@@ -28,14 +28,25 @@
 //! cost: the park path may allocate (a `Vec` push, cold, epoch-only),
 //! which the in-slot draft avoided.
 //!
-//! What rides the queue: all four freeable block kinds (heap raw
-//! buffers, entity slots, pooled large, OS-direct runs). The walker
-//! today chases only entity slots, but array storage (Phase C) will
-//! make it chase raw buffers of any size — parking them all now costs
-//! nothing and closes that door in advance. What does not: cross-thread
-//! frees (`free_foreign` — the crate is single-mutator; actors will
-//! reopen this) and the no-op kinds (arena, retained: nothing is
-//! recycled, so identity holds without parking).
+//! What rides the queue: all four freeable block kinds that reach
+//! `ll_free` (heap raw buffers, entity slots, pooled large, OS-direct
+//! runs), and **buffer-arena chunks**, which do not. A chunk is freed
+//! by `buffer_arena::buffer_free_longlived_payload` calling
+//! `BufferArena::free` directly, so it never passes `ll_free`'s test;
+//! that branch does its own, and parks the whole call rather than the
+//! link write, because `free` also decrements the block's live count
+//! and can hand an emptied block back to the pool to be re-stamped as
+//! another kind. Parked chunks are the reason a parked record carries a
+//! size: `BufferArena::free` is size-carrying, the chunk itself holds
+//! no metadata, and the block header would be gone by flush time
+//! anyway. The walker today chases only entity slots, but array storage
+//! (Phase C) will make it chase raw buffers of any size, and a string
+//! payload already lives in a buffer chunk.
+//!
+//! What does not ride it: cross-thread frees (`free_foreign` — the
+//! crate is single-mutator; actors will reopen this) and the no-op
+//! kinds (arena, retained: nothing is recycled, so identity holds
+//! without parking).
 //!
 //! Known limit: a thread that parks and exits before flushing leaks its
 //! parked list until process end — bounded by what that thread freed
@@ -55,6 +66,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// The GC activity bit: an epoch is in flight, park instead of freeing.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// A parked release: the pointer, and how it will be freed.
+///
+/// `size == 0` is the ordinary `ll_free` route, which reads everything
+/// it needs from the block header. A non-zero size is a buffer-arena
+/// chunk and is its granted capacity: `BufferArena::free` takes the size
+/// as an argument, since a chunk carries no metadata of its own
+/// (`buffer_arena.rs`, the zero-metadata contract).
+#[derive(Clone, Copy)]
+struct Parked {
+    ptr: *mut u8,
+    size: usize,
+}
+
 thread_local! {
     /// This thread's parked allocations, in park order. Out-of-band:
     /// the parked memory itself is never touched (module doc).
@@ -72,11 +96,11 @@ thread_local! {
     /// unwind: the process aborts. A `Cell<*mut _>` has no drop glue,
     /// is never registered, and stays readable for the whole life of
     /// the thread; [`dispose`] frees it explicitly.
-    static PARKED: Cell<*mut Vec<*mut u8>> = const { Cell::new(std::ptr::null_mut()) };
+    static PARKED: Cell<*mut Vec<Parked>> = const { Cell::new(std::ptr::null_mut()) };
 }
 
 /// This thread's list, allocated on first use.
-fn parked_list() -> *mut Vec<*mut u8> {
+fn parked_list() -> *mut Vec<Parked> {
     PARKED.with(|cell| {
         let mut list = cell.get();
         if list.is_null() {
@@ -115,7 +139,40 @@ pub(crate) fn end_epoch() {
 /// owned by this call (nothing may recycle it until [`flush`]
 /// releases it for real).
 pub(crate) unsafe fn park(ptr: *mut u8) {
-    unsafe { (*parked_list()).push(ptr) };
+    unsafe { (*parked_list()).push(Parked { ptr, size: 0 }) };
+}
+
+/// Park a buffer-arena chunk, which does not pass `ll_free` and whose
+/// free needs the granted capacity back. The whole call is parked, not
+/// just the free-list link it would write: `BufferArena::free` also
+/// decrements the block's live count, and an emptied block returns to
+/// the global pool and can be re-stamped as another kind while the
+/// walker still holds addresses inside it.
+///
+/// # Safety
+/// `(ptr, capacity)` must be exactly one live chunk of this thread's
+/// buffer arena, freed by this call and reachable by nothing until
+/// [`flush`] releases it.
+pub(crate) unsafe fn park_buffer_chunk(ptr: *mut u8, capacity: usize) {
+    debug_assert!(capacity > 0, "a zero size is the ll_free route");
+    unsafe {
+        (*parked_list()).push(Parked {
+            ptr,
+            size: capacity,
+        })
+    };
+}
+
+/// Release one parked record through the free path its size names.
+///
+/// # Safety
+/// Runs on the parking thread, with no epoch in flight.
+unsafe fn release(p: Parked) {
+    if p.size == 0 {
+        unsafe { crate::memory::stdapi::ll_free(p.ptr) };
+    } else {
+        unsafe { crate::memory::buffer_arena::free_parked_chunk(p.ptr, p.size) };
+    }
 }
 
 /// Release this thread's parked backlog through the real free path.
@@ -148,8 +205,8 @@ pub(crate) unsafe fn flush() -> usize {
         return 0;
     }
     let backlog = unsafe { std::mem::take(&mut *list) };
-    for &ptr in backlog.iter().rev() {
-        unsafe { crate::memory::stdapi::ll_free(ptr) };
+    for &parked in backlog.iter().rev() {
+        unsafe { release(parked) };
     }
     backlog.len()
 }
@@ -182,8 +239,8 @@ pub(crate) fn dispose() {
     }
     let backlog = unsafe { Box::from_raw(list) };
     if !active() {
-        for &ptr in backlog.iter().rev() {
-            unsafe { crate::memory::stdapi::ll_free(ptr) };
+        for &parked in backlog.iter().rev() {
+            unsafe { release(parked) };
         }
     }
 }
@@ -373,6 +430,39 @@ mod tests {
         end_epoch();
         assert_eq!(unsafe { flush() }, 1);
         arena.reset(|_| {});
+    }
+
+    /// A buffer-arena chunk never passes `ll_free`, so the epoch test
+    /// that parks everything else used to miss it entirely:
+    /// `BufferArena::free` wrote its `{ next, size }` link straight into
+    /// the freed chunk — which is where a string payload's bytes are,
+    /// and where array storage will be once the walker chases it — and
+    /// could hand an emptied block back to the pool mid-epoch.
+    #[test]
+    fn a_buffer_chunk_parks_instead_of_being_written_into() {
+        let _g = crate::memory::block_pool::test_guard();
+        use crate::memory::buffer::Buffer;
+        use crate::memory::buffer_arena::{buffer_ensure_longlived, buffer_free_longlived_payload};
+
+        let mut buf = Buffer::new();
+        let data = buffer_ensure_longlived(&mut buf, 64, 0);
+        assert!(!data.is_null());
+        let capacity = buf.capacity;
+        // Payload bytes, which is what a walker chasing this chunk reads.
+        unsafe { std::ptr::write_bytes(data, 0xA5, capacity) };
+
+        begin_epoch();
+        unsafe { buffer_free_longlived_payload(data, capacity) };
+        assert_eq!(parked_count(), 1, "the chunk parked with its capacity");
+        let head = unsafe { std::slice::from_raw_parts(data, 16) };
+        assert!(
+            head.iter().all(|&b| b == 0xA5),
+            "the free-list link was written into a chunk the walker may be reading"
+        );
+
+        end_epoch();
+        assert_eq!(unsafe { flush() }, 1, "released for real at the flush");
+        assert_eq!(parked_count(), 0);
     }
 
     /// The pooled-large and OS-direct kinds park too — array storage of

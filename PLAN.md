@@ -51,8 +51,8 @@ string's payload (recorded in `rfc/model/memory/buffers.md`), and the
 cross-thread slot memory model that decides whether freeing a displaced
 string must route through epoch-deferred reclamation.
 
-**Task list, in dependency order** (16 items; 1–8, 10, 11 and 13 are
-closed, 9, 12 and 14–16 open). This list *is* the task list — the session tool
+**Task list, in dependency order** (16 items; 1–8, 10, 11, 13 and 16 are
+closed, 9, 12, 14 and 15 open). This list *is* the task list — the session tool
 that tracks it does not survive a cleared context, so it is rebuilt from
 here.
 
@@ -151,7 +151,20 @@ here.
     copy; declare the arm dead for COW and take it out of the rule; or
     give COW escapees a second field. The present state, a live test for
     an arm the barrier forbids, is the worst of the three.
-16. **Park buffer-arena frees during a collector epoch.** The parking
+16. ~~**Park buffer-arena frees during a collector epoch**~~ — done
+    2026-08-04. The epoch test `ll_free` makes is made in
+    `buffer_free_longlived_payload`'s buffer branch instead, since that
+    free never reaches `ll_free`; the whole call parks, so the block
+    cannot empty and be re-stamped; the parked record carries
+    `(pointer, size)`, because `BufferArena::free` is size-carrying and a
+    chunk holds no metadata. `ll_free_large` gained the
+    `BLOCK_KIND_BUFFER` arm its silent default was swallowing, and
+    `deferred_free`'s module doc now describes the chunk rider instead of
+    claiming the door was shut in advance. Regression:
+    `deferred_free::tests::a_buffer_chunk_parks_instead_of_being_written_into`,
+    seen failing. Below is what the task said before it was done.
+
+    The parking
     test lives in `stdapi::ll_free`, and a buffer-arena chunk never
     reaches it: `buffer_free_longlived_payload` branches on the block
     kind and calls `BufferArena::free` directly, which writes a

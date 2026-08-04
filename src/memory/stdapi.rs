@@ -273,6 +273,16 @@ unsafe fn ll_free_large(block: *mut u8, kind: u32) {
             let layout = Layout::from_size_align(run_bytes, BLOCK_SIZE).unwrap();
             unsafe { std::alloc::dealloc(block, layout) };
         }
+        crate::memory::block_pool::BLOCK_KIND_BUFFER => {
+            // A buffer-arena chunk carries no metadata, so its size lives
+            // with its owner and only `buffer_free_longlived_payload` has
+            // it. Arriving here means a caller lost the capacity, and the
+            // silent default arm below made that a leak nobody saw.
+            debug_assert!(
+                false,
+                "a buffer-arena chunk frees through buffer_free_longlived_payload, which carries its size"
+            );
+        }
         _ => { /* not ours / double free — ignore in release, catch in tests */ }
     }
 }
