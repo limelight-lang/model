@@ -47,7 +47,22 @@ interleavings less often. A wider run on a machine that can spare the
 cores stays worth doing before a release; it is no longer the
 per-commit gate.
 
-Both configurations run because GC strategy selection is a build-time
+Since 2026-08-04 there is a second build-time axis, `hash-folding`
+(`src/hash/seed.rs`). It does not run as a full third leg of the gate: it
+touches no header bit, no GC path and no threading, so the interleavings
+the three threaded runs exist to find are the same on both sides of it.
+What it does need is one run of its own, because the two arms take
+different `cfg` branches and each carries a test the other does not:
+
+```
+LL_HASH_SEED=<any> cargo test --lib --features hash-folding -- --test-threads=4
+```
+
+Run it once, in the default GC configuration. Without `LL_HASH_SEED` that
+command is *supposed* to fail — that is the arm's own test firing, not a
+broken gate.
+
+Both GC configurations run because GC strategy selection is a build-time
 feature (the two collectors claim the same header bits — see the
 feature's note in `Cargo.toml`). Since 2026-07-27 **rc-walk is the
 default build**; rc-trace is `--no-default-features`. Both must be

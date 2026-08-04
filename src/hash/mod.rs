@@ -33,25 +33,22 @@ mod vectors;
 /// compiler-folded hashes have to match runtime-computed ones.
 pub const ZERO_REPLACEMENT: u64 = 1;
 
-/// The seed the runtime hashes with.
-///
-/// Zero for now, which is the reference implementation's own default. The
-/// seed's real home — per process where the compiler runs in-process, per
-/// build otherwise — is its own step (`rfc/model/strings.md`, "Seeding");
-/// until it lands, every build of every process hashes alike, and a
-/// collision-flooding attacker who knows the algorithm knows the hash.
-const SEED: u64 = 0;
+pub mod seed;
 
 /// The hash of `bytes`, never zero.
 ///
-/// Equal for equal byte sequences within one build artifact, and not
-/// comparable across artifacts: the function and its seed are build-time
-/// choices, so nothing may persist a hash beyond the process that computed
-/// it or ship it to a peer.
+/// Equal for equal byte sequences for as long as the seed holds still, and
+/// no longer: with `hash-folding` off the seed is drawn per process, so a
+/// hash may not be persisted, cached on disk, or sent to a peer. See
+/// [`seed`] for which it is in this build.
 ///
 /// The empty input is valid and hashes like any other.
 pub fn hash_bytes(bytes: &[u8]) -> u64 {
-    remap_zero(rapidhash::hash(bytes, SEED, &rapidhash::DEFAULT_SECRET))
+    remap_zero(rapidhash::hash_expanded(
+        bytes,
+        seed::expanded(),
+        &rapidhash::DEFAULT_SECRET,
+    ))
 }
 
 /// Zero out of the hash function, [`ZERO_REPLACEMENT`] out of here.
@@ -87,6 +84,22 @@ mod tests {
 
         assert_eq!(hash_bytes(b"limelight"), hash_bytes(&owned));
         assert_eq!(hash_bytes(b"limelight"), hash_bytes(&embedded[2..11]));
+    }
+
+    /// The seed reaches the function the runtime actually calls.
+    ///
+    /// Every other test here would pass on a `hash_bytes` that ignored the
+    /// seed entirely: the vector table passes its seeds explicitly, and the
+    /// rest compare `hash_bytes` against itself. This one compares it
+    /// against the same input hashed under the reference's default seed of
+    /// zero, which is what an unseeded build produces. It holds in both
+    /// arms, since neither installs a zero seed —
+    /// `hash::seed::tests` is what enforces that.
+    #[test]
+    fn the_installed_seed_reaches_hash_bytes() {
+        let unseeded = rapidhash::hash(b"limelight", 0, &rapidhash::DEFAULT_SECRET);
+
+        assert_ne!(hash_bytes(b"limelight"), unseeded);
     }
 
     /// Content of the generated inputs in [`vectors::FILLED_VECTORS`], byte

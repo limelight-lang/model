@@ -71,9 +71,19 @@ versions live in `docs/history/`, marked at the top.
   `src/hash/vectors.rs`; that table is the only thing separating a port
   from a hash of its own invention, since a mistranscribed constant
   still hashes well and fails nothing else. Zero is never returned —
-  it is the string field's "not computed" sentinel. Still open: the
-  seed (zero today, `rfc/model/strings.md` "Seeding") and the cargo
-  feature that selects the function.
+  it is the string field's "not computed" sentinel.
+
+  `hash/seed.rs` holds the seed and the `hash-folding` cargo feature.
+  Off (the default): the seed is drawn from the OS per process and the
+  compiler folds nothing. On: the seed is fixed from `LL_HASH_SEED`,
+  the compiler gets the same value and folds every literal key's hash,
+  and the artifact carries the seed with it. One option, because a
+  compiler that folds has to know the seed while it compiles. `STAMP`
+  and `ll_hash_stamp_matches` are what keep a program folded under one
+  seed from silently missing against a runtime holding another; the
+  program's half of that check is owed by the compiler. Neither arm
+  defends against hash flooding — that is the table's debt
+  (`dev/DECISIONS.md`, 2026-08-04).
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted. Registered by `promote` at reset,
   read by both of `heap`'s enumerators. This is what makes a

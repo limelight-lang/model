@@ -52,6 +52,24 @@ checked-refcount = []
 # writes, not the mutator's.
 rc-walk = []
 
+# The compiler folds the hash of every literal key into the program, and
+# the seed is therefore fixed at build time from `LL_HASH_SEED` rather than
+# drawn from the OS per process. The two halves are one option because a
+# compiler that folds has to know the seed while it compiles, and a
+# per-process seed is not knowable then.
+#
+# Off by default, and the default is the safe one: with a per-process seed
+# an attacker holding the artifact cannot compute a set of colliding keys
+# in advance, which with folding on they can. What folding buys is one load
+# per literal-key access — a literal's hash is already computed once per
+# process at intern time — and that has not been measured. See
+# `src/hash/seed.rs` and `rfc/model/strings.md`.
+#
+# A folding build must also check `ll_hash_stamp_matches` at startup:
+# folded constants live in the program and the function that has to agree
+# with them lives in the runtime, and a mismatch is silent otherwise.
+hash-folding = []
+
 [dependencies]
 
 [dev-dependencies]

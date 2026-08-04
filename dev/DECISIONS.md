@@ -8,6 +8,83 @@ never edited or deleted.
 
 ---
 
+## 2026-08-04 — folding a literal key's hash is a build option, and it is off by default
+
+`rfc/model/strings.md` left it open whether the compiler folds the hash of
+a literal key at all, and defaulted to not folding while saying elsewhere
+that in the AOT modes "the short path's seed cannot be" per-process
+random — a sentence that only holds if it does fold. The two are one
+question, because a compiler that folds has to know the seed while it
+compiles, and a seed drawn when the process starts is not knowable then.
+
+**Decided (Edmond's call):** make it optional rather than settle it. The
+`hash-folding` cargo feature selects the pair.
+
+- **Off, the default.** The seed is drawn from the OS once per process
+  (`std::hash::RandomState`, the only portable source in the standard
+  library and not worth a dependency). The compiler emits no hash
+  constants.
+- **On.** `LL_HASH_SEED` fixes the seed at build time, the compiler is
+  given the same value, and it folds. The seed then travels inside the
+  artifact.
+
+**What folding buys is one load, not the multiplies the RFC priced.** A
+literal key is interned, and an interned name is hashed once at creation
+(`intern.rs`, `string::init_at`), so the hash of a literal is already
+computed once per process. Folding replaces a load from a permanently hot
+address with an immediate, and generated code needs the interned pointer
+anyway for the identity compare. That gain has not been measured, and
+this crate does not land a speed change on reasoning — which is the
+second reason the option is off by default rather than on.
+
+**What it costs is the seed's secrecy**, and the threat is concrete:
+array keys in a web request are attacker-supplied, so an attacker who
+knows the mapping from string to bucket sends N keys that collide and
+turns insertion into roughly N²/2 comparisons. With the seed inside the
+artifact, that set is computed once, offline, against every deployment of
+that build.
+
+**Neither arm is a defence.** A per-process seed raises the attack from
+reading a constant to mounting a timing attack, and no further: rapidhash
+descends from wyhash and claims no resistance to key recovery from
+observed collisions, and seven of its eight secret words are published
+constants. Bounding the worst case is the hash table's job — the
+probe-length counter with an escape hatch named in `strings.md` — and
+that table has no design yet (`rfc/model/arrays.md`). **This entry must
+not be read as closing hash flooding.**
+
+**The seed is expanded once.** The reference opens with
+`seed ^= rapid_mix(seed ^ secret[2], secret[1])`, which folds away under a
+constant seed and would otherwise run per call, ahead of the first byte
+and on the chain feeding the finalizer. `expand_seed` and `hash_expanded`
+split it so the static holds the expanded value; `hash` keeps composing
+the two, so the vector test still exercises the reference's entry point.
+
+**The stamp exists because the alternative failure is silent.** Folded
+constants live in the compiled program and the function that must agree
+with them lives in the runtime; nothing in the linker compares them, and a
+disagreement produces lookups that miss with no crash and no failing
+test. `hash::seed::STAMP` identifies the function and — only when folding
+— the seed, `ll_hash_stamp_matches` compares it, and generated code is
+required to call it at startup. Emitting the program's half is owed by the
+compiler and does not exist yet.
+
+**`build.rs` arrived with this** for one line:
+`cargo::rerun-if-env-changed=LL_HASH_SEED`. `option_env!` is invisible to
+cargo, so without it a rebuild after changing the seed silently reuses the
+artifact built under the old one.
+
+**Rejected: making a default seed fail the whole suite.** The literal
+reading of the plan's "a test that fails when a seed is left at its
+default" would turn the documented gate — plain `cargo test --lib`, no
+environment — red by construction and leave the default build path the
+one nobody runs. Each arm tests its own mechanism instead: with folding,
+that `LL_HASH_SEED` was supplied; without it, that two draws from the OS
+differ. A third test checks what neither would catch, that the installed
+seed reaches `hash_bytes` at all.
+
+---
+
 ## 2026-08-04 — the rapidhash port is checked against vectors we generate, because the author publishes none
 
 `rfc/model/strings.md` makes the hash a compiler/runtime contract: the

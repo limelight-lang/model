@@ -41,7 +41,7 @@ pub(super) const DEFAULT_SECRET: [u64; 8] = [
 /// pointer arguments; a pair says the same thing without the aliasing
 /// question.
 #[inline(always)]
-fn multiply_wide(a: u64, b: u64) -> (u64, u64) {
+const fn multiply_wide(a: u64, b: u64) -> (u64, u64) {
     let product = (a as u128) * (b as u128);
     (product as u64, (product >> 64) as u64)
 }
@@ -49,7 +49,7 @@ fn multiply_wide(a: u64, b: u64) -> (u64, u64) {
 /// The reference's `rapid_mix`: the two halves of the 128-bit product,
 /// folded together.
 #[inline(always)]
-fn mix(a: u64, b: u64) -> u64 {
+pub(super) const fn mix(a: u64, b: u64) -> u64 {
     let (low, high) = multiply_wide(a, b);
     low ^ high
 }
@@ -89,8 +89,32 @@ const BULK_STRIDE: usize = 112;
 /// them is the caller's business — [`super::hash_bytes`] is where this
 /// crate's choice is made.
 pub fn hash(bytes: &[u8], seed: u64, secret: &[u64; 8]) -> u64 {
+    hash_expanded(bytes, expand_seed(seed, secret), secret)
+}
+
+/// The reference's first line, `seed ^= rapid_mix(seed ^ secret[2],
+/// secret[1])`, on its own.
+///
+/// It depends on nothing but the seed and the secret, so a caller that
+/// hashes many inputs under one seed can do it once. Under a seed fixed at
+/// build time the compiler does it instead, and the split costs nothing;
+/// under a seed drawn per process it is the difference between one load
+/// per hash and a load, a 64x64 multiply and three xors — on the
+/// dependency chain that feeds the finalizer, ahead of the first byte.
+#[inline(always)]
+pub const fn expand_seed(seed: u64, secret: &[u64; 8]) -> u64 {
+    seed ^ mix(seed ^ secret[2], secret[1])
+}
+
+/// Hash `bytes` under an already-expanded seed.
+///
+/// `expanded` must come from [`expand_seed`] with the same `secret`;
+/// passing a raw seed produces a hash that is not the reference's for any
+/// input. Kept separate so the expansion can be hoisted out of the hot
+/// path — see [`expand_seed`].
+pub fn hash_expanded(bytes: &[u8], expanded: u64, secret: &[u64; 8]) -> u64 {
     let len = bytes.len();
-    let mut seed = seed ^ mix(seed ^ secret[2], secret[1]);
+    let mut seed = expanded;
 
     // The two words the finalizer consumes. Everything before it exists
     // to fill these and to stir `seed`.

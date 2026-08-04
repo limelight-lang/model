@@ -8,9 +8,9 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: two string tasks, and one measurement
+## Next: one string task, and one measurement
 
-Read this first in a fresh session. The string stage is built: 14 of the
+Read this first in a fresh session. The string stage is built: 15 of the
 16 tasks below are closed, both critic passes are done and their findings
 fixed, and the gate and Miri are green in both configurations as of
 2026-08-04. The design lives in `rfc/model/strings.md` and
@@ -19,15 +19,7 @@ design.
 
 **What to pick up, in the order they are ready:**
 
-1. **Task 14, the rapidhash v3 port** — the only unblocked one. It needs
-   the author's reference implementation and his test vectors fetched
-   from upstream, because the constants must not be written from memory:
-   a one-constant divergence between the hash the compiler folds and the
-   one the runtime computes does not crash, it misses. It also carries
-   the seed's home (per process under JIT, per build under AOT) and the
-   build-time selection of the function, the way the GC strategy is
-   selected. Full statement at task 14 below.
-2. **Grow a buffer payload in place off the bump top** — `buffers.md`
+1. **Grow a buffer payload in place off the bump top** — `buffers.md`
    already gives the request arena this trick and
    `buffer_ensure_longlived` does not have it: it reallocates and copies
    even when the payload is the last chunk bumped in the current block.
@@ -37,7 +29,7 @@ design.
    benchmark for string append, which does not exist yet, both arms
    measured back to back in one session, and a line in
    `dev/BENCHMARKS.md`.
-3. **Task 9, the interpolated template** — blocked on the RFC, not on
+2. **Task 9, the interpolated template** — blocked on the RFC, not on
    code: where the template flattens is still TBD in
    `rfc/model/strings.md`. That is a design question for Edmond.
 
@@ -90,9 +82,9 @@ and adoption at thread exit). The arena reset traces through
 cross-thread slot memory model that decides whether freeing a displaced
 string must route through epoch-deferred reclamation.
 
-**Task list, in dependency order** (16 items; only 9 and 14 are open —
-the interpolated template, which waits on the RFC, and the rapidhash
-port). This list *is* the task list — the session tool that tracks it
+**Task list, in dependency order** (16 items; only 9 is open — the
+interpolated template, which waits on the RFC). This list *is* the task
+list — the session tool that tracks it
 does not survive a cleared context, so it is rebuilt from here. The
 bump-top growth above is not in this list because it is not a string
 task; it belongs to the memory manager and is written up under
@@ -175,16 +167,38 @@ task; it belongs to the memory manager and is written up under
     one route `buffer_free_longlived_payload` leaves alone. The escape
     ban this replaced lasted a day. Arrays will need the same.
 
-14. **Port rapidhash v3** into `string::hash_bytes`, vendored, constants
-    pinned, with the author's reference test vectors run in CI. That last
-    part is the task: a one-constant divergence between the hash the
-    compiler folds and the one the runtime computes does not crash, it
-    misses. Comes with the seed's home (per process under JIT, per build
-    under AOT), the build-time selection of the function the way the GC
-    strategy is selected, and a test that fails when a seed is left at
-    its default. Until it lands, `hash_bytes` is the FNV-1a that was
-    already there. Decision: `rfc/model/strings.md`, "The hash function
-    is a build-time choice".
+14. ~~**Port rapidhash v3**~~ — done 2026-08-04, in `src/hash/`. The
+    function is transcribed from the header vendored at
+    `vendor/rapidhash/` at a pinned commit, and the part that was the
+    task — proving the transcription — is a table generated from that
+    header, since the author publishes no vectors of his own. Seen
+    failing: one bit inverted in `secret[0]` breaks it at generated
+    length 113.
+
+    **The seed's home came out differently from the sentence above.**
+    That sentence read the split as JIT versus AOT; it is really folding
+    versus not, and the two halves are one question, because a compiler
+    that folds has to know the seed while it compiles. Edmond's call was
+    to make it optional rather than settle it: the `hash-folding` cargo
+    feature, off by default, selects a build-time seed from
+    `LL_HASH_SEED` plus folding, and off selects a per-process seed drawn
+    from the OS plus no folding. Reasoning, including why folding buys
+    one load rather than the multiplies the RFC priced, and why neither
+    arm defends against hash flooding: `dev/DECISIONS.md`, and the RFC
+    section it amended.
+
+    **"The build-time selection of the function" is not built, and
+    deliberately.** There is one function. The second slot the RFC names
+    is HighwayHash for long keys, gated on a length threshold that is a
+    measurement with no number yet, and a selection mechanism with one
+    occupant is a second untested path in the gate. The axis that does
+    exist — `hash-folding` — is selected exactly the way the GC strategy
+    is, so the pattern is in place when the second function arrives.
+
+    **Owed by the compiler, not by this crate:** emitting the program's
+    half of `hash::seed::STAMP` and calling `ll_hash_stamp_matches` at
+    startup. Until that exists, a folding build has nothing checking that
+    the program and the runtime hash alike.
 15. ~~**Resolve `IS_ESCAPEE` against the COW count**~~ — done
     2026-08-04, Edmond's call: build the deep copy. The store barrier
     copies a request-arena COW value into the GC heap when a longer-lived
