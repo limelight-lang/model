@@ -30,13 +30,14 @@ unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
 /// does not exist is a wild read (`rfc/model/gc/rc-walk.md`, "What the
 /// walker traces").
 ///
-/// A reference box (kind 3) is traced through its one Value. Kinds this
-/// crate does not yet produce (String, Array, Box) are skipped, which
-/// is conservative: an omitted source only removes in-edges, so its
-/// targets are pinned as roots. Array tracing must land with Phase C,
-/// before the collector ships — String, WeakRef and Box stay skipped by
-/// design (no out-edge can close a ring / untraceable C payload; a weak
-/// cell's target is deliberately uncounted, `src/weak.rs`).
+/// A reference box (kind 3) is traced through its one Value. Kinds the
+/// crate does not yet produce (Array, Box) are skipped, which is
+/// conservative: an omitted source only removes in-edges, so its targets
+/// are pinned as roots. Array tracing must land with Phase C, before the
+/// collector ships — String, WeakRef and Box stay skipped by design. A
+/// string is a leaf whichever layout it has: its payload is bytes, never
+/// entities, so no out-edge of one can close a ring. (Box: untraceable C
+/// payload; a weak cell's target is deliberately uncounted, `src/weak.rs`.)
 ///
 /// # Safety
 /// `entity` must point to a live entity whose slots are still readable.

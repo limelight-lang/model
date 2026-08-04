@@ -655,6 +655,7 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     const LAZY: u32 = EntityKind::Lazy as u32;
     const REFERENCE: u32 = EntityKind::Reference as u32;
     const WEAKREF: u32 = EntityKind::WeakRef as u32;
+    const STRING: u32 = EntityKind::String as u32;
     let flags = unsafe { crate::refcount::header_flags(entity) };
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
     // Teardown bracket (rc-walk) — see `ll_object_die`; nesting is
@@ -668,6 +669,7 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
             crate::reference::reference_die(entity as *mut crate::reference::LLReference)
         },
         WEAKREF => unsafe { crate::weak::weakref_die(entity as *mut crate::weak::LLWeakRef) },
+        STRING => unsafe { crate::string::string_die(entity as *mut crate::string::LLString) },
         _ => debug_assert!(false, "teardown for an entity kind the crate cannot produce yet"),
     }
     #[cfg(feature = "rc-walk")]

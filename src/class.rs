@@ -31,7 +31,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::intern::LLString;
+use crate::string::LLString;
 use crate::memory::immortal::immortal_alloc;
 
 pub const CLASS_FINAL: u32 = 1 << 0;

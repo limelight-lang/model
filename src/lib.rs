@@ -17,12 +17,14 @@ pub mod promote;
 pub mod refcount;
 pub mod reference;
 pub mod static_block;
+pub mod string;
 pub mod value;
 pub mod walk;
 pub mod weak;
 
 pub use class::{Class, ClassBuilder};
-pub use intern::{LLString, intern, intern_str};
+pub use intern::{intern, intern_str};
+pub use string::LLString;
 pub use memory::{Arena, BlockPool, Heap, LLContext, LimelightAlloc};
 pub use object::Object;
 pub use refcount::{MemoryCategory, RcHeader};

@@ -56,9 +56,14 @@ string must route through epoch-deferred reclamation.
 1. ~~Sweep the contract and list the holes~~ — done 2026-08-03.
 2. ~~Find a home for a sub-mode bit~~ — dropped: the COW flag is the
    layout.
-3. Inline string in the GC heap: allocation, header, lazy hash. Field
-   order is `len` then `hash`, pinned by a layout test. Hash zero means
-   "not computed"; `hash_bytes` must not return a real zero.
+3. ~~Inline string in the GC heap: allocation, header, lazy hash~~ —
+   done 2026-08-04, `src/string.rs`. `ll_string_new` in every category,
+   the layout pinned by a test, the lazy hash with zero as "not
+   computed" and the remap inside `hash_bytes`, `fits` as the single
+   length gate, the `String` arm of `ll_entity_die`, and the walker
+   counting a string as the leaf it is. Not here: the rapidhash port
+   (its own step — it needs the reference test vectors in CI) and the
+   dynamic layout.
 4. String teardown by layout: inline frees its own block, dynamic frees
    the payload too. Both collector configurations.
 5. Separation on write for inline strings, in the rule's order.
