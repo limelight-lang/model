@@ -29,9 +29,13 @@ design.
    benchmark for string append, which does not exist yet, both arms
    measured back to back in one session, and a line in
    `dev/BENCHMARKS.md`.
-2. **Task 9, the interpolated template** — blocked on the RFC, not on
-   code: where the template flattens is still TBD in
-   `rfc/model/strings.md`. That is a design question for Edmond.
+2. **Task 9, the interpolated template** — the RFC is written as of
+   2026-08-05 (rules 1–3 in `rfc/model/strings.md`), so what is left here
+   is the runtime half: the parts table on `Class`, the enumeration a
+   structure-aware consumer reads, and the shared flattening routine.
+   Which shape a site builds is the compiler's decision and there is no
+   compiler, so none of it can be exercised end-to-end yet. Full
+   statement at task 9 below.
 
 **What today changed underneath everything else**, worth knowing before
 touching any of it (all four entries are in `dev/DECISIONS.md`,
@@ -83,7 +87,8 @@ cross-thread slot memory model that decides whether freeing a displaced
 string must route through epoch-deferred reclamation.
 
 **Task list, in dependency order** (16 items; only 9 is open — the
-interpolated template, which waits on the RFC). This list *is* the task
+interpolated template, whose design landed 2026-08-05 and whose runtime
+half is unbuilt). This list *is* the task
 list — the session tool that tracks it
 does not survive a cleared context, so it is rebuilt from here. The
 bump-top growth above is not in this list because it is not a string
@@ -131,8 +136,25 @@ task; it belongs to the memory manager and is written up under
    was not a tail but a live abort the moment `string_die` began freeing
    payloads. Converted to the no-drop-glue cell and disposed explicitly,
    fifth in `ll_thread_exit`'s order (`dev/DECISIONS.md`).
-9. Interpolated template as its own class. Flattening point still TBD in
-   the RFC.
+9. Interpolated template as its own class. **The RFC no longer blocks
+   it**: three rules landed 2026-08-05 (`rfc/model/strings.md`, rules
+   1–3, and `rfc/dev/DECISIONS.md`). A template used once and consumed as
+   a string is never built — the site assembles in one pass. An object
+   exists only where the declared type of the destination is the template
+   interface. The object is `RcHeader | class | Value[n]` with the
+   literal parts as interned immortal strings on the per-site class,
+   parts and values alternating so no offset map is needed.
+
+   **Most of it is the compiler's, not this crate's.** Rules 1 and 2 are
+   codegen decisions — which shape a site builds, and whether it builds
+   one at all — and there is no compiler yet. What `ll-model` owes is the
+   runtime half: a place on `Class` for the parts table, the enumeration
+   the structure-aware consumer reads through, and the one shared
+   flattening routine (sum, allocate once, copy; a non-string value
+   written into the result directly where its length is knowable first;
+   every `__toString` completed before the allocation). None of that
+   needs the compiler to exist, and none of it can be exercised
+   end-to-end until it does.
 10. ~~Documents move with behaviour, in the same commit; `rfc` stays in
     sync~~ — the two corrections owed to the RFC landed 2026-08-04 in
     `rfc` `1fa621c`. `values.md`'s COW rule now separates the immortal
