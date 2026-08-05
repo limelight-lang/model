@@ -8,34 +8,46 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: one string task, and one measurement
+## Next: two open pieces, and a choice between them
 
 Read this first in a fresh session. The string stage is built: 15 of the
 16 tasks below are closed, both critic passes are done and their findings
 fixed, and the gate and Miri are green in both configurations as of
-2026-08-04. The design lives in `rfc/model/strings.md` and
+2026-08-05. The design lives in `rfc/model/strings.md` and
 `rfc/dev/DECISIONS.md`; what follows is the state of the work, not the
 design.
 
-**What to pick up, in the order they are ready:**
+**What landed 2026-08-05**, so that nobody starts it again: the rapidhash
+v3 port with its generated vector table, the seed and the `hash-folding`
+build option with its stamp, the critic pass on all of that, the first
+string benchmark (`benches/strings.rs`), growing a long-lived payload off
+the bump top, and rules 1–3 for the interpolated template in the RFC.
+Commits `ec8d8f6`, `2d6be59`, `12fe843`, `98ca50c`, `c81cdf5`, `3c25db8`,
+`d65ecac`.
 
-1. **Grow a buffer payload in place off the bump top** — `buffers.md`
-   already gives the request arena this trick and
-   `buffer_ensure_longlived` does not have it: it reallocates and copies
-   even when the payload is the last chunk bumped in the current block.
-   The condition is `ptr + capacity == arena.bump` with room left. An
-   append loop on the newest string hits it every time. **This is a
-   speed change**, so it does not land on reasoning: it needs a criterion
-   benchmark for string append, which does not exist yet, both arms
-   measured back to back in one session, and a line in
-   `dev/BENCHMARKS.md`.
-2. **Task 9, the interpolated template** — the RFC is written as of
-   2026-08-05 (rules 1–3 in `rfc/model/strings.md`), so what is left here
-   is the runtime half: the parts table on `Class`, the enumeration a
-   structure-aware consumer reads, and the shared flattening routine.
-   Which shape a site builds is the compiler's decision and there is no
-   compiler, so none of it can be exercised end-to-end yet. Full
-   statement at task 9 below.
+**What to pick up — either, and the choice was left open:**
+
+1. **Task 9's runtime half, the interpolated template.** The RFC is
+   written (rules 1–3), so what is left here is the parts table on
+   `Class`, the enumeration a structure-aware consumer reads, and the
+   shared flattening routine. Which shape a site builds is the
+   compiler's decision and there is no compiler, so none of it can be
+   exercised end-to-end yet. Full statement at task 9 below.
+2. **Reuse an adopted buffer block, not just reclaim it** — the Residual
+   entry below. An adopted block never becomes current and its free list
+   is never consulted, so a block abandoned with one live chunk holds
+   ~64 KiB out of circulation until that chunk dies. `heap.rs` already
+   serves allocations from an adopted block's free list; this is the same
+   thing left undone in `buffer_arena.rs`. Needs no design and no
+   measurement.
+
+**Beyond the string stage** the next real step is design, not code: the
+hashtable — bucket layout and collision strategy — which
+`rfc/model/arrays.md` still calls a future document and without which
+arrays cannot start. It also owes the probe-length backstop that the hash
+stage recorded as unpaid: neither arm of the seed defends against
+collision flooding, and the table is where that defence has to live
+(`dev/DECISIONS.md`, 2026-08-04).
 
 **What today changed underneath everything else**, worth knowing before
 touching any of it (all four entries are in `dev/DECISIONS.md`,
@@ -575,14 +587,19 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
 
 Memory manager, still open:
 
-- [ ] **Grow a long-lived buffer in place off the bump top** — the one
-  optimization the buffer arena is missing, and the second item in the
-  list at the top of this file. `buffer_ensure_longlived` reallocates and
-  copies even when the payload is the last chunk bumped in the current
-  block, while the request arena's `buffer_ensure` extends in place in
-  exactly that case (`rfc/model/memory/buffers.md`). Blocked on a
-  benchmark, not on design: this crate does not land a speed change
-  without one, and there is no string-append bench yet.
+- [x] **Grow a long-lived buffer in place off the bump top** — done
+  2026-08-05, `3c25db8`. `buffer_ensure_longlived` moves the bump when
+  the payload is still the last chunk taken from it, ahead of hole reuse
+  in every pressure mode. **The clock could not resolve it** and the run
+  was void on its own terms — two runs of the same arm disagreed by 4.6%
+  — so the evidence is a count instead: an append loop moves its payload
+  once now and nine times before
+  (`string::tests::an_append_loop_moves_its_payload_once`,
+  `dev/BENCHMARKS.md` 2026-08-05). Accepted on three grounds needing no
+  measurement: less work, no payload free on the growth path and so
+  nothing to park during an epoch, and no chain of holes that never
+  coalesce. `benches/strings.rs` arrived with it and is the harness the
+  next string measurement uses.
 - [ ] **Reuse an adopted block, not just reclaim it** — an adopted buffer
   block never becomes current and its free list is never consulted, so a
   block abandoned with one live chunk holds ~64 KiB out of circulation
