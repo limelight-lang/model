@@ -8,6 +8,63 @@ never edited or deleted.
 
 ---
 
+## 2026-08-05 — one template class, and the site's identity is a static shape
+
+`rfc/model/strings.md` rule 3 gave every interpolation site its own
+generated class carrying the parts table. **Edmond's call, this date:
+one class for all of them**, and what differs per site is a plain
+structure in memory that is never allocated and never freed — a count and
+a pointer to that many interned immortal parts. A class per string
+literal buys nothing: the consumer's declared type is the same interface
+either way, and the site's identity is its parts.
+
+The instance stays an ordinary entity, `RcHeader | class | shape |
+Value[n]`. Its values are exactly what the substitutions produced, so
+they are `Value` boxes rather than pointers: an int or a bool sits in the
+box, a string or an object is a reference the collector must see, and
+Edmond confirmed the second half explicitly — once the template exists it
+is an ordinary object and the collector reads its values.
+
+**What it costs, and it is three places rather than one:** the number of
+values is a property of the instance, not of the class, so the class's box
+runs cannot describe the body, and every walker that strides an object's
+slots needs the branch. `for_each_counted_child` (which teardown,
+promotion and the synchronous collector share) and `sever_counted_slots`
+(the drain's, which needs the lvalue) were the two the first version
+found. The third is `collector::trace_mature`, the concurrent collector's,
+which reads cells relaxed-atomically and therefore keeps its own copy of
+the stride — an independent review found it missing, with a ring through a
+template surviving three epochs while the control ring died. The error was
+conservative (an under-counted in-degree reads as rooted), so it leaked
+rather than freeing early, but it leaked forever.
+
+**What that says about the shape:** a fourth copy of the stride is one
+`git grep` away from existing, and nothing in the type system stops it.
+Two `debug_assert`s now close the states that would make such a walk read
+past the end of an instance — a template class carrying a property, and a
+template built through `ll_object_new`, whose `object_size` is 16 bytes
+and whose shape word would be past the body.
+
+**The factory takes its own references** rather than consuming the
+caller's, and publishes each value through the store barrier instead of
+writing the slot: that is what applies the escape and COW-copy rules, and
+what makes a refusal (a copy that cannot be allocated) reportable. A
+refused build releases what it had already stored and returns null.
+
+**Flattening measures before it allocates**, so a value with no text yet
+stops the whole thing rather than producing a wrong string. Two such
+values exist and each waits on something outside this crate: a float
+needs the language's precision rules, and an object needs `__toString` —
+user code, which rule 3 requires to complete in the measuring pass,
+before the result is allocated, so the call site is already where it will
+have to go. `new_uninit`/`finish_uninit` in `string.rs` are what let the
+result be allocated once and filled in place instead of assembling a
+buffer and copying it in.
+
+**Not built, deliberately:** the C ABI a foreign consumer would read the
+structure through. Edmond's call — there is no consumer until the
+compiler exists, and the signatures would be a guess.
+
 ## 2026-08-05 — a buffer block carries its own cursor, so an adopted block is reused and not just held
 
 The entry of 2026-08-04 below named the debt: an adopted buffer block

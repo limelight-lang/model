@@ -59,6 +59,22 @@ versions live in `docs/history/`, marked at the top.
   question and `string::carry_payload_out_of` answers it — an OS-direct
   run transfers, an in-block payload is copied, and a refused copy
   retains the block instead (`dev/DECISIONS.md`, 2026-08-04).
+- Interpolated string templates: `src/template.rs` — the parts of one
+  interpolation site are a `TemplateShape`, static data the compiler
+  emits once and never frees; the instance is
+  `RcHeader | class | shape | Value[n]`, an ordinary entity under **one**
+  class for every site (`dev/DECISIONS.md`, 2026-08-05, amending
+  `rfc/model/strings.md` rule 3). Because the value count is the
+  instance's and not the class's, **three** walkers branch on
+  `CLASS_TEMPLATE` and read it from the shape: `for_each_counted_child`
+  and `sever_counted_slots` in `object.rs`, and `collector::trace_mature`,
+  which reads cells relaxed-atomically and so keeps its own copy of the
+  slot stride. A walk that strides an object's slots and does not know
+  this is a leak, not a crash — that is what the review found in the
+  third one. `flatten` measures
+  everything, allocates once through `string::new_uninit`, and writes
+  each piece into place; it refuses a float or an object, each waiting on
+  something outside this crate.
 - The hash of a byte string: `src/hash/` — `hash_bytes` is what every
   hashed thing in the runtime goes through (a string's cached hash now,
   array keys later), and it is **rapidhash V3**, ported in

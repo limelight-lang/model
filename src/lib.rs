@@ -19,6 +19,7 @@ pub mod refcount;
 pub mod reference;
 pub mod static_block;
 pub mod string;
+pub mod template;
 pub mod value;
 pub mod walk;
 pub mod weak;

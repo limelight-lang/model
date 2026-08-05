@@ -8,10 +8,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: one open piece, and the design step behind it
+## Next: the hashtable design, and nothing else in this stage
 
-Read this first in a fresh session. The string stage is built: 15 of the
-16 tasks below are closed, both critic passes are done and their findings
+Read this first in a fresh session. The string stage is finished: all 16
+tasks below are closed, both critic passes are done and their findings
 fixed, and the gate and Miri are green in both configurations as of
 2026-08-05. The design lives in `rfc/model/strings.md` and
 `rfc/dev/DECISIONS.md`; what follows is the state of the work, not the
@@ -31,12 +31,10 @@ Residual entry below, and `dev/DECISIONS.md` of that date). It was taken
 first because it can be verified end to end today, and because array
 storage lands in the same arena later.
 
-**What to pick up: task 9's runtime half, the interpolated template.**
-The RFC is written (rules 1–3), so what is left here is the parts table
-on `Class`, the enumeration a structure-aware consumer reads, and the
-shared flattening routine. Which shape a site builds is the compiler's
-decision and there is no compiler, so none of it can be exercised
-end-to-end yet. Full statement at task 9 below.
+**Task 9's runtime half also landed 2026-08-05** (`src/template.rs`),
+which closes the last of the sixteen. What it deliberately does not
+include is at task 9 below: the C ABI for a foreign consumer, and
+flattening a float or an object.
 
 **Beyond the string stage** the next real step is design, not code: the
 hashtable — bucket layout and collision strategy — which
@@ -95,9 +93,8 @@ and adoption at thread exit). The arena reset traces through
 cross-thread slot memory model that decides whether freeing a displaced
 string must route through epoch-deferred reclamation.
 
-**Task list, in dependency order** (16 items; only 9 is open — the
-interpolated template, whose design landed 2026-08-05 and whose runtime
-half is unbuilt). This list *is* the task
+**Task list, in dependency order** (16 items, all closed as of
+2026-08-05). This list *is* the task
 list — the session tool that tracks it
 does not survive a cleared context, so it is rebuilt from here. The
 bump-top growth above is not in this list because it is not a string
@@ -145,25 +142,29 @@ task; it belongs to the memory manager and is written up under
    was not a tail but a live abort the moment `string_die` began freeing
    payloads. Converted to the no-drop-glue cell and disposed explicitly,
    fifth in `ll_thread_exit`'s order (`dev/DECISIONS.md`).
-9. Interpolated template as its own class. **The RFC no longer blocks
-   it**: three rules landed 2026-08-05 (`rfc/model/strings.md`, rules
-   1–3, and `rfc/dev/DECISIONS.md`). A template used once and consumed as
-   a string is never built — the site assembles in one pass. An object
-   exists only where the declared type of the destination is the template
-   interface. The object is `RcHeader | class | Value[n]` with the
-   literal parts as interned immortal strings on the per-site class,
-   parts and values alternating so no offset map is needed.
+9. ~~Interpolated template as its own class — the runtime half~~ — done
+   2026-08-05, `src/template.rs`. The design landed the same day as rules
+   1–3 (`rfc/model/strings.md`), and Edmond amended rule 3 while this was
+   being built: **one class for every site**, with the parts in a static
+   per-site `TemplateShape` that is never allocated and never freed,
+   rather than a generated class per site. The instance is
+   `RcHeader | class | shape | Value[n]`, an ordinary entity; because the
+   value count belongs to the instance, `object.rs`'s two child walkers
+   branch on `CLASS_TEMPLATE` and read it from the shape.
 
-   **Most of it is the compiler's, not this crate's.** Rules 1 and 2 are
-   codegen decisions — which shape a site builds, and whether it builds
-   one at all — and there is no compiler yet. What `ll-model` owes is the
-   runtime half: a place on `Class` for the parts table, the enumeration
-   the structure-aware consumer reads through, and the one shared
-   flattening routine (sum, allocate once, copy; a non-string value
-   written into the result directly where its length is knowable first;
-   every `__toString` completed before the allocation). None of that
-   needs the compiler to exist, and none of it can be exercised
-   end-to-end until it does.
+   Built: the factory (its own references, published through the store
+   barrier, refusal unwound), the walker and teardown branch, and the
+   shared flattening routine — measure, allocate once through
+   `string::new_uninit`, write each piece into place.
+
+   **Left open, each waiting on something outside this crate.** The C ABI
+   a foreign consumer would read the structure through is not written:
+   Edmond's call, since there is no consumer until the compiler exists.
+   Flattening refuses a float (the language's precision rules are
+   undecided) and an object (`__toString` is user code with no call path
+   in the crate); rule 3 puts that call in the measuring pass, so the
+   place it goes is already fixed. Rules 1 and 2 stay the compiler's, so
+   none of this can be exercised end to end yet.
 10. ~~Documents move with behaviour, in the same commit; `rfc` stays in
     sync~~ — the two corrections owed to the RFC landed 2026-08-04 in
     `rfc` `1fa621c`. `values.md`'s COW rule now separates the immortal

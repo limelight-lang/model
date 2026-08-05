@@ -437,6 +437,32 @@ fn trace_mature(
         OBJECT | LAZY => {
             let class = load_cell(entity as usize + 8) as *const crate::class::Class;
             let base = entity as usize;
+
+            // A template's values are counted by its shape, not by its
+            // class (`crate::template`). The shape word is as safe to
+            // chase as the class word, and for the same reason — the
+            // entity is mature — and the shape itself is static data no
+            // mutator writes, so its count needs no atomic read.
+            //
+            // Like the class word, it is recovered from an integer load,
+            // so the shape must live in memory whose address was exposed
+            // as an integer: immortal memory here, the binary's own data
+            // once the compiler emits shapes. Miri reports a dangling
+            // pointer for anything else, and it is right to.
+            if unsafe { (*class).flags } & crate::class::CLASS_TEMPLATE != 0 {
+                let shape = load_cell(base + 16) as *const crate::template::TemplateShape;
+                let n = unsafe { (*shape).value_count } as usize;
+                for i in 0..n {
+                    let cell = base + crate::template::VALUES_OFFSET + i * 16;
+                    let payload = load_cell(cell);
+                    let meta = load_cell(cell + 8);
+                    if (meta >> 8) as u8 & crate::value::VALUE_REFCOUNTED != 0 {
+                        visit(cell, payload, payload as *mut RcHeader);
+                    }
+                }
+                return;
+            }
+
             for run in unsafe { (*class).ptr_runs() } {
                 for i in 0..run.count {
                     let cell = base + (run.offset + i * 8) as usize;
@@ -513,6 +539,72 @@ mod tests {
     use crate::refcount::{ll_release, ll_retain};
     use crate::value::{Tag, Value};
     use std::sync::atomic::AtomicUsize;
+
+    /// The concurrent collector reads cells relaxed-atomically and so
+    /// keeps its own copy of the slot stride — which means a template's
+    /// values, counted by its shape rather than by its class, have to be
+    /// found here too. A class-driven walk finds nothing on a template
+    /// (the class has no runs), and an under-counted in-degree makes the
+    /// target look rooted: a ring through a template would never be
+    /// collected.
+    #[test]
+    fn the_concurrent_tracer_sees_a_templates_values() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("InterpolatedString").template().build();
+        // The shape lives in immortal memory, where a compiler-emitted
+        // one lives: this walk recovers the shape word from a relaxed
+        // integer load, so the address it casts back has to be one that
+        // was exposed as an integer to begin with — Miri says so, and it
+        // is right (`dev/WORKFLOW.md`, provenance).
+        let parts = [crate::intern::intern_str(""), crate::intern::intern_str("")];
+        let shape =
+            crate::memory::immortal::immortal_alloc(size_of::<crate::template::TemplateShape>())
+                as *mut crate::template::TemplateShape;
+        unsafe {
+            shape.write(crate::template::TemplateShape {
+                value_count: 1,
+                parts: parts.as_ptr(),
+            })
+        };
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let held = unsafe {
+            crate::string::ll_string_new(&mut ctx, crate::refcount::MemoryCategory::GcHeap, b"v")
+        };
+        let values = [Value::entity(Tag::String, held as *mut RcHeader)];
+        let t = unsafe {
+            crate::template::ll_template_new(
+                &mut ctx,
+                cls,
+                shape,
+                &values,
+                crate::refcount::MemoryCategory::GcHeap,
+            )
+        };
+
+        let mut seen = Vec::new();
+        trace_mature(
+            t as *mut RcHeader,
+            EntityKind::Object as u32,
+            |_, _, child| seen.push(child),
+        );
+        assert_eq!(
+            seen,
+            vec![held as *mut RcHeader],
+            "the template's value is invisible to the epoch's walk"
+        );
+
+        unsafe {
+            if ll_release(t as *mut RcHeader) {
+                crate::object::ll_entity_die(t as *mut RcHeader);
+            }
+            if ll_release(held as *mut RcHeader) {
+                crate::object::ll_entity_die(held as *mut RcHeader);
+            }
+        }
+        arena.reset(|_| {});
+    }
 
     fn walked_addresses() -> Vec<usize> {
         let mut seen = Vec::new();

@@ -161,6 +161,14 @@ unsafe fn stamp_into(
     size: usize,
     category: MemoryCategory,
 ) -> *mut Object {
+    // A template's size comes from its shape, so this factory would
+    // allocate a body of 16 bytes and every walker would then read the
+    // shape word past the end of it (`crate::template::ll_template_new`
+    // is the one that builds these).
+    debug_assert!(
+        unsafe { (*class).flags } & crate::class::CLASS_TEMPLATE == 0,
+        "a template is built by its own factory, not by the object one"
+    );
     let obj = mem as *mut Object;
 
     // No `DESTRUCTOR_PENDING` here: the flag is set by `object_constructed`.
@@ -355,6 +363,22 @@ pub(crate) unsafe fn for_each_counted_child(
     let cls = unsafe { (*obj).class() };
     let base = obj as *mut u8;
 
+    // A template's children are counted by its shape, because one class
+    // serves every interpolation site and the runs would have to differ
+    // per instance (`crate::template`).
+    if cls.flags & crate::class::CLASS_TEMPLATE != 0 {
+        // The read-only view, and deliberately: `visit` runs `__destruct`
+        // on this path, which is user code that can reach this same
+        // template, and a live `&mut` over its slots across that call
+        // would be the aliasing this walker's contract exists to avoid.
+        for v in unsafe { crate::template::values(base as *const crate::template::Template) } {
+            if v.is_refcounted() {
+                visit(v.entity_ptr());
+            }
+        }
+        return;
+    }
+
     // Pointer runs: bare 8-byte pointers, `NULL` is empty.
     for run in cls.ptr_runs() {
         for i in 0..run.count {
@@ -421,6 +445,21 @@ pub(crate) unsafe fn sever_counted_slots(
     cls: &crate::class::Class,
     displaced: &mut Vec<*mut RcHeader>,
 ) {
+    // The template arm of `for_each_counted_child`, in the walker that
+    // owns the lvalue: same children, found the same way.
+    if cls.flags & crate::class::CLASS_TEMPLATE != 0 {
+        for slot in unsafe { crate::template::values_at(base, cls) } {
+            let v = *slot;
+            if v.is_refcounted() {
+                unsafe {
+                    crate::memory::barrier::write_value_slot(slot as *mut Value, Value::null())
+                };
+                displaced.push(v.entity_ptr());
+            }
+        }
+        return;
+    }
+
     for run in cls.ptr_runs() {
         for i in 0..run.count {
             let slot = unsafe { base.add((run.offset + i * 8) as usize) } as *mut *mut RcHeader;

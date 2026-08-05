@@ -227,6 +227,73 @@ pub(crate) unsafe fn init_at(
     s
 }
 
+/// Reserve an inline string of exactly `len` bytes and hand back its
+/// **memory**, for a caller that assembles the content in place instead
+/// of copying a finished buffer in. Not an entity yet: the header is
+/// unpublished, so nothing can reach it.
+///
+/// Null when the allocation fails or `len` is over [`MAX_LEN`]. Write all
+/// `len` bytes at `mem + size_of::<LLString>()`, then call
+/// [`publish_uninit`] to make it a string. Between the two calls the
+/// memory belongs to the caller alone.
+///
+/// # Safety
+/// `ctx` per [`crate::memory::context::ll_arena_alloc`].
+pub(crate) unsafe fn new_uninit(
+    ctx: *mut LLContext,
+    category: MemoryCategory,
+    len: usize,
+) -> *mut u8 {
+    if !fits(len) {
+        return std::ptr::null_mut();
+    }
+    let size = size_of::<LLString>() + len;
+    let mem = match category {
+        MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },
+        MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
+            crate::memory::heap::entity_alloc(size)
+        },
+        MemoryCategory::Immortal => immortal_alloc(size),
+    };
+    if mem.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe { (&raw mut (*(mem as *mut LLString)).len).write(len as u32) };
+    mem
+}
+
+/// Turn filled [`new_uninit`] memory into a live string: hash it when the
+/// category is one another thread can reach — where the lazy hash is not
+/// available, the rule [`init_at`] applies for the same reason — and
+/// publish the header last, so no walker ever sees a header over bytes
+/// that are not yet written.
+///
+/// # Safety
+/// `mem` came from [`new_uninit`] on this thread with the same
+/// `category`, and every one of its bytes has been written exactly once
+/// since.
+pub(crate) unsafe fn publish_uninit(mem: *mut u8, category: MemoryCategory) -> *mut LLString {
+    let s = mem as *mut LLString;
+    let shared = matches!(
+        category,
+        MemoryCategory::Immortal | MemoryCategory::LongLived
+    );
+    unsafe {
+        let len = (*s).len as usize;
+        let hash = if shared {
+            hash_bytes(std::slice::from_raw_parts(s.add(1) as *const u8, len))
+        } else {
+            0
+        };
+        (&raw mut (*s).hash).write(hash);
+        publish_header(
+            s as *mut RcHeader,
+            RcHeader::new(category, COW | EntityKind::String.to_flags()),
+        );
+    }
+    s
+}
+
 /// Allocate an inline string holding `bytes` in `category`, hash left
 /// lazy.
 ///

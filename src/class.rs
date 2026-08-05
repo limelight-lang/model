@@ -39,6 +39,13 @@ pub const CLASS_ABSTRACT: u32 = 1 << 1;
 pub const CLASS_INTERFACE: u32 = 1 << 2;
 /// The class declares (or inherits) a `__destruct` with side effects.
 pub const CLASS_HAS_DESTRUCTOR: u32 = 1 << 3;
+/// Instances are interpolated-string templates
+/// (`crate::template::Template`): the body is a shape pointer followed by
+/// as many `Value`s as that shape declares, so the counted children are
+/// found through it and not through this class's runs, which are empty.
+/// One class serves every interpolation site, which is why the count
+/// belongs to the instance.
+pub const CLASS_TEMPLATE: u32 = 1 << 4;
 
 /// No `__destruct`.
 pub const NO_DESTRUCT_SLOT: u32 = u32::MAX;
@@ -366,6 +373,13 @@ impl ClassBuilder {
         self
     }
 
+    /// The template class ([`CLASS_TEMPLATE`]). Declares no properties:
+    /// a template's values are counted by its shape, not by this class.
+    pub fn template(mut self) -> Self {
+        self.flags |= CLASS_TEMPLATE;
+        self
+    }
+
     /// Declare a property, in the boolean compatibility shim over the two
     /// common kinds: `true` → a [`SlotKind::Boxed`] slot **with a
     /// default** (starts `null` from the zero-fill, never undef-tracked),
@@ -462,6 +476,14 @@ impl ClassBuilder {
     /// bytes on a failing load costs less than a rollback path that has
     /// no memory to run in.
     pub fn build(&mut self) -> *const Class {
+        // A template's body is its shape's, not this class's, and the
+        // walkers that branch on the flag return before they read a run —
+        // so a property here would be traced by nobody
+        // (`crate::template`).
+        debug_assert!(
+            self.flags & CLASS_TEMPLATE == 0 || self.props.is_empty(),
+            "a template class cannot carry properties"
+        );
         // The interned names come from `intern`, which reports the same
         // way. A null here means one of them was refused earlier, and a
         // class with a nameless property is not worth building.
