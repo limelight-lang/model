@@ -170,6 +170,12 @@ abandoned list at thread exit, adoption on the refill path
 bumped by moving the bump, ahead of hole reuse in every pressure mode —
 an append loop moves its payload once instead of nine times, which the
 clock cannot resolve and a count can (`dev/BENCHMARKS.md`, 2026-08-05).
+Each block carries its own bump cursor, so an adopted block is reused
+and not only held: rotation takes an adopted tail, then any owned tail
+(`resume_owned`), and only then the pool — the reverse of `heap.rs`'s
+order, for a reason worth reading before changing it — while `critical`
+searches the free lists of the whole owned chain under one budget
+(`dev/DECISIONS.md`, 2026-08-05).
 
 Arena reset and promotion: `src/promote.rs` — the fixpoint, the counting
 pass and block retention. Children come from `walk::trace_entity`, so a

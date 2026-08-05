@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: two open pieces, and a choice between them
+## Next: one open piece, and the design step behind it
 
 Read this first in a fresh session. The string stage is built: 15 of the
 16 tasks below are closed, both critic passes are done and their findings
@@ -25,21 +25,18 @@ the bump top, and rules 1–3 for the interpolated template in the RFC.
 Commits `ec8d8f6`, `2d6be59`, `12fe843`, `98ca50c`, `c81cdf5`, `3c25db8`,
 `d65ecac`.
 
-**What to pick up — either, and the choice was left open:**
+**Also landed 2026-08-05**, after the two open pieces were written down
+as a choice: adopted buffer blocks are reused rather than only held (the
+Residual entry below, and `dev/DECISIONS.md` of that date). It was taken
+first because it can be verified end to end today, and because array
+storage lands in the same arena later.
 
-1. **Task 9's runtime half, the interpolated template.** The RFC is
-   written (rules 1–3), so what is left here is the parts table on
-   `Class`, the enumeration a structure-aware consumer reads, and the
-   shared flattening routine. Which shape a site builds is the
-   compiler's decision and there is no compiler, so none of it can be
-   exercised end-to-end yet. Full statement at task 9 below.
-2. **Reuse an adopted buffer block, not just reclaim it** — the Residual
-   entry below. An adopted block never becomes current and its free list
-   is never consulted, so a block abandoned with one live chunk holds
-   ~64 KiB out of circulation until that chunk dies. `heap.rs` already
-   serves allocations from an adopted block's free list; this is the same
-   thing left undone in `buffer_arena.rs`. Needs no design and no
-   measurement.
+**What to pick up: task 9's runtime half, the interpolated template.**
+The RFC is written (rules 1–3), so what is left here is the parts table
+on `Class`, the enumeration a structure-aware consumer reads, and the
+shared flattening routine. Which shape a site builds is the compiler's
+decision and there is no compiler, so none of it can be exercised
+end-to-end yet. Full statement at task 9 below.
 
 **Beyond the string stage** the next real step is design, not code: the
 hashtable — bucket layout and collision strategy — which
@@ -600,12 +597,14 @@ Memory manager, still open:
   nothing to park during an epoch, and no chain of holes that never
   coalesce. `benches/strings.rs` arrived with it and is the harness the
   next string measurement uses.
-- [ ] **Reuse an adopted block, not just reclaim it** — an adopted buffer
-  block never becomes current and its free list is never consulted, so a
-  block abandoned with one live chunk holds ~64 KiB out of circulation
-  until that chunk dies (`dev/DECISIONS.md`, 2026-08-04). `heap.rs`
-  serves allocations from an adopted block's free list; this is the
-  weaker half of what adoption is for.
+- [x] **Reuse an adopted block, not just reclaim it** — done 2026-08-05.
+  The cursor moved into the block header, so an adopted block's tail is
+  resumable: rotation takes an adopted tail, then any owned tail, then
+  the pool, and `critical` searches the free lists of the whole owned
+  chain under one budget. `resume_owned` is the step that keeps a block
+  adopted for a request its tail cannot serve from being looked at once
+  and never again. The order is the reverse of `heap.rs`, and why is in
+  `dev/DECISIONS.md`, 2026-08-05.
 - [ ] Buffer *K* and memory-pressure mode thresholds — **blocked on D**:
   need real workloads. Do not design further on paper (`buffers.md`).
 - [ ] Cross-thread free of long-lived buffers — deferred until a consumer

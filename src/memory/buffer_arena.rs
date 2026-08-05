@@ -10,8 +10,8 @@
 //! - a freed chunk threads `{ next, size }` through its own payload —
 //!   zero metadata on live buffers (minimum chunk is 16 bytes for it);
 //! - `plenty`/`tight` allocation just bumps; `critical` first-fit
-//!   searches at most [`CRITICAL_SEARCH_BOUND`] entries of the current
-//!   block's list;
+//!   searches at most [`CRITICAL_SEARCH_BOUND`] entries across the lists
+//!   of the blocks this arena owns, current first;
 //! - chunks never coalesce (accepted: damage bounded by one block);
 //! - a per-block live count returns fully-emptied blocks to the pool.
 //!
@@ -36,6 +36,13 @@
 //! from which the next thread that needs a block adopts one. Without
 //! that, every block a thread still owned when it died was stranded, and
 //! so was every later cross-thread free posted into it.
+//!
+//! An adopted block is **reused, not merely reclaimed**: its bump cursor
+//! lives in its own header, so the adopter resumes the tail its previous
+//! owner left, and its inherited free list is searched with everything
+//! else the arena owns. A block abandoned with one live chunk would
+//! otherwise hold the other 63 KiB out of circulation until that chunk
+//! died (`dev/DECISIONS.md`, 2026-08-05).
 //!
 //! This arrived on 2026-08-04 with the first entity body that lives
 //! here. Until then the module carried a Phase-1 note deferring it until
@@ -90,6 +97,21 @@ struct BufferBlockPrivate {
     free: *mut FreeChunk,
     /// Next block in its owner's chain.
     owned_next: *mut BufferBlockHeader,
+    /// Where bump allocation in this block stopped: the first byte of
+    /// its unused tail, or the block's end when there is none.
+    ///
+    /// Owned by the block rather than by the arena, which is what lets
+    /// the tail outlive the thread that opened it — an adopter reads it
+    /// and keeps bumping. While the block is its arena's current one the
+    /// arena's own `bump` runs ahead of this field, and
+    /// [`BufferArena::settle_cursor`] settles it at every point the block
+    /// can change hands. `heap.rs` keeps the cursor here too, and keeps no
+    /// second copy — it reads and writes the block's own on every
+    /// allocation, so it has no window where the header is behind; the
+    /// cache here is what buys the bump path one line and costs the
+    /// settling protocol. mimalloc likewise carries a page's `capacity`
+    /// in the page, which is what lets a reclaimed page keep extending.
+    bump: *mut u8,
 }
 
 /// The half a non-owner reads: one word, and it is compared for identity
@@ -155,6 +177,10 @@ static ABANDONED: Mutex<Abandoned> = Mutex::new(Abandoned {
 
 /// Thread-local long-lived buffer arena.
 pub struct BufferArena {
+    /// The current block's cursor, held here while that block is current
+    /// so the allocation path touches one cache line instead of two. The
+    /// block's own [`BufferBlockPrivate::bump`] is the copy that survives
+    /// this arena.
     bump: *mut u8,
     limit: *mut u8,
     current: *mut BufferBlockHeader,
@@ -205,7 +231,7 @@ impl BufferArena {
             }
         }
 
-        if (self.bump.is_null() || (self.remaining()) < size) && !self.rotate_block() {
+        if (self.bump.is_null() || (self.remaining()) < size) && !self.rotate_block(size) {
             // Out of memory: null with a zero grant, so a caller that
             // ignores the pointer cannot mistake the capacity for real.
             return (std::ptr::null_mut(), 0);
@@ -274,11 +300,6 @@ impl BufferArena {
         // `free` may be written from here — they are the owner's, and an
         // emptied block returned from the wrong thread would go back to
         // the pool while the owner still bumps into it.
-
-        // Not ours: post it and touch nothing else. Neither `live` nor
-        // `free` may be written from here — they are the owner's, and an
-        // emptied block returned from the wrong thread would go back to
-        // the pool while the owner still bumps into it.
         if unsafe { (*block).shared.owner.load(Ordering::Relaxed) } != self.id() {
             return unsafe { post_remote(block, ptr, size) };
         }
@@ -301,28 +322,32 @@ impl BufferArena {
         b.free = chunk;
     }
 
-    /// First-fit over the current block's list, bounded by
-    /// [`CRITICAL_SEARCH_BOUND`]. Takes the whole chunk: no splitting,
-    /// the caller keeps the granted capacity.
+    /// First-fit over the free lists of the blocks this arena owns,
+    /// current first, spending at most [`CRITICAL_SEARCH_BOUND`] misses
+    /// across the whole chain. Takes the whole chunk: no splitting, the
+    /// caller keeps the granted capacity.
+    ///
+    /// The chain and not just the current block, because an adopted
+    /// block arrives with the free list of a thread that has exited, and
+    /// that list is the one memory this arena holds and nobody is going
+    /// to ask for again. The budget is shared rather than per block so a
+    /// long chain cannot turn the bounded walk `buffers.md` promises into
+    /// a linear one.
     fn pop_fit(&mut self, size: usize) -> Option<(*mut u8, usize)> {
-        if self.current.is_null() {
-            return None;
+        let mut budget = CRITICAL_SEARCH_BOUND;
+        if let Some(hit) = pop_fit_in(self.current, size, &mut budget) {
+            return Some(hit);
         }
-        let b = unsafe { &mut (*self.current).private };
 
-        let mut prev: *mut *mut FreeChunk = &mut b.free;
-        let mut walked = 0;
-        unsafe {
-            while !(*prev).is_null() && walked < CRITICAL_SEARCH_BOUND {
-                let chunk = *prev;
-                if (*chunk).size >= size {
-                    *prev = (*chunk).next;
-                    b.live += 1;
-                    return Some((chunk as *mut u8, (*chunk).size));
-                }
-                prev = &mut (*chunk).next;
-                walked += 1;
+        let mut block = self.owned;
+        while !block.is_null() && budget > 0 {
+            let next = unsafe { (*block).private.owned_next };
+            if block != self.current
+                && let Some(hit) = pop_fit_in(block, size, &mut budget)
+            {
+                return Some(hit);
             }
+            block = next;
         }
         None
     }
@@ -416,14 +441,26 @@ impl BufferArena {
 
     /// Take over one block from a thread that exited holding chunks, so
     /// its memory comes back into circulation and the frees still being
-    /// posted into it have a collector again. Returns the block, already
-    /// owned and collected, or null when the list is empty.
-    fn adopt(&mut self) -> *mut BufferBlockHeader {
+    /// posted into it have a collector again.
+    ///
+    /// True when the block became this arena's current one, which happens
+    /// when the tail its previous owner left can serve `size`: the
+    /// allocation that triggered the rotation is then served from memory
+    /// this process already holds and no pool block is taken. False when
+    /// there was nothing to adopt, when the block turned out empty and
+    /// went home, or when its tail is too short — the block is owned and
+    /// swept from then on either way, its tail is reachable through
+    /// [`resume_owned`] and its free list through [`pop_fit`].
+    ///
+    /// One block per call: a rotation that adopts a block too full to
+    /// serve it moves on to the rest of the refill path rather than
+    /// walking the list for a better fit.
+    fn adopt(&mut self, size: usize) -> bool {
         let block = {
             let mut list = ABANDONED.lock().unwrap();
             let head = list.head;
             if head.is_null() {
-                return std::ptr::null_mut();
+                return false;
             }
             list.head = unsafe { (*head).private.owned_next };
             head
@@ -439,9 +476,74 @@ impl BufferArena {
         if self.collect_remote(block) {
             // Everything it held was freed while it was ownerless.
             self.retire(block);
-            return std::ptr::null_mut();
+            return false;
         }
-        block
+
+        if tail_of(block) < size {
+            return false;
+        }
+        self.make_current(block);
+        true
+    }
+
+    /// Settle the current block's cursor in its own header, so whoever
+    /// holds the block next resumes where this arena stopped. Called at
+    /// every point the block stops being current: rotation, and hand-over
+    /// at thread exit.
+    fn settle_cursor(&mut self) {
+        if !self.current.is_null() {
+            unsafe { (*self.current).private.bump = self.bump };
+        }
+    }
+
+    /// Make `block` this arena's current one and take up its cursor,
+    /// settling the outgoing block's first.
+    ///
+    /// The single writer of the `current`/`bump`/`limit` triple, so the
+    /// settle can never be forgotten at one of the three sites that hand
+    /// the role over. The assertion is what a stale or foreign cursor
+    /// looks like from here, and the subtraction in [`tail_of`] would
+    /// otherwise wrap into a tail big enough to satisfy any request.
+    fn make_current(&mut self, block: *mut BufferBlockHeader) {
+        let bump = unsafe { (*block).private.bump };
+        let base = block as *mut u8;
+        debug_assert!(
+            bump >= base.wrapping_add(LINE_SIZE)
+                && bump <= base.wrapping_add(crate::memory::block_pool::BLOCK_SIZE),
+            "a block's cursor points outside its own block"
+        );
+
+        self.settle_cursor();
+        self.current = block;
+        self.bump = bump;
+        self.limit = base.wrapping_add(crate::memory::block_pool::BLOCK_SIZE);
+    }
+
+    /// Go back to an owned block whose unused tail can serve `size` and
+    /// make it current. False when none has the room.
+    ///
+    /// Two blocks reach this state. One this arena bumped past because a
+    /// larger request did not fit, and one it adopted whose tail was too
+    /// short for the request that adopted it — an adopted block is
+    /// otherwise looked at once, on the rotation that claimed it, and a
+    /// smaller request later would never see the 63 KiB it came with.
+    ///
+    /// Requires every owned cursor to be settled ([`settle_cursor`]),
+    /// which is what makes the walk read all blocks the same way.
+    ///
+    /// O(blocks this arena owns), on the path that would otherwise take a
+    /// block from the pool — the same trade `collect_owned` makes, on the
+    /// same chain, in the same call.
+    fn resume_owned(&mut self, size: usize) -> bool {
+        let mut block = self.owned;
+        while !block.is_null() {
+            if tail_of(block) >= size {
+                self.make_current(block);
+                return true;
+            }
+            block = unsafe { (*block).private.owned_next };
+        }
+        false
     }
 
     /// Hand this arena's blocks over at thread exit: the empty ones to
@@ -453,6 +555,9 @@ impl BufferArena {
     /// bodies living here the holder can be any thread, so the block has
     /// to stay findable.
     fn hand_over(&mut self) {
+        // The tail of the current block is the one thing here that only
+        // this arena knows; settled now, it is what the adopter resumes.
+        self.settle_cursor();
         self.current = std::ptr::null_mut();
         self.bump = std::ptr::null_mut();
         self.limit = std::ptr::null_mut();
@@ -489,7 +594,7 @@ impl BufferArena {
     /// half-rotated: the previous current block has already gone home by
     /// then, so it must not stay referenced.
     #[must_use]
-    fn rotate_block(&mut self) -> bool {
+    fn rotate_block(&mut self, size: usize) -> bool {
         // Posted frees first: they may have emptied blocks this arena
         // bumped past, and an emptied block is worth more to the pool
         // than a fresh one is to this thread.
@@ -503,13 +608,30 @@ impl BufferArena {
             self.retire(old);
         }
 
-        // Take a block back from a thread that exited holding chunks,
-        // before asking the pool for a new one. It does not become
-        // current: its bump tail stays unused, and the block comes home
-        // whole once its chunks are freed. What adoption buys is that
-        // they *can* be freed — a block with no owner has nobody to
-        // collect the frees still being posted into it.
-        self.adopt();
+        // The old current stops being current here whatever comes next,
+        // so its cursor is settled before anything reads the chain: from
+        // this line on, every owned block's tail is in its own header.
+        self.settle_cursor();
+
+        // Adoption before this arena's own tails, which is the opposite
+        // of `heap.rs`, where a block with room is found in `available`
+        // and the abandoned list is reached only when there is none. The
+        // reason to differ: a block with no owner has nobody to collect
+        // the frees still being posted into it, and every rotation is one
+        // pickup, so the number of ownerless blocks cannot grow with a
+        // thread that keeps finding room in its own. The price is that a
+        // busy arena accumulates foreign blocks it can never empty, and
+        // pays their length on each of the three chain walks a rotation
+        // makes (`dev/DECISIONS.md`, 2026-08-05).
+        if self.adopt(size) {
+            return true;
+        }
+
+        // Then the tails already in hand, including the one just adopted
+        // for a request it could not serve.
+        if self.resume_owned(size) {
+            return true;
+        }
 
         let block = BlockPool::global().get() as *mut BufferBlockHeader;
         if block.is_null() {
@@ -528,6 +650,7 @@ impl BufferArena {
                     live: 0,
                     free: std::ptr::null_mut(),
                     owned_next: std::ptr::null_mut(),
+                    bump: (block as *mut u8).wrapping_add(LINE_SIZE),
                 },
                 shared: BufferBlockShared {
                     owner: AtomicPtr::new(id),
@@ -554,6 +677,46 @@ impl Drop for BufferArena {
     fn drop(&mut self) {
         self.hand_over();
     }
+}
+
+/// Bytes between a block's settled cursor and its end. Meaningful for
+/// any block whose cursor is settled, which is every owned block except
+/// the current one ([`BufferArena::settle_cursor`]).
+fn tail_of(block: *mut BufferBlockHeader) -> usize {
+    let end = (block as *mut u8).wrapping_add(crate::memory::block_pool::BLOCK_SIZE) as usize;
+    end - unsafe { (*block).private.bump } as usize
+}
+
+/// First-fit within one block's free list, spending at most `budget`
+/// misses and decrementing it by what was spent. Null block, or an empty
+/// list, is a miss that costs nothing.
+///
+/// A free function because it needs no arena state: the block it works on
+/// is whichever the caller is walking, current or not.
+fn pop_fit_in(
+    block: *mut BufferBlockHeader,
+    size: usize,
+    budget: &mut usize,
+) -> Option<(*mut u8, usize)> {
+    if block.is_null() {
+        return None;
+    }
+    let b = unsafe { &mut (*block).private };
+
+    let mut prev: *mut *mut FreeChunk = &mut b.free;
+    unsafe {
+        while !(*prev).is_null() && *budget > 0 {
+            let chunk = *prev;
+            if (*chunk).size >= size {
+                *prev = (*chunk).next;
+                b.live += 1;
+                return Some((chunk as *mut u8, (*chunk).size));
+            }
+            prev = &mut (*chunk).next;
+            *budget -= 1;
+        }
+    }
+    None
 }
 
 /// Post a chunk to the block's cross-thread stack: one CAS loop, and
@@ -931,9 +1094,12 @@ mod tests {
             if unsafe { (*block).private.kind } == 0 {
                 break;
             }
-            if next.adopt().is_null() && ABANDONED.lock().unwrap().head.is_null() {
+            if ABANDONED.lock().unwrap().head.is_null() {
                 break;
             }
+            // Zero, because what is being tested is the collect-and-retire
+            // half of adoption, not whether the tail fits a request.
+            next.adopt(0);
         }
         unsafe { assert_eq!((*block).private.kind, 0, "adopted, collected, and home") };
     }
@@ -972,12 +1138,183 @@ mod tests {
         // And it is genuinely back in the pool, not merely restamped: the
         // next taker on this thread gets that same block.
         let mut second = BufferArena::new();
-        let (p2, _) = second.alloc(8);
+        let (p2, g2) = second.alloc(8);
         assert_eq!(
             BlockHeader::of_ptr(p2),
             block,
             "the returned block went home to the pool"
         );
+
+        // Freed, or `second` dies holding it and the block joins the
+        // global abandoned list, where every later test's rotation adopts
+        // it — with a live chunk this suite can never account for.
+        unsafe { second.free(p2, g2) };
+    }
+
+    /// What adoption is worth is the tail the dead thread left, not only
+    /// the collector it gives the block back: the allocation that
+    /// triggered the rotation is served from the adopted block, and the
+    /// pool is not asked for a fresh one.
+    ///
+    /// The lower bound on the served address is the load-bearing half —
+    /// it is what says the resumed cursor stopped where the dead thread
+    /// stopped, and did not hand out the live chunk it was abandoned for.
+    ///
+    /// Reads the head of the global abandoned list directly, so a test
+    /// that leaves a block on it breaks this one. That is the intent:
+    /// nothing else in the suite notices a leaked buffer block.
+    #[test]
+    fn adoption_resumes_the_tail_when_it_fits_the_request() {
+        let _g = crate::memory::block_pool::test_guard();
+
+        let (chunk, size) = {
+            let mut dying = BufferArena::new();
+            dying.alloc(48)
+        };
+        let abandoned = BufferBlockHeader::of_ptr(chunk);
+
+        let mut heir = BufferArena::new();
+        assert!(heir.adopt(1024), "63 KiB of tail can serve 1 KiB");
+        assert_eq!(
+            heir.current, abandoned,
+            "a tail that fits makes its block current"
+        );
+
+        let (served, _) = heir.alloc(1024);
+        assert_eq!(BufferBlockHeader::of_ptr(served), abandoned);
+        assert!(
+            served >= chunk.wrapping_add(size),
+            "the resumed cursor handed out the live chunk it was abandoned for"
+        );
+
+        unsafe {
+            heir.free(served, 1024);
+            heir.free(chunk, size);
+        }
+    }
+
+    /// An adopted block is looked at again on later rotations, which is
+    /// what keeps its tail from being lost to the one request that
+    /// happened to trigger the adoption. Here that request is a whole
+    /// block payload, which no inherited tail can serve.
+    #[test]
+    fn an_adopted_tail_serves_the_request_after_the_one_that_adopted_it() {
+        let _g = crate::memory::block_pool::test_guard();
+
+        let (chunk, size) = {
+            let mut dying = BufferArena::new();
+            dying.alloc(48)
+        };
+        let abandoned = BufferBlockHeader::of_ptr(chunk);
+
+        let mut heir = BufferArena::new();
+        // Adopts the block, cannot use it, and exhausts a fresh one.
+        let (filler, filler_size) = heir.alloc(BLOCK_PAYLOAD);
+        assert_ne!(BufferBlockHeader::of_ptr(filler), abandoned);
+
+        let (served, _) = heir.alloc(1024);
+        assert_eq!(
+            BufferBlockHeader::of_ptr(served),
+            abandoned,
+            "the second rotation took a fresh block and left the adopted tail unused"
+        );
+        assert!(
+            served >= chunk.wrapping_add(size),
+            "the resumed cursor handed out the live chunk it was abandoned for"
+        );
+
+        unsafe {
+            heir.free(served, 1024);
+            heir.free(chunk, size);
+            heir.free(filler, filler_size);
+        }
+    }
+
+    /// The bound on the `critical` walk is one budget for the whole chain,
+    /// not one per block: a fitting hole behind a current block whose list
+    /// has already spent the budget is not reached, and the allocation
+    /// bumps instead.
+    ///
+    /// Pinning a miss looks backwards until the alternative is written
+    /// out: a per-block budget makes the search cost grow with the number
+    /// of blocks the arena owns, and an arena that keeps adopting owns
+    /// more of them the longer it lives.
+    #[test]
+    fn the_critical_search_budget_covers_the_whole_chain() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut a = BufferArena::new();
+
+        // Fill one block exactly, then rotate off it and free a chunk
+        // there: a fitting hole in a block that is no longer current.
+        let quarter = BLOCK_PAYLOAD / 4;
+        let filling: Vec<_> = (0..4).map(|_| a.alloc(quarter)).collect();
+        let (keeper, keeper_size) = a.alloc(64);
+        let first = BufferBlockHeader::of_ptr(filling[0].0);
+        assert_ne!(BufferBlockHeader::of_ptr(keeper), first, "rotated off it");
+        unsafe { a.free(filling[0].0, filling[0].1) };
+
+        // Exactly the budget's worth of misses on the current block.
+        let smalls: Vec<_> = (0..CRITICAL_SEARCH_BOUND).map(|_| a.alloc(16)).collect();
+        for &(p, g) in &smalls {
+            unsafe { a.free(p, g) };
+        }
+
+        set_pressure_mode(PressureMode::Critical);
+        let (served, granted) = a.alloc(quarter);
+        set_pressure_mode(PressureMode::Plenty);
+        assert_ne!(
+            BufferBlockHeader::of_ptr(served),
+            first,
+            "the budget was spent on the current block and refilled for the next"
+        );
+
+        unsafe {
+            a.free(served, granted);
+            a.free(keeper, keeper_size);
+            for &(p, g) in &filling[1..] {
+                a.free(p, g);
+            }
+        }
+    }
+
+    /// The free list an adopted block arrives with is memory nobody is
+    /// going to ask for again, so `critical` mode has to reach it — and
+    /// the block holding it is not the current one, which is the case the
+    /// bounded search used to miss by construction.
+    #[test]
+    fn critical_mode_reuses_a_hole_in_an_adopted_block() {
+        let _g = crate::memory::block_pool::test_guard();
+
+        let (keeper, keeper_size, hole, hole_size) = {
+            let mut dying = BufferArena::new();
+            let (keeper, keeper_size) = dying.alloc(64);
+            let (hole, hole_size) = dying.alloc(256);
+            unsafe { dying.free(hole, hole_size) };
+            (keeper, keeper_size, hole, hole_size)
+        };
+
+        let mut heir = BufferArena::new();
+        // A request no tail can serve, so the block is adopted without
+        // becoming current: its inherited list is what is under test.
+        assert!(!heir.adopt(BLOCK_PAYLOAD));
+        assert!(
+            heir.current.is_null(),
+            "adopted, and not as the current block"
+        );
+
+        set_pressure_mode(PressureMode::Critical);
+        let (served, granted) = heir.alloc(256);
+        set_pressure_mode(PressureMode::Plenty);
+        assert_eq!(
+            served, hole,
+            "an inherited hole must serve a fitting request"
+        );
+        assert_eq!(granted, hole_size, "the whole chunk is granted, no split");
+
+        unsafe {
+            heir.free(served, granted);
+            heir.free(keeper, keeper_size);
+        }
     }
 
     #[test]
@@ -999,7 +1336,7 @@ mod tests {
         let mut a = BufferArena::new();
 
         let (p, g) = a.alloc(128);
-        let (_live, _) = a.alloc(64); // keeps the block non-empty
+        let (live, live_size) = a.alloc(64); // keeps the block non-empty
         unsafe { a.free(p, g) };
 
         set_pressure_mode(PressureMode::Plenty);
@@ -1012,6 +1349,14 @@ mod tests {
         assert_eq!(r, q, "critical must pop the fitting hole");
         assert_eq!(granted, 128, "the whole chunk is granted, no split");
         set_pressure_mode(PressureMode::Plenty);
+
+        // Freed, or this arena dies holding chunks and its block goes to
+        // the abandoned list, where the next test's rotation adopts it —
+        // block identity is what several tests here assert.
+        unsafe {
+            a.free(r, granted);
+            a.free(live, live_size);
+        }
     }
 
     #[test]

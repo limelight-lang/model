@@ -8,6 +8,85 @@ never edited or deleted.
 
 ---
 
+## 2026-08-05 — a buffer block carries its own cursor, so an adopted block is reused and not just held
+
+The entry of 2026-08-04 below named the debt: an adopted buffer block
+never became current and `pop_fit` consulted only the current block, so
+neither its tail nor its inherited free list served an allocation, and a
+block abandoned with one 16-byte chunk held the other 63 KiB until that
+chunk died. Both halves are paid here, and the objection that entry
+raised — "resuming a foreign bump would mean storing the cursor in the
+header and trusting it across an owner's death" — turned out to be
+answered already. The adopter reads `live`, `free` and `owned_next` of
+the same header across the same death; the cursor is one more field of
+the same kind, and what orders it is the abandoned list's lock — the
+dying owner settles the cursor before taking the lock to post the block,
+the adopter reads it after taking the same lock. (The `Release` store of
+`owner` in `adopt` is the adopter's own and orders nothing against the
+previous owner; an earlier draft of this entry offered it as half the
+proof.) `heap.rs` has kept its blocks' cursors this way since
+2026-07-26, and mimalloc, whose model that heap follows, keeps a page's
+`capacity` in the page for exactly this reason: a reclaimed page is
+pushed straight into the new owner's queue and extends further
+(`src/page.c`, `_mi_page_reclaim`; verified against the vendored source
+of `libmimalloc-sys` 0.1.49).
+
+**Decided:** `BufferBlockPrivate` gains `bump`, the block's own cursor.
+The arena keeps caching it while the block is current — the allocation
+path still touches one line — and `settle_cursor` writes it back wherever
+the block can change hands, which is rotation and hand-over. Adoption
+then takes the request's size: if the adopted tail fits, the block
+becomes current and the pool is not asked at all.
+
+**A second look at an owned block was needed:** `resume_owned`, which
+goes back to any owned block whose tail fits. Without it a block adopted
+for a request its tail could not serve is looked at once and never again,
+and the 63 KiB stays out of circulation exactly as before — the first
+version of this change had that hole, and the test written for the
+ordinary case (adopt on a large request, need a small one next) is what
+showed it.
+
+**The order is adopt, then own tails, then the pool — the opposite of
+`heap.rs`, deliberately.** `heap.rs` finds a block with room in
+`available` and reaches the abandoned list only when there is none;
+stated the other way round in an earlier draft of this entry, which read
+`alloc_no_block` as the whole path instead of its cold tail. The reason
+to differ here: an ownerless block has nobody to collect the frees still
+being posted into it, and one pickup per rotation keeps that population
+from growing while a thread keeps finding room in its own blocks. The
+price, worth naming because nothing measures it yet: a busy arena
+accumulates foreign blocks it can never empty, and a rotation walks the
+owned chain three times — `collect_owned`, `resume_owned`, and `pop_fit`
+in `critical`.
+
+**The free list follows the same rule:** `critical` mode searches the
+lists of all owned blocks, current first, with `CRITICAL_SEARCH_BOUND`
+misses as one budget for the whole chain rather than per block, so the
+bounded walk `buffers.md` promises stays bounded as the chain grows.
+`plenty`/`tight` still never consult holes; the tail, unlike a hole, is
+served in every mode, because bumping into it is what bump allocation
+already is.
+
+**Regressions**, one per claim, each seen failing with its own branch
+neutered and only its own: the adopted tail serves the request that
+adopted it (`adoption_resumes_the_tail_when_it_fits_the_request`); the
+tail of a block adopted for a request it could not serve serves the next
+one (`an_adopted_tail_serves_the_request_after_the_one_that_adopted_it`);
+an inherited hole in a non-current block serves a fitting request in
+`critical` (`critical_mode_reuses_a_hole_in_an_adopted_block`); and a
+hole behind a current block whose list has spent the budget is not
+reached (`the_critical_search_budget_covers_the_whole_chain`).
+
+**A leak in the tests surfaced with it.** Allocation addresses now depend
+on what other tests left on the global abandoned list, and two tests that
+follow one named block started failing in the suite while passing alone.
+The cause was one missing `free` in a third test, whose arena died
+holding a chunk; the first repair was scaffolding that drained the list
+for the affected tests, which would have absorbed the next leak just as
+quietly. The leak is fixed instead, and the two tests that read the list
+directly now fail when one appears — the only place in the suite where a
+stranded buffer block is visible at all.
+
 ## 2026-08-04 — the critic pass on the hash stage: the stamp did not separate the pair it existed for
 
 Seven findings against the entry below, all above the hash function
