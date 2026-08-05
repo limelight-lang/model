@@ -166,6 +166,10 @@ heap's ownership rules**: per-block `owner`, per-block lock-free stack
 for frees from other threads, owner-written `live`, hand-over to a global
 abandoned list at thread exit, adoption on the refill path
 (`dev/DECISIONS.md`, 2026-08-04; `rfc/model/memory/buffers.md`).
+`buffer_ensure_longlived` grows a payload that is still the last chunk
+bumped by moving the bump, ahead of hole reuse in every pressure mode —
+an append loop moves its payload once instead of nine times, which the
+clock cannot resolve and a count can (`dev/BENCHMARKS.md`, 2026-08-05).
 
 Arena reset and promotion: `src/promote.rs` — the fixpoint, the counting
 pass and block retention. Children come from `walk::trace_entity`, so a

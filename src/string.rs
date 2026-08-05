@@ -452,9 +452,10 @@ fn stored_capacity(granted: usize) -> u32 {
 }
 
 /// Grow `payload` to hold `min_capacity`, through whichever half of the
-/// buffer machinery the category calls for: the request arena extends at
-/// its bump top when it can, everything else is alloc-new, copy,
-/// free-old. False on refusal, with the buffer untouched.
+/// buffer machinery the category calls for. Both halves extend at their
+/// own bump top when the payload is still the last chunk taken from it,
+/// and fall back to alloc-new, copy, free-old. False on refusal, with the
+/// buffer untouched.
 ///
 /// # Safety
 /// `ctx` per [`crate::memory::context::ll_arena_alloc`].
@@ -1176,10 +1177,54 @@ mod tests {
         arena.reset(|_| {});
     }
 
-    /// The hash is a function of the content and of nothing else, so the
-    /// two layouts holding the same bytes hash the same. Computing it
-    /// through the inline accessor on a dynamic string would hash the
-    /// `data` field — an address — and this is the assertion that says so.
+    /// An append loop on a GC-heap string moves its payload once — for the
+    /// first allocation — and never again.
+    ///
+    /// The buffer arena extends a payload that is still the last chunk it
+    /// bumped, and this is what says that the string path reaches that,
+    /// rather than only the arena's own unit test. Measured both ways on
+    /// 2026-08-05: one move with the in-place path, nine without it, for
+    /// the same 256 appends of 16 bytes.
+    ///
+    /// Nine moves are nine copies of everything written so far, which is
+    /// the cost this exists to keep at one. The benchmark could not resolve
+    /// the difference (`dev/BENCHMARKS.md`), so the count is the evidence,
+    /// not the clock.
+    #[test]
+    fn an_append_loop_moves_its_payload_once() {
+        let _g = crate::memory::block_pool::test_guard();
+        let s =
+            unsafe { ll_string_new_dynamic(std::ptr::null_mut(), MemoryCategory::GcHeap, b"", 0) };
+        assert!(!s.is_null());
+
+        let chunk = [b'x'; 16];
+        let mut moves = 0;
+        let mut last = unsafe { (*s).data };
+        for _ in 0..256 {
+            assert!(unsafe { ll_string_append(std::ptr::null_mut(), s, &chunk) });
+            let now = unsafe { (*s).data };
+            if now != last {
+                moves += 1;
+                last = now;
+            }
+        }
+
+        assert_eq!(moves, 1, "the payload was reallocated instead of extended");
+        assert_eq!(unsafe { (*s).len }, 256 * 16);
+        assert!(
+            unsafe { LLStringDynamic::bytes(s) }
+                .iter()
+                .all(|&b| b == b'x'),
+            "extending in place must not disturb what was written"
+        );
+
+        unsafe {
+            if ll_release(s as *mut RcHeader) {
+                crate::object::ll_entity_die(s as *mut RcHeader);
+            }
+        }
+    }
+
     /// The empty string is the one content on which the two layouts do not
     /// merely differ in where the bytes live — the dynamic one has no
     /// payload at all and returns its slice without reading `data`, which
@@ -1223,6 +1268,10 @@ mod tests {
         }
     }
 
+    /// The hash is a function of the content and of nothing else, so the
+    /// two layouts holding the same bytes hash the same. Computing it
+    /// through the inline accessor on a dynamic string would hash the
+    /// `data` field — an address — and this is the assertion that says so.
     #[test]
     fn the_two_layouts_hash_the_same_content_the_same() {
         let _g = crate::memory::block_pool::test_guard();

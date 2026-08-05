@@ -100,6 +100,53 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-05 — growing a long-lived buffer off the bump top: no resolvable difference
+
+`buffer_ensure_longlived` now extends a payload in place when it is still
+the last chunk the buffer arena bumped, instead of allocating a new one,
+copying and freeing the old. The request arena has had this since it was
+written; the long-lived side did not (`rfc/model/memory/buffers.md`).
+
+**It works, and the clock cannot see it.**
+
+| arm | `append_256x16_gcheap` |
+|---|---|
+| A — reallocate and copy | 1.4285 µs |
+| B — extend in place | 1.4355 µs |
+| B, repeated | 1.3693 µs |
+| A, control | 1.4046 µs |
+
+Criterion defaults, release, rc-walk, one sitting, first run discarded
+(1.503 µs). `append_256x16_arena` beside it moved 1.2707–1.3024 µs across
+the same four runs and is not affected by the change either way.
+
+**The run is void by this file's own rule and would be void whatever it
+showed:** two runs of the *same* arm B disagree by 4.6%, which is wider
+than the 1.5–3% recorded elsewhere here and wider than any effect being
+looked for. Nothing separates the arms.
+
+**What replaces the measurement is a count.** `string::tests::`
+`an_append_loop_moves_its_payload_once` counts payload moves over 256
+appends of 16 bytes: **one with the in-place path, nine without it.**
+Eight of those nine are a copy of everything written so far — 16, 32, 64
+… up to 2 KiB — and they are gone. That the wall clock does not show it
+means the copies were never what the loop spent its time on: 256 calls
+each doing a 16-byte `memcpy` plus the append's own bookkeeping dominate.
+
+**Accepted anyway**, on three grounds that need no measurement. It
+removes work rather than adding any, so the arm that cannot be resolved
+is the one doing less. It removes a payload free from the growth path,
+and a payload freed during a collector epoch has to park
+(`memory::deferred_free`) — a payload that never moves has nothing to
+park. And it removes the fragmentation that hole reuse would produce on
+this shape: holes never coalesce here, so a moving append loop leaves a
+chain of them at 64, 128, 256 bytes, each too small for the step that
+follows.
+
+**Where it would show, unmeasured:** a bigger payload, where the copies
+grow linearly while the per-append work does not. Nothing in this crate
+builds one yet.
+
 ## 2026-08-04 — first string benchmark: a baseline, not a comparison
 
 `benches/strings.rs`, new. The crate had no string or hash benchmark at

@@ -217,6 +217,48 @@ impl BufferArena {
         (p, size)
     }
 
+    /// Grow the chunk at `ptr` from `old_size` to `new_size` without
+    /// moving it, when it is the last one bumped and the block has room.
+    /// False when it is not, and nothing is changed then.
+    ///
+    /// The condition is `ptr + old_size == bump`, which also establishes
+    /// that the chunk is in the current block and owned by this thread:
+    /// `bump` points into `current`, and a chunk in any other block, or
+    /// one this arena does not own, cannot be adjacent to it.
+    ///
+    /// `live` is untouched — one chunk before, one chunk after. So is the
+    /// free list: nothing is released here, which is the second thing this
+    /// path is worth. The growth it replaces frees the old payload, and a
+    /// payload freed during a collector epoch has to park
+    /// (`deferred_free`); a payload that never moves has nothing to park.
+    ///
+    /// # Safety
+    /// `(ptr, old_size)` must be exactly one live allocation of this arena.
+    pub unsafe fn try_grow_in_place(
+        &mut self,
+        ptr: *mut u8,
+        old_size: usize,
+        new_size: usize,
+    ) -> bool {
+        // The same rounding `alloc` applied on the way in, so the
+        // adjacency test compares what was really handed out.
+        let old_size = round_up_8(old_size).max(MIN_CHUNK);
+        let new_size = round_up_8(new_size).max(MIN_CHUNK);
+
+        if new_size > BLOCK_PAYLOAD || ptr.wrapping_add(old_size) != self.bump {
+            return false;
+        }
+
+        // checked_add: the same overflow discipline as `alloc`.
+        match (ptr as usize).checked_add(new_size) {
+            Some(new_end) if new_end <= self.limit as usize => {
+                self.bump = new_end as *mut u8;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Free a chunk previously handed out by [`alloc`] on this thread.
     /// `size` must be the granted capacity (the owner tracks it as the
     /// buffer's `capacity` anyway) — the zero-metadata contract.
@@ -603,10 +645,10 @@ pub fn dispose() {
 
 // --- Long-lived growth over the arena -------------------------------------
 
-/// Long-lived counterpart of `buffer_ensure`: no bump-top trick (no
-/// arena reset will save us), growth is alloc-new + copy + free-old.
-/// Size routing per `rfc/model/memory/buffers.md`: payloads over a
-/// block payload are OS-direct.
+/// Long-lived counterpart of `buffer_ensure`: extend off the bump top
+/// when the payload is the last chunk bumped, otherwise alloc-new + copy
+/// + free-old. Size routing per `rfc/model/memory/buffers.md`: payloads
+/// over a block payload are OS-direct.
 pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usize) -> *mut u8 {
     if buf.capacity >= min_capacity {
         return buf.data;
@@ -617,6 +659,21 @@ pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usiz
         min_capacity,
         hint,
     ));
+
+    // An append loop on the newest buffer hits this every time: nothing
+    // has been bumped since, so the payload is still at the top and the
+    // growth costs a pointer store instead of an allocation and a copy of
+    // everything written so far. Refused for an OS-direct payload, whose
+    // block header is not a buffer block's, and for one that is not
+    // adjacent to the bump — where the reallocating path below is right.
+    if !buf.data.is_null()
+        && target <= BLOCK_PAYLOAD
+        && buf.capacity <= BLOCK_PAYLOAD
+        && with_buffer_arena(|a| unsafe { a.try_grow_in_place(buf.data, buf.capacity, target) })
+    {
+        buf.capacity = round_up_8(target).max(MIN_CHUNK);
+        return buf.data;
+    }
 
     let (new_data, granted) = if target <= BLOCK_PAYLOAD {
         with_buffer_arena(|a| a.alloc(target))
@@ -997,8 +1054,15 @@ mod tests {
         unsafe { a.free(chunks[4].0, chunks[4].1) };
     }
 
+    /// A payload with something allocated after it is not at the bump top,
+    /// so growth has to move it — allocate, copy, free the old chunk — and
+    /// the chunk it leaves behind is a hole that `critical` mode reuses.
+    ///
+    /// The spacer is what puts the payload off the top. Without it this
+    /// grows in place and there is no old chunk to recycle, which is the
+    /// case the test below covers instead.
     #[test]
-    fn longlived_growth_copies_and_recycles_old_payload() {
+    fn a_payload_off_the_bump_top_moves_and_leaves_a_reusable_hole() {
         let _g = crate::memory::block_pool::test_guard();
         let mut b = Buffer::new();
 
@@ -1006,20 +1070,59 @@ mod tests {
         unsafe { std::ptr::copy_nonoverlapping(b"payload".as_ptr(), b.data, 7) };
         b.len = 7;
         let old = b.data;
+        let old_capacity = b.capacity;
+
+        let (spacer, spacer_size) = with_buffer_arena(|a| a.alloc(64));
+        assert!(!spacer.is_null());
 
         set_pressure_mode(PressureMode::Critical);
         let grow_to = b.capacity + 1;
         buffer_ensure_longlived(&mut b, grow_to, 0);
-        assert_ne!(b.data, old, "long-lived growth always moves");
+        assert_ne!(b.data, old, "a payload off the bump top has to move");
         assert_eq!(unsafe { std::slice::from_raw_parts(b.data, 7) }, b"payload");
 
         // The old chunk is a hole now: a fitting alloc must find it.
-        let (p, _) = with_buffer_arena(|a| a.alloc(64));
+        let (p, _) = with_buffer_arena(|a| a.alloc(old_capacity));
         assert_eq!(p, old, "old payload must be reusable in critical mode");
         set_pressure_mode(PressureMode::Plenty);
 
         unsafe { buffer_release_longlived(&mut b) };
-        with_buffer_arena(|a| unsafe { a.free(p, 64) });
+        with_buffer_arena(|a| unsafe {
+            a.free(p, old_capacity);
+            a.free(spacer, spacer_size);
+        });
+    }
+
+    /// A payload that is still the last thing bumped grows by moving the
+    /// bump, and the bytes already written stay where they are.
+    ///
+    /// This is the case an append loop is in on every iteration, and it is
+    /// worth a test of its own because the alternative — reallocate and
+    /// copy — is correct, passes every other assertion in this file, and
+    /// costs a copy of everything written so far on each step.
+    #[test]
+    fn a_payload_at_the_bump_top_grows_without_moving() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut b = Buffer::new();
+
+        buffer_ensure_longlived(&mut b, 64, 0);
+        unsafe { std::ptr::copy_nonoverlapping(b"payload".as_ptr(), b.data, 7) };
+        b.len = 7;
+        let first = b.data;
+
+        for step in 0..4 {
+            let before = b.capacity;
+            buffer_ensure_longlived(&mut b, before + 1, 0);
+            assert_eq!(b.data, first, "step {step}: nothing was allocated after it");
+            assert!(b.capacity > before, "step {step}: no room was gained");
+        }
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(b.data, 7) },
+            b"payload",
+            "extending in place does not touch what was written"
+        );
+
+        unsafe { buffer_release_longlived(&mut b) };
     }
 
     #[test]
