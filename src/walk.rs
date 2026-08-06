@@ -344,11 +344,20 @@ unsafe fn sever_component(members: &[*mut RcHeader]) -> Vec<*mut RcHeader> {
                 crate::object::sever_counted_children(m as *mut Object, &mut displaced)
             },
             REFERENCE => {
-                // A reference member severs its one Value the same way.
+                // A reference member severs its one Value the same way,
+                // and through the same helper: this store runs on the
+                // mutator while an epoch may be live, and the collector
+                // reads this very cell as a relaxed atomic
+                // (`collector::trace_mature`'s Reference arm). A plain
+                // 16-byte write against that load is a mixed-atomicity
+                // race, which is why `reference_die` has always gone
+                // through `write_value_slot` for the identical store.
                 let r = m as *mut crate::reference::LLReference;
                 let v = unsafe { (*r).value };
                 if v.is_refcounted() {
-                    unsafe { (*r).value = Value::null() };
+                    unsafe {
+                        crate::memory::barrier::write_value_slot(&raw mut (*r).value, Value::null())
+                    };
                     displaced.push(v.entity_ptr());
                 }
             }
