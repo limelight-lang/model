@@ -8,7 +8,52 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: the COW doors, and the publish-first repair that must ride with them
+## Urgent, ahead of everything: the GC's walk exists in copies
+
+Edmond's ruling, 2026-08-06, and it outranks every item below including the COW
+doors. **For the GC an object, an array and a string are almost the same
+thing**, so an algorithm written once for an object has to handle every other
+kind. The generalization he asks for takes `*mut RcHeader` at the entrance.
+
+The kind *dispatch* is not the debt — `walk::trace_entity` and
+`ll_entity_die` already take a bare header. The debt is the **slot walk**:
+where a kind keeps its counted children is written out again in every
+operation that needs it, so one layout is known in five places.
+`object::for_each_counted_child` yields children by plain reads;
+`object::sever_counted_slots` strides the same slots again for the lvalue, with
+a doc saying it is deliberately not folded into the first;
+`collector::trace_mature` strides them a third time with relaxed loads, and
+already yields cell addresses, so it is the closest of the three to the general
+shape; `array::entity::for_each_counted_child` and `Table::sever_entries` are
+the same pair over again for the array.
+
+This is debt rather than taste, and the repository has already paid twice. The
+interpolated template moved its value count from the class to the instance and
+**three** walkers had to learn it, the third found late by review. The array was
+wired into the child walkers and not into the sever, and a confirmed-garbage
+ring of two arrays was un-freeable in both configurations until `144b318`.
+
+The work is: inventory every copy and every kind-shaped dispatch, name the SOLID
+violations against this code rather than in the abstract, and design one walk
+that serves tracing, severing and the concurrent trace alike. The nuances that
+have to survive it are known and are not objections to it: `trace_mature` reads
+concurrently with relaxed atomics and cannot use the ordinary accessors, the
+store barrier stays the only writer of a published slot, clearing an array cell
+means a hole rather than a null and an integer-keyed entry has no key cell at
+all, and the child walkers are `#[inline]` and generic precisely so no caller
+pays an indirect call per child (`rfc/model/classes.md`, "Why tracing stays
+data").
+
+**Items 11 and 12 wait on this**, and the reasoning is that both *add arms* to
+doors this refactor may delete: written now they are written twice, and item
+12's arm is itself the third copy of the walk. A Fable pass is directing the
+design and the order of the steps.
+
+This supersedes item 13, whose earlier proposal — exhaustive matches, `const fn`
+predicates and a `specimen` registry — the critic showed would not have caught
+any of the misses, every door having had a legal-looking arm already.
+
+## Then: the COW doors, and the publish-first repair that must ride with them
 
 Three live defects found by the second critic pass of 2026-08-06 are
 closed (`2e55036`, `144b318`, `f56a035`); the section **"What the second
