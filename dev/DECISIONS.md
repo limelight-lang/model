@@ -8,6 +8,42 @@ never edited or deleted.
 
 ---
 
+## 2026-08-06 — an oversized immortal allocation takes an OS-direct run instead of aborting
+
+`immortal_alloc` routed anything above one block payload into an `assert!`,
+justified as a caller bug: immortal entities are class metadata and interned
+strings, and those are small. That reading holds only while no caller forwards
+input, and the release profile is `panic = "abort"`, so the assert kills the
+worker rather than raising. Two callers falsify the premise. A class's
+`[Class][vtbl][itables]` train has no size bound. And `intern` would forward an
+attacker-shaped length the moment the RFC's runtime-interning arm were taken —
+that arm is now dropped (`rfc/model/classes.md`, "A runtime-built name is
+matched, never interned"), but this crate must not depend on a document to stay
+memory-safe.
+
+**The shape.** A request above `BLOCK_PAYLOAD` takes an OS-direct run aligned to
+`BLOCK_SIZE`, with its payload at `+LINE_SIZE` like every other block, so
+`BlockHeader::of_ptr` still finds a header carrying `BLOCK_KIND_IMMORTAL`. It
+carries no size field: it is never freed, `ll_free` on an immortal pointer is
+already a no-op, and nothing enumerates immortal blocks. It does not touch the
+bump region either — a huge entity must not abandon the remainder of the current
+block behind it.
+
+**An old test was replaced, not muted.** `oversized_immortal_is_a_caller_bug`
+pinned the abort and is gone, because the behaviour it pinned is the defect.
+Two tests replace it and both were seen failing on the old `assert!` first: the
+run is readable and writable end to end under the right block kind, and it leaves
+the bump cursor undisturbed. Gate green in both configurations, three threaded
+runs each; Miri silent under the workflow's `-Zmiri-ignore-leaks`, which the
+immortal region needs by construction.
+
+**Cost.** An oversized immortal entity rounds up to whole blocks, so a 65 KB
+entity occupies 128 KB. Immortal memory is never reclaimed, so that waste is
+permanent — acceptable for metadata allocated once at link time, and the reason
+the path is `#[cold]`.
+
+---
+
 ## 2026-08-05 — one template class, and the site's identity is a static shape
 
 `rfc/model/strings.md` rule 3 gave every interpolation site its own
