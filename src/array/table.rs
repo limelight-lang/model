@@ -23,6 +23,8 @@
 //! obligation for arrays). An implementer reaching for a pointer here
 //! would break promotion silently.
 
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
 use crate::array::entry::{Entry, MAX_ENTRIES, NONE};
 use crate::memory::block_pool::BLOCK_PAYLOAD;
 use crate::memory::buffer_arena::{buffer_alloc_longlived_payload, buffer_free_longlived_payload};
@@ -133,7 +135,11 @@ fn storage_bytes(nslots: usize, cap: usize) -> Option<usize> {
 /// The ordered hash. Holds no header of its own: the entity wrapper that
 /// owns it supplies the `RcHeader`, the class pointer and the COW state.
 pub struct Table {
-    storage: *mut u8,
+    /// Published atomically because the concurrent collector reads it
+    /// while this thread writes it: a plain write against a relaxed load
+    /// is a data race, which is undefined behaviour rather than the torn
+    /// value the epoch is built to absorb.
+    storage: AtomicPtr<u8>,
     /// Bytes really granted for `storage`, which is not always what was
     /// asked for: a reused buffer-arena chunk may be larger, and the free
     /// that returns it carries the size, since a chunk holds no metadata
@@ -142,17 +148,30 @@ pub struct Table {
     /// never free — the request arena and the immortal region — this holds
     /// the requested size and nothing reads it.
     storage_capacity: usize,
-    nslots: usize,
+    /// Atomic for the same reason as `storage`; the entries begin
+    /// `nslots * 4` bytes into the chunk, so a walker needs both.
+    nslots: AtomicUsize,
     mask: usize,
     cap: usize,
     /// Entries written so far, holes included. Iteration and the arena
-    /// reset's tracer both scan `0..used`.
-    used: usize,
+    /// reset's tracer both scan `0..used`. Atomic, and **published after
+    /// the entry it counts is written**: a reader that saw the count
+    /// first would read an entry nobody had written yet.
+    used: AtomicUsize,
     /// Live entries.
     live: usize,
     holes: usize,
     salt: u64,
     category: MemoryCategory,
+    /// Bumped twice by every operation that moves entries — growth and
+    /// compaction — odd while the move is in progress. A concurrent
+    /// walker reads it, then `storage`, `nslots` and `used`, then reads it
+    /// again, and starts over unless both readings are the same even
+    /// number. That is the whole bound on walking a table that a mutator
+    /// is rearranging: a stale-but-coherent view of the entries is a
+    /// missed edge, which the epoch's later phases repair, while an
+    /// incoherent one is an edge that never existed, which nothing does.
+    version: AtomicUsize,
     /// Set once, one way, when the flood backstop fires on equal full
     /// hashes: from then on a string key's slot comes from a keyed hash
     /// over its bytes rather than from the cached hash at +16.
@@ -163,12 +182,13 @@ impl Table {
     /// An empty table with no storage. The first insert allocates.
     pub const fn empty(category: MemoryCategory, salt: u64) -> Self {
         Table {
-            storage: std::ptr::null_mut(),
+            storage: AtomicPtr::new(std::ptr::null_mut()),
             storage_capacity: 0,
-            nslots: 0,
+            nslots: AtomicUsize::new(0),
             mask: 0,
             cap: 0,
-            used: 0,
+            used: AtomicUsize::new(0),
+            version: AtomicUsize::new(0),
             live: 0,
             holes: 0,
             salt,
@@ -204,7 +224,62 @@ impl Table {
     /// iteration scan to.
     #[inline]
     pub fn used(&self) -> usize {
-        self.used
+        self.used.load(Ordering::Relaxed)
+    }
+
+    /// Publish the entry count. **Called after the entry it counts is
+    /// written**, never before: a walker that saw the count first would
+    /// read an entry nobody had written.
+    #[inline]
+    fn set_used(&self, n: usize) {
+        self.used.store(n, Ordering::Release);
+    }
+
+    /// The storage chunk, or null before the first insert.
+    #[inline]
+    fn storage(&self) -> *mut u8 {
+        self.storage.load(Ordering::Relaxed)
+    }
+
+    /// Publish the storage chunk. Release, so a walker that acquires this
+    /// pointer sees the entries already copied into it.
+    #[inline]
+    fn set_storage(&self, p: *mut u8) {
+        self.storage.store(p, Ordering::Release);
+    }
+
+    /// Open a window in which entries move. The version goes odd, and a
+    /// walker that sees an odd reading — or two different readings around
+    /// its own — starts over (`PLAN.md`, item 12).
+    #[inline]
+    fn begin_entry_move(&self) {
+        let v = self.version.load(Ordering::Relaxed);
+        self.version.store(v + 1, Ordering::Release);
+    }
+
+    /// Close it. Even again, and everything the move wrote is published
+    /// before the walker can accept the reading.
+    #[inline]
+    fn end_entry_move(&self) {
+        let v = self.version.load(Ordering::Relaxed);
+        self.version.store(v + 1, Ordering::Release);
+    }
+
+    /// The version a walker validates its reading against.
+    #[inline]
+    pub(crate) fn version(&self) -> usize {
+        self.version.load(Ordering::Acquire)
+    }
+
+    /// Index slots before the dense entry array.
+    #[inline]
+    fn nslots(&self) -> usize {
+        self.nslots.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn set_nslots(&self, n: usize) {
+        self.nslots.store(n, Ordering::Release);
     }
 
     /// The storage and the bytes granted for it, or a null pointer when
@@ -215,8 +290,8 @@ impl Table {
     /// over the storage is a method here — this hands out the address, not
     /// the right to walk it.
     #[inline]
-    pub(crate) fn storage(&self) -> (*mut u8, usize) {
-        (self.storage, self.storage_capacity)
+    pub(crate) fn storage_and_capacity(&self) -> (*mut u8, usize) {
+        (self.storage(), self.storage_capacity)
     }
 
     /// Carry this table's storage out of `arena`, which is about to
@@ -260,7 +335,7 @@ impl Table {
             MemoryCategory::RequestArena,
             "only an arena table is carried out of a reset"
         );
-        if self.storage.is_null() {
+        if self.storage().is_null() {
             self.category = MemoryCategory::GcHeap;
             return true;
         }
@@ -272,7 +347,7 @@ impl Table {
             // leaks — the safe direction — while reporting a refusal would
             // send the caller into stamping `BLOCK_KIND_RETAINED` over the
             // run's own header.
-            let forgotten = unsafe { (*arena).forget_large(self.storage) };
+            let forgotten = unsafe { (*arena).forget_large(self.storage()) };
             debug_assert!(forgotten, "an OS-direct storage the arena never logged");
             self.category = MemoryCategory::GcHeap;
             return true;
@@ -290,8 +365,8 @@ impl Table {
             self.category = MemoryCategory::GcHeap;
             return false;
         }
-        unsafe { std::ptr::copy_nonoverlapping(self.storage, fresh, self.storage_capacity) };
-        self.storage = fresh;
+        unsafe { std::ptr::copy_nonoverlapping(self.storage(), fresh, self.storage_capacity) };
+        self.set_storage(fresh);
         self.storage_capacity = granted;
         self.category = MemoryCategory::GcHeap;
         true
@@ -299,24 +374,24 @@ impl Table {
 
     #[inline]
     fn slots(&self) -> *mut u32 {
-        self.storage as *mut u32
+        self.storage() as *mut u32
     }
 
     #[inline]
     fn entries(&self) -> *mut Entry {
-        unsafe { self.storage.add(entries_offset(self.nslots)) as *mut Entry }
+        unsafe { self.storage().add(entries_offset(self.nslots())) as *mut Entry }
     }
 
     /// The entry at `i`. Callers hold `i < used`.
     #[inline]
     pub fn entry(&self, i: usize) -> &Entry {
-        debug_assert!(i < self.used);
+        debug_assert!(i < self.used());
         unsafe { &*self.entries().add(i) }
     }
 
     #[inline]
     fn entry_mut(&mut self, i: usize) -> &mut Entry {
-        debug_assert!(i < self.used);
+        debug_assert!(i < self.used());
         unsafe { &mut *self.entries().add(i) }
     }
 
@@ -376,7 +451,7 @@ impl Table {
 
     /// The value under `key`, or `None`.
     pub fn get(&self, key: Key) -> Option<&Value> {
-        if self.storage.is_null() {
+        if self.storage().is_null() {
             return None;
         }
         let sh = self.slot_hash(key);
@@ -414,7 +489,7 @@ impl Table {
             Key::Int(k) => k as u64,
             Key::Str(s) => unsafe { LLString::hash(s) },
         };
-        if !self.storage.is_null() {
+        if !self.storage().is_null() {
             let mut i = unsafe { *self.slots().add(sh as usize & self.mask) };
             while i != NONE {
                 let matched = Self::entry_matches(self.entry(i as usize), key);
@@ -441,16 +516,20 @@ impl Table {
         }
         let sh = self.slot_hash(key);
 
-        if self.used == self.cap && !self.grow() {
+        if self.used() == self.cap && !self.grow() {
             return None;
         }
 
         let slot = sh as usize & self.mask;
-        let k = self.used;
-        self.used += 1;
+        let k = self.used();
         let head = unsafe { *self.slots().add(slot) };
-        {
-            let e = self.entry_mut(k);
+        // **The entry is written before the count that admits it.** A
+        // concurrent walker reads `used` to bound its stride, so a count
+        // published first offers it an entry nobody has written yet. That
+        // is also why this goes through the raw entry pointer rather than
+        // `entry_mut`, which asserts the index is already inside the count.
+        unsafe {
+            let e = &mut *self.entries().add(k);
             match key {
                 Key::Int(v) => e.set_int_key(v),
                 // `stored_hash`, not `sh`: the entry holds the key's own
@@ -463,6 +542,7 @@ impl Table {
             e.value = value;
             e.next = head;
         }
+        self.set_used(k + 1);
         unsafe { *self.slots().add(slot) = k as u32 };
         self.live += 1;
         Some((true, None))
@@ -472,7 +552,7 @@ impl Table {
     /// Unlinking leaves nothing behind: the chain is genuinely shorter,
     /// which is the property an open-addressed index cannot have.
     pub fn remove(&mut self, key: Key) -> Option<Value> {
-        if self.storage.is_null() {
+        if self.storage().is_null() {
             return None;
         }
         let sh = self.slot_hash(key);
@@ -511,7 +591,7 @@ impl Table {
     /// entity wrapper, and this returns whether a compaction happened so
     /// the wrapper can act on it.
     fn grow(&mut self) -> bool {
-        if self.storage.is_null() {
+        if self.storage().is_null() {
             return self.realloc_storage(8);
         }
         // Zend's rule: reclaim holes rather than doubling when they are
@@ -530,8 +610,15 @@ impl Table {
     /// Returns the number of entries that moved, which is what an
     /// iterator repair needs.
     pub fn compact(&mut self) -> usize {
+        self.begin_entry_move();
+        let moved = self.compact_entries();
+        self.end_entry_move();
+        moved
+    }
+
+    fn compact_entries(&mut self) -> usize {
         let mut w = 0usize;
-        for r in 0..self.used {
+        for r in 0..self.used() {
             if self.entry(r).is_hole() {
                 continue;
             }
@@ -542,16 +629,16 @@ impl Table {
             }
             w += 1;
         }
-        let moved = self.used - w;
-        self.used = w;
+        let moved = self.used() - w;
+        self.set_used(w);
         self.holes = 0;
         self.rebuild_index();
         moved
     }
 
     fn rebuild_index(&mut self) {
-        unsafe { std::ptr::write_bytes(self.slots(), 0xFF, self.nslots) };
-        for k in 0..self.used {
+        unsafe { std::ptr::write_bytes(self.slots(), 0xFF, self.nslots()) };
+        for k in 0..self.used() {
             // Holes are skipped rather than linked: a hole's `key` field
             // is a sentinel, not a string, so reading bytes through it in
             // strong mode would dereference 1.
@@ -586,24 +673,26 @@ impl Table {
         if mem.is_null() {
             return false;
         }
-        let old_storage = self.storage;
+        self.begin_entry_move();
+        let old_storage = self.storage();
         let old_capacity = self.storage_capacity;
-        let old_used = self.used;
+        let old_used = self.used();
         let old_entries = if old_storage.is_null() {
             std::ptr::null_mut()
         } else {
             self.entries()
         };
 
-        self.storage = mem;
+        self.set_storage(mem);
         self.storage_capacity = granted;
-        self.nslots = nslots;
+        self.set_nslots(nslots);
         self.mask = nslots - 1;
         self.cap = cap;
         if !old_entries.is_null() {
             unsafe { std::ptr::copy_nonoverlapping(old_entries, self.entries(), old_used) };
         }
         self.rebuild_index();
+        self.end_entry_move();
         self.free_storage(old_storage, old_capacity);
         true
     }
@@ -660,7 +749,7 @@ impl Table {
     /// zero over an entry array of holes is a contradiction anything
     /// reading it would act on.
     pub(crate) fn sever_entries(&mut self, displaced: &mut Vec<*mut RcHeader>) {
-        for i in 0..self.used {
+        for i in 0..self.used() {
             let e = self.entry_mut(i);
             if e.is_hole() {
                 continue;
@@ -677,7 +766,7 @@ impl Table {
             }
         }
         self.live = 0;
-        self.holes = self.used;
+        self.holes = self.used();
     }
 
     /// Release storage the table has replaced. Only the long-lived
@@ -715,7 +804,7 @@ impl Table {
     /// The caller retains the box for its own holder; this leaves the
     /// element's reference to it at the count the factory gave.
     pub fn make_ref(&mut self, key: Key) -> *mut crate::reference::LLReference {
-        if self.storage.is_null() {
+        if self.storage().is_null() {
             return std::ptr::null_mut();
         }
         let sh = self.slot_hash(key);
@@ -753,7 +842,7 @@ impl Table {
             return;
         }
         self.strong = true;
-        if !self.storage.is_null() {
+        if !self.storage().is_null() {
             self.rebuild_index();
         }
     }
@@ -769,7 +858,7 @@ impl Table {
             .salt
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        if !self.storage.is_null() {
+        if !self.storage().is_null() {
             self.rebuild_index();
         }
     }
@@ -787,7 +876,7 @@ impl Table {
     /// the sixteen bytes the store barrier writes, precisely so that an
     /// ordinary value store cannot destroy it.
     pub fn for_each_value(&self, mut f: impl FnMut(&Value)) {
-        for k in 0..self.used {
+        for k in 0..self.used() {
             let e = self.entry(k);
             if !e.is_hole() {
                 f(&e.value);
@@ -798,7 +887,7 @@ impl Table {
     /// The same, with the elements mutable — what a walker that rewrites
     /// references needs.
     pub fn for_each_value_mut(&mut self, mut f: impl FnMut(&mut Value)) {
-        for k in 0..self.used {
+        for k in 0..self.used() {
             if self.entry(k).is_hole() {
                 continue;
             }
@@ -809,7 +898,7 @@ impl Table {
     /// Every string key that is a live entity, in insertion order. Keys
     /// are counted children too: a table holds a reference to each.
     pub fn for_each_string_key(&self, mut f: impl FnMut(*mut LLString)) {
-        for k in 0..self.used {
+        for k in 0..self.used() {
             let e = self.entry(k);
             if e.is_hole() {
                 continue;
@@ -827,14 +916,14 @@ impl Table {
     /// collector, so the entity wrapper walks and releases them first and
     /// then calls this. Nothing here reads a value.
     pub fn dispose(&mut self) {
-        let p = self.storage;
+        let p = self.storage();
         let capacity = self.storage_capacity;
-        self.storage = std::ptr::null_mut();
+        self.set_storage(std::ptr::null_mut());
         self.storage_capacity = 0;
-        self.nslots = 0;
+        self.set_nslots(0);
         self.mask = 0;
         self.cap = 0;
-        self.used = 0;
+        self.set_used(0);
         self.live = 0;
         self.holes = 0;
         self.free_storage(p, capacity);
@@ -844,7 +933,7 @@ impl Table {
     /// all, which is why the choice of index layer does not affect
     /// `foreach`.
     pub fn iter(&self) -> impl Iterator<Item = &Entry> {
-        (0..self.used)
+        (0..self.used())
             .map(|i| self.entry(i))
             .filter(|e| !e.is_hole())
     }
@@ -892,6 +981,35 @@ mod tests {
         assert!(!m.contains(Key::Int(1)));
         assert_eq!(m.used(), 0);
         let _ = ctx();
+    }
+
+    /// Every operation that moves entries has to be visible to a walker
+    /// that is reading them, and the version is how: odd while the move
+    /// runs, changed afterwards. A walker validates its reading of
+    /// `storage`, `nslots` and `used` against two readings of this
+    /// (`PLAN.md`, item 12).
+    #[test]
+    fn moving_the_entries_shows_up_as_a_version_change() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        let at_rest = m.version();
+        assert_eq!(at_rest % 2, 0, "a table nobody is rearranging reads even");
+
+        // Enough inserts to cross several growths.
+        for i in 0..200i64 {
+            assert!(m.insert(Key::Int(i), Value::int(i)).is_some());
+        }
+        let after_growth = m.version();
+        assert!(after_growth > at_rest, "growth moved entries silently");
+        assert_eq!(after_growth % 2, 0, "the window was left open");
+
+        m.compact();
+        let after_compaction = m.version();
+        assert!(
+            after_compaction > after_growth,
+            "compaction moved entries silently, and it does not change `storage`"
+        );
+        assert_eq!(after_compaction % 2, 0, "the window was left open");
     }
 
     #[test]
@@ -1028,7 +1146,7 @@ mod tests {
         // Longest chain: with the mix this is a handful; indexing by the
         // key's low bits would put all 512 in one bucket.
         let mut longest = 0usize;
-        for slot in 0..m.nslots {
+        for slot in 0..m.nslots() {
             let mut n = 0usize;
             let mut i = unsafe { *m.slots().add(slot) };
             while i != NONE {
@@ -1202,7 +1320,7 @@ mod tests {
         assert!(m.is_strong());
 
         let mut longest = 0usize;
-        for slot in 0..m.nslots {
+        for slot in 0..m.nslots() {
             let mut n = 0usize;
             let mut i = unsafe { *m.slots().add(slot) };
             while i != NONE {
@@ -1383,8 +1501,8 @@ mod tests {
         for i in 0..500i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
-        let base = m.0.storage as usize;
-        let bytes = super::storage_bytes(m.0.nslots, m.0.cap).unwrap();
+        let base = m.0.storage() as usize;
+        let bytes = super::storage_bytes(m.0.nslots(), m.0.cap).unwrap();
         for k in 0..m.used() {
             let e = m.entry(k);
             for word in [e.hash_or_key, e.key as u64, e.value.as_int() as u64] {
@@ -1416,7 +1534,7 @@ mod tests {
 
         let mut m = Table::empty(MemoryCategory::GcHeap, 0x243F_6A88_85A3_08D3);
         m.insert(Key::Int(1), Value::int(1));
-        let storage = m.storage;
+        let storage = m.storage();
         let capacity = m.storage_capacity;
         assert!(!storage.is_null());
         assert!(
@@ -1459,7 +1577,7 @@ mod tests {
             "the table never grew past one block, so this proves nothing"
         );
 
-        let kind = unsafe { *(((m.0.storage as usize) & !BLOCK_MASK) as *const u32) };
+        let kind = unsafe { *(((m.0.storage() as usize) & !BLOCK_MASK) as *const u32) };
         assert_eq!(
             kind, BLOCK_KIND_LARGE_RUN,
             "a storage larger than a block is a run of blocks, which is what \
@@ -1484,7 +1602,7 @@ mod tests {
 
         let mut m = t();
         m.insert(Key::Int(1), Value::int(1));
-        let storage = m.0.storage as usize;
+        let storage = m.0.storage() as usize;
 
         // A `Table` holds raw pointers, so it is not `Send` by inference.
         // Handing one to another thread to die on is the case the buffer

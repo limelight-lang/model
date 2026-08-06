@@ -284,7 +284,7 @@ pub(crate) unsafe fn sever_counted_children(a: *mut LLArray, displaced: &mut Vec
 /// # Safety
 /// `a` must be a live array entity.
 pub(crate) unsafe fn storage_address(a: *mut LLArray) -> *mut u8 {
-    unsafe { (*a).table.storage().0 }
+    unsafe { (*a).table.storage_and_capacity().0 }
 }
 
 /// Bring a surviving array's storage out of the arena that is about to
@@ -629,7 +629,7 @@ mod tests {
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, value as *mut RcHeader),
             );
-            let (storage, capacity) = (*a).table.storage();
+            let (storage, capacity) = (*a).table.storage_and_capacity();
             assert!(
                 !storage.is_null(),
                 "the insert allocated storage to release"
@@ -693,7 +693,7 @@ mod tests {
         let inner = arr();
         unsafe {
             (*inner).table.insert(Key::Int(1), Value::int(1));
-            let (storage, capacity) = (*inner).table.storage();
+            let (storage, capacity) = (*inner).table.storage_and_capacity();
             assert!(!storage.is_null(), "the inner array has storage to reclaim");
 
             // The inner array's only reference is the outer array's

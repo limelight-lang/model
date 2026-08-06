@@ -729,7 +729,7 @@ mod tests {
             crate::array::entity::storage_address(array)
         };
         assert!(
-            unsafe { (*array).table.storage().1 } > BLOCK_PAYLOAD,
+            unsafe { (*array).table.storage_and_capacity().1 } > BLOCK_PAYLOAD,
             "the table never grew past one block, so this proves nothing"
         );
 

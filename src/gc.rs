@@ -1298,7 +1298,7 @@ mod tests {
                 Value::entity(Tag::Object, obj as *mut RcHeader),
             );
             ll_retain(obj as *mut RcHeader);
-            (*a).table.storage()
+            (*a).table.storage_and_capacity()
         };
         assert!(!storage.is_null(), "the insert allocated storage to lose");
 
