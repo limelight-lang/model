@@ -119,8 +119,12 @@ versions live in `docs/history/`, marked at the top.
   `entity.rs` is the wrapper supplying the `RcHeader`: an array carries no
   class pointer, the same construction as a string, because the entity
   kind already says what it is. Its children — elements **and** string
-  keys — come from one walk, `entity::for_each_counted_child`, which both
-  `ll_entity_die`'s Array arm and `walk::trace_entity` go through; the
+  keys — come from the one tracing stride, `walk::trace_cells`' Array arm,
+  which reads the entries through `Table::coherent_entries`: a version
+  counter brackets growth and compaction, and a walker that cannot get a
+  coherent reading skips the array for that epoch rather than striding a
+  fresh count over a stale chunk. `entity::for_each_counted_child` is an
+  adapter over it, and `ll_entity_die`'s Array arm goes through that; the
   release side uses the barrier's `drop_ref`, so a child the array held
   last is torn down rather than only decremented. An arena array that
   survives a reset **takes its storage with it**, the same two routes a

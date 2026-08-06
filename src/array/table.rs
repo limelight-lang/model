@@ -115,6 +115,13 @@ fn pow2ge(n: usize) -> usize {
     p
 }
 
+/// How many times a walker re-reads a table whose entries keep moving
+/// before it gives up on this epoch. Small on purpose: growth and
+/// compaction are rare, so a second disagreement means the walker is
+/// unlucky rather than starved, and giving up leaks one epoch's worth
+/// rather than freeing anything early.
+const COHERENT_READ_ATTEMPTS: usize = 4;
+
 /// Byte offset of the entry array inside a storage block of `nslots`
 /// index slots. The entries are 8-aligned, and `nslots` is a power of two
 /// of at least 2, so the slot array is already a multiple of 8.
@@ -263,6 +270,58 @@ impl Table {
     fn end_entry_move(&self) {
         let v = self.version.load(Ordering::Relaxed);
         self.version.store(v + 1, Ordering::Release);
+    }
+
+    /// The dense entry array and how many entries it holds, read
+    /// coherently, or `None` when the mutator kept moving them.
+    ///
+    /// The three words a walker needs — the chunk, the offset the entries
+    /// start at, and how many there are — are written independently, so a
+    /// walker that read them one by one could stride a fresh count over a
+    /// stale chunk. Growth would be caught by comparing the chunk address
+    /// before and after; compaction would not, because it slides live
+    /// entries down *inside the same chunk*. Hence the version: odd while
+    /// entries move, and changed across any move that completed.
+    ///
+    /// **`None` is safe and leaks rather than frees early.** An entity the
+    /// walk does not enumerate becomes a root source — its out-edges land
+    /// in `RC` and never in `IN` — so its children are computed roots and
+    /// survive one more epoch (`rfc/model/gc/retained-block-walk.md`, the
+    /// derived-roots corollary). That is what makes a bounded retry the
+    /// right answer rather than an unbounded one.
+    ///
+    /// # Safety
+    /// The table is live. Under a concurrent mutator every word this reads
+    /// is atomic; nothing else in the table may be read here.
+    pub(crate) unsafe fn coherent_entries(t: *const Table) -> Option<(*mut Entry, usize)> {
+        // Raw pointers per field, never a `&Table`: a shared reference
+        // would retag the whole struct, and the mutator is writing the
+        // words beside these — `mask`, `cap`, `live` — with ordinary
+        // stores. Only the four atomics below may be read here.
+        let version = unsafe { &(*t).version };
+        let storage_word = unsafe { &(*t).storage };
+        let nslots_word = unsafe { &(*t).nslots };
+        let used_word = unsafe { &(*t).used };
+        for _ in 0..COHERENT_READ_ATTEMPTS {
+            let before = version.load(Ordering::Acquire);
+            if before % 2 != 0 {
+                continue;
+            }
+            let storage = storage_word.load(Ordering::Relaxed);
+            let nslots = nslots_word.load(Ordering::Relaxed);
+            let used = used_word.load(Ordering::Relaxed);
+            if version.load(Ordering::Acquire) != before {
+                continue;
+            }
+            if storage.is_null() {
+                return Some((std::ptr::null_mut(), 0));
+            }
+            return Some((
+                unsafe { storage.add(entries_offset(nslots)) } as *mut Entry,
+                used,
+            ));
+        }
+        None
     }
 
     /// The version a walker validates its reading against.
@@ -471,6 +530,17 @@ impl Table {
         self.get(key).is_some()
     }
 
+    /// **The caller publishes its references before it inserts.** The
+    /// entry is written raw and this counts nothing, so between the write
+    /// and the caller's retain the table names a child no reference backs.
+    /// While nothing walked an array concurrently that window was
+    /// invisible; the tracer reads one now, and a phantom in-edge pushes
+    /// the key toward looking unrooted. `barrier::store_category_barrier`
+    /// is the operation to publish through — it takes an already-retained
+    /// reference and returns the entity the entry must name, which is a
+    /// different one when the barrier copied an arena value out
+    /// (`array::entity::separate` is the worked example).
+    ///
     /// Insert or overwrite. Returns `None` when the storage could not
     /// grow — an allocation refusal reports rather than aborting, and the
     /// table is unchanged. `Some(true)` means a new key was added.

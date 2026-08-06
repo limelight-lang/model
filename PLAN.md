@@ -194,12 +194,17 @@ What to take next, in this order and for these reasons.
    recursion is the machine stack's, and the explicit work list the ruling
    calls for is not built — nesting depth is attacker-shaped input on a
    store path, and there is no compiler yet to shape it.
-2. **Item 12's concurrent-walk arm together with the publish-first repair
-   of the key slot.** These are one commit, not two: the window in which a
-   table entry holds an uncounted edge is invisible while the concurrent
-   tracer cannot read an array at all, and becomes live at exactly the
-   commit that teaches it to. The bound its storage needs is the blocker
-   named under the walk refactor above.
+2. ~~**Item 12's concurrent-walk arm together with the publish-first
+   repair of the key slot.**~~ — closed. The arm is in `trace_cells`, so
+   the array is inside the one tracing dispatch like every other kind, and
+   `array::entity::for_each_counted_child` is an adapter over it rather
+   than a second stride. The bound is a version counter bracketing growth
+   and compaction plus a validated read of the three words
+   (`Table::coherent_entries`); failing it skips the array for one epoch,
+   which leaks rather than frees early. The publish-first contract is
+   stated on `Table::insert` and worked in `array::entity::separate`.
+   **Left:** test call sites that still retain after inserting rather than
+   before, which is the pattern to copy and now the wrong one.
 3. **Item 20, the candidate gate**, which is one changed constant.
 
 Both questions that were open on 2026-08-06 are answered, neither by

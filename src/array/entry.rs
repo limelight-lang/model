@@ -48,8 +48,10 @@ pub const MAX_ENTRIES: usize = (NONE - 1) as usize;
 
 /// `key` values that are not a string pointer. Both are below the
 /// alignment of any real `LLString`, so a pointer can never collide.
-const KEY_INT: usize = 0;
-const KEY_HOLE: usize = 1;
+pub(crate) const KEY_INT: usize = 0;
+/// Anything above this in the `key` field is a real string pointer, which
+/// is the test a walker makes on the raw word it read.
+pub(crate) const KEY_HOLE: usize = 1;
 
 /// One element of the table, in insertion order. See the module comment
 /// for why the fields sit where they do.

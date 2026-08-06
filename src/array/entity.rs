@@ -209,32 +209,25 @@ unsafe fn release_value(v: &Value) {
     }
 }
 
-/// Every counted child of `a` — elements and string keys — in insertion
-/// order, element before its own key.
+/// Every counted child of `a` — elements **and** string keys, a table
+/// holding a reference to each string it keys on.
 ///
-/// One walk with three consumers, which is why it exists rather than
-/// three loops over the same entries: teardown releases what it yields,
-/// the tracer counts it as an out-edge, and the arena reset reaches an
-/// array's children through the same tracer. A key is a child like an
-/// element is: a table holds a reference to each string it keys on.
+/// An adapter over the one tracing stride rather than a walk of its own:
+/// the array's cells are `walk::trace_cells`' since the coherent read
+/// exists (`PLAN.md`, item 12). Kept as a name because the release side
+/// reads better for it, and because a caller here has an `LLArray` rather
+/// than a bare header and a kind.
 ///
 /// # Safety
-/// `a` is a live array entity whose storage is still readable.
+/// `a` is a live array entity.
 pub unsafe fn for_each_counted_child(a: *mut LLArray, mut visit: impl FnMut(*mut RcHeader)) {
-    let n = unsafe { (*a).table.used() };
-    for i in 0..n {
-        let e = unsafe { (*a).table.entry(i) };
-        if e.is_hole() {
-            continue;
-        }
-        if e.value.is_refcounted() {
-            visit(e.value.entity_ptr());
-        }
-        let s = e.string_key();
-        if !s.is_null() {
-            visit(s as *mut RcHeader);
-        }
-    }
+    unsafe {
+        crate::walk::trace_cells::<crate::walk::PlainCells>(
+            a as *mut RcHeader,
+            crate::refcount::EntityKind::Array as u32,
+            |cell| visit(cell.child),
+        )
+    };
 }
 
 /// Release every counted child of `a`. The storage is not freed here;

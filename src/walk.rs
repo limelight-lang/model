@@ -167,23 +167,6 @@ impl CellReader for RelaxedCells {
 /// `entity` must point to a live entity whose slots are still readable.
 pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcHeader)) {
     let kind = unsafe { entity_kind(entity) };
-    if kind == EntityKind::Array as u32 {
-        // The one kind not yet routed through [`trace_cells`], and the
-        // reason is a decision rather than an omission: an array's cells
-        // live in storage that moves on growth, so a relaxed reader can
-        // observe a `used` that outran the `storage` it read and stride
-        // past the end of the stale chunk. Parked frees keep that chunk
-        // readable but bound nothing. Until that bound exists the array
-        // has no concurrent walk at all, and giving it a cell walker here
-        // would put one within reach of a single instantiation. It is
-        // `PLAN.md` item 12's, together with the bound.
-        return unsafe {
-            crate::array::entity::for_each_counted_child(
-                entity as *mut crate::array::entity::LLArray,
-                visit,
-            )
-        };
-    }
     unsafe { trace_cells::<PlainCells>(entity, kind, |cell| visit(cell.child)) };
 }
 
@@ -198,8 +181,9 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
 /// Kinds with no counted cells are named in the arms rather than left to
 /// a default: a string is a leaf whichever layout it has, since its
 /// payload is bytes; a weak cell's target is deliberately uncounted; an
-/// FFI Box holds an opaque C payload. Arrays are absent by the decision
-/// recorded at [`trace_entity`].
+/// FFI Box holds an opaque C payload. An array is here now: its entries
+/// are read coherently or not at all, which is what the earlier exclusion
+/// was waiting for.
 ///
 /// # Safety
 /// `entity` is a live entity of `kind` whose cells are readable, and
@@ -214,6 +198,9 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
     const OBJECT: u32 = EntityKind::Object as u32;
     const LAZY: u32 = EntityKind::Lazy as u32;
     const REFERENCE: u32 = EntityKind::Reference as u32;
+    const ARRAY: u32 = EntityKind::Array as u32;
+    const KEY_OFFSET: usize = std::mem::offset_of!(crate::array::entry::Entry, key);
+    const VALUE_OFFSET: usize = std::mem::offset_of!(crate::array::entry::Entry, value);
     match kind {
         OBJECT | LAZY => {
             // The class word is the entity's own and goes through the
@@ -234,6 +221,47 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                     child,
                     shape: CellShape::Box,
                 });
+            }
+        }
+        // An array's cells live in storage the mutator moves, so this
+        // starts by reading the entries coherently and gives up rather
+        // than striding a fresh count over a stale chunk
+        // (`Table::coherent_entries`). Giving up leaks one epoch and frees
+        // nothing early: an entity the walk does not enumerate becomes a
+        // root source.
+        ARRAY => {
+            let table =
+                unsafe { &raw const (*(entity as *mut crate::array::entity::LLArray)).table };
+            let Some((entries, used)) =
+                (unsafe { crate::array::table::Table::coherent_entries(table) })
+            else {
+                return;
+            };
+            for i in 0..used {
+                let at = unsafe { entries.add(i) as *const u8 };
+                // A string key is a counted child; the two sentinels below
+                // it are an integer key and a hole, and neither is a cell.
+                let key = unsafe { R::ptr(at.add(KEY_OFFSET)) };
+                if key as usize > crate::array::entry::KEY_HOLE {
+                    visit(Cell {
+                        addr: at as usize + KEY_OFFSET,
+                        raw: key as u64,
+                        child: key as *mut RcHeader,
+                        shape: CellShape::Pointer,
+                    });
+                }
+                // The element is a Box like any other: an integer read for
+                // the payload, the flags in the second word.
+                let value_at = unsafe { at.add(VALUE_OFFSET) };
+                let child = unsafe { R::word(value_at) } as *mut RcHeader;
+                if Value::refcounted_in_meta_word(unsafe { R::word(value_at.add(8)) }) {
+                    visit(Cell {
+                        addr: value_at as usize,
+                        raw: child as u64,
+                        child,
+                        shape: CellShape::Box,
+                    });
+                }
             }
         }
         _ => {}
@@ -1630,6 +1658,55 @@ mod tests {
         }
     }
 
+    /// The collector's reader sees an array's children. This is the arm
+    /// item 12 exists for: until it landed the concurrent tracer took the
+    /// empty default on kind 2, so an array's out-edges were invisible to
+    /// the epoch while its in-edge was not.
+    #[cfg(feature = "rc-walk")]
+    #[test]
+    fn the_relaxed_reader_sees_an_arrays_children() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::string::ll_string_new;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let key = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"k") };
+        let value = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"v") };
+        unsafe {
+            (*a).table.insert(
+                Key::Str(key),
+                Value::entity(Tag::String, value as *mut RcHeader),
+            );
+            crate::refcount::ll_retain(key as *mut RcHeader);
+            crate::refcount::ll_retain(value as *mut RcHeader);
+        }
+
+        let mut seen = Vec::new();
+        unsafe {
+            trace_cells::<RelaxedCells>(a as *mut RcHeader, EntityKind::Array as u32, |c| {
+                seen.push(c.child as usize)
+            })
+        };
+        assert!(
+            seen.contains(&(key as usize)),
+            "the string key is not an out-edge for the collector"
+        );
+        assert!(
+            seen.contains(&(value as usize)),
+            "the element is not an out-edge for the collector"
+        );
+
+        unsafe {
+            assert!(ll_release(a as *mut RcHeader));
+            crate::object::ll_entity_die(a as *mut RcHeader);
+            assert!(ll_release(key as *mut RcHeader));
+            crate::object::ll_entity_die(key as *mut RcHeader);
+            assert!(ll_release(value as *mut RcHeader));
+            crate::object::ll_entity_die(value as *mut RcHeader);
+        }
+    }
+
     /// The two readers must agree on a quiescent heap, for every walked
     /// entity and every kind that is producible.
     ///
@@ -1682,9 +1759,6 @@ mod tests {
             for_each_entity_slot(|entity| {
                 walked += 1;
                 let kind = entity_kind(entity);
-                if kind == EntityKind::Array as u32 {
-                    return; // no relaxed walk for arrays yet, by decision
-                }
                 let mut plain = Vec::new();
                 let mut relaxed = Vec::new();
                 trace_cells::<PlainCells>(entity, kind, |c| plain.push(c.child as usize));

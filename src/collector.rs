@@ -1306,6 +1306,53 @@ mod tests {
         arena.reset(|_| {});
     }
 
+    /// A ring that runs through an array is garbage like any other, and
+    /// the epoch could not see it until the array's entries could be read
+    /// coherently: the edge *into* the array was counted and the edge
+    /// *out* was not, so the holder read `RC` above `IN` and was a
+    /// computed root every epoch, forever (`PLAN.md`, item 12).
+    #[test]
+    fn a_mature_ring_through_an_array_is_collected() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("CollectorArrayRing")
+            .prop("table", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let holder = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let table = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        assert!(!table.is_null());
+        unsafe {
+            // The holder's property takes the array, and the array's only
+            // element takes the holder back: one ring, one edge of it
+            // inside a table.
+            Object::prop_at(holder, 16).write(Value::entity(Tag::Array, table as *mut RcHeader));
+            (*table).table.insert(
+                Key::Int(0),
+                Value::entity(Tag::Object, holder as *mut RcHeader),
+            );
+            crate::refcount::ll_retain(holder as *mut RcHeader);
+        }
+        assert!(!unsafe { ll_release(holder as *mut RcHeader) });
+
+        stepped_epoch(); // mature quietly first
+        let stats = stepped_epoch();
+
+        assert_eq!(stats.confirmed, 1, "the ring through the array survived");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1);
+        let seen = walked_addresses();
+        assert!(
+            !seen.contains(&(holder as usize)) && !seen.contains(&(table as usize)),
+            "a member outlived the drain"
+        );
+        arena.reset(|_| {});
+    }
+
     /// The production shape: a real collector thread runs a full epoch
     /// while the mutator thread does nothing but reach checkpoints.
     #[test]
