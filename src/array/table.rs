@@ -280,6 +280,14 @@ impl Table {
 
         let (fresh, granted) = buffer_alloc_longlived_payload(self.storage_capacity);
         if fresh.is_null() {
+            // The refusal rewrites the category like the other three
+            // exits, and the reason is the allocation side rather than
+            // the free side the paragraph above worries about: `alloc`
+            // routes by this field, so a table left at `RequestArena`
+            // would take its next growth from whatever arena is mounted
+            // then, and that arena's reset would return the storage to
+            // the pool under a heap array still pointing at it.
+            self.category = MemoryCategory::GcHeap;
             return false;
         }
         unsafe { std::ptr::copy_nonoverlapping(self.storage, fresh, self.storage_capacity) };
@@ -1496,6 +1504,59 @@ mod tests {
         }
 
         m.dispose();
+        set_current_context(std::ptr::null_mut());
+        arena.reset(|_| {});
+    }
+
+    /// A refused carry leaves the storage where it is, but the table is a
+    /// heap table from that moment on and `alloc` routes by this very
+    /// field. Left at `RequestArena` it would take its next storage from
+    /// whatever arena is mounted then, and that arena's reset would return
+    /// the storage to the pool with the promoted heap array still pointing
+    /// at it — a use-after-free rather than the leak the refusal looks
+    /// like. Seen failing: without the rewrite the next allocation's block
+    /// reads arena rather than buffer.
+    #[test]
+    fn a_refused_carry_still_moves_the_table_into_the_heap() {
+        use crate::memory::arena::Arena;
+        use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK, BLOCK_PAYLOAD, FORCE_OOM};
+        use crate::memory::buffer_arena::buffer_free_longlived_payload;
+        use crate::memory::context::set_current_context;
+        use std::sync::atomic::Ordering;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut context = LLContext { arena: arena_ptr };
+        let context_ptr: *mut LLContext = &mut context;
+        set_current_context(context_ptr);
+
+        let mut m = Table::empty(MemoryCategory::RequestArena, 0x243F_6A88_85A3_08D3);
+        for i in 0..8i64 {
+            m.insert(Key::Int(i), Value::int(i));
+        }
+        assert!(
+            m.storage_capacity <= BLOCK_PAYLOAD,
+            "an in-block storage is the only one that can be refused"
+        );
+
+        FORCE_OOM.store(true, Ordering::Relaxed);
+        let carried = unsafe { m.carry_out_of(arena_ptr) };
+        FORCE_OOM.store(false, Ordering::Relaxed);
+        assert!(!carried, "the copy was meant to be refused and was not");
+
+        // The storage itself stays in the arena block, which promotion
+        // stamps retained a moment later; what must have moved is where
+        // the *next* one comes from.
+        let (fresh, granted) = m.alloc(64);
+        assert!(!fresh.is_null());
+        let kind = unsafe { *(((fresh as usize) & !BLOCK_MASK) as *const u32) };
+        assert_eq!(
+            kind, BLOCK_KIND_BUFFER,
+            "the table still allocates from the arena it was carried out of"
+        );
+        unsafe { buffer_free_longlived_payload(fresh, granted) };
+
         set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
