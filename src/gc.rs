@@ -1332,6 +1332,73 @@ mod tests {
         arena.reset(|_| {});
     }
 
+    /// A freed slot's header word is the enumerators' occupancy test:
+    /// `heap::for_each_entity_slot` and the epoch snapshot both read it and
+    /// treat a non-zero refcount as a live entity. An ordinary death drives
+    /// the count to zero on its way out, but a white-set member is freed
+    /// while its count is whatever trial deletion left, so the free has to
+    /// write the final zero itself.
+    ///
+    /// The consequence is worse than an over-count. A freed object slot has
+    /// the free-list link at bytes 8-15, where the class pointer was, so a
+    /// walk that reads the slot as live follows a free-list link as a
+    /// `*const Class`.
+    #[test]
+    fn a_collected_member_leaves_a_slot_the_walk_reads_as_free() {
+        let _g = crate::memory::block_pool::test_guard();
+
+        let cls = ClassBuilder::new("WhiteRing")
+            .prop("self", true)
+            .prop("text", true)
+            .build();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+        let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let s = unsafe { crate::string::ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"white") };
+        assert!(!s.is_null());
+
+        unsafe {
+            assert!(ref_store(
+                arena_ptr,
+                obj as *mut RcHeader,
+                Object::prop_at(obj, 16),
+                std::ptr::null_mut(),
+                Value::entity(Tag::Object, obj as *mut RcHeader),
+            ));
+            assert!(ref_store(
+                arena_ptr,
+                obj as *mut RcHeader,
+                Object::prop_at(obj, 32),
+                std::ptr::null_mut(),
+                Value::entity(Tag::String, s as *mut RcHeader),
+            ));
+            assert!(!ll_release(s as *mut RcHeader));
+            assert!(!ll_release(obj as *mut RcHeader));
+        }
+
+        let (obj_addr, string_addr) = (obj as usize, s as usize);
+        let reclaimed = unsafe { collect_cycles() };
+        assert!(reclaimed >= 2, "the self-ring was not collected");
+
+        // Nothing allocates from this block between the collection and the
+        // read: blocks are owner-allocated and this thread is the owner, so
+        // the two slots are still on its free list.
+        let refcount_at = |addr: usize| unsafe { *(addr as *const u32) };
+        assert_eq!(
+            refcount_at(obj_addr),
+            0,
+            "the collected object's slot still reads as a live entity"
+        );
+        assert_eq!(
+            refcount_at(string_addr),
+            0,
+            "the collected string's slot still reads as a live entity"
+        );
+
+        arena.reset(|_| {});
+    }
+
     /// The same hole, one kind over. A dynamic string's payload is a
     /// separate allocation too, and it has been reachable from cyclic
     /// garbage since the layout landed — longer than the array has

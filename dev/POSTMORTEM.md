@@ -200,3 +200,46 @@ next. They were removed before the change landed.
 - A rule that per-variant figures may not be written into code comments
   unless they came from a back-to-back run. Direction is safe to
   record; an unreproducible number is worse than none.
+
+---
+
+# An entity killed at refcount 1 (2026-08-06)
+
+**What happened.** `walk::tests::census_counts_objects_and_their_edges`
+failed at roughly 5 in 30 under load, and stayed unexplained for a
+session. The cause was two array tests calling `ll_entity_die` on
+entities whose refcount was still 1. The slot reaches the free list
+carrying its old header, and that word is the occupancy test both
+process-global enumerators apply, so every later census in the process
+read those freed slots as live entities — until the allocator handed
+them back out, at which point the count stopped growing and an
+unrelated test on another thread failed.
+
+**Why it took so long.** The failure has no local symptom. The test
+that commits the mistake passes, on every run, in both configurations;
+what fails is a different test, in a different file, on a different
+thread, after enough allocation to reuse the slot. The first diagnosis
+went the other way round — a live entity leaving the walk — because a
+count that fails to grow looks the same from the outside whichever end
+the error is at, and the walk is the side with a documented quiescence
+requirement it does not get in a parallel suite.
+
+The measurement that settled it was cheap and could have been made on
+day one: record the *addresses* both censuses yield, not only the
+totals, and print the header word each census read at an address the
+two disagree about. The two sets turned out to be identical, which
+killed the entire "an entity left the walk" family of hypotheses in one
+reading.
+
+**What changed so it cannot repeat.**
+
+- `stdapi::ll_free` asserts in test builds that an entity slot arrives
+  with a refcount-0 header. Killing at 1 is now a failure in the test
+  that does it, at the moment it does it.
+- The census test keeps its drift report: on a mismatch it names the
+  addresses that came and went and the block state behind each
+  (`heap::describe_slot`).
+- For an object the defect is worse than an over-count, and that is the
+  part to remember: the free-list link is written at bytes 8-15, where
+  the class pointer was, so a walk that believes such a slot follows a
+  free-list link as a `*const Class`.

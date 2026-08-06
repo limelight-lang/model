@@ -1873,6 +1873,47 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
     }
 }
 
+/// What the enumerator sees at `addr`, as text, for a test that found an
+/// entity missing from a census and needs to say why.
+///
+/// Every field `for_each_entity_slot` gates on, in the order it reads
+/// them: whether the address is inside a registered region at all, then
+/// the block's kind, then its stride and bump, then the header word whose
+/// low half is the refcount. A slot index at or past `bump` is a slot the
+/// walk does not reach.
+#[cfg(test)]
+pub(crate) fn describe_slot(addr: usize) -> String {
+    let block = (addr & !BLOCK_MASK) as *mut HeapBlockHeader;
+    let in_region = BlockPool::global().regions().iter().any(|&r| {
+        let base = r as usize;
+        addr >= base && addr < base + crate::memory::block_pool::REGION_SIZE
+    });
+    let (kind, size_class, used, slots, bump) = unsafe {
+        (
+            (*block).private.kind,
+            (*block).private.size_class,
+            (*block).private.used,
+            (*block).private.slots,
+            (*block).private.bump,
+        )
+    };
+    let header = unsafe { *(addr as *const u64) };
+    let stride = SIZE_CLASSES
+        .get(size_class as usize)
+        .copied()
+        .unwrap_or(usize::MAX);
+    let index = (addr - block as usize - LINE_SIZE) / stride.max(1);
+    let retained = crate::memory::retained::snapshot()
+        .iter()
+        .any(|(_, ix)| ix.contains(&addr));
+    format!(
+        "addr {addr:#x} block {:#x} in_region {in_region} kind {kind} class {size_class} \
+         stride {stride} used {used} slots {slots} bump {bump} slot_index {index} \
+         retained_index {retained} header {header:#018x}",
+        block as usize
+    )
+}
+
 /// One walkable block as the rc-walk collector snapshotted it at epoch
 /// open (`rfc/model/gc/rc-walk.md`, Phase 1). The collector computes
 /// slot addresses itself and touches slots only through the

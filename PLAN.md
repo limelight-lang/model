@@ -43,30 +43,44 @@ when a window overflows a ring, the answer is *unknown* rather than *none* —
 the hunt turned on "no string died inside the window", and a silent eviction
 would have made that finding false.
 
-## Also open: the census loses a live entity under load
+## Closed: the census flake was two tests killing an entity at refcount 1
 
-`walk::tests::census_counts_objects_and_their_edges` fails at roughly 5 in 30
-under load, and predates the refactor below (14 in 60 on `8adbfe8`). The
-reproducer is the session's main asset — before it the failure was random: build
-the rc-trace test binary with `--no-run`, pin it to two cores with
-`taskset -c 0,1` at `--test-threads 4`, and run two spinners on the same cores.
+`walk::tests::census_counts_objects_and_their_edges` failed at roughly 5 in 30
+under load. Under the same load it now fails 0 in 60 in rc-trace and 0 in 30 in
+rc-walk, against 3 in 30, 7 in 40, 6 in 40 and 9 in 40 measured on this box
+before the fix. The reproducer stays worth keeping: build the test binary with
+`--no-run`, pin it to two cores with `taskset -c 0,1` at `--test-threads 4`, and
+run two spinners on the same cores.
 
-Three measurements say what it is. The test's own two objects **are** in the
-census. The count does not grow because **two strings leave** it. And **no
-string died inside the window**. So nothing was freed: `for_each_entity_slot`
-stopped seeing a live entity — the dangerous direction, since a missed entity
-contributes none of its out-edges and its children then read as less rooted.
+**Nothing left the walk.** The two censuses yield the *same* address set; the
+count fails to grow because the first census already counted the two slots the
+test's own objects then land on. At the first census those slots read
+`0x0000_1400_0000_0001` — an inline string at refcount 1 — and at the second
+they read the fresh objects. No string died inside the window, which the
+earlier hunt measured correctly and read the wrong way round: the strings had
+been freed *before* the window, with their headers never driven to zero.
 
-**Do not weaken the test.** A membership-shaped assertion fails too
-(`a_reserved_cell_is_walker_invisible_until_constructed`), so the assertion's
-shape is not the problem: the quiescence `for_each_entity_slot` declares as its
-safety condition is genuinely violated. Retired hypotheses: retained blocks
-returning to the pool — the `debug_assert` now in `BlockPool::put` never fired —
-and an unsynchronised race, ThreadSanitizer being silent across failures.
-Standing and unproven: blocks of a finishing thread leaving the registry's
-reachable set with occupied slots still live. Next instrument: per-block census
-subtotals on mismatch, diffed between the two censuses. This is also the first
-real customer for the journal above.
+**What does that is a test killing an entity with `ll_entity_die` while its
+refcount is still 1.** `walk::tests::an_array_is_traced_through_its_elements_
+and_its_string_keys` did it three times and
+`array::entity::tests::dying_through_the_kind_switch_releases_the_children_and_
+the_storage` twice — the second half of item 14, which named the shape and was
+never connected to this. The slot then reaches the free list carrying a
+live-looking header, and that word is the occupancy test both process-global
+enumerators apply. For a string it is an over-count. For an object it is worse:
+the free-list link is written at bytes 8-15, where the class pointer was, so a
+walk that believes such a slot follows a free-list link as a `*const Class`.
+
+**The guard is what keeps it closed.** `stdapi::ll_free` asserts in test builds
+that an entity slot arrives with a refcount-0 header, so killing at 1 fails in
+the test that does it rather than in an unrelated test on another thread half an
+hour later. Kept with it: the census test's drift report, which on a mismatch
+names the addresses that came and went and the block state behind each
+(`heap::describe_slot`). Lesson in `dev/POSTMORTEM.md`.
+
+Both earlier hypotheses stay retired and are now explained rather than merely
+unobserved: retained blocks never returned to the pool, and ThreadSanitizer was
+silent because there was no race to find.
 
 Two certain defects were found beside it and both are closed (`576ffc1`).
 `retained.rs`'s tests registered fabricated addresses in the **process-global**

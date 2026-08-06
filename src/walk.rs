@@ -1363,6 +1363,50 @@ mod tests {
         arena.reset(|_| {});
     }
 
+    /// One walk that yields both the aggregate and the addresses behind
+    /// it, so a census that disagrees with its predecessor can name the
+    /// entities that came and went instead of only the count.
+    ///
+    /// # Safety
+    /// As [`heap_census`]: a quiescent mutator.
+    unsafe fn census_with_addresses() -> (Census, Vec<(usize, u64)>) {
+        let mut census = Census::default();
+        let mut addresses = Vec::new();
+        unsafe {
+            for_each_entity_slot(|entity| {
+                census.entities += 1;
+                census.by_kind[entity_kind(entity) as usize] += 1;
+                addresses.push((entity as usize, *(entity as *const u64)));
+                trace_entity(entity, |_child| census.edges += 1);
+            });
+        }
+        (census, addresses)
+    }
+
+    /// Print what left the census and what joined it, each address with
+    /// the state of the block the enumerator gates on.
+    ///
+    /// The census flake under investigation (`PLAN.md`) is entities
+    /// *leaving*: the count fails to grow because a live entity stopped
+    /// being enumerated, which is the direction that matters — a missed
+    /// entity contributes none of its out-edges, so its children read as
+    /// less rooted than they are.
+    fn report_census_drift(before: &[(usize, u64)], after: &[(usize, u64)]) {
+        let before_set: HashSet<usize> = before.iter().map(|&(a, _)| a).collect();
+        let after_set: HashSet<usize> = after.iter().map(|&(a, _)| a).collect();
+        eprintln!(
+            "census drift: {} before, {} after, expected +2",
+            before.len(),
+            after.len()
+        );
+        for addr in before_set.difference(&after_set) {
+            eprintln!("  LEFT  {}", crate::memory::heap::describe_slot(*addr));
+        }
+        for addr in after_set.difference(&before_set) {
+            eprintln!("  ADDED {}", crate::memory::heap::describe_slot(*addr));
+        }
+    }
+
     /// The census aggregates what the walk yields; with only objects
     /// produced today, every walked entity reports the Object kind.
     #[test]
@@ -1372,14 +1416,32 @@ mod tests {
 
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
-        let before = unsafe { heap_census() };
+        let (before, before_addrs) = unsafe { census_with_addresses() };
         let parent = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         let child = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         unsafe {
             Object::prop_at(parent, 16).write(Value::entity(Tag::Object, child as *mut RcHeader));
         }
 
-        let after = unsafe { heap_census() };
+        let (after, after_addrs) = unsafe { census_with_addresses() };
+        if after.entities != before.entities + 2 {
+            report_census_drift(&before_addrs, &after_addrs);
+            for (name, e) in [("parent", parent), ("child", child)] {
+                let addr = e as usize;
+                let was = before_addrs
+                    .iter()
+                    .find(|&&(a, _)| a == addr)
+                    .map(|&(_, h)| h);
+                let now = after_addrs
+                    .iter()
+                    .find(|&&(a, _)| a == addr)
+                    .map(|&(_, h)| h);
+                eprintln!(
+                    "  {name} header_at_before {was:#x?} header_at_after {now:#x?} {}",
+                    crate::memory::heap::describe_slot(addr)
+                );
+            }
+        }
         assert_eq!(after.entities, before.entities + 2);
         assert_eq!(
             after.by_kind[EntityKind::Object as usize],
@@ -1507,8 +1569,17 @@ mod tests {
 
         unsafe {
             (*a).table.dispose();
+            // Each of the three is released before it is killed, so its
+            // slot reaches the free list carrying the refcount-0 header
+            // the process-global enumerators use as their occupancy test.
+            // Killing at 1 leaves a freed slot that every later census in
+            // the process reads as a live entity (`PLAN.md`, the census
+            // flake).
+            assert!(ll_release(a as *mut RcHeader));
             crate::object::ll_entity_die(a as *mut RcHeader);
+            assert!(ll_release(key as *mut RcHeader));
             crate::object::ll_entity_die(key as *mut RcHeader);
+            assert!(ll_release(value as *mut RcHeader));
             crate::object::ll_entity_die(value as *mut RcHeader);
         }
     }

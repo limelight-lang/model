@@ -471,7 +471,12 @@ mod tests {
             assert_eq!(reused, storage, "teardown left the storage unreturned");
             with_buffer_arena(|arena| arena.free(reused, capacity));
 
+            // Released first: a slot freed while its header still reads
+            // refcount 1 is enumerated as a live entity by every later
+            // process-global walk (`PLAN.md`, the census flake).
+            assert!(ll_release(key as *mut RcHeader));
             crate::object::ll_entity_die(key as *mut RcHeader);
+            assert!(ll_release(value as *mut RcHeader));
             crate::object::ll_entity_die(value as *mut RcHeader);
         }
     }

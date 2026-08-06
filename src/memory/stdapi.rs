@@ -219,6 +219,31 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     let block = block_of(ptr);
     let kind = unsafe { *(block as *const u32) };
 
+    // An entity slot reaches the free list carrying the final
+    // refcount-0 header, because that word is the occupancy test both
+    // process-global enumerators apply (`heap::for_each_entity_slot`,
+    // `heap::snapshot_entity_blocks`). A slot freed while its header
+    // still reads a live count is enumerated as a live entity by every
+    // later walk in the process, and for an object it is worse than an
+    // over-count: the free-list link lands at bytes 8-15, where the
+    // class pointer was, so a walk that believes the slot follows a
+    // free-list link as a `*const Class`.
+    //
+    // Test-only, and it earned its place: killing an entity at
+    // refcount 1 is a mistake with no local symptom, and the one it
+    // does have surfaced as a census flake in an unrelated test on
+    // another thread half an hour later (`PLAN.md`).
+    #[cfg(test)]
+    if kind == BLOCK_KIND_ENTITY {
+        let header = unsafe { *(ptr as *const u64) };
+        assert_eq!(
+            header & 0xffff_ffff,
+            0,
+            "entity freed with a live-looking header {header:#018x} at {:#x}",
+            ptr as usize
+        );
+    }
+
     // While an rc-walk epoch is in flight, every freeable kind parks
     // instead of recycling — identity of walked slots and chased buffers
     // (`deferred_free`, one relaxed load + predicted branch, per
