@@ -8,12 +8,54 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: build the hashtable — the design is written
+## Next: finish the hashtable — four pieces are left
 
-Read this first in a fresh session. **The hashtable design landed
-2026-08-06** in `rfc/model/arrays-hashtable.md` (rfc `ca0d197`, `eb68707`,
-`9e5ae3d`, `2a9ce2e`), so arrays are unblocked and the next step is code
-rather than design. The string stage before it is finished: all 16 tasks
+Read this first in a fresh session. The design is in
+`rfc/model/arrays-hashtable.md` (rfc `ca0d197`, `eb68707`, `9e5ae3d`,
+`2a9ce2e`) and **the crate now has `src/array/`** with 37 tests, green in
+both configurations and silent under Miri: the entry layout, the table
+core, string keys, the flood backstop, element references and the entity
+wrapper (`model` `514c526`, `80494ff`, `eaf6a03`, `42c2a6f`, `3316343`,
+`3025757`).
+
+### What is left, in order
+
+1. **The 2 → 3 migration** from the mixed vector: walk the vector in
+   order and append each element with its integer key, so insertion order
+   survives by construction. Needs the mixed vector to exist first, which
+   it does not — so this may become the reason to build strategy 2 next
+   instead.
+2. **Promotion of the storage out of the arena.** An arena survivor's
+   storage is copied into the heap with the entity header fixed in place,
+   the way a string payload is. Every link inside the storage is already
+   an index rather than a pointer, which is what makes the copy legal, and
+   a test pins that no word in the storage points into it. Still to build:
+   the `Array` arm of `carry_external_memory`, the OS-direct transfer that
+   moves a large storage without copying, and the refusal path that
+   retains the payload's block because the reset has no caller to report
+   to.
+3. **Thread hand-over.** Storage should live in the per-thread buffer
+   arena under its owner/abandon/adopt protocol (`dev/DECISIONS.md`,
+   2026-08-04). It currently goes through the ordinary allocator instead,
+   which is correct but not final — and *not* `entity_alloc`, which would
+   put headerless storage in a block the collector reads as entities.
+4. **The strategy tag and the `arrays.md` hole.** Two bits for the
+   strategy plus the strong-mode bit live in the ArrayBox body, not the
+   flags word, which has none free. And `arrays.md`'s "strategy 1 never
+   transitions" cannot hold: separation copies the storage in its current
+   representation, so a callee can store a pointer into a proven
+   `array<int>`. The generic element write has to dispatch on the tag and
+   transition 1 → 2.
+
+### Two defects this work found, worth not repeating
+
+The entry's `hash_or_key` holds the key's own identity — the raw integer
+or the string's cached hash — while the index slot comes from a
+*different* number, the salted mix or the keyed hash. Conflating them
+makes insertion succeed and lookup lose every key, and it happened twice.
+And table storage must never go through `entity_alloc`: the collector
+reads the first eight bytes of every occupied slot in an entity block as
+an `RcHeader`, and storage has no header. The string stage before it is finished: all 16 tasks
 below are closed, both critic passes are done and their findings fixed,
 and the gate and Miri are green in both configurations as of 2026-08-05.
 
