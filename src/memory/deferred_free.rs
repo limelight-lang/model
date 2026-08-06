@@ -39,9 +39,10 @@
 //! another kind. Parked chunks are the reason a parked record carries a
 //! size: `BufferArena::free` is size-carrying, the chunk itself holds
 //! no metadata, and the block header would be gone by flush time
-//! anyway. The walker today chases only entity slots, but array storage
-//! (Phase C) will make it chase raw buffers of any size, and a string
-//! payload already lives in a buffer chunk.
+//! anyway. A string payload and an array's table storage both live in
+//! buffer chunks; the walker today chases only entity slots, and array
+//! tracing, which will make it chase raw buffers of any size, is still
+//! owed (`walk.rs`).
 //!
 //! What does not ride it: cross-thread frees (`free_foreign` — the
 //! crate is single-mutator; actors will reopen this) and the no-op
@@ -454,9 +455,9 @@ mod tests {
     /// A buffer-arena chunk never passes `ll_free`, so the epoch test
     /// that parks everything else used to miss it entirely:
     /// `BufferArena::free` wrote its `{ next, size }` link straight into
-    /// the freed chunk — which is where a string payload's bytes are,
-    /// and where array storage will be once the walker chases it — and
-    /// could hand an emptied block back to the pool mid-epoch.
+    /// the freed chunk — which is where a string payload's bytes and an
+    /// array's table storage are, and what a walker chasing either would
+    /// read — and could hand an emptied block back to the pool mid-epoch.
     #[test]
     fn a_buffer_chunk_parks_instead_of_being_written_into() {
         let _g = crate::memory::block_pool::test_guard();

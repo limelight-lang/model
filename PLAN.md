@@ -12,11 +12,11 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 
 Read this first in a fresh session. The design is in
 `rfc/model/arrays-hashtable.md` (rfc `ca0d197`, `eb68707`, `9e5ae3d`,
-`2a9ce2e`) and **the crate now has `src/array/`** with 37 tests, green in
+`2a9ce2e`) and **the crate now has `src/array/`** with 41 tests, green in
 both configurations and silent under Miri: the entry layout, the table
-core, string keys, the flood backstop, element references and the entity
-wrapper (`model` `514c526`, `80494ff`, `eaf6a03`, `42c2a6f`, `3316343`,
-`3025757`).
+core, string keys, the flood backstop, element references, the entity
+wrapper and the storage's home in the buffer arena (`model` `514c526`,
+`80494ff`, `eaf6a03`, `42c2a6f`, `3316343`, `3025757`).
 
 ### What is left, in order
 
@@ -34,11 +34,53 @@ wrapper (`model` `514c526`, `80494ff`, `eaf6a03`, `42c2a6f`, `3316343`,
    moves a large storage without copying, and the refusal path that
    retains the payload's block because the reset has no caller to report
    to.
-3. **Thread hand-over.** Storage should live in the per-thread buffer
-   arena under its owner/abandon/adopt protocol (`dev/DECISIONS.md`,
-   2026-08-04). It currently goes through the ordinary allocator instead,
-   which is correct but not final — and *not* `entity_alloc`, which would
-   put headerless storage in a block the collector reads as entities.
+3. ~~**Thread hand-over.**~~ — done 2026-08-06. Storage in a long-lived
+   category is a buffer-arena chunk, so it is under the owner/abandon/adopt
+   protocol (`dev/DECISIONS.md`, 2026-08-04), which matters because a table
+   dies wherever its last reference is dropped: the chunk is routinely
+   freed by a thread that did not allocate it, and the buffer block carries
+   the owner and the stack that free posts to. The size split is the
+   string's — over a block payload the storage is an OS-direct run, since
+   an arena chunk is bounded by one block. The table records the *granted*
+   byte size rather than the requested one: a reused chunk may be larger
+   and the arena's free is size-carrying, so freeing by the request would
+   lose the difference from the block's free list. Storage still never
+   goes through `entity_alloc`, which would put headerless bytes in a
+   block the collector reads as entities.
+
+   **The independent review found a live abort next door**, in the branch
+   this work rewrote rather than in what it added: a request-arena table
+   called `Arena::alloc` for a storage of program-visible size, and that
+   asserts above a block payload, so the 1025th element of a request array
+   killed the process — by abort in release, the profile not unwinding.
+   Both arenas split by size and neither split belonged in the table, so
+   there is now `Arena::alloc_body` beside
+   `buffer_arena::buffer_alloc_longlived_payload`, and `buffer::
+   buffer_ensure` — which had the same split inline for a string payload —
+   goes through it too.
+
+   **One latent defect next door was closed with it.** `string::
+   grow_payload` routed every category but the request arena through a
+   catch-all into the buffer arena, immortal included. Unreachable today —
+   `ll_string_new_dynamic` refuses both long-lived categories, so no
+   dynamic string carries either — but the wrong answer was written down
+   waiting for a caller: an immortal payload in a buffer chunk holds its
+   block's `live` above zero for the life of the process, and growth there
+   frees the old payload, whose address an immortal reader may have cached
+   forever. The match is exhaustive now and those two arms refuse. The RFC
+   is where the wrong answer came from: `memory/buffers.md` groups
+   immortal with long-lived in the buffer arena while `memory/arenas.md`
+   and `strings.md` say the opposite — the correction is owed there and
+   not yet made.
+
+   Four tests. Seen failing first:
+   `a_request_arena_storage_over_a_block_takes_the_large_run_path` on the
+   assert above, and
+   `heap_storage_is_a_buffer_arena_chunk_and_is_returned_to_it` on the old
+   routing, with the block kind reading heap rather than buffer. The other
+   two are edges rather than regressions:
+   `a_storage_over_a_block_payload_is_an_os_direct_run` and
+   `a_table_disposed_on_another_thread_leaves_the_owners_block_alive`.
 4. **The strategy tag and the `arrays.md` hole.** Two bits for the
    strategy plus the strong-mode bit live in the ArrayBox body, not the
    flags word, which has none free. And `arrays.md`'s "strategy 1 never

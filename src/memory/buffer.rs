@@ -109,11 +109,7 @@ pub fn buffer_ensure(
 
     // Fresh payload: in-block when it fits, OS-direct (arena-tracked,
     // freed at reset) when it does not.
-    let new_data = if target <= BLOCK_PAYLOAD {
-        arena.alloc(target)
-    } else {
-        arena.alloc_large(target)
-    };
+    let new_data = arena.alloc_body(target);
 
     if new_data.is_null() {
         // Out of memory. Leave the buffer exactly as it was — old payload,

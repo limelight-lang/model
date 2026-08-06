@@ -135,7 +135,8 @@ impl Arena {
     fn alloc_slow(&mut self, size: usize) -> *mut u8 {
         assert!(
             size <= BLOCK_PAYLOAD,
-            "large objects take the dedicated-run path, not the arena"
+            "large objects take the dedicated-run path, not the arena — a \
+             caller whose size comes from the program wants alloc_body"
         );
 
         if !self.fresh_block() {
@@ -214,6 +215,25 @@ impl Arena {
             "out of memory recording an arena large run — the record cannot be \n             dropped without leaking the run at reset"
         );
         p
+    }
+
+    /// Allocate an entity's out-of-line body of `size` bytes, in-block
+    /// while it fits and as a dedicated run above that. Either way the
+    /// arena owns it and the reset frees it.
+    ///
+    /// The split has to be made by somebody: [`Arena::alloc`] asserts on a
+    /// size over a block payload and [`Arena::alloc_large`] asserts on one
+    /// under it, so a caller that allocates a body of program-visible size
+    /// and does not split kills the process on the first body that crosses
+    /// the line — in a release build by abort, the profile not unwinding.
+    /// This is the request-arena counterpart of
+    /// `buffer_arena::buffer_alloc_longlived_payload`.
+    pub fn alloc_body(&mut self, size: usize) -> *mut u8 {
+        if size <= BLOCK_PAYLOAD {
+            self.alloc(size)
+        } else {
+            self.alloc_large(size)
+        }
     }
 
     /// Give up ownership of an OS-direct run this arena allocated: the

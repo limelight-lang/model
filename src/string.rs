@@ -542,7 +542,24 @@ unsafe fn grow_payload(
                 hint,
             )
         },
-        _ => crate::memory::buffer_arena::buffer_ensure_longlived(payload, min_capacity, hint),
+        MemoryCategory::GcHeap => {
+            crate::memory::buffer_arena::buffer_ensure_longlived(payload, min_capacity, hint)
+        }
+        // Exhaustive rather than a catch-all, and these two refuse. A
+        // dynamic string in either category does not exist —
+        // `ll_string_new_dynamic` refuses to build one — so this arm is
+        // unreachable, and the point of writing it out is what a catch-all
+        // would do if it ever became reachable: an immortal payload would
+        // go to the buffer arena, whose whole machinery answers the
+        // question of who frees a chunk, and pin its block for the life of
+        // the process; growth there would free the old payload, whose
+        // address an immortal reader may have cached forever
+        // (`rfc/model/memory/arenas.md`, "Immortal Objects"). A refusal is
+        // also what the next category added to the enum should meet here.
+        MemoryCategory::LongLived | MemoryCategory::Immortal => {
+            debug_assert!(false, "a dynamic string is never built in this category");
+            std::ptr::null_mut()
+        }
     };
     !grown.is_null()
 }

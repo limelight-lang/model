@@ -20,8 +20,8 @@
 //!
 //! ## Cross-thread free
 //!
-//! A buffer here holds the body of an entity — a string's bytes today,
-//! an array's storage next — and an entity dies wherever its last
+//! A buffer here holds the body of an entity — a string's bytes and an
+//! array's table storage — and an entity dies wherever its last
 //! reference is dropped. So this heap obeys the same ownership rules as
 //! the object heap (`heap.rs`), for the same reason and in the same
 //! shape: each block carries an `owner` and its own lock-free MPSC
@@ -808,6 +808,30 @@ pub fn dispose() {
 
 // --- Long-lived growth over the arena -------------------------------------
 
+/// Allocate a long-lived payload of `size` bytes, routed the way
+/// `rfc/model/memory/buffers.md` routes them: an arena chunk while it fits
+/// in one block, an OS-direct run above that. Null with a zero grant on
+/// refusal, so a caller that ignores the pointer cannot mistake the
+/// capacity for real.
+///
+/// The second number is the bytes **really granted**, which a reused chunk
+/// can make larger than the request. A caller keeps that number and hands
+/// it back to [`buffer_free_longlived_payload`], the arena's free being
+/// size-carrying; freeing by the request instead loses the difference from
+/// the block's free list.
+///
+/// This is where the size split lives, so that a payload's owner — a
+/// string's bytes, an array's table storage — carries no knowledge of how
+/// big a block is. `Arena::alloc_body` is the request-arena counterpart.
+pub fn buffer_alloc_longlived_payload(size: usize) -> (*mut u8, usize) {
+    if size <= BLOCK_PAYLOAD {
+        return with_buffer_arena(|a| a.alloc(size));
+    }
+
+    let p = unsafe { crate::memory::stdapi::ll_alloc(size, 16) };
+    if p.is_null() { (p, 0) } else { (p, size) }
+}
+
 /// Long-lived counterpart of `buffer_ensure`: extend off the bump top
 /// when the payload is the last chunk bumped, otherwise alloc-new + copy
 /// + free-old. Size routing per `rfc/model/memory/buffers.md`: payloads
@@ -838,12 +862,7 @@ pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usiz
         return buf.data;
     }
 
-    let (new_data, granted) = if target <= BLOCK_PAYLOAD {
-        with_buffer_arena(|a| a.alloc(target))
-    } else {
-        let p = unsafe { crate::memory::stdapi::ll_alloc(target, 16) };
-        (p, target)
-    };
+    let (new_data, granted) = buffer_alloc_longlived_payload(target);
 
     if new_data.is_null() {
         // Out of memory. Leave the buffer exactly as it was — its old

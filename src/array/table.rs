@@ -24,6 +24,7 @@
 //! would break promotion silently.
 
 use crate::array::entry::{Entry, MAX_ENTRIES, NONE};
+use crate::memory::buffer_arena::{buffer_alloc_longlived_payload, buffer_free_longlived_payload};
 use crate::memory::context::resolve_arena;
 use crate::memory::immortal::immortal_alloc;
 use crate::refcount::MemoryCategory;
@@ -132,6 +133,14 @@ fn storage_bytes(nslots: usize, cap: usize) -> Option<usize> {
 /// owns it supplies the `RcHeader`, the class pointer and the COW state.
 pub struct Table {
     storage: *mut u8,
+    /// Bytes really granted for `storage`, which is not always what was
+    /// asked for: a reused buffer-arena chunk may be larger, and the free
+    /// that returns it carries the size, since a chunk holds no metadata
+    /// of its own. Freeing with the requested size would lose the
+    /// difference from the block's free list. In the two categories that
+    /// never free — the request arena and the immortal region — this holds
+    /// the requested size and nothing reads it.
+    storage_capacity: usize,
     nslots: usize,
     mask: usize,
     cap: usize,
@@ -154,6 +163,7 @@ impl Table {
     pub const fn empty(category: MemoryCategory, salt: u64) -> Self {
         Table {
             storage: std::ptr::null_mut(),
+            storage_capacity: 0,
             nslots: 0,
             mask: 0,
             cap: 0,
@@ -479,11 +489,12 @@ impl Table {
             Some(b) => b,
             None => return false,
         };
-        let mem = self.alloc(bytes);
+        let (mem, granted) = self.alloc(bytes);
         if mem.is_null() {
             return false;
         }
         let old_storage = self.storage;
+        let old_capacity = self.storage_capacity;
         let old_used = self.used;
         let old_entries = if old_storage.is_null() {
             std::ptr::null_mut()
@@ -492,6 +503,7 @@ impl Table {
         };
 
         self.storage = mem;
+        self.storage_capacity = granted;
         self.nslots = nslots;
         self.mask = nslots - 1;
         self.cap = cap;
@@ -499,38 +511,59 @@ impl Table {
             unsafe { std::ptr::copy_nonoverlapping(old_entries, self.entries(), old_used) };
         }
         self.rebuild_index();
-        self.free_storage(old_storage);
+        self.free_storage(old_storage, old_capacity);
         true
     }
 
-    /// Route the allocation by category.
+    /// Route the allocation by category, reporting the bytes really
+    /// granted alongside the pointer.
     ///
     /// **Not `entity_alloc`.** Table storage is not an entity: it has no
     /// `RcHeader`, and the cycle collector reads the first eight bytes of
     /// every occupied slot in an entity block as one
-    /// (`memory/block_pool.rs`, `BLOCK_KIND_ENTITY`). Storage goes through
-    /// the ordinary allocator, which lands in a heap block instead.
-    fn alloc(&self, bytes: usize) -> *mut u8 {
+    /// (`memory/block_pool.rs`, `BLOCK_KIND_ENTITY`).
+    ///
+    /// The long-lived categories go to the **buffer arena**, which is
+    /// where an entity's out-of-line body lives, a string's payload being
+    /// the other one (`rfc/model/memory/buffers.md`). What that buys over the
+    /// ordinary allocator is the ownership protocol: a table dies wherever
+    /// its last reference is dropped, so a storage chunk is routinely
+    /// freed by a thread that did not allocate it, and the buffer block
+    /// carries the owner and the stack such a free posts to.
+    ///
+    /// Both arenas split by size — a body over a block payload is a
+    /// dedicated run — and in both the split belongs to the arena rather
+    /// than here: a storage is sized from a program-visible element count,
+    /// so a table that made the test itself would be carrying the block
+    /// size around with it.
+    fn alloc(&self, bytes: usize) -> (*mut u8, usize) {
         match self.category {
-            MemoryCategory::RequestArena => unsafe {
-                (*resolve_arena(std::ptr::null_mut())).alloc(bytes)
-            },
-            MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-                crate::memory::stdapi::ll_alloc(bytes, 8)
-            },
-            MemoryCategory::Immortal => immortal_alloc(bytes),
+            MemoryCategory::RequestArena => {
+                let p = unsafe { (*resolve_arena(std::ptr::null_mut())).alloc_body(bytes) };
+                (p, bytes)
+            }
+            MemoryCategory::GcHeap | MemoryCategory::LongLived => {
+                buffer_alloc_longlived_payload(bytes)
+            }
+            MemoryCategory::Immortal => (immortal_alloc(bytes), bytes),
         }
     }
 
-    /// Release storage the table has replaced. Only the heap categories
-    /// free: arena storage goes at the reset, and immortal never goes.
-    fn free_storage(&self, p: *mut u8) {
+    /// Release storage the table has replaced. Only the long-lived
+    /// categories free: arena storage goes at the reset, and immortal
+    /// never goes.
+    ///
+    /// `capacity` is the granted size from [`Table::alloc`], not the
+    /// requested one — the buffer arena's free is size-carrying, and the
+    /// same call is what parks the chunk during a collector epoch and what
+    /// leaves a retained block's bytes alone.
+    fn free_storage(&self, p: *mut u8, capacity: usize) {
         if p.is_null() {
             return;
         }
         match self.category {
             MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-                crate::memory::stdapi::ll_free(p)
+                buffer_free_longlived_payload(p, capacity)
             },
             MemoryCategory::RequestArena | MemoryCategory::Immortal => {}
         }
@@ -664,14 +697,16 @@ impl Table {
     /// then calls this. Nothing here reads a value.
     pub fn dispose(&mut self) {
         let p = self.storage;
+        let capacity = self.storage_capacity;
         self.storage = std::ptr::null_mut();
+        self.storage_capacity = 0;
         self.nslots = 0;
         self.mask = 0;
         self.cap = 0;
         self.used = 0;
         self.live = 0;
         self.holes = 0;
-        self.free_storage(p);
+        self.free_storage(p, capacity);
     }
 
     /// Iterate live entries in insertion order. This reads no index at
@@ -1218,5 +1253,154 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Where a long-lived table's storage lives, pinned from both ends:
+    /// the block it comes out of is a buffer block, and disposing puts the
+    /// chunk back on that block's free list. While storage came from
+    /// `ll_alloc` it landed in a heap block, so the first assertion failed
+    /// there and the second could not be asked at all.
+    ///
+    /// The return half is proved the way `string.rs` proves it for a
+    /// payload: in critical mode an allocation searches the free lists, so
+    /// the same address coming back means the chunk was really returned
+    /// rather than merely forgotten.
+    #[test]
+    fn heap_storage_is_a_buffer_arena_chunk_and_is_returned_to_it() {
+        use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK, BLOCK_PAYLOAD};
+        use crate::memory::buffer::{PressureMode, set_pressure_mode};
+        use crate::memory::buffer_arena::with_buffer_arena;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let mut m = Table::empty(MemoryCategory::GcHeap, 0x243F_6A88_85A3_08D3);
+        m.insert(Key::Int(1), Value::int(1));
+        let storage = m.storage;
+        let capacity = m.storage_capacity;
+        assert!(!storage.is_null());
+        assert!(
+            capacity <= BLOCK_PAYLOAD,
+            "a table of one entry is a chunk, not an OS-direct run"
+        );
+
+        let kind = unsafe { *(((storage as usize) & !BLOCK_MASK) as *const u32) };
+        assert_eq!(
+            kind, BLOCK_KIND_BUFFER,
+            "the storage came from somewhere other than the buffer arena"
+        );
+
+        m.dispose();
+
+        set_pressure_mode(PressureMode::Critical);
+        let (reused, _) = with_buffer_arena(|a| a.alloc(capacity));
+        set_pressure_mode(PressureMode::Plenty);
+        assert_eq!(reused, storage, "the storage was not returned to the arena");
+        with_buffer_arena(|a| unsafe { a.free(reused, capacity) });
+    }
+
+    /// Past a block payload the storage is an OS-direct run instead, the
+    /// arena's chunks being bounded by one block. The doubling that
+    /// crosses the line frees a chunk and allocates a run, and teardown
+    /// then frees the run; both are dispatched on the block kind, so a
+    /// storage that lands in the wrong half is released by the wrong
+    /// allocator. The table also has to still answer for every key it held
+    /// before the crossing.
+    #[test]
+    fn a_storage_over_a_block_payload_is_an_os_direct_run() {
+        use crate::memory::block_pool::{BLOCK_KIND_LARGE_RUN, BLOCK_MASK, BLOCK_PAYLOAD};
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        for i in 0..1100i64 {
+            m.insert(Key::Int(i), Value::int(i));
+        }
+        assert!(
+            m.0.storage_capacity > BLOCK_PAYLOAD,
+            "the table never grew past one block, so this proves nothing"
+        );
+
+        let kind = unsafe { *(((m.0.storage as usize) & !BLOCK_MASK) as *const u32) };
+        assert_eq!(
+            kind, BLOCK_KIND_LARGE_RUN,
+            "a storage larger than a block is a run of blocks, which is what \
+             decides the free path that releases it"
+        );
+        for i in 0..1100i64 {
+            assert_eq!(m.get(Key::Int(i)).unwrap().as_int(), i);
+        }
+    }
+
+    /// The reason the storage moved here at all: a table dies wherever its
+    /// last reference is dropped, so the thread that frees a storage is
+    /// routinely not the one that allocated it. What this pins is that the
+    /// foreign free reaches the owner's block and leaves it alive — the
+    /// posting stack itself is the arena's own contract, tested there.
+    /// Under Miri it is also the only exercise of that path in this
+    /// module.
+    #[test]
+    fn a_table_disposed_on_another_thread_leaves_the_owners_block_alive() {
+        use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK};
+        let _g = crate::memory::block_pool::test_guard();
+
+        let mut m = t();
+        m.insert(Key::Int(1), Value::int(1));
+        let storage = m.0.storage as usize;
+
+        // A `Table` holds raw pointers, so it is not `Send` by inference.
+        // Handing one to another thread to die on is the case the buffer
+        // arena's ownership protocol exists for, not a violation of it.
+        struct HandOver(Table);
+        unsafe impl Send for HandOver {}
+        let carried = HandOver(std::mem::replace(
+            &mut m.0,
+            Table::empty(MemoryCategory::GcHeap, 0),
+        ));
+
+        std::thread::spawn(move || {
+            let mut carried = carried;
+            carried.0.dispose();
+        })
+        .join()
+        .unwrap();
+
+        let kind = unsafe { *((storage & !BLOCK_MASK) as *const u32) };
+        assert_eq!(
+            kind, BLOCK_KIND_BUFFER,
+            "the owner's block went home while the owner still held it"
+        );
+    }
+
+    /// A request-arena table has to cross the same line, and the arena
+    /// splits at it too: `Arena::alloc` asserts on anything larger than a
+    /// block payload, and a run that size belongs to `alloc_large`, which
+    /// records it so the reset frees it. Without the split the 1025th
+    /// element of a request array kills the process, the release profile
+    /// aborting rather than unwinding.
+    #[test]
+    fn a_request_arena_storage_over_a_block_takes_the_large_run_path() {
+        use crate::memory::arena::Arena;
+        use crate::memory::block_pool::BLOCK_PAYLOAD;
+        use crate::memory::context::set_current_context;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut context = LLContext { arena: arena_ptr };
+        let context_ptr: *mut LLContext = &mut context;
+        set_current_context(context_ptr);
+
+        let mut m = Table::empty(MemoryCategory::RequestArena, 0x243F_6A88_85A3_08D3);
+        for i in 0..1100i64 {
+            m.insert(Key::Int(i), Value::int(i));
+        }
+        assert!(
+            m.storage_capacity > BLOCK_PAYLOAD,
+            "the table never grew past one block, so this proves nothing"
+        );
+        for i in 0..1100i64 {
+            assert_eq!(m.get(Key::Int(i)).unwrap().as_int(), i);
+        }
+
+        m.dispose();
+        set_current_context(std::ptr::null_mut());
+        arena.reset(|_| {});
     }
 }

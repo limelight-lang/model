@@ -100,6 +100,25 @@ versions live in `docs/history/`, marked at the top.
   program's half of that check is owed by the compiler. Neither arm
   defends against hash flooding — that is the table's debt
   (`dev/DECISIONS.md`, 2026-08-04).
+- Arrays: `src/array/` — storage strategy 3 of `rfc/model/arrays.md`, the
+  ordered hash designed in `rfc/model/arrays-hashtable.md`. One storage
+  allocation holds `u32` index slots followed by a dense insertion-ordered
+  array of 40-byte entries (`entry.rs`); the collision link is an explicit
+  `next` index rather than state threaded through the element, which the
+  store barrier would sever by writing all sixteen bytes of a value.
+  `table.rs` is the core — lookup, insert, remove, growth by compaction or
+  doubling, the flood backstop that escalates a table once to a keyed hash
+  over the key bytes, and element references, which are `ReferenceBox`es
+  because growth moves an entry. Storage is a **buffer-arena** chunk in
+  the two long-lived categories, a request-arena body in a request array
+  and an immortal-region allocation in an immortal one; both arenas split
+  by size, so a storage over one block payload is a dedicated run. It
+  never comes from `entity_alloc`, whose blocks the collector reads as
+  entities.
+  `entity.rs` is the wrapper supplying the `RcHeader`: an array carries no
+  class pointer, the same construction as a string, because the entity
+  kind already says what it is. What is still unbuilt is listed at the
+  head of `PLAN.md`.
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted. Registered by `promote` at reset,
   read by both of `heap`'s enumerators. This is what makes a
@@ -176,8 +195,8 @@ carries `(pointer, size)` (`dev/DECISIONS.md`, 2026-08-04). Design:
 `rfc/model/gc/heap-design.md`.
 
 Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's
-out-of-line body lives: a string's payload today, an array's storage
-next. Bump allocation with a per-block free list, and **the object
+out-of-line body lives: a string's payload and an array's table storage.
+Bump allocation with a per-block free list, and **the object
 heap's ownership rules**: per-block `owner`, per-block lock-free stack
 for frees from other threads, owner-written `live`, hand-over to a global
 abandoned list at thread exit, adoption on the refill path
