@@ -372,29 +372,46 @@ the shape of the problem is more important than the four instances.
     ReferenceBox holding the array, which is `$a['x'] = &$a` — never
     becomes a candidate. Both configurations are required legs of the
     gate, so rc-trace is green today with a systematic leak.
-    **The bound the arm waits on, worked out 2026-08-06 and not yet built.**
-    A relaxed reader cannot read `storage` and `used` as an unrelated pair:
-    growth moves the entries, so it could stride a fresh `used` over a
-    stale chunk. The bound needs no layout change and costs the mutator
-    nothing on the hot path. Read `storage`, then `used`, then `storage`
-    again, and retry while the two readings differ — sound because a chunk
-    cannot be recycled underneath the reader mid-epoch, since buffer frees
-    park while an epoch is in flight (item 16, 2026-08-04). That is what
-    parked frees are worth here: they do not bound the stride, they remove
-    the ABA that would make the double read a lie.
+    **The bound the arm waits on is a design question, not an
+    implementation one — 2026-08-06, and the first answer was wrong within
+    the hour.** A relaxed reader cannot read `storage`, `nslots` and `used`
+    as unrelated words: growth moves the entries, so it could stride a
+    fresh count over a stale chunk. The obvious repair — read `storage`,
+    then the counts, then `storage` again, retrying while the two readings
+    differ — is refuted by `Table::compact`, which slides live entries down
+    **inside the same chunk** and lowers `used`. The storage pointer does
+    not change, so the double read sees nothing and the reader walks
+    entries that moved under it. Whatever the bound is, it has to cover an
+    in-place rearrangement as well as a move.
 
-    **What must change on the mutator side, and it is a defect today
-    rather than an omission.** `Table::insert` bumps `self.used` *before*
-    it writes the entry (`array/table.rs`, the `let k = self.used;
+    A version counter bumped by both operations is the obvious next shape:
+    read the version, read the three words, read the version again, retry
+    while it changed. It costs the mutator one relaxed store per growth and
+    per compaction, both rare, and nothing on insert or lookup.
+
+    **What it does not answer, and what makes this Edmond's rather than
+    mine:** what a walker does when it cannot get a consistent read. Giving
+    up and treating the array as opaque is the *dangerous* direction — a
+    missed entity contributes none of its out-edges, so its children read
+    as less rooted than they are, which is exactly the failure mode the
+    census hunt spent a session on. An unbounded retry against a mutator
+    that keeps compacting is not obviously better. The third option is to
+    make the array's entries immovable while an epoch is in flight, which
+    is a cost on the mutator and a new coupling between the table and the
+    collector.
+
+    **What must change on the mutator side either way, and it is a defect
+    today rather than an omission.** `Table::insert` bumps `self.used`
+    *before* it writes the entry (`array/table.rs`, the `let k = self.used;
     self.used += 1;` pair). A reader that sees the bumped count reads an
     entry nobody has written. It is latent while nothing walks an array
     concurrently and becomes live at exactly the commit that teaches the
-    tracer to — which is why it belongs to this item and not to a separate
-    one: it has no observable until then, so it cannot carry a regression
-    test of its own. The repair is publication order, the same rule the
-    factory obeys for a header: write the entry, then publish the count
-    with a release store; and in `grow`, copy first, then publish the new
-    `storage`.
+    tracer to, which is why it has no regression test of its own. The
+    repair is publication order — write the entry, then publish the count —
+    and the same rule applies to `grow`: fill the new chunk, then publish
+    `storage` last. Both stores the collector reads must also *be* atomic
+    stores, or the mutator's plain write against a relaxed load is a data
+    race rather than a torn value.
 
 13. **The dispatch surface itself.** A kind has six doors —
     `ll_entity_die`, `walk::trace_entity`, `collector::trace_mature`, the
