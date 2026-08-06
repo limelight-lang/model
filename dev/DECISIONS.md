@@ -8,6 +8,40 @@ never edited or deleted.
 
 ---
 
+## 2026-08-06 — the array entity, and separation is the shallow copy
+
+`LLArray` is `RcHeader | class | Table`: the table holds no header of its own, so
+it stays testable without an entity around it, and the wrapper supplies the
+refcount, the memory category and the COW flag.
+
+**Separation is shallow, and that is a decision rather than a shortcut.** The
+copy gets its own storage and index, replays the source in order so insertion
+order survives, and retains each counted child once — elements and string keys
+alike. Nothing recurses: both arrays share the children until one is written,
+which is PHP's semantics. This is *not* the store barrier's escape copy, which
+is deep and category-driven; `rfc/model/arrays-hashtable.md` had to separate the
+two because `arrays.md` said shallow and `values.md` said deep about what read
+as one operation, and an implementer who sees only the word "copy" builds the
+wrong one. A refusal part-way releases what the copy retained, disposes the
+private storage and reports — the source is untouched, because nothing was
+published.
+
+**A reference into an element is a `ReferenceBox`, never a pointer to the slot.**
+The other form `values.md` offers retains an owner and points at a slot, which
+is right for slots that never move; an element moves on every growth and every
+compaction. Two tests pin it by doing the thing that would break a slot pointer:
+take the reference, then insert five thousand keys, then write through it.
+
+**Complete enumeration is the tracer's, and the hole marker is why it works.**
+`for_each_value`, `for_each_value_mut` and `for_each_string_key` scan the dense
+prefix and skip holes, which the arena reset requires to be complete rather than
+conservative. A test writes a full sixteen-byte value straight into a dead slot
+and checks the hole survives — that is the whole reason the marker lives in the
+`key` field rather than inside the value, and the reason the `Value` sits last
+in the entry.
+
+---
+
 ## 2026-08-06 — the array table's flood backstop counts equal full hashes, and a latent test defect surfaced with it
 
 The backstop from `rfc/model/arrays-hashtable.md` is built. Per insert and

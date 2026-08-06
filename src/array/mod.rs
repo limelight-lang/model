@@ -7,4 +7,5 @@
 //! no index at all.
 
 pub mod entry;
+pub mod entity;
 pub mod table;

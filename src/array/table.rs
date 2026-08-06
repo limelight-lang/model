@@ -166,6 +166,13 @@ impl Table {
         }
     }
 
+    /// The per-table salt, which a COW copy inherits so that a copied
+    /// table indexes its keys exactly as the original did.
+    #[inline]
+    pub fn salt(&self) -> u64 {
+        self.salt
+    }
+
     /// True once the table has escalated to the keyed byte hash.
     #[inline]
     pub fn is_strong(&self) -> bool {
