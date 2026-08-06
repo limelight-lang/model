@@ -20,6 +20,36 @@ wrapper and the storage's home in the buffer arena (`model` `514c526`,
 
 ### What is left, in order
 
+**First a prerequisite nobody had written down, done 2026-08-06** (task 10
+in the session tool). `ll_array_new` stamps `EntityKind::Array` and the COW
+flag, so the crate produces the entity — but no dispatch site handled it.
+`ll_entity_die` had no arm: a `debug_assert` in debug and a silent no-op in
+release, so children kept the references the array owed them and the
+storage was never returned. `walk::trace_entity` skipped it while its doc
+still called Array a kind "the crate does not yet produce". Both now have
+their arm, sharing one walk — `array::entity::for_each_counted_child`,
+which yields elements and string keys alike, a table holding a reference
+to each string it keys on. Promotion could not have been built before
+this: it takes its survivors from the trace, and a refused carry falls
+back onto the death path.
+
+That work also found a leak in `release_children`: it discarded what
+`ll_release` returns, and that answer is an obligation — whoever gets
+`true` owes the teardown. It goes through the barrier's `drop_ref` now,
+which also settles the escape hold-count and leaves a heap child inside an
+arena array to the release-at-reset log. Seen failing through a nested
+array, whose storage is a buffer chunk that can be watched for.
+
+**Still owed on that front:** `escape_copy` has no Array arm either, and
+there it is an `unreachable!()` rather than a no-op. The design is written
+(`rfc/model/arrays-hashtable.md`, "The COW copy has two depths"): the
+escape copy republishes each element through the barrier with the
+destination's category, so an arena COW child is copied recursively while
+a heap or immortal one is merely retained. Its recursion-depth guard is
+still open in that document, and nesting depth is attacker-shaped input on
+a store path — which is why it was not built in the same breath.
+
+
 1. **The 2 → 3 migration** from the mixed vector: walk the vector in
    order and append each element with its integer key, so insertion order
    survives by construction. Needs the mixed vector to exist first, which

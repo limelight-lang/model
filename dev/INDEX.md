@@ -117,8 +117,13 @@ versions live in `docs/history/`, marked at the top.
   entities.
   `entity.rs` is the wrapper supplying the `RcHeader`: an array carries no
   class pointer, the same construction as a string, because the entity
-  kind already says what it is. What is still unbuilt is listed at the
-  head of `PLAN.md`.
+  kind already says what it is. Its children — elements **and** string
+  keys — come from one walk, `entity::for_each_counted_child`, which both
+  `ll_entity_die`'s Array arm and `walk::trace_entity` go through; the
+  release side uses the barrier's `drop_ref`, so a child the array held
+  last is torn down rather than only decremented. `escape_copy` still has
+  no Array arm and aborts, which is the next thing owed. What is unbuilt
+  is listed at the head of `PLAN.md`.
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted. Registered by `promote` at reset,
   read by both of `heap`'s enumerators. This is what makes a

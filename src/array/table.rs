@@ -206,6 +206,21 @@ impl Table {
         self.used
     }
 
+    /// The storage and the bytes granted for it, or a null pointer when
+    /// the table has never grown — an observation point for tests that
+    /// need to check where the storage went and whether it came back.
+    ///
+    /// Nothing in the crate reads it: every operation over the storage is
+    /// a method here, which is what keeps the layout private. Promotion
+    /// will want both — the address to find the block holding the storage
+    /// when a carry is refused, and the size to copy by — and can drop
+    /// the gate then.
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn storage(&self) -> (*mut u8, usize) {
+        (self.storage, self.storage_capacity)
+    }
+
     #[inline]
     fn slots(&self) -> *mut u32 {
         self.storage as *mut u32

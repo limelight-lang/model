@@ -146,13 +146,18 @@ unsafe fn retain_value(v: &Value) {
     }
 }
 
-/// Release every counted child of `a` — elements and string keys — in
-/// insertion order. The storage is not freed here; teardown does that
-/// after, because the order matters to the collector.
+/// Every counted child of `a` — elements and string keys — in insertion
+/// order, element before its own key.
+///
+/// One walk with three consumers, which is why it exists rather than
+/// three loops over the same entries: teardown releases what it yields,
+/// the tracer counts it as an out-edge, and the arena reset reaches an
+/// array's children through the same tracer. A key is a child like an
+/// element is: a table holds a reference to each string it keys on.
 ///
 /// # Safety
-/// `a` is a live array entity whose children are still counted.
-pub unsafe fn release_children(a: *mut LLArray) {
+/// `a` is a live array entity whose storage is still readable.
+pub unsafe fn for_each_counted_child(a: *mut LLArray, mut visit: impl FnMut(*mut RcHeader)) {
     let n = unsafe { (*a).table.used() };
     for i in 0..n {
         let e = unsafe { (*a).table.entry(i) };
@@ -160,12 +165,55 @@ pub unsafe fn release_children(a: *mut LLArray) {
             continue;
         }
         if e.value.is_refcounted() {
-            unsafe { crate::refcount::ll_release(e.value.entity_ptr()) };
+            visit(e.value.entity_ptr());
         }
         let s = e.string_key();
         if !s.is_null() {
-            unsafe { crate::refcount::ll_release(s as *mut RcHeader) };
+            visit(s as *mut RcHeader);
         }
+    }
+}
+
+/// Release every counted child of `a`. The storage is not freed here;
+/// teardown does that after, because the order matters to the collector.
+///
+/// Each release goes through the store barrier's `drop_ref` rather than
+/// through `ll_release` directly, and the difference is not stylistic.
+/// `ll_release` only decrements and reports; whoever gets `true` owes the
+/// teardown, so dropping that answer leaks every child the array was the
+/// last holder of. `drop_ref` also settles the two rules an owner letting
+/// go has to obey: an arena child held by a longer-lived array loses its
+/// escape hold-count, and a heap child inside an arena array is left to
+/// the release-at-reset log that owns it.
+///
+/// # Safety
+/// `a` is a live array entity whose children are still counted.
+pub unsafe fn release_children(a: *mut LLArray) {
+    let owner_cat = unsafe { crate::object::header_category(a as *const RcHeader) };
+    unsafe {
+        for_each_counted_child(a, |child| {
+            crate::memory::barrier::drop_ref(owner_cat, child);
+        })
+    };
+}
+
+/// Teardown for an array whose count reached zero, or that a collector
+/// owns: children first, then the storage, then the entity's own memory.
+///
+/// The order is forced rather than chosen. `release_children` reads the
+/// storage to find the children, so the storage cannot already be gone;
+/// and a child's death can run user code, which must not meet a table
+/// half-disposed. The entity's own memory follows the same rule as a
+/// string's: only the GC heap frees here, an arena entity dying with its
+/// reset and an immortal one not dying at all.
+///
+/// # Safety
+/// `a` must be a live array entity.
+pub(crate) unsafe fn array_die(a: *mut LLArray) {
+    unsafe { release_children(a) };
+    unsafe { (*a).table.dispose() };
+    if unsafe { crate::object::header_category(a as *const RcHeader) } == MemoryCategory::GcHeap {
+        unsafe { crate::memory::stdapi::ll_free(a as *mut u8) };
     }
 }
 
@@ -318,6 +366,122 @@ mod tests {
             assert_eq!((*(child as *mut RcHeader)).refcount, c0 - 1);
 
             (*a).table.dispose();
+        }
+    }
+
+    /// Death through the kind switch, which is the only door a bare
+    /// entity pointer has. Before the Array arm existed this reached a
+    /// `debug_assert!(false)` and, in release, did nothing at all: the
+    /// children kept the references the array owed them and the storage
+    /// was never returned.
+    #[test]
+    fn dying_through_the_kind_switch_releases_the_children_and_the_storage() {
+        use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK};
+        use crate::memory::buffer::{PressureMode, set_pressure_mode};
+        use crate::memory::buffer_arena::with_buffer_arena;
+        use crate::refcount::{ll_release, ll_retain};
+        let _g = crate::memory::block_pool::test_guard();
+
+        let a = arr();
+        let key = mk(b"key");
+        let value = mk(b"value");
+        unsafe {
+            // One reference each for the array, one for this test, so the
+            // children outlive the array and can be read afterwards.
+            ll_retain(key as *mut RcHeader);
+            ll_retain(value as *mut RcHeader);
+            (*a).table.insert(
+                Key::Str(key),
+                Value::entity(crate::value::Tag::String, value as *mut RcHeader),
+            );
+            let (storage, capacity) = (*a).table.storage();
+            assert!(
+                !storage.is_null(),
+                "the insert allocated storage to release"
+            );
+
+            assert!(
+                ll_release(a as *mut RcHeader),
+                "the array was the last holder"
+            );
+            crate::object::ll_entity_die(a as *mut RcHeader);
+
+            assert_eq!(
+                (*(key as *mut RcHeader)).refcount,
+                1,
+                "the key's reference was not let go"
+            );
+            assert_eq!(
+                (*(value as *mut RcHeader)).refcount,
+                1,
+                "the element's reference was not let go"
+            );
+            // The storage came back: in critical mode an allocation
+            // searches the block's free list, so the same address
+            // returning means teardown really disposed of the table
+            // rather than only dropping the entity.
+            let kind = *(((storage as usize) & !BLOCK_MASK) as *const u32);
+            assert_eq!(
+                kind, BLOCK_KIND_BUFFER,
+                "the storage was not a buffer chunk"
+            );
+            set_pressure_mode(PressureMode::Critical);
+            let (reused, _) = with_buffer_arena(|arena| arena.alloc(capacity));
+            set_pressure_mode(PressureMode::Plenty);
+            assert_eq!(reused, storage, "teardown left the storage unreturned");
+            with_buffer_arena(|arena| arena.free(reused, capacity));
+
+            crate::object::ll_entity_die(key as *mut RcHeader);
+            crate::object::ll_entity_die(value as *mut RcHeader);
+        }
+    }
+
+    /// A child the array was the last holder of has to be torn down, not
+    /// merely decremented. `ll_release` reports the death and the report
+    /// is an obligation: dropping it leaves the child's own memory — and
+    /// everything *it* holds — unreachable and unfreed. Observed through a
+    /// nested array, whose storage is a buffer chunk that can be seen
+    /// coming back.
+    #[test]
+    fn a_child_the_array_held_last_is_torn_down_and_not_only_released() {
+        use crate::memory::buffer::{PressureMode, set_pressure_mode};
+        use crate::memory::buffer_arena::with_buffer_arena;
+        use crate::refcount::ll_release;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let outer = arr();
+        let inner = arr();
+        unsafe {
+            (*inner).table.insert(Key::Int(1), Value::int(1));
+            let (storage, capacity) = (*inner).table.storage();
+            assert!(!storage.is_null(), "the inner array has storage to reclaim");
+
+            // The inner array's only reference is the outer array's
+            // element, so the outer's death is the inner's death.
+            (*outer).table.insert(
+                Key::Int(0),
+                Value::entity(crate::value::Tag::Array, inner as *mut RcHeader),
+            );
+
+            assert!(ll_release(outer as *mut RcHeader));
+            crate::object::ll_entity_die(outer as *mut RcHeader);
+
+            // Both tables are freed by this teardown — the inner one by
+            // the cascade, the outer one by its own dispose — and the
+            // free list is LIFO, so the inner chunk is the second one
+            // back, not the first.
+            set_pressure_mode(PressureMode::Critical);
+            let first = with_buffer_arena(|arena| arena.alloc(capacity));
+            let second = with_buffer_arena(|arena| arena.alloc(capacity));
+            set_pressure_mode(PressureMode::Plenty);
+            assert!(
+                first.0 == storage || second.0 == storage,
+                "the inner array was released but never torn down: its storage never came back"
+            );
+            with_buffer_arena(|arena| {
+                arena.free(first.0, first.1);
+                arena.free(second.0, second.1);
+            });
         }
     }
 

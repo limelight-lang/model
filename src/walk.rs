@@ -30,11 +30,12 @@ unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
 /// does not exist is a wild read (`rfc/model/gc/rc-walk.md`, "What the
 /// walker traces").
 ///
-/// A reference box (kind 3) is traced through its one Value. Kinds the
-/// crate does not yet produce (Array, Box) are skipped, which is
-/// conservative: an omitted source only removes in-edges, so its targets
-/// are pinned as roots. Array tracing must land with Phase C, before the
-/// collector ships — String, WeakRef and Box stay skipped by design. A
+/// A reference box (kind 3) is traced through its one Value. An array
+/// (kind 2) is traced through the counted children of its table —
+/// elements and string keys alike, since a table holds a reference to
+/// each string it keys on. Box is skipped, which is conservative: an
+/// omitted source only removes in-edges, so its targets are pinned as
+/// roots. String, WeakRef and Box stay skipped by design. A
 /// string is a leaf whichever layout it has: its payload is bytes, never
 /// entities, so no out-edge of one can close a ring. (Box: untraceable C
 /// payload; a weak cell's target is deliberately uncounted, `src/weak.rs`.)
@@ -46,8 +47,15 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
     const OBJECT: u32 = EntityKind::Object as u32;
     const LAZY: u32 = EntityKind::Lazy as u32;
     const REFERENCE: u32 = EntityKind::Reference as u32;
+    const ARRAY: u32 = EntityKind::Array as u32;
     match kind {
         OBJECT | LAZY => unsafe { for_each_counted_child(entity as *mut Object, visit) },
+        ARRAY => unsafe {
+            crate::array::entity::for_each_counted_child(
+                entity as *mut crate::array::entity::LLArray,
+                visit,
+            )
+        },
         REFERENCE => {
             let v = unsafe { (*(entity as *mut crate::reference::LLReference)).value };
             if v.is_refcounted() {
@@ -1251,5 +1259,53 @@ mod tests {
             2,
             "__destruct ran for both"
         );
+    }
+
+    /// An array's out-edges are its elements **and** its string keys: the
+    /// table holds a reference to each string it keys on, so a walk that
+    /// counts only elements under-counts the in-edges of every key and
+    /// pins it as a root. Before the Array arm existed the walk yielded
+    /// nothing at all here, which is conservative but makes a ring
+    /// through an array uncollectable.
+    #[test]
+    fn an_array_is_traced_through_its_elements_and_its_string_keys() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::string::ll_string_new;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let key = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"k") };
+        let value = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"v") };
+        unsafe {
+            (*a).table.insert(
+                Key::Str(key),
+                Value::entity(Tag::String, value as *mut RcHeader),
+            );
+            // An integer key with a plain value adds no edge of its own,
+            // and a hole must add none either.
+            (*a).table.insert(Key::Int(7), Value::int(7));
+            (*a).table.remove(Key::Int(7));
+        }
+
+        let mut seen = Vec::new();
+        unsafe { trace_entity(a as *mut RcHeader, |child| seen.push(child as usize)) };
+
+        assert!(
+            seen.contains(&(key as usize)),
+            "the string key is not an out-edge"
+        );
+        assert!(
+            seen.contains(&(value as usize)),
+            "the element is not an out-edge"
+        );
+        assert_eq!(seen.len(), 2, "a hole or an integer key produced an edge");
+
+        unsafe {
+            (*a).table.dispose();
+            crate::object::ll_entity_die(a as *mut RcHeader);
+            crate::object::ll_entity_die(key as *mut RcHeader);
+            crate::object::ll_entity_die(value as *mut RcHeader);
+        }
     }
 }
