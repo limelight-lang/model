@@ -4,6 +4,7 @@
 //! This crate contains runtime *mechanics* only — no PHP standard library
 //! functions live here.
 
+pub mod array;
 pub mod class;
 #[cfg(feature = "rc-walk")]
 pub(crate) mod collector;
