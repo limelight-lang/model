@@ -1076,6 +1076,18 @@ Object model, deferred by design:
 - [ ] Allocation telemetry layer 2 / debug mode — full design in
   `dev/design/debug-modes.md`; build order is its section 9. Designed, not
   scheduled.
+- [ ] **The opt-in event journal, designed to completion** — Edmond's,
+  2026-08-06, and the one part of debug mode he wants finished rather than
+  sketched. `debug-modes.md` already names it (layer 2, "the opt-in event
+  log") and is the home; it gains a section rather than a new document. The
+  acceptance criterion is the hunt of that day: under load the whole-heap
+  census lost two live strings, and what settled it was a hand-made ring of
+  `(thread, address)` recorded at string death with the window between two
+  censuses marked. It answered only because the shape was picked by hand for
+  that one question, and the journal's job is to make that shape ordinary.
+  First decision, because everything follows from it: per-thread rings or one
+  global ring — that is what decides whether events can be ordered across
+  threads at all, and cross-thread order was exactly what the hunt needed.
 
 ## Cross-cutting (every phase)
 

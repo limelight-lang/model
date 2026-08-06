@@ -107,8 +107,8 @@ pub(crate) unsafe fn values<'a>(t: *const Template) -> &'a [Value] {
 /// `base` is a live template instance, and under a relaxed reader its
 /// cells may be concurrently written.
 #[inline]
-pub(crate) unsafe fn value_count_at<R: crate::walk::CellReader>(base: usize) -> usize {
-    let shape = unsafe { R::word(base + 16) } as *const TemplateShape;
+pub(crate) unsafe fn value_count_at<R: crate::walk::CellReader>(base: *const u8) -> usize {
+    let shape = unsafe { R::ptr(base.add(16)) } as *const TemplateShape;
     unsafe { (*shape).value_count as usize }
 }
 

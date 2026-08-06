@@ -403,22 +403,26 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
     mut visit: impl FnMut(crate::walk::Cell),
 ) {
     let flags = unsafe { (*cls).flags };
-    let start = base as usize;
 
     // A template's children are counted by its shape, because one class
     // serves every interpolation site and the runs would have to differ
     // per instance (`crate::template`).
     if flags & crate::class::CLASS_TEMPLATE != 0 {
-        let n = unsafe { crate::template::value_count_at::<R>(start) };
+        let n = unsafe { crate::template::value_count_at::<R>(base) };
         for i in 0..n {
-            let addr = start + crate::template::VALUES_OFFSET + i * 16;
-            let raw = unsafe { R::word(addr) };
-            let meta = unsafe { R::word(addr + 8) };
-            if Value::refcounted_in_meta_word(meta) {
+            let at = unsafe { base.add(crate::template::VALUES_OFFSET + i * 16) };
+            // A Box payload is read as an **integer**, not as a pointer,
+            // and that is `Value`'s doing rather than a shortcut here:
+            // `Value::entity` stores the address as a `u64`, so the bytes
+            // in the slot carry no provenance and reading them back as a
+            // pointer yields one Miri rejects on first use. `entity_ptr`
+            // has always recovered it by the same cast. Found by Miri.
+            let child = unsafe { R::word(at) } as *mut RcHeader;
+            if Value::refcounted_in_meta_word(unsafe { R::word(at.add(8)) }) {
                 visit(crate::walk::Cell {
-                    addr,
-                    raw,
-                    child: raw as *mut RcHeader,
+                    addr: at as usize,
+                    raw: child as u64,
+                    child,
                 });
             }
         }
@@ -428,13 +432,13 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
     // Pointer runs: bare 8-byte pointers, `NULL` is empty.
     for run in unsafe { (*cls).ptr_runs() } {
         for i in 0..run.count {
-            let addr = start + (run.offset + i * 8) as usize;
-            let raw = unsafe { R::word(addr) };
-            if raw != 0 {
+            let at = unsafe { base.add((run.offset + i * 8) as usize) };
+            let child = unsafe { R::ptr(at) } as *mut RcHeader;
+            if !child.is_null() {
                 visit(crate::walk::Cell {
-                    addr,
-                    raw,
-                    child: raw as *mut RcHeader,
+                    addr: at as usize,
+                    raw: child as u64,
+                    child,
                 });
             }
         }
@@ -442,14 +446,14 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
     // Box runs: 16-byte Values, empty is the refcounted flag clear.
     for run in unsafe { (*cls).box_runs() } {
         for i in 0..run.count {
-            let addr = start + (run.offset + i * 16) as usize;
-            let raw = unsafe { R::word(addr) };
-            let meta = unsafe { R::word(addr + 8) };
-            if Value::refcounted_in_meta_word(meta) {
+            let at = unsafe { base.add((run.offset + i * 16) as usize) };
+            // An integer read — see the template arm above.
+            let child = unsafe { R::word(at) } as *mut RcHeader;
+            if Value::refcounted_in_meta_word(unsafe { R::word(at.add(8)) }) {
                 visit(crate::walk::Cell {
-                    addr,
-                    raw,
-                    child: raw as *mut RcHeader,
+                    addr: at as usize,
+                    raw: child as u64,
+                    child,
                 });
             }
         }

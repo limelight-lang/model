@@ -58,13 +58,34 @@ pub(crate) struct Cell {
 /// descriptor and a template shape are immortal static data no mutator
 /// writes, so both instantiations read those plainly, and the word that
 /// *points* at them is what goes through the reader.
+/// **Two methods, and the second is not a convenience.** A cell holding a
+/// pointer must be read *as* a pointer: recovering one from an integer
+/// load strips its provenance, and Miri rejects the first dereference of
+/// the result unless the target's address happens to have been exposed as
+/// an integer somewhere. The collector could afford the integer form —
+/// everything it chases is entity or immortal memory whose address was —
+/// but the quiescent walk chases a template shape that may be an ordinary
+/// Rust static, and that one Miri refuses. Found by Miri, not by reasoning:
+/// the first version of this trait had only `word`, and
+/// `template::tests::a_dying_template_releases_what_it_held` reported a
+/// dangling pointer with no provenance.
 pub(crate) trait CellReader {
-    /// Read the eight bytes at `addr`.
+    /// Read the eight bytes at `addr` as an integer. For the second word
+    /// of a `Value`, which carries the tag and flags rather than an
+    /// address.
     ///
     /// # Safety
     /// `addr` must be an aligned, readable eight-byte word of a live
     /// entity.
-    unsafe fn word(addr: usize) -> u64;
+    unsafe fn word(at: *const u8) -> u64;
+
+    /// Read the pointer at `at`, **keeping its provenance**. For a class
+    /// word, a template's shape word, a pointer slot, and a Box's payload
+    /// word.
+    ///
+    /// # Safety
+    /// As [`CellReader::word`], and the cell must hold a pointer or null.
+    unsafe fn ptr(at: *const u8) -> *mut u8;
 }
 
 /// The ordinary reader: a quiescent heap, or memory only this thread can
@@ -73,8 +94,13 @@ pub(crate) struct PlainCells;
 
 impl CellReader for PlainCells {
     #[inline]
-    unsafe fn word(addr: usize) -> u64 {
-        unsafe { (addr as *const u64).read() }
+    unsafe fn word(at: *const u8) -> u64 {
+        unsafe { (at as *const u64).read() }
+    }
+
+    #[inline]
+    unsafe fn ptr(at: *const u8) -> *mut u8 {
+        unsafe { (at as *const *mut u8).read() }
     }
 }
 
@@ -86,9 +112,21 @@ pub(crate) struct RelaxedCells;
 #[cfg(feature = "rc-walk")]
 impl CellReader for RelaxedCells {
     #[inline]
-    unsafe fn word(addr: usize) -> u64 {
+    unsafe fn word(at: *const u8) -> u64 {
         unsafe {
-            (*(addr as *const std::sync::atomic::AtomicU64))
+            (*(at as *const std::sync::atomic::AtomicU64))
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    /// `AtomicPtr`, not an `AtomicU64` cast back: the atomic load keeps
+    /// the provenance an integer load would drop, so the collector gains
+    /// what the quiescent walk needed rather than merely tolerating what
+    /// it had.
+    #[inline]
+    unsafe fn ptr(at: *const u8) -> *mut u8 {
+        unsafe {
+            (*(at as *const std::sync::atomic::AtomicPtr<u8>))
                 .load(std::sync::atomic::Ordering::Relaxed)
         }
     }
@@ -165,17 +203,20 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
         OBJECT | LAZY => {
             // The class word is the entity's own and goes through the
             // reader; the descriptor it names is immortal and does not.
-            let class = unsafe { R::word(entity as usize + 8) } as *const crate::class::Class;
+            let class =
+                unsafe { R::ptr((entity as *const u8).add(8)) } as *const crate::class::Class;
             unsafe { crate::object::for_each_counted_cell::<R>(entity as *mut u8, class, visit) };
         }
         REFERENCE => {
-            let addr = entity as usize + 8;
-            let raw = unsafe { R::word(addr) };
-            if Value::refcounted_in_meta_word(unsafe { R::word(addr + 8) }) {
+            let at = unsafe { (entity as *const u8).add(8) };
+            // A Box payload, so an integer read — see
+            // `object::for_each_counted_cell`.
+            let child = unsafe { R::word(at) } as *mut RcHeader;
+            if Value::refcounted_in_meta_word(unsafe { R::word(at.add(8)) }) {
                 visit(Cell {
-                    addr,
-                    raw,
-                    child: raw as *mut RcHeader,
+                    addr: at as usize,
+                    raw: child as u64,
+                    child,
                 });
             }
         }
