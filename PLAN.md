@@ -8,31 +8,40 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## First, out of turn: the opt-in event journal, designed to completion
+## First, out of turn: the opt-in event journal — designed, not built
 
-Edmond's, 2026-08-06, and he put it ahead of the refactor below. Efficient
-in-memory write journals, active behind an option, with investigations
-conducted through them. Home is `dev/design/debug-modes.md`, which already
-names this (layer 2, "the opt-in event log") and is design-only end to end, so
-it gains a section rather than a new document.
+Edmond's, 2026-08-06, and he put it ahead of the refactor below. The design
+is `dev/design/debug-modes.md` §9, and it is complete enough to build from:
+the record and its width, the ring, how a window is marked and read back,
+what is recorded by default, the cost when the option is off, and the rules
+the record path obeys. Three things are left open there and each is named as
+open. Build order moved with it — the journal is now item 1 of §10, ahead of
+the registry.
 
-**The acceptance criterion is the hunt of that day**, and it belongs in the
-design. Under load the whole-heap census lost two live strings. What settled it
-was a hand-made ring of `(thread, address)` recorded at string death, with the
-window between two censuses marked by the ring's own sequence number, so the
-question became "what was recorded inside my window". It answered only because
-the shape was picked by hand for that one question; the journal's job is to make
-that shape ordinary.
+**The ring question was answered without Edmond**, who had been asked and had
+not answered when the session ended. **One ring per thread**, no global ring
+and no global sequence number; a window is marked by reading every ring's
+cursor before and after. The reasoning that decided it, and the part he may
+want to overturn: the framing that the hunt needed a *global order* is wrong.
+It needed *membership* in a window, and a cursor pair answers membership
+exactly while costing no atomic read-modify-write on the write path. Two
+properties settled the rest — a single ring lets the hardest-allocating
+thread evict the records of the thread under investigation, and thread
+identity in a per-thread ring lives in the header rather than in every
+record. What is genuinely lost is order across threads, and an investigation
+needing it stamps a shared counter into a payload word on its own event kind,
+paying the contention on that kind alone.
 
-**One question is open and everything follows from it, so start there:
-per-thread rings or one global ring.** A single ring with an atomic bump gives a
-global order for free, and that order is what the hunt needed — the window was
-two reads of one counter. Per-thread rings are cheaper with no contention point,
-but there is then no global order to recover without clocks, counters or
-barriers, and without it "did this happen before my census" has no answer.
-Edmond was asked and had not answered. Do not design past it. Then: what a
-record is and how wide, how a window is marked and read back, the cost when the
-option is off, and what is recorded by default versus on demand.
+**The acceptance criterion is the hunt of that day** and is written into the
+design. Under load the whole-heap census lost two live strings. What settled
+it was a hand-made ring of `(thread, address)` recorded at string death, with
+the window between two censuses marked by the ring's own sequence number. It
+answered only because the shape was picked by hand for that one question; the
+journal is finished when that hunt runs through it with no ring written by
+hand. One consequence of the criterion is worth repeating outside the design:
+when a window overflows a ring, the answer is *unknown* rather than *none* —
+the hunt turned on "no string died inside the window", and a silent eviction
+would have made that finding false.
 
 ## Also open: the census loses a live entity under load
 
@@ -77,15 +86,36 @@ kind. The generalization he asks for takes `*mut RcHeader` at the entrance.
 
 The kind *dispatch* is not the debt — `walk::trace_entity` and
 `ll_entity_die` already take a bare header. The debt is the **slot walk**:
-where a kind keeps its counted children is written out again in every
-operation that needs it, so one layout is known in five places.
-`object::for_each_counted_child` yields children by plain reads;
-`object::sever_counted_slots` strides the same slots again for the lvalue, with
-a doc saying it is deliberately not folded into the first;
-`collector::trace_mature` strides them a third time with relaxed loads, and
-already yields cell addresses, so it is the closest of the three to the general
-shape; `array::entity::for_each_counted_child` and `Table::sever_entries` are
-the same pair over again for the array.
+where a kind keeps its counted children was written out again in every
+operation that needed it, so one layout was known in five places.
+
+**Steps 1 and 2 have landed.** Step 1 (`348d24b`) made the object layout's
+stride one place, `object::for_each_counted_cell`, keyed on `(base, class)` so
+that a headerless static block can be walked too, and generic over a
+`CellReader` with two zero-sized implementations: plain reads for a quiescent
+walk, relaxed atomic reads for the collector, which needs them because a plain
+read racing a mutator store is undefined behaviour rather than the torn read
+Phases 3 and 4 repair. Step 2 (`8bd73d3`) made `trace_cells` the single tracing
+dispatch and deleted `collector::trace_mature` along with the last copy of the
+Box layout arithmetic; the pin is a differential test, which asserts that on a
+quiescent heap the two readers yield the same child set for every walked
+entity. `f5234fd` then repaired what Miri caught inside the reader: a pointer
+cell is read as a pointer and a Box payload as an integer, because
+`Value::entity` stores the address as a `u64` and those bytes carry no
+provenance to recover.
+
+**Step 3 is the sever, and it is what remains.**
+`object::sever_counted_slots` and `Table::sever_entries` still stride their
+layouts separately; folding them in needs the single sever dispatch.
+`6afd220` moved the reference sever onto the store barrier ahead of that,
+because a plain store there raced the collector's relaxed loads.
+
+**Arrays stay outside `trace_cells` deliberately**, and the reason is in
+`8bd73d3` rather than a step left half-done: an array's cells live in storage
+that moves on growth, so a relaxed reader can observe a `used` that outran the
+`storage` it read and stride past the end of a stale chunk. Parked frees keep
+that chunk readable and bound nothing. The bound is item 12's, and until it
+exists `trace_entity` keeps its own array arm and says so.
 
 This is debt rather than taste, and the repository has already paid twice. The
 interpolated template moved its value count from the class to the instance and
@@ -93,21 +123,16 @@ interpolated template moved its value count from the class to the instance and
 wired into the child walkers and not into the sever, and a confirmed-garbage
 ring of two arrays was un-freeable in both configurations until `144b318`.
 
-The work is: inventory every copy and every kind-shaped dispatch, name the SOLID
-violations against this code rather than in the abstract, and design one walk
-that serves tracing, severing and the concurrent trace alike. The nuances that
-have to survive it are known and are not objections to it: `trace_mature` reads
-concurrently with relaxed atomics and cannot use the ordinary accessors, the
-store barrier stays the only writer of a published slot, clearing an array cell
-means a hole rather than a null and an integer-keyed entry has no key cell at
-all, and the child walkers are `#[inline]` and generic precisely so no caller
-pays an indirect call per child (`rfc/model/classes.md`, "Why tracing stays
-data").
+The nuances that have to survive step 3 are known and are not objections to it:
+the collector's reader cannot use the ordinary accessors, the store barrier
+stays the only writer of a published slot, clearing an array cell means a hole
+rather than a null and an integer-keyed entry has no key cell at all, and the
+child walkers are `#[inline]` and generic precisely so no caller pays an
+indirect call per child (`rfc/model/classes.md`, "Why tracing stays data").
 
-**Items 11 and 12 wait on this**, and the reasoning is that both *add arms* to
-doors this refactor may delete: written now they are written twice, and item
-12's arm is itself the third copy of the walk. A Fable pass is directing the
-design and the order of the steps.
+**Items 11 and 12 wait on step 3**, and the reasoning is that both *add arms*
+to doors this refactor may delete: written now they are written twice, and item
+12's arm needs the storage bound the array is excluded for.
 
 This supersedes item 13, whose earlier proposal — exhaustive matches, `const fn`
 predicates and a `specimen` registry — the critic showed would not have caught
@@ -1134,20 +1159,13 @@ Object model, deferred by design:
   whether this is the same mechanism as the deferred CHA-style optimistic
   devirtualization (`classes.md` Deferred).
 - [ ] Allocation telemetry layer 2 / debug mode — full design in
-  `dev/design/debug-modes.md`; build order is its section 9. Designed, not
+  `dev/design/debug-modes.md`; build order is its section 10. Designed, not
   scheduled.
-- [ ] **The opt-in event journal, designed to completion** — Edmond's,
-  2026-08-06, and the one part of debug mode he wants finished rather than
-  sketched. `debug-modes.md` already names it (layer 2, "the opt-in event
-  log") and is the home; it gains a section rather than a new document. The
-  acceptance criterion is the hunt of that day: under load the whole-heap
-  census lost two live strings, and what settled it was a hand-made ring of
-  `(thread, address)` recorded at string death with the window between two
-  censuses marked. It answered only because the shape was picked by hand for
-  that one question, and the journal's job is to make that shape ordinary.
-  First decision, because everything follows from it: per-thread rings or one
-  global ring — that is what decides whether events can be ordered across
-  threads at all, and cross-thread order was exactly what the hunt needed.
+- [x] **The opt-in event journal, designed to completion** — design done
+  2026-08-06, `dev/design/debug-modes.md` §9. One ring per thread, 32-byte
+  fixed records, a window marked by a cursor snapshot across the registry,
+  eviction reported as *unknown* rather than *none*. Not built: it is item 1
+  of the build order, and its first customer is the census flake above.
 
 ## Cross-cutting (every phase)
 

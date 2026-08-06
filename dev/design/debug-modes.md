@@ -487,24 +487,223 @@ nothing when the tools are absent. It does not replace the registry, it
 complements it: they check memory correctness, the registry answers
 "what is alive and for how long".
 
-## 9. Build order, and what is deliberately deferred
+## 9. The event journal
+
+The event journal is a fixed-width record of what the runtime did, written
+into a ring buffer and read back afterwards. It answers one question
+exactly: **what was recorded inside this window.** Layer 1 counts totals
+and the registry (§3) says what exists now; neither can say what happened
+between two moments, which is what an investigation asks.
+
+The acceptance criterion is the hunt of 2026-08-06. Under load the
+whole-heap census lost two live strings, and what settled it was a
+hand-made ring of `(thread, address)` written at string death, with the
+window between the two censuses marked by that ring's own sequence number.
+It answered because the shape was picked by hand for that one question.
+This section is finished when the same hunt can be run through the journal
+without writing a ring by hand.
+
+### 9.1 Decision: one ring per thread
+
+**Each thread journals into its own ring. There is no global ring and no
+global sequence number.** A window is marked by reading every ring's
+cursor before and after the interval, and membership in the window follows
+from the two readings (§9.3).
+
+Three properties decide it against a single shared ring:
+
+- **The write path takes no atomic read-modify-write.** A global ring
+  claims each slot with a `fetch_add` on one line that every journaling
+  thread writes. A per-thread cursor is written by its owner alone. The
+  conditions the journal exists for are the ones a shared counter is worst
+  under: the census reproducer pins four test threads to two cores and
+  runs two spinners beside them.
+- **A noisy thread cannot evict a quiet one's records.** A single ring of
+  K records holds the last K of the whole process, so the thread under
+  investigation loses its history to whichever thread allocates hardest.
+  Per-thread rings give each thread its own K.
+- **The record is narrower**, because thread identity belongs to the ring
+  header instead of to every record in it.
+
+The price is order across threads: two records in different rings cannot
+be ordered against each other. That is affordable because the census hunt
+asked about membership — "did any string die between my two censuses" —
+and a cursor pair answers membership exactly. An investigation that needs
+order across threads defines an event kind that stamps a shared counter
+into a payload word, and pays the contended increment on that kind alone
+rather than on every record in the process.
+
+### 9.2 The record: 32 bytes, fixed width
+
+```rust
+#[repr(C)]
+struct Record {
+    kind: AtomicU32,      // what happened; 0 = unset
+    site: AtomicU32,      // LLAllocSite id (§4.1); 0 = unknown
+    subject: AtomicU64,   // the address the event is about
+    a: AtomicU64,         // kind-specific
+    b: AtomicU64,         // kind-specific
+}
+```
+
+Width is fixed so that the ring is an array and the cursor is an index:
+the reader walks backwards from the cursor, and a variable-width record
+cannot be walked from that end. Two payload words carry every event in
+§9.5; an event needing more state writes two records sharing a `subject`.
+Kind `0` is unset, so a ring that was allocated and never written reads as
+empty rather than as a run of some real kind.
+
+The fields are atomics because the writer is the owning thread and the
+reader is another one: a plain store racing a plain load is a data race,
+which is undefined behaviour rather than the torn value a reader could
+cope with, and Miri reports it. Both sides use relaxed ordering, the same
+way the collector reads headers a mutator may be writing. Asm inspection
+that relaxed access costs no more than a plain one here is owed before
+anyone quotes a figure for the enabled path.
+
+### 9.3 The ring, and how a window is marked
+
+A ring is a header plus `[Record; capacity]`, capacity a power of two, so
+the slot for cursor value `c` is `c & (capacity - 1)`. The cursor counts
+records ever written and does not wrap.
+
+A write fills the record's words with relaxed stores and then publishes
+`cursor + 1` with a release store. A reader loads the cursor with acquire
+ordering, so every record below it is fully written. Because the owner
+keeps writing while the reader copies, the reader re-reads the cursor
+after copying the record at position `p` and discards the copy when
+`cursor - p >= capacity`: the slot was reused underneath it.
+
+The investigator marks a window by snapshotting `(ring, cursor)` for every
+registered ring at the start and again at the end. For each ring the
+records at `[c_start, c_end)` were written inside the window. A thread
+that started inside it has `c_start = 0`, which is the correct answer
+rather than an approximation, and a thread that exited inside it keeps its
+ring (§9.4) with its final cursor as `c_end`.
+
+**Eviction is reported, never hidden.** When `c_end - c_start >= capacity`
+the window overflowed that ring and its answer is *unknown*, not *none*.
+The hunt turned on the finding that no string died inside the window, and
+a silent eviction converts that finding into a false one. An empty answer
+is worth having only if it can be trusted.
+
+### 9.4 Where a ring lives, and what happens at thread exit
+
+A ring is allocated on the thread's first record through `ll_malloc`
+(`memory/stdapi.rs`) — never through `entity_alloc`, never from an arena.
+The journal has to be readable while the collector holds an epoch and
+while an arena resets, and it has to record events raised from inside the
+allocator without re-entering it. If the allocation fails, journaling is
+off for that thread and the journaled operation proceeds.
+
+Rings outlive their threads, because a thread's records matter most once
+it is gone — the standing hypothesis about the census flake is about a
+*finishing* thread. At exit the ring is handed to a global list under a
+`Mutex`, the shape `buffer_arena` already uses for abandoned blocks
+(`ABANDONED`, `buffer_arena.rs:174`). One registry holds live and retired
+rings alike, so a window snapshot covers both without a second path.
+
+The TLS cell holding the ring pointer carries **no drop glue**, under the
+rule every per-thread structure reachable from thread exit obeys
+(`dev/DECISIONS.md`, 2026-08-03): exit runs user code and TLS destructor
+order is unspecified. The ring is disposed explicitly from
+`heap::ll_thread_exit`, and it goes **last** in that fixed order, since
+everything disposed before it is worth journaling.
+
+Retired rings are bounded: the registry keeps the most recent R and frees
+the oldest beyond that. A program that creates a thread per request would
+otherwise accumulate rings for the life of the process.
+
+### 9.5 What is recorded by default, and what has to be asked for
+
+A record is written only when its kind is enabled — `enabled & (1 << kind)`
+— one relaxed load of a mask and a predictable branch. Volume is what
+decides the default set, because a ring of K records says nothing about a
+window in which one kind wrote K records by itself.
+
+Default:
+
+- entity birth and entity death, carrying the address and the entity kind;
+- arena reset: begin, end, survivor count;
+- block commissioning and decommissioning, and a block leaving the region
+  registry's reachable set;
+- thread start and thread exit;
+- collector epoch begin and end.
+
+On demand:
+
+- retain and release — the highest-volume event in the runtime, and it
+  evicts every other kind within a few thousand records;
+- store-barrier publishes;
+- buffer chunk allocation and free, including a free parked by an epoch.
+
+The default set is what the census hunt had to build by hand, plus the one
+event it lacked: a block leaving the reachable set is the standing
+hypothesis in `PLAN.md`, and today it can only be inferred from a count
+that came out wrong.
+
+### 9.6 The cost when it is off
+
+Built without the `debug-journal` feature, the record sites compile to
+nothing, by §2's reasoning for every other level: a runtime check on the
+allocation path is itself the cost being measured.
+
+Built with the feature and disabled at runtime, a site costs one relaxed
+load and one predictable branch. **That is not claimed to be free.** The
+sites sit on the allocation and death paths, this crate does not accept
+"probably negligible" (`dev/BENCHMARKS.md`), and the two-arm measurement
+is owed before the feature is enabled anywhere but a development build —
+the same obligation §2 records for sampled mode.
+
+### 9.7 Rules the record path obeys
+
+- **No allocation.** The ring is allocated once per thread and wraps when
+  full.
+- **No lock.** The registry's `Mutex` is taken at thread start, at thread
+  exit and by an investigator, never to write a record.
+- **No re-entry.** A site touches its own ring and returns; a site inside
+  the allocator that journaled through an allocating path would recurse.
+- **No panic and no unwinding.** An argument that makes no sense is
+  recorded as it is; the journal reports, it does not judge.
+- **Order within a ring is that thread's program order.** Across rings
+  there is none (§9.1).
+
+### 9.8 Open
+
+- Capacity per ring, and R, the number of retired rings kept. Both are
+  runtime settings and both defaults are guesses until a hunt runs against
+  them.
+- Whether the kind mask is global or per ring. Per ring lets an
+  investigator journal one suspect thread heavily and leave the rest
+  cheap; a global mask is one load from a line nobody writes. Nothing
+  above depends on the answer.
+- The C ABI an external reader would use. The registry walk has the shape
+  of §3.3's enumerator, so it is that visitor copied, but there is no
+  consumer for it until the compiler exists.
+
+## 10. Build order, and what is deliberately deferred
 
 Ordered by value delivered per unit of work, not by section number:
 
-1. **Heap walk + live registry (level 1).** Answers "what objects exist,
+1. **The event journal (§9).** Ahead of the registry by Edmond's ruling of
+   2026-08-06: the registry says what exists now, and every open
+   investigation in `PLAN.md` asks instead what happened between two
+   moments. It needs no ABI change and no compiler cooperation, and its
+   first customer is the census flake.
+2. **Heap walk + live registry (level 1).** Answers "what objects exist,
    of what class, in which memory" — the question with nothing behind it
    today. Needs no ABI change, no compiler cooperation, no layout
    change.
-2. **Per-request leak report.** Falls out of (1) plus the arena reset
+3. **Per-request leak report.** Falls out of (2) plus the arena reset
    boundary we already have. This is the Zend MM model and the highest
    value for day-to-day work.
-3. **Lifetime histograms (level 2).** Needs the virtual clock and the
+4. **Lifetime histograms (level 2).** Needs the virtual clock and the
    shadow/side-log metadata.
-4. **Integrity checks and fault injection (level 3).** Independent of the
+5. **Integrity checks and fault injection (level 3).** Independent of the
    above; can be built in parallel by anyone.
-5. **Metrics export.** Trivial once (1) and (3) exist, because the
+6. **Metrics export.** Trivial once (2) and (4) exist, because the
    histogram shape was chosen to match.
-6. **The debug ABI, and the attribution it carries** — site id, stack
+7. **The debug ABI, and the attribution it carries** — site id, stack
    id, arena identity (§4, §4.1, §4.2, §6). Implemented last here,
    because it is the only work that needs the compiler, but its **RFC
    should be opened first**: three separate features depend on it, and
