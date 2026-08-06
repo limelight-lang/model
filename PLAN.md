@@ -360,17 +360,42 @@ the shape of the problem is more important than the four instances.
     store path; Edmond was asked to choose between a fixed limit that
     refuses and an iterative copy with an explicit stack, and had not
     answered when the session ended.
-12. **Both collectors are blind to arrays.** `collector::trace_mature`
-    (rc-walk) takes the empty default arm on kind 2, so a ring through a
-    heap array is never collected — the edge in is seen, the edge out is
-    not, the holder reads RC above IN and is judged a root every epoch. It
-    needs its own relaxed-atomic read of the storage, the way `template.rs`
-    needed a third walker with its own stride. And rc-trace's candidate
+12. **Both collectors are blind to arrays.** The concurrent tracer takes
+    no arm on kind 2, so a ring through a heap array is never collected —
+    the edge in is seen, the edge out is not, the holder reads RC above IN
+    and is judged a root every epoch. It no longer needs a stride of its
+    own: `trace_cells` is the one dispatch and the array is excluded from
+    it by decision, so the arm is an arm rather than a fourth walker. And
+    rc-trace's candidate
     gate in `refcount.rs` buffers only kind 0, one masked compare on the
     hot release path, so a ring with no object in it — an array holding a
     ReferenceBox holding the array, which is `$a['x'] = &$a` — never
     becomes a candidate. Both configurations are required legs of the
     gate, so rc-trace is green today with a systematic leak.
+    **The bound the arm waits on, worked out 2026-08-06 and not yet built.**
+    A relaxed reader cannot read `storage` and `used` as an unrelated pair:
+    growth moves the entries, so it could stride a fresh `used` over a
+    stale chunk. The bound needs no layout change and costs the mutator
+    nothing on the hot path. Read `storage`, then `used`, then `storage`
+    again, and retry while the two readings differ — sound because a chunk
+    cannot be recycled underneath the reader mid-epoch, since buffer frees
+    park while an epoch is in flight (item 16, 2026-08-04). That is what
+    parked frees are worth here: they do not bound the stride, they remove
+    the ABA that would make the double read a lie.
+
+    **What must change on the mutator side, and it is a defect today
+    rather than an omission.** `Table::insert` bumps `self.used` *before*
+    it writes the entry (`array/table.rs`, the `let k = self.used;
+    self.used += 1;` pair). A reader that sees the bumped count reads an
+    entry nobody has written. It is latent while nothing walks an array
+    concurrently and becomes live at exactly the commit that teaches the
+    tracer to — which is why it belongs to this item and not to a separate
+    one: it has no observable until then, so it cannot carry a regression
+    test of its own. The repair is publication order, the same rule the
+    factory obeys for a header: write the entry, then publish the count
+    with a release store; and in `grow`, copy first, then publish the new
+    `storage`.
+
 13. **The dispatch surface itself.** A kind has six doors —
     `ll_entity_die`, `walk::trace_entity`, `collector::trace_mature`, the
     candidate gate, `ll_cow_separate`, `escape_copy` — plus
