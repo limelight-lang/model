@@ -55,15 +55,34 @@ a store path — which is why it was not built in the same breath.
    survives by construction. Needs the mixed vector to exist first, which
    it does not — so this may become the reason to build strategy 2 next
    instead.
-2. **Promotion of the storage out of the arena.** An arena survivor's
-   storage is copied into the heap with the entity header fixed in place,
-   the way a string payload is. Every link inside the storage is already
-   an index rather than a pointer, which is what makes the copy legal, and
-   a test pins that no word in the storage points into it. Still to build:
-   the `Array` arm of `carry_external_memory`, the OS-direct transfer that
-   moves a large storage without copying, and the refusal path that
-   retains the payload's block because the reset has no caller to report
-   to.
+2. ~~**Promotion of the storage out of the arena.**~~ — done 2026-08-06.
+   Both routes, the same pair a string's payload takes: an in-block
+   storage is copied into a buffer-arena chunk, and one over a block
+   payload is an OS-direct run the arena forgets, so it keeps its address
+   and nothing can be refused. The flat copy is legal because every link
+   inside the storage is a `u32` index, which a test already pinned.
+
+   **The route into it is not the one the entry assumed.** An array is a
+   COW entity, so it never escapes on its own — the barrier copies a COW
+   value out of the arena instead — and it becomes a survivor only as a
+   *child* of something that did escape. That edge exists only since the
+   tracing arm above, which is why the two had to land in this order.
+
+   Two things the work had to settle. The table keeps its own copy of the
+   memory category, so it can be used without an entity around it, and
+   promotion rewrites the header — so the carry rewrites the copy too, in
+   every outcome including refusal, or every later free of that storage
+   would take an arm that frees nothing. And `promote::traceable_in_full`,
+   a guard the earlier work left in advance, had to learn the Array kind:
+   it asserts that a survivor's children are all enumerable, because the
+   COW reconciliation decides a count from the edges it finds and a
+   skipped kind would erase holders rather than be ignored.
+
+   Two tests, both seen failing: the in-block carry, on the storage's
+   block kind reading arena-retained rather than buffer; and the
+   OS-direct transfer, which segfaults without the `forget_large` — the
+   reset frees every logged run, so a missed record is a use-after-free
+   rather than a leak.
 3. ~~**Thread hand-over.**~~ — done 2026-08-06. Storage in a long-lived
    category is a buffer-arena chunk, so it is under the owner/abandon/adopt
    protocol (`dev/DECISIONS.md`, 2026-08-04), which matters because a table

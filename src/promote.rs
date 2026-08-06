@@ -255,25 +255,41 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
 /// # Safety
 /// `surv` is a live survivor of `arena`, mid-reset.
 unsafe fn carry_external_memory(arena: *mut Arena, surv: *mut RcHeader) -> bool {
-    match unsafe { external_payload(surv) } {
-        Some(s) => unsafe { crate::string::carry_payload_out_of(arena, s) },
-        None => true,
+    match unsafe { external_memory(surv) } {
+        External::StringPayload(s) => unsafe { crate::string::carry_payload_out_of(arena, s) },
+        External::ArrayStorage(a) => unsafe {
+            crate::array::entity::carry_storage_out_of(arena, a)
+        },
+        External::None => true,
     }
 }
 
-/// The survivor as a dynamic string, or `None` — the only kind with
-/// memory of its own outside its entity today. Arrays join it.
+/// What a survivor owns outside its own entity. Two kinds do today; the
+/// rest answer [`External::None`] and cost one flags read.
+enum External {
+    None,
+    StringPayload(*mut crate::string::LLStringDynamic),
+    ArrayStorage(*mut crate::array::entity::LLArray),
+}
+
+/// Classify a survivor once, so the carry and the block it falls back on
+/// cannot disagree about what the entity is.
 ///
 /// # Safety
 /// `surv` must be a live entity.
-unsafe fn external_payload(surv: *mut RcHeader) -> Option<*mut crate::string::LLStringDynamic> {
+unsafe fn external_memory(surv: *mut RcHeader) -> External {
+    use crate::refcount::{COW, ENTITY_KIND_MASK, EntityKind};
     let flags = unsafe { (*surv).flags };
-    let is_string =
-        flags & crate::refcount::ENTITY_KIND_MASK == crate::refcount::EntityKind::String.to_flags();
-    if is_string && flags & crate::refcount::COW == 0 {
-        Some(surv as *mut crate::string::LLStringDynamic)
-    } else {
-        None
+    match flags & ENTITY_KIND_MASK {
+        // Only the dynamic layout holds bytes out of line; an inline
+        // string carries them behind its own header and moves with it.
+        k if k == EntityKind::String.to_flags() && flags & COW == 0 => {
+            External::StringPayload(surv as *mut crate::string::LLStringDynamic)
+        }
+        k if k == EntityKind::Array.to_flags() => {
+            External::ArrayStorage(surv as *mut crate::array::entity::LLArray)
+        }
+        _ => External::None,
     }
 }
 
@@ -284,14 +300,15 @@ unsafe fn external_payload(surv: *mut RcHeader) -> Option<*mut crate::string::LL
 /// # Safety
 /// As [`carry_external_memory`].
 unsafe fn external_memory_block(surv: *mut RcHeader) -> usize {
-    let Some(s) = (unsafe { external_payload(surv) }) else {
-        return 0;
+    let memory = match unsafe { external_memory(surv) } {
+        External::StringPayload(s) => unsafe { (*s).data },
+        External::ArrayStorage(a) => unsafe { crate::array::entity::storage_address(a) },
+        External::None => return 0,
     };
-    let data = unsafe { (*s).data };
-    if data.is_null() {
+    if memory.is_null() {
         return 0;
     }
-    BlockHeader::of_ptr(data as *const u8) as usize
+    BlockHeader::of_ptr(memory as *const u8) as usize
 }
 
 fn index_retained_blocks(survivors: &[*mut RcHeader]) {
@@ -459,8 +476,8 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
 /// The tracer's own skips are conservative for the collector — an omitted
 /// source only removes in-edges, so its targets stay pinned — and they
 /// are the opposite of conservative for a pass that decides a count from
-/// the edges it finds. Arrays are the kind this will catch (Phase C):
-/// they hold counted children and the tracer has no arm for them yet.
+/// the edges it finds. Box is the kind left out: its payload is C memory
+/// nothing here can read.
 fn traceable_in_full(flags: u32) -> bool {
     use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
@@ -469,9 +486,10 @@ fn traceable_in_full(flags: u32) -> bool {
     const REFERENCE: u32 = EntityKind::Reference as u32;
     const STRING: u32 = EntityKind::String as u32;
     const WEAKREF: u32 = EntityKind::WeakRef as u32;
+    const ARRAY: u32 = EntityKind::Array as u32;
     // String and WeakRef are leaves, so "skipped" and "enumerated in
     // full" are the same answer for them.
-    matches!(kind, OBJECT | LAZY | REFERENCE | STRING | WEAKREF)
+    matches!(kind, OBJECT | LAZY | REFERENCE | STRING | WEAKREF | ARRAY)
 }
 
 /// One counting pass over a survivor's reference slots: +1 to arena
@@ -593,6 +611,153 @@ mod tests {
             1,
             "the box's slot is its one holder"
         );
+    }
+
+    /// An arena array reached from an escaping object takes its storage
+    /// with it. The route matters: an array is a COW entity, so it never
+    /// escapes on its own — the barrier copies a COW value out of the
+    /// arena instead — and it becomes a survivor only as a **child** of
+    /// something that did escape. That child edge is what the array's
+    /// tracing arm added, and this is the first thing to walk it.
+    ///
+    /// Without the carry the storage goes back to the block pool at the
+    /// reset while the promoted array still points at it, so the array
+    /// reads whatever the next owner of those bytes writes.
+    #[test]
+    fn an_array_reached_from_an_escapee_carries_its_storage_out() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK};
+        let _g = crate::memory::block_pool::test_guard();
+        let holder_cls = ClassBuilder::new("Cache").prop("last", true).build();
+        let owner_cls = ClassBuilder::new("Owner").prop("items", true).build();
+
+        // One raw pointer per arena and per context, reused: `ll_array_new`
+        // resolves the arena from the mounted context rather than taking
+        // one, and a fresh `&mut` per call would retag the pointer parked
+        // in TLS (`dev/WORKFLOW.md`, Miri).
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut context = LLContext { arena: arena_ptr };
+        let context_ptr: *mut LLContext = &mut context;
+        crate::memory::context::set_current_context(context_ptr);
+
+        let holder =
+            unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+        let owner =
+            unsafe { new_constructed(&mut *context_ptr, owner_cls, MemoryCategory::RequestArena) };
+        let array = unsafe { ll_array_new(MemoryCategory::RequestArena, 0x9E37_79B9) };
+
+        let storage_before = unsafe {
+            (*array).table.insert(Key::Int(1), Value::int(11));
+            (*array).table.insert(Key::Int(2), Value::int(22));
+            crate::array::entity::storage_address(array)
+        };
+        assert!(!storage_before.is_null());
+
+        unsafe {
+            // The array into the arena owner: same category on both sides,
+            // so no escape copy is asked for.
+            let slot = Object::prop_at(owner, 16);
+            assert!(ref_store(
+                arena_ptr,
+                owner as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, array as *mut RcHeader),
+            ));
+            // The heap holder takes the owner: this is the escape, and the
+            // only reason anything here survives.
+            store_prop(arena_ptr, holder, 16, owner);
+        }
+
+        unsafe { arena_reset_full(&mut *arena_ptr) };
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+
+        unsafe {
+            assert_eq!(
+                (*(array as *mut RcHeader)).memory_category(),
+                MemoryCategory::GcHeap,
+                "the array stayed behind in the dying arena"
+            );
+            let storage_after = crate::array::entity::storage_address(array);
+            let kind = *(((storage_after as usize) & !BLOCK_MASK) as *const u32);
+            assert_eq!(
+                kind, BLOCK_KIND_BUFFER,
+                "the storage is still arena memory the reset gave back"
+            );
+            assert_eq!(
+                (*array).table.get(Key::Int(1)).unwrap().as_int(),
+                11,
+                "the carried storage lost its entries"
+            );
+            assert_eq!((*array).table.get(Key::Int(2)).unwrap().as_int(), 22);
+        }
+    }
+
+    /// The other route out: a storage larger than a block payload is an
+    /// OS-direct run the arena logged, and carrying it is making the arena
+    /// forget the record rather than copying anything. Getting that wrong
+    /// is not a leak but a use-after-free — the reset frees every logged
+    /// run, and the promoted array would go on reading the freed memory.
+    /// The address is therefore unchanged, which is the observable.
+    #[test]
+    fn an_over_block_storage_transfers_instead_of_being_copied() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::memory::block_pool::BLOCK_PAYLOAD;
+        let _g = crate::memory::block_pool::test_guard();
+        let holder_cls = ClassBuilder::new("Cache").prop("last", true).build();
+        let owner_cls = ClassBuilder::new("Owner").prop("items", true).build();
+
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut context = LLContext { arena: arena_ptr };
+        let context_ptr: *mut LLContext = &mut context;
+        crate::memory::context::set_current_context(context_ptr);
+
+        let holder =
+            unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+        let owner =
+            unsafe { new_constructed(&mut *context_ptr, owner_cls, MemoryCategory::RequestArena) };
+        let array = unsafe { ll_array_new(MemoryCategory::RequestArena, 0x9E37_79B9) };
+
+        let storage_before = unsafe {
+            for i in 0..1100i64 {
+                (*array).table.insert(Key::Int(i), Value::int(i));
+            }
+            crate::array::entity::storage_address(array)
+        };
+        assert!(
+            unsafe { (*array).table.storage().1 } > BLOCK_PAYLOAD,
+            "the table never grew past one block, so this proves nothing"
+        );
+
+        unsafe {
+            let slot = Object::prop_at(owner, 16);
+            assert!(ref_store(
+                arena_ptr,
+                owner as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, array as *mut RcHeader),
+            ));
+            store_prop(arena_ptr, holder, 16, owner);
+        }
+
+        unsafe { arena_reset_full(&mut *arena_ptr) };
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+
+        unsafe {
+            assert_eq!(
+                crate::array::entity::storage_address(array),
+                storage_before,
+                "an OS-direct storage was copied instead of transferred"
+            );
+            for i in 0..1100i64 {
+                assert_eq!((*array).table.get(Key::Int(i)).unwrap().as_int(), i);
+            }
+        }
     }
 
     #[test]

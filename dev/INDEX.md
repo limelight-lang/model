@@ -121,7 +121,12 @@ versions live in `docs/history/`, marked at the top.
   keys — come from one walk, `entity::for_each_counted_child`, which both
   `ll_entity_die`'s Array arm and `walk::trace_entity` go through; the
   release side uses the barrier's `drop_ref`, so a child the array held
-  last is torn down rather than only decremented. `escape_copy` still has
+  last is torn down rather than only decremented. An arena array that
+  survives a reset **takes its storage with it**, the same two routes a
+  string's payload takes (`table::Table::carry_out_of`, reached from
+  `promote::carry_external_memory`); it gets there as a child of an
+  escapee, never on its own, an array being COW and therefore copied at
+  the barrier rather than counted as an escapee. `escape_copy` still has
   no Array arm and aborts, which is the next thing owed. What is unbuilt
   is listed at the head of `PLAN.md`.
 - Retained-block object indexes: `src/memory/retained.rs` — block

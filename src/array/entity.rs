@@ -197,6 +197,29 @@ pub unsafe fn release_children(a: *mut LLArray) {
     };
 }
 
+/// The address of the array's storage and the bytes granted for it — the
+/// block promotion retains when a carry was refused. Null when the array
+/// never grew a table.
+///
+/// # Safety
+/// `a` must be a live array entity.
+pub(crate) unsafe fn storage_address(a: *mut LLArray) -> *mut u8 {
+    unsafe { (*a).table.storage().0 }
+}
+
+/// Bring a surviving array's storage out of the arena that is about to
+/// reset. One line, because the storage is the table's and so is every
+/// reason: see [`crate::array::table::Table::carry_out_of`].
+///
+/// # Safety
+/// `a` must be a live request-arena array of `arena`, mid-reset.
+pub(crate) unsafe fn carry_storage_out_of(
+    arena: *mut crate::memory::arena::Arena,
+    a: *mut LLArray,
+) -> bool {
+    unsafe { (*a).table.carry_out_of(arena) }
+}
+
 /// Teardown for an array whose count reached zero, or that a collector
 /// owns: children first, then the storage, then the entity's own memory.
 ///
