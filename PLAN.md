@@ -55,11 +55,15 @@ or the string's cached hash — while the index slot comes from a
 makes insertion succeed and lookup lose every key, and it happened twice.
 And table storage must never go through `entity_alloc`: the collector
 reads the first eight bytes of every occupied slot in an entity block as
-an `RcHeader`, and storage has no header. The string stage before it is finished: all 16 tasks
-below are closed, both critic passes are done and their findings fixed,
-and the gate and Miri are green in both configurations as of 2026-08-05.
+an `RcHeader`, and storage has no header.
 
-**What the hashtable design fixes**, so it is not re-litigated: one
+### The design, so it is not re-litigated
+
+The string stage before all this is finished: all 16 tasks below are
+closed, both critic passes are done and their findings fixed, and the gate
+and Miri were green in both configurations as of 2026-08-05.
+
+The table is one
 allocation of `u32` index slots plus a dense insertion-ordered array of
 40-byte entries; the collision link is an explicit `next` field, because
 `values.md` forbids per-slot state in the ValueBox's padding — the store
