@@ -2022,14 +2022,23 @@ mod tests {
         let n = unsafe { ll_entity_reserve(48, 8, cells.as_mut_ptr(), &mut contiguous) };
         assert!(n >= 1 && n <= 8, "an answer between 0 and count; got {n}");
         assert!(contiguous <= n);
-        // The reported run is honest: adjacent at the class stride.
-        let stride = cells[1] as usize - cells[0] as usize;
-        for i in 1..contiguous {
-            assert_eq!(
-                cells[i] as usize - cells[i - 1] as usize,
-                stride,
-                "cell {i} breaks the reported run"
-            );
+        // The reported run is honest: adjacent at a constant class
+        // stride. Two things this used to get wrong, both invisible until
+        // pool pressure made them real. It read `cells[1]` after asserting
+        // only `n >= 1`, so a reserve that answered 1 subtracted from
+        // null. And it took the stride unsigned, while the free list is
+        // LIFO and hands cells back in descending address order, so the
+        // honest stride is negative about as often as not. The run's
+        // length is `contiguous`, not `n`.
+        if contiguous >= 2 {
+            let stride = cells[1] as isize - cells[0] as isize;
+            for i in 1..contiguous {
+                assert_eq!(
+                    cells[i] as isize - cells[i - 1] as isize,
+                    stride,
+                    "cell {i} breaks the reported run"
+                );
+            }
         }
         // Ordinary allocation must not hand out a reserved cell.
         let p = unsafe { entity_alloc(48) };

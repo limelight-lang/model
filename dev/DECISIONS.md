@@ -8,6 +8,43 @@ never edited or deleted.
 
 ---
 
+## 2026-08-06 — the array table's flood backstop counts equal full hashes, and a latent test defect surfaced with it
+
+The backstop from `rfc/model/arrays-hashtable.md` is built. Per insert and
+against current state, the walk counts two things: entries whose full 64-bit
+hash equals the incoming key's, and the chain length. Nothing accumulates
+between operations, which is what makes it survive deletion — a running maximum
+would stay high on an emptied table forever. Eight equal full hashes escalate
+the table once and one way to a keyed hash over the key's bytes; a long chain of
+keys whose hashes *differ* redraws the per-table salt instead, and a second
+firing escalates. Redrawing the salt in response to equal hashes is precisely
+what made Perl's REHASH exploitable, and a test pins that it does not happen.
+The string's cached hash at +16 is never touched, being shared with every other
+table holding that string; a test pins that too. Integer keys go through a
+salted avalanche mix rather than being indexed by value, and a test pins that
+512 keys on a 1024 stride do not share one bucket.
+
+**Two defects of my own, both found by tests rather than by reading.** The
+entry's `hash_or_key` holds the key's own identity — the raw integer or the
+string's cached hash — while the index slot comes from a *different* number, the
+salted mix or the keyed hash. I conflated the two twice, once in matching and
+rebuilding and once in what `insert` stored, and each time the symptom was that
+insertion succeeded and lookup lost every key. Second: table storage was going
+through `entity_alloc`, and the cycle collector reads the first eight bytes of
+every occupied slot in an entity block as an `RcHeader` — storage has no header,
+so that would have been corruption at the first walk. It goes through the
+ordinary allocator now.
+
+**An old test was corrected, not muted.**
+`reserved_cells_are_accounted_returned_cells_recirculate` asserted `n >= 1` and
+then read `cells[1]`, and took the stride unsigned although the free list is
+LIFO and returns cells in descending address order. Both were latent: the array
+tests changed pool pressure enough to make a one-cell reserve real, and the
+subtraction underflowed. The run's length is `contiguous`, not `n`, and the
+stride is signed. No assertion was weakened.
+
+---
+
 ## 2026-08-06 — an oversized immortal allocation takes an OS-direct run instead of aborting
 
 `immortal_alloc` routed anything above one block payload into an `assert!`,

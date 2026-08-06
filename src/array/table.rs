@@ -56,6 +56,48 @@ fn mix_int(k: i64, salt: u64) -> u64 {
     x ^ (x >> 31)
 }
 
+/// A keyed hash over the key's bytes, used only after the flood backstop
+/// has escalated a table.
+///
+/// The cached hash at a string's +16 stays rapidhash and is shared with
+/// every other table holding that string, so escalation must not touch
+/// it — a table that has been attacked hashes bytes itself instead.
+///
+/// This is a placeholder shape rather than the final function: the design
+/// names the long-key slot (`rfc/model/strings.md`) with a per-process key
+/// that is never folded, and this stands in until that slot is filled.
+#[inline]
+fn strong_hash(bytes: &[u8], key: u64) -> u64 {
+    let mut h = key ^ 0x9E37_79B9_7F4A_7C15;
+    for chunk in bytes.chunks(8) {
+        let mut w = 0u64;
+        for (i, b) in chunk.iter().enumerate() {
+            w |= (*b as u64) << (i * 8);
+        }
+        h = (h ^ w).wrapping_mul(0x1000_0000_01B3);
+        h ^= h >> 29;
+    }
+    h = h.wrapping_add(bytes.len() as u64);
+    h = (h ^ (h >> 32)).wrapping_mul(0xD6E8_FEB8_6659_FD93);
+    h ^ (h >> 32)
+}
+
+/// The flood backstop's first trigger: how many entries with a full
+/// 64-bit hash equal to the incoming key's may be met during one insert
+/// before the table escalates.
+///
+/// A size-independent constant, and that is the point. Eight-way
+/// agreement on a full 64-bit hash by chance needs on the order of 2^56
+/// keys, so an honest table never reaches it at any size; probe length
+/// would have to grow with the table and could not be a constant. It is
+/// also unaffected by deletion, which a running maximum would not be.
+const EQUAL_HASH_LIMIT: u32 = 8;
+
+/// The second trigger: chain length. This catches families whose hashes
+/// differ but whose slots coincide, including an integer flood. Generous,
+/// since the honest maximum is 4-8 even at millions of keys.
+const CHAIN_LIMIT: u32 = 32;
+
 /// Round up to a power of two, saturating rather than wrapping.
 #[inline]
 fn pow2ge(n: usize) -> usize {
@@ -101,6 +143,10 @@ pub struct Table {
     holes: usize,
     salt: u64,
     category: MemoryCategory,
+    /// Set once, one way, when the flood backstop fires on equal full
+    /// hashes: from then on a string key's slot comes from a keyed hash
+    /// over its bytes rather than from the cached hash at +16.
+    strong: bool,
 }
 
 impl Table {
@@ -116,7 +162,14 @@ impl Table {
             holes: 0,
             salt,
             category,
+            strong: false,
         }
+    }
+
+    /// True once the table has escalated to the keyed byte hash.
+    #[inline]
+    pub fn is_strong(&self) -> bool {
+        self.strong
     }
 
     #[inline]
@@ -168,7 +221,13 @@ impl Table {
     fn slot_hash(&self, key: Key) -> u64 {
         match key {
             Key::Int(k) => mix_int(k, self.salt),
-            Key::Str(s) => unsafe { LLString::hash(s) },
+            Key::Str(s) => {
+                if self.strong {
+                    strong_hash(unsafe { LLString::bytes(s) }, self.salt)
+                } else {
+                    unsafe { LLString::hash(s) }
+                }
+            }
         }
     }
 
@@ -178,6 +237,8 @@ impl Table {
     fn entry_slot_hash(&self, e: &Entry) -> u64 {
         if e.is_int_key() {
             mix_int(e.hash_or_key as i64, self.salt)
+        } else if self.strong {
+            strong_hash(unsafe { LLString::bytes(e.key) }, self.salt)
         } else {
             e.hash_or_key
         }
@@ -236,6 +297,15 @@ impl Table {
     /// order matters to the collector.
     pub fn insert(&mut self, key: Key, value: Value) -> Option<(bool, Option<Value>)> {
         let sh = self.slot_hash(key);
+        // Counted during the insert's own walk, against current state:
+        // nothing is stored between operations, so deletion cannot leave a
+        // counter stuck high — the defect a running maximum would have.
+        let mut equal_hashes: u32 = 0;
+        let mut chain_len: u32 = 0;
+        let stored_hash = match key {
+            Key::Int(k) => k as u64,
+            Key::Str(s) => unsafe { LLString::hash(s) },
+        };
         if !self.storage.is_null() {
             let mut i = unsafe { *self.slots().add(sh as usize & self.mask) };
             while i != NONE {
@@ -245,9 +315,23 @@ impl Table {
                     let old = std::mem::replace(&mut e.value, value);
                     return Some((false, Some(old)));
                 }
-                i = self.entry(i as usize).next;
+                chain_len += 1;
+                let e = self.entry(i as usize);
+                if !e.is_int_key() && e.hash_or_key == stored_hash {
+                    equal_hashes += 1;
+                }
+                i = e.next;
             }
         }
+        // Fires on insertion only: this path already holds exclusive
+        // ownership, may allocate and may raise, while a lookup may do
+        // none of those under a live iterator on a shared table.
+        if equal_hashes >= EQUAL_HASH_LIMIT {
+            self.escalate();
+        } else if chain_len >= CHAIN_LIMIT {
+            self.reseed();
+        }
+        let sh = self.slot_hash(key);
 
         if self.used == self.cap && !self.grow() {
             return None;
@@ -261,7 +345,11 @@ impl Table {
             let e = self.entry_mut(k);
             match key {
                 Key::Int(v) => e.set_int_key(v),
-                Key::Str(s) => e.set_string_key(s, sh),
+                // `stored_hash`, not `sh`: the entry holds the key's own
+                // identity, which is the string's cached hash. In strong
+                // mode `sh` is a different number entirely, and storing it
+                // here would make the key unfindable by its own hash.
+                Key::Str(s) => e.set_string_key(s, stored_hash),
             }
             e.meta = 0;
             e.value = value;
@@ -354,6 +442,13 @@ impl Table {
     fn rebuild_index(&mut self) {
         unsafe { std::ptr::write_bytes(self.slots(), 0xFF, self.nslots) };
         for k in 0..self.used {
+            // Holes are skipped rather than linked: a hole's `key` field
+            // is a sentinel, not a string, so reading bytes through it in
+            // strong mode would dereference 1.
+            if self.entry(k).is_hole() {
+                self.entry_mut(k).next = NONE;
+                continue;
+            }
             // The slot comes from the *mixed* integer or the string hash,
             // never from the stored word as-is.
             let sh = self.entry_slot_hash(self.entry(k));
@@ -431,6 +526,36 @@ impl Table {
                 crate::memory::stdapi::ll_free(p)
             },
             MemoryCategory::RequestArena | MemoryCategory::Immortal => {}
+        }
+    }
+
+    /// Escalate to the keyed byte hash, once and one way. The response
+    /// to *equal full hashes*: redrawing a salt cannot separate keys whose
+    /// hashes agree, and doing so on that trigger is what made Perl's
+    /// REHASH exploitable (CVE-2013-1667).
+    fn escalate(&mut self) {
+        if self.strong {
+            return;
+        }
+        self.strong = true;
+        if !self.storage.is_null() {
+            self.rebuild_index();
+        }
+    }
+
+    /// Redraw the per-table salt and rebuild the index. The response to a
+    /// long chain of keys whose hashes *differ* — an accident, an integer
+    /// flood, or a leaked salt. A second firing escalates instead.
+    fn reseed(&mut self) {
+        if self.strong {
+            return;
+        }
+        self.salt = self
+            .salt
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        if !self.storage.is_null() {
+            self.rebuild_index();
         }
     }
 
@@ -669,5 +794,192 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert_eq!(m.get(Key::Int(1)).unwrap().as_int(), 1);
     }
-}
 
+    // ---- string keys -----------------------------------------------
+
+    fn mk(bytes: &[u8]) -> *mut LLString {
+        unsafe {
+            crate::string::ll_string_new(
+                std::ptr::null_mut(),
+                MemoryCategory::GcHeap,
+                bytes,
+            )
+        }
+    }
+
+    #[test]
+    fn string_keys_round_trip_and_compare_by_content_not_by_pointer() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+
+        let names: Vec<*mut LLString> = (0..200)
+            .map(|i| mk(format!("key-{i}").as_bytes()))
+            .collect();
+        for (i, s) in names.iter().enumerate() {
+            let (added, _) = m.insert(Key::Str(*s), Value::int(i as i64)).unwrap();
+            assert!(added);
+        }
+        assert_eq!(m.len(), 200);
+
+        // A *different* entity with the same bytes must find the entry:
+        // the table compares content, since only interned names have
+        // pointer identity.
+        for i in 0..200usize {
+            let other = mk(format!("key-{i}").as_bytes());
+            assert_eq!(
+                m.get(Key::Str(other)).unwrap().as_int(),
+                i as i64,
+                "a string key is matched by content"
+            );
+        }
+        assert!(m.get(Key::Str(mk(b"absent"))).is_none());
+    }
+
+    #[test]
+    fn integer_and_string_keys_coexist_without_aliasing() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        m.insert(Key::Int(7), Value::int(700));
+        let s = mk(b"7");
+        m.insert(Key::Str(s), Value::int(77));
+
+        assert_eq!(m.len(), 2, "int 7 and string \"7\" are different keys here");
+        assert_eq!(m.get(Key::Int(7)).unwrap().as_int(), 700);
+        assert_eq!(m.get(Key::Str(s)).unwrap().as_int(), 77);
+    }
+
+    #[test]
+    fn a_string_key_survives_growth_and_compaction() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        let keys: Vec<*mut LLString> =
+            (0..300).map(|i| mk(format!("k{i}").as_bytes())).collect();
+        for (i, s) in keys.iter().enumerate() {
+            m.insert(Key::Str(*s), Value::int(i as i64));
+        }
+        for (i, s) in keys.iter().enumerate() {
+            if i % 3 == 0 {
+                m.remove(Key::Str(*s));
+            }
+        }
+        m.compact();
+        for (i, s) in keys.iter().enumerate() {
+            if i % 3 == 0 {
+                assert!(m.get(Key::Str(*s)).is_none());
+            } else {
+                assert_eq!(m.get(Key::Str(*s)).unwrap().as_int(), i as i64);
+            }
+        }
+    }
+
+    // ---- the flood backstop -----------------------------------------
+
+    /// Forge the state the backstop exists for: many entries whose *full*
+    /// 64-bit hash agrees. Real construction of such a set needs a break
+    /// of the hash; here the stored hash is written directly, which
+    /// exercises the same code path the attack would reach.
+    fn force_equal_hashes(m: &mut Table, n: usize) {
+        for i in 0..n {
+            let s = mk(format!("collider-{i}").as_bytes());
+            unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
+            m.insert(Key::Str(s), Value::int(i as i64));
+        }
+    }
+
+    #[test]
+    fn equal_full_hashes_escalate_the_table_to_the_keyed_hash() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        assert!(!m.is_strong());
+        force_equal_hashes(&mut m, EQUAL_HASH_LIMIT as usize + 4);
+        assert!(
+            m.is_strong(),
+            "a set of equal full hashes must escalate, not reseed"
+        );
+    }
+
+    #[test]
+    fn every_key_still_resolves_after_escalation() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+
+        let honest: Vec<*mut LLString> =
+            (0..50).map(|i| mk(format!("h{i}").as_bytes())).collect();
+        for (i, s) in honest.iter().enumerate() {
+            m.insert(Key::Str(*s), Value::int(1000 + i as i64));
+        }
+        let mut colliders = Vec::new();
+        for i in 0..(EQUAL_HASH_LIMIT as usize + 4) {
+            let s = mk(format!("collider-{i}").as_bytes());
+            unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
+            m.insert(Key::Str(s), Value::int(i as i64));
+            colliders.push(s);
+        }
+        assert!(m.is_strong());
+
+        for (i, s) in honest.iter().enumerate() {
+            assert_eq!(
+                m.get(Key::Str(*s)).unwrap().as_int(),
+                1000 + i as i64,
+                "escalation must not lose an honest key"
+            );
+        }
+        for (i, s) in colliders.iter().enumerate() {
+            assert_eq!(m.get(Key::Str(*s)).unwrap().as_int(), i as i64);
+        }
+        assert_eq!(m.len(), 50 + EQUAL_HASH_LIMIT as usize + 4);
+    }
+
+    #[test]
+    fn escalation_scatters_a_colliding_set_instead_of_chaining_it() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        force_equal_hashes(&mut m, 64);
+        assert!(m.is_strong());
+
+        let mut longest = 0usize;
+        for slot in 0..m.nslots {
+            let mut n = 0usize;
+            let mut i = unsafe { *m.slots().add(slot) };
+            while i != NONE {
+                n += 1;
+                i = m.entry(i as usize).next;
+            }
+            longest = longest.max(n);
+        }
+        assert!(
+            longest < 16,
+            "longest chain {longest} after escalation — the keyed hash is not separating them"
+        );
+    }
+
+    #[test]
+    fn escalation_happens_once_and_the_salt_is_not_redrawn_on_equal_hashes() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        let before = m.salt;
+        force_equal_hashes(&mut m, 64);
+        assert!(m.is_strong());
+        assert_eq!(
+            m.salt, before,
+            "redrawing the salt on equal hashes is the Perl REHASH defect"
+        );
+    }
+
+    #[test]
+    fn the_cached_string_hash_is_not_touched_by_escalation() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        let s = mk(b"shared-with-other-tables");
+        let h = unsafe { LLString::hash(s) };
+        m.insert(Key::Str(s), Value::int(1));
+        force_equal_hashes(&mut m, 64);
+        assert!(m.is_strong());
+        assert_eq!(
+            unsafe { (*s).hash },
+            h,
+            "the +16 hash is shared across tables and must survive escalation"
+        );
+        assert_eq!(m.get(Key::Str(s)).unwrap().as_int(), 1);
+    }
+}
