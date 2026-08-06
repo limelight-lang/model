@@ -15,7 +15,9 @@
 use std::sync::Mutex;
 
 use crate::memory::arena::round_up_8;
-use crate::memory::block_pool::{BLOCK_KIND_IMMORTAL, BLOCK_PAYLOAD, BlockHeader, BlockPool};
+use crate::memory::block_pool::{
+    BLOCK_KIND_IMMORTAL, BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader, BlockPool, LINE_SIZE,
+};
 
 struct Region {
     bump: *mut u8,
@@ -34,15 +36,18 @@ static IMMORTAL: Mutex<Region> = Mutex::new(Region {
 /// runs out** — class loading can happen mid-request (autoload), so a
 /// refusal has to reach a frame that can raise, not kill the process.
 ///
-/// Panics on sizes above a block payload: immortal entities (class
-/// metadata, interned strings) are small; anything bigger is a caller
-/// bug, which is a different thing from a machine out of memory.
+/// A request above one block payload takes an OS-direct, block-aligned
+/// run instead of the bump region. This used to be an `assert!` on the
+/// grounds that immortal entities are small and anything larger is a
+/// caller bug — but that reading only holds while no caller forwards
+/// input, and under `panic = "abort"` the assert kills the worker rather
+/// than raising. A class's `[Class][vtbl][itables]` train has no such
+/// bound either.
 pub fn immortal_alloc(size: usize) -> *mut u8 {
     let size = round_up_8(size);
-    assert!(
-        size <= BLOCK_PAYLOAD,
-        "immortal entities must fit one block"
-    );
+    if size > BLOCK_PAYLOAD {
+        return immortal_alloc_run(size);
+    }
 
     let mut r = IMMORTAL.lock().unwrap();
 
@@ -71,6 +76,44 @@ pub fn immortal_alloc(size: usize) -> *mut u8 {
     r.bump = p.wrapping_add(size);
     r.limit = BlockHeader::end(block);
     p
+}
+
+/// One immortal entity too large for a block: an OS-direct run, aligned
+/// to `BLOCK_SIZE` so `BlockHeader::of_ptr` on any pointer into its first
+/// block still finds the header, with the payload at `+LINE_SIZE` like
+/// every other block.
+///
+/// The run is never freed and never returns to the pool, so it needs no
+/// size field: `ll_free` on an immortal pointer is already a no-op, and
+/// nothing enumerates immortal blocks. It also does not touch the bump
+/// region — a huge entity must not abandon the remainder of the current
+/// block behind it.
+#[cold]
+fn immortal_alloc_run(size: usize) -> *mut u8 {
+    // `size` reaches here from ABI input in the interning path, so both
+    // the header add and the block round-up are guarded: either would
+    // wrap to a tiny run and hand back an under-allocation.
+    let run_bytes = match size
+        .checked_add(LINE_SIZE)
+        .and_then(|n| n.checked_add(BLOCK_SIZE - 1))
+        .map(|n| n & !(BLOCK_SIZE - 1))
+    {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
+    };
+    let layout = match std::alloc::Layout::from_size_align(run_bytes, BLOCK_SIZE) {
+        Ok(l) => l,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let block = unsafe { std::alloc::alloc(layout) } as *mut BlockHeader;
+    if block.is_null() {
+        // Same discipline as the pooled path: report, do not abort.
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        (*block).kind = BLOCK_KIND_IMMORTAL;
+        BlockHeader::payload_start(block)
+    }
 }
 
 #[cfg(test)]
@@ -150,10 +193,51 @@ mod tests {
         }
     }
 
+    /// An allocation larger than one block payload used to hit an
+    /// `assert!`, which under `panic = "abort"` kills the process. That is
+    /// only a defensible reading of "caller bug" while no caller forwards
+    /// input, and a class's `[Class][vtbl][itables]` train has no such
+    /// bound. It now takes an OS-direct run, which still answers
+    /// `of_ptr` because the run is block-aligned.
     #[test]
-    #[should_panic(expected = "immortal entities must fit one block")]
-    fn oversized_immortal_is_a_caller_bug() {
-        immortal_alloc(BLOCK_PAYLOAD + 1);
+    fn oversized_immortal_takes_an_os_direct_run() {
+        let _g = crate::memory::block_pool::test_guard();
+
+        let size = BLOCK_PAYLOAD * 3 + 7;
+        let p = immortal_alloc(size);
+        assert!(!p.is_null(), "an oversized immortal must not refuse here");
+        assert_eq!(p as usize % 8, 0);
+
+        let block = BlockHeader::of_ptr(p);
+        assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_IMMORTAL);
+
+        // Writable end to end, and the tail is really ours.
+        unsafe {
+            std::ptr::write_bytes(p, 0xA5, size);
+            assert_eq!(*p, 0xA5);
+            assert_eq!(*p.add(size - 1), 0xA5);
+        }
+
+        // A free is still a no-op, as for every other immortal pointer.
+        unsafe { crate::memory::stdapi::ll_free(p) };
+        assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_IMMORTAL);
+        assert_eq!(unsafe { *p }, 0xA5);
+    }
+
+    /// The bump region must survive an oversized request: the run is its
+    /// own allocation and must not disturb the current block's cursor.
+    #[test]
+    fn an_oversized_run_does_not_disturb_the_bump_region() {
+        let _g = crate::memory::block_pool::test_guard();
+
+        let a = immortal_alloc(16);
+        let big = immortal_alloc(BLOCK_PAYLOAD + 1);
+        let b = immortal_alloc(16);
+
+        assert!(!big.is_null());
+        assert_ne!(BlockHeader::of_ptr(big), BlockHeader::of_ptr(a));
+        assert_eq!(BlockHeader::of_ptr(a), BlockHeader::of_ptr(b));
+        assert_eq!(b as usize - a as usize, 16);
     }
 
     #[test]
