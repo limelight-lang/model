@@ -529,6 +529,50 @@ impl Table {
         }
     }
 
+    /// Turn the element under `key` into a reference and hand the box
+    /// back, creating the box if the element is not one already.
+    ///
+    /// **A reference into an element is a `ReferenceBox`, never a pointer
+    /// to the slot.** The other form `values.md` offers — an owner plus a
+    /// slot pointer — is for slots that never move, and an element moves
+    /// whenever growth or compaction reallocates the storage: `$r =
+    /// &$a['x']` followed by enough inserts to grow would leave `$r`
+    /// pointing into freed storage. Boxing means growth moves sixteen
+    /// bytes containing a pointer, and the box stays put.
+    ///
+    /// Null when the key is absent or the box could not be allocated.
+    /// The caller retains the box for its own holder; this leaves the
+    /// element's reference to it at the count the factory gave.
+    pub fn make_ref(&mut self, key: Key) -> *mut crate::reference::LLReference {
+        if self.storage.is_null() {
+            return std::ptr::null_mut();
+        }
+        let sh = self.slot_hash(key);
+        let mut i = unsafe { *self.slots().add(sh as usize & self.mask) };
+        while i != NONE {
+            if Self::entry_matches(self.entry(i as usize), key) {
+                let current = self.entry(i as usize).value;
+                if current.tag() == crate::value::Tag::Reference {
+                    return current.entity_ptr() as *mut crate::reference::LLReference;
+                }
+                let category = self.category;
+                let boxed =
+                    unsafe { crate::reference::ll_reference_new(std::ptr::null_mut(), category) };
+                if boxed.is_null() {
+                    return std::ptr::null_mut();
+                }
+                unsafe { (*boxed).value = current };
+                self.entry_mut(i as usize).value = Value::entity(
+                    crate::value::Tag::Reference,
+                    boxed as *mut crate::refcount::RcHeader,
+                );
+                return boxed;
+            }
+            i = self.entry(i as usize).next;
+        }
+        std::ptr::null_mut()
+    }
+
     /// Escalate to the keyed byte hash, once and one way. The response
     /// to *equal full hashes*: redrawing a salt cannot separate keys whose
     /// hashes agree, and doing so on that trigger is what made Perl's
@@ -556,6 +600,53 @@ impl Table {
             .wrapping_add(1442695040888963407);
         if !self.storage.is_null() {
             self.rebuild_index();
+        }
+    }
+
+    /// Visit every live element's `Value`, in insertion order.
+    ///
+    /// **This enumeration has to be complete rather than conservative.**
+    /// The arena reset's escaped-subgraph trace marks visited *entities*
+    /// in flag bits, and table storage is not an entity and has no
+    /// header, so the tracer enumerates elements from the storage itself;
+    /// an array survivor has its elements' references erased rather than
+    /// ignored (`dev/DECISIONS.md`, 2026-08-04, and `traceable_in_full`).
+    /// Scanning the dense prefix `0..used` and skipping holes satisfies
+    /// that by construction — and the hole marker lives in `key`, outside
+    /// the sixteen bytes the store barrier writes, precisely so that an
+    /// ordinary value store cannot destroy it.
+    pub fn for_each_value(&self, mut f: impl FnMut(&Value)) {
+        for k in 0..self.used {
+            let e = self.entry(k);
+            if !e.is_hole() {
+                f(&e.value);
+            }
+        }
+    }
+
+    /// The same, with the elements mutable — what a walker that rewrites
+    /// references needs.
+    pub fn for_each_value_mut(&mut self, mut f: impl FnMut(&mut Value)) {
+        for k in 0..self.used {
+            if self.entry(k).is_hole() {
+                continue;
+            }
+            f(&mut self.entry_mut(k).value);
+        }
+    }
+
+    /// Every string key that is a live entity, in insertion order. Keys
+    /// are counted children too: a table holds a reference to each.
+    pub fn for_each_string_key(&self, mut f: impl FnMut(*mut LLString)) {
+        for k in 0..self.used {
+            let e = self.entry(k);
+            if e.is_hole() {
+                continue;
+            }
+            let s = e.string_key();
+            if !s.is_null() {
+                f(s);
+            }
         }
     }
 
@@ -981,5 +1072,144 @@ mod tests {
             "the +16 hash is shared across tables and must survive escalation"
         );
         assert_eq!(m.get(Key::Str(s)).unwrap().as_int(), 1);
+    }
+
+    // ---- a reference into an element --------------------------------
+
+    #[test]
+    fn a_reference_into_an_element_survives_growth() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        m.insert(Key::Int(1), Value::int(41));
+
+        let r = m.make_ref(Key::Int(1));
+        assert!(!r.is_null());
+        assert_eq!(unsafe { (*r).value.as_int() }, 41);
+
+        // Enough inserts to reallocate the storage several times. A slot
+        // pointer would be dangling by now; the box is not.
+        for i in 2..5000i64 {
+            m.insert(Key::Int(i), Value::int(i));
+        }
+        unsafe { (*r).value = Value::int(99) };
+        assert_eq!(unsafe { (*r).value.as_int() }, 99);
+
+        // The element still holds the same box.
+        let again = m.make_ref(Key::Int(1));
+        assert_eq!(again, r, "asking twice must not build a second box");
+    }
+
+    #[test]
+    fn a_reference_into_an_element_survives_compaction() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        for i in 0..200i64 {
+            m.insert(Key::Int(i), Value::int(i));
+        }
+        let r = m.make_ref(Key::Int(150));
+        assert!(!r.is_null());
+        for i in 0..150i64 {
+            m.remove(Key::Int(i));
+        }
+        m.compact();
+
+        assert_eq!(m.make_ref(Key::Int(150)), r, "compaction moved the element, not the box");
+        unsafe { (*r).value = Value::int(-1) };
+        assert_eq!(
+            m.get(Key::Int(150)).unwrap().tag(),
+            crate::value::Tag::Reference,
+            "the element holds the box, not the value"
+        );
+    }
+
+    #[test]
+    fn make_ref_reports_on_an_absent_key() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        m.insert(Key::Int(1), Value::int(1));
+        assert!(m.make_ref(Key::Int(2)).is_null());
+        assert!(m.make_ref(Key::Str(mk(b"nope"))).is_null());
+    }
+
+    // ---- what the memory manager is owed -----------------------------
+
+    #[test]
+    fn enumeration_is_complete_over_the_dense_prefix_and_skips_holes() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        for i in 0..100i64 {
+            m.insert(Key::Int(i), Value::int(i));
+        }
+        for i in (0..100i64).filter(|i| i % 3 == 0) {
+            m.remove(Key::Int(i));
+        }
+
+        let mut seen = Vec::new();
+        m.for_each_value(|v| seen.push(v.as_int()));
+        let expected: Vec<i64> = (0..100).filter(|i| i % 3 != 0).collect();
+        assert_eq!(seen, expected, "every live element exactly once, in order");
+        assert_eq!(seen.len(), m.len());
+    }
+
+    /// The reason the hole marker lives in `key`: a store barrier writes
+    /// all sixteen bytes of a `Value`, so a marker inside it would be
+    /// erased and the tracer would then walk a dead element.
+    #[test]
+    fn a_value_store_over_a_hole_does_not_resurrect_it() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        for i in 0..8i64 {
+            m.insert(Key::Int(i), Value::int(i));
+        }
+        m.remove(Key::Int(3));
+        // Simulate a barrier writing the full Value into the dead slot.
+        m.for_each_value_mut(|_| {});
+        unsafe {
+            let e = m.0.entries().add(3);
+            (*e).value = Value::int(0xDEAD);
+        }
+        let mut seen = Vec::new();
+        m.for_each_value(|v| seen.push(v.as_int()));
+        assert!(!seen.contains(&0xDEAD), "the hole survived a full value write");
+        assert_eq!(seen.len(), 7);
+    }
+
+    #[test]
+    fn string_keys_are_enumerated_as_counted_children() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        let a = mk(b"alpha");
+        let b = mk(b"beta");
+        m.insert(Key::Str(a), Value::int(1));
+        m.insert(Key::Int(9), Value::int(2));
+        m.insert(Key::Str(b), Value::int(3));
+        m.remove(Key::Str(a));
+
+        let mut keys = Vec::new();
+        m.for_each_string_key(|s| keys.push(s));
+        assert_eq!(keys, vec![b], "an integer key and a hole are not string children");
+    }
+
+    /// Promotion copies the storage as one contiguous block, so nothing
+    /// inside it may point into it. Every link is an index; this pins it.
+    #[test]
+    fn the_storage_holds_no_pointer_into_itself() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        for i in 0..500i64 {
+            m.insert(Key::Int(i), Value::int(i));
+        }
+        let base = m.0.storage as usize;
+        let bytes = super::storage_bytes(m.0.nslots, m.0.cap).unwrap();
+        for k in 0..m.used() {
+            let e = m.entry(k);
+            for word in [e.hash_or_key, e.key as u64, e.value.as_int() as u64] {
+                let w = word as usize;
+                assert!(
+                    w < base || w >= base + bytes,
+                    "entry {k} holds a word pointing into the storage"
+                );
+            }
+        }
     }
 }
