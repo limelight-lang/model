@@ -133,7 +133,7 @@ pub unsafe fn separate(src: *mut LLArray, category: MemoryCategory) -> *mut LLAr
         // insert succeeded, so a refusal has nothing extra to unwind.
         unsafe { retain_value(&v) };
         if let Key::Str(s) = key {
-            crate::refcount::ll_retain(s as *mut RcHeader);
+            unsafe { crate::refcount::ll_retain(s as *mut RcHeader) };
         }
     }
     dst
@@ -142,7 +142,7 @@ pub unsafe fn separate(src: *mut LLArray, category: MemoryCategory) -> *mut LLAr
 #[inline]
 unsafe fn retain_value(v: &Value) {
     if v.is_refcounted() {
-        crate::refcount::ll_retain(v.entity_ptr());
+        unsafe { crate::refcount::ll_retain(v.entity_ptr()) };
     }
 }
 
