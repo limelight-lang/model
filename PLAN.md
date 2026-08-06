@@ -389,16 +389,23 @@ the shape of the problem is more important than the four instances.
     while it changed. It costs the mutator one relaxed store per growth and
     per compaction, both rare, and nothing on insert or lookup.
 
-    **What it does not answer, and what makes this Edmond's rather than
-    mine:** what a walker does when it cannot get a consistent read. Giving
-    up and treating the array as opaque is the *dangerous* direction — a
-    missed entity contributes none of its out-edges, so its children read
-    as less rooted than they are, which is exactly the failure mode the
-    census hunt spent a session on. An unbounded retry against a mutator
-    that keeps compacting is not obviously better. The third option is to
-    make the array's entries immovable while an epoch is in flight, which
-    is a cost on the mutator and a new coupling between the table and the
-    collector.
+    **What a walker does when the read never stabilizes, corrected.** An
+    earlier note here called giving up the dangerous direction. It is the
+    opposite: an entity the walk does not enumerate becomes a **root
+    source** by the derived-roots corollary — its out-edges land in `RC`
+    and never in `IN`, so its children are computed roots and survive
+    (`walk.rs`, `a_ring_among_promoted_survivors_is_collected`, and
+    `rfc/model/gc/retained-block-walk.md`). Skipping an array the walker
+    cannot read coherently therefore leaks, exactly as skipping it
+    unconditionally leaks today, and frees nothing early. So the fallback
+    is sound and the only question left is how much it leaks: a bounded
+    retry, then skip, costs a ring through that array one more epoch.
+
+    That also re-dates the danger in the wrong-sign direction. What must
+    never happen is an *incoherent* read — `storage` from one chunk with
+    `used` from another, or a key from one entry with a value from the
+    entry that replaced it. That is not a stale snapshot, it is an edge
+    that never existed, and no phase repairs it.
 
     **What must change on the mutator side either way, and it is a defect
     today rather than an omission.** `Table::insert` bumps `self.used`
