@@ -8,14 +8,41 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: the hashtable design, and nothing else in this stage
+## Next: build the hashtable — the design is written
 
-Read this first in a fresh session. The string stage is finished: all 16
-tasks below are closed, both critic passes are done and their findings
-fixed, and the gate and Miri are green in both configurations as of
-2026-08-05. The design lives in `rfc/model/strings.md` and
-`rfc/dev/DECISIONS.md`; what follows is the state of the work, not the
-design.
+Read this first in a fresh session. **The hashtable design landed
+2026-08-06** in `rfc/model/arrays-hashtable.md` (rfc `ca0d197`, `eb68707`,
+`9e5ae3d`, `2a9ce2e`), so arrays are unblocked and the next step is code
+rather than design. The string stage before it is finished: all 16 tasks
+below are closed, both critic passes are done and their findings fixed,
+and the gate and Miri are green in both configurations as of 2026-08-05.
+
+**What the hashtable design fixes**, so it is not re-litigated: one
+allocation of `u32` index slots plus a dense insertion-ordered array of
+40-byte entries; the collision link is an explicit `next` field, because
+`values.md` forbids per-slot state in the ValueBox's padding — the store
+barrier writes all sixteen bytes, so Zend's trick of threading the chain
+through the element would be severed by the first value store; the
+ValueBox sits last, at +24, so no write it performs reaches the key or the
+link. The index layer is **decided**, not deferred: chains, on measurement
+at each index's design load, with the reversal test named in the
+document's Open section.
+
+**What it deliberately leaves open**, each a measurement rather than a
+question of design: the string-key check with its named reversal threshold;
+the compaction threshold, borrowed from Zend at ~3 % rather than measured;
+and the two flood constants.
+
+**One retraction is recorded there and repeated here**, because it cost a
+day. The first set of index measurements was withdrawn after an
+independent review found six defects in the harness across two passes —
+among them that every table size was a power of two, so the open-addressed
+index silently ran at load 0.5 rather than the 0.875 it exists for, and
+that its deletion rule truncated the probe sequence of unrelated keys and
+lost live entries. The numbers that stand are the second set, and they
+stand for integer keys only.
+
+What follows is the state of the string work, not the design.
 
 **What landed 2026-08-05**, so that nobody starts it again: the rapidhash
 v3 port with its generated vector table, the seed and the `hash-folding`
@@ -36,13 +63,17 @@ which closes the last of the sixteen. What it deliberately does not
 include is at task 9 below: the C ABI for a foreign consumer, and
 flattening a float or an object.
 
-**Beyond the string stage** the next real step is design, not code: the
-hashtable — bucket layout and collision strategy — which
-`rfc/model/arrays.md` still calls a future document and without which
-arrays cannot start. It also owes the probe-length backstop that the hash
-stage recorded as unpaid: neither arm of the seed defends against
-collision flooding, and the table is where that defence has to live
-(`dev/DECISIONS.md`, 2026-08-04).
+**The collision-flooding debt the hash stage recorded as unpaid is now
+placed**, though not yet built: neither arm of the seed defends against it
+(`dev/DECISIONS.md`, 2026-08-04), and the table is where the defence
+lives. It counts, per insert and against current state, the entries whose
+full 64-bit hash equals the new key's — a size-independent constant,
+unreachable by chance, and unaffected by deletion, which a running maximum
+would not be. Firing escalates the table once to a keyed hash over the key
+bytes; the cached string hash at +16 is untouched, being shared across
+tables. Integer keys are indexed through a salted avalanche mix rather
+than by value, since `0, 1024, 2048, …` otherwise share a bucket with no
+knowledge of any seed.
 
 **What today changed underneath everything else**, worth knowing before
 touching any of it (all four entries are in `dev/DECISIONS.md`,
@@ -287,10 +318,17 @@ design work): `rfc/model/strings.md` is written, A2's entity-kind switch
 is what was blocking it, and it is the first real subsystem rather than a
 tail. It also unblocks arrays, which nothing else does.
 
-**Not arrays yet.** One array class with three storage strategies is
-designed, but the hashtable underneath it — bucket layout, collision
-strategy — is still called a future document in
-`rfc/model/arrays.md`. Design that before writing code, not after.
+**Arrays are unblocked as of 2026-08-06.** One array class with three
+storage strategies is designed in `rfc/model/arrays.md`, and the hashtable
+under strategy 3 is now designed in
+`rfc/model/arrays-hashtable.md`. Two holes in `arrays.md` were found while
+writing it and are answered there, so read both before coding: the depth
+of the store barrier's COW copy, which `arrays.md` calls shallow and
+`values.md` calls deep — they describe two different operations, and the
+escape copy is the deep one; and strategy 1's claim never to transition,
+which cannot hold, because separation copies the storage in its current
+representation and a callee can then store a pointer into a proven
+`array<int>`.
 
 Deliberately not next, each with its reason:
 
