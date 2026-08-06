@@ -8,21 +8,38 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: the array's kind dispatch is half-wired — read that section first
+## Next: the COW doors, and the publish-first repair that must ride with them
 
-As of 2026-08-06 the hashtable's own four pieces are down to two, and the
-work that closed the other two opened something larger: the array is now a
-producible entity that four of the six kind-dispatch sites still answer
-wrongly, one of them silently and in release. That is the section **"What
-the critic pass of 2026-08-06 found"** below, items 11–14, and it outranks
-the remaining hashtable items — a shared array written in place and a ring
-that no collector can free are both worse than a missing strategy tag.
+Three live defects found by the second critic pass of 2026-08-06 are
+closed (`2e55036`, `144b318`, `f56a035`); the section **"What the second
+critic pass of 2026-08-06 found"** below carries the rest, items 15–20,
+and its two rulings. Read it before the older list: it renames the
+problem. **A kind has seven doors, not six** — `walk::sever_component` was
+in nobody's list and was the worst of them — and the count is a symptom
+rather than the thing to fix, since every door the array missed had a
+legal-looking arm for it already.
 
-Two questions were open when the session ended, both put to Edmond and
-neither answered: how to bound the recursion of the array's deep escape
-copy, and whether rc-trace is obliged to collect a ring containing no
-object at all. An architect pass was running on the second when the
-session ended; its answer is not in the repository.
+What to take next, in this order and for these reasons.
+
+1. **Item 11, the two COW doors**, still the most dangerous open one:
+   `ll_cow_separate` writes a *shared* array in place in release, which is
+   the language's value semantics broken with no signal. The shape is
+   settled now (see the rulings below), and the work is bigger than the
+   plan said: the shallow copy must publish its children through the store
+   barrier rather than by bare `ll_retain`, or the arm makes a latent
+   ledger defect live in three configurations out of four.
+2. **Item 12's `trace_mature` arm together with the publish-first repair
+   of the key slot.** These are one commit, not two: the window in which a
+   table entry holds an uncounted edge is invisible while the concurrent
+   tracer cannot read an array at all, and becomes live at exactly the
+   commit that teaches it to.
+3. **Item 20, the candidate gate**, which is one changed constant.
+
+Both questions that were open on 2026-08-06 are answered, neither by
+Edmond. The recursion bound of the deep escape copy is an explicit work
+list rather than a depth limit; the ring with no object in it is a real
+obligation and the gate diverges from the RFC over it. The reasoning for
+each is below, with what is still Edmond's to accept.
 
 ## Then: finish the hashtable — two pieces are left
 
@@ -206,6 +223,118 @@ the shape of the problem is more important than the four instances.
     `GcHeap`, one commit after that category was marked out of use, with
     its `salt` parameter carrying a security policy that has no contract
     comment and no named source.
+
+### What the second critic pass of 2026-08-06 found, and the two rulings
+
+A pass over an architect's answers to the two open questions found three
+live defects nobody had named, and refuted the architect's main
+recommendation. Each was verified against the code before being acted on.
+Items 15–17 are closed; 18–20 are not.
+
+15. ~~**`walk::sever_component` had no Array arm**~~ — closed `144b318`.
+    The seventh door, and the one that matters most about the count: a
+    kind that falls off it does not leak in a way the next pass finds. The
+    component has already been confirmed garbage, so its members are
+    guarded, severed of nothing, and un-guarded back to the counts they
+    started at — `collected` reads zero and the same work repeats on every
+    later call. A ring of two arrays with no object in it was
+    uncollectable in **both** configurations. The mixed object-array ring
+    did free, but by accident, and in a way that broke the deferred-drop
+    property the function's own doc exists to guarantee.
+16. ~~**The white set was freed without regard to what an entity holds
+    outside its own slot**~~ — closed `f56a035`, and wider than it was
+    reported. An array's storage was the reported half; a dynamic string's
+    payload is the other, older than arrays, and reached by any cyclic
+    garbage with a string property.
+17. ~~**`carry_out_of` left the category wrong on refusal**~~ — closed
+    `2e55036`. The damage was on the allocation side rather than the free
+    side its own doc worries about, which is why it survived review: a
+    promoted heap array took its next storage from whatever request arena
+    was mounted.
+18. **The flood ladder's second rung does not exist.** `reseed`'s doc and
+    `rfc/model/arrays-hashtable.md` both say a second firing escalates,
+    and both bound the attacker at one rebuild and one escalation per
+    table. There is no reseed counter: the chain trigger calls `reseed`,
+    only the equal-hash trigger calls `escalate`, and `reseed` returns
+    early only on `strong`. So the chain trigger fires without bound, each
+    firing an O(`used`) rebuild. The new salt is a public LCG over the old
+    with no entropy added, so an attacker who knows the initial salt knows
+    the whole orbit offline and can make every insert reseed: O(n²),
+    against a document that promises O(n) twice.
+19. **A COW copy silently de-escalates an attacked table.** `separate`
+    carries the salt forward but builds through `ll_array_new`, so
+    `Table::empty` clears `strong` and the entries are re-inserted through
+    the weak path. `$b = $a` on an escalated `$a` re-installs the
+    attacker's whole collision set under the unescalated hash, and copying
+    an array is the ordinary thing PHP does.
+20. **The candidate gate diverges from the RFC, and costs one constant.**
+    `rfc/model/classes.md` fixes that the buffer holds objects *and*
+    arrays; `refcount.rs` masks all three kind bits and admits only
+    objects. `{Object 000, Array 010}` is one masked compare under the
+    present numbering — `flags & ((0b101 << ENTITY_KIND_SHIFT) |
+    CYCLE_COLLECTOR_BUFFERED) == 0` — so no renumbering is needed for it.
+    Owed with it: `forget_candidate` moves up into `ll_entity_die`, where
+    the kind is already in a register, rather than staying a duty every
+    generated `dispose` must remember forever.
+
+**The renumbering is rejected, and the reason is worth keeping.** The
+architect proposed moving the four kinds that carry traceable slots to
+codes 0–3 so the gate could admit `{Object, Lazy, Array, Reference}` in
+one compare — the set that would catch `$a['x'] = &$a`, which
+`{Object, Array}` does not, the last external release landing on the
+ReferenceBox. The crate itself is clean: every use is symbolic, `is_object`
+survives because Object stays 0, and the compiler holds no kind constant.
+The RFC is not: thirteen documents key on the numbers, `layouts.md` is
+organized by them, and `dev/DECISIONS.md` records them in dated entries
+that cannot be edited without falsifying history. And `classes.md` builds
+an argument that kinds 4–6 are one family whose codes may later be
+consolidated to reclaim a kind bit — the crate's only recorded route to
+one — which the proposed numbering scatters. Above all the ordering is
+wrong: until 15 and 16 landed, the wider set would have bought a
+mechanism that could not free an array ring at all. Revisit it when
+`resource` needs the last code, and price the Proxy family then.
+
+**Ruling on the escape copy's recursion, and on the two depths.** An
+explicit work list, not a depth limit. A limit would have to refuse
+through a channel whose only meaning is "out of memory", which is a lie
+while memory is plentiful and unfixable until the exceptions runtime
+exists; PHP has no nesting depth at which an assignment becomes invalid;
+and the limit would not even remove recursion from the crate, since
+teardown of what it permits is recursive too. The list itself belongs in
+a buffer-arena chunk rather than on the machine stack or in arena bump
+memory. Termination needs no visited set: recursion enters only arena COW
+children, and a cycle cannot close inside a pure-COW subgraph while the
+count-equals-holders invariant holds — every entity a real ring must pass
+through is non-COW and is counted rather than entered. Assert that under a
+debug feature rather than paying for it.
+
+The deep and shallow copies are **one body parameterized by destination
+category**, with the barrier supplying the depth: called with an arena
+destination the copy arm cannot fire, called with a heap destination on an
+arena source it is clause for clause the RFC's deep copy. The two depths
+are two call sites, not two operations. `ll_cow_separate` never presents
+the deep configuration — `store_category_barrier` copies every arena COW
+entity crossing into a longer-lived slot, so no longer-lived slot ever
+holds an arena array to separate. **This amends an authoritative sentence**
+(`arrays-hashtable.md`, "two depths … must not be confused") and the
+module comment in `array/entity.rs` that follows it, so it is Edmond's to
+accept; the code shape does not depend on which wording wins.
+
+`separation_category` is the COW rule and not a string rule — every reason
+it gives has an array counterpart that was verified — so it moves out of
+`string.rs` rather than being copied.
+
+**One window, documented rather than closed by the table.** `Table::insert`
+writes an entry raw and leaves the counting to the caller, so a string key
+appears as an out-edge before any reference backs it, and the extra
+in-edge pushes the key toward looking unrooted. It is absorbed today by
+three independent things — a fresh copy is allocate-blacked and never
+traced, the phantom edge supplies its own mark path from an array the
+mutator provably reaches, and Phase 4 recomputes on the owning thread —
+but relying on that is exactly the distant dependency item 13 exists to
+make visible. The repair is a crate-internal barrier entry that publishes
+an already-retained reference: `store_category_barrier` is that operation
+already, minus the slot write. It must land with or before item 12's arm.
 
 ### Beside the hashtable: the memory categories
 
