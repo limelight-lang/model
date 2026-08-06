@@ -22,6 +22,15 @@
 //! harmless — a survivor that later dies reads refcount 0 — is applied
 //! by the readers, not here.
 //!
+//! # The one requirement on an address
+//!
+//! Every address in a registered index stays **readable** for as long as
+//! the index is registered. Both enumerators read its refcount word
+//! without first testing that the block still exists — they can, because
+//! a retained block leaves circulation only once its last survivor is
+//! gone — so an address that stops being mapped is a wild read on
+//! whichever thread walks next, and both walks are process-global.
+//!
 //! # Why the arrays never change under a reader
 //!
 //! Nothing allocates into a dead arena, so a retained block's
@@ -93,17 +102,40 @@ pub(crate) fn snapshot() -> Vec<(usize, Arc<[usize]>)> {
 mod tests {
     use super::*;
 
+    /// A block address and occupants a walk may dereference, which is
+    /// what the module doc requires of anything registered here.
+    ///
+    /// The registry is process-global and the suite runs in parallel, so
+    /// a walk on another thread reads these addresses while the test that
+    /// registered them is still running. The cells are **leaked** rather
+    /// than owned by the test: a test that panics between `register` and
+    /// `release` leaves its index in place, and freeing the cells would
+    /// turn that stale entry into a use-after-free instead of an entry
+    /// that reads refcount 0 and is skipped.
+    ///
+    /// The block address is derived from the cells so that it names the
+    /// range they lie in. A constant would be a guess about an address
+    /// space the process is also carving regions out of.
+    fn walkable_index(n: usize) -> (usize, Vec<usize>) {
+        let cells: &'static mut [u64] = Box::leak(vec![0u64; n].into_boxed_slice());
+        let addresses: Vec<usize> = cells.iter().map(|c| c as *const u64 as usize).collect();
+        let block = addresses[0] & !crate::memory::block_pool::BLOCK_MASK;
+        (block, addresses)
+    }
+
     /// Registration sorts, because the census binary-searches the index
     /// and the reset discovers survivors in trace order.
     #[test]
     fn an_index_is_stored_sorted_whatever_order_it_arrives_in() {
-        let block = 0x4000_0000usize;
-        register(block, vec![0x4000_3000, 0x4000_1000, 0x4000_2000]);
+        let (block, cells) = walkable_index(3);
+        register(block, vec![cells[2], cells[0], cells[1]]);
         let found = snapshot()
             .into_iter()
             .find(|&(b, _)| b == block)
             .expect("registered block is in the snapshot");
-        assert_eq!(&*found.1, &[0x4000_1000, 0x4000_2000, 0x4000_3000]);
+        let mut ascending = cells.clone();
+        ascending.sort_unstable();
+        assert_eq!(&*found.1, &ascending[..]);
         release(block);
     }
 
@@ -111,10 +143,31 @@ mod tests {
     /// invisible to every enumerator again.
     #[test]
     fn a_released_block_leaves_the_snapshot() {
-        let block = 0x5000_0000usize;
-        register(block, vec![0x5000_1000]);
+        let (block, cells) = walkable_index(1);
+        register(block, cells);
         assert!(snapshot().iter().any(|&(b, _)| b == block));
         release(block);
         assert!(!snapshot().iter().any(|&(b, _)| b == block));
+    }
+
+    /// The synchronous enumerator walks a registered index without
+    /// checking that the block exists, so a registered address is
+    /// dereferenced by whichever thread walks next. A zeroed cell reads
+    /// refcount 0 and is skipped, which is the contract; a fabricated
+    /// address is a wild read, which is what this pins against.
+    #[test]
+    fn a_registered_index_is_safe_for_the_enumerator_to_read() {
+        let (block, cells) = walkable_index(4);
+        register(block, cells.clone());
+        let mut seen = 0usize;
+        unsafe {
+            crate::memory::heap::for_each_entity_slot(|slot| {
+                if cells.contains(&(slot as usize)) {
+                    seen += 1;
+                }
+            })
+        };
+        release(block);
+        assert_eq!(seen, 0, "zeroed cells read refcount 0 and are skipped");
     }
 }

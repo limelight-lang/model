@@ -1513,15 +1513,24 @@ mod tls {
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_exit() {
     // Thread exit owns the order in which this thread's runtime state
-    // goes away, and owns it *explicitly*, because the alternative does
-    // not work: TLS destructor order is unspecified, and on glibc it is
-    // reverse registration order — which puts the exit guard that calls
-    // this function last, precisely because `ll_thread_init` registers
-    // it first. Anything reached from here through a `thread_local!`
-    // with drop glue would already be destroyed, and the panic that
-    // follows cannot unwind out of a destructor: the process aborts.
-    // So every structure below is a no-drop-glue cell freed by hand
-    // (`dev/DECISIONS.md`, 2026-08-03).
+    // goes away, and owns it *explicitly*, because TLS destructor order
+    // is unspecified and nothing here may rest on it.
+    //
+    // What the registration order is, since the answer is easy to get
+    // backwards: `ll_thread_init` calls `reserve::replenish` before it
+    // registers `EXIT_GUARD`, and that call touches both of this crate's
+    // `thread_local!`s that have drop glue — the barrier reserve and the
+    // pool's thread cache. On glibc, which destroys in reverse
+    // registration order, this guard runs first of the three and both are
+    // alive while it runs.
+    //
+    // Nothing below is built on that. Every structure this function
+    // disposes is a no-drop-glue cell freed by hand
+    // (`dev/DECISIONS.md`, 2026-08-03), and the two that do have drop
+    // glue are reached through `try_with` on every non-test path, so a
+    // destroyed slot is reported rather than panicked on. A panic here
+    // cannot unwind out of a destructor, and under `panic = "abort"` it
+    // ends the process.
 
     // 1. Static blocks let go of their roots (A6). The only step that
     //    runs user code, so it goes first, while every structure the
