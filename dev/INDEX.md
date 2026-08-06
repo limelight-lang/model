@@ -65,13 +65,14 @@ versions live in `docs/history/`, marked at the top.
   `RcHeader | class | shape | Value[n]`, an ordinary entity under **one**
   class for every site (`dev/DECISIONS.md`, 2026-08-05, amending
   `rfc/model/strings.md` rule 3). Because the value count is the
-  instance's and not the class's, **three** walkers branch on
-  `CLASS_TEMPLATE` and read it from the shape: `for_each_counted_child`
-  and `sever_counted_slots` in `object.rs`, and `collector::trace_mature`,
-  which reads cells relaxed-atomically and so keeps its own copy of the
-  slot stride. A walk that strides an object's slots and does not know
-  this is a leak, not a crash — that is what the review found in the
-  third one. `flatten` measures
+  instance's and not the class's, the count is read from the shape — and
+  since the walk-duplication refactor it is read there in **one** place,
+  `object::for_each_counted_cell`, which serves the quiescent tracer, the
+  collector's relaxed one and the sever alike (`walk::trace_cells`,
+  `walk::sever_cells`). It was three strides, each branching on
+  `CLASS_TEMPLATE` separately, and a walk that strides an object's slots
+  without knowing this leaks rather than crashes — which is why the third
+  one was found by review and not by the suite. `flatten` measures
   everything, allocates once through `string::new_uninit`, and writes
   each piece into place; it refuses a float or an object, each waiting on
   something outside this crate.

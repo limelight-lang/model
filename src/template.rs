@@ -19,12 +19,11 @@
 //! Value[n]`, an object whose body is a shape pointer and the values.
 //! One class serves every site — the site's identity is the shape, not a
 //! generated class — which is why the body's length is a property of the
-//! instance rather than of the class, and why **two** walkers take a
-//! branch on [`CLASS_TEMPLATE`] and read the count from the shape:
-//! [`crate::object::for_each_counted_cell`], the single tracing stride,
-//! which both cell readers share — so the mutator's walk and the
-//! concurrent collector's relaxed one agree by construction — and
-//! `object::sever_counted_slots`, the drain's, which owns the lvalue.
+//! instance rather than of the class, and why the count is read from the
+//! shape in exactly **one** place: [`crate::object::for_each_counted_cell`],
+//! which both cell readers share and which the sever goes through as well
+//! as the two tracers. A layout known in one place cannot be learned by
+//! three walkers and missed by a fourth, which is what happened here.
 //!
 //! **Flattening is the rare path** (rule 2: an object exists only where
 //! the destination declared the interface), so it is one shared routine

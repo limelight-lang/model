@@ -122,11 +122,22 @@ cell is read as a pointer and a Box payload as an integer, because
 `Value::entity` stores the address as a `u64` and those bytes carry no
 provenance to recover.
 
-**Step 3 is the sever, and it is what remains.**
-`object::sever_counted_slots` and `Table::sever_entries` still stride their
-layouts separately; folding them in needs the single sever dispatch.
-`6afd220` moved the reference sever onto the store barrier ahead of that,
-because a plain store there raced the collector's relaxed loads.
+**Step 3, the sever, has landed too.** `walk::sever_cells` is the single
+sever dispatch, and it goes *through* `trace_cells` rather than striding
+again: one layout, one stride, two operations over it. What made that
+possible is one field — a cell now carries its shape, pointer or Box, which
+is the only fact about it the address does not give and the only reason the
+sever needed a stride of its own. `object::sever_counted_slots` is four
+lines over the shared walker and keeps its base-and-descriptor signature
+for the static-block pass, which has no header to read a class from.
+`6afd220` had moved the reference sever onto the store barrier ahead of
+this, because a plain store there raced the collector's relaxed loads.
+
+Left standing on purpose: `Table::sever_entries`, reached through the
+Array arm. An array's cells are not `trace_cells`' (below), and emptying
+one is not a null — a cleared entry is a hole, and an integer-keyed entry
+has no key cell. The table owns both facts, so the dispatch delegates
+rather than absorbing it.
 
 **Arrays stay outside `trace_cells` deliberately**, and the reason is in
 `8bd73d3` rather than a step left half-done: an array's cells live in storage

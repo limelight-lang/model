@@ -423,6 +423,7 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
                     addr: at as usize,
                     raw: child as u64,
                     child,
+                    shape: crate::walk::CellShape::Box,
                 });
             }
         }
@@ -439,6 +440,7 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
                     addr: at as usize,
                     raw: child as u64,
                     child,
+                    shape: crate::walk::CellShape::Pointer,
                 });
             }
         }
@@ -454,6 +456,7 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
                     addr: at as usize,
                     raw: child as u64,
                     child,
+                    shape: crate::walk::CellShape::Box,
                 });
             }
         }
@@ -474,11 +477,12 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
 /// ordinary teardown that follows the un-guard finds the fields already
 /// null and releases nothing twice.
 ///
-/// The second occurrence of the slot strides beside
-/// [`for_each_counted_child`], deliberately not folded into it: the
-/// walker exposes children and hides slot lvalues by contract (a store
-/// goes through the barrier); this is teardown machinery and needs the
-/// lvalue.
+/// One stride, two operations: this goes through
+/// [`for_each_counted_cell`], the same walker the tracer uses, and empties
+/// each cell it yields. The walker exposes the cell rather than only the
+/// child, and the store still goes through the barrier
+/// (`walk::empty_cell`), so hiding the lvalue was never what kept the two
+/// apart — only the second copy of the stride was.
 ///
 /// # Safety
 /// `obj` must be a live object whose slots are readable and writable.
@@ -492,9 +496,10 @@ pub(crate) unsafe fn sever_counted_children(obj: *mut Object, displaced: &mut Ve
 /// block (A6). Same contract: every counted slot is nulled and its
 /// former occupant collected, and the caller owes one drop per entry.
 ///
-/// This is where the slot stride lives now. It had three callers —
-/// object teardown, the drain's sever, and the thread-exit pass — and
-/// the third was the point the duplicate was meant to be abstracted at.
+/// Three callers — object teardown, the drain's sever, and the
+/// thread-exit pass — and the third is why this takes a base and a
+/// descriptor rather than an entity: a static block has no header to read
+/// a class from.
 ///
 /// # Safety
 /// `base` must address a live region laid out by `cls`, with its slots
@@ -504,41 +509,12 @@ pub(crate) unsafe fn sever_counted_slots(
     cls: &crate::class::Class,
     displaced: &mut Vec<*mut RcHeader>,
 ) {
-    // The template arm of `for_each_counted_child`, in the walker that
-    // owns the lvalue: same children, found the same way.
-    if cls.flags & crate::class::CLASS_TEMPLATE != 0 {
-        for slot in unsafe { crate::template::values_at(base, cls) } {
-            let v = *slot;
-            if v.is_refcounted() {
-                unsafe {
-                    crate::memory::barrier::write_value_slot(slot as *mut Value, Value::null())
-                };
-                displaced.push(v.entity_ptr());
-            }
-        }
-        return;
-    }
-
-    for run in cls.ptr_runs() {
-        for i in 0..run.count {
-            let slot = unsafe { base.add((run.offset + i * 8) as usize) } as *mut *mut RcHeader;
-            let child = unsafe { slot.read() };
-            if !child.is_null() {
-                unsafe { crate::memory::barrier::write_ptr_slot(slot, std::ptr::null_mut()) };
-                displaced.push(child);
-            }
-        }
-    }
-    for run in cls.box_runs() {
-        for i in 0..run.count {
-            let slot = unsafe { base.add((run.offset + i * 16) as usize) } as *mut Value;
-            let v = unsafe { slot.read() };
-            if v.is_refcounted() {
-                unsafe { crate::memory::barrier::write_value_slot(slot, Value::null()) };
-                displaced.push(v.entity_ptr());
-            }
-        }
-    }
+    unsafe {
+        for_each_counted_cell::<crate::walk::PlainCells>(base, cls, |cell| {
+            unsafe { crate::walk::empty_cell(cell) };
+            displaced.push(cell.child);
+        })
+    };
 }
 
 /// Phase 1 alone: run `__destruct` exactly once (sets the guard bit).

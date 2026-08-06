@@ -35,12 +35,27 @@ unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
 /// Only the epoch reads the address and the raw word, and the epoch is
 /// the `rc-walk` build's; under `rc-trace` the same cells are walked for
 /// their children alone.
-#[cfg_attr(not(feature = "rc-walk"), expect(dead_code))]
 #[derive(Clone, Copy)]
 pub(crate) struct Cell {
     pub addr: usize,
+    #[cfg_attr(not(feature = "rc-walk"), expect(dead_code))]
     pub raw: u64,
     pub child: *mut RcHeader,
+    pub shape: CellShape,
+}
+
+/// How wide a cell is, and therefore how a writer empties it: a bare
+/// 8-byte pointer takes `NULL`, a 16-byte `Value` takes `Value::null()`.
+///
+/// This is the one fact about a cell that its address does not carry, and
+/// the sever is what needs it — the tracer reads the child and never
+/// writes. Without it the sever would have to stride the layout a second
+/// time to learn which runs it was in, which is the duplication this
+/// walker exists to remove.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CellShape {
+    Pointer,
+    Box,
 }
 
 /// How a walk reads the entity memory it strides over.
@@ -217,10 +232,97 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                     addr: at as usize,
                     raw: child as u64,
                     child,
+                    shape: CellShape::Box,
                 });
             }
         }
         _ => {}
+    }
+}
+
+/// Empty one cell through the store barrier, by its shape.
+///
+/// The barrier is not ceremony here: this store runs on the mutator while
+/// an epoch may be live, and the collector reads the same cell as a
+/// relaxed atomic (`collector::walk_edges`). A plain write against that
+/// load is a mixed-atomicity data race, which is undefined behaviour
+/// rather than the torn value Phases 3 and 4 are built to repair.
+///
+/// # Safety
+/// `cell` addresses a live, writable cell of the shape it names.
+#[inline]
+pub(crate) unsafe fn empty_cell(cell: Cell) {
+    match cell.shape {
+        CellShape::Pointer => unsafe {
+            crate::memory::barrier::write_ptr_slot(
+                cell.addr as *mut *mut RcHeader,
+                std::ptr::null_mut(),
+            )
+        },
+        CellShape::Box => unsafe {
+            crate::memory::barrier::write_value_slot(cell.addr as *mut Value, Value::null())
+        },
+    }
+}
+
+/// Sever every counted cell of `entity`: empty the cell and collect the
+/// child it held into `displaced`, **without dropping it** — the caller
+/// owes one drop per entry (`object::sever_counted_children`).
+///
+/// **The single sever dispatch**, beside [`trace_cells`], and it goes
+/// through that walker rather than striding again: one layout, one
+/// stride, two operations over it.
+///
+/// The kinds are named rather than left to a default. A kind that falls
+/// off this dispatch is not a leak the next pass finds: the component was
+/// already confirmed garbage, so its members are guarded, severed of
+/// nothing, and un-guarded back to the counts they started with —
+/// collected zero, forever, on every call. That is how the Array kind sat
+/// here from the day it became producible, and an empty fall-through is
+/// what hid it.
+///
+/// # Safety
+/// `entity` is a live entity of `kind` whose cells are readable and
+/// writable, and no other thread writes them.
+pub(crate) unsafe fn sever_cells(
+    entity: *mut RcHeader,
+    kind: u32,
+    displaced: &mut Vec<*mut RcHeader>,
+) {
+    const OBJECT: u32 = EntityKind::Object as u32;
+    const LAZY: u32 = EntityKind::Lazy as u32;
+    const REFERENCE: u32 = EntityKind::Reference as u32;
+    const ARRAY: u32 = EntityKind::Array as u32;
+    const STRING: u32 = EntityKind::String as u32;
+    const WEAKREF: u32 = EntityKind::WeakRef as u32;
+    const BOX: u32 = EntityKind::Box as u32;
+    match kind {
+        OBJECT | LAZY | REFERENCE => unsafe {
+            trace_cells::<PlainCells>(entity, kind, |cell| {
+                unsafe { empty_cell(cell) };
+                displaced.push(cell.child);
+            })
+        },
+        // An array's cells are not `trace_cells`' (the decision at
+        // [`trace_entity`]), and emptying one is not a null either: a
+        // cleared entry is a hole, and an integer-keyed entry has no key
+        // cell at all. The table owns both facts.
+        ARRAY => unsafe {
+            crate::array::entity::sever_counted_children(
+                entity as *mut crate::array::entity::LLArray,
+                displaced,
+            )
+        },
+        // The kinds with no counted children. Reaching one here is
+        // ordinary, not an error: a component is weakly connected, so a
+        // string element of a dying object and a weak cell that died
+        // inside the garbage are both members. Severing them is genuinely
+        // nothing — a string is a leaf, a weak cell's target is
+        // deliberately uncounted and the drain's weak pass has already
+        // nulled it, and an FFI Box holds an opaque C payload the runtime
+        // never counted.
+        STRING | WEAKREF | BOX => {}
+        _ => debug_assert!(false, "entity kind 7 is reserved"),
     }
 }
 
@@ -481,63 +583,7 @@ unsafe fn sever_component(members: &[*mut RcHeader]) -> Vec<*mut RcHeader> {
     let member_set: HashSet<usize> = members.iter().map(|&m| m as usize).collect();
     let mut displaced: Vec<*mut RcHeader> = Vec::new();
     for &m in members {
-        // Named arms rather than a chain ending in nothing. A kind that
-        // falls off this dispatch is not a leak the next pass finds: the
-        // component was already confirmed garbage, so its members are
-        // guarded, severed of nothing, and un-guarded back to the counts
-        // they started with — collected zero, forever, on every call. That
-        // is how the Array kind sat here from the day it became
-        // producible, and an empty fall-through is what hid it.
-        const OBJECT: u32 = EntityKind::Object as u32;
-        const LAZY: u32 = EntityKind::Lazy as u32;
-        const REFERENCE: u32 = EntityKind::Reference as u32;
-        const ARRAY: u32 = EntityKind::Array as u32;
-        const STRING: u32 = EntityKind::String as u32;
-        const WEAKREF: u32 = EntityKind::WeakRef as u32;
-        const BOX: u32 = EntityKind::Box as u32;
-        match unsafe { entity_kind(m) } {
-            // Lazy carries a class at +8 exactly as an object does, which
-            // is why teardown pairs the two the same way (`ll_entity_die`).
-            OBJECT | LAZY => unsafe {
-                crate::object::sever_counted_children(m as *mut Object, &mut displaced)
-            },
-            REFERENCE => {
-                // A reference member severs its one Value the same way,
-                // and through the same helper: this store runs on the
-                // mutator while an epoch may be live, and the collector
-                // reads this very cell as a relaxed atomic (the epoch's
-                // reader, `collector::walk_edges`). A plain
-                // 16-byte write against that load is a mixed-atomicity
-                // race, which is why `reference_die` has always gone
-                // through `write_value_slot` for the identical store.
-                let r = m as *mut crate::reference::LLReference;
-                let v = unsafe { (*r).value };
-                if v.is_refcounted() {
-                    unsafe {
-                        crate::memory::barrier::write_value_slot(&raw mut (*r).value, Value::null())
-                    };
-                    displaced.push(v.entity_ptr());
-                }
-            }
-            ARRAY => unsafe {
-                crate::array::entity::sever_counted_children(
-                    m as *mut crate::array::entity::LLArray,
-                    &mut displaced,
-                )
-            },
-            // The kinds with no counted children. Reaching one here is
-            // ordinary, not an error: a component is weakly connected, so
-            // a string element of a dying object and a weak cell that
-            // died inside the garbage are both members. Severing them is
-            // genuinely nothing — a string is a leaf, a weak cell's target
-            // is deliberately uncounted and the drain's weak pass has
-            // already nulled it, and an FFI Box holds an opaque C payload
-            // the runtime never counted. The arms are written out anyway,
-            // because "nothing to do" and "nobody wrote the arm" looked
-            // identical here and that is what hid the Array kind.
-            STRING | WEAKREF | BOX => {}
-            _ => debug_assert!(false, "entity kind 7 is reserved and cannot be a member"),
-        }
+        unsafe { sever_cells(m, entity_kind(m), &mut displaced) };
     }
     let mut external: Vec<*mut RcHeader> = Vec::new();
     for child in displaced {
