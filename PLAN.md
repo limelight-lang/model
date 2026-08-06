@@ -8,7 +8,23 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-## Next: finish the hashtable — four pieces are left
+## Next: the array's kind dispatch is half-wired — read that section first
+
+As of 2026-08-06 the hashtable's own four pieces are down to two, and the
+work that closed the other two opened something larger: the array is now a
+producible entity that four of the six kind-dispatch sites still answer
+wrongly, one of them silently and in release. That is the section **"What
+the critic pass of 2026-08-06 found"** below, items 11–14, and it outranks
+the remaining hashtable items — a shared array written in place and a ring
+that no collector can free are both worse than a missing strategy tag.
+
+Two questions were open when the session ended, both put to Edmond and
+neither answered: how to bound the recursion of the array's deep escape
+copy, and whether rc-trace is obliged to collect a ring containing no
+object at all. An architect pass was running on the second when the
+session ended; its answer is not in the repository.
+
+## Then: finish the hashtable — two pieces are left
 
 Read this first in a fresh session. The design is in
 `rfc/model/arrays-hashtable.md` (rfc `ca0d197`, `eb68707`, `9e5ae3d`,
@@ -137,6 +153,59 @@ a store path — which is why it was not built in the same breath.
    representation, so a callee can store a pointer into a proven
    `array<int>`. The generic element write has to dispatch on the tag and
    transition 1 → 2.
+
+### What the critic pass of 2026-08-06 found, and none of it is closed
+
+An independent pass over the tracing-and-death commit found four doors the
+array has not gone through. Each was verified against the code before
+being written down. **Read this before adding any entity kind**, because
+the shape of the problem is more important than the four instances.
+
+11. **The two COW doors.** `ll_array_new` stamps the COW flag, so both COW
+    dispatch sites now answer wrongly. `object::ll_cow_separate` has a
+    `debug_assert` and returns the original entity, which in release writes
+    a *shared* array in place — PHP's semantics broken with no signal. The
+    shallow copy it needs already exists (`array::entity::separate`); what
+    has to move with it is `string.rs`'s private `separation_category`,
+    which is the COW rule and not a string rule. `object::escape_copy` has
+    `unreachable!()`, and that arm is the deep, category-driven copy of
+    `rfc/model/arrays-hashtable.md` — each element republished through the
+    barrier with the destination's category. Its recursion-depth guard is
+    open in that document, and nesting depth is attacker-shaped input on a
+    store path; Edmond was asked to choose between a fixed limit that
+    refuses and an iterative copy with an explicit stack, and had not
+    answered when the session ended.
+12. **Both collectors are blind to arrays.** `collector::trace_mature`
+    (rc-walk) takes the empty default arm on kind 2, so a ring through a
+    heap array is never collected — the edge in is seen, the edge out is
+    not, the holder reads RC above IN and is judged a root every epoch. It
+    needs its own relaxed-atomic read of the storage, the way `template.rs`
+    needed a third walker with its own stride. And rc-trace's candidate
+    gate in `refcount.rs` buffers only kind 0, one masked compare on the
+    hot release path, so a ring with no object in it — an array holding a
+    ReferenceBox holding the array, which is `$a['x'] = &$a` — never
+    becomes a candidate. Both configurations are required legs of the
+    gate, so rc-trace is green today with a systematic leak.
+13. **The dispatch surface itself.** A kind has six doors —
+    `ll_entity_die`, `walk::trace_entity`, `collector::trace_mature`, the
+    candidate gate, `ll_cow_separate`, `escape_copy` — plus
+    `promote::traceable_in_full` as a guard. The array went through two and
+    missed four, and nothing made that visible: a miss hides in an empty
+    default arm or in a masked compare. Proposal on the table: dispatch on
+    `EntityKind` with exhaustive matches, so a new kind fails to compile
+    until every door has an arm. Two doors are hot and `trace_mature`
+    cannot use the ordinary accessors, so the shape has to survive both.
+14. **Three smaller ones.** The escape ledger is asymmetric inside
+    `array/entity.rs`: `separate` takes references with a bare `ll_retain`,
+    a no-op on an arena entity, while `release_children` gives them back
+    through `drop_ref`, which calls `escape_lose` — a copy that recorded no
+    gain spends a hold-count belonging to a real holder. Unreachable today.
+    Several array tests call `ll_entity_die` on an entity still at
+    refcount 1, leaving a slot the process-global walks enumerate as live.
+    And `ll_array_new` accepts `LongLived` while `array_die` frees only
+    `GcHeap`, one commit after that category was marked out of use, with
+    its `salt` parameter carrying a security policy that has no contract
+    comment and no named source.
 
 ### Beside the hashtable: the memory categories
 
