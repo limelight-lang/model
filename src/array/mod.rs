@@ -7,3 +7,4 @@
 //! no index at all.
 
 pub mod entry;
+pub mod table;
