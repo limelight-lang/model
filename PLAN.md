@@ -180,18 +180,26 @@ legal-looking arm for it already.
 
 What to take next, in this order and for these reasons.
 
-1. **Item 11, the two COW doors**, still the most dangerous open one:
-   `ll_cow_separate` writes a *shared* array in place in release, which is
-   the language's value semantics broken with no signal. The shape is
-   settled now (see the rulings below), and the work is bigger than the
-   plan said: the shallow copy must publish its children through the store
-   barrier rather than by bare `ll_retain`, or the arm makes a latent
-   ledger defect live in three configurations out of four.
-2. **Item 12's `trace_mature` arm together with the publish-first repair
+1. ~~**Item 11, the two COW doors**~~ — closed. Both arms are
+   `array::entity::separate`, one body with the destination category
+   supplying the depth, exactly as the ruling below settled: with an arena
+   destination the copy arm cannot fire and the children are shared, with a
+   longer-lived destination over an arena source every arena COW child is
+   copied in turn. Each child is published through
+   `barrier::store_category_barrier`, now `pub(crate)` — that is also the
+   crate-internal publish-without-a-slot-write the repair in item 12 needs,
+   so it is built. `separation_category` moved to `refcount.rs` beside
+   `cow_separation_needed`, being the COW rule rather than a string rule,
+   and item 14's escape-ledger asymmetry went with it. **Still owed:** the
+   recursion is the machine stack's, and the explicit work list the ruling
+   calls for is not built — nesting depth is attacker-shaped input on a
+   store path, and there is no compiler yet to shape it.
+2. **Item 12's concurrent-walk arm together with the publish-first repair
    of the key slot.** These are one commit, not two: the window in which a
    table entry holds an uncounted edge is invisible while the concurrent
    tracer cannot read an array at all, and becomes live at exactly the
-   commit that teaches it to.
+   commit that teaches it to. The bound its storage needs is the blocker
+   named under the walk refactor above.
 3. **Item 20, the candidate gate**, which is one changed constant.
 
 Both questions that were open on 2026-08-06 are answered, neither by
@@ -337,8 +345,9 @@ array has not gone through. Each was verified against the code before
 being written down. **Read this before adding any entity kind**, because
 the shape of the problem is more important than the four instances.
 
-11. **The two COW doors.** `ll_array_new` stamps the COW flag, so both COW
-    dispatch sites now answer wrongly. `object::ll_cow_separate` has a
+11. ~~**The two COW doors.**~~ — closed; see the ordered list above. What
+    the entry said when it was open: `ll_array_new` stamps the COW flag, so
+    both COW dispatch sites answer wrongly. `object::ll_cow_separate` has a
     `debug_assert` and returns the original entity, which in release writes
     a *shared* array in place — PHP's semantics broken with no signal. The
     shallow copy it needs already exists (`array::entity::separate`); what

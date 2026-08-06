@@ -339,33 +339,6 @@ pub(crate) unsafe fn new_with_hash(
     unsafe { init_at(mem, category, bytes, hash) }
 }
 
-/// Where a separated copy lands — decided by **the holder's** category,
-/// not the original's and not the writing context's.
-///
-/// The copy is a fresh entity nothing has registered anywhere, so the
-/// only thing that can go wrong is a holder outliving it. An arena
-/// holder can hold an arena copy, and not because the holder dies at the
-/// reset — it may escape and be promoted. It is safe because the reset's
-/// survivor trace reaches the copy through the holder's slot and promotes
-/// it too, the same way it reaches any other arena child; every
-/// other holder needs something that outlives the request, so the copy
-/// goes to the GC heap. That also keeps a copy out of the two categories
-/// that cannot own a written string at all: immortal is shared
-/// process-wide, and `string_die` frees only `GcHeap`, so a long-lived
-/// copy could never be reclaimed.
-///
-/// The original's category does not enter into it. An arena holder
-/// writing to an interned string gets an arena copy — a bump and a reset,
-/// rather than a heap allocation plus a release-at-reset record for a
-/// value that dies at the reset regardless.
-#[inline]
-fn separation_category(owner_cat: MemoryCategory) -> MemoryCategory {
-    match owner_cat {
-        MemoryCategory::RequestArena => MemoryCategory::RequestArena,
-        _ => MemoryCategory::GcHeap,
-    }
-}
-
 /// Copy an inline string into a fresh entity — the string half of the
 /// COW write barrier (`rfc/model/values.md`, "Copy-on-Write Protocol").
 ///
@@ -422,7 +395,14 @@ pub unsafe fn separate(
         "a dynamic string is outside the COW rule and writes in place"
     );
     let bytes = unsafe { LLString::bytes(s) };
-    unsafe { new_with_hash(ctx, separation_category(owner_cat), bytes, 0) }
+    unsafe {
+        new_with_hash(
+            ctx,
+            crate::refcount::separation_category(owner_cat),
+            bytes,
+            0,
+        )
+    }
 }
 
 /// Allocate a **dynamic** string holding `bytes`: the entity in

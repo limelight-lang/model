@@ -267,7 +267,7 @@ pub(crate) unsafe fn empty_cell(cell: Cell) {
 
 /// Sever every counted cell of `entity`: empty the cell and collect the
 /// child it held into `displaced`, **without dropping it** — the caller
-/// owes one drop per entry (`object::sever_counted_children`).
+/// owes one drop per entry.
 ///
 /// **The single sever dispatch**, beside [`trace_cells`], and it goes
 /// through that walker rather than striding again: one layout, one
@@ -299,7 +299,7 @@ pub(crate) unsafe fn sever_cells(
     match kind {
         OBJECT | LAZY | REFERENCE => unsafe {
             trace_cells::<PlainCells>(entity, kind, |cell| {
-                unsafe { empty_cell(cell) };
+                empty_cell(cell);
                 displaced.push(cell.child);
             })
         },

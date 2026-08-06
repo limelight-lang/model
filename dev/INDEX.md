@@ -127,9 +127,13 @@ versions live in `docs/history/`, marked at the top.
   string's payload takes (`table::Table::carry_out_of`, reached from
   `promote::carry_external_memory`); it gets there as a child of an
   escapee, never on its own, an array being COW and therefore copied at
-  the barrier rather than counted as an escapee. `escape_copy` still has
-  no Array arm and aborts, which is the next thing owed. What is unbuilt
-  is listed at the head of `PLAN.md`.
+  the barrier rather than counted as an escapee. Both COW doors have their Array arm
+  now: `object::ll_cow_separate` separates a shared array and
+  `object::escape_copy` copies an arena one out, and they are one body —
+  `array::entity::separate` — with the destination category supplying the
+  depth, each child published through `barrier::store_category_barrier`
+  rather than retained bare. Its recursion is still the machine stack's.
+  What is unbuilt is listed at the head of `PLAN.md`.
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted. Registered by `promote` at reset,
   read by both of `heap`'s enumerators. This is what makes a

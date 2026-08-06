@@ -463,38 +463,13 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
     }
 }
 
-/// Sever this object's counted children: null each counted slot and
-/// collect the displaced children into `displaced` — **without dropping
-/// them**. The "sever" half of the rc-walk drain's "sever and free"
-/// (`rfc/model/gc/rc-walk.md`, Phase 4); the caller owns the drops, and
-/// owes one per collected entry.
+/// Sever the counted slots of a region laid out by `cls`: empty each cell
+/// and collect its former occupant into `displaced`, **without dropping
+/// it** — the caller owes one drop per entry (`walk::sever_cells`, which
+/// is the dispatch this serves).
 ///
-/// Deliberately not drop-inline: a dropped external child's teardown
-/// runs arbitrary `__destruct` code, and the drain must not let any user
-/// code run between severing and freeing its members — deferring the
-/// drops until the members are gone closes the resurrected-hollow-member
-/// window structurally (see `walk::collect_cycles`). Afterwards the
-/// ordinary teardown that follows the un-guard finds the fields already
-/// null and releases nothing twice.
-///
-/// One stride, two operations: this goes through
-/// [`for_each_counted_cell`], the same walker the tracer uses, and empties
-/// each cell it yields. The walker exposes the cell rather than only the
-/// child, and the store still goes through the barrier
-/// (`walk::empty_cell`), so hiding the lvalue was never what kept the two
-/// apart — only the second copy of the stride was.
-///
-/// # Safety
-/// `obj` must be a live object whose slots are readable and writable.
-pub(crate) unsafe fn sever_counted_children(obj: *mut Object, displaced: &mut Vec<*mut RcHeader>) {
-    let cls = unsafe { (*obj).class() };
-    unsafe { sever_counted_slots(obj as *mut u8, cls, displaced) };
-}
-
-/// [`sever_counted_children`] over a bare base address and a descriptor,
-/// for a region that carries no header to read a class from — a static
-/// block (A6). Same contract: every counted slot is nulled and its
-/// former occupant collected, and the caller owes one drop per entry.
+/// Takes a base and a descriptor rather than an entity because a static
+/// block carries no header to read a class from (A6).
 ///
 /// Three callers — object teardown, the drain's sever, and the
 /// thread-exit pass — and the third is why this takes a base and a
@@ -511,7 +486,7 @@ pub(crate) unsafe fn sever_counted_slots(
 ) {
     unsafe {
         for_each_counted_cell::<crate::walk::PlainCells>(base, cls, |cell| {
-            unsafe { crate::walk::empty_cell(cell) };
+            crate::walk::empty_cell(cell);
             displaced.push(cell.child);
         })
     };
@@ -803,10 +778,22 @@ pub unsafe fn ll_cow_separate(
         return entity;
     }
     const STRING: u32 = EntityKind::String as u32;
+    const ARRAY: u32 = EntityKind::Array as u32;
     match (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT {
         STRING => unsafe {
             crate::string::separate(ctx, owner_cat, entity as *mut crate::string::LLString)
                 as *mut RcHeader
+        },
+        // Returning the original here is what a missing arm did, and in
+        // release that is a *shared* array written in place: the
+        // language's value semantics broken with no signal at all.
+        ARRAY => unsafe {
+            let arena = crate::memory::context::resolve_arena(ctx);
+            crate::array::entity::separate(
+                entity as *mut crate::array::entity::LLArray,
+                crate::refcount::separation_category(owner_cat),
+                arena,
+            ) as *mut RcHeader
         },
         _ => {
             debug_assert!(false, "no COW copy for this entity kind yet");
@@ -826,7 +813,7 @@ pub unsafe fn ll_cow_separate(
 /// the copy is owed even when the count is 1, because the holder outlives
 /// the arena and not because the value is shared.
 ///
-/// The copy lands by [`crate::string::separation_category`], which for
+/// The copy lands by [`crate::refcount::separation_category`], which for
 /// every `owner_cat` this path admits is the GC heap. It arrives at `+1`,
 /// which is the reference the slot takes.
 ///
@@ -837,6 +824,7 @@ pub unsafe fn ll_cow_separate(
 /// `entity` is a live COW entity in the request arena, and `owner_cat`
 /// belongs to a holder that outlives it.
 pub(crate) unsafe fn escape_copy(
+    arena: *mut crate::memory::arena::Arena,
     owner_cat: MemoryCategory,
     entity: *mut RcHeader,
 ) -> *mut RcHeader {
@@ -844,6 +832,7 @@ pub(crate) unsafe fn escape_copy(
     debug_assert_ne!(owner_cat, MemoryCategory::RequestArena);
     let flags = unsafe { crate::refcount::header_flags(entity) };
     const STRING: u32 = EntityKind::String as u32;
+    const ARRAY: u32 = EntityKind::Array as u32;
     match (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT {
         STRING => unsafe {
             crate::string::separate(
@@ -852,13 +841,24 @@ pub(crate) unsafe fn escape_copy(
                 entity as *mut crate::string::LLString,
             ) as *mut RcHeader
         },
+        // The same body as the shallow separation, and the destination
+        // category is the whole difference: with a longer-lived
+        // destination over an arena source, every arena COW child is
+        // copied in turn by the barrier each element is published
+        // through, which is clause for clause the deep copy of
+        // `rfc/model/arrays-hashtable.md`.
+        ARRAY => unsafe {
+            crate::array::entity::separate(
+                entity as *mut crate::array::entity::LLArray,
+                crate::refcount::separation_category(owner_cat),
+                arena,
+            ) as *mut RcHeader
+        },
         _ => {
             // Null is how this function says "out of memory", and an
             // unimplemented kind is not that. There is nothing safe to
             // return, and nothing safe to continue into: the caller would
             // store a hold on arena memory into a longer-lived slot.
-            // Arrays are the kind that will arrive here (Phase C), and
-            // they will arrive with an arm.
             unreachable!("no COW copy for this entity kind yet");
         }
     }

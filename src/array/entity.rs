@@ -91,10 +91,24 @@ impl LLArray {
     }
 }
 
-/// Copy `src` into a fresh array of `category` — the **shallow** COW
-/// separation. Every element is copied as a `Value` and every counted
-/// child is retained once for the copy; nothing is walked recursively,
-/// because both arrays share the children until one is written.
+/// Copy `src` into a fresh array of `category` — **one body for both
+/// depths**, with `category` supplying the depth.
+///
+/// Every element is copied as a `Value` and every counted child is
+/// published for the copy through the store barrier
+/// (`barrier::store_category_barrier`), which is where the two depths
+/// part company. With an arena destination the barrier's copy arm cannot
+/// fire and nothing is walked recursively: both arrays share the children
+/// until one is written, which is the shallow separation. With a
+/// longer-lived destination over an arena source every arena COW child is
+/// copied in turn, which is the deep copy of
+/// `rfc/model/arrays-hashtable.md` clause for clause. Two call sites, one
+/// operation (`dev/DECISIONS.md`).
+///
+/// **The barrier rather than a bare `ll_retain`**, and not for tidiness:
+/// `release_children` gives references back through `drop_ref`, which
+/// calls `escape_lose`, so a copy that recorded no gain would spend a
+/// hold-count belonging to a real holder.
 ///
 /// Insertion order survives, because the copy replays `src` in order.
 ///
@@ -102,9 +116,18 @@ impl LLArray {
 /// it is returned, so a failure part-way releases what it has retained
 /// and leaves the source untouched.
 ///
+/// Recursion is still the machine stack's: nesting depth is
+/// attacker-shaped input on a store path, and the explicit work list that
+/// answers it is owed (`PLAN.md`, item 11).
+///
 /// # Safety
-/// `src` is a live array entity.
-pub unsafe fn separate(src: *mut LLArray, category: MemoryCategory) -> *mut LLArray {
+/// `src` is a live array entity; `arena` the live mounted arena, which
+/// the barrier needs to count an escape or log a release at reset.
+pub unsafe fn separate(
+    src: *mut LLArray,
+    category: MemoryCategory,
+    arena: *mut crate::memory::arena::Arena,
+) -> *mut LLArray {
     let salt = unsafe { (*src).table.salt() };
     let dst = unsafe { ll_array_new(category, salt) };
     if dst.is_null() {
@@ -121,28 +144,68 @@ pub unsafe fn separate(src: *mut LLArray, category: MemoryCategory) -> *mut LLAr
         } else {
             Key::Str(e.string_key())
         };
-        let v = e.value;
-        if unsafe { (*dst).table.insert(key, v) }.is_none() {
-            // Out of memory part-way. Release what the copy retained and
-            // report; the source is exactly as it was.
+        // Publish the element for the copy *before* the entry is written,
+        // so the entry never names something the copy does not hold, and
+        // so the barrier can hand back a different entity: an arena COW
+        // child crossing into a longer-lived copy is replaced by a copy of
+        // its own.
+        let mut v = e.value;
+        if v.is_refcounted() {
+            let child = v.entity_ptr();
+            unsafe { crate::refcount::ll_retain(child) };
+            let stored =
+                unsafe { crate::memory::barrier::store_category_barrier(arena, category, child) };
+            if stored.is_null() {
+                unsafe { crate::refcount::ll_release(child) };
+                unsafe { release_children(dst) };
+                unsafe { (*dst).table.dispose() };
+                return std::ptr::null_mut();
+            }
+            if stored != child {
+                // The barrier copied it. The copy arrives at +1 and is
+                // what the entry names; the retain above goes back.
+                unsafe { crate::refcount::ll_release(child) };
+                v = Value::entity(v.tag(), stored);
+            }
+        }
+        let published_key = if let Key::Str(k) = key {
+            let child = k as *mut RcHeader;
+            unsafe { crate::refcount::ll_retain(child) };
+            let stored =
+                unsafe { crate::memory::barrier::store_category_barrier(arena, category, child) };
+            if stored.is_null() {
+                unsafe { crate::refcount::ll_release(child) };
+                unsafe { release_value(&v) };
+                unsafe { release_children(dst) };
+                unsafe { (*dst).table.dispose() };
+                return std::ptr::null_mut();
+            }
+            if stored != child {
+                unsafe { crate::refcount::ll_release(child) };
+            }
+            Key::Str(stored as *mut crate::string::LLString)
+        } else {
+            key
+        };
+        if unsafe { (*dst).table.insert(published_key, v) }.is_none() {
+            // Out of memory part-way. Give back what this element took and
+            // release what the copy retained; the source is untouched.
+            unsafe { release_value(&v) };
+            if let Key::Str(k) = published_key {
+                unsafe { crate::refcount::ll_release(k as *mut RcHeader) };
+            }
             unsafe { release_children(dst) };
             unsafe { (*dst).table.dispose() };
             return std::ptr::null_mut();
-        }
-        // Retain the child for the copy's own reference. Done after the
-        // insert succeeded, so a refusal has nothing extra to unwind.
-        unsafe { retain_value(&v) };
-        if let Key::Str(s) = key {
-            unsafe { crate::refcount::ll_retain(s as *mut RcHeader) };
         }
     }
     dst
 }
 
 #[inline]
-unsafe fn retain_value(v: &Value) {
+unsafe fn release_value(v: &Value) {
     if v.is_refcounted() {
-        unsafe { crate::refcount::ll_retain(v.entity_ptr()) };
+        unsafe { crate::refcount::ll_release(v.entity_ptr()) };
     }
 }
 
@@ -261,7 +324,139 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
 mod tests {
     use super::*;
     use crate::array::table::Key;
+    use crate::refcount::ll_release;
     use crate::string::{LLString, ll_string_new};
+
+    /// The COW door. A shared array asked to separate must hand back a
+    /// **different** array; returning the original is a write into a value
+    /// two holders share, which in release happens with no signal at all.
+    #[test]
+    fn a_shared_array_separates_into_a_copy_of_its_own() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = crate::memory::arena::Arena::new();
+        let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
+
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let key = mk(b"k");
+        let value = mk(b"v");
+        unsafe {
+            (*src).table.insert(
+                Key::Str(key),
+                Value::entity(crate::value::Tag::String, value as *mut RcHeader),
+            );
+            // `insert` writes the entry raw and leaves the counting to the
+            // caller, so these are the source array's own references.
+            crate::refcount::ll_retain(key as *mut RcHeader);
+            crate::refcount::ll_retain(value as *mut RcHeader);
+        }
+        // A second holder is what makes the write a separation.
+        unsafe { crate::refcount::ll_retain(src as *mut RcHeader) };
+
+        let copy = unsafe {
+            crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, src as *mut RcHeader)
+        } as *mut LLArray;
+        assert_ne!(copy, src, "the shared array was written in place");
+        assert_eq!(
+            unsafe { (*copy).table.used() },
+            1,
+            "the entry did not survive"
+        );
+        // Three each: this test, the source array, and the copy.
+        assert_eq!(
+            unsafe { (*(key as *mut RcHeader)).refcount },
+            3,
+            "the copy did not take a reference to the key"
+        );
+        assert_eq!(
+            unsafe { (*(value as *mut RcHeader)).refcount },
+            3,
+            "the copy did not take a reference to the element"
+        );
+
+        unsafe {
+            assert!(ll_release(copy as *mut RcHeader));
+            crate::object::ll_entity_die(copy as *mut RcHeader);
+            assert!(!ll_release(src as *mut RcHeader));
+            assert!(ll_release(src as *mut RcHeader));
+            crate::object::ll_entity_die(src as *mut RcHeader);
+            assert!(ll_release(key as *mut RcHeader));
+            crate::object::ll_entity_die(key as *mut RcHeader);
+            assert!(ll_release(value as *mut RcHeader));
+            crate::object::ll_entity_die(value as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The escape door. An arena array taken by a longer-lived holder is
+    /// copied out, and its arena COW children are copied with it — a hold
+    /// on arena memory in a heap slot dangles at the reset.
+    #[test]
+    fn an_arena_array_taken_by_a_heap_holder_is_copied_out_with_its_children() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = crate::memory::arena::Arena::new();
+        let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        // `ll_array_new` takes no context and resolves this thread's, so
+        // an arena array needs one mounted. One raw pointer, reused: a
+        // fresh `&mut` per call retags and invalidates what TLS holds
+        // (`dev/WORKFLOW.md`, Miri).
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        crate::memory::context::set_current_context(context_ptr);
+
+        let holder_class = crate::class::ClassBuilder::new("ArrayHolder")
+            .prop("a", true)
+            .build();
+        let holder = unsafe {
+            crate::object::new_constructed(context_ptr, holder_class, MemoryCategory::GcHeap)
+        };
+
+        let src = unsafe { ll_array_new(MemoryCategory::RequestArena, 0x9E37_79B9) };
+        let element =
+            unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"in the arena") };
+        unsafe {
+            (*src).table.insert(
+                Key::Int(1),
+                Value::entity(crate::value::Tag::String, element as *mut RcHeader),
+            );
+            crate::refcount::ll_retain(element as *mut RcHeader);
+        }
+
+        unsafe {
+            assert!(crate::memory::barrier::ref_store(
+                arena_ptr,
+                holder as *mut RcHeader,
+                crate::object::Object::prop_at(holder, 16),
+                std::ptr::null_mut(),
+                Value::entity(crate::value::Tag::Array, src as *mut RcHeader),
+            ));
+        }
+
+        let stored =
+            unsafe { (*crate::object::Object::prop_at(holder, 16)).entity_ptr() } as *mut LLArray;
+        assert_ne!(stored, src, "the heap slot took the arena array itself");
+        assert_eq!(
+            unsafe { (*stored).rc.memory_category() },
+            MemoryCategory::GcHeap,
+            "the copy did not land in the heap"
+        );
+        let copied_element = unsafe { (*stored).table.entry(0).value.entity_ptr() };
+        assert_ne!(
+            copied_element, element as *mut RcHeader,
+            "the copy still holds the arena string"
+        );
+        assert_eq!(
+            unsafe { crate::object::header_category(copied_element) },
+            MemoryCategory::GcHeap,
+            "the copied element did not leave the arena"
+        );
+
+        unsafe {
+            assert!(ll_release(holder as *mut RcHeader));
+            crate::object::ll_object_die(holder);
+        }
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+        arena.reset(|_| {});
+    }
 
     fn mk(bytes: &[u8]) -> *mut LLString {
         unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, bytes) }
@@ -324,7 +519,7 @@ mod tests {
         let before_key = unsafe { (*(key as *mut RcHeader)).refcount };
         let before_child = unsafe { (*(child as *mut RcHeader)).refcount };
 
-        let dst = unsafe { separate(src, MemoryCategory::GcHeap) };
+        let dst = unsafe { separate(src, MemoryCategory::GcHeap, std::ptr::null_mut()) };
         assert!(!dst.is_null());
 
         unsafe {
@@ -369,7 +564,7 @@ mod tests {
             for i in [2i64, 5, 8] {
                 (*src).table.remove(Key::Int(i));
             }
-            let dst = separate(src, MemoryCategory::GcHeap);
+            let dst = separate(src, MemoryCategory::GcHeap, std::ptr::null_mut());
             assert!(!dst.is_null());
             assert_eq!((*dst).table.len(), 7);
             assert_eq!(

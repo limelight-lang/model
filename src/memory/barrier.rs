@@ -132,8 +132,15 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 /// The returned entity carries a reference for the slot either way — the
 /// caller retains `new` before calling, and a copy arrives at `+1` from
 /// its factory, so the caller releases `new` when they differ.
+///
+/// **Crate-internal, and with a second consumer beside the two store
+/// micro-ops**: the array's COW copy publishes each child it takes
+/// through this rather than by a bare `ll_retain`, because a copy that
+/// records no escape gain spends a hold-count belonging to a real holder
+/// when `drop_ref` gives it back. Publishing without writing a slot is
+/// exactly what this operation is: the caller stores what it returns.
 #[inline]
-unsafe fn store_category_barrier(
+pub(crate) unsafe fn store_category_barrier(
     arena: *mut Arena,
     owner_cat: MemoryCategory,
     new: *mut RcHeader,
@@ -151,7 +158,7 @@ unsafe fn store_category_barrier(
             // copy). That is also what keeps `IS_ESCAPEE` and the exact
             // COW count from claiming the same four bytes — a COW entity
             // never becomes an escapee at all.
-            stored = unsafe { crate::object::escape_copy(owner_cat, new) };
+            stored = unsafe { crate::object::escape_copy(arena, owner_cat, new) };
             if stored.is_null() {
                 return std::ptr::null_mut();
             }

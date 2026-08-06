@@ -110,18 +110,6 @@ pub(crate) unsafe fn value_count_at<R: crate::walk::CellReader>(base: *const u8)
     unsafe { (*shape).value_count as usize }
 }
 
-/// The values of the instance based at `base`, for a caller that has the
-/// address and the class but no typed pointer — the teardown walkers.
-///
-/// # Safety
-/// `base` is a live template instance and `cls` is its class.
-pub(crate) unsafe fn values_at<'a>(base: *mut u8, cls: &Class) -> &'a mut [Value] {
-    debug_assert!(cls.flags & CLASS_TEMPLATE != 0);
-    let n = unsafe { (*(base as *const Template)).shape };
-    let n = unsafe { (*n).value_count } as usize;
-    unsafe { std::slice::from_raw_parts_mut(base.add(VALUES_OFFSET) as *mut Value, n) }
-}
-
 /// Build a template instance in `category` from `shape` and the values
 /// this pass substituted.
 ///
