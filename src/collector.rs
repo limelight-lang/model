@@ -22,9 +22,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::epoch as protocol;
 use crate::memory::deferred_free;
 use crate::memory::heap::{EntityBlockSnapshot, snapshot_entity_blocks};
+#[cfg(test)]
+use crate::refcount::EntityKind;
 use crate::refcount::{
-    ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EPOCH_BYTE_MASK, EPOCH_BYTE_SHIFT, EntityKind,
-    MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, collector_load_header, collector_stamp_epoch,
+    ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EPOCH_BYTE_MASK, EPOCH_BYTE_SHIFT, MEMORY_CATEGORY_MASK,
+    MemoryCategory, RcHeader, collector_load_header, collector_stamp_epoch,
 };
 use crate::walk::garbage_components;
 
@@ -251,17 +253,25 @@ impl Epoch {
             let slot_rows = &self.slot_rows;
             let edges = &mut self.edges;
             let dropped = &mut self.stats.dropped_edges;
-            trace_mature(entity, kind, |field, raw, child| {
-                match census_row(blocks, first_slot, slot_rows, child as usize) {
-                    Some(dst) => edges.push(Edge {
-                        src: i as u32,
-                        dst,
-                        field,
-                        raw,
-                    }),
-                    None => *dropped += 1,
-                }
-            });
+            // The relaxed instantiation of the one tracing walk. The
+            // mutator races these reads; a torn Box or a stale cell costs
+            // a phantom or a missed edge, never a wild dereference —
+            // every row here is mature, so the class word at `+8` was
+            // published epochs ago and every handshake since ordered that
+            // store before this load.
+            unsafe {
+                crate::walk::trace_cells::<crate::walk::RelaxedCells>(entity, kind, |cell| {
+                    match census_row(blocks, first_slot, slot_rows, cell.child as usize) {
+                        Some(dst) => edges.push(Edge {
+                            src: i as u32,
+                            dst,
+                            field: cell.addr,
+                            raw: cell.raw,
+                        }),
+                        None => *dropped += 1,
+                    }
+                })
+            };
         }
     }
 
@@ -412,69 +422,6 @@ fn census_row(
     (row != u32::MAX).then_some(row)
 }
 
-/// Trace one mature entity's counted children with relaxed-atomic cell
-/// reads, yielding `(cell address, raw word, child)` for each non-null
-/// candidate. The mutator races these reads; a torn Box or a stale cell
-/// costs a phantom or missed edge, never a wild dereference — the class
-/// pointer at `+8` is safe to chase *because* the entity is mature: it
-/// was published epochs ago, and every handshake since ordered that
-/// store before this load.
-fn trace_mature(
-    entity: *mut RcHeader,
-    kind: u32,
-    mut visit: impl FnMut(usize, u64, *mut RcHeader),
-) {
-    use std::sync::atomic::AtomicU64;
-    #[inline]
-    fn load_cell(addr: usize) -> u64 {
-        unsafe { (*(addr as *const AtomicU64)).load(Ordering::Relaxed) }
-    }
-
-    const OBJECT: u32 = EntityKind::Object as u32;
-    const LAZY: u32 = EntityKind::Lazy as u32;
-    const REFERENCE: u32 = EntityKind::Reference as u32;
-    match kind {
-        OBJECT | LAZY => {
-            // The class word is the entity's own and goes through the
-            // reader; the descriptor it names is immortal static data and
-            // does not. It is recovered from an integer load, so the
-            // descriptor — and a template's shape, below the same
-            // entrance — must live in memory whose address was exposed as
-            // an integer: immortal memory here, the binary's own data once
-            // the compiler emits shapes. Miri reports a dangling pointer
-            // for anything else, and it is right to.
-            //
-            // The stride itself is not written out here any more. It is
-            // `object::for_each_counted_cell`, instantiated with the
-            // relaxed reader, and that is the whole difference between
-            // this walk and the quiescent one — a fact that used to be a
-            // second copy of the runs and a second copy of the template
-            // arm, and that cost a defect each time the layout moved.
-            let class = load_cell(entity as usize + 8) as *const crate::class::Class;
-            unsafe {
-                crate::object::for_each_counted_cell::<crate::walk::RelaxedCells>(
-                    entity as *mut u8,
-                    class,
-                    |cell| visit(cell.addr, cell.raw, cell.child),
-                )
-            };
-        }
-        REFERENCE => {
-            // The reference layout still has its own arm here; folding it
-            // into one dispatch with the tracer is the next step. What has
-            // already moved out is the Box's own layout arithmetic —
-            // "the flags byte is bits 8-15 of the second word" is
-            // `value.rs`'s contract and was a copy of it here.
-            let cell = entity as usize + 8;
-            let payload = load_cell(cell);
-            if crate::value::Value::refcounted_in_meta_word(load_cell(cell + 8)) {
-                visit(cell, payload, payload as *mut RcHeader);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// One full epoch, blocking: the production shape, run on a dedicated
 /// collector thread against a mutator that reaches checkpoints. Every
 /// wait is a spin-yield — the epoch's pace is bounded by the mutator's
@@ -562,11 +509,13 @@ mod tests {
         };
 
         let mut seen = Vec::new();
-        trace_mature(
-            t as *mut RcHeader,
-            EntityKind::Object as u32,
-            |_, _, child| seen.push(child),
-        );
+        unsafe {
+            crate::walk::trace_cells::<crate::walk::RelaxedCells>(
+                t as *mut RcHeader,
+                EntityKind::Object as u32,
+                |cell| seen.push(cell.child),
+            )
+        };
         assert_eq!(
             seen,
             vec![held as *mut RcHeader],

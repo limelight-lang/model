@@ -11,7 +11,7 @@
 //! each kind's out-edges are. Neither knows the other's internals.
 
 use crate::memory::heap::for_each_entity_slot;
-use crate::object::{Object, for_each_counted_child};
+use crate::object::Object;
 use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind, RcHeader};
 use crate::value::Value;
 
@@ -114,22 +114,69 @@ impl CellReader for RelaxedCells {
 /// `entity` must point to a live entity whose slots are still readable.
 pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcHeader)) {
     let kind = unsafe { entity_kind(entity) };
-    const OBJECT: u32 = EntityKind::Object as u32;
-    const LAZY: u32 = EntityKind::Lazy as u32;
-    const REFERENCE: u32 = EntityKind::Reference as u32;
-    const ARRAY: u32 = EntityKind::Array as u32;
-    match kind {
-        OBJECT | LAZY => unsafe { for_each_counted_child(entity as *mut Object, visit) },
-        ARRAY => unsafe {
+    if kind == EntityKind::Array as u32 {
+        // The one kind not yet routed through [`trace_cells`], and the
+        // reason is a decision rather than an omission: an array's cells
+        // live in storage that moves on growth, so a relaxed reader can
+        // observe a `used` that outran the `storage` it read and stride
+        // past the end of the stale chunk. Parked frees keep that chunk
+        // readable but bound nothing. Until that bound exists the array
+        // has no concurrent walk at all, and giving it a cell walker here
+        // would put one within reach of a single instantiation. It is
+        // `PLAN.md` item 12's, together with the bound.
+        return unsafe {
             crate::array::entity::for_each_counted_child(
                 entity as *mut crate::array::entity::LLArray,
                 visit,
             )
-        },
+        };
+    }
+    unsafe { trace_cells::<PlainCells>(entity, kind, |cell| visit(cell.child)) };
+}
+
+/// Every counted cell of `entity`, dispatched on its kind — **the single
+/// tracing dispatch**, serving the quiescent walk and the collector's
+/// epoch alike, which differ only in `R`.
+///
+/// `kind` is a parameter rather than a load, because the collector holds
+/// it from its own snapshot and must not re-read a header the mutator is
+/// writing.
+///
+/// Kinds with no counted cells are named in the arms rather than left to
+/// a default: a string is a leaf whichever layout it has, since its
+/// payload is bytes; a weak cell's target is deliberately uncounted; an
+/// FFI Box holds an opaque C payload. Arrays are absent by the decision
+/// recorded at [`trace_entity`].
+///
+/// # Safety
+/// `entity` is a live entity of `kind` whose cells are readable, and
+/// under `R = RelaxedCells` it must be **mature** — the class word at
+/// `+8` is chased, and that is safe only because a handshake ordered its
+/// publication epochs ago.
+pub(crate) unsafe fn trace_cells<R: CellReader>(
+    entity: *mut RcHeader,
+    kind: u32,
+    mut visit: impl FnMut(Cell),
+) {
+    const OBJECT: u32 = EntityKind::Object as u32;
+    const LAZY: u32 = EntityKind::Lazy as u32;
+    const REFERENCE: u32 = EntityKind::Reference as u32;
+    match kind {
+        OBJECT | LAZY => {
+            // The class word is the entity's own and goes through the
+            // reader; the descriptor it names is immortal and does not.
+            let class = unsafe { R::word(entity as usize + 8) } as *const crate::class::Class;
+            unsafe { crate::object::for_each_counted_cell::<R>(entity as *mut u8, class, visit) };
+        }
         REFERENCE => {
-            let v = unsafe { (*(entity as *mut crate::reference::LLReference)).value };
-            if v.is_refcounted() {
-                visit(v.entity_ptr());
+            let addr = entity as usize + 8;
+            let raw = unsafe { R::word(addr) };
+            if Value::refcounted_in_meta_word(unsafe { R::word(addr + 8) }) {
+                visit(Cell {
+                    addr,
+                    raw,
+                    child: raw as *mut RcHeader,
+                });
             }
         }
         _ => {}
@@ -1423,6 +1470,90 @@ mod tests {
             crate::object::ll_entity_die(key as *mut RcHeader);
             crate::object::ll_entity_die(value as *mut RcHeader);
         }
+    }
+
+    /// The two readers must agree on a quiescent heap, for every walked
+    /// entity and every kind that is producible.
+    ///
+    /// This is the pin the crate lacked. The stride used to be written
+    /// out once per walk, so the walks could disagree and nothing said
+    /// so: when the interpolated template moved its value count from the
+    /// class to the instance, two walkers learned it and the third did
+    /// not, and the miss was a leak rather than a crash — found by
+    /// review, not by the suite. With one stride under two readers a
+    /// divergence can only come from the readers, and this catches that;
+    /// with two strides it would catch their divergence too.
+    ///
+    /// Quiescent is the whole precondition: the relaxed reader exists for
+    /// a racing mutator, and here there is none, so the two must return
+    /// the same set rather than merely compatible ones.
+    #[cfg(feature = "rc-walk")]
+    #[test]
+    fn both_readers_agree_on_a_quiet_heap() {
+        use crate::class::ClassBuilder;
+        use crate::memory::arena::Arena;
+        use crate::memory::context::LLContext;
+        use crate::object::new_constructed;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let cls = ClassBuilder::new("TwoReaders")
+            .prop("a", true)
+            .prop("b", true)
+            .build();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let holder = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let child = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let boxed = unsafe {
+            crate::reference::ll_reference_new(std::ptr::null_mut(), MemoryCategory::GcHeap)
+        };
+        unsafe {
+            tie(holder, 16, child);
+            // The second property stays empty, so an unoccupied cell has
+            // to be skipped by both readers rather than by one.
+            crate::memory::barrier::write_value_slot(
+                &raw mut (*boxed).value,
+                Value::entity(Tag::Object, child as *mut RcHeader),
+            );
+            crate::refcount::ll_retain(child as *mut RcHeader);
+        }
+
+        let mut disagreed = Vec::new();
+        let mut walked = 0usize;
+        unsafe {
+            for_each_entity_slot(|entity| {
+                walked += 1;
+                let kind = entity_kind(entity);
+                if kind == EntityKind::Array as u32 {
+                    return; // no relaxed walk for arrays yet, by decision
+                }
+                let mut plain = Vec::new();
+                let mut relaxed = Vec::new();
+                trace_cells::<PlainCells>(entity, kind, |c| plain.push(c.child as usize));
+                trace_cells::<RelaxedCells>(entity, kind, |c| relaxed.push(c.child as usize));
+                if plain != relaxed {
+                    disagreed.push((entity as usize, plain, relaxed));
+                }
+            });
+        }
+        assert!(walked >= 3, "the heap under test was empty");
+        assert!(
+            disagreed.is_empty(),
+            "the two readers disagree: {disagreed:?}"
+        );
+
+        // Everything this test made has to go: `census_counts_objects_and_
+        // _their_edges` counts the whole process's entity blocks, so a
+        // survivor here is a failure over there. The box's Value goes
+        // first, then the holder's dispose releases the child last.
+        unsafe {
+            use crate::refcount::ll_release;
+            assert!(ll_release(boxed as *mut RcHeader));
+            crate::object::ll_entity_die(boxed as *mut RcHeader);
+            assert!(ll_release(holder as *mut RcHeader));
+            crate::object::ll_entity_die(holder as *mut RcHeader);
+        }
+        arena.reset(|_| {});
     }
 
     /// A ring with no object anywhere in it. Phase 1 traced both arrays
