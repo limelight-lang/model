@@ -463,10 +463,32 @@ unsafe fn collect_cycles_inner() -> usize {
                 // return this freed cell. Its die-arm unregisters and
                 // frees; it never touches counts, so trial-deleted
                 // siblings are safe.
-                if (*w).flags & ENTITY_KIND_MASK == EntityKind::WeakRef.to_flags() {
-                    crate::weak::weakref_die(w as *mut crate::weak::LLWeakRef);
-                } else {
-                    crate::memory::stdapi::ll_free(w as *mut u8);
+                // The raw free below reclaims the entity's own slot and
+                // nothing else, so every kind that owns memory *outside*
+                // that slot needs an arm here or its body is lost with no
+                // pointer left to it. Two do, and both were missing: a
+                // dynamic string's payload and an array's table storage
+                // are separate allocations, each a buffer chunk holding
+                // its block's live count above zero for the life of the
+                // process, or an OS-direct run.
+                //
+                // A string goes through its own teardown, which touches no
+                // counts. An array cannot: `array_die` releases the
+                // children first, and these children were already
+                // trial-deleted, so it would decrement them twice. Only
+                // the storage half of it applies.
+                match (*w).flags & ENTITY_KIND_MASK {
+                    k if k == EntityKind::WeakRef.to_flags() => {
+                        crate::weak::weakref_die(w as *mut crate::weak::LLWeakRef)
+                    }
+                    k if k == EntityKind::String.to_flags() => {
+                        crate::string::string_die(w as *mut crate::string::LLString)
+                    }
+                    k if k == EntityKind::Array.to_flags() => {
+                        (*(w as *mut crate::array::entity::LLArray)).table.dispose();
+                        crate::memory::stdapi::ll_free(w as *mut u8);
+                    }
+                    _ => crate::memory::stdapi::ll_free(w as *mut u8),
                 }
             }
         }
@@ -1243,5 +1265,136 @@ mod tests {
             assert!(buffer().is_empty());
             assert!(h.iter().all(|e| e.flags & CYCLE_COLLECTOR_BUFFERED == 0));
         }
+    }
+
+    /// The white set is freed by reclaiming each entity's own slot, and
+    /// an array's table storage is not in that slot. Without the arm the
+    /// storage is lost with no pointer left anywhere to it — a buffer
+    /// chunk holding its block's live count above zero for the life of
+    /// the process. `$obj->arr = [$obj]` reaches it with no new mechanism:
+    /// the object buffers as a candidate on kind 0 and `trace_entity`
+    /// pulls the array into the white set behind it.
+    ///
+    /// Seen failing on the storage never coming back.
+    #[test]
+    fn a_collected_array_gives_its_table_storage_back() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::memory::buffer::{PressureMode, set_pressure_mode};
+        use crate::memory::buffer_arena::with_buffer_arena;
+        use crate::refcount::ll_retain;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let cls = ClassBuilder::new("ArrayHolder").prop("arr", true).build();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+        let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+
+        let (storage, capacity) = unsafe {
+            (*a).table.insert(
+                Key::Int(0),
+                Value::entity(Tag::Object, obj as *mut RcHeader),
+            );
+            ll_retain(obj as *mut RcHeader);
+            (*a).table.storage()
+        };
+        assert!(!storage.is_null(), "the insert allocated storage to lose");
+
+        unsafe {
+            let slot = Object::prop_at(obj, 16);
+            assert!(ref_store(
+                arena_ptr,
+                obj as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, a as *mut RcHeader),
+            ));
+            // Both creation references go; the ring is all that holds
+            // either of them now.
+            assert!(!ll_release(a as *mut RcHeader));
+            assert!(!ll_release(obj as *mut RcHeader));
+        }
+
+        let reclaimed = unsafe { collect_cycles() };
+        assert!(reclaimed >= 2, "the ring was not collected");
+
+        // In critical mode an allocation searches the block's free list,
+        // so the same address coming back is the storage having been
+        // returned rather than merely forgotten.
+        set_pressure_mode(PressureMode::Critical);
+        let (reused, granted) = with_buffer_arena(|arena| arena.alloc(capacity));
+        set_pressure_mode(PressureMode::Plenty);
+        assert_eq!(reused, storage, "the array's table storage was never freed");
+        with_buffer_arena(|arena| unsafe { arena.free(reused, granted) });
+
+        arena.reset(|_| {});
+    }
+
+    /// The same hole, one kind over. A dynamic string's payload is a
+    /// separate allocation too, and it has been reachable from cyclic
+    /// garbage since the layout landed — longer than the array has
+    /// existed. The critic pass that found the array half named only the
+    /// array; this is the rest of it.
+    ///
+    /// A self-ring is enough: the object holds itself, so it is garbage,
+    /// and its string property is white behind it.
+    #[test]
+    fn a_collected_dynamic_string_gives_its_payload_back() {
+        use crate::memory::buffer::{PressureMode, set_pressure_mode};
+        use crate::memory::buffer_arena::with_buffer_arena;
+        use crate::string::{LLStringDynamic, ll_string_new_dynamic};
+        let _g = crate::memory::block_pool::test_guard();
+
+        let cls = ClassBuilder::new("StringHolder")
+            .prop("self", true)
+            .prop("text", true)
+            .build();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+        let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let s = unsafe {
+            ll_string_new_dynamic(
+                std::ptr::null_mut(),
+                MemoryCategory::GcHeap,
+                b"a payload",
+                0,
+            )
+        };
+        assert!(!s.is_null());
+        let (payload, capacity) = unsafe { ((*s).data, (*s).capacity as usize) };
+        assert!(!payload.is_null(), "the string has an out-of-line payload");
+
+        unsafe {
+            assert!(ref_store(
+                arena_ptr,
+                obj as *mut RcHeader,
+                Object::prop_at(obj, 16),
+                std::ptr::null_mut(),
+                Value::entity(Tag::Object, obj as *mut RcHeader),
+            ));
+            assert!(ref_store(
+                arena_ptr,
+                obj as *mut RcHeader,
+                Object::prop_at(obj, 32),
+                std::ptr::null_mut(),
+                Value::entity(Tag::String, s as *mut RcHeader),
+            ));
+            assert!(!ll_release(s as *mut RcHeader));
+            assert!(!ll_release(obj as *mut RcHeader));
+        }
+
+        let reclaimed = unsafe { collect_cycles() };
+        assert!(reclaimed >= 2, "the self-ring was not collected");
+
+        set_pressure_mode(PressureMode::Critical);
+        let (reused, granted) = with_buffer_arena(|arena| arena.alloc(capacity));
+        set_pressure_mode(PressureMode::Plenty);
+        assert_eq!(reused, payload, "the string's payload was never freed");
+        with_buffer_arena(|arena| unsafe { arena.free(reused, granted) });
+
+        arena.reset(|_| {});
     }
 }
