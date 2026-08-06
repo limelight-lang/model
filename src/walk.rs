@@ -323,16 +323,53 @@ unsafe fn sever_component(members: &[*mut RcHeader]) -> Vec<*mut RcHeader> {
     let member_set: HashSet<usize> = members.iter().map(|&m| m as usize).collect();
     let mut displaced: Vec<*mut RcHeader> = Vec::new();
     for &m in members {
-        if is_object(unsafe { (*m).flags }) {
-            unsafe { crate::object::sever_counted_children(m as *mut Object, &mut displaced) };
-        } else if unsafe { entity_kind(m) } == EntityKind::Reference as u32 {
-            // A reference member severs its one Value the same way.
-            let r = m as *mut crate::reference::LLReference;
-            let v = unsafe { (*r).value };
-            if v.is_refcounted() {
-                unsafe { (*r).value = Value::null() };
-                displaced.push(v.entity_ptr());
+        // Named arms rather than a chain ending in nothing. A kind that
+        // falls off this dispatch is not a leak the next pass finds: the
+        // component was already confirmed garbage, so its members are
+        // guarded, severed of nothing, and un-guarded back to the counts
+        // they started with — collected zero, forever, on every call. That
+        // is how the Array kind sat here from the day it became
+        // producible, and an empty fall-through is what hid it.
+        const OBJECT: u32 = EntityKind::Object as u32;
+        const LAZY: u32 = EntityKind::Lazy as u32;
+        const REFERENCE: u32 = EntityKind::Reference as u32;
+        const ARRAY: u32 = EntityKind::Array as u32;
+        const STRING: u32 = EntityKind::String as u32;
+        const WEAKREF: u32 = EntityKind::WeakRef as u32;
+        const BOX: u32 = EntityKind::Box as u32;
+        match unsafe { entity_kind(m) } {
+            // Lazy carries a class at +8 exactly as an object does, which
+            // is why teardown pairs the two the same way (`ll_entity_die`).
+            OBJECT | LAZY => unsafe {
+                crate::object::sever_counted_children(m as *mut Object, &mut displaced)
+            },
+            REFERENCE => {
+                // A reference member severs its one Value the same way.
+                let r = m as *mut crate::reference::LLReference;
+                let v = unsafe { (*r).value };
+                if v.is_refcounted() {
+                    unsafe { (*r).value = Value::null() };
+                    displaced.push(v.entity_ptr());
+                }
             }
+            ARRAY => unsafe {
+                crate::array::entity::sever_counted_children(
+                    m as *mut crate::array::entity::LLArray,
+                    &mut displaced,
+                )
+            },
+            // The kinds with no counted children. Reaching one here is
+            // ordinary, not an error: a component is weakly connected, so
+            // a string element of a dying object and a weak cell that
+            // died inside the garbage are both members. Severing them is
+            // genuinely nothing — a string is a leaf, a weak cell's target
+            // is deliberately uncounted and the drain's weak pass has
+            // already nulled it, and an FFI Box holds an opaque C payload
+            // the runtime never counted. The arms are written out anyway,
+            // because "nothing to do" and "nobody wrote the arm" looked
+            // identical here and that is what hid the Array kind.
+            STRING | WEAKREF | BOX => {}
+            _ => debug_assert!(false, "entity kind 7 is reserved and cannot be a member"),
         }
     }
     let mut external: Vec<*mut RcHeader> = Vec::new();
@@ -1307,5 +1344,53 @@ mod tests {
             crate::object::ll_entity_die(key as *mut RcHeader);
             crate::object::ll_entity_die(value as *mut RcHeader);
         }
+    }
+
+    /// A ring with no object anywhere in it. Phase 1 traced both arrays
+    /// and Phase 2 judged the component garbage; what was missing was the
+    /// arm that severs it, so the drain guarded the two members, severed
+    /// nothing, and un-guarded them back to the counts they started at.
+    /// The failure was not a crash and not a leak the next pass finds: the
+    /// collector reported a confirmed component and freed none of it, and
+    /// repeated the whole walk, judge, guard and un-guard on the same ring
+    /// on every later call. Seen failing at `collected: 0`.
+    #[test]
+    fn a_ring_of_two_arrays_and_no_object_is_collected() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::refcount::{ll_release, ll_retain};
+        let _g = crate::memory::block_pool::test_guard();
+
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let b = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        unsafe {
+            (*a).table
+                .insert(Key::Int(0), Value::entity(Tag::Array, b as *mut RcHeader));
+            ll_retain(b as *mut RcHeader);
+            (*b).table
+                .insert(Key::Int(0), Value::entity(Tag::Array, a as *mut RcHeader));
+            ll_retain(a as *mut RcHeader);
+            // Drop the creation references: each array is now held by the
+            // other and by nothing else, which is the ring.
+            assert!(!ll_release(a as *mut RcHeader), "a is still held by b");
+            assert!(!ll_release(b as *mut RcHeader), "b is still held by a");
+        }
+
+        let stats = unsafe { collect_cycles() };
+        // At least one, not exactly one: `collect_cycles` measures the
+        // whole process and the tests share it, so an exact count is a
+        // claim about every other test rather than about this ring. The
+        // proof that severing happened is `collected` below, which is
+        // what read zero before the arm existed.
+        assert!(
+            stats.candidate_components >= 1,
+            "the ring was not judged garbage, so this proves nothing about severing"
+        );
+        assert!(
+            stats.collected >= 2,
+            "the component was confirmed and then not freed"
+        );
+        let seen = walked_addresses();
+        assert!(!seen.contains(&(a as usize)) && !seen.contains(&(b as usize)));
     }
 }

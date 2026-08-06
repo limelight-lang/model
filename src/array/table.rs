@@ -28,7 +28,7 @@ use crate::memory::block_pool::BLOCK_PAYLOAD;
 use crate::memory::buffer_arena::{buffer_alloc_longlived_payload, buffer_free_longlived_payload};
 use crate::memory::context::resolve_arena;
 use crate::memory::immortal::immortal_alloc;
-use crate::refcount::MemoryCategory;
+use crate::refcount::{MemoryCategory, RcHeader};
 use crate::string::LLString;
 use crate::value::Value;
 
@@ -640,6 +640,44 @@ impl Table {
             }
             MemoryCategory::Immortal => (immortal_alloc(bytes), bytes),
         }
+    }
+
+    /// Sever every live entry: null its element, drop its key, and
+    /// collect both into `displaced` — **without releasing them**. The
+    /// array's half of the rc-walk drain's "sever and free"
+    /// (`rfc/model/gc/rc-walk.md`, Phase 4); the caller owes one drop per
+    /// collected entry.
+    ///
+    /// An entry becomes a **hole** rather than keeping a nulled element,
+    /// because an array's key is a counted child too and there is no
+    /// "null key" to write: a hole is the one state in which
+    /// `for_each_counted_child` yields neither. That is what makes the
+    /// ordinary teardown after the un-guard find nothing left to release,
+    /// which is the property the object side gets from writing nulls.
+    ///
+    /// The counters are settled here rather than left stale: the table
+    /// outlives this call by the width of the drain, and a `live` above
+    /// zero over an entry array of holes is a contradiction anything
+    /// reading it would act on.
+    pub(crate) fn sever_entries(&mut self, displaced: &mut Vec<*mut RcHeader>) {
+        for i in 0..self.used {
+            let e = self.entry_mut(i);
+            if e.is_hole() {
+                continue;
+            }
+            let value = e.value;
+            let key = e.string_key();
+            unsafe { crate::memory::barrier::write_value_slot(&raw mut e.value, Value::null()) };
+            e.make_hole();
+            if value.is_refcounted() {
+                displaced.push(value.entity_ptr());
+            }
+            if !key.is_null() {
+                displaced.push(key as *mut RcHeader);
+            }
+        }
+        self.live = 0;
+        self.holes = self.used;
     }
 
     /// Release storage the table has replaced. Only the long-lived

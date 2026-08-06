@@ -197,6 +197,23 @@ pub unsafe fn release_children(a: *mut LLArray) {
     };
 }
 
+/// Sever this array's counted children — elements and string keys alike
+/// — collecting them into `displaced` without releasing them. The array's
+/// arm of the drain's Phase 4, and the counterpart of
+/// [`crate::object::sever_counted_children`]: same contract, same reason
+/// for not dropping inline, and the caller owes one drop per entry.
+///
+/// One line, because every entry the walk yields is the table's and so is
+/// the state that has to replace it: see
+/// [`crate::array::table::Table::sever_entries`].
+///
+/// # Safety
+/// `a` must be a live array entity whose storage is readable and
+/// writable.
+pub(crate) unsafe fn sever_counted_children(a: *mut LLArray, displaced: &mut Vec<*mut RcHeader>) {
+    unsafe { (*a).table.sever_entries(displaced) };
+}
+
 /// The address of the array's storage and the bytes granted for it — the
 /// block promotion retains when a carry was refused. Null when the array
 /// never grew a table.
