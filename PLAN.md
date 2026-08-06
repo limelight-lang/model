@@ -89,6 +89,40 @@ wrapper and the storage's home in the buffer arena (`model` `514c526`,
    `array<int>`. The generic element write has to dispatch on the tag and
    transition 1 → 2.
 
+### Beside the hashtable: the memory categories
+
+Opened 2026-08-06, out of the same review chain, and independent of the
+four items above. Numbered as they are in the session tool.
+
+5. **One place for the category → allocator routing.** The compiler
+   assigns a category to an owner independently of what kind of entity it
+   is, so "where does this go" belongs to the memory layer rather than to
+   each consumer. The same `match` on `MemoryCategory` is written eight
+   times: six for the entity itself (`object.rs`, `reference.rs`,
+   `template.rs`, `string.rs` twice, and `string.rs`'s dynamic factory,
+   which differs), and two for an entity's out-of-line body (`string.rs`'s
+   payload growth, `array/table.rs`'s storage). The two body copies had
+   already diverged. Shape: `entity_alloc_in` for the first group,
+   `body_alloc` / `body_ensure` / `body_free` for the second, the free
+   dispatching on the block kind the pointer already carries.
+6. **~~RFC: rename the categories where they are defined~~** and
+   7. **~~carry it through the referring documents~~**, 8. **~~rename them
+   in the crate~~** — all three **deferred 2026-08-06**, reasoning in
+   `dev/DECISIONS.md`. `LongLived` is named after a duration rather than
+   an owner, which is why its reclamation was never decided; but `Region`
+   would mark exactly the entities no region owns, since a `#[Region]`
+   class owns *arenas*, and `Arena` would make `arenas.md`'s "between two
+   request arenas: forbidden" false before the mechanism justifying it
+   exists. Both wait on item 9. Meanwhile the category is marked out of
+   use on the enum itself.
+9. **The region reset, and the refusal that waits on it.** The mechanism
+   that would make a long-lived category mean something: what a region
+   owns, when it resets, how the owner's O(1) death reaches its entities,
+   and what promotion across a region boundary is.
+   `rfc/model/memory/regions.md` is the starting point. It also gates
+   `ll_string_new_dynamic`'s refusal of that category — today nothing
+   would reclaim such a string. Blocked on design, not scheduled.
+
 ### Two defects this work found, worth not repeating
 
 The entry's `hash_or_key` holds the key's own identity — the raw integer

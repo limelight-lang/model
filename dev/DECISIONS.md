@@ -8,6 +8,48 @@ never edited or deleted.
 
 ---
 
+## 2026-08-06 — `LongLived` goes out of use, and its rename waits for a mechanism
+
+**As the category of an entity the code does nothing.** It is not counted
+(`ll_retain` and `ll_release` return early on any non-zero category that is not
+COW), not collected (the census enrolls only `GcHeap`, `walk.rs`), and not
+freed by any reset or teardown pass — `rfc/model/memory/arenas.md` still records
+the reclamation strategy as undecided and no long-lived arena exists here. Its
+memory comes from the same entity blocks as `GcHeap`, so an entity marked
+long-lived is an immortal entity housed in the collected heap: it survives to
+process exit like an immortal one while occupying a slot the collector strides
+over on every walk. Nothing new is stamped with it until that changes. The
+`owner_cat` use is untouched and stays — a static block or a global has no
+owning entity to say how long the receiving slot lives, and that is a comparison
+rather than an allocation.
+
+**The rename was considered the same day and deferred.** Edmond's diagnosis is
+right: the category is named after a duration rather than an owner, which is
+exactly why its reclamation was never decided, and naming the owner would settle
+it — the memory would die with the owner in O(1), like an arena reset. The
+proposed names were `Region` for it and `Arena` for `RequestArena`.
+
+`Region` does not fit, and the reason is worth keeping. A class declared
+`#[Region]` **owns arenas** (`rfc/model/memory/regions.md`: "owns arenas,
+exactly like an actor owns arenas", and its example is annotated "lives in this
+region's arena"), so the entities a region owns carry the *arena* category. The
+population called long-lived today belongs to no region at all. Naming the code
+`Region` would therefore mark precisely the entities no region owns. The other
+reading — give a region's contents this code — fails against the store barrier,
+which counts escapes on `RequestArena` exactly (`barrier.rs`): a reference from
+a heap container into a region would take no hold-count, the reset would promote
+nobody, and the first reset would leave a dangling pointer in a live container.
+
+`RequestArena` → `Arena` was deferred with it. The invariant "between two
+request arenas: forbidden" (`rfc/model/memory/arenas.md`) holds *because* at
+most one request arena is mounted in a context; regions break that construction,
+and the general name makes the sentence false before the mechanism that would
+justify it exists. Both renames wait on the region reset, which is where it will
+be decided what category a region's contents carry.
+
+The objections came from an independent critic pass over the plan and were each
+verified against the code before being accepted.
+
 ## 2026-08-06 — the array entity, and separation is the shallow copy
 
 `LLArray` is `RcHeader | Table`, with **no per-instance class pointer** — the

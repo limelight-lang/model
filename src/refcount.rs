@@ -24,6 +24,29 @@ pub const MEMORY_CATEGORY_MASK: u32 = 0b11;
 pub enum MemoryCategory {
     GcHeap = 0b00,
     RequestArena = 0b01,
+    /// **Out of use: stamp it on nothing new.** As the category of an
+    /// entity this code has no mechanism behind it. `ll_retain` and
+    /// `ll_release` return early on it, so it is not counted; the census
+    /// enrolls only `GcHeap` (`walk.rs`), so it is not collected; and no
+    /// reset or teardown pass frees it — `rfc/model/memory/arenas.md`
+    /// still records the reclamation strategy as undecided, and no
+    /// long-lived arena exists in this crate. What it does instead is take
+    /// its memory from the same entity blocks as `GcHeap`, so an entity
+    /// marked here is an immortal entity housed in the collected heap: it
+    /// lives to process exit like `Immortal` while occupying a slot the
+    /// collector strides over on every walk, paying that visit forever and
+    /// buying nothing for it.
+    ///
+    /// **As `owner_cat` it works, and that use stays.** The question there
+    /// is how long the slot receiving a store lives, and a static block or
+    /// a global has no owning entity to answer it (`static_block.rs`;
+    /// `rfc/model/memory/arena-promotion.md` on a slot that is long-lived
+    /// by construction). That is a comparison the store barrier makes, not
+    /// an allocation.
+    ///
+    /// Renaming the code after an owner was considered on 2026-08-06 and
+    /// deferred — the name has to wait for the mechanism, or it promises
+    /// what nothing delivers (`dev/DECISIONS.md`).
     LongLived = 0b10,
     Immortal = 0b11,
 }
