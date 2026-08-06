@@ -68,14 +68,18 @@ reachable set with occupied slots still live. Next instrument: per-block census
 subtotals on mismatch, diffed between the two censuses. This is also the first
 real customer for the journal above.
 
-Two certain defects were found beside it and are not fixed. `retained.rs`'s two
-tests at lines 98-119 register fabricated addresses in the **process-global**
-retained registry holding no `test_guard`, so a concurrent walk dereferences
-them. And `heap.rs:1516-1524` claims the exit guard registers first so its
-destructor runs last, while `ll_thread_init` registers the barrier reserve and
-the block cache before `EXIT_GUARD` (heap.rs:1697) — so on glibc it runs first
-of the three, and that is a wrong load-bearing comment inside the machinery this
-flake involves.
+Two certain defects were found beside it and both are closed (`576ffc1`).
+`retained.rs`'s tests registered fabricated addresses in the **process-global**
+retained registry, which a concurrent walk dereferences; they now register
+leaked zeroed cells, and the third test is the regression — it was seen
+segfaulting on the fabricated version. The `ll_thread_exit` comment had the
+registration order backwards: `replenish` runs before `EXIT_GUARD` is
+registered, so on glibc the guard runs *first* of the three, and the safety
+rests on the no-drop-glue rule plus `try_with` rather than on the order.
+
+**One thing the new regression is worth knowing about:** it walks the process
+heap the way the census test does, so if it ever fails intermittently, that is
+this flake and not a new one.
 
 ## Urgent, ahead of everything: the GC's walk exists in copies
 
