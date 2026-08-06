@@ -505,8 +505,8 @@ unsafe fn sever_component(members: &[*mut RcHeader]) -> Vec<*mut RcHeader> {
                 // A reference member severs its one Value the same way,
                 // and through the same helper: this store runs on the
                 // mutator while an epoch may be live, and the collector
-                // reads this very cell as a relaxed atomic
-                // (`collector::trace_mature`'s Reference arm). A plain
+                // reads this very cell as a relaxed atomic (the epoch's
+                // reader, `collector::walk_edges`). A plain
                 // 16-byte write against that load is a mixed-atomicity
                 // race, which is why `reference_die` has always gone
                 // through `write_value_slot` for the identical store.
