@@ -2,9 +2,17 @@
 //!
 //! ```text
 //! +0   RcHeader   (kind = Array, COW set)
-//! +8   class      *const Class
-//! +16  Table      the storage handle
+//! +8   Table      the storage handle
 //! ```
+//!
+//! **No per-instance class pointer**, the same construction as a string
+//! (`rfc/model/arrays.md`: "a single final class … no per-instance class
+//! pointer, devirtualized methods"). The entity kind *is* the class:
+//! `array` is final, so nothing needs to be read to know what this is,
+//! and the storage-strategy tag is an internal bit invisible to
+//! `instanceof`. Spending eight bytes on a word that would hold the same
+//! value in every array ever allocated is exactly the trade the string
+//! layout already refused.
 //!
 //! The table itself holds no header: this is what supplies the refcount,
 //! the memory category and the COW state, so the table can be tested and
@@ -20,7 +28,6 @@
 //! will build the wrong thing.
 
 use crate::array::table::{Key, Table};
-use crate::class::Class;
 use crate::memory::immortal::immortal_alloc;
 use crate::refcount::{COW, EntityKind, MemoryCategory, RcHeader, publish_header};
 use crate::value::Value;
@@ -29,7 +36,6 @@ use crate::value::Value;
 #[repr(C)]
 pub struct LLArray {
     pub rc: RcHeader,
-    pub class: *const Class,
     pub table: Table,
 }
 
@@ -45,7 +51,7 @@ pub struct LLArray {
 ///
 /// # Safety
 /// Standard factory contract: the result is a fresh entity at count 1.
-pub unsafe fn ll_array_new(category: MemoryCategory, class: *const Class, salt: u64) -> *mut LLArray {
+pub unsafe fn ll_array_new(category: MemoryCategory, salt: u64) -> *mut LLArray {
     let size = size_of::<LLArray>();
     let mem = match category {
         MemoryCategory::RequestArena => unsafe {
@@ -61,7 +67,6 @@ pub unsafe fn ll_array_new(category: MemoryCategory, class: *const Class, salt: 
     }
     let a = mem as *mut LLArray;
     unsafe {
-        (&raw mut (*a).class).write(class);
         (&raw mut (*a).table).write(Table::empty(category, salt));
         publish_header(
             a as *mut RcHeader,
@@ -100,9 +105,8 @@ impl LLArray {
 /// # Safety
 /// `src` is a live array entity.
 pub unsafe fn separate(src: *mut LLArray, category: MemoryCategory) -> *mut LLArray {
-    let class = unsafe { (*src).class };
     let salt = unsafe { (*src).table.salt() };
-    let dst = unsafe { ll_array_new(category, class, salt) };
+    let dst = unsafe { ll_array_new(category, salt) };
     if dst.is_null() {
         return std::ptr::null_mut();
     }
@@ -176,7 +180,7 @@ mod tests {
     }
 
     fn arr() -> *mut LLArray {
-        unsafe { ll_array_new(MemoryCategory::GcHeap, std::ptr::null(), 0x9E37_79B9) }
+        unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) }
     }
 
     #[test]
@@ -308,5 +312,18 @@ mod tests {
 
             (*a).table.dispose();
         }
+    }
+
+    /// The layout the design fixes: no per-instance class pointer, the
+    /// same construction as a string. `array` is final, so the entity
+    /// kind already says what this is.
+    #[test]
+    fn an_array_carries_no_class_pointer() {
+        assert_eq!(std::mem::offset_of!(LLArray, rc), 0);
+        assert_eq!(
+            std::mem::offset_of!(LLArray, table),
+            8,
+            "the table starts straight after the header — nothing between"
+        );
     }
 }

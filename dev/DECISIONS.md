@@ -10,9 +10,16 @@ never edited or deleted.
 
 ## 2026-08-06 — the array entity, and separation is the shallow copy
 
-`LLArray` is `RcHeader | class | Table`: the table holds no header of its own, so
-it stays testable without an entity around it, and the wrapper supplies the
-refcount, the memory category and the COW flag.
+`LLArray` is `RcHeader | Table`, with **no per-instance class pointer** — the
+same construction as a string. `rfc/model/arrays.md` says it directly ("a single
+final class … no per-instance class pointer, devirtualized methods"): `array` is
+final, so the entity kind already says what this is, and the storage-strategy
+tag is an internal bit invisible to `instanceof`. My first version carried a
+class word; Edmond caught it. Eight bytes holding the same value in every array
+ever allocated is the trade the string layout already refused, and a layout test
+now pins the table at +8. The table holds no header of its own, so it stays
+testable without an entity around it, and the wrapper supplies the refcount, the
+memory category and the COW flag.
 
 **Separation is shallow, and that is a decision rather than a shortcut.** The
 copy gets its own storage and index, replays the source in order so insertion
