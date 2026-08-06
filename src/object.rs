@@ -361,41 +361,96 @@ pub(crate) unsafe fn for_each_counted_child(
     mut visit: impl FnMut(*mut RcHeader),
 ) {
     let cls = unsafe { (*obj).class() };
-    let base = obj as *mut u8;
+    unsafe {
+        for_each_counted_cell::<crate::walk::PlainCells>(obj as *mut u8, cls, |cell| {
+            visit(cell.child)
+        })
+    };
+}
+
+/// The object layout's counted cells — **the one place that knows where
+/// an object keeps children**, and the stride every operation over them
+/// goes through: tracing, severing, the arena reset's walk, and the
+/// concurrent collector alike.
+///
+/// It existed in three copies until 2026-08-06, and the copies cost real
+/// defects rather than tidiness: when the interpolated template moved its
+/// value count from the class to the instance, three walkers had to learn
+/// it and the third was found by review after the fact. The difference
+/// between those copies was never the stride — it was how the memory is
+/// read — so that is what `R` is (`crate::walk::CellReader`).
+///
+/// Keyed on `(base, cls)` rather than on an entity pointer, because one
+/// caller has no entity to read a class from: a static block is a
+/// headerless region laid out by a descriptor (A6,
+/// `crate::static_block`).
+///
+/// The **descriptor and the shape are read plainly under either reader**.
+/// They are immortal static data no mutator writes; what goes through the
+/// reader is the entity's own word that points at them.
+///
+/// Generic over the visitor and `#[inline]`, so every instantiation
+/// monomorphizes to a bare stride with no indirect call per child — the
+/// contract `rfc/model/classes.md` states as "Why tracing stays data".
+///
+/// # Safety
+/// `base` addresses a live region laid out by `cls`, and its cells are
+/// readable — under `R = RelaxedCells` they may be concurrently written.
+#[inline]
+pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
+    base: *mut u8,
+    cls: *const crate::class::Class,
+    mut visit: impl FnMut(crate::walk::Cell),
+) {
+    let flags = unsafe { (*cls).flags };
+    let start = base as usize;
 
     // A template's children are counted by its shape, because one class
     // serves every interpolation site and the runs would have to differ
     // per instance (`crate::template`).
-    if cls.flags & crate::class::CLASS_TEMPLATE != 0 {
-        // The read-only view, and deliberately: `visit` runs `__destruct`
-        // on this path, which is user code that can reach this same
-        // template, and a live `&mut` over its slots across that call
-        // would be the aliasing this walker's contract exists to avoid.
-        for v in unsafe { crate::template::values(base as *const crate::template::Template) } {
-            if v.is_refcounted() {
-                visit(v.entity_ptr());
+    if flags & crate::class::CLASS_TEMPLATE != 0 {
+        let n = unsafe { crate::template::value_count_at::<R>(start) };
+        for i in 0..n {
+            let addr = start + crate::template::VALUES_OFFSET + i * 16;
+            let raw = unsafe { R::word(addr) };
+            let meta = unsafe { R::word(addr + 8) };
+            if Value::refcounted_in_meta_word(meta) {
+                visit(crate::walk::Cell {
+                    addr,
+                    raw,
+                    child: raw as *mut RcHeader,
+                });
             }
         }
         return;
     }
 
     // Pointer runs: bare 8-byte pointers, `NULL` is empty.
-    for run in cls.ptr_runs() {
+    for run in unsafe { (*cls).ptr_runs() } {
         for i in 0..run.count {
-            let slot = unsafe { base.add((run.offset + i * 8) as usize) } as *const *mut RcHeader;
-            let child = unsafe { slot.read() };
-            if !child.is_null() {
-                visit(child);
+            let addr = start + (run.offset + i * 8) as usize;
+            let raw = unsafe { R::word(addr) };
+            if raw != 0 {
+                visit(crate::walk::Cell {
+                    addr,
+                    raw,
+                    child: raw as *mut RcHeader,
+                });
             }
         }
     }
     // Box runs: 16-byte Values, empty is the refcounted flag clear.
-    for run in cls.box_runs() {
+    for run in unsafe { (*cls).box_runs() } {
         for i in 0..run.count {
-            let slot = unsafe { base.add((run.offset + i * 16) as usize) } as *const Value;
-            let v = unsafe { slot.read() };
-            if v.is_refcounted() {
-                visit(v.entity_ptr());
+            let addr = start + (run.offset + i * 16) as usize;
+            let raw = unsafe { R::word(addr) };
+            let meta = unsafe { R::word(addr + 8) };
+            if Value::refcounted_in_meta_word(meta) {
+                visit(crate::walk::Cell {
+                    addr,
+                    raw,
+                    child: raw as *mut RcHeader,
+                });
             }
         }
     }

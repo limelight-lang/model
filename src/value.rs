@@ -116,6 +116,21 @@ impl Value {
         self.flags & VALUE_REFCOUNTED != 0
     }
 
+    /// The same test for a caller holding the Box's **second raw word**
+    /// rather than a `Value` — a walker reading slot memory as two `u64`s
+    /// because it may be racing a mutator and must read atomically.
+    ///
+    /// It lives here rather than at the walkers because it is this type's
+    /// layout contract and nothing else: the second word is
+    /// `tag | flags | reserved`, so the flags byte is bits 8-15. Written
+    /// out at a walker, that arithmetic is a copy of the contract in a
+    /// module that cannot be told when the contract moves, and there were
+    /// two such copies before this existed.
+    #[inline]
+    pub(crate) fn refcounted_in_meta_word(meta: u64) -> bool {
+        (meta >> 8) as u8 & VALUE_REFCOUNTED != 0
+    }
+
     /// Uninitialized property slot? Generated code tests this on a
     /// tracked property read and throws `Error` when set; `isset()`
     /// reads it inverted.

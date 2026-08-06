@@ -93,6 +93,25 @@ pub(crate) unsafe fn values<'a>(t: *const Template) -> &'a [Value] {
     unsafe { std::slice::from_raw_parts((t as *const u8).add(VALUES_OFFSET) as *const Value, n) }
 }
 
+/// How many values the instance at `base` holds, for a walker that must
+/// read the instance's own memory through its reader rather than by a
+/// plain load (`crate::walk::CellReader`).
+///
+/// The **shape word** is the instance's and goes through the reader; the
+/// count inside the shape does not, the shape being static data no
+/// mutator writes. Chasing that word is safe for the concurrent reader
+/// for the same reason the class word is: the entity is mature, so the
+/// store that published it was ordered by a handshake epochs ago.
+///
+/// # Safety
+/// `base` is a live template instance, and under a relaxed reader its
+/// cells may be concurrently written.
+#[inline]
+pub(crate) unsafe fn value_count_at<R: crate::walk::CellReader>(base: usize) -> usize {
+    let shape = unsafe { R::word(base + 16) } as *const TemplateShape;
+    unsafe { (*shape).value_count as usize }
+}
+
 /// The values of the instance based at `base`, for a caller that has the
 /// address and the class but no typed pointer — the teardown walkers.
 ///

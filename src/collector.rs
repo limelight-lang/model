@@ -435,61 +435,39 @@ fn trace_mature(
     const REFERENCE: u32 = EntityKind::Reference as u32;
     match kind {
         OBJECT | LAZY => {
-            let class = load_cell(entity as usize + 8) as *const crate::class::Class;
-            let base = entity as usize;
-
-            // A template's values are counted by its shape, not by its
-            // class (`crate::template`). The shape word is as safe to
-            // chase as the class word, and for the same reason — the
-            // entity is mature — and the shape itself is static data no
-            // mutator writes, so its count needs no atomic read.
+            // The class word is the entity's own and goes through the
+            // reader; the descriptor it names is immortal static data and
+            // does not. It is recovered from an integer load, so the
+            // descriptor — and a template's shape, below the same
+            // entrance — must live in memory whose address was exposed as
+            // an integer: immortal memory here, the binary's own data once
+            // the compiler emits shapes. Miri reports a dangling pointer
+            // for anything else, and it is right to.
             //
-            // Like the class word, it is recovered from an integer load,
-            // so the shape must live in memory whose address was exposed
-            // as an integer: immortal memory here, the binary's own data
-            // once the compiler emits shapes. Miri reports a dangling
-            // pointer for anything else, and it is right to.
-            if unsafe { (*class).flags } & crate::class::CLASS_TEMPLATE != 0 {
-                let shape = load_cell(base + 16) as *const crate::template::TemplateShape;
-                let n = unsafe { (*shape).value_count } as usize;
-                for i in 0..n {
-                    let cell = base + crate::template::VALUES_OFFSET + i * 16;
-                    let payload = load_cell(cell);
-                    let meta = load_cell(cell + 8);
-                    if (meta >> 8) as u8 & crate::value::VALUE_REFCOUNTED != 0 {
-                        visit(cell, payload, payload as *mut RcHeader);
-                    }
-                }
-                return;
-            }
-
-            for run in unsafe { (*class).ptr_runs() } {
-                for i in 0..run.count {
-                    let cell = base + (run.offset + i * 8) as usize;
-                    let raw = load_cell(cell);
-                    if raw != 0 {
-                        visit(cell, raw, raw as *mut RcHeader);
-                    }
-                }
-            }
-            for run in unsafe { (*class).box_runs() } {
-                for i in 0..run.count {
-                    let cell = base + (run.offset + i * 16) as usize;
-                    let payload = load_cell(cell);
-                    let meta = load_cell(cell + 8);
-                    // Byte +9 of the Value is its flags; bit 0 is
-                    // VALUE_REFCOUNTED (`value.rs` layout contract).
-                    if (meta >> 8) as u8 & crate::value::VALUE_REFCOUNTED != 0 {
-                        visit(cell, payload, payload as *mut RcHeader);
-                    }
-                }
-            }
+            // The stride itself is not written out here any more. It is
+            // `object::for_each_counted_cell`, instantiated with the
+            // relaxed reader, and that is the whole difference between
+            // this walk and the quiescent one — a fact that used to be a
+            // second copy of the runs and a second copy of the template
+            // arm, and that cost a defect each time the layout moved.
+            let class = load_cell(entity as usize + 8) as *const crate::class::Class;
+            unsafe {
+                crate::object::for_each_counted_cell::<crate::walk::RelaxedCells>(
+                    entity as *mut u8,
+                    class,
+                    |cell| visit(cell.addr, cell.raw, cell.child),
+                )
+            };
         }
         REFERENCE => {
+            // The reference layout still has its own arm here; folding it
+            // into one dispatch with the tracer is the next step. What has
+            // already moved out is the Box's own layout arithmetic —
+            // "the flags byte is bits 8-15 of the second word" is
+            // `value.rs`'s contract and was a copy of it here.
             let cell = entity as usize + 8;
             let payload = load_cell(cell);
-            let meta = load_cell(cell + 8);
-            if (meta >> 8) as u8 & crate::value::VALUE_REFCOUNTED != 0 {
+            if crate::value::Value::refcounted_in_meta_word(load_cell(cell + 8)) {
                 visit(cell, payload, payload as *mut RcHeader);
             }
         }

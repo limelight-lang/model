@@ -24,6 +24,76 @@ unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
     (unsafe { (*e).flags } & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT
 }
 
+/// One counted cell of an entity: where it is, the word that is in it,
+/// and the child that word designates.
+///
+/// The address and the raw word are not decoration for the tracer's
+/// benefit — the epoch records both in its `Edge` and re-reads the cell
+/// at Phase 3 to see whether the mutator has moved it. A walker that
+/// yielded only the child could not serve the collector, which is how
+/// the collector came to carry its own copy of every stride.
+/// Only the epoch reads the address and the raw word, and the epoch is
+/// the `rc-walk` build's; under `rc-trace` the same cells are walked for
+/// their children alone.
+#[cfg_attr(not(feature = "rc-walk"), expect(dead_code))]
+#[derive(Clone, Copy)]
+pub(crate) struct Cell {
+    pub addr: usize,
+    pub raw: u64,
+    pub child: *mut RcHeader,
+}
+
+/// How a walk reads the entity memory it strides over.
+///
+/// This is the **only** difference between the three walks that used to
+/// exist per layout. Tracing on a quiescent heap reads plainly; the
+/// concurrent collector races the mutator and must read relaxed-atomically,
+/// because a plain read against a concurrent store is undefined behaviour
+/// rather than a torn value — and the whole design rests on a torn read
+/// being merely a phantom or a missed edge (`rfc/model/gc/rc-walk.md`).
+/// Parameterizing the read instead of copying the stride is what lets one
+/// enumerator serve both.
+///
+/// It covers reads of the **entity's own** memory only. A class
+/// descriptor and a template shape are immortal static data no mutator
+/// writes, so both instantiations read those plainly, and the word that
+/// *points* at them is what goes through the reader.
+pub(crate) trait CellReader {
+    /// Read the eight bytes at `addr`.
+    ///
+    /// # Safety
+    /// `addr` must be an aligned, readable eight-byte word of a live
+    /// entity.
+    unsafe fn word(addr: usize) -> u64;
+}
+
+/// The ordinary reader: a quiescent heap, or memory only this thread can
+/// reach.
+pub(crate) struct PlainCells;
+
+impl CellReader for PlainCells {
+    #[inline]
+    unsafe fn word(addr: usize) -> u64 {
+        unsafe { (addr as *const u64).read() }
+    }
+}
+
+/// The collector's reader: the mutator is running and may store into any
+/// of these cells. Exists only where a concurrent collector does.
+#[cfg(feature = "rc-walk")]
+pub(crate) struct RelaxedCells;
+
+#[cfg(feature = "rc-walk")]
+impl CellReader for RelaxedCells {
+    #[inline]
+    unsafe fn word(addr: usize) -> u64 {
+        unsafe {
+            (*(addr as *const std::sync::atomic::AtomicU64))
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+}
+
 /// Visit every counted child of `entity`, dispatching on the kind bits
 /// **before** touching `+8`: only Object (0) and Lazy (6) carry a class
 /// pointer there, and reaching for `traced_runs` through a class that
