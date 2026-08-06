@@ -105,13 +105,14 @@ mod tests {
     /// A block address and occupants a walk may dereference, which is
     /// what the module doc requires of anything registered here.
     ///
-    /// The registry is process-global and the suite runs in parallel, so
-    /// a walk on another thread reads these addresses while the test that
-    /// registered them is still running. The cells are **leaked** rather
-    /// than owned by the test: a test that panics between `register` and
-    /// `release` leaves its index in place, and freeing the cells would
-    /// turn that stale entry into a use-after-free instead of an entry
-    /// that reads refcount 0 and is skipped.
+    /// The registry is process-global, so an index left in it is read by
+    /// every later walk in the process. The tests below hold the block
+    /// pool's test guard, which is what serializes them against the walks
+    /// that take it; the cells are **leaked** on top of that, because a
+    /// test that panics between `register` and `release` leaves its index
+    /// registered for the rest of the run and no guard covers that.
+    /// Freeing the cells would make such an entry a use-after-free rather
+    /// than one that reads refcount 0 and is skipped.
     ///
     /// The block address is derived from the cells so that it names the
     /// range they lie in. A constant would be a guess about an address
@@ -127,6 +128,7 @@ mod tests {
     /// and the reset discovers survivors in trace order.
     #[test]
     fn an_index_is_stored_sorted_whatever_order_it_arrives_in() {
+        let _g = crate::memory::block_pool::test_guard();
         let (block, cells) = walkable_index(3);
         register(block, vec![cells[2], cells[0], cells[1]]);
         let found = snapshot()
@@ -143,6 +145,7 @@ mod tests {
     /// invisible to every enumerator again.
     #[test]
     fn a_released_block_leaves_the_snapshot() {
+        let _g = crate::memory::block_pool::test_guard();
         let (block, cells) = walkable_index(1);
         register(block, cells);
         assert!(snapshot().iter().any(|&(b, _)| b == block));
@@ -157,6 +160,7 @@ mod tests {
     /// address is a wild read, which is what this pins against.
     #[test]
     fn a_registered_index_is_safe_for_the_enumerator_to_read() {
+        let _g = crate::memory::block_pool::test_guard();
         let (block, cells) = walkable_index(4);
         register(block, cells.clone());
         let mut seen = 0usize;
