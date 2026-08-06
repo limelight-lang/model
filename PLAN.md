@@ -8,6 +8,66 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
+## First, out of turn: the opt-in event journal, designed to completion
+
+Edmond's, 2026-08-06, and he put it ahead of the refactor below. Efficient
+in-memory write journals, active behind an option, with investigations
+conducted through them. Home is `dev/design/debug-modes.md`, which already
+names this (layer 2, "the opt-in event log") and is design-only end to end, so
+it gains a section rather than a new document.
+
+**The acceptance criterion is the hunt of that day**, and it belongs in the
+design. Under load the whole-heap census lost two live strings. What settled it
+was a hand-made ring of `(thread, address)` recorded at string death, with the
+window between two censuses marked by the ring's own sequence number, so the
+question became "what was recorded inside my window". It answered only because
+the shape was picked by hand for that one question; the journal's job is to make
+that shape ordinary.
+
+**One question is open and everything follows from it, so start there:
+per-thread rings or one global ring.** A single ring with an atomic bump gives a
+global order for free, and that order is what the hunt needed — the window was
+two reads of one counter. Per-thread rings are cheaper with no contention point,
+but there is then no global order to recover without clocks, counters or
+barriers, and without it "did this happen before my census" has no answer.
+Edmond was asked and had not answered. Do not design past it. Then: what a
+record is and how wide, how a window is marked and read back, the cost when the
+option is off, and what is recorded by default versus on demand.
+
+## Also open: the census loses a live entity under load
+
+`walk::tests::census_counts_objects_and_their_edges` fails at roughly 5 in 30
+under load, and predates the refactor below (14 in 60 on `8adbfe8`). The
+reproducer is the session's main asset — before it the failure was random: build
+the rc-trace test binary with `--no-run`, pin it to two cores with
+`taskset -c 0,1` at `--test-threads 4`, and run two spinners on the same cores.
+
+Three measurements say what it is. The test's own two objects **are** in the
+census. The count does not grow because **two strings leave** it. And **no
+string died inside the window**. So nothing was freed: `for_each_entity_slot`
+stopped seeing a live entity — the dangerous direction, since a missed entity
+contributes none of its out-edges and its children then read as less rooted.
+
+**Do not weaken the test.** A membership-shaped assertion fails too
+(`a_reserved_cell_is_walker_invisible_until_constructed`), so the assertion's
+shape is not the problem: the quiescence `for_each_entity_slot` declares as its
+safety condition is genuinely violated. Retired hypotheses: retained blocks
+returning to the pool — the `debug_assert` now in `BlockPool::put` never fired —
+and an unsynchronised race, ThreadSanitizer being silent across failures.
+Standing and unproven: blocks of a finishing thread leaving the registry's
+reachable set with occupied slots still live. Next instrument: per-block census
+subtotals on mismatch, diffed between the two censuses. This is also the first
+real customer for the journal above.
+
+Two certain defects were found beside it and are not fixed. `retained.rs`'s two
+tests at lines 98-119 register fabricated addresses in the **process-global**
+retained registry holding no `test_guard`, so a concurrent walk dereferences
+them. And `heap.rs:1516-1524` claims the exit guard registers first so its
+destructor runs last, while `ll_thread_init` registers the barrier reserve and
+the block cache before `EXIT_GUARD` (heap.rs:1697) — so on glibc it runs first
+of the three, and that is a wrong load-bearing comment inside the machinery this
+flake involves.
+
 ## Urgent, ahead of everything: the GC's walk exists in copies
 
 Edmond's ruling, 2026-08-06, and it outranks every item below including the COW
