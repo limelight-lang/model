@@ -445,7 +445,9 @@ impl Table {
                 continue;
             }
             if w != r {
-                unsafe { std::ptr::copy_nonoverlapping(self.entries().add(r), self.entries().add(w), 1) };
+                unsafe {
+                    std::ptr::copy_nonoverlapping(self.entries().add(r), self.entries().add(w), 1)
+                };
             }
             w += 1;
         }
@@ -713,7 +715,9 @@ impl Table {
     /// all, which is why the choice of index layer does not affect
     /// `foreach`.
     pub fn iter(&self) -> impl Iterator<Item = &Entry> {
-        (0..self.used).map(|i| self.entry(i)).filter(|e| !e.is_hole())
+        (0..self.used)
+            .map(|i| self.entry(i))
+            .filter(|e| !e.is_hole())
     }
 }
 
@@ -732,13 +736,19 @@ mod tests {
     struct Owned(Table);
     impl std::ops::Deref for Owned {
         type Target = Table;
-        fn deref(&self) -> &Table { &self.0 }
+        fn deref(&self) -> &Table {
+            &self.0
+        }
     }
     impl std::ops::DerefMut for Owned {
-        fn deref_mut(&mut self) -> &mut Table { &mut self.0 }
+        fn deref_mut(&mut self) -> &mut Table {
+            &mut self.0
+        }
     }
     impl Drop for Owned {
-        fn drop(&mut self) { self.0.dispose() }
+        fn drop(&mut self) {
+            self.0.dispose()
+        }
     }
 
     fn t() -> Owned {
@@ -931,13 +941,7 @@ mod tests {
     // ---- string keys -----------------------------------------------
 
     fn mk(bytes: &[u8]) -> *mut LLString {
-        unsafe {
-            crate::string::ll_string_new(
-                std::ptr::null_mut(),
-                MemoryCategory::GcHeap,
-                bytes,
-            )
-        }
+        unsafe { crate::string::ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, bytes) }
     }
 
     #[test]
@@ -985,8 +989,7 @@ mod tests {
     fn a_string_key_survives_growth_and_compaction() {
         let _g = crate::memory::block_pool::test_guard();
         let mut m = t();
-        let keys: Vec<*mut LLString> =
-            (0..300).map(|i| mk(format!("k{i}").as_bytes())).collect();
+        let keys: Vec<*mut LLString> = (0..300).map(|i| mk(format!("k{i}").as_bytes())).collect();
         for (i, s) in keys.iter().enumerate() {
             m.insert(Key::Str(*s), Value::int(i as i64));
         }
@@ -1036,8 +1039,7 @@ mod tests {
         let _g = crate::memory::block_pool::test_guard();
         let mut m = t();
 
-        let honest: Vec<*mut LLString> =
-            (0..50).map(|i| mk(format!("h{i}").as_bytes())).collect();
+        let honest: Vec<*mut LLString> = (0..50).map(|i| mk(format!("h{i}").as_bytes())).collect();
         for (i, s) in honest.iter().enumerate() {
             m.insert(Key::Str(*s), Value::int(1000 + i as i64));
         }
@@ -1155,7 +1157,11 @@ mod tests {
         }
         m.compact();
 
-        assert_eq!(m.make_ref(Key::Int(150)), r, "compaction moved the element, not the box");
+        assert_eq!(
+            m.make_ref(Key::Int(150)),
+            r,
+            "compaction moved the element, not the box"
+        );
         unsafe { (*r).value = Value::int(-1) };
         assert_eq!(
             m.get(Key::Int(150)).unwrap().tag(),
@@ -1212,7 +1218,10 @@ mod tests {
         }
         let mut seen = Vec::new();
         m.for_each_value(|v| seen.push(v.as_int()));
-        assert!(!seen.contains(&0xDEAD), "the hole survived a full value write");
+        assert!(
+            !seen.contains(&0xDEAD),
+            "the hole survived a full value write"
+        );
         assert_eq!(seen.len(), 7);
     }
 
@@ -1229,7 +1238,11 @@ mod tests {
 
         let mut keys = Vec::new();
         m.for_each_string_key(|s| keys.push(s));
-        assert_eq!(keys, vec![b], "an integer key and a hole are not string children");
+        assert_eq!(
+            keys,
+            vec![b],
+            "an integer key and a hole are not string children"
+        );
     }
 
     /// Promotion copies the storage as one contiguous block, so nothing

@@ -6,6 +6,6 @@
 //! entry array is the order, so iteration is a stride over it and reads
 //! no index at all.
 
-pub mod entry;
 pub mod entity;
+pub mod entry;
 pub mod table;

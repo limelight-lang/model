@@ -224,9 +224,10 @@ mod tests {
         let child = mk(b"child-value");
         unsafe {
             (*src).table.insert(Key::Int(1), Value::int(10));
-            (*src)
-                .table
-                .insert(Key::Str(key), Value::entity(crate::value::Tag::String, child as *mut RcHeader));
+            (*src).table.insert(
+                Key::Str(key),
+                Value::entity(crate::value::Tag::String, child as *mut RcHeader),
+            );
             (*src).table.insert(Key::Int(2), Value::int(20));
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(child as *mut RcHeader);
@@ -243,7 +244,13 @@ mod tests {
             let order: Vec<i64> = (*dst)
                 .table
                 .iter()
-                .map(|e| if e.is_int_key() { e.hash_or_key as i64 } else { -1 })
+                .map(|e| {
+                    if e.is_int_key() {
+                        e.hash_or_key as i64
+                    } else {
+                        -1
+                    }
+                })
                 .collect();
             assert_eq!(order, vec![1, -1, 2]);
 
