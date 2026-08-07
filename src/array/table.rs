@@ -179,11 +179,24 @@ pub struct Table {
     /// missed edge, which the epoch's later phases repair, while an
     /// incoherent one is an edge that never existed, which nothing does.
     version: AtomicUsize,
-    /// Set once, one way, when the flood backstop fires on equal full
-    /// hashes: from then on a string key's slot comes from a keyed hash
-    /// over its bytes rather than from the cached hash at +16.
-    strong: bool,
+    /// The table's one-bit state, [`TABLE_STRONG`] and
+    /// [`TABLE_RESEEDED`]. One byte rather than a `bool` apiece because
+    /// the strategy tag joins them: `rfc/model/arrays.md` gives an array
+    /// three storage strategies and two bits to name the current one, and
+    /// the entity's flags word has no free bit to put them in
+    /// (`PLAN.md`, "The strategy tag and the `arrays.md` hole").
+    flags: u8,
 }
+
+/// A string key's slot comes from a keyed hash over its bytes rather
+/// than from the cached hash at +16. Set once and one way, by the flood
+/// backstop's equal-hash trigger.
+const TABLE_STRONG: u8 = 1 << 0;
+
+/// The per-table salt has been redrawn once. It bounds the ladder's
+/// first rung at one firing per table: a second long chain escalates
+/// instead of rebuilding again.
+const TABLE_RESEEDED: u8 = 1 << 1;
 
 impl Table {
     /// An empty table with no storage. The first insert allocates.
@@ -200,7 +213,7 @@ impl Table {
             holes: 0,
             salt,
             category,
-            strong: false,
+            flags: 0,
         }
     }
 
@@ -214,7 +227,7 @@ impl Table {
     /// True once the table has escalated to the keyed byte hash.
     #[inline]
     pub fn is_strong(&self) -> bool {
-        self.strong
+        self.flags & TABLE_STRONG != 0
     }
 
     #[inline]
@@ -470,7 +483,7 @@ impl Table {
         match key {
             Key::Int(k) => mix_int(k, self.salt),
             Key::Str(s) => {
-                if self.strong {
+                if self.flags & TABLE_STRONG != 0 {
                     strong_hash(unsafe { LLString::bytes(s) }, self.salt)
                 } else {
                     unsafe { LLString::hash(s) }
@@ -485,7 +498,7 @@ impl Table {
     fn entry_slot_hash(&self, e: &Entry) -> u64 {
         if e.is_int_key() {
             mix_int(e.hash_or_key as i64, self.salt)
-        } else if self.strong {
+        } else if self.flags & TABLE_STRONG != 0 {
             strong_hash(unsafe { LLString::bytes(e.key) }, self.salt)
         } else {
             e.hash_or_key
@@ -914,10 +927,10 @@ impl Table {
     /// hashes agree, and doing so on that trigger is what made Perl's
     /// REHASH exploitable (CVE-2013-1667).
     fn escalate(&mut self) {
-        if self.strong {
+        if self.flags & TABLE_STRONG != 0 {
             return;
         }
-        self.strong = true;
+        self.flags |= TABLE_STRONG;
         if !self.storage().is_null() {
             self.rebuild_index();
         }
@@ -925,15 +938,46 @@ impl Table {
 
     /// Redraw the per-table salt and rebuild the index. The response to a
     /// long chain of keys whose hashes *differ* — an accident, an integer
-    /// flood, or a leaked salt. A second firing escalates instead.
+    /// flood, or a leaked salt. **A second firing escalates instead**,
+    /// which is what bounds the attacker at one rebuild and one
+    /// escalation per table (`rfc/model/arrays-hashtable.md`, "What the
+    /// attacker can drive"). Without that bound the chain trigger fires
+    /// on every insert an attacker chooses, each firing an O(`used`)
+    /// rebuild, and the promised O(n) is O(n²).
+    ///
+    /// **The two rungs defend different key kinds**, which is why both
+    /// exist and why the order is this one. A redraw moves integer keys,
+    /// whose slot is `mix_int(k, salt)`, and cannot move string keys at
+    /// all: below `strong` a string's slot *is* its cached hash, which no
+    /// salt enters. Escalation is the reverse — it rehashes string keys
+    /// with a keyed function over their bytes and leaves `mix_int`
+    /// exactly as it was. So a pure string flood spends one useless
+    /// rebuild before the rung that answers it, and a pure integer flood
+    /// is answered by the first rung or not at all.
+    ///
+    /// The new salt mixes the process seed and the storage address into
+    /// the step, because the step alone is a public LCG: an attacker who
+    /// learns the initial salt would otherwise know the whole orbit
+    /// offline and could aim the redraw as easily as the original. Under
+    /// `hash-folding` the process seed is a build constant, so a folding
+    /// build's redraw is only as unpredictable as its storage address.
     fn reseed(&mut self) {
-        if self.strong {
+        if self.flags & TABLE_STRONG != 0 {
             return;
         }
-        self.salt = self
+        if self.flags & TABLE_RESEEDED != 0 {
+            self.escalate();
+            return;
+        }
+        self.flags |= TABLE_RESEEDED;
+        let step = self
             .salt
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
+        self.salt = mix_int(
+            step as i64,
+            crate::hash::seed::raw() ^ (self.storage() as u64),
+        );
         if !self.storage().is_null() {
             self.rebuild_index();
         }
@@ -1342,6 +1386,58 @@ mod tests {
             let s = mk(format!("collider-{i}").as_bytes());
             unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
             m.insert(Key::Str(s), Value::int(i as i64));
+        }
+    }
+
+    /// Forge the other trigger's state: keys whose full hashes *differ*,
+    /// so the equal-hash trigger stays quiet, but whose low 16 bits agree,
+    /// so every one lands in the same index slot at any table size up to
+    /// 65536 and they form one chain.
+    fn extend_one_chain(m: &mut Table, from: usize, to: usize) -> Vec<*mut LLString> {
+        (from..to)
+            .map(|i| {
+                let s = mk(format!("chain-{i}").as_bytes());
+                unsafe { (*s).hash = ((i as u64 + 1) << 16) | 0xC0DE };
+                m.insert(Key::Str(s), Value::int(i as i64));
+                s
+            })
+            .collect()
+    }
+
+    /// The ladder's two rungs, in order and each once. A long chain of
+    /// keys whose hashes differ redraws the salt; the next one escalates
+    /// instead of redrawing again, which is what bounds the attacker at
+    /// one rebuild and one escalation per table.
+    ///
+    /// Seen failing at the escalation: without the reseed counter the
+    /// chain trigger redraws forever, and for string keys it cannot even
+    /// separate them — below `strong` a string's slot is its cached hash,
+    /// which no salt enters — so every later insert pays another O(used)
+    /// rebuild and the chain stays exactly as long.
+    #[test]
+    fn a_long_chain_redraws_the_salt_once_and_then_escalates() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        let before = m.salt;
+
+        let first = extend_one_chain(&mut m, 0, CHAIN_LIMIT as usize + 1);
+        assert_ne!(m.salt, before, "the first long chain redraws the salt");
+        assert!(!m.is_strong(), "and does not escalate on the first firing");
+        let redrawn = m.salt;
+
+        let second = extend_one_chain(&mut m, CHAIN_LIMIT as usize + 1, CHAIN_LIMIT as usize + 2);
+        assert!(m.is_strong(), "the second firing escalates");
+        assert_eq!(
+            m.salt, redrawn,
+            "escalation redraws nothing: that is the Perl REHASH defect"
+        );
+
+        for (i, s) in first.iter().chain(second.iter()).enumerate() {
+            assert_eq!(
+                m.get(Key::Str(*s)).unwrap().as_int(),
+                i as i64,
+                "a key was lost across the ladder"
+            );
         }
     }
 

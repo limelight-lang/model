@@ -496,7 +496,20 @@ Items 15–17 are closed; 18–20 are not.
     side its own doc worries about, which is why it survived review: a
     promoted heap array took its next storage from whatever request arena
     was mounted.
-18. **The flood ladder's second rung does not exist.** `reseed`'s doc and
+18. ~~**The flood ladder's second rung does not exist.**~~ — closed. A
+    table carries `TABLE_RESEEDED` beside `TABLE_STRONG` in one byte of
+    flags, and a second long chain escalates instead of rebuilding again,
+    which is the bound the documents promise. The salt's redraw mixes the
+    process seed and the storage address into the LCG step, so the orbit
+    is no longer computable from the initial salt alone; under
+    `hash-folding` the seed is a build constant and only the address is
+    left. Regression: the ladder's two rungs in order, seen failing at the
+    escalation. **Found while doing it, and owed to the RFC:** below
+    `strong` a string key's slot *is* its cached hash, which no salt
+    enters, so the first rung cannot separate string keys at all and the
+    second cannot separate integer keys — the two rungs answer different
+    key kinds rather than escalating one defence. What the entry said:
+
     `rfc/model/arrays-hashtable.md` both say a second firing escalates,
     and both bound the attacker at one rebuild and one escalation per
     table. There is no reseed counter: the chain trigger calls `reseed`,

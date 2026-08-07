@@ -8,6 +8,39 @@ never edited or deleted.
 
 ---
 
+## 2026-08-07 — the flood ladder's two rungs answer different key kinds
+
+The chain trigger redraws the table's salt once and escalates on the second
+firing, which is the bound `rfc/model/arrays-hashtable.md` states and the code
+did not have: `reseed` returned early only on `strong`, so an attacker could
+make every insert redraw, each redraw an O(`used`) rebuild against a document
+promising O(n) twice.
+
+**What the work found is why both rungs exist.** A redraw moves integer keys and
+no others, because an integer's slot is `mix_int(k, salt)` while a string's slot
+below `strong` *is* its cached rapidhash, which no salt enters. Escalation is the
+mirror image: it rehashes string keys with a keyed function over their bytes and
+leaves `mix_int` untouched. So the ladder is not one defence escalating in
+strength — it is two defences for two key kinds, tried cheapest first. The
+consequences are worth stating rather than rediscovering: a pure string flood
+spends one rebuild that provably separates nothing before reaching the rung that
+answers it, and a pure integer flood is answered by the redraw or not at all,
+since escalation gives it nothing. `arrays-hashtable.md` describes the rungs as
+an escalation and owes this correction.
+
+**The redrawn salt takes entropy.** The step was a public LCG over the old salt,
+so an attacker who learned the initial value knew the whole orbit offline and
+could aim the redraw as easily as the original — the one rebuild the bound allows
+would then be spent for nothing. The new salt mixes the process seed
+(`hash::seed::raw`) and the storage address into the step. Under `hash-folding`
+the process seed is a build constant, so such a build's redraw is only as
+unpredictable as its storage address, which is ASLR's to give.
+
+`strong` and `reseeded` are bits in one `flags` byte rather than a `bool` each,
+because the strategy tag joins them there: `rfc/model/arrays.md` gives an array
+three storage strategies and two bits to name the current one, and the entity's
+flags word has no free bit for either.
+
 ## 2026-08-07 — a fire point inside a teardown collects nothing, and the runtime enforces it
 
 Edmond's ruling: the compiler may put `ll_gc_maybe_collect` inside a destructor
