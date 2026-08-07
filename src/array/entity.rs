@@ -159,7 +159,7 @@ pub unsafe fn separate(
             // into every copy this call published, nested ones included:
             // each is held once, by the entry naming it.
             unsafe { release_children(dst) };
-            unsafe { (*dst).table.dispose() };
+            unsafe { (*dst).table.dispose(dst as *const RcHeader) };
             pending.dispose();
             return std::ptr::null_mut();
         }
@@ -243,7 +243,7 @@ unsafe fn fill_from(
                     // The copy is held by nothing yet, so it goes back
                     // here rather than through the root's cascade.
                     unsafe { crate::refcount::ll_release(copy as *mut RcHeader) };
-                    unsafe { (*copy).table.dispose() };
+                    unsafe { (*copy).table.dispose(copy as *const RcHeader) };
                     return false;
                 }
                 v = Value::entity(v.tag(), copy as *mut RcHeader);
@@ -281,7 +281,13 @@ unsafe fn fill_from(
         } else {
             key
         };
-        if unsafe { (*dst).table.insert(published_key, v) }.is_none() {
+        if unsafe {
+            (*dst)
+                .table
+                .insert(dst as *const RcHeader, published_key, v)
+        }
+        .is_none()
+        {
             // Out of memory part-way. Give back what this element took;
             // the source is untouched.
             unsafe { release_value(&v) };
@@ -510,7 +516,7 @@ pub(crate) unsafe fn carry_storage_out_of(
     arena: *mut crate::memory::arena::Arena,
     a: *mut LLArray,
 ) -> bool {
-    unsafe { (*a).table.carry_out_of(arena) }
+    unsafe { (*a).table.carry_out_of(a as *const RcHeader, arena) }
 }
 
 /// Teardown for an array whose count reached zero, or that a collector
@@ -527,7 +533,7 @@ pub(crate) unsafe fn carry_storage_out_of(
 /// `a` must be a live array entity.
 pub(crate) unsafe fn array_die(a: *mut LLArray) {
     unsafe { release_children(a) };
-    unsafe { (*a).table.dispose() };
+    unsafe { (*a).table.dispose(a as *const RcHeader) };
     if unsafe { crate::object::header_category(a as *const RcHeader) } == MemoryCategory::GcHeap {
         unsafe { crate::memory::stdapi::ll_free(a as *mut u8) };
     }
@@ -560,6 +566,7 @@ mod tests {
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(value as *mut RcHeader);
             (*src).table.insert(
+                src as *const RcHeader,
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, value as *mut RcHeader),
             );
@@ -631,6 +638,7 @@ mod tests {
         unsafe {
             crate::refcount::ll_retain(element as *mut RcHeader);
             (*src).table.insert(
+                src as *const RcHeader,
                 Key::Int(1),
                 Value::entity(crate::value::Tag::String, element as *mut RcHeader),
             );
@@ -704,6 +712,7 @@ mod tests {
             unsafe {
                 crate::refcount::ll_retain(inner as *mut RcHeader);
                 (*outer).table.insert(
+                    outer as *const RcHeader,
                     Key::Int(0),
                     Value::entity(crate::value::Tag::Array, inner as *mut RcHeader),
                 );
@@ -790,7 +799,7 @@ mod tests {
             );
             assert_eq!((*a).category(), MemoryCategory::GcHeap);
             assert!((*a).table.is_empty());
-            (*a).table.dispose();
+            (*a).table.dispose(a as *const RcHeader);
         }
     }
 
@@ -805,7 +814,7 @@ mod tests {
             crate::refcount::ll_retain(a as *mut RcHeader);
             assert!((*a).needs_separation(), "a second holder forces a copy");
             crate::refcount::ll_release(a as *mut RcHeader);
-            (*a).table.dispose();
+            (*a).table.dispose(a as *const RcHeader);
         }
     }
 
@@ -818,12 +827,17 @@ mod tests {
         unsafe {
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(child as *mut RcHeader);
-            (*src).table.insert(Key::Int(1), Value::int(10));
+            (*src)
+                .table
+                .insert(src as *const RcHeader, Key::Int(1), Value::int(10));
             (*src).table.insert(
+                src as *const RcHeader,
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, child as *mut RcHeader),
             );
-            (*src).table.insert(Key::Int(2), Value::int(20));
+            (*src)
+                .table
+                .insert(src as *const RcHeader, Key::Int(2), Value::int(20));
         }
 
         let before_key = unsafe { (*(key as *mut RcHeader)).refcount };
@@ -852,14 +866,16 @@ mod tests {
             assert_eq!((*(child as *mut RcHeader)).refcount, before_child + 1);
 
             // Writing the copy does not touch the source.
-            (*dst).table.insert(Key::Int(1), Value::int(999));
+            (*dst)
+                .table
+                .insert(dst as *const RcHeader, Key::Int(1), Value::int(999));
             assert_eq!((*src).table.get(Key::Int(1)).unwrap().as_int(), 10);
             assert_eq!((*dst).table.get(Key::Int(1)).unwrap().as_int(), 999);
 
             release_children(dst);
-            (*dst).table.dispose();
+            (*dst).table.dispose(dst as *const RcHeader);
             release_children(src);
-            (*src).table.dispose();
+            (*src).table.dispose(src as *const RcHeader);
         }
     }
 
@@ -869,7 +885,9 @@ mod tests {
         let src = arr();
         unsafe {
             for i in 0..10i64 {
-                (*src).table.insert(Key::Int(i), Value::int(i));
+                (*src)
+                    .table
+                    .insert(src as *const RcHeader, Key::Int(i), Value::int(i));
             }
             for i in [2i64, 5, 8] {
                 (*src).table.remove(Key::Int(i));
@@ -885,8 +903,8 @@ mod tests {
             let order: Vec<i64> = (*dst).table.iter().map(|e| e.hash_or_key as i64).collect();
             assert_eq!(order, vec![0, 1, 3, 4, 6, 7, 9]);
 
-            (*dst).table.dispose();
-            (*src).table.dispose();
+            (*dst).table.dispose(dst as *const RcHeader);
+            (*src).table.dispose(src as *const RcHeader);
         }
     }
 
@@ -900,6 +918,7 @@ mod tests {
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(child as *mut RcHeader);
             (*a).table.insert(
+                a as *const RcHeader,
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, child as *mut RcHeader),
             );
@@ -910,7 +929,7 @@ mod tests {
             assert_eq!((*(key as *mut RcHeader)).refcount, k0 - 1);
             assert_eq!((*(child as *mut RcHeader)).refcount, c0 - 1);
 
-            (*a).table.dispose();
+            (*a).table.dispose(a as *const RcHeader);
         }
     }
 
@@ -936,6 +955,7 @@ mod tests {
             ll_retain(key as *mut RcHeader);
             ll_retain(value as *mut RcHeader);
             (*a).table.insert(
+                a as *const RcHeader,
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, value as *mut RcHeader),
             );
@@ -1002,13 +1022,16 @@ mod tests {
         let outer = arr();
         let inner = arr();
         unsafe {
-            (*inner).table.insert(Key::Int(1), Value::int(1));
+            (*inner)
+                .table
+                .insert(inner as *const RcHeader, Key::Int(1), Value::int(1));
             let (storage, capacity) = (*inner).table.storage_and_capacity();
             assert!(!storage.is_null(), "the inner array has storage to reclaim");
 
             // The inner array's only reference is the outer array's
             // element, so the outer's death is the inner's death.
             (*outer).table.insert(
+                outer as *const RcHeader,
                 Key::Int(0),
                 Value::entity(crate::value::Tag::Array, inner as *mut RcHeader),
             );
@@ -1067,7 +1090,9 @@ mod tests {
                 unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
                 unsafe {
                     crate::refcount::ll_retain(s as *mut RcHeader);
-                    (*src).table.insert(Key::Str(s), Value::int(i as i64));
+                    (*src)
+                        .table
+                        .insert(src as *const RcHeader, Key::Str(s), Value::int(i as i64));
                 }
                 s
             })

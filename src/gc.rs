@@ -524,7 +524,9 @@ unsafe fn collect_cycles_inner() -> usize {
                         crate::string::string_die(w as *mut crate::string::LLString)
                     }
                     k if k == EntityKind::Array.to_flags() => {
-                        (*(w as *mut crate::array::entity::LLArray)).table.dispose();
+                        (*(w as *mut crate::array::entity::LLArray))
+                            .table
+                            .dispose(w);
                         crate::memory::stdapi::ll_free(w as *mut u8);
                     }
                     _ => crate::memory::stdapi::ll_free(w as *mut u8),
@@ -1335,6 +1337,7 @@ mod tests {
             // Retained before the entry is published, per `Table::insert`.
             ll_retain(obj as *mut RcHeader);
             (*a).table.insert(
+                a as *const RcHeader,
                 Key::Int(0),
                 Value::entity(Tag::Object, obj as *mut RcHeader),
             );
@@ -1469,11 +1472,17 @@ mod tests {
             // is `Table::insert`'s contract: an entry a walker can reach
             // must already be backed by a count.
             ll_retain(b as *mut RcHeader);
-            (*a).table
-                .insert(Key::Int(0), Value::entity(Tag::Array, b as *mut RcHeader));
+            (*a).table.insert(
+                a as *const RcHeader,
+                Key::Int(0),
+                Value::entity(Tag::Array, b as *mut RcHeader),
+            );
             ll_retain(a as *mut RcHeader);
-            (*b).table
-                .insert(Key::Int(0), Value::entity(Tag::Array, a as *mut RcHeader));
+            (*b).table.insert(
+                b as *const RcHeader,
+                Key::Int(0),
+                Value::entity(Tag::Array, a as *mut RcHeader),
+            );
             // Drop the creation references: each array is held by the
             // other and by nothing else, which is the ring.
             assert!(!ll_release(a as *mut RcHeader), "a is still held by b");

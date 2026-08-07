@@ -1619,12 +1619,14 @@ mod tests {
         let value = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"v") };
         unsafe {
             (*a).table.insert(
+                a as *const RcHeader,
                 Key::Str(key),
                 Value::entity(Tag::String, value as *mut RcHeader),
             );
             // An integer key with a plain value adds no edge of its own,
             // and a hole must add none either.
-            (*a).table.insert(Key::Int(7), Value::int(7));
+            (*a).table
+                .insert(a as *const RcHeader, Key::Int(7), Value::int(7));
             (*a).table.remove(Key::Int(7));
         }
 
@@ -1642,7 +1644,7 @@ mod tests {
         assert_eq!(seen.len(), 2, "a hole or an integer key produced an edge");
 
         unsafe {
-            (*a).table.dispose();
+            (*a).table.dispose(a as *const RcHeader);
             // Each of the three is released before it is killed, so its
             // slot reaches the free list carrying the refcount-0 header
             // the process-global enumerators use as their occupancy test.
@@ -1678,6 +1680,7 @@ mod tests {
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(value as *mut RcHeader);
             (*a).table.insert(
+                a as *const RcHeader,
                 Key::Str(key),
                 Value::entity(Tag::String, value as *mut RcHeader),
             );
@@ -1809,11 +1812,17 @@ mod tests {
         unsafe {
             // Retained before the entry is published, per `Table::insert`.
             ll_retain(b as *mut RcHeader);
-            (*a).table
-                .insert(Key::Int(0), Value::entity(Tag::Array, b as *mut RcHeader));
+            (*a).table.insert(
+                a as *const RcHeader,
+                Key::Int(0),
+                Value::entity(Tag::Array, b as *mut RcHeader),
+            );
             ll_retain(a as *mut RcHeader);
-            (*b).table
-                .insert(Key::Int(0), Value::entity(Tag::Array, a as *mut RcHeader));
+            (*b).table.insert(
+                b as *const RcHeader,
+                Key::Int(0),
+                Value::entity(Tag::Array, a as *mut RcHeader),
+            );
             // Drop the creation references: each array is now held by the
             // other and by nothing else, which is the ring.
             assert!(!ll_release(a as *mut RcHeader), "a is still held by b");

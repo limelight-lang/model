@@ -184,11 +184,6 @@ pub struct Table {
     flags: u8,
 }
 
-/// A table is embedded in an [`LLArray`](crate::array::entity::LLArray)
-/// at this offset and lives nowhere else, so its owner's header is a
-/// fixed step back from its own address.
-const OWNER_OFFSET: usize = size_of::<RcHeader>();
-
 /// A string key's slot comes from a keyed hash over its bytes rather
 /// than from the cached hash at +16. Set once and one way, by the flood
 /// backstop's equal-hash trigger.
@@ -232,22 +227,31 @@ impl Table {
         self.salt
     }
 
-    /// The memory this table's storage comes from, read from the owning
-    /// entity's header — **the only authority there is**. A copy of the
-    /// category here would be a second fact to keep in step with the
+    /// The memory an array's storage comes from, read from `owner`'s
+    /// header — **the only authority there is**. A copy of the category
+    /// in the table would be a second fact to keep in step with the
     /// first, and it drifted once already: a refused promotion left it
     /// reading `RequestArena` under a heap array, so the next storage
     /// came from whatever request arena was mounted (`2e55036`,
     /// `dev/DECISIONS.md` 2026-08-07).
     ///
-    /// Reads the header a fixed step back from `self`, which holds
-    /// because a table is embedded in its array and never moved out of
-    /// it. The debug assertion is what says so out loud: a table read
-    /// somewhere else answers with whatever precedes it in memory.
+    /// **The owner is a parameter and is never derived from a reference
+    /// to the table.** A table is embedded in its array one `RcHeader`
+    /// past the header, so the address is a subtraction away — but a
+    /// reference to the body carries provenance over the body alone, and
+    /// reading the header is an atomic load, which asks for a write
+    /// permission that a shared reference cannot grant at any offset.
+    /// Only Miri sees it; every other build performs the read and reports
+    /// nothing.
+    ///
+    /// The debug assertion is what states the requirement out loud: given
+    /// anything but an array entity, this answers with whatever that
+    /// memory holds.
+    ///
+    /// Callers hold `owner` as a raw pointer to the live array this table
+    /// belongs to.
     #[inline]
-    pub(crate) fn category(&self) -> MemoryCategory {
-        let owner =
-            unsafe { (self as *const Table as *const u8).sub(OWNER_OFFSET) as *const RcHeader };
+    pub(crate) fn category_of(owner: *const RcHeader) -> MemoryCategory {
         let flags = unsafe { crate::refcount::header_flags(owner) };
         debug_assert_eq!(
             (flags & crate::refcount::ENTITY_KIND_MASK) >> crate::refcount::ENTITY_KIND_SHIFT,
@@ -439,12 +443,12 @@ impl Table {
     /// - **In-block**: a fresh buffer-arena chunk, copied. Bounded by a
     ///   block payload, so the copy is bounded too.
     ///
-    /// The category is rewritten in **every** outcome, refusal included,
-    /// because it is this table's copy of what the header says and
-    /// promotion rewrites the header a moment later. Leaving it at
-    /// `RequestArena` would send every later free of this storage down an
-    /// arm that frees nothing. A refused carry is safe under the new
-    /// category too: promotion stamps the storage's block
+    /// Nothing here records where the storage now lives. The category is
+    /// the header's to say and promotion rewrites the header a moment
+    /// later, so every later free of this storage reads the new answer
+    /// with no second field to keep in step (`dev/DECISIONS.md`
+    /// 2026-08-07). A refused carry is safe under the new category too:
+    /// promotion stamps the storage's block
     /// `BLOCK_KIND_RETAINED` right after, and that is the one kind
     /// `buffer_free_longlived_payload` leaves alone — the same mechanism
     /// that protects a string's uncarried payload, rather than a second
@@ -454,10 +458,14 @@ impl Table {
     ///
     /// # Safety
     /// The table must be a live request-arena table of `arena`,
-    /// mid-reset.
-    pub(crate) unsafe fn carry_out_of(&mut self, arena: *mut crate::memory::arena::Arena) -> bool {
+    /// mid-reset, and `owner` the array entity holding it.
+    pub(crate) unsafe fn carry_out_of(
+        &mut self,
+        owner: *const RcHeader,
+        arena: *mut crate::memory::arena::Arena,
+    ) -> bool {
         debug_assert_eq!(
-            self.category(),
+            Self::category_of(owner),
             MemoryCategory::RequestArena,
             "only an arena table is carried out of a reset"
         );
@@ -615,7 +623,12 @@ impl Table {
     /// The old value of an overwritten key is returned to the caller
     /// rather than dropped here: releasing it is the owner's, because the
     /// order matters to the collector.
-    pub fn insert(&mut self, key: Key, value: Value) -> Option<(bool, Option<Value>)> {
+    pub fn insert(
+        &mut self,
+        owner: *const RcHeader,
+        key: Key,
+        value: Value,
+    ) -> Option<(bool, Option<Value>)> {
         let sh = self.slot_hash(key);
         // Counted during the insert's own walk, against current state:
         // nothing is stored between operations, so deletion cannot leave a
@@ -653,7 +666,7 @@ impl Table {
         }
         let sh = self.slot_hash(key);
 
-        if self.used() == self.cap && !self.grow() {
+        if self.used() == self.cap && !self.grow(owner) {
             return None;
         }
 
@@ -727,9 +740,9 @@ impl Table {
     /// positions has to repair them; that obligation belongs to the
     /// entity wrapper, and this returns whether a compaction happened so
     /// the wrapper can act on it.
-    fn grow(&mut self) -> bool {
+    fn grow(&mut self, owner: *const RcHeader) -> bool {
         if self.storage().is_null() {
-            return self.realloc_storage(8);
+            return self.realloc_storage(owner, 8);
         }
         // Zend's rule: reclaim holes rather than doubling when they are
         // more than a thirty-second of the live count.
@@ -738,7 +751,7 @@ impl Table {
             return true;
         }
         match self.cap.checked_mul(2) {
-            Some(n) if n <= MAX_ENTRIES => self.realloc_storage(n),
+            Some(n) if n <= MAX_ENTRIES => self.realloc_storage(owner, n),
             _ => false,
         }
     }
@@ -797,7 +810,7 @@ impl Table {
     /// into it. False on refusal, with the table left exactly as it was —
     /// an allocation failure reports to a frame that can raise rather
     /// than aborting.
-    fn realloc_storage(&mut self, cap: usize) -> bool {
+    fn realloc_storage(&mut self, owner: *const RcHeader, cap: usize) -> bool {
         if cap > MAX_ENTRIES {
             return false;
         }
@@ -806,7 +819,7 @@ impl Table {
             Some(b) => b,
             None => return false,
         };
-        let (mem, granted) = self.alloc(bytes);
+        let (mem, granted) = self.alloc(owner, bytes);
         if mem.is_null() {
             return false;
         }
@@ -830,7 +843,7 @@ impl Table {
         }
         self.rebuild_index();
         self.end_entry_move();
-        self.free_storage(old_storage, old_capacity);
+        self.free_storage(owner, old_storage, old_capacity);
         true
     }
 
@@ -847,8 +860,14 @@ impl Table {
     /// a storage chunk is routinely freed by a thread that did not
     /// allocate it, and the buffer block carries the owner and the stack
     /// such a free posts to.
-    fn alloc(&self, bytes: usize) -> (*mut u8, usize) {
-        unsafe { crate::memory::routing::body_alloc(std::ptr::null_mut(), self.category(), bytes) }
+    fn alloc(&self, owner: *const RcHeader, bytes: usize) -> (*mut u8, usize) {
+        unsafe {
+            crate::memory::routing::body_alloc(
+                std::ptr::null_mut(),
+                Self::category_of(owner),
+                bytes,
+            )
+        }
     }
 
     /// Sever every live entry: null its element, drop its key, and
@@ -899,10 +918,10 @@ impl Table {
     /// chunk holds no metadata.
     ///
     /// The category comes from the owning entity's header
-    /// ([`Table::category`]), so a promotion that moves this storage
+    /// ([`Table::category_of`]), so a promotion that moves this storage
     /// needs no second field kept in step with it.
-    fn free_storage(&self, p: *mut u8, capacity: usize) {
-        unsafe { crate::memory::routing::body_free(self.category(), p, capacity) };
+    fn free_storage(&self, owner: *const RcHeader, p: *mut u8, capacity: usize) {
+        unsafe { crate::memory::routing::body_free(Self::category_of(owner), p, capacity) };
     }
 
     /// Turn the element under `key` into a reference and hand the box
@@ -919,7 +938,11 @@ impl Table {
     /// Null when the key is absent or the box could not be allocated.
     /// The caller retains the box for its own holder; this leaves the
     /// element's reference to it at the count the factory gave.
-    pub fn make_ref(&mut self, key: Key) -> *mut crate::reference::LLReference {
+    pub fn make_ref(
+        &mut self,
+        owner: *const RcHeader,
+        key: Key,
+    ) -> *mut crate::reference::LLReference {
         if self.storage().is_null() {
             return std::ptr::null_mut();
         }
@@ -931,7 +954,7 @@ impl Table {
                 if current.tag() == crate::value::Tag::Reference {
                     return current.entity_ptr() as *mut crate::reference::LLReference;
                 }
-                let category = self.category();
+                let category = Self::category_of(owner);
                 let boxed =
                     unsafe { crate::reference::ll_reference_new(std::ptr::null_mut(), category) };
                 if boxed.is_null() {
@@ -1062,7 +1085,7 @@ impl Table {
     /// The values are **not** released here: their order matters to the
     /// collector, so the entity wrapper walks and releases them first and
     /// then calls this. Nothing here reads a value.
-    pub fn dispose(&mut self) {
+    pub fn dispose(&mut self, owner: *const RcHeader) {
         let p = self.storage();
         let capacity = self.storage_capacity;
         self.set_storage(std::ptr::null_mut());
@@ -1073,7 +1096,7 @@ impl Table {
         self.set_used(0);
         self.live = 0;
         self.holes = 0;
-        self.free_storage(p, capacity);
+        self.free_storage(owner, p, capacity);
     }
 
     /// Iterate live entries in insertion order. This reads no index at
@@ -1101,9 +1124,35 @@ mod tests {
     /// A table **inside its array**, which is the only place a table
     /// lives: the memory its storage comes from is the owning entity's
     /// header to say, so a headerless table has nothing to answer with
-    /// (`Table::category`, `dev/DECISIONS.md` 2026-08-07). Derefs to the
-    /// table, so a test reads as if it held one.
+    /// (`Table::category_of`, `dev/DECISIONS.md` 2026-08-07). Derefs to
+    /// the table, so a test reads as if it held one.
     struct Owned(*mut crate::array::entity::LLArray);
+
+    /// The operations that need the owner, wrapped so that a test writes
+    /// them as if the table found its own header. It cannot: a reference
+    /// to the body carries provenance over the body, so the entity
+    /// pointer has to arrive from outside ([`Table::category_of`]).
+    impl Owned {
+        fn owner(&self) -> *const RcHeader {
+            self.0 as *const RcHeader
+        }
+
+        fn insert(&mut self, key: Key, value: Value) -> Option<(bool, Option<Value>)> {
+            let owner = self.owner();
+            unsafe { (*self.0).table.insert(owner, key, value) }
+        }
+
+        fn make_ref(&mut self, key: Key) -> *mut crate::reference::LLReference {
+            let owner = self.owner();
+            unsafe { (*self.0).table.make_ref(owner, key) }
+        }
+
+        fn dispose(&mut self) {
+            let owner = self.owner();
+            unsafe { (*self.0).table.dispose(owner) };
+        }
+    }
+
     impl std::ops::Deref for Owned {
         type Target = Table;
         fn deref(&self) -> &Table {
@@ -1118,7 +1167,7 @@ mod tests {
     impl Drop for Owned {
         fn drop(&mut self) {
             unsafe {
-                (*self.0).table.dispose();
+                (*self.0).table.dispose(self.0 as *const RcHeader);
                 // The entity's own slot, by hand rather than through
                 // `ll_entity_die`: these tests own the children and give
                 // them back themselves, and teardown would release them a
@@ -1424,7 +1473,7 @@ mod tests {
     /// 64-bit hash agrees. Real construction of such a set needs a break
     /// of the hash; here the stored hash is written directly, which
     /// exercises the same code path the attack would reach.
-    fn force_equal_hashes(m: &mut Table, n: usize) {
+    fn force_equal_hashes(m: &mut Owned, n: usize) {
         for i in 0..n {
             let s = mk(format!("collider-{i}").as_bytes());
             unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
@@ -1436,7 +1485,7 @@ mod tests {
     /// so the equal-hash trigger stays quiet, but whose low 16 bits agree,
     /// so every one lands in the same index slot at any table size up to
     /// 65536 and they form one chain.
-    fn extend_one_chain(m: &mut Table, from: usize, to: usize) -> Vec<*mut LLString> {
+    fn extend_one_chain(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LLString> {
         (from..to)
             .map(|i| {
                 let s = mk(format!("chain-{i}").as_bytes());
@@ -1836,7 +1885,7 @@ mod tests {
         std::thread::spawn(move || {
             let carried = carried;
             unsafe {
-                (*carried.0).table.dispose();
+                (*carried.0).table.dispose(carried.0 as *const RcHeader);
                 (*carried.0).rc.refcount = 0;
                 crate::memory::stdapi::ll_free(carried.0 as *mut u8);
             }
@@ -1874,9 +1923,10 @@ mod tests {
         // the header in front of it like every other table's.
         let a =
             unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena, TEST_SALT) };
+        let owner = a as *const RcHeader;
         let m = unsafe { &mut (*a).table };
         for i in 0..1100i64 {
-            m.insert(Key::Int(i), Value::int(i));
+            m.insert(owner, Key::Int(i), Value::int(i));
         }
         assert!(
             m.storage_capacity > BLOCK_PAYLOAD,
@@ -1886,7 +1936,7 @@ mod tests {
             assert_eq!(m.get(Key::Int(i)).unwrap().as_int(), i);
         }
 
-        m.dispose();
+        m.dispose(owner);
         set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -1921,9 +1971,10 @@ mod tests {
 
         let a =
             unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena, TEST_SALT) };
+        let owner = a as *const RcHeader;
         let m = unsafe { &mut (*a).table };
         for i in 0..8i64 {
-            m.insert(Key::Int(i), Value::int(i));
+            m.insert(owner, Key::Int(i), Value::int(i));
         }
         assert!(
             m.storage_capacity <= BLOCK_PAYLOAD,
@@ -1931,11 +1982,11 @@ mod tests {
         );
 
         FORCE_OOM.store(true, Ordering::Relaxed);
-        let carried = unsafe { m.carry_out_of(arena_ptr) };
+        let carried = unsafe { m.carry_out_of(owner, arena_ptr) };
         FORCE_OOM.store(false, Ordering::Relaxed);
         assert!(!carried, "the copy was meant to be refused and was not");
         assert_eq!(
-            m.category(),
+            Table::category_of(owner),
             MemoryCategory::RequestArena,
             "the carry decided a category of its own instead of leaving it to the header"
         );
@@ -1948,7 +1999,7 @@ mod tests {
         // The storage itself stays in the arena block, which promotion
         // stamps retained a moment later; what must have moved is where
         // the *next* one comes from.
-        let (fresh, granted) = m.alloc(64);
+        let (fresh, granted) = m.alloc(owner, 64);
         assert!(!fresh.is_null());
         let kind = unsafe { *(((fresh as usize) & !BLOCK_MASK) as *const u32) };
         assert_eq!(
