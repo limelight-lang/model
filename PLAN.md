@@ -709,11 +709,16 @@ readable through the box.
         giving either up goes through `barrier::drop_ref` with the
         owner's category. Both arms and the cross-category cycle seen
         failing under targeted reverts.
-- [ ] S2.3 The layer's key constructor canonicalises a numeric string
+- [x] S2.3 The layer's key constructor canonicalises a numeric string
       done: `"1"`, `"-1"` and `"9223372036854775807"` find what the
         integer keys stored, while `"011"`, `"1.0"`, `" 1"`, `"-0"` and
         `"9223372036854775808"` stay string keys — one pinned pair each
       tier: T1 · role: —
+      handoff: `array::element::canonical_key` in the new
+        `src/array/element.rs` — the layer's home, where S2.5's five
+        operations land. The overflow edge goes through `str::parse`;
+        `i64::MIN`'s spelling and `""`/`"+1"`/`"-"` are pinned beside
+        the criterion's eight.
 - [ ] S2.4 `next_free`, its overflow, and a copy that inherits it
       done: append after `[0,1,2]` with key 1 removed yields 3; append
         after an explicit key 9 yields 10; a COW copy of an array whose
