@@ -633,10 +633,9 @@ rather than measured, and the two flood constants. None of these can be
 settled on this box: `dev/BENCHMARKS.md` puts its noise floor at 1.5–3 %,
 and every effect above is smaller than that.
 
-**What has to come first**, because it changes the shape rather than the
-speed: the `RcHeader` rule of 2026-08-07 (`dev/DECISIONS.md`) takes
-`category` out of `Table`, and a strategy tag added before that would be
-written into a struct whose fields are about to move.
+**What had to come first is done** (`a2e1318`): the `RcHeader` rule of
+2026-08-07 (`dev/DECISIONS.md`) took `category` out of `Table`, so the
+strategy tag goes into a struct whose fields have stopped moving.
 
 ## Then: `Map`, whose keys may be objects
 
