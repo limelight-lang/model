@@ -219,27 +219,51 @@ impl EntityKind {
     }
 }
 
-/// The kind bits that must be clear for an entity to enter the cycle
-/// collector's candidate buffer: `Object` is `000` and `Array` is `010`,
-/// so masking bit 1 away leaves exactly that pair standing and rejects
-/// every other kind. The pair is the RFC's (`rfc/model/classes.md`, "the
-/// buffer holds objects and arrays"), and testing it costs the release
-/// path one masked compare rather than a switch.
+/// The entity kinds that may enter the cycle collector's candidate
+/// buffer, as a set indexed by the kind code. **A kind belongs here
+/// exactly when it holds counted slots a cycle can close through**: an
+/// object's properties, an array's elements and string keys, a
+/// ReferenceBox's one Value, and a Lazy proxy's object slots —
+/// `ll_entity_die` sends `Lazy` through `ll_object_die` and
+/// `walk::trace_cells` strides it like an object. String, Box and WeakRef
+/// own nothing a ring can pass through and stay out by that same
+/// criterion.
 ///
-/// **Three kinds carry counted slots and only two are admitted.** A
-/// ReferenceBox holds one Value and a Lazy proxy holds an object's
-/// slots — `ll_entity_die` sends `Lazy` through `ll_object_die` and
-/// `walk::trace_cells` strides it like an object — so a ring taking its
-/// last external release on either produces no candidate and leaks.
-/// `$a['x'] = &$a` is the ReferenceBox shape; the Lazy one waits for a
-/// factory, since nothing stamps that kind yet. Neither joins the pair
-/// in one compare under the present numbering: `011` needs a second
-/// test, and any mask admitting `110` admits `Box 100` with it. The
-/// renumbering that would have bought all four in one compare is
-/// rejected, with the reasoning, in `PLAN.md`, item 20.
+/// **A set rather than a mask over the kind bits**, because no mask can
+/// express this one: admitting `Reference 011` needs bit 0 clear in the
+/// mask, and excluding `String 001` needs it set. A mask admits only kind
+/// sets closed under clearing a bit, so the contradiction belongs to
+/// masking rather than to this pair of codes. Membership costs a shift
+/// and a bit test on a word the release path already holds
+/// ([`kind_may_close_a_cycle`]).
+///
+/// Built from [`EntityKind`] rather than written as a literal, so the
+/// consolidation of codes 4-6 that `rfc/model/classes.md` argues for moves
+/// the value at compile time and leaves the meaning alone. The entity-kind
+/// renumbering that would have bought these four kinds a single masked
+/// compare is rejected on its own grounds (`PLAN.md`, the ruling on the
+/// renumbering); this set does not need it.
+///
+/// `Lazy` is admitted although no factory stamps that kind yet: the
+/// criterion is the slots the kind can hold, and an absent producer is no
+/// reason to exclude a kind. A kind left out until its producer arrives
+/// leaks every ring that closes through it in the meantime.
 ///
 /// **rc-trace only**, like the buffer itself.
-pub const CANDIDATE_KIND_MASK: u32 = 0b101 << ENTITY_KIND_SHIFT;
+pub const CANDIDATE_KINDS: u32 = (1 << EntityKind::Object as u32)
+    | (1 << EntityKind::Array as u32)
+    | (1 << EntityKind::Reference as u32)
+    | (1 << EntityKind::Lazy as u32);
+
+/// True when the kind in this flags word is in [`CANDIDATE_KINDS`] — the
+/// kinds whose non-zero decrement is buffered as a possible cycle root.
+/// For the reserved code 7 the answer is false, as for every kind outside
+/// the set. Takes the flags word rather than the entity, because every
+/// caller holds it in a register already.
+#[inline]
+pub fn kind_may_close_a_cycle(flags: u32) -> bool {
+    (CANDIDATE_KINDS >> ((flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT)) & 1 != 0
+}
 
 /// True when the entity kind field is `Object` (the zero default). The
 /// dispatch every teardown and trace path makes on a bare header; replaces
@@ -573,10 +597,10 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
         }
 
         // Non-zero decrement on a heap entity: a possible cycle root
-        // (`ll_buffer_cycle_root` of rfc/model/lowering.md). Objects and
-        // arrays buffer, being the kinds that hold counted slots a cycle
-        // can close through ([`CANDIDATE_KIND_MASK`]). In a NoGC or
-        // pure-RC build this call compiles away with the strategy.
+        // (`ll_buffer_cycle_root` of rfc/model/lowering.md). The kinds
+        // that buffer are those holding counted slots a cycle can close
+        // through ([`CANDIDATE_KINDS`]). In a NoGC or pure-RC build this
+        // call compiles away with the strategy.
         //
         // The "already buffered" test is here rather than only inside
         // `buffer_candidate`, because `flags` is in a register on this line
@@ -585,13 +609,13 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
         // to be told nothing had changed. The callee keeps its own copy of
         // the test — it has other callers, and this one is an optimization,
         // not the invariant.
-        // Kind and buffered bit fall into one masked compare, the same
-        // single test the old `ENTITY_OBJECT` bit gave.
         //
-        // What a ring through a ReferenceBox or a Lazy proxy costs, and
-        // why neither joins the compare: [`CANDIDATE_KIND_MASK`].
+        // The buffered bit and the kind are two tests rather than one
+        // masked compare, because the admitted kinds are not a mask
+        // ([`CANDIDATE_KINDS`]).
         if header.memory_category() == MemoryCategory::GcHeap
-            && header.flags & (CANDIDATE_KIND_MASK | CYCLE_COLLECTOR_BUFFERED) == 0
+            && header.flags & CYCLE_COLLECTOR_BUFFERED == 0
+            && kind_may_close_a_cycle(header.flags)
         {
             // `entity`, not `header`: the buffered pointer outlives this call
             // and the collector casts it back to `*mut Object` to read the

@@ -278,7 +278,12 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
 
 ## Key decisions
 
-`dev/DECISIONS.md` — 2026-07-26: GC strategy is the build-time `rc-walk`
+`dev/DECISIONS.md` — 2026-08-07: rc-trace's candidate gate is a **set of
+kinds** (`refcount::CANDIDATE_KINDS`, `{Object, Array, Reference, Lazy}`)
+rather than a mask over their codes, because no mask admits `Reference 011`
+while excluding `String 001`; a kind is in the set exactly when it holds
+counted slots a cycle can close through, so the policy stops depending on
+which numbers the kinds were given. 2026-07-26: GC strategy is the build-time `rc-walk`
 cargo feature (the two collectors share header bits; verification runs
 both configurations); entity blocks as a second heap
 population (rc-walk step 1). 2026-07-20: arena handle as a raw pointer;

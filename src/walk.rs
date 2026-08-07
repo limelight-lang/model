@@ -1846,4 +1846,50 @@ mod tests {
         let seen = walked_addresses();
         assert!(!seen.contains(&(a as usize)) && !seen.contains(&(b as usize)));
     }
+
+    /// The rc-walk twin of
+    /// `gc::tests::a_ring_whose_last_release_lands_on_a_reference_box_is_collected`:
+    /// `$a[0] = &$a`, with the ring's only external hold landing on the
+    /// box. This walk computes its roots and buffers no candidates, so
+    /// which kind took the last decrement cannot reach it. The twin runs
+    /// to check that independence rather than assume it.
+    #[test]
+    fn a_ring_through_a_reference_box_and_an_array_is_collected() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::refcount::{ll_release, ll_retain};
+        let _g = crate::memory::block_pool::test_guard();
+
+        let array = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let boxed = unsafe {
+            crate::reference::ll_reference_new(std::ptr::null_mut(), MemoryCategory::GcHeap)
+        };
+        unsafe {
+            // The box takes the array's creation reference, as `&$a` does.
+            (*boxed).value = Value::entity(Tag::Array, array as *mut RcHeader);
+            // Retained before the entry is published, per `Table::insert`.
+            ll_retain(boxed as *mut RcHeader);
+            (*array).table.insert(
+                array as *const RcHeader,
+                Key::Int(0),
+                Value::entity(Tag::Reference, boxed as *mut RcHeader),
+            );
+            assert!(
+                !ll_release(boxed as *mut RcHeader),
+                "the box is still held by the array's element"
+            );
+        }
+
+        let stats = unsafe { collect_cycles() };
+        assert!(
+            stats.candidate_components >= 1,
+            "the ring was not judged garbage, so this proves nothing about severing"
+        );
+        assert!(
+            stats.collected >= 2,
+            "the component was confirmed and then not freed"
+        );
+        let seen = walked_addresses();
+        assert!(!seen.contains(&(array as usize)) && !seen.contains(&(boxed as usize)));
+    }
 }

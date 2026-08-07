@@ -189,10 +189,10 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
     children
 }
 
-/// Called by `ll_release` on a non-zero decrement of a heap object or
-/// array ([`crate::refcount::CANDIDATE_KIND_MASK`]): buffer it once as a
-/// possible cycle root, and *arm* (never run) a collection when the
-/// buffer fills.
+/// Called by `ll_release` on a non-zero decrement of a heap entity whose
+/// kind can close a cycle ([`crate::refcount::CANDIDATE_KINDS`]): buffer
+/// it once as a possible cycle root, and *arm* (never run) a collection
+/// when the buffer fills.
 ///
 /// This runs from **inside `ll_release`, mid-mutation**: the reference
 /// that was just decremented is still physically in its slot, so refcounts
@@ -580,9 +580,11 @@ unsafe fn run_cyclic_destructors(whites: &[*mut RcHeader]) {
     }
     for &w in whites {
         if unsafe { ll_release(w) } {
-            // Ordinary death: the kind switch — a white may be an object,
-            // a reference box or a weak cell (only objects buffer, but the
-            // trace pulls the other kinds in as their holders' children).
+            // Ordinary death through the kind switch: a white can be any
+            // kind the trace reaches — an object, an array, a reference
+            // box, a string, a weak cell. Only the candidate kinds ever
+            // buffer, and the rest enter the component as their holders'
+            // children.
             unsafe { crate::object::ll_entity_die(w) };
         }
     }
@@ -1497,6 +1499,60 @@ mod tests {
         // an earlier test on it may have left roots of its own, so an
         // exact count would be a claim about them rather than about this
         // ring.
+        assert!(
+            unsafe { collect_cycles() } >= 2,
+            "the ring was judged and then not freed"
+        );
+    }
+
+    /// A ring whose last external release lands on the **ReferenceBox**:
+    /// `$a[0] = &$a`, where `&$a` makes the variable a box, the box
+    /// holds the array and the array's element holds the box. An integer
+    /// key, because the key's own kind is not what this measures — a
+    /// string key would add one counted child and no edge through the
+    /// box. Nothing
+    /// outside ever decrements the array, so the only entity that can
+    /// become a candidate is the box — and unless the gate admits its
+    /// kind, the ring produces no candidate at all, so no collection ever
+    /// judges it and it lives to process exit.
+    ///
+    /// The rc-walk twin is
+    /// `walk::tests::a_ring_through_a_reference_box_and_an_array_is_collected`,
+    /// which needs no candidate at all.
+    #[test]
+    fn a_ring_whose_last_release_lands_on_a_reference_box_is_collected() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::refcount::ll_retain;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let array = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let boxed = unsafe {
+            crate::reference::ll_reference_new(std::ptr::null_mut(), MemoryCategory::GcHeap)
+        };
+        unsafe {
+            // `&$a` moves the variable's hold onto the box rather than
+            // adding one, so the box takes the array's creation reference.
+            (*boxed).value = Value::entity(Tag::Array, array as *mut RcHeader);
+            // Retained before the entry is published, per `Table::insert`.
+            ll_retain(boxed as *mut RcHeader);
+            (*array).table.insert(
+                array as *const RcHeader,
+                Key::Int(0),
+                Value::entity(Tag::Reference, boxed as *mut RcHeader),
+            );
+            // The frame's reference dies. It is the ring's only external
+            // hold, and it lands on the box rather than on the array.
+            assert!(
+                !ll_release(boxed as *mut RcHeader),
+                "the box is still held by the array's element"
+            );
+        }
+
+        assert!(
+            unsafe { (*candidate_buffer()).contains(&(boxed as *mut RcHeader)) },
+            "a reference box that took a non-zero decrement is a candidate root"
+        );
         assert!(
             unsafe { collect_cycles() } >= 2,
             "the ring was judged and then not freed"

@@ -714,11 +714,10 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
     // The bare-pointer door leaves the candidate buffer for every kind
     // the gate admits, so a kind that gains counted slots later inherits
-    // it without a call site of its own
-    // (`refcount::CANDIDATE_KIND_MASK`). An array reaches teardown here
-    // and nowhere else — it runs no `dispose`, which is where an object
-    // does this on its way past the free. The bit is tested from flags
-    // already in a register.
+    // it without a call site of its own (`refcount::CANDIDATE_KINDS`).
+    // An array reaches teardown here and nowhere else — it runs no
+    // `dispose`, which is where an object does this on its way past the
+    // free. The bit is tested from flags already in a register.
     #[cfg(not(feature = "rc-walk"))]
     if flags & crate::refcount::CYCLE_COLLECTOR_BUFFERED != 0 {
         unsafe { crate::gc::forget_candidate(entity) };

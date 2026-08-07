@@ -608,16 +608,201 @@ make visible. The repair is a crate-internal barrier entry that publishes
 an already-retained reference: `store_category_barrier` is that operation
 already, minus the slot write. It must land with or before item 12's arm.
 
+## S2 — The generic element interface  [ ]
+
+Goal: the five element operations exist as one layer over the table —
+read, store, append, unset, take a reference — each separating a shared
+array before it writes, each settling who owns the key, and the layer
+canonicalising a numeric string into an integer key. `Map` is the layer's
+second customer, which is why the canonicalisation lives above `Table`
+rather than inside it.
+
+**The operations take the holder's slot** and return `bool`, as every
+store-side barrier in this crate does (`ll_store_ptr`, `ll_store_box`,
+`ll_ref_store`). `ll_cow_separate` hands its copy back instead only
+because an FFI handle has no slot to write, which its own doc says. The
+consequence is the point: the separation's full composition — publish the
+copy, drop the displaced original, release the creation reference — lives
+inside the operation, so the "copy left at two separates forever" trap is
+unreachable from any call site.
+
+Done when: the five operations are each one call taking the holder's slot,
+each with a test over a **shared** array; a numeric-string key finds what
+the integer key stored; two string entities with equal bytes come out of
+an insert-overwrite-remove cycle at the counts they started at; a
+separated copy carries the source's salt state, flood state and
+`next_free`; and a store into an element holding a ReferenceBox is
+readable through the box.
+
+- [ ] S2.1 A table starts unsalted, and the ladder's first rung draws the
+      salt
+      done: a fresh table indexes an integer key by its value; a chain
+        long enough to fire the first rung draws a salt, rebuilds the
+        index and finds every key again; a COW copy inherits whichever
+        state its source is in; `ll_array_new` no longer takes a salt
+      tier: T2 · role: Критик
+      Edmond 2026-08-07: the salt is worth paying for where the keys can
+        come from outside and not otherwise, so unsalted becomes the
+        ladder's zeroth rung rather than a mode somebody has to select.
+        Against a compiler-supplied "external data" flag: the classification
+        has to be right on every array, it fails silently in the unsafe
+        direction, and keys arrive through `json_decode`, a database row,
+        `array_keys` of another array and any function argument. The
+        ladder needs nobody to predict anything — an integer flood builds
+        exactly one long chain, which is the rung's own trigger. The flag
+        stays available later as an extra optimization, when a compiler
+        exists that can prove rather than assume.
+- [ ] S2.2 Dropping a key returns it to the caller; storing one consumes
+      the caller's
+      done: two distinct string entities with equal bytes — one inserted,
+        the other overwriting it, then the key removed — both end at the
+        counts they started at; seen failing on both arms
+      tier: T2 · role: Критик
+- [ ] S2.3 The layer's key constructor canonicalises a numeric string
+      done: `"1"`, `"-1"` and `"9223372036854775807"` find what the
+        integer keys stored, while `"011"`, `"1.0"`, `" 1"`, `"-0"` and
+        `"9223372036854775808"` stay string keys — one pinned pair each
+      tier: T1 · role: —
+- [ ] S2.4 `next_free`, its overflow, and a copy that inherits it
+      done: append after `[0,1,2]` with key 1 removed yields 3; append
+        after an explicit key 9 yields 10; a COW copy of an array whose
+        only high key was removed appends at 10 rather than 0; append
+        after `i64::MAX` is refused rather than wrapping
+      tier: T1 · role: —
+- [ ] S2.5 The store: separate, publish, release, refuse
+      done: `set(ctx, owner_cat, slot, key, value) -> bool` — a store
+        through one holder of a shared array leaves the other holder's
+        entries unchanged, leaves the displaced original at count one so a
+        second store to it does not separate again, and reports both
+        refusals, the separation's and the table's, with every array
+        involved unchanged
+      tier: T2 · role: Критик
+- [ ] S2.6 Read, append and unset over the store's composition
+      done: appending through one holder of a shared array leaves the
+        other holder's length unchanged; `unset` gives the key back by
+        S2.2's rule and leaves the other holder's entry standing; `get`
+        yields the value through a ReferenceBox rather than the box, and
+        leaves both holders naming the same array
+      tier: T1 · role: —
+- [ ] S2.7 A store into an element holding a ReferenceBox goes through the
+      box, and through the barrier
+      done: built against `Table::make_ref`, which exists — after boxing
+        an element, a store into it is readable through the box, goes
+        through `barrier::ref_store` rather than a plain write, and
+        suppresses the displaced value's `drop_ref` when the barrier
+        refuses; a copy with a heap destination over an arena source
+        shares the box rather than copying it, and `escape_copy` holds it
+      tier: T2 · role: — (judged in S2.8's call)
+- [ ] S2.8 `&$a[k]`, separating first
+      done: `$a=['x'=>1]; $b=$a; $r=&$b['x']; $r=2` leaves `$a['x']` at 1
+        **and** `$b['x']` at 2 — the shared table separated before the box
+        was written, rather than the reference being refused
+      tier: T2 · role: Критик, over S2.7 and S2.8 together
+
+### What the steps rest on, verified against the code
+
+**S2.1.** Below `strong` a string key's slot is its cached hash and no
+salt enters it, so the salt is paid by integer keys only — and a dense
+integer array is strategy 2 and never reaches this table, which leaves
+sparse and mixed ones as the whole population that pays. The zeroth rung
+needs no new state: `TABLE_RESEEDED` already means "this table has a
+salt", and it sits in the same byte as `TABLE_STRONG`, which that path
+reads anyway. The documents' bound — one rebuild and one escalation per
+table — does not move, because the first rung now *draws* where it used to
+redraw. Where the entropy comes from stops being an open question with it:
+the draw happens only inside `reseed`, which already mixes the process seed
+and the storage address. Separately, `ll_array_new`'s `salt` parameter has
+twenty call sites, sixteen passing one literal (five in `array/entity.rs`,
+eleven across `promote.rs`, `gc.rs`, `collector.rs`, `walk.rs`), three in
+`array/table.rs` passing another, and one — `new_empty_copy` — handing the
+source's salt over so a copy indexes its keys as the original did. A grep
+for the literal is not a criterion: `strong_hash` uses
+`0x9E37_79B9_7F4A_7C15`, the golden ratio, unrelated to the salt.
+
+**S2.2 is the prerequisite every write step waits on.** The table owes one
+reference per string key: `fill_from` retains each key before inserting it
+and `release_children` gives key and element back. Two sites break the
+symmetry and they are one rule rather than two defects. `Table::remove`
+returns the element and calls `Entry::make_hole`, which overwrites the key
+word, so the table's reference is dropped with nothing to release it.
+`Table::insert`'s overwrite arm keeps the entry's original key and never
+sees the caller's, so the caller's retain is stranded. Two distinct string
+entities are needed in the test because one measurement over one entity
+catches one arm and not the other.
+
+**S2.3.** `Key`'s own doc says the caller canonicalises and no caller
+does. The `i64::MAX` pair is the boundary where a hand-rolled digit
+accumulator overflows and `str::parse` does not.
+
+**S2.4.** `Table` has no `next_free` field, and `new_empty_copy` copies
+the salt and the flood state and nothing else while `fill_from` skips
+holes — so a copy of `[9 => 'x']` with key 9 removed would append at 0
+where PHP appends at 10. Overflow is checked rather than wrapped, which is
+what `storage_bytes`' `checked_add` and `pow2ge`'s saturating loop already
+do. **Open, a language question rather than a design one:** PHP 8.3
+changed `$a[-5]=1; $a[]=2;` from key 0 to key −4.
+
+**S2.5 fixes the operations' shape**, the most expensive thing to change
+once four other call sites exist. `ll_cow_separate` returns its copy at +1
+and its doc names the full composition, with `string::separate` as the
+worked example; skipping the middle term does not merely leak, since a
+copy left at two reads as shared on every later write and separates
+forever. There are two refusals rather than one — the separation's, an
+allocation no reserve funds, and the table's growth — and they leave
+different numbers of arrays behind. `memory::block_pool::FORCE_OOM` drives
+both; `array/table.rs` already uses it for a table allocation refusal.
+
+**S2.7 and S2.8 carry five clauses of `arrays-hashtable.md` "Element
+states"**: an element store writes through the box, taking the reference
+on a shared table separates first, a by-value read dereferences the box,
+the COW separator retains the box without recursing, and `escape_copy`
+treats it as identity-bearing. S2.7 builds against `Table::make_ref`,
+which is `pub` and already boxes an element, so it does not wait on S2.8's
+separating wrapper. The write goes through `barrier::ref_store` rather
+than a plain store into the box's slot: `6afd220` moved the reference
+sever onto the barrier because the collector's relaxed loads race a plain
+store into a published slot. `make_ref`'s own `(*boxed).value = current`
+is legal only because that box is not published yet, which makes it the
+pattern an implementer would copy and the wrong one.
+
+### Named, and outside these two stages
+
+Teardown of a deeply nested array is recursive at the free while the deep
+copy walks a work list at the store (item 11's tail). S2 produces the
+input that reaches it; the fix is the drain's shape rather than an element
+operation.
+
+Compaction moves entries, and `arrays-hashtable.md` says the table carries
+a count of live iterators and repairs them. No iterator exists yet.
+
+`string.rs` answers the RFC's "the cached string hash becomes a relaxed
+atomic, and this lands with the table" the other way: a string in either
+category a second thread can reach is hashed at creation, so the lazy
+plain store is single-owner by construction. The crate's answer looks
+sound and the RFC still prescribes the other one; the correction is owed
+there, beside the RFC debts already under task 11.
+
 ## Then: arrays as a performance problem
 
 Opened 2026-08-07 at Edmond's request, and it gathers work the plan had
 scattered rather than adding any. Everything here is measurement or
 representation; nothing in it is a defect.
 
-**The representation.** Two bits of `Table::flags` name the storage
-strategy, which nothing sets yet because only strategy 3 is built and a
-tag with one occupant is a field nobody reads. Behind it: the generic
-element write dispatches on the tag and performs the 1 → 2 transition
+**The generic element write is S2 above and runs first**, by Edmond's
+ruling of 2026-08-07: the strategy tag exists for the dispatch inside that
+write, so the write comes before the tag rather than after it.
+
+**The representation, and the tag waits for its second occupant.** Two
+bits of `Table::flags` name the storage strategy, which nothing sets yet.
+It was drafted as the last step of S2 and taken out: with one strategy
+built the dispatch has one arm, no test can tell a write that reads the
+tag from one that calls the table directly, and `arrays.md` makes a fresh
+dense array strategy 2 — so a test pinning "a fresh array is strategy 3"
+is one the strategy-2 work would have to rewrite. The crate refused this
+shape once already, leaving the hash-function selection unbuilt with one
+occupant for the same reason. The cost of deferring is that the write is
+edited twice, and the write is a few lines. Behind the tag: the generic
+element write dispatches on it and performs the 1 → 2 transition
 `arrays.md` says never happens — it must, because separation copies the
 storage in its current representation and a callee can then store a
 pointer into a proven `array<int>`. Then the 2 → 3 migration, walking

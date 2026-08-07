@@ -218,6 +218,68 @@ obligation (no message pickup between a committing zero store and the end of a
 dispose), so both configurations now count teardown depth, each for its own
 strategy.
 
+## 2026-08-07 — the candidate gate is a set of kinds, not a mask over their codes
+
+`rc-trace` admits an entity to the candidate buffer when its kind is in
+`refcount::CANDIDATE_KINDS` — `{Object, Array, Reference, Lazy}`, a set
+indexed by kind code and tested as `(CANDIDATE_KINDS >> kind) & 1` beside
+the existing buffered-bit test. **A kind belongs to the set exactly when it
+holds counted slots a cycle can close through.** That sentence is the whole
+policy, and it is what the constant carries: String, Box and WeakRef own
+nothing a ring passes through, so they stay out by the same test that lets
+a Lazy proxy in.
+
+**No mask can express this set**, which is why the shape changed rather
+than the constant. A subset compare `flags & MASK == 0` admits only kind
+sets closed under clearing a bit; admitting `Reference 011` needs bit 0
+clear in the mask and excluding `String 001` needs it set. The entry below
+read that impossibility as a reason to wait for a renumbering. It is a
+reason to stop deriving the policy from the codes: the mask could say
+"which kinds" only by leaning on "which numbers they were given", and that
+coupling is what produced the leak. The set is built from `EntityKind`, so
+a later consolidation of the codes moves its value at compile time and
+leaves its meaning alone.
+
+The leak it closes: `$a['x'] = &$a` — the box holds the array, the array's
+element holds the box, and the frame's release lands on the box at count
+two. Nothing else is decremented, the box was not admitted, so no candidate
+existed and the ring lived to process exit. `$a->next = &$a` never showed
+it, because there the last release lands on the object.
+
+**`Lazy` is admitted although no factory stamps kind 6 yet.** Waiting for a
+producer before admitting a kind is exactly what left the ReferenceBox
+outside; its test is owed to whichever stage builds the Lazy factory.
+
+Three alternatives were rejected, and the reasons matter more than the
+choice. Buffering the box's *target* instead of the box keeps boxes out of
+the buffer, but pays a data-dependent load on the mutator's hot path, moves
+knowledge of the Reference layout into `ll_release`, and still leaves Lazy
+needing to admit itself — so it ends as this test plus a special case. A
+second compare (`masked == 0 || kind == Reference`) grows one term per
+admitted kind and leaves Lazy out on the same argument. The entity-kind
+renumbering stays rejected on the grounds recorded in `PLAN.md`, and this
+removes its last motive.
+
+Cost, accepted on reasoning because `dev/BENCHMARKS.md` puts this box's
+noise floor at 1.5–3 % and the effect is smaller: roughly three ALU
+instructions where there were two, on the rc-trace non-final-release tail
+only — the `rc-walk` build compiles the branch away entirely. Buffer
+pressure grows by every heap ReferenceBox decremented to non-zero,
+scalar-valued ones included, so the candidate threshold arms marginally
+sooner; that threshold is already unmeasured.
+
+Nothing else needed changing, which was verified rather than assumed:
+`ll_entity_die` already forgets a buffered candidate of any kind before its
+kind switch, `gc.rs`'s white-free default arm already frees a box, and
+`walk::trace_entity` already traces through one. Regressions:
+`gc::tests::a_ring_whose_last_release_lands_on_a_reference_box_is_collected`,
+seen failing on the old gate, and its rc-walk twin in `walk.rs`, which turns
+"the whole-heap walk needs no candidate" from an expectation into a fact.
+
+**Owed to the RFC and not yet made:** `model/classes.md` says the buffer
+holds objects and arrays, and `model/lowering.md`'s pseudocode comment names
+a heap *object*. Both now describe a gate the crate no longer has.
+
 ## 2026-08-07 — the candidate buffer admits arrays, and leaving it belongs to the runtime
 
 `rc-trace`'s candidate gate buffers objects and arrays:
@@ -229,11 +291,11 @@ only objects, so a ring closed through a heap array produced no root and
 was never collected. Both configurations are required legs of the gate, so
 rc-trace stayed green over a systematic leak.
 
-A ring that passes through neither kind is still out of reach: an array
+A ring that passes through neither kind was still out of reach: an array
 holding a ReferenceBox holding the array (`$a['x'] = &$a`) takes its last
 external release on the box, and kind `011` does not join `000` and `010`
-in one compare. The renumbering that would have bought the wider set in one
-is rejected in `PLAN.md`, item 20, and the reasoning is recorded there.
+in one compare. That is answered by the entry above, the same day: the
+compare stopped being a mask.
 
 **Forgetting a candidate is the runtime's duty at every door into
 teardown**, where it used to be `ll_default_dispose`'s. A `dispose` is class
