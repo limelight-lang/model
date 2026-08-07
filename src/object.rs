@@ -13,7 +13,6 @@
 
 use crate::class::{Class, NO_DESTRUCT_SLOT};
 use crate::memory::context::{LLContext, resolve_arena};
-use crate::memory::immortal::immortal_alloc;
 use crate::refcount::{DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHeader};
 use crate::value::Value;
 
@@ -126,17 +125,7 @@ pub unsafe fn ll_object_new(
     let cls = unsafe { &*class };
     let size = cls.object_size as usize;
 
-    let mem = match category {
-        MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },
-        // Counted entities live in the segregated entity-block population
-        // the cycle collector walks (`rfc/model/gc/rc-walk.md`). LongLived
-        // rides along: the walker skips it by category per entity, and the
-        // long-lived arena's own reclamation policy is still TBD.
-        MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-            crate::memory::heap::entity_alloc(size)
-        },
-        MemoryCategory::Immortal => immortal_alloc(size),
-    };
+    let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     // Out of memory. The caller raises; nothing here is half-built,
     // because nothing was built (`rfc/runtime/exceptions.md`: the Rust
     // core reports, a Limelight frame raises).

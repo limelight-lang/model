@@ -8,6 +8,35 @@ never edited or deleted.
 
 ---
 
+## 2026-08-07 — category routing lives in one module, and the free still needs the category
+
+`memory/routing.rs` answers "which allocator serves this memory category" for
+the whole crate: `entity_alloc_in` for the seven factories that build an entity,
+and `body_alloc` / `body_ensure` / `body_free` for the bytes an entity owns
+outside its own slot. The compiler assigns a category to an owner without
+knowing what kind of entity will live there, so the question belongs to the
+memory layer; it had been answered by the same `match` written out eight times,
+and the two body copies had already drifted apart.
+
+What stays at a call site is what belongs to that caller rather than to the
+routing: `ll_string_new_dynamic` refuses the two long-lived categories before it
+allocates, because an immortal-flagged dynamic string in a GC entity block is
+walked by the census and never released; and `Table::carry_out_of` names its
+destination, because `self.category` still reads `RequestArena` when the copy is
+made and is rewritten only once the outcome is known.
+
+**The free cannot dispatch on the block kind alone**, which is what the plan
+asked for and what the first attempt did. The kind looks like the better source
+— it is what the bytes are, while the category is a field promotion rewrites —
+but the two populations share a kind: a body over a block payload is an
+OS-direct run in *both* arenas, so `BLOCK_KIND_LARGE_RUN` names a run the
+request arena logged and frees at its reset just as readily as one the caller
+owns. Freeing by kind double-freed arena storage and aborted the suite with
+`corrupted size vs. prev_size`. So `body_free` takes the category, which
+separates the two populations, and `buffer_free_longlived_payload` keeps
+dispatching on the kind inside the long-lived one, where retained blocks, parked
+chunks and OS-direct runs genuinely differ.
+
 ## 2026-08-07 — the flood ladder's two rungs answer different key kinds
 
 The chain trigger redraws the table's salt once and escalates on the second

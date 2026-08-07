@@ -28,7 +28,6 @@
 //! will build the wrong thing.
 
 use crate::array::table::{Key, Table};
-use crate::memory::immortal::immortal_alloc;
 use crate::refcount::{COW, EntityKind, MemoryCategory, RcHeader, publish_header};
 use crate::value::Value;
 
@@ -53,15 +52,10 @@ pub struct LLArray {
 /// Standard factory contract: the result is a fresh entity at count 1.
 pub unsafe fn ll_array_new(category: MemoryCategory, salt: u64) -> *mut LLArray {
     let size = size_of::<LLArray>();
-    let mem = match category {
-        MemoryCategory::RequestArena => unsafe {
-            (*crate::memory::context::resolve_arena(std::ptr::null_mut())).alloc(size)
-        },
-        MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-            crate::memory::heap::entity_alloc(size)
-        },
-        MemoryCategory::Immortal => immortal_alloc(size),
-    };
+    // No context to pass: an array factory takes none, so the arena is
+    // the mounted one either way.
+    let mem =
+        unsafe { crate::memory::routing::entity_alloc_in(std::ptr::null_mut(), category, size) };
     if mem.is_null() {
         return std::ptr::null_mut();
     }

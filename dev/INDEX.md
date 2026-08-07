@@ -138,6 +138,12 @@ versions live in `docs/history/`, marked at the top.
   depth, each child published through `barrier::store_category_barrier`
   rather than retained bare. Its recursion is still the machine stack's.
   What is unbuilt is listed at the head of `PLAN.md`.
+- Category → allocator routing: `src/memory/routing.rs` — the one place
+  that answers where a memory category's bytes come from.
+  `entity_alloc_in` for anything with an `RcHeader`, `body_alloc` /
+  `body_ensure` / `body_free` for the bytes an entity owns outside its
+  own slot. A factory that has a category to refuse refuses it itself,
+  before calling.
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted. Registered by `promote` at reset,
   read by both of `heap`'s enumerators. This is what makes a

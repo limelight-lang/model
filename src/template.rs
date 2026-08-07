@@ -38,7 +38,6 @@
 
 use crate::class::{CLASS_TEMPLATE, Class};
 use crate::memory::context::{LLContext, resolve_arena};
-use crate::memory::immortal::immortal_alloc;
 use crate::refcount::{EntityKind, MemoryCategory, RcHeader, publish_header};
 use crate::string::LLString;
 use crate::value::{Tag, Value};
@@ -141,13 +140,7 @@ pub unsafe fn ll_template_new(
     );
 
     let size = VALUES_OFFSET + n * size_of::<Value>();
-    let mem = match category {
-        MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },
-        MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-            crate::memory::heap::entity_alloc(size)
-        },
-        MemoryCategory::Immortal => immortal_alloc(size),
-    };
+    let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     if mem.is_null() {
         return std::ptr::null_mut();
     }

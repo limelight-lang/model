@@ -23,8 +23,7 @@
 
 use crate::hash::hash_bytes;
 use crate::memory::buffer::Buffer;
-use crate::memory::context::{LLContext, resolve_arena};
-use crate::memory::immortal::immortal_alloc;
+use crate::memory::context::LLContext;
 use crate::refcount::{COW, EntityKind, MemoryCategory, RcHeader, publish_header};
 
 /// The most bytes a string can hold: `len` is a `u32`
@@ -248,13 +247,7 @@ pub(crate) unsafe fn new_uninit(
         return std::ptr::null_mut();
     }
     let size = size_of::<LLString>() + len;
-    let mem = match category {
-        MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },
-        MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-            crate::memory::heap::entity_alloc(size)
-        },
-        MemoryCategory::Immortal => immortal_alloc(size),
-    };
+    let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     if mem.is_null() {
         return std::ptr::null_mut();
     }
@@ -326,13 +319,7 @@ pub(crate) unsafe fn new_with_hash(
         return std::ptr::null_mut();
     }
     let size = size_of::<LLString>() + bytes.len();
-    let mem = match category {
-        MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },
-        MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-            crate::memory::heap::entity_alloc(size)
-        },
-        MemoryCategory::Immortal => immortal_alloc(size),
-    };
+    let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     if mem.is_null() {
         return std::ptr::null_mut();
     }
@@ -434,19 +421,21 @@ pub unsafe fn ll_string_new_dynamic(
     if !fits(bytes.len()) {
         return std::ptr::null_mut();
     }
-    // Refused, not redirected. A `debug_assert` here would vanish in
-    // release into the catch-all arm below, which would put an
-    // immortal-flagged entity in a GC entity block — walked by the
-    // census, never released (retain and release no-op on immortal), and
-    // pinned for the life of the process.
-    let mem = match category {
-        MemoryCategory::RequestArena => unsafe {
-            (*resolve_arena(ctx)).alloc(size_of::<LLStringDynamic>())
-        },
-        MemoryCategory::GcHeap => unsafe {
-            crate::memory::heap::entity_alloc(size_of::<LLStringDynamic>())
-        },
-        MemoryCategory::LongLived | MemoryCategory::Immortal => std::ptr::null_mut(),
+    // Refused, not redirected, and refused *here* rather than left to
+    // the routing below, which serves every category: an
+    // immortal-flagged dynamic string would land in a GC entity block —
+    // walked by the census, never released (retain and release no-op on
+    // immortal), and pinned for the life of the process. A
+    // `debug_assert` would say the same thing in debug and nothing at
+    // all in release, which is where the damage would happen.
+    if matches!(
+        category,
+        MemoryCategory::LongLived | MemoryCategory::Immortal
+    ) {
+        return std::ptr::null_mut();
+    }
+    let mem = unsafe {
+        crate::memory::routing::entity_alloc_in(ctx, category, size_of::<LLStringDynamic>())
     };
     if mem.is_null() {
         return std::ptr::null_mut();
@@ -513,35 +502,7 @@ unsafe fn grow_payload(
     min_capacity: usize,
     hint: usize,
 ) -> bool {
-    let grown = match category {
-        MemoryCategory::RequestArena => unsafe {
-            crate::memory::buffer::buffer_ensure(
-                &mut *resolve_arena(ctx),
-                payload,
-                min_capacity,
-                hint,
-            )
-        },
-        MemoryCategory::GcHeap => {
-            crate::memory::buffer_arena::buffer_ensure_longlived(payload, min_capacity, hint)
-        }
-        // Exhaustive rather than a catch-all, and these two refuse. A
-        // dynamic string in either category does not exist —
-        // `ll_string_new_dynamic` refuses to build one — so this arm is
-        // unreachable, and the point of writing it out is what a catch-all
-        // would do if it ever became reachable: an immortal payload would
-        // go to the buffer arena, whose whole machinery answers the
-        // question of who frees a chunk, and pin its block for the life of
-        // the process; growth there would free the old payload, whose
-        // address an immortal reader may have cached forever
-        // (`rfc/model/memory/arenas.md`, "Immortal Objects"). A refusal is
-        // also what the next category added to the enum should meet here.
-        MemoryCategory::LongLived | MemoryCategory::Immortal => {
-            debug_assert!(false, "a dynamic string is never built in this category");
-            std::ptr::null_mut()
-        }
-    };
-    !grown.is_null()
+    unsafe { crate::memory::routing::body_ensure(ctx, category, payload, min_capacity, hint) }
 }
 
 /// Append to a dynamic string, in place — no sharing test, no copy: the

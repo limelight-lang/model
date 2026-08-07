@@ -15,6 +15,7 @@ pub mod heap;
 pub mod immortal;
 pub(crate) mod reserve;
 pub(crate) mod retained;
+pub(crate) mod routing;
 pub mod stats;
 pub mod stdapi;
 

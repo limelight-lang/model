@@ -10,8 +10,7 @@
 //! bare pointer self-describing at teardown
 //! (`rfc/model/classes.md`, "Entity kind and non-object teardown").
 
-use crate::memory::context::{LLContext, resolve_arena};
-use crate::memory::immortal::immortal_alloc;
+use crate::memory::context::LLContext;
 use crate::refcount::{EntityKind, MemoryCategory, RcHeader};
 use crate::value::Value;
 
@@ -33,13 +32,7 @@ pub struct LLReference {
 /// `ctx` per [`crate::memory::context::ll_arena_alloc`].
 pub unsafe fn ll_reference_new(ctx: *mut LLContext, category: MemoryCategory) -> *mut LLReference {
     let size = size_of::<LLReference>();
-    let mem = match category {
-        MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },
-        MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-            crate::memory::heap::entity_alloc(size)
-        },
-        MemoryCategory::Immortal => immortal_alloc(size),
-    };
+    let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     if mem.is_null() {
         return std::ptr::null_mut();
     }

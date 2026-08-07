@@ -607,17 +607,24 @@ already, minus the slot write. It must land with or before item 12's arm.
 Opened 2026-08-06, out of the same review chain, and independent of the
 four items above. Numbered as they are in the session tool.
 
-5. **One place for the category → allocator routing.** The compiler
-   assigns a category to an owner independently of what kind of entity it
-   is, so "where does this go" belongs to the memory layer rather than to
-   each consumer. The same `match` on `MemoryCategory` is written eight
-   times: six for the entity itself (`object.rs`, `reference.rs`,
-   `template.rs`, `string.rs` twice, and `string.rs`'s dynamic factory,
-   which differs), and two for an entity's out-of-line body (`string.rs`'s
-   payload growth, `array/table.rs`'s storage). The two body copies had
-   already diverged. Shape: `entity_alloc_in` for the first group,
-   `body_alloc` / `body_ensure` / `body_free` for the second, the free
-   dispatching on the block kind the pointer already carries.
+5. ~~**One place for the category → allocator routing.**~~ — closed.
+   `memory/routing.rs` holds `entity_alloc_in` for the seven factories
+   and `body_alloc` / `body_ensure` / `body_free` for the two out-of-line
+   bodies. Each call site keeps only what is its own: the dynamic string
+   factory's refusal of the two long-lived categories, and
+   `carry_out_of`'s naming of the destination, which cannot come from
+   `self.category` because that field still says `RequestArena` when the
+   copy is made.
+
+   **The free does not dispatch on the block kind, and the entry was
+   wrong to say it could.** Both arenas put a body over a block payload
+   in an OS-direct run, so `BLOCK_KIND_LARGE_RUN` names a run the request
+   arena logged and will free at its reset exactly as readily as one the
+   caller owns. Freeing by kind alone double-frees arena storage — the
+   suite aborted on `corrupted size vs. prev_size`, which is how this was
+   found. The category decides between the two populations; the block
+   kind decides inside the long-lived one, which is what
+   `buffer_free_longlived_payload` was already doing.
 6. **~~RFC: rename the categories where they are defined~~** and
    7. **~~carry it through the referring documents~~**, 8. **~~rename them
    in the crate~~** — all three **deferred 2026-08-06**, reasoning in

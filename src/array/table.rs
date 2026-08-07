@@ -27,9 +27,6 @@ use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use crate::array::entry::{Entry, MAX_ENTRIES, NONE};
 use crate::memory::block_pool::BLOCK_PAYLOAD;
-use crate::memory::buffer_arena::{buffer_alloc_longlived_payload, buffer_free_longlived_payload};
-use crate::memory::context::resolve_arena;
-use crate::memory::immortal::immortal_alloc;
 use crate::refcount::{MemoryCategory, RcHeader};
 use crate::string::LLString;
 use crate::value::Value;
@@ -450,7 +447,16 @@ impl Table {
             return true;
         }
 
-        let (fresh, granted) = buffer_alloc_longlived_payload(self.storage_capacity);
+        // The destination is named rather than taken from `self.category`,
+        // which still says `RequestArena` here — it is rewritten below,
+        // once the outcome is known.
+        let (fresh, granted) = unsafe {
+            crate::memory::routing::body_alloc(
+                std::ptr::null_mut(),
+                MemoryCategory::GcHeap,
+                self.storage_capacity,
+            )
+        };
         if fresh.is_null() {
             // The refusal rewrites the category like the other three
             // exits, and the reason is the allocation side rather than
@@ -805,38 +811,21 @@ impl Table {
         true
     }
 
-    /// Route the allocation by category, reporting the bytes really
-    /// granted alongside the pointer.
+    /// The storage, routed by the table's category
+    /// (`memory::routing::body_alloc`), with the bytes really granted
+    /// reported alongside the pointer.
     ///
-    /// **Not `entity_alloc`.** Table storage is not an entity: it has no
-    /// `RcHeader`, and the cycle collector reads the first eight bytes of
-    /// every occupied slot in an entity block as one
-    /// (`memory/block_pool.rs`, `BLOCK_KIND_ENTITY`).
-    ///
-    /// The long-lived categories go to the **buffer arena**, which is
-    /// where an entity's out-of-line body lives, a string's payload being
-    /// the other one (`rfc/model/memory/buffers.md`). What that buys over the
-    /// ordinary allocator is the ownership protocol: a table dies wherever
-    /// its last reference is dropped, so a storage chunk is routinely
-    /// freed by a thread that did not allocate it, and the buffer block
-    /// carries the owner and the stack such a free posts to.
-    ///
-    /// Both arenas split by size — a body over a block payload is a
-    /// dedicated run — and in both the split belongs to the arena rather
-    /// than here: a storage is sized from a program-visible element count,
-    /// so a table that made the test itself would be carrying the block
-    /// size around with it.
+    /// **A body, not an entity**, which is the one thing a reader has to
+    /// know here: storage has no `RcHeader`, and the cycle collector
+    /// reads the first eight bytes of every occupied slot in an entity
+    /// block as one (`memory/block_pool.rs`, `BLOCK_KIND_ENTITY`). What
+    /// the body population buys a table beyond that is the ownership
+    /// protocol: a table dies wherever its last reference is dropped, so
+    /// a storage chunk is routinely freed by a thread that did not
+    /// allocate it, and the buffer block carries the owner and the stack
+    /// such a free posts to.
     fn alloc(&self, bytes: usize) -> (*mut u8, usize) {
-        match self.category {
-            MemoryCategory::RequestArena => {
-                let p = unsafe { (*resolve_arena(std::ptr::null_mut())).alloc_body(bytes) };
-                (p, bytes)
-            }
-            MemoryCategory::GcHeap | MemoryCategory::LongLived => {
-                buffer_alloc_longlived_payload(bytes)
-            }
-            MemoryCategory::Immortal => (immortal_alloc(bytes), bytes),
-        }
+        unsafe { crate::memory::routing::body_alloc(std::ptr::null_mut(), self.category, bytes) }
     }
 
     /// Sever every live entry: null its element, drop its key, and
@@ -877,24 +866,20 @@ impl Table {
         self.holes = self.used();
     }
 
-    /// Release storage the table has replaced. Only the long-lived
-    /// categories free: arena storage goes at the reset, and immortal
-    /// never goes.
+    /// Release storage the table has replaced, through
+    /// `memory::routing::body_free`: arena storage goes at the reset and
+    /// immortal storage never goes, so only the long-lived categories do
+    /// anything here.
     ///
     /// `capacity` is the granted size from [`Table::alloc`], not the
-    /// requested one — the buffer arena's free is size-carrying, and the
-    /// same call is what parks the chunk during a collector epoch and what
-    /// leaves a retained block's bytes alone.
+    /// requested one: the buffer arena's free is size-carrying and a
+    /// chunk holds no metadata.
+    ///
+    /// `self.category` is this table's copy of what the header says, and
+    /// `carry_out_of` rewrites it in every outcome for exactly this
+    /// reader.
     fn free_storage(&self, p: *mut u8, capacity: usize) {
-        if p.is_null() {
-            return;
-        }
-        match self.category {
-            MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-                buffer_free_longlived_payload(p, capacity)
-            },
-            MemoryCategory::RequestArena | MemoryCategory::Immortal => {}
-        }
+        unsafe { crate::memory::routing::body_free(self.category, p, capacity) };
     }
 
     /// Turn the element under `key` into a reference and hand the box
