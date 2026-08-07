@@ -174,6 +174,17 @@ pub struct Table {
     /// Zero from birth. Meaningful only while [`TABLE_RESEEDED`] is set:
     /// the ladder's first rung draws it, and nothing else writes it.
     salt: u64,
+    /// The next append key: one past the highest integer key ever
+    /// inserted, [`NEXT_FREE_NONE`] while none has been. Removal never
+    /// rewinds it — PHP's `nNextFreeElement` — and a COW copy inherits
+    /// it ([`Table::adopt_append_state`]), because the replay skips
+    /// holes and would otherwise rewind past a removed high key.
+    ///
+    /// A negative key moves it too: PHP 8.3 semantics, where
+    /// `$a[-5] = 1; $a[] = 2;` appends at −4 (assumption recorded in
+    /// `PLAN.md` S2.4, Edmond's to overturn — the pre-8.3 answer is one
+    /// comparison away).
+    next_free: i64,
     /// Bumped twice by every operation that moves entries — growth and
     /// compaction — odd while the move is in progress. A concurrent
     /// walker reads it, then `storage`, `nslots` and `used`, then reads it
@@ -207,6 +218,16 @@ const TABLE_RESEEDED: u8 = 1 << 1;
 /// backstop has decided, and nothing else in the byte.
 const TABLE_FLOOD_STATE: u8 = TABLE_STRONG | TABLE_RESEEDED;
 
+/// `i64::MAX` has been an integer key, so there is no next append key:
+/// [`Table::append_key`] refuses rather than wrapping. Bit 4, leaving
+/// bits 2–3 for the storage-strategy tag the plan reserves.
+const TABLE_APPEND_EXHAUSTED: u8 = 1 << 4;
+
+/// [`Table::next_free`]'s "no integer key yet": the first append is 0.
+/// Unreachable as a real cursor — the lowest one a key can set is
+/// `i64::MIN + 1`, from the key `i64::MIN`.
+const NEXT_FREE_NONE: i64 = i64::MIN;
+
 impl Table {
     /// An empty table with no storage. The first insert allocates.
     ///
@@ -230,7 +251,48 @@ impl Table {
             live: 0,
             holes: 0,
             salt: 0,
+            next_free: NEXT_FREE_NONE,
             flags: 0,
+        }
+    }
+
+    /// The key the next append takes, or `None` once `i64::MAX` has been
+    /// a key — the refusal `PLAN.md` S2.4 requires in place of wrapping.
+    /// Reading it moves nothing: the append's own insert is what
+    /// advances the cursor.
+    pub fn append_key(&self) -> Option<i64> {
+        if self.flags & TABLE_APPEND_EXHAUSTED != 0 {
+            return None;
+        }
+        Some(if self.next_free == NEXT_FREE_NONE {
+            0
+        } else {
+            self.next_free
+        })
+    }
+
+    /// Take `source`'s append cursor, which a copy owes for PHP's
+    /// append rule: the replay copies live entries only, so a hole under
+    /// the highest integer key ever inserted would otherwise rewind the
+    /// copy — `[9 => 'x']` minus its 9 appends at 10, not at 0.
+    #[inline]
+    pub(crate) fn adopt_append_state(&mut self, source: &Table) {
+        self.next_free = source.next_free;
+        self.flags =
+            (self.flags & !TABLE_APPEND_EXHAUSTED) | (source.flags & TABLE_APPEND_EXHAUSTED);
+    }
+
+    /// Advance the append cursor past `k`, saturating into the refusal
+    /// state at `i64::MAX` — the one integer key with no successor.
+    #[inline]
+    fn note_int_key(&mut self, k: i64) {
+        match k.checked_add(1) {
+            Some(next) => {
+                if next > self.next_free {
+                    self.next_free = next;
+                }
+            }
+            None => self.flags |= TABLE_APPEND_EXHAUSTED,
         }
     }
 
@@ -766,6 +828,9 @@ impl Table {
         self.set_used(k + 1);
         unsafe { *self.slots().add(slot) = k as u32 };
         self.live += 1;
+        if let Key::Int(v) = key {
+            self.note_int_key(v);
+        }
         Some((true, None))
     }
 
@@ -1423,6 +1488,51 @@ mod tests {
         let order: Vec<i64> = m.iter().map(|e| e.hash_or_key as i64).collect();
         assert_eq!(order, vec![0, 2, 3, 5, 6, 8, 9]);
         assert_eq!(m.len(), 7);
+    }
+
+    /// PHP's append rule, its three table-side clauses: removal never
+    /// rewinds the cursor, an explicit key moves it past itself, and a
+    /// fresh table appends at 0. The PHP 8.3 arm — a negative key moves
+    /// the cursor too, `$a[-5] = 1; $a[] = 2;` appending at −4 — is the
+    /// assumption `PLAN.md` S2.4 records for Edmond to overturn.
+    #[test]
+    fn the_append_cursor_never_rewinds_and_an_explicit_key_moves_it() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        assert_eq!(m.append_key(), Some(0), "a fresh table appends at 0");
+        for i in 0..3i64 {
+            m.insert(Key::Int(i), Value::int(i));
+        }
+        let _ = m.remove(Key::Int(1));
+        assert_eq!(m.append_key(), Some(3), "removal rewinds nothing");
+
+        m.insert(Key::Int(9), Value::int(9));
+        assert_eq!(
+            m.append_key(),
+            Some(10),
+            "an explicit key moves the cursor past itself"
+        );
+
+        let mut n = t();
+        n.insert(Key::Int(-5), Value::int(1));
+        assert_eq!(
+            n.append_key(),
+            Some(-4),
+            "PHP 8.3: a negative key moves the cursor"
+        );
+    }
+
+    /// `i64::MAX` is the one integer key with no successor, so the next
+    /// append is refused rather than wrapped — the same posture as
+    /// `storage_bytes`' checked arithmetic.
+    #[test]
+    fn append_after_the_maximum_key_is_refused_rather_than_wrapping() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        m.insert(Key::Int(i64::MAX), Value::int(1));
+        assert_eq!(m.append_key(), None, "i64::MAX + 1 must refuse, not wrap");
+        m.insert(Key::Int(5), Value::int(2));
+        assert_eq!(m.append_key(), None, "no later key un-exhausts the cursor");
     }
 
     #[test]

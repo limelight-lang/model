@@ -719,12 +719,19 @@ readable through the box.
         operations land. The overflow edge goes through `str::parse`;
         `i64::MIN`'s spelling and `""`/`"+1"`/`"-"` are pinned beside
         the criterion's eight.
-- [ ] S2.4 `next_free`, its overflow, and a copy that inherits it
+- [x] S2.4 `next_free`, its overflow, and a copy that inherits it
       done: append after `[0,1,2]` with key 1 removed yields 3; append
         after an explicit key 9 yields 10; a COW copy of an array whose
         only high key was removed appends at 10 rather than 0; append
         after `i64::MAX` is refused rather than wrapping
       tier: T1 · role: —
+      handoff: `Table::append_key` (None once `i64::MAX` was a key —
+        `TABLE_APPEND_EXHAUSTED`, bit 4, bits 2–3 stay the strategy
+        tag's), `next_free` maintained by insert's added arm, carried by
+        a copy through `adopt_append_state` — seen failing without it.
+        **Assumption, Edmond's to overturn:** PHP 8.3 semantics — a
+        negative key moves the cursor, `$a[-5]=1; $a[]=2;` appends at
+        −4; pinned by test, the pre-8.3 answer is one comparison away.
 - [ ] S2.5 The store: separate, publish, release, refuse
       done: `set(ctx, owner_cat, slot, key, value) -> bool` — a store
         through one holder of a shared array leaves the other holder's

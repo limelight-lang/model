@@ -169,8 +169,8 @@ pub unsafe fn separate(
     dst
 }
 
-/// A destination array with the source's salt and flood state and no
-/// entries. Null when the allocation is refused.
+/// A destination array with the source's salt, flood state and append
+/// cursor, and no entries. Null when the allocation is refused.
 ///
 /// The flood state goes in before the first insert, because it decides
 /// how a key is hashed: a copy that starts weak re-installs an
@@ -185,6 +185,7 @@ unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LL
         return std::ptr::null_mut();
     }
     unsafe { (*dst).table.adopt_flood_state(&(*src).table) };
+    unsafe { (*dst).table.adopt_append_state(&(*src).table) };
     dst
 }
 
@@ -1371,6 +1372,42 @@ mod tests {
             );
             assert!(ll_release(key as *mut RcHeader));
             crate::object::ll_entity_die(key as *mut RcHeader);
+        }
+    }
+
+    /// The append cursor survives the copy, where the replay cannot
+    /// carry it: `fill_from` copies live entries only, so a hole under
+    /// the highest key ever inserted has no witness in the copy — PHP
+    /// appends `[9 => 'x']` minus its 9 at 10, and a copy that answered
+    /// 0 would hand back keys the source already spent.
+    #[test]
+    fn a_copy_inherits_the_append_cursor_over_a_hole() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = crate::memory::arena::Arena::new();
+        let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+
+        let src = arr();
+        unsafe {
+            (*src)
+                .table
+                .insert(src as *const RcHeader, Key::Int(9), Value::int(1));
+            let _ = (*src).table.remove(Key::Int(9));
+            assert_eq!((*src).table.append_key(), Some(10));
+        }
+
+        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        assert!(!copy.is_null());
+        unsafe {
+            assert_eq!((*copy).table.len(), 0, "a hole is not worth copying");
+            assert_eq!(
+                (*copy).table.append_key(),
+                Some(10),
+                "the copy rewound the append cursor past a removed key"
+            );
+            assert!(ll_release(copy as *mut RcHeader));
+            crate::object::ll_entity_die(copy as *mut RcHeader);
+            assert!(ll_release(src as *mut RcHeader));
+            crate::object::ll_entity_die(src as *mut RcHeader);
         }
     }
 
