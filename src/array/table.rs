@@ -325,6 +325,12 @@ impl Table {
     }
 
     /// The version a walker validates its reading against.
+    ///
+    /// Tests only: [`coherent_entries`](Self::coherent_entries) reads the
+    /// counter itself, from a raw pointer it must not turn into a
+    /// reference, so this accessor exists for the tests that assert the
+    /// counter moves — and outside them it is a dead read that warns.
+    #[cfg(test)]
     #[inline]
     pub(crate) fn version(&self) -> usize {
         self.version.load(Ordering::Acquire)

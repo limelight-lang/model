@@ -8,6 +8,43 @@ never edited or deleted.
 
 ---
 
+## 2026-08-07 — the candidate buffer admits arrays, and leaving it belongs to the runtime
+
+`rc-trace`'s candidate gate buffers objects and arrays:
+`flags & ((0b101 << ENTITY_KIND_SHIFT) | CYCLE_COLLECTOR_BUFFERED) == 0`,
+which is the one masked compare the object-only test already was, because
+`Object` is `000` and `Array` is `010` and masking bit 1 away leaves that
+pair standing. `rfc/model/classes.md` fixes the pair; the crate admitted
+only objects, so a ring closed through a heap array produced no root and
+was never collected. Both configurations are required legs of the gate, so
+rc-trace stayed green over a systematic leak.
+
+A ring that passes through neither kind is still out of reach: an array
+holding a ReferenceBox holding the array (`$a['x'] = &$a`) takes its last
+external release on the box, and kind `011` does not join `000` and `010`
+in one compare. The renumbering that would have bought the wider set in one
+is rejected in `PLAN.md`, item 20, and the reasoning is recorded there.
+
+**Forgetting a candidate is the runtime's duty at every door into
+teardown**, where it used to be `ll_default_dispose`'s. A `dispose` is class
+code and the compiler emits one per class, so the duty was owed forever by
+code this crate does not write, and an array runs no `dispose` at all. The
+call sites are `ll_entity_die` before the kind switch, which covers every
+kind the gate admits, and `ll_object_die` twice: once before `dispose`,
+because a caller that statically knows the object takes that door instead of
+the switch, and once after it returns, because `__destruct` can buffer the
+object afresh — a transient `$this` taken inside it is a retain and a
+release, and that release is a non-zero decrement. The order is the whole
+point: a collection fired by user code between the buffer entry and the free
+traces the dying entity as a root and frees it, and the teardown then frees
+it again.
+
+`ll_free` asserts in test builds that an entity slot arrives unbuffered,
+beside the refcount-0 assertion that closed the census flake. A door that
+forgets to forget then fails at the free that dangles the root, rather than
+in an unrelated test half an hour later, which is where the same class of
+defect surfaced before.
+
 ## 2026-08-06 — `LongLived` goes out of use, and its rename waits for a mechanism
 
 **As the category of an entity the code does nothing.** It is not counted

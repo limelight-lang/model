@@ -219,6 +219,17 @@ impl EntityKind {
     }
 }
 
+/// The kind bits that must be clear for an entity to enter the cycle
+/// collector's candidate buffer: `Object` is `000` and `Array` is `010`,
+/// so masking bit 1 away leaves exactly that pair standing and rejects
+/// every other kind. Those are the two kinds that carry counted slots a
+/// cycle can close through (`rfc/model/classes.md`, "the buffer holds
+/// objects and arrays"), and testing them costs the release path one
+/// masked compare rather than a switch.
+///
+/// **rc-trace only**, like the buffer itself.
+pub const CANDIDATE_KIND_MASK: u32 = 0b101 << ENTITY_KIND_SHIFT;
+
 /// True when the entity kind field is `Object` (the zero default). The
 /// dispatch every teardown and trace path makes on a bare header; replaces
 /// the old dedicated `ENTITY_OBJECT` flag test. Kept as a flags-word
@@ -550,23 +561,30 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
             return header.memory_category() == MemoryCategory::GcHeap;
         }
 
-        // Non-zero decrement on a heap object: a possible cycle root
-        // (`ll_buffer_cycle_root` of rfc/model/lowering.md). Only objects
-        // buffer — only they carry traceable reference slots. In a NoGC or
+        // Non-zero decrement on a heap entity: a possible cycle root
+        // (`ll_buffer_cycle_root` of rfc/model/lowering.md). Objects and
+        // arrays buffer, being the kinds that hold counted slots a cycle
+        // can close through ([`CANDIDATE_KIND_MASK`]). In a NoGC or
         // pure-RC build this call compiles away with the strategy.
         //
         // The "already buffered" test is here rather than only inside
         // `buffer_candidate`, because `flags` is in a register on this line
-        // and an object is buffered at most once per collection: without it
-        // every later decrement of the same object paid a call and a reload
+        // and an entity is buffered at most once per collection: without it
+        // every later decrement of the same entity paid a call and a reload
         // to be told nothing had changed. The callee keeps its own copy of
         // the test — it has other callers, and this one is an optimization,
         // not the invariant.
-        // Object kind is the zero kind field, so "an object that is not yet
-        // buffered" is exactly "kind bits and buffered bit all clear" — one
-        // masked compare, the same single test the old `ENTITY_OBJECT` bit gave.
+        // Kind and buffered bit fall into one masked compare, the same
+        // single test the old `ENTITY_OBJECT` bit gave.
+        //
+        // A ring that passes through neither kind stays out of reach: an
+        // array holding a ReferenceBox holding the array (`$a['x'] = &$a`)
+        // takes its last external release on the box, and admitting kind
+        // `011` beside `000` and `010` needs a second compare under the
+        // present numbering (PLAN.md, item 20, where the renumbering that
+        // would have bought it in one is rejected and why).
         if header.memory_category() == MemoryCategory::GcHeap
-            && header.flags & (ENTITY_KIND_MASK | CYCLE_COLLECTOR_BUFFERED) == 0
+            && header.flags & (CANDIDATE_KIND_MASK | CYCLE_COLLECTOR_BUFFERED) == 0
         {
             // `entity`, not `header`: the buffered pointer outlives this call
             // and the collector casts it back to `*mut Object` to read the

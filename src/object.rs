@@ -579,13 +579,6 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
         if ran && unsafe { (*obj).rc.refcount } > 0 {
             return false; // resurrected: __destruct stored $this somewhere lasting
         }
-        // Leave the cycle-collector candidate buffer before releasing any
-        // child. This object's refcount is already 0; a child release below can
-        // trip the candidate threshold and run a synchronous collection, which
-        // would otherwise trace this still-buffered object as a root and free it
-        // — then the free in `ll_object_die` frees it again (double free). No-op
-        // for entities never buffered (non-GcHeap, or GcHeap never decremented).
-        unsafe { crate::gc::forget_candidate(obj as *mut RcHeader) };
     }
     #[cfg(feature = "rc-walk")]
     {
@@ -663,12 +656,33 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     #[cfg(feature = "rc-walk")]
     crate::epoch::teardown_enter();
 
+    // Leave the cycle-collector candidate buffer before `dispose` runs.
+    // This object's refcount is already 0; the destructor and the child
+    // drops below are user code, and a collection fired from inside them
+    // would trace this still-buffered object as a root and free it —
+    // then the free below frees it again. This is the door a caller who
+    // statically knows the object takes, so it clears the buffer itself
+    // rather than trusting either the caller or `dispose`, which is class
+    // code a generated one would have to remember forever.
+    #[cfg(not(feature = "rc-walk"))]
+    unsafe {
+        crate::gc::forget_candidate(obj as *mut RcHeader)
+    };
+
     let dispose: DisposeFn = unsafe { std::mem::transmute((*(*obj).class).dispose) };
     if unsafe { dispose(obj) } {
+        // And again, because `__destruct` ran in between: a transient
+        // `$this` taken inside it is a retain and a release, and that
+        // release is a non-zero decrement — which buffers this object
+        // afresh. The free below would leave the buffer holding memory
+        // about to be reused.
+        #[cfg(not(feature = "rc-walk"))]
+        unsafe {
+            crate::gc::forget_candidate(obj as *mut RcHeader)
+        };
+
         // Phase 3 — memory, by category. Arenas reclaim at reset; the
-        // long-lived policy is TBD; only the GC heap frees here. The
-        // candidate buffer was already cleared inside `dispose`, before
-        // its child drops.
+        // long-lived policy is TBD; only the GC heap frees here.
         if unsafe { header_category(obj as *const RcHeader) } == MemoryCategory::GcHeap {
             unsafe { crate::memory::stdapi::ll_free(obj as *mut u8) };
         }
@@ -691,11 +705,12 @@ pub(crate) unsafe fn header_category(header: *const RcHeader) -> MemoryCategory 
 /// teardown") — one flags load and a small switch. Object and lazy
 /// carry a class pointer and dispatch through its `dispose`; a
 /// reference box releases its one Value and frees; a weak cell
-/// unregisters from the weak table; string, array and Box gain arms
-/// when the crate can produce them (Phase C / FFI), and reaching them
-/// today is a bug, not a leak policy. The future Box arm owes the
-/// bit-7 weak-notify test — a Box is a legal `WeakReference` target
-/// (`rfc/model/weak-references.md`, "every entity kind honours bit 7").
+/// unregisters from the weak table; a string and an array free the
+/// body they own outside their own slot. Box gains its arm when the
+/// crate can produce one (FFI), and reaching it today is a bug, not a
+/// leak policy; that arm owes the bit-7 weak-notify test — a Box is a
+/// legal `WeakReference` target (`rfc/model/weak-references.md`,
+/// "every entity kind honours bit 7").
 ///
 /// # Safety
 /// `entity` must be a live entity whose count just reached zero (or a
@@ -711,6 +726,18 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     const ARRAY: u32 = EntityKind::Array as u32;
     let flags = unsafe { crate::refcount::header_flags(entity) };
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
+    // The bare-pointer door leaves the candidate buffer for every kind
+    // the gate admits, so a kind that gains counted slots later inherits
+    // it without a call site of its own
+    // (`refcount::CANDIDATE_KIND_MASK`). An array reaches teardown here
+    // and nowhere else, and its child releases below can fire a
+    // collection the same way an object's can. The bit is tested from
+    // flags already in a register; `ll_object_die` repeats the call for
+    // its own door and for what `__destruct` may re-buffer.
+    #[cfg(not(feature = "rc-walk"))]
+    if flags & crate::refcount::CYCLE_COLLECTOR_BUFFERED != 0 {
+        unsafe { crate::gc::forget_candidate(entity) };
+    }
     // Teardown bracket (rc-walk) — see `ll_object_die`; nesting is
     // fine, the depth is a counter and only the outermost exit picks
     // up messages.

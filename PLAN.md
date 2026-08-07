@@ -205,7 +205,20 @@ What to take next, in this order and for these reasons.
    stated on `Table::insert` and worked in `array::entity::separate`.
    **Left:** test call sites that still retain after inserting rather than
    before, which is the pattern to copy and now the wrong one.
-3. **Item 20, the candidate gate**, which is one changed constant.
+3. ~~**Item 20, the candidate gate**~~ — closed. The gate masks
+   `0b101` of the kind field, so `{Object 000, Array 010}` pass in the
+   one compare the object-only test already was
+   (`refcount::CANDIDATE_KIND_MASK`). Forgetting a candidate moved off
+   `ll_default_dispose`, which is class code an array never runs, onto
+   the teardown doors: `ll_entity_die` before the kind switch, and
+   `ll_object_die` both before `dispose` and after it returns, the second
+   because a `__destruct` can buffer the object afresh. `ll_free` asserts
+   in test builds that an entity arrives unbuffered, beside the
+   refcount-0 assertion. Two regression tests in `gc.rs`, both seen
+   failing: a ring of two arrays with no object in it, and an array
+   forgetting its candidacy as it dies. **Left:** the ReferenceBox ring
+   `$a['x'] = &$a` still buys no root, which is item 20's own reasoning
+   and not a miss.
 
 Both questions that were open on 2026-08-06 are answered, neither by
 Edmond. The recursion bound of the deep escape copy is an explicit work
@@ -489,15 +502,14 @@ Items 15–17 are closed; 18–20 are not.
     the weak path. `$b = $a` on an escalated `$a` re-installs the
     attacker's whole collision set under the unescalated hash, and copying
     an array is the ordinary thing PHP does.
-20. **The candidate gate diverges from the RFC, and costs one constant.**
-    `rfc/model/classes.md` fixes that the buffer holds objects *and*
-    arrays; `refcount.rs` masks all three kind bits and admits only
-    objects. `{Object 000, Array 010}` is one masked compare under the
-    present numbering — `flags & ((0b101 << ENTITY_KIND_SHIFT) |
-    CYCLE_COLLECTOR_BUFFERED) == 0` — so no renumbering is needed for it.
-    Owed with it: `forget_candidate` moves up into `ll_entity_die`, where
-    the kind is already in a register, rather than staying a duty every
-    generated `dispose` must remember forever.
+20. ~~**The candidate gate diverges from the RFC, and costs one
+    constant.**~~ — closed; see the ordered list above and
+    `dev/DECISIONS.md`, 2026-08-07. One correction to what the entry
+    proposed: `forget_candidate` could not simply move up into
+    `ll_entity_die`, because the object's own `__destruct` runs *inside*
+    `dispose` and can buffer the object again, so `ll_object_die` calls it
+    a second time after `dispose` returns. The duty the entry wanted gone
+    — one every generated `dispose` must remember forever — is gone.
 
 **The renumbering is rejected, and the reason is worth keeping.** The
 architect proposed moving the four kinds that carry traceable slots to

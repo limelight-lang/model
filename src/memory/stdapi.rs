@@ -242,6 +242,19 @@ pub unsafe fn ll_free(ptr: *mut u8) {
             "entity freed with a live-looking header {header:#018x} at {:#x}",
             ptr as usize
         );
+        // The same shape one field up: the cycle collector's candidate
+        // buffer holds raw pointers, so a slot that reaches the free
+        // list still claiming a place in it leaves a root aimed at
+        // memory about to be handed out again. Every teardown door
+        // clears it (`gc::forget_candidate`); this is where a door that
+        // forgot to says so.
+        #[cfg(not(feature = "rc-walk"))]
+        assert_eq!(
+            (header >> 32) as u32 & crate::refcount::CYCLE_COLLECTOR_BUFFERED,
+            0,
+            "entity freed while buffered as a cycle-collector candidate at {:#x}",
+            ptr as usize
+        );
     }
 
     // While an rc-walk epoch is in flight, every freeable kind parks

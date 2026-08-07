@@ -9,7 +9,7 @@
 //!
 //! There is **no selection mechanism today**, and the module should not
 //! pretend otherwise: `ll_release` calls [`buffer_candidate`] directly,
-//! and `ll_object_die` calls [`forget_candidate`] directly. A `nogc` or
+//! and the two teardown doors call [`forget_candidate`] directly. A `nogc` or
 //! pure-`rc` build would compile the buffering away, and the tool for
 //! that is a cargo feature around those call sites — build-time
 //! selection with nothing left behind, which is what the contract asks
@@ -162,9 +162,10 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
     children
 }
 
-/// Called by `ll_release` on a non-zero decrement of a heap object:
-/// buffer it once as a possible cycle root, and *arm* (never run) a
-/// collection when the buffer fills.
+/// Called by `ll_release` on a non-zero decrement of a heap object or
+/// array ([`crate::refcount::CANDIDATE_KIND_MASK`]): buffer it once as a
+/// possible cycle root, and *arm* (never run) a collection when the
+/// buffer fills.
 ///
 /// This runs from **inside `ll_release`, mid-mutation**: the reference
 /// that was just decremented is still physically in its slot, so refcounts
@@ -270,10 +271,16 @@ unsafe fn decode_index(entity: *mut RcHeader) -> Option<usize> {
 /// survives only as the fallback for a position that did not fit the
 /// field.
 ///
+/// **Every door into teardown calls this**, and none of them delegates
+/// the duty to `dispose`, which is class code: `ll_entity_die` for a
+/// bare pointer of any kind, `ll_object_die` for a statically-known
+/// object, and `ll_object_die` a second time after `dispose` returns,
+/// because a `__destruct` can buffer the object afresh.
+///
 /// # Safety
 /// `entity` must still point at the (dying) entity.
-// Dead under `rc-walk` — see `candidate_threshold`'s note; the one
-// caller left (`ll_default_dispose`) is cfg'd to the rc-trace arm.
+// Dead under `rc-walk` — see `candidate_threshold`'s note; the callers
+// left are cfg'd to the rc-trace arm.
 #[cfg_attr(feature = "rc-walk", expect(dead_code))]
 pub(crate) unsafe fn forget_candidate(entity: *mut RcHeader) {
     if unsafe { (*entity).flags } & CYCLE_COLLECTOR_BUFFERED == 0 {
@@ -1330,6 +1337,91 @@ mod tests {
         with_buffer_arena(|arena| unsafe { arena.free(reused, granted) });
 
         arena.reset(|_| {});
+    }
+
+    /// A ring with no object anywhere in it: two arrays holding each
+    /// other. The last external release of either is a non-zero
+    /// decrement and bought nothing while the gate masked all three kind
+    /// bits — neither array ever became a candidate, the collector never
+    /// got a root, and the ring leaked in the configuration whose whole
+    /// purpose is cycles. Both configurations are required legs of the
+    /// gate, so rc-trace was green with a systematic leak in it; the
+    /// rc-walk twin is `walk::tests::a_ring_of_two_arrays_and_no_object_
+    /// is_collected`.
+    ///
+    /// Seen failing on the candidacy assertion below.
+    #[test]
+    fn a_ring_of_two_arrays_and_no_object_is_collected() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::refcount::ll_retain;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let b = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        unsafe {
+            // The reference is taken before the entry is published, which
+            // is `Table::insert`'s contract: an entry a walker can reach
+            // must already be backed by a count.
+            ll_retain(b as *mut RcHeader);
+            (*a).table
+                .insert(Key::Int(0), Value::entity(Tag::Array, b as *mut RcHeader));
+            ll_retain(a as *mut RcHeader);
+            (*b).table
+                .insert(Key::Int(0), Value::entity(Tag::Array, a as *mut RcHeader));
+            // Drop the creation references: each array is held by the
+            // other and by nothing else, which is the ring.
+            assert!(!ll_release(a as *mut RcHeader), "a is still held by b");
+            assert!(!ll_release(b as *mut RcHeader), "b is still held by a");
+        }
+
+        assert!(
+            unsafe { (*candidate_buffer()).contains(&(a as *mut RcHeader)) },
+            "an array that took a non-zero decrement is a candidate root"
+        );
+        // At least two, not exactly two: the buffer is this thread's and
+        // an earlier test on it may have left roots of its own, so an
+        // exact count would be a claim about them rather than about this
+        // ring.
+        assert!(
+            unsafe { collect_cycles() } >= 2,
+            "the ring was judged and then not freed"
+        );
+    }
+
+    /// An array that dies through plain refcounting leaves the candidate
+    /// buffer on the way out. The duty used to live inside
+    /// `ll_default_dispose`, which no array ever runs, so a buffered
+    /// array would die leaving its pointer behind and the next
+    /// collection would trace freed memory as a root.
+    ///
+    /// Seen failing under Miri on the read through the stale root; under
+    /// plain `cargo test` the reused slot answers plausibly and the
+    /// assertion below is what catches it.
+    #[test]
+    fn a_dying_array_forgets_its_candidacy() {
+        use crate::array::entity::ll_array_new;
+        use crate::refcount::ll_retain;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        unsafe {
+            ll_retain(a as *mut RcHeader);
+            assert!(!ll_release(a as *mut RcHeader));
+            assert!(
+                (*candidate_buffer()).contains(&(a as *mut RcHeader)),
+                "the non-zero decrement buffered it"
+            );
+
+            assert!(ll_release(a as *mut RcHeader), "the last reference");
+            crate::object::ll_entity_die(a as *mut RcHeader);
+        }
+
+        assert!(
+            !unsafe { (*candidate_buffer()).contains(&(a as *mut RcHeader)) },
+            "the buffer kept a root pointing at freed memory"
+        );
+        assert_eq!(unsafe { collect_cycles() }, 0);
     }
 
     /// A freed slot's header word is the enumerators' occupancy test:
