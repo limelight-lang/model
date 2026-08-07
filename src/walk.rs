@@ -200,7 +200,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
     const REFERENCE: u32 = EntityKind::Reference as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
     const KEY_OFFSET: usize = std::mem::offset_of!(crate::array::entry::Entry, key);
-    const VALUE_OFFSET: usize = std::mem::offset_of!(crate::array::entry::Entry, value);
+    const VALUE_OFFSET: usize = crate::array::entry::ELEMENT_OFFSET;
     match kind {
         OBJECT | LAZY => {
             // The class word is the entity's own and goes through the

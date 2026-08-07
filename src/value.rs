@@ -131,6 +131,32 @@ impl Value {
         (meta >> 8) as u8 & VALUE_REFCOUNTED != 0
     }
 
+    /// The Box as the two machine words a slot holds it in: payload first,
+    /// then `tag | flags << 8` with the reserved bytes above them. This is
+    /// the form the store barrier publishes and every walker reads back,
+    /// and it lives here for the reason
+    /// [`refcounted_in_meta_word`](Self::refcounted_in_meta_word) does —
+    /// the arithmetic is this type's layout contract, and a copy of it in
+    /// another module cannot be told when the contract moves.
+    #[inline]
+    pub(crate) fn into_words(self) -> [u64; 2] {
+        // `repr(C)`, sixteen bytes, every field a plain integer: the pair
+        // is the same bits under another name.
+        unsafe { core::mem::transmute::<Value, [u64; 2]>(self) }
+    }
+
+    /// The same Box with its reserved bytes cleared.
+    ///
+    /// A container that keeps state of its own in those bytes — the array
+    /// table keeps an entry's chain link there — hands the Box out through
+    /// this, so the link never travels in a copy and lands in another
+    /// container's entry (`array/entry.rs`).
+    #[inline]
+    pub(crate) fn without_reserved(mut self) -> Self {
+        self._reserved = [0; 6];
+        self
+    }
+
     /// Uninitialized property slot? Generated code tests this on a
     /// tracked property read and throws `Error` when set; `isset()`
     /// reads it inverted.

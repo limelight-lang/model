@@ -624,14 +624,32 @@ pointer into a proven `array<int>`. Then the 2 → 3 migration, walking
 the vector in order and appending each element under its integer key, so
 insertion order survives by construction.
 
-**The numbers, and every one of them is unmeasured.** The 40-byte entry
-against a 32-byte one, which costs the inline full hash serving two
-masters — the equality pre-check that avoids touching the string, and
-the index rebuild that reads no strings at all. The string-key check's
-reversal threshold, the compaction threshold borrowed from Zend at ~3 %
-rather than measured, and the two flood constants. None of these can be
-settled on this box: `dev/BENCHMARKS.md` puts its noise floor at 1.5–3 %,
-and every effect above is smaller than that.
+**The entry is 32 bytes and the inline hash survived.** Settled
+2026-08-07, by reasoning rather than by the clock, which is why it could
+be settled here at all. The eight bytes came from the `next` field, not
+from the hash: the collision link moved into the element Box's reserved
+bytes at +28, `meta` went with it, and an entry is now `hash_or_key`,
+`key` and the element. Per element of capacity that is 40 bytes against
+`zend_array` 7.3+'s 40 — parity, where it had been 48.
+
+What the move costs is not memory but a rule, and the rule is enforced
+rather than remembered: the element field is private, so no caller can
+assign a whole Box over the link; every write goes through
+`Entry::store_element` or `Entry::store_link`, which compose tag, flags
+and link into one relaxed atomic store matching the eight-byte relaxed
+load the collector performs; and every read hands the Box out through
+`Value::without_reserved`. Two rejected shapes are worth keeping: the
+link in the *element's* reserved bytes with a narrowed store barrier
+(mixed-width atomics against the collector's load, and it breaks on
+objects before arrays), and the entry as two `Value`s with the link in
+the key half (the key's tag has to be read by the collector, so the link
+would share a word with it again). `dev/DECISIONS.md`, 2026-08-07.
+
+**The numbers still unmeasured.** The string-key check's reversal
+threshold, the compaction threshold borrowed from Zend at ~3 % rather
+than measured, and the two flood constants. None of these can be settled
+on this box: `dev/BENCHMARKS.md` puts its noise floor at 1.5–3 %, and
+every effect above is smaller than that.
 
 **What had to come first is done** (`a2e1318`): the `RcHeader` rule of
 2026-08-07 (`dev/DECISIONS.md`) took `category` out of `Table`, so the

@@ -104,9 +104,14 @@ versions live in `docs/history/`, marked at the top.
 - Arrays: `src/array/` — storage strategy 3 of `rfc/model/arrays.md`, the
   ordered hash designed in `rfc/model/arrays-hashtable.md`. One storage
   allocation holds `u32` index slots followed by a dense insertion-ordered
-  array of 40-byte entries (`entry.rs`); the collision link is an explicit
-  `next` index rather than state threaded through the element, which the
-  store barrier would sever by writing all sixteen bytes of a value.
+  array of 32-byte entries (`entry.rs`): `hash_or_key`, `key`, and the
+  element Box, whose reserved bytes carry the collision link as a `u32` at
+  +28. That link is the reason the element field is private and every
+  write to it goes through `Entry::store_element` / `store_link`, which
+  compose tag, flags and link into one relaxed atomic store — the width
+  the collector's load uses — while `Entry::value` clears the bytes on the
+  way out so a link never travels in a copy (`dev/DECISIONS.md`,
+  2026-08-07).
   `table.rs` is the core — lookup, insert, remove, growth by compaction or
   doubling, the flood backstop that escalates a table once to a keyed hash
   over the key bytes, and element references, which are `ReferenceBox`es

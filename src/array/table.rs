@@ -523,10 +523,14 @@ impl Table {
         unsafe { &*self.entries().add(i) }
     }
 
+    /// A raw pointer to the entry at `i`, which is what every write to a
+    /// published entry goes through: the element and the key word are
+    /// stored atomically ([`Entry::store_element`]), and an atomic store
+    /// needs a pointer rather than a reference to reach the bytes.
     #[inline]
-    fn entry_mut(&mut self, i: usize) -> &mut Entry {
+    fn entry_ptr(&self, i: usize) -> *mut Entry {
         debug_assert!(i < self.used());
-        unsafe { &mut *self.entries().add(i) }
+        unsafe { self.entries().add(i) }
     }
 
     /// The value an index slot is derived from. **This is not what the
@@ -584,7 +588,14 @@ impl Table {
     }
 
     /// The value under `key`, or `None`.
-    pub fn get(&self, key: Key) -> Option<&Value> {
+    ///
+    /// **A copy, not a reference into the entry.** An entry keeps its
+    /// chain link inside the element's reserved bytes, so the Box has to
+    /// be handed out through `Entry::value`, which clears them
+    /// (`array/entry.rs`). The copy also means a caller holds no borrow of
+    /// the table, so a value read before a `remove` names an entity the
+    /// caller must have its own reference to.
+    pub fn get(&self, key: Key) -> Option<Value> {
         if self.storage().is_null() {
             return None;
         }
@@ -593,9 +604,9 @@ impl Table {
         while i != NONE {
             let e = self.entry(i as usize);
             if Self::entry_matches(e, key) {
-                return Some(&e.value);
+                return Some(e.value());
             }
-            i = e.next;
+            i = e.link();
         }
         None
     }
@@ -644,8 +655,12 @@ impl Table {
             while i != NONE {
                 let matched = Self::entry_matches(self.entry(i as usize), key);
                 if matched {
-                    let e = self.entry_mut(i as usize);
-                    let old = std::mem::replace(&mut e.value, value);
+                    // The element is published atomically and the chain
+                    // link it carries is kept, which is what
+                    // `Entry::store_element` exists for: the collector may
+                    // be reading this very word.
+                    let old = self.entry(i as usize).value();
+                    unsafe { Entry::store_element(self.entry_ptr(i as usize), value) };
                     return Some((false, Some(old)));
                 }
                 chain_len += 1;
@@ -653,7 +668,7 @@ impl Table {
                 if !e.is_int_key() && e.hash_or_key == stored_hash {
                     equal_hashes += 1;
                 }
-                i = e.next;
+                i = e.link();
             }
         }
         // Fires on insertion only: this path already holds exclusive
@@ -677,7 +692,7 @@ impl Table {
         // concurrent walker reads `used` to bound its stride, so a count
         // published first offers it an entry nobody has written yet. That
         // is also why this goes through the raw entry pointer rather than
-        // `entry_mut`, which asserts the index is already inside the count.
+        // `entry_ptr`, which asserts the index is already inside the count.
         unsafe {
             let e = &mut *self.entries().add(k);
             match key {
@@ -688,9 +703,7 @@ impl Table {
                 // here would make the key unfindable by its own hash.
                 Key::Str(s) => e.set_string_key(s, stored_hash),
             }
-            e.meta = 0;
-            e.value = value;
-            e.next = head;
+            Entry::store_element_and_link(&raw mut *e, value, head);
         }
         self.set_used(k + 1);
         unsafe { *self.slots().add(slot) = k as u32 };
@@ -711,17 +724,24 @@ impl Table {
         let mut prev = NONE;
         while i != NONE {
             let matched = Self::entry_matches(self.entry(i as usize), key);
-            let next = self.entry(i as usize).next;
+            let next = self.entry(i as usize).link();
             if matched {
                 if prev == NONE {
                     unsafe { *self.slots().add(slot) = next };
                 } else {
-                    self.entry_mut(prev as usize).next = next;
+                    unsafe { Entry::store_link(self.entry_ptr(prev as usize), next) };
                 }
-                let e = self.entry_mut(i as usize);
-                let old = std::mem::replace(&mut e.value, Value::undef());
-                e.make_hole();
-                e.next = NONE;
+                // The element goes first and the marker second: an
+                // `undef` element carries no edge, so a collector that
+                // reads between the two sees a live key over a value it
+                // will not follow, which is a missed edge and not one that
+                // never existed.
+                let at = self.entry_ptr(i as usize);
+                let old = self.entry(i as usize).value();
+                unsafe {
+                    Entry::store_element_and_link(at, Value::undef(), NONE);
+                    Entry::make_hole(at);
+                }
                 self.live -= 1;
                 self.holes += 1;
                 return Some(old);
@@ -793,7 +813,7 @@ impl Table {
             // is a sentinel, not a string, so reading bytes through it in
             // strong mode would dereference 1.
             if self.entry(k).is_hole() {
-                self.entry_mut(k).next = NONE;
+                unsafe { Entry::store_link(self.entry_ptr(k), NONE) };
                 continue;
             }
             // The slot comes from the *mixed* integer or the string hash,
@@ -801,7 +821,11 @@ impl Table {
             let sh = self.entry_slot_hash(self.entry(k));
             let slot = sh as usize & self.mask;
             let head = unsafe { *self.slots().add(slot) };
-            self.entry_mut(k).next = head;
+            // A relaxed atomic store, not a plain one: the link shares its
+            // word with the element's tag and flags, which the collector
+            // reads while this runs. The composition keeps those bytes, so
+            // no version bracket is needed here either.
+            unsafe { Entry::store_link(self.entry_ptr(k), head) };
             unsafe { *self.slots().add(slot) = k as u32 };
         }
     }
@@ -889,14 +913,21 @@ impl Table {
     /// reading it would act on.
     pub(crate) fn sever_entries(&mut self, displaced: &mut Vec<*mut RcHeader>) {
         for i in 0..self.used() {
-            let e = self.entry_mut(i);
+            let e = self.entry(i);
             if e.is_hole() {
                 continue;
             }
-            let value = e.value;
+            let value = e.value();
             let key = e.string_key();
-            unsafe { crate::memory::barrier::write_value_slot(&raw mut e.value, Value::null()) };
-            e.make_hole();
+            // The table's own store rather than the barrier's: a barrier
+            // write publishes a whole Box, zeroed reserved bytes and all,
+            // which would set this entry's chain link to 0 — a legal entry
+            // index rather than an end of chain (`array/entry.rs`).
+            let at = self.entry_ptr(i);
+            unsafe {
+                Entry::store_element(at, Value::null());
+                Entry::make_hole(at);
+            }
             if value.is_refcounted() {
                 displaced.push(value.entity_ptr());
             }
@@ -950,7 +981,7 @@ impl Table {
         let mut i = unsafe { *self.slots().add(sh as usize & self.mask) };
         while i != NONE {
             if Self::entry_matches(self.entry(i as usize), key) {
-                let current = self.entry(i as usize).value;
+                let current = self.entry(i as usize).value();
                 if current.tag() == crate::value::Tag::Reference {
                     return current.entity_ptr() as *mut crate::reference::LLReference;
                 }
@@ -961,13 +992,18 @@ impl Table {
                     return std::ptr::null_mut();
                 }
                 unsafe { (*boxed).value = current };
-                self.entry_mut(i as usize).value = Value::entity(
-                    crate::value::Tag::Reference,
-                    boxed as *mut crate::refcount::RcHeader,
-                );
+                unsafe {
+                    Entry::store_element(
+                        self.entry_ptr(i as usize),
+                        Value::entity(
+                            crate::value::Tag::Reference,
+                            boxed as *mut crate::refcount::RcHeader,
+                        ),
+                    )
+                };
                 return boxed;
             }
-            i = self.entry(i as usize).next;
+            i = self.entry(i as usize).link();
         }
         std::ptr::null_mut()
     }
@@ -1045,23 +1081,31 @@ impl Table {
     /// that by construction — and the hole marker lives in `key`, outside
     /// the sixteen bytes the store barrier writes, precisely so that an
     /// ordinary value store cannot destroy it.
-    pub fn for_each_value(&self, mut f: impl FnMut(&Value)) {
+    pub fn for_each_value(&self, mut f: impl FnMut(Value)) {
         for k in 0..self.used() {
             let e = self.entry(k);
             if !e.is_hole() {
-                f(&e.value);
+                f(e.value());
             }
         }
     }
 
-    /// The same, with the elements mutable — what a walker that rewrites
-    /// references needs.
-    pub fn for_each_value_mut(&mut self, mut f: impl FnMut(&mut Value)) {
+    /// The same, for a walker that rewrites elements: what `f` returns is
+    /// published as the new element.
+    ///
+    /// **By value in both directions.** A `&mut Value` into an entry would
+    /// let a caller store a whole Box over the chain link the element's
+    /// reserved bytes carry, and zero is a legal entry index rather than
+    /// an end of chain, so the corruption would be a self-referencing
+    /// entry (`array/entry.rs`). Returning the new Box instead routes
+    /// every write through the one store that keeps the link.
+    pub fn for_each_value_mut(&mut self, mut f: impl FnMut(Value) -> Value) {
         for k in 0..self.used() {
             if self.entry(k).is_hole() {
                 continue;
             }
-            f(&mut self.entry_mut(k).value);
+            let replaced = f(self.entry(k).value());
+            unsafe { Entry::store_element(self.entry_ptr(k), replaced) };
         }
     }
 
@@ -1363,7 +1407,7 @@ mod tests {
             let mut i = unsafe { *m.slots().add(slot) };
             while i != NONE {
                 n += 1;
-                i = m.entry(i as usize).next;
+                i = m.entry(i as usize).link();
             }
             longest = longest.max(n);
         }
@@ -1589,7 +1633,7 @@ mod tests {
             let mut i = unsafe { *m.slots().add(slot) };
             while i != NONE {
                 n += 1;
-                i = m.entry(i as usize).next;
+                i = m.entry(i as usize).link();
             }
             longest = longest.max(n);
         }
@@ -1721,12 +1765,22 @@ mod tests {
             m.insert(Key::Int(i), Value::int(i));
         }
         m.remove(Key::Int(3));
-        // Simulate a barrier writing the full Value into the dead slot.
-        m.for_each_value_mut(|_| {});
-        unsafe {
-            let e = m.entries().add(3);
-            (*e).value = Value::int(0xDEAD);
-        }
+        // The old shape of this wrote a whole `Value` into the slot by
+        // hand to stand in for a barrier. The element field is private
+        // now and that write does not compile, so what is left to check is
+        // the store the table really performs — and the link it has to
+        // carry through, which the earlier shape could not see at all.
+        let link_before = m.entry(3).link();
+        unsafe { Entry::store_element(m.entries().add(3), Value::int(0xDEAD)) };
+        assert!(
+            m.entry(3).is_hole(),
+            "an element store cleared the hole marker"
+        );
+        assert_eq!(
+            m.entry(3).link(),
+            link_before,
+            "an element store moved the chain link"
+        );
         let mut seen = Vec::new();
         m.for_each_value(|v| seen.push(v.as_int()));
         assert!(
@@ -1769,7 +1823,7 @@ mod tests {
         let bytes = super::storage_bytes(m.nslots(), m.cap).unwrap();
         for k in 0..m.used() {
             let e = m.entry(k);
-            for word in [e.hash_or_key, e.key as u64, e.value.as_int() as u64] {
+            for word in [e.hash_or_key, e.key as u64, e.value().as_int() as u64] {
                 let w = word as usize;
                 assert!(
                     w < base || w >= base + bytes,

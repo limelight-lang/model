@@ -8,6 +8,64 @@ never edited or deleted.
 
 ---
 
+## 2026-08-07 — an entry's collision link lives inside the element Box
+
+**Decided:** the array table's entry is 32 bytes — `hash_or_key`, `key`,
+element — and the collision link is a `u32` inside the element Box's
+reserved bytes, at entry +28. The `next` and `meta` fields are gone. Per
+element of capacity the table now costs 40 bytes against the 48 it cost
+before, which is what `zend_array` has cost since PHP 7.3.
+
+**Why:** the eight bytes had to come from somewhere no concurrent reader
+looks. `hash_or_key` could not go — the flood backstop counts equal full
+hashes during the insert's own chain walk, and without an inline copy
+every step of an attacker-chosen chain would dereference a cold string.
+The element's reserved bytes are read by the collector only as part of
+the eight-byte relaxed load it makes for the refcounted bit, and it
+masks them away; so the bytes are free as long as **every** write to that
+word is one relaxed atomic store of the same width.
+
+That is the whole cost, and it is enforced rather than remembered:
+`Entry`'s element field is private, so no caller can assign a whole Box
+over the link; `Entry::store_element`, `store_element_and_link` and
+`store_link` compose tag, flags and link and publish the word once; and
+`Entry::value` hands the Box out through `Value::without_reserved`, so a
+link cannot travel in a copy into another entry. `Table::entry_mut` is
+gone with them — nothing hands out a `&mut Entry` any more.
+
+Zend does the same thing with `zval.u2.next` and keeps it honest with a
+rule its macros obey. The rule here has to be stronger because the
+collector reads that word while a mutator writes it.
+
+**Considered and rejected, both attacked before being dropped:**
+
+- The link in the element's reserved bytes with the **store barrier**
+  narrowed so it stops writing them. The barrier serves every Box slot,
+  so the narrowing would reach object property slots, where the collector
+  loads the second word as eight bytes (`walk.rs:217`, `walk.rs:257`,
+  `object.rs:410`, `object.rs:443`). A four-byte atomic store against an
+  eight-byte atomic load on the same bytes is undefined, and it breaks on
+  `$o->p = 5` before any array is involved.
+- The entry as **two `Value`s**, key and element, with the link in the
+  key half's reserved bytes. A key Box's payload does not classify it —
+  an integer key is an arbitrary `u64` — so the collector has to read the
+  key's tag, which puts the link back in a word it reads. And a `Map`'s
+  object key must be published through the category barrier, whose only
+  Value-slot store writes all sixteen bytes and would zero the link;
+  zero is a legal entry index, so the chain would fold onto entry 0
+  rather than end.
+
+**Cost:** `Table::get` returns a `Value` rather than a `&Value`, so a
+caller holds no borrow of the table and owes itself a reference to
+anything it keeps; `for_each_value_mut` takes and returns a `Value`
+instead of handing out `&mut Value`. Two bytes of per-entry reserve
+remain, at entry +26, inside the same atomic word. The layout test that
+pinned "a full Value write cannot reach the key or the link" lost its
+subject — the link is inside the Value now — and was rewritten to check
+the store the table performs, which the old shape could not see.
+
+---
+
 ## 2026-08-07 — the `RcHeader` is the only authority on which memory an entity lives in
 
 Edmond's ruling, and it is a rule rather than a repair: **an entity's `RcHeader`

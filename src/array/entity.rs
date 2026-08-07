@@ -229,7 +229,7 @@ unsafe fn fill_from(
         // so the barrier can hand back a different entity: an arena COW
         // child crossing into a longer-lived copy is replaced by a copy of
         // its own.
-        let mut v = e.value;
+        let mut v = e.value();
         if v.is_refcounted() {
             let child = v.entity_ptr();
             if unsafe { is_nested_arena_array(child, category) } {
@@ -662,7 +662,7 @@ mod tests {
             MemoryCategory::GcHeap,
             "the copy did not land in the heap"
         );
-        let copied_element = unsafe { (*stored).table.entry(0).value.entity_ptr() };
+        let copied_element = unsafe { (*stored).table.entry(0).value().entity_ptr() };
         assert_ne!(
             copied_element, element as *mut RcHeader,
             "the copy still holds the arena string"
