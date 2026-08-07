@@ -519,12 +519,21 @@ Items 15–17 are closed; 18–20 are not.
     with no entropy added, so an attacker who knows the initial salt knows
     the whole orbit offline and can make every insert reseed: O(n²),
     against a document that promises O(n) twice.
-19. **A COW copy silently de-escalates an attacked table.** `separate`
-    carries the salt forward but builds through `ll_array_new`, so
-    `Table::empty` clears `strong` and the entries are re-inserted through
-    the weak path. `$b = $a` on an escalated `$a` re-installs the
-    attacker's whole collision set under the unescalated hash, and copying
-    an array is the ordinary thing PHP does.
+19. ~~**A COW copy silently de-escalates an attacked table.**~~ — closed.
+    `separate` takes the source's flood state before its first insert
+    (`Table::adopt_flood_state`), since the mode decides how a key is
+    hashed and a table that adopts it afterwards has already indexed its
+    entries the other way.
+
+    **The entry overstated the damage and the test says why.** While the
+    colliding set is still in the table the copy re-escalates on its own —
+    the equal-hash trigger fires again on the ninth collider it
+    re-inserts — so the weak window is bounded by the trigger rather than
+    open for the life of the copy. What makes the loss permanent is
+    `unset`: with the set thinned below the threshold nothing re-fires,
+    and the copy is back to the hash the attacker already knows, ready
+    for the same flood. The regression is built that way and was seen
+    failing on it.
 20. ~~**The candidate gate diverges from the RFC, and costs one
     constant.**~~ — closed; see the ordered list above and
     `dev/DECISIONS.md`, 2026-08-07. One correction to what the entry

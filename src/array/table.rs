@@ -95,7 +95,7 @@ fn strong_hash(bytes: &[u8], key: u64) -> u64 {
 /// keys, so an honest table never reaches it at any size; probe length
 /// would have to grow with the table and could not be a constant. It is
 /// also unaffected by deletion, which a running maximum would not be.
-const EQUAL_HASH_LIMIT: u32 = 8;
+pub(crate) const EQUAL_HASH_LIMIT: u32 = 8;
 
 /// The second trigger: chain length. This catches families whose hashes
 /// differ but whose slots coincide, including an integer flood. Generous,
@@ -198,6 +198,10 @@ const TABLE_STRONG: u8 = 1 << 0;
 /// instead of rebuilding again.
 const TABLE_RESEEDED: u8 = 1 << 1;
 
+/// What a copy of an attacked table inherits — everything the flood
+/// backstop has decided, and nothing else in the byte.
+const TABLE_FLOOD_STATE: u8 = TABLE_STRONG | TABLE_RESEEDED;
+
 impl Table {
     /// An empty table with no storage. The first insert allocates.
     pub const fn empty(category: MemoryCategory, salt: u64) -> Self {
@@ -228,6 +232,21 @@ impl Table {
     #[inline]
     pub fn is_strong(&self) -> bool {
         self.flags & TABLE_STRONG != 0
+    }
+
+    /// Take `source`'s flood state, which is what a copy of an attacked
+    /// table owes: an escalated table copied through a fresh
+    /// [`Table::empty`] would otherwise re-insert the attacker's whole
+    /// collision set under the hash it escalated away from, and copying
+    /// an array is the ordinary thing the language does.
+    ///
+    /// **Call it before the first insert.** The mode decides how a key is
+    /// hashed, so a table that adopts it afterwards has already indexed
+    /// its entries the other way.
+    #[inline]
+    pub(crate) fn adopt_flood_state(&mut self, source: &Table) {
+        debug_assert_eq!(self.used(), 0, "the mode decides how a key is indexed");
+        self.flags = (self.flags & !TABLE_FLOOD_STATE) | (source.flags & TABLE_FLOOD_STATE);
     }
 
     #[inline]

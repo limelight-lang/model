@@ -110,7 +110,9 @@ impl LLArray {
 /// calls `escape_lose`, so a copy that recorded no gain would spend a
 /// hold-count belonging to a real holder.
 ///
-/// Insertion order survives, because the copy replays `src` in order.
+/// Insertion order survives, because the copy replays `src` in order,
+/// and so does the flood backstop's state: a copy of an attacked table
+/// is attacked.
 ///
 /// **Null on refusal**, with nothing published: the copy is private until
 /// it is returned, so a failure part-way releases what it has retained
@@ -133,6 +135,10 @@ pub unsafe fn separate(
     if dst.is_null() {
         return std::ptr::null_mut();
     }
+    // Before the first insert, because the flood state decides how a key
+    // is hashed: a copy that starts weak re-installs an attacker's whole
+    // collision set under the hash the source escalated away from.
+    unsafe { (*dst).table.adopt_flood_state(&(*src).table) };
     let n = unsafe { (*src).table.used() };
     for i in 0..n {
         let e = unsafe { (*src).table.entry(i) };
@@ -715,6 +721,86 @@ mod tests {
                 arena.free(first.0, first.1);
                 arena.free(second.0, second.1);
             });
+        }
+    }
+
+    /// A copy of an attacked table is attacked. The mode is one-way on
+    /// the source and `$b = $a` is the ordinary thing the language does,
+    /// so a copy that starts weak hands the attacker an unescalated table
+    /// whenever they want one.
+    ///
+    /// **The colliding set is removed before the copy, and that is the
+    /// point.** While the whole set is still in the table the copy
+    /// re-escalates on its own — the equal-hash trigger fires again on
+    /// the ninth collider it re-inserts — so a copy made then proves
+    /// nothing about carrying the state. `unset` is what makes the loss
+    /// permanent: below the trigger's threshold nothing re-fires, and the
+    /// table is back to the hash the attacker already knows, ready for
+    /// the same flood again.
+    ///
+    /// Seen failing on `is_strong` for the copy.
+    #[test]
+    fn a_copy_of_an_escalated_table_is_escalated() {
+        use crate::array::table::EQUAL_HASH_LIMIT;
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = crate::memory::arena::Arena::new();
+        let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+
+        let src = arr();
+        let colliders: Vec<*mut LLString> = (0..EQUAL_HASH_LIMIT as usize + 4)
+            .map(|i| {
+                let s = mk(format!("collider-{i}").as_bytes());
+                // Forged rather than found: constructing a set of equal
+                // full hashes needs a break of the hash, and the code
+                // path the attack reaches is this one.
+                unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
+                unsafe {
+                    crate::refcount::ll_retain(s as *mut RcHeader);
+                    (*src).table.insert(Key::Str(s), Value::int(i as i64));
+                }
+                s
+            })
+            .collect();
+        assert!(
+            unsafe { (*src).table.is_strong() },
+            "the forged set did not escalate the source, so this proves nothing"
+        );
+
+        // Leave one collider behind: far below the trigger, so nothing in
+        // the copy can re-fire it.
+        for s in &colliders[1..] {
+            assert!(unsafe { (*src).table.remove(Key::Str(*s)) }.is_some());
+            unsafe {
+                // `remove` hands back the value and leaves the key's
+                // reference to the caller, so two go here: the table's
+                // and this test's own creation reference.
+                assert!(!ll_release(*s as *mut RcHeader), "the table's");
+                assert!(ll_release(*s as *mut RcHeader), "and the test's");
+                crate::object::ll_entity_die(*s as *mut RcHeader);
+            }
+        }
+
+        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        assert!(!copy.is_null());
+        assert!(
+            unsafe { (*copy).table.is_strong() },
+            "the copy came back to the hash the attacker already knows"
+        );
+        assert_eq!(
+            unsafe { (*copy).table.get(Key::Str(colliders[0])) }
+                .unwrap()
+                .as_int(),
+            0,
+            "a key was lost by the copy's own hashing"
+        );
+
+        unsafe {
+            assert!(ll_release(copy as *mut RcHeader));
+            crate::object::ll_entity_die(copy as *mut RcHeader);
+            assert!(ll_release(src as *mut RcHeader));
+            crate::object::ll_entity_die(src as *mut RcHeader);
+            assert!(ll_release(colliders[0] as *mut RcHeader));
+            crate::object::ll_entity_die(colliders[0] as *mut RcHeader);
         }
     }
 
