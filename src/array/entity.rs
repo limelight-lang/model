@@ -271,7 +271,7 @@ unsafe fn fill_from(
                 unsafe { crate::memory::barrier::store_category_barrier(arena, category, child) };
             if stored.is_null() {
                 unsafe { crate::refcount::ll_release(child) };
-                unsafe { release_value(&v) };
+                unsafe { give_value_back(category, &v) };
                 return false;
             }
             if stored != child {
@@ -288,11 +288,12 @@ unsafe fn fill_from(
         }
         .is_none()
         {
-            // Out of memory part-way. Give back what this element took;
-            // the source is untouched.
-            unsafe { release_value(&v) };
+            // Out of memory part-way. Give back what this element took —
+            // through the barrier, key and value alike; the source is
+            // untouched.
+            unsafe { give_value_back(category, &v) };
             if let Key::Str(k) = published_key {
-                unsafe { crate::refcount::ll_release(k as *mut RcHeader) };
+                unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
             }
             return false;
         }
@@ -428,10 +429,17 @@ impl WorkList {
     }
 }
 
+/// Give a value's published reference back on a refusal path — through
+/// the barrier's `drop_ref` with the destination's category, never a
+/// bare release. The publication may have logged the release (a heap
+/// child entering an arena destination) or counted an escape (a non-COW
+/// arena child entering a longer-lived one), and each of those is
+/// `drop_ref`'s to settle: a bare release double-frees the first at the
+/// reset and leaves the second counted forever.
 #[inline]
-unsafe fn release_value(v: &Value) {
+unsafe fn give_value_back(category: MemoryCategory, v: &Value) {
     if v.is_refcounted() {
-        unsafe { crate::refcount::ll_release(v.entity_ptr()) };
+        unsafe { crate::memory::barrier::drop_ref(category, v.entity_ptr()) };
     }
 }
 
@@ -1307,6 +1315,65 @@ mod tests {
             assert!(ll_release(b as *mut RcHeader));
             crate::object::ll_entity_die(b as *mut RcHeader);
         }
+    }
+
+    /// A refusal mid-copy gives a published child back through the
+    /// barrier, and the difference from a bare release is an escape
+    /// hold-count: the copy's barrier counted the non-COW arena child as
+    /// escaping into a heap destination, so the giveback must
+    /// `escape_lose` it — a bare `ll_release` no-ops on an arena entity
+    /// and leaves the count stuck, and the reset then treats a child
+    /// nobody holds as an escapee. Seen failing on the escapee flag.
+    #[test]
+    fn a_refused_heap_copy_gives_an_escaped_child_back_through_the_barrier() {
+        use crate::memory::block_pool::FORCE_OOM;
+        use std::sync::atomic::Ordering;
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = crate::memory::arena::Arena::new();
+        let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        crate::memory::context::set_current_context(context_ptr);
+
+        // Warm a heap entity block, so the forced refusal below lands on
+        // the copy's table storage and not on the copy's own slot.
+        let warm = arr();
+
+        let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+        let d = unsafe {
+            crate::string::ll_string_new_dynamic(context_ptr, MemoryCategory::RequestArena, b"p", 0)
+        };
+        assert!(!d.is_null());
+        unsafe {
+            crate::refcount::ll_retain(d as *mut RcHeader);
+            (*src).table.insert(
+                src as *const RcHeader,
+                Key::Int(0),
+                Value::entity(crate::value::Tag::String, d as *mut RcHeader),
+            );
+            crate::refcount::ll_retain(src as *mut RcHeader);
+        }
+
+        FORCE_OOM.store(true, Ordering::Relaxed);
+        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        FORCE_OOM.store(false, Ordering::Relaxed);
+        assert!(
+            copy.is_null(),
+            "the copy was meant to be refused and was not"
+        );
+
+        unsafe {
+            assert_eq!(
+                crate::refcount::header_flags(d as *const RcHeader) & crate::refcount::IS_ESCAPEE,
+                0,
+                "the refused copy left the child counted as an escapee"
+            );
+            crate::refcount::ll_release(src as *mut RcHeader);
+            assert!(ll_release(warm as *mut RcHeader));
+            crate::object::ll_entity_die(warm as *mut RcHeader);
+        }
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+        arena.reset(|_| {});
     }
 
     /// The ownership rule's cross-category half: in an arena table a
