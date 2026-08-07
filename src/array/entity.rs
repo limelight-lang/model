@@ -112,9 +112,22 @@ impl LLArray {
 /// it is returned, so a failure part-way releases what it has retained
 /// and leaves the source untouched.
 ///
-/// Recursion is still the machine stack's: nesting depth is
-/// attacker-shaped input on a store path, and the explicit work list that
-/// answers it is owed (`PLAN.md`, item 11).
+/// **Nesting is worked through a list, not the machine stack.** Depth
+/// here is attacker-shaped input on a store path — `$deep = [[[[…]]]]`
+/// in the arena, then one assignment into a heap slot — and a limit was
+/// rejected as the answer: it would have to refuse through a channel
+/// whose only meaning is "out of memory", PHP has no depth at which an
+/// assignment becomes invalid, and teardown of whatever the limit
+/// permitted is recursive anyway (`dev/DECISIONS.md`, `PLAN.md` item 11).
+/// So a nested arena array is copied empty, published, and its filling
+/// pushed onto [`WorkList`], which lives in a buffer-arena chunk.
+///
+/// **Termination needs no visited set.** The list is entered only by an
+/// arena COW child, and a cycle cannot close inside a pure-COW subgraph
+/// while count-equals-holders holds: every entity a real ring passes
+/// through is non-COW, and those are published by the barrier rather
+/// than entered. A debug build checks that claim rather than paying for
+/// it.
 ///
 /// # Safety
 /// `src` is a live array entity; `arena` the live mounted arena, which
@@ -124,15 +137,82 @@ pub unsafe fn separate(
     category: MemoryCategory,
     arena: *mut crate::memory::arena::Arena,
 ) -> *mut LLArray {
+    let dst = unsafe { new_empty_copy(src, category) };
+    if dst.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut pending = WorkList::new();
+    #[cfg(debug_assertions)]
+    let mut entered: Vec<*mut LLArray> = Vec::new();
+    let mut next = Some((src, dst));
+    while let Some((s, d)) = next {
+        #[cfg(debug_assertions)]
+        {
+            assert!(
+                !entered.contains(&s),
+                "a COW subgraph closed on itself: count-equals-holders is broken"
+            );
+            entered.push(s);
+        }
+        if !unsafe { fill_from(s, d, arena, &mut pending) } {
+            // Refused part-way. Releasing the root's children cascades
+            // into every copy this call published, nested ones included:
+            // each is held once, by the entry naming it.
+            unsafe { release_children(dst) };
+            unsafe { (*dst).table.dispose() };
+            pending.dispose();
+            return std::ptr::null_mut();
+        }
+        next = pending.pop();
+    }
+    pending.dispose();
+    dst
+}
+
+/// A destination array with the source's salt and flood state and no
+/// entries. Null when the allocation is refused.
+///
+/// The flood state goes in before the first insert, because it decides
+/// how a key is hashed: a copy that starts weak re-installs an
+/// attacker's whole collision set under the hash the source escalated
+/// away from.
+///
+/// # Safety
+/// `src` is a live array entity.
+unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LLArray {
     let salt = unsafe { (*src).table.salt() };
     let dst = unsafe { ll_array_new(category, salt) };
     if dst.is_null() {
         return std::ptr::null_mut();
     }
-    // Before the first insert, because the flood state decides how a key
-    // is hashed: a copy that starts weak re-installs an attacker's whole
-    // collision set under the hash the source escalated away from.
     unsafe { (*dst).table.adopt_flood_state(&(*src).table) };
+    dst
+}
+
+/// Copy `src`'s entries into the empty `dst`, publishing every counted
+/// child for it. False on refusal, with what this call took given back
+/// and `dst` left holding whatever it had published — the caller
+/// releases that through the root.
+///
+/// A nested arena array is not copied here: it is copied *empty*,
+/// published, and pushed onto `pending`. Everything else goes through
+/// the store barrier, whose copy arm is a leaf for every kind but this
+/// one.
+///
+/// The destination's category comes from `dst` rather than from the
+/// caller, because a nested copy's category is not the root's: it is
+/// `separation_category` of it, which the empty copy already carries.
+///
+/// # Safety
+/// `src` and `dst` are live arrays, `dst` empty; `arena` the live
+/// mounted arena.
+unsafe fn fill_from(
+    src: *mut LLArray,
+    dst: *mut LLArray,
+    arena: *mut crate::memory::arena::Arena,
+    pending: &mut WorkList,
+) -> bool {
+    let category = unsafe { (*dst).category() };
     let n = unsafe { (*src).table.used() };
     for i in 0..n {
         let e = unsafe { (*src).table.entry(i) };
@@ -152,20 +232,36 @@ pub unsafe fn separate(
         let mut v = e.value;
         if v.is_refcounted() {
             let child = v.entity_ptr();
-            unsafe { crate::refcount::ll_retain(child) };
-            let stored =
-                unsafe { crate::memory::barrier::store_category_barrier(arena, category, child) };
-            if stored.is_null() {
-                unsafe { crate::refcount::ll_release(child) };
-                unsafe { release_children(dst) };
-                unsafe { (*dst).table.dispose() };
-                return std::ptr::null_mut();
-            }
-            if stored != child {
-                // The barrier copied it. The copy arrives at +1 and is
-                // what the entry names; the retain above goes back.
-                unsafe { crate::refcount::ll_release(child) };
-                v = Value::entity(v.tag(), stored);
+            if unsafe { is_nested_arena_array(child, category) } {
+                let copy = unsafe {
+                    new_empty_copy(
+                        child as *mut LLArray,
+                        crate::refcount::separation_category(category),
+                    )
+                };
+                if copy.is_null() || !pending.push((child as *mut LLArray, copy)) {
+                    // The copy is held by nothing yet, so it goes back
+                    // here rather than through the root's cascade.
+                    unsafe { crate::refcount::ll_release(copy as *mut RcHeader) };
+                    unsafe { (*copy).table.dispose() };
+                    return false;
+                }
+                v = Value::entity(v.tag(), copy as *mut RcHeader);
+            } else {
+                unsafe { crate::refcount::ll_retain(child) };
+                let stored = unsafe {
+                    crate::memory::barrier::store_category_barrier(arena, category, child)
+                };
+                if stored.is_null() {
+                    unsafe { crate::refcount::ll_release(child) };
+                    return false;
+                }
+                if stored != child {
+                    // The barrier copied it. The copy arrives at +1 and is
+                    // what the entry names; the retain above goes back.
+                    unsafe { crate::refcount::ll_release(child) };
+                    v = Value::entity(v.tag(), stored);
+                }
             }
         }
         let published_key = if let Key::Str(k) = key {
@@ -176,9 +272,7 @@ pub unsafe fn separate(
             if stored.is_null() {
                 unsafe { crate::refcount::ll_release(child) };
                 unsafe { release_value(&v) };
-                unsafe { release_children(dst) };
-                unsafe { (*dst).table.dispose() };
-                return std::ptr::null_mut();
+                return false;
             }
             if stored != child {
                 unsafe { crate::refcount::ll_release(child) };
@@ -188,18 +282,144 @@ pub unsafe fn separate(
             key
         };
         if unsafe { (*dst).table.insert(published_key, v) }.is_none() {
-            // Out of memory part-way. Give back what this element took and
-            // release what the copy retained; the source is untouched.
+            // Out of memory part-way. Give back what this element took;
+            // the source is untouched.
             unsafe { release_value(&v) };
             if let Key::Str(k) = published_key {
                 unsafe { crate::refcount::ll_release(k as *mut RcHeader) };
             }
-            unsafe { release_children(dst) };
-            unsafe { (*dst).table.dispose() };
-            return std::ptr::null_mut();
+            return false;
         }
     }
-    dst
+    true
+}
+
+/// Whether publishing `child` into a slot of `category` would copy it
+/// **and** the copy would contain another copy — an arena COW array
+/// crossing into a longer-lived destination. That is the one child whose
+/// copying recurses, and the only one the work list exists for; the
+/// barrier's copy arm is a leaf for every other kind.
+///
+/// # Safety
+/// `child` is a live entity.
+#[inline]
+unsafe fn is_nested_arena_array(child: *mut RcHeader, category: MemoryCategory) -> bool {
+    if category == MemoryCategory::RequestArena {
+        return false;
+    }
+    let flags = unsafe { crate::refcount::header_flags(child) };
+    MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena
+        && flags & COW != 0
+        && (flags & crate::refcount::ENTITY_KIND_MASK) >> crate::refcount::ENTITY_KIND_SHIFT
+            == EntityKind::Array as u32
+}
+
+/// The arrays a deep copy still owes, as `(source, destination)` pairs.
+///
+/// **In a buffer-arena chunk**, which is the decision rather than an
+/// implementation detail. The machine stack is what this replaces. Arena
+/// bump memory is wrong because the list outlives nothing and would be
+/// held to the reset. The system allocator's `Vec` would abort the
+/// process when it cannot grow, and growth here is driven by the
+/// attacker's nesting depth, so a refusal has to be a value rather than
+/// an abort.
+///
+/// Empty until the first nested array, so an ordinary copy allocates
+/// nothing.
+struct WorkList {
+    items: *mut (*mut LLArray, *mut LLArray),
+    len: usize,
+    capacity: usize,
+    /// Bytes granted, which is what the free needs: the buffer arena's
+    /// free is size-carrying and a chunk holds no metadata.
+    granted: usize,
+}
+
+impl WorkList {
+    /// The pairs a first growth makes room for. Deep enough that
+    /// ordinary nesting never grows twice, small enough to be one
+    /// allocation.
+    const FIRST: usize = 8;
+
+    const fn new() -> Self {
+        WorkList {
+            items: std::ptr::null_mut(),
+            len: 0,
+            capacity: 0,
+            granted: 0,
+        }
+    }
+
+    /// False when the chunk could not grow, which the caller turns into
+    /// a refused copy.
+    fn push(&mut self, pair: (*mut LLArray, *mut LLArray)) -> bool {
+        if self.len == self.capacity && !self.grow() {
+            return false;
+        }
+        unsafe { self.items.add(self.len).write(pair) };
+        self.len += 1;
+        true
+    }
+
+    fn pop(&mut self) -> Option<(*mut LLArray, *mut LLArray)> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        Some(unsafe { self.items.add(self.len).read() })
+    }
+
+    fn grow(&mut self) -> bool {
+        let capacity = if self.capacity == 0 {
+            Self::FIRST
+        } else {
+            self.capacity * 2
+        };
+        let bytes = capacity * size_of::<(*mut LLArray, *mut LLArray)>();
+        let (fresh, granted) = unsafe {
+            crate::memory::routing::body_alloc(std::ptr::null_mut(), MemoryCategory::GcHeap, bytes)
+        };
+        if fresh.is_null() {
+            return false;
+        }
+        debug_assert_eq!(
+            fresh as usize % align_of::<(*mut LLArray, *mut LLArray)>(),
+            0,
+            "the buffer arena hands out 8-aligned chunks"
+        );
+        let fresh = fresh as *mut (*mut LLArray, *mut LLArray);
+        if self.len > 0 {
+            unsafe { std::ptr::copy_nonoverlapping(self.items, fresh, self.len) };
+        }
+        // The old chunk directly rather than through `dispose`, which
+        // empties the list: what is being replaced is the storage, not
+        // the contents.
+        unsafe {
+            crate::memory::routing::body_free(
+                MemoryCategory::GcHeap,
+                self.items as *mut u8,
+                self.granted,
+            )
+        };
+        self.items = fresh;
+        self.capacity = capacity;
+        self.granted = granted;
+        true
+    }
+
+    fn dispose(&mut self) {
+        unsafe {
+            crate::memory::routing::body_free(
+                MemoryCategory::GcHeap,
+                self.items as *mut u8,
+                self.granted,
+            )
+        };
+        self.items = std::ptr::null_mut();
+        self.capacity = 0;
+        self.granted = 0;
+        self.len = 0;
+    }
 }
 
 #[inline]
@@ -451,6 +671,101 @@ mod tests {
         }
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
+    }
+
+    /// Nesting is worked through the list, so the copy of a deep arena
+    /// array touches one stack frame per *call*, not one per level. The
+    /// depth is well past `WorkList::FIRST`, so the chunk grows more than
+    /// once on the way through.
+    ///
+    /// **What this does not prove** is a bound on the attacker's depth:
+    /// teardown of the copy is still recursive, one nested set of frames
+    /// per level, which is why the depth here is modest and why the
+    /// remaining half is named in `PLAN.md`.
+    #[test]
+    fn a_deep_arena_array_is_copied_out_through_the_work_list() {
+        const DEPTH: usize = 200;
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = crate::memory::arena::Arena::new();
+        let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        crate::memory::context::set_current_context(context_ptr);
+
+        // `[[[…]]]`, built from the inside out: each array holds the one
+        // below it under key 0, and the source stays entirely in the
+        // arena, where COW children are shared rather than copied.
+        let mut levels = Vec::with_capacity(DEPTH);
+        let innermost = unsafe { ll_array_new(MemoryCategory::RequestArena, 0x9E37_79B9) };
+        levels.push(innermost);
+        for _ in 1..DEPTH {
+            let outer = unsafe { ll_array_new(MemoryCategory::RequestArena, 0x9E37_79B9) };
+            let inner = *levels.last().unwrap();
+            unsafe {
+                crate::refcount::ll_retain(inner as *mut RcHeader);
+                (*outer).table.insert(
+                    Key::Int(0),
+                    Value::entity(crate::value::Tag::Array, inner as *mut RcHeader),
+                );
+            }
+            levels.push(outer);
+        }
+        let src = *levels.last().unwrap();
+
+        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        assert!(!copy.is_null(), "the deep copy was refused");
+
+        // Every level is a heap array of its own, and none of them is the
+        // arena array it was copied from.
+        let mut level = copy;
+        for depth in 0..DEPTH {
+            assert_eq!(
+                unsafe { (*level).rc.memory_category() },
+                MemoryCategory::GcHeap,
+                "level {depth} did not leave the arena"
+            );
+            assert_ne!(
+                level,
+                levels[DEPTH - 1 - depth],
+                "level {depth} is the source array itself"
+            );
+            let entry = unsafe { &(*level).table }.get(Key::Int(0));
+            if depth == DEPTH - 1 {
+                assert!(entry.is_none(), "the innermost copy holds something");
+                break;
+            }
+            level = entry
+                .expect("the copy is shallower than its source")
+                .entity_ptr() as *mut LLArray;
+        }
+
+        unsafe {
+            assert!(ll_release(copy as *mut RcHeader));
+            crate::object::ll_entity_die(copy as *mut RcHeader);
+        }
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+        arena.reset(|_| {});
+    }
+
+    /// The list grows past its first chunk and hands pairs back in
+    /// reverse, which is all the copy asks of it. Growth copies what was
+    /// already there — losing it would drop whole subtrees of a deep copy
+    /// without any assertion firing.
+    #[test]
+    fn the_work_list_grows_and_keeps_what_it_held() {
+        let _g = crate::memory::block_pool::test_guard();
+        let n = WorkList::FIRST * 3;
+        let mut list = WorkList::new();
+        let pair = |i: usize| (i as *mut LLArray, (i + 1000) as *mut LLArray);
+        for i in 0..n {
+            assert!(list.push(pair(i)), "the list refused at {i}");
+        }
+        assert!(list.capacity >= n);
+        for i in (0..n).rev() {
+            assert_eq!(list.pop(), Some(pair(i)));
+        }
+        assert_eq!(list.pop(), None);
+        list.dispose();
     }
 
     fn mk(bytes: &[u8]) -> *mut LLString {

@@ -8,6 +8,39 @@ never edited or deleted.
 
 ---
 
+## 2026-08-07 — the deep copy walks a list, and teardown is the half still on the stack
+
+The escape copy of a nested arena array no longer recurses. A nested arena COW
+array is copied *empty*, published into its parent's entry, and the filling of
+it pushed onto a work list; the copy loop drains that list. Every destination is
+therefore reachable from the root the moment it exists, which is what makes the
+refusal path a cascade: releasing the root's children frees every copy the call
+published, at whatever depth.
+
+The list lives in a buffer-arena chunk, per the ruling of 2026-08-06. The
+machine stack is what it replaces. Arena bump memory would hold the list to the
+reset for no reason. A `Vec` aborts the process when it cannot grow, and growth
+here is driven by the attacker's nesting depth, so the refusal has to be a value.
+An ordinary copy allocates nothing: the list is empty until the first nested
+array.
+
+Termination needs no visited set, and the reasoning is the ruling's: the list is
+entered only by an arena COW child, and a cycle cannot close inside a pure-COW
+subgraph while count-equals-holders holds, because every entity a real ring
+passes through is non-COW and is published by the barrier rather than entered. A
+debug build keeps the visited set and asserts it; a release build pays nothing.
+
+**What this does not fix, and it is the same attacker's input:** teardown of the
+copy is recursive — `array_die` releases a child, the child dies, its own
+`array_die` runs — one nested set of frames per level. The depth reaches the
+machine stack at the free instead of at the store. The plan carries it as the
+other half rather than as a separate finding.
+
+One defect found by the test rather than by reading: the list's growth freed the
+old chunk through `dispose`, which also empties the list, so a copy deeper than
+the first chunk silently lost every pair it had queued — whole subtrees copied
+empty with no assertion anywhere. Growth frees the chunk directly now.
+
 ## 2026-08-07 — category routing lives in one module, and the free still needs the category
 
 `memory/routing.rs` answers "which allocator serves this memory category" for

@@ -190,10 +190,16 @@ What to take next, in this order and for these reasons.
    crate-internal publish-without-a-slot-write the repair in item 12 needs,
    so it is built. `separation_category` moved to `refcount.rs` beside
    `cow_separation_needed`, being the COW rule rather than a string rule,
-   and item 14's escape-ledger asymmetry went with it. **Still owed:** the
-   recursion is the machine stack's, and the explicit work list the ruling
-   calls for is not built — nesting depth is attacker-shaped input on a
-   store path, and there is no compiler yet to shape it.
+   and item 14's escape-ledger asymmetry went with it. The work list the
+   ruling calls for is built: a nested arena array is copied empty,
+   published, and its filling pushed onto `WorkList`, which lives in a
+   buffer-arena chunk and refuses rather than aborting when it cannot
+   grow. Termination is asserted in debug builds instead of paid for.
+   **Still owed, and it is the same problem's other half:** teardown of
+   what the copy produces is recursive, one nested set of frames per
+   level, so the attacker's depth still reaches the machine stack — at
+   the free rather than at the store. Nothing else in the crate bounds
+   it, and the shape it wants is the drain's, not a limit's.
 2. ~~**Item 12's concurrent-walk arm together with the publish-first
    repair of the key slot.**~~ — closed. The arm is in `trace_cells`, so
    the array is inside the one tracing dispatch like every other kind, and
