@@ -735,12 +735,20 @@ mod tests {
     /// and `collect_white` frees it **while its own teardown is running** —
     /// a free of memory the caller is still inside, followed by a second
     /// free when teardown finishes. Publishing the slot first removes the
-    /// edge, so only the owner's genuine garbage is collected.
+    /// edge, so there is nothing to walk.
     ///
-    /// rc-trace only: the scenario fires `ll_gc_collect_cycles` from the
-    /// destructor, and an `rc-walk` build never feeds its candidate
-    /// buffer (the publish-before-teardown order it proves is
-    /// strategy-independent and holds there too).
+    /// **The slot is read from inside the destructor**, rather than
+    /// inferred from what a collection there reclaims. That inference was
+    /// the original instrument and it stopped measuring on 2026-08-07,
+    /// when a fire point inside a teardown became a no-op
+    /// (`dev/DECISIONS.md`): the count is zero now whatever the slot
+    /// holds. Reading the slot states the property directly and needs no
+    /// collection to expose it.
+    ///
+    /// rc-trace only, for the second half of the scenario: the
+    /// destructor's fire point must reclaim nothing, and an `rc-walk`
+    /// build has no candidate buffer to fire from. The
+    /// publish-before-teardown order itself is strategy-independent.
     #[cfg(not(feature = "rc-walk"))]
     #[test]
     fn a_collecting_destructor_cannot_see_the_slot_it_is_being_removed_from() {
@@ -750,12 +758,35 @@ mod tests {
         use crate::object::{Object, new_constructed};
         use crate::value::{Tag, Value};
 
-        static COLLECTED: std::sync::atomic::AtomicUsize =
+        /// The owner's `next` slot, read from inside the destructor of
+        /// the value being removed from it. Null until the destructor
+        /// runs — `Value::null()` is not a legal reading of an
+        /// unvisited slot, so the assertion below cannot pass by
+        /// accident of the destructor never firing.
+        static SEEN: std::sync::atomic::AtomicUsize =
             std::sync::atomic::AtomicUsize::new(usize::MAX);
+        /// The owner, so the destructor can find the slot it is being
+        /// removed from.
+        static OWNER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-        unsafe extern "C" fn collect_from_destructor(_obj: *mut Object) {
-            let n = unsafe { ll_gc_collect_cycles() };
-            COLLECTED.store(n, std::sync::atomic::Ordering::Relaxed);
+        unsafe extern "C" fn read_the_slot(_obj: *mut Object) {
+            let owner = OWNER.load(std::sync::atomic::Ordering::Relaxed) as *mut Object;
+            let held = unsafe { Object::prop_at(owner, 16).read() };
+            let entity = if held.is_refcounted() {
+                held.entity_ptr() as usize
+            } else {
+                0
+            };
+            SEEN.store(entity, std::sync::atomic::Ordering::Relaxed);
+            // The fire point a destructor may carry, which since
+            // 2026-08-07 collects nothing from inside a teardown
+            // (`dev/DECISIONS.md`). Kept here because this test exists
+            // for what such a collection would have walked.
+            assert_eq!(
+                unsafe { ll_gc_collect_cycles() },
+                0,
+                "a collection fired from a destructor reclaims nothing"
+            );
         }
 
         let _g = crate::memory::block_pool::test_guard();
@@ -764,7 +795,7 @@ mod tests {
             .prop("mine", true)
             .build();
         let dying_cls = ClassBuilder::new("C1Dying")
-            .destructor(collect_from_destructor as *const ())
+            .destructor(read_the_slot as *const ())
             .build();
 
         let mut arena = Arena::new();
@@ -775,6 +806,7 @@ mod tests {
             let old = new_constructed(&mut ctx, dying_cls, MemoryCategory::GcHeap);
             let next = Object::prop_at(owner, 16);
             let mine = Object::prop_at(owner, 32);
+            OWNER.store(owner as usize, std::sync::atomic::Ordering::Relaxed);
 
             // owner --mine--> owner: a self-cycle, so the owner is garbage
             // held up only by its own edge.
@@ -797,9 +829,9 @@ mod tests {
             assert!(!ll_release(old as *mut RcHeader));
 
             // Drop the owner's external reference too: now it is a
-            // buffered candidate root, and the collection the destructor
-            // starts will trace it — through `next`, if the old value is
-            // still visible there.
+            // buffered candidate root, so the owner is exactly the shape
+            // a collection would walk — through `next`, if the old value
+            // were still visible there.
             set_test_threshold(usize::MAX); // arm nothing, fire only from the destructor
             assert!(!ll_release(owner as *mut RcHeader));
 
@@ -813,13 +845,15 @@ mod tests {
                 Value::null(),
             );
 
-            // The collection reclaimed the owner's self-cycle and nothing
-            // else. Two means it also took `old`, whose teardown was on the
-            // stack at that moment.
+            // The store barrier publishes before it drops, so by the time
+            // `old`'s teardown runs the slot holds the new value. A
+            // reading of `old` here is the edge still standing into an
+            // object at refcount zero, which anything walking the owner —
+            // a collection, another destructor — would follow.
             assert_eq!(
-                COLLECTED.load(std::sync::atomic::Ordering::Relaxed),
-                1,
-                "the dying value must not be visible to a collection inside its own destructor"
+                SEEN.load(std::sync::atomic::Ordering::Relaxed),
+                0,
+                "the slot must be published before the displaced value's teardown"
             );
             set_test_threshold(crate::gc::CANDIDATE_THRESHOLD);
         }

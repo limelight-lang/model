@@ -8,6 +8,39 @@ never edited or deleted.
 
 ---
 
+## 2026-08-07 — a fire point inside a teardown collects nothing, and the runtime enforces it
+
+Edmond's ruling: the compiler may put `ll_gc_maybe_collect` inside a destructor
+body, and it must return there without collecting. The runtime enforces it
+rather than trusting the emitted code — `gc::TEARDOWN_DEPTH` counts teardowns in
+flight on the thread, the two doors bracket it (`ll_entity_die`,
+`ll_object_die`, which nest), and `collect_cycles` returns zero while it is
+non-zero, beside the `GC_ACTIVE` reentrancy test it already had. `COLLECT_PENDING`
+is untouched by the refusal, so the arming survives and the next poll at a clean
+point collects.
+
+**This supersedes the three-call shape recorded below on the same day**, which an
+independent review refuted: with the forget standing before `dispose` and again
+after it, an object was still a buffered root at refcount zero for the whole of
+phase 2, and phase 2 releases children whose destructors are user code. A
+collection fired there computes the dying object garbage — its slots are still
+populated, so `mark_gray` trial-deletes through them, and `scan` sees refcount
+zero — frees it, and the teardown that was interrupted frees it again. The only
+point that closes the window by ordering alone lies between phase 1 and phase 2,
+which is inside `dispose`, where the runtime has no call site. The guard closes
+it without one, so the forget stays at a single place per door: after `dispose`
+returns in `ll_object_die`, and before the kind switch in `ll_entity_die` for
+the kinds that run no `dispose`.
+
+Regression: `gc::tests::a_collection_fired_from_a_destructor_does_nothing_and_
+defers`, seen returning 2 without the guard — the two objects it would have
+freed being the two already dying.
+
+The rc-walk build has carried the same bracket since 2026-07-27 for a different
+obligation (no message pickup between a committing zero store and the end of a
+dispose), so both configurations now count teardown depth, each for its own
+strategy.
+
 ## 2026-08-07 — the candidate buffer admits arrays, and leaving it belongs to the runtime
 
 `rc-trace`'s candidate gate buffers objects and arrays:

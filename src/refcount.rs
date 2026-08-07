@@ -222,10 +222,21 @@ impl EntityKind {
 /// The kind bits that must be clear for an entity to enter the cycle
 /// collector's candidate buffer: `Object` is `000` and `Array` is `010`,
 /// so masking bit 1 away leaves exactly that pair standing and rejects
-/// every other kind. Those are the two kinds that carry counted slots a
-/// cycle can close through (`rfc/model/classes.md`, "the buffer holds
-/// objects and arrays"), and testing them costs the release path one
-/// masked compare rather than a switch.
+/// every other kind. The pair is the RFC's (`rfc/model/classes.md`, "the
+/// buffer holds objects and arrays"), and testing it costs the release
+/// path one masked compare rather than a switch.
+///
+/// **Three kinds carry counted slots and only two are admitted.** A
+/// ReferenceBox holds one Value and a Lazy proxy holds an object's
+/// slots — `ll_entity_die` sends `Lazy` through `ll_object_die` and
+/// `walk::trace_cells` strides it like an object — so a ring taking its
+/// last external release on either produces no candidate and leaks.
+/// `$a['x'] = &$a` is the ReferenceBox shape; the Lazy one waits for a
+/// factory, since nothing stamps that kind yet. Neither joins the pair
+/// in one compare under the present numbering: `011` needs a second
+/// test, and any mask admitting `110` admits `Box 100` with it. The
+/// renumbering that would have bought all four in one compare is
+/// rejected, with the reasoning, in `PLAN.md`, item 20.
 ///
 /// **rc-trace only**, like the buffer itself.
 pub const CANDIDATE_KIND_MASK: u32 = 0b101 << ENTITY_KIND_SHIFT;
@@ -577,12 +588,8 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
         // Kind and buffered bit fall into one masked compare, the same
         // single test the old `ENTITY_OBJECT` bit gave.
         //
-        // A ring that passes through neither kind stays out of reach: an
-        // array holding a ReferenceBox holding the array (`$a['x'] = &$a`)
-        // takes its last external release on the box, and admitting kind
-        // `011` beside `000` and `010` needs a second compare under the
-        // present numbering (PLAN.md, item 20, where the renumbering that
-        // would have bought it in one is rejected and why).
+        // What a ring through a ReferenceBox or a Lazy proxy costs, and
+        // why neither joins the compare: [`CANDIDATE_KIND_MASK`].
         if header.memory_category() == MemoryCategory::GcHeap
             && header.flags & (CANDIDATE_KIND_MASK | CYCLE_COLLECTOR_BUFFERED) == 0
         {

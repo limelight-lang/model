@@ -123,6 +123,33 @@ thread_local! {
     /// any fire point safe even if it is somehow reached from within
     /// teardown: a nested `collect_cycles` becomes a no-op.
     static GC_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Teardowns in flight on this thread, counted because teardown
+    /// cascades: a child release inside a dispose is another teardown.
+    /// While it is non-zero every fire point returns without collecting
+    /// (Edmond's ruling, 2026-08-07, `dev/DECISIONS.md`), which is what
+    /// makes the arm/fire split hold for user code as well as for the
+    /// runtime — a destructor may hold the compiler's poll, and the poll
+    /// must do nothing there. The rc-walk twin of this counter is
+    /// `epoch::TEARDOWN_DEPTH`, which brackets the same two doors for a
+    /// different reason (message pickup).
+    static TEARDOWN_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Enter a teardown: fire points stop collecting until the matching
+/// [`teardown_exit`]. Called by the two doors into teardown
+/// (`ll_entity_die`, `ll_object_die`), which nest.
+#[cfg_attr(feature = "rc-walk", allow(dead_code))]
+#[inline]
+pub(crate) fn teardown_enter() {
+    TEARDOWN_DEPTH.with(|d| d.set(d.get() + 1));
+}
+
+/// See [`teardown_enter`]. Nothing is fired on the way out: an armed
+/// collection waits for the next poll, where the graph is clean.
+#[cfg_attr(feature = "rc-walk", allow(dead_code))]
+#[inline]
+pub(crate) fn teardown_exit() {
+    TEARDOWN_DEPTH.with(|d| d.set(d.get() - 1));
 }
 
 const COLOR_BLACK: u32 = 0; // in use / definitely live (default)
@@ -359,10 +386,15 @@ pub(crate) fn dispose() {
 /// Bacon–Rajan synchronous cycle collection over the candidate buffer.
 /// Returns the number of entities reclaimed.
 ///
-/// Reentrancy-guarded: a call made while a collection is already running is
-/// a no-op, so a fire point reached from inside teardown (a `__destruct`
-/// that triggers collection, say) cannot recurse into the marker. Clears
-/// the pending flag it may have been armed with.
+/// Refuses in two states, returning zero and leaving the arming alone.
+/// A call made while a collection is already running would recurse into
+/// the marker. A call made while a teardown is in flight — a
+/// `__destruct` that fires one, or the compiler's poll standing inside
+/// a destructor body — would read a graph mid-teardown, where the dying
+/// entity is still a buffered root at refcount zero: the collection
+/// would judge it garbage and free it, and the teardown it interrupted
+/// would free it again. Neither state clears `COLLECT_PENDING`, so the
+/// next poll at a clean point collects.
 ///
 /// # Safety
 /// Must run at a **clean point** — where refcounts and physical edges agree
@@ -371,7 +403,7 @@ pub(crate) fn dispose() {
 /// (`rfc/model/gc/strategies.md`); `buffer_candidate` arms, this fires.
 /// Single mutator thread parked here by construction (`rc-trace`).
 pub unsafe fn collect_cycles() -> usize {
-    if GC_ACTIVE.with(|a| a.get()) {
+    if GC_ACTIVE.with(|a| a.get()) || TEARDOWN_DEPTH.with(|d| d.get()) != 0 {
         return 0;
     }
     // Reset the guard on every exit path, including a panicking assert in
@@ -1336,6 +1368,78 @@ mod tests {
         assert_eq!(reused, storage, "the array's table storage was never freed");
         with_buffer_arena(|arena| unsafe { arena.free(reused, granted) });
 
+        arena.reset(|_| {});
+    }
+
+    /// A fire point reached from inside a destructor collects nothing and
+    /// leaves the work for the next clean point. Edmond's ruling of
+    /// 2026-08-07 is that `ll_gc_maybe_collect` may stand inside a
+    /// destructor body and must return there, so the runtime enforces it
+    /// rather than trusting the compiler not to emit one.
+    ///
+    /// What it prevents: the object under teardown is at refcount zero
+    /// and still a buffered root while its `dispose` releases children,
+    /// so a collection running there computes it garbage and frees it,
+    /// and the teardown that was interrupted frees it again. Seen
+    /// failing at the returned count, which was 2 without the guard —
+    /// the two objects being freed were the ones already dying.
+    #[test]
+    fn a_collection_fired_from_a_destructor_does_nothing_and_defers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        /// `usize::MAX` until the destructor has run.
+        static FIRED: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+        unsafe extern "C" fn fire_a_collection(_o: *mut Object) {
+            FIRED.store(unsafe { collect_cycles() }, Ordering::Relaxed);
+        }
+
+        let _g = crate::memory::block_pool::test_guard();
+        FIRED.store(usize::MAX, Ordering::Relaxed);
+        let node = node_class();
+        let firer = ClassBuilder::new("FiringNode")
+            .prop("next", true)
+            .destructor(fire_a_collection as *const ())
+            .build();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+
+        unsafe {
+            // Garbage waiting for a collection: a two-node cycle whose
+            // creation references are gone. It is what the deferred
+            // collection must still find afterwards.
+            let d = new_constructed(&mut ctx, node, MemoryCategory::GcHeap);
+            let e = new_constructed(&mut ctx, node, MemoryCategory::GcHeap);
+            link(arena_ptr, d, 16, e);
+            link(arena_ptr, e, 16, d);
+            assert!(!ll_release(d as *mut RcHeader));
+            assert!(!ll_release(e as *mut RcHeader));
+
+            // The object that dies with a fire point inside its teardown:
+            // `a` holds `c`, so `a`'s dispose drops `c` and `c`'s
+            // destructor collects while `a` is a refcount-zero root.
+            let a = new_constructed(&mut ctx, node, MemoryCategory::GcHeap);
+            let c = new_constructed(&mut ctx, firer, MemoryCategory::GcHeap);
+            link(arena_ptr, a, 16, c);
+            assert!(!ll_release(c as *mut RcHeader), "a holds it");
+            // A non-zero decrement, so `a` is a candidate root when it
+            // dies a moment later.
+            crate::refcount::ll_retain(a as *mut RcHeader);
+            assert!(!ll_release(a as *mut RcHeader));
+            assert!(ll_release(a as *mut RcHeader), "the last reference");
+            crate::object::ll_entity_die(a as *mut RcHeader);
+        }
+
+        assert_eq!(
+            FIRED.load(Ordering::Relaxed),
+            0,
+            "a collection fired from inside teardown must reclaim nothing"
+        );
+        assert_eq!(
+            unsafe { collect_cycles() },
+            2,
+            "the refused collection deferred the work rather than losing it"
+        );
         arena.reset(|_| {});
     }
 

@@ -211,14 +211,24 @@ What to take next, in this order and for these reasons.
    (`refcount::CANDIDATE_KIND_MASK`). Forgetting a candidate moved off
    `ll_default_dispose`, which is class code an array never runs, onto
    the teardown doors: `ll_entity_die` before the kind switch, and
-   `ll_object_die` both before `dispose` and after it returns, the second
-   because a `__destruct` can buffer the object afresh. `ll_free` asserts
-   in test builds that an entity arrives unbuffered, beside the
-   refcount-0 assertion. Two regression tests in `gc.rs`, both seen
-   failing: a ring of two arrays with no object in it, and an array
-   forgetting its candidacy as it dies. **Left:** the ReferenceBox ring
-   `$a['x'] = &$a` still buys no root, which is item 20's own reasoning
-   and not a miss.
+   `ll_object_die` after `dispose` returns, because a `__destruct` can
+   buffer the object afresh. What holds the window between those two
+   points is not their ordering but Edmond's ruling of the same day: a
+   fire point reached from inside a teardown collects nothing
+   (`gc::TEARDOWN_DEPTH`, `dev/DECISIONS.md`). `ll_free` asserts in test
+   builds that an entity arrives unbuffered, beside the refcount-0
+   assertion. Three regression tests in `gc.rs`, each seen failing: a
+   ring of two arrays with no object in it, an array forgetting its
+   candidacy as it dies, and a collection fired from a destructor
+   reclaiming nothing.
+
+   **Left, and both are leaks rather than misses:** a ring taking its
+   last external release on a ReferenceBox (`$a['x'] = &$a`) or on a
+   Lazy proxy produces no candidate. Lazy carries an object's counted
+   slots and is traced like one, so it belongs in the buffer by the same
+   argument as Array; no factory stamps that kind yet, and no mask admits
+   `110` without admitting `Box 100`. Take it with the numbering, when
+   `resource` needs the last code.
 
 Both questions that were open on 2026-08-06 are answered, neither by
 Edmond. The recursion bound of the deep escape copy is an explicit work

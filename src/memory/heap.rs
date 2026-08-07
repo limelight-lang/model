@@ -1538,9 +1538,12 @@ pub extern "C" fn ll_thread_exit() {
     //    context, candidate buffer, parked list, weak table.
     crate::static_block::run_thread_exit_teardown();
 
-    // 2. The rc-trace candidate buffer, whose entries' buffered bits are
-    //    cleared on the way out (an entity can outlive this thread in an
-    //    abandoned block, and a stale bit suppresses re-buffering).
+    // 2. The rc-trace candidate buffer, given back without touching the
+    //    entities it names: a candidate can already be freed, and a
+    //    write through such an entry is a use-after-free Miri caught
+    //    (2026-08-03). The cost is stated at `gc::dispose` — an entity
+    //    that outlives this thread in an abandoned block keeps a stale
+    //    buffered bit, which suppresses its re-buffering for good.
     #[cfg(not(feature = "rc-walk"))]
     crate::gc::dispose();
 

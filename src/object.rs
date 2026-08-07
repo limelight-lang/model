@@ -655,27 +655,22 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     // The exit of the outermost bracket runs the full checkpoint.
     #[cfg(feature = "rc-walk")]
     crate::epoch::teardown_enter();
-
-    // Leave the cycle-collector candidate buffer before `dispose` runs.
-    // This object's refcount is already 0; the destructor and the child
-    // drops below are user code, and a collection fired from inside them
-    // would trace this still-buffered object as a root and free it —
-    // then the free below frees it again. This is the door a caller who
-    // statically knows the object takes, so it clears the buffer itself
-    // rather than trusting either the caller or `dispose`, which is class
-    // code a generated one would have to remember forever.
+    // Teardown bracket (rc-trace): while it is held no fire point
+    // collects, so the user code `dispose` runs cannot reach a
+    // collection that would judge this refcount-zero object garbage
+    // (`gc::teardown_enter`).
     #[cfg(not(feature = "rc-walk"))]
-    unsafe {
-        crate::gc::forget_candidate(obj as *mut RcHeader)
-    };
+    crate::gc::teardown_enter();
 
     let dispose: DisposeFn = unsafe { std::mem::transmute((*(*obj).class).dispose) };
     if unsafe { dispose(obj) } {
-        // And again, because `__destruct` ran in between: a transient
-        // `$this` taken inside it is a retain and a release, and that
-        // release is a non-zero decrement — which buffers this object
-        // afresh. The free below would leave the buffer holding memory
-        // about to be reused.
+        // Leave the candidate buffer before the free, or the buffer
+        // keeps a root pointing at memory about to be reused. It has to
+        // be *here* rather than before `dispose`, because `__destruct`
+        // can buffer the object afresh: a transient `$this` taken inside
+        // it is a retain and a release, and that release is a non-zero
+        // decrement. `dispose` cannot own the duty — it is class code,
+        // and the compiler emits one per class.
         #[cfg(not(feature = "rc-walk"))]
         unsafe {
             crate::gc::forget_candidate(obj as *mut RcHeader)
@@ -690,6 +685,8 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
 
     #[cfg(feature = "rc-walk")]
     crate::epoch::teardown_exit();
+    #[cfg(not(feature = "rc-walk"))]
+    crate::gc::teardown_exit();
 }
 
 /// The category of a possibly-walked header: a relaxed read under
@@ -730,10 +727,9 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     // the gate admits, so a kind that gains counted slots later inherits
     // it without a call site of its own
     // (`refcount::CANDIDATE_KIND_MASK`). An array reaches teardown here
-    // and nowhere else, and its child releases below can fire a
-    // collection the same way an object's can. The bit is tested from
-    // flags already in a register; `ll_object_die` repeats the call for
-    // its own door and for what `__destruct` may re-buffer.
+    // and nowhere else — it runs no `dispose`, which is where an object
+    // does this on its way past the free. The bit is tested from flags
+    // already in a register.
     #[cfg(not(feature = "rc-walk"))]
     if flags & crate::refcount::CYCLE_COLLECTOR_BUFFERED != 0 {
         unsafe { crate::gc::forget_candidate(entity) };
@@ -743,6 +739,8 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     // up messages.
     #[cfg(feature = "rc-walk")]
     crate::epoch::teardown_enter();
+    #[cfg(not(feature = "rc-walk"))]
+    crate::gc::teardown_enter();
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },
         REFERENCE => unsafe {
@@ -760,6 +758,8 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     }
     #[cfg(feature = "rc-walk")]
     crate::epoch::teardown_exit();
+    #[cfg(not(feature = "rc-walk"))]
+    crate::gc::teardown_exit();
 }
 
 /// The copy-on-write write barrier: takes the pointer a holder has,
