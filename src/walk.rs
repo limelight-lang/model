@@ -1627,7 +1627,7 @@ mod tests {
             // and a hole must add none either.
             (*a).table
                 .insert(a as *const RcHeader, Key::Int(7), Value::int(7));
-            (*a).table.remove(Key::Int(7));
+            let _ = (*a).table.remove(Key::Int(7));
         }
 
         let mut seen = Vec::new();

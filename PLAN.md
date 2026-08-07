@@ -681,12 +681,34 @@ readable through the box.
         only the category. `dev/DECISIONS.md` 2026-08-07 and the RFC
         amendment (rfc 556704e) carry the reasoning; the gate and both
         Miri results are in this commit's message.
-- [ ] S2.2 Dropping a key returns it to the caller; storing one consumes
+- [x] S2.2 Dropping a key returns it to the caller; storing one consumes
       the caller's
       done: two distinct string entities with equal bytes — one inserted,
         the other overwriting it, then the key removed — both end at the
         counts they started at; seen failing on both arms
       tier: T2 · role: Критик
+      Критик 2026-08-07 round 1: four findings — the contract prescribed a
+        bare `ll_release` for a key whose release the arena reset log or
+        an escape hold-count owns (double free on the first arena
+        request); the test measured only heap/heap; the two-entities
+        premise was unasserted; the pair was droppable silently, with
+        exemplars in the contract's own file. All accepted: the verb is
+        the barrier's `drop_ref`, a cross-category test runs a heap key
+        through an arena table to the reset, `assert_ne!` pins the
+        premise, `#[must_use]` guards the pair and nine sites waive it
+        explicitly.
+      Критик 2026-08-07 round 2: all four confirmed cleared against the
+        diff and a re-run suite. Named residue, non-blocking: the
+        prescribed `drop_ref` is `pub(crate)` under a `pub` `remove`, so
+        the contract's verb is crate-internal — the public door is
+        S2.5's layer.
+      handoff: `Table::remove` returns `(Value, *mut LLString)` — the
+        table's one reference per stored key travels out, null for an
+        integer key; the overwrite arm of `insert` leaves the caller's
+        key reference with the caller, signalled by `added == false`;
+        giving either up goes through `barrier::drop_ref` with the
+        owner's category. Both arms and the cross-category cycle seen
+        failing under targeted reverts.
 - [ ] S2.3 The layer's key constructor canonicalises a numeric string
       done: `"1"`, `"-1"` and `"9223372036854775807"` find what the
         integer keys stored, while `"011"`, `"1.0"`, `" 1"`, `"-0"` and

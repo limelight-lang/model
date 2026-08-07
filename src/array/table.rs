@@ -683,6 +683,15 @@ impl Table {
     /// The old value of an overwritten key is returned to the caller
     /// rather than dropped here: releasing it is the owner's, because the
     /// order matters to the collector.
+    ///
+    /// **Key ownership** (`PLAN.md` S2.2): storing a *new* string key
+    /// consumes the caller's reference — the retain published before this
+    /// call becomes the table's one reference per stored key, given back
+    /// by [`Table::remove`] or by teardown. The overwrite arm keeps the
+    /// entry's original key and never stores the caller's, so there
+    /// `added == false` also says the key reference stays the caller's:
+    /// give it back through the barrier's `drop_ref` or reuse it, but do
+    /// not count it as stored.
     pub fn insert(
         &mut self,
         owner: *const RcHeader,
@@ -760,10 +769,30 @@ impl Table {
         Some((true, None))
     }
 
-    /// Remove `key`, returning its value for the caller to release.
-    /// Unlinking leaves nothing behind: the chain is genuinely shorter,
-    /// which is the property an open-addressed index cannot have.
-    pub fn remove(&mut self, key: Key) -> Option<Value> {
+    /// Remove `key`, returning its value **and its key entity** for the
+    /// caller to release. Unlinking leaves nothing behind: the chain is
+    /// genuinely shorter, which is the property an open-addressed index
+    /// cannot have.
+    ///
+    /// The second half of the pair is the ownership rule of `PLAN.md`
+    /// S2.2: the table owes one reference per stored string key, and
+    /// dropping a key hands that reference to the caller — `make_hole`
+    /// overwrites the key word, so a reference not handed out here is
+    /// dropped with nothing left to release it. Null for an integer key,
+    /// which owes nothing.
+    ///
+    /// **Giving either half up goes through the barrier's `drop_ref`
+    /// with the owner's category**, the verb `release_children` already
+    /// uses, and for the same non-stylistic reasons: a heap key in an
+    /// arena table is owed its one release by the reset log, so a bare
+    /// `ll_release` double-frees it at the reset, and an arena entity
+    /// held by a longer-lived table carries an escape hold-count that
+    /// only `escape_lose` settles. `drop_ref` also absorbs the integer
+    /// key's null. The halves may go in either order: the entry is a
+    /// hole before this returns, so neither release is observable
+    /// through the table.
+    #[must_use = "the pair carries the table's key reference; dropping it leaks the key"]
+    pub fn remove(&mut self, key: Key) -> Option<(Value, *mut LLString)> {
         if self.storage().is_null() {
             return None;
         }
@@ -787,13 +816,14 @@ impl Table {
                 // never existed.
                 let at = self.entry_ptr(i as usize);
                 let old = self.entry(i as usize).value();
+                let removed_key = self.entry(i as usize).string_key();
                 unsafe {
                     Entry::store_element_and_link(at, Value::undef(), NONE);
                     Entry::make_hole(at);
                 }
                 self.live -= 1;
                 self.holes += 1;
-                return Some(old);
+                return Some((old, removed_key));
             }
             prev = i;
             i = next;
@@ -1402,7 +1432,7 @@ mod tests {
         for i in 0..3i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
-        m.remove(Key::Int(1));
+        let _ = m.remove(Key::Int(1));
         m.insert(Key::Int(1), Value::int(99));
 
         let order: Vec<i64> = m.iter().map(|e| e.hash_or_key as i64).collect();
@@ -1418,7 +1448,7 @@ mod tests {
             m.insert(Key::Int(i), Value::int(i));
         }
         for i in 0..64i64 {
-            assert_eq!(m.remove(Key::Int(i)).unwrap().as_int(), i);
+            assert_eq!(m.remove(Key::Int(i)).unwrap().0.as_int(), i);
             assert!(m.get(Key::Int(i)).is_none(), "a removed key stays removed");
         }
         assert_eq!(m.len(), 0);
@@ -1437,7 +1467,7 @@ mod tests {
             m.insert(Key::Int(i), Value::int(i));
         }
         for i in (0..100i64).filter(|i| i % 2 == 0) {
-            m.remove(Key::Int(i));
+            let _ = m.remove(Key::Int(i));
         }
         let before: Vec<i64> = m.iter().map(|e| e.hash_or_key as i64).collect();
         assert_eq!(m.used(), 100, "holes still occupy their slots");
@@ -1625,7 +1655,9 @@ mod tests {
         }
         for (i, s) in keys.iter().enumerate() {
             if i % 3 == 0 {
-                m.remove(Key::Str(*s));
+                // Table tests leave key ownership unmodelled; the pair is
+                // waived here and measured in `array::entity`'s tests.
+                let _ = m.remove(Key::Str(*s));
             }
         }
         m.compact();
@@ -1855,7 +1887,7 @@ mod tests {
         let r = m.make_ref(Key::Int(150));
         assert!(!r.is_null());
         for i in 0..150i64 {
-            m.remove(Key::Int(i));
+            let _ = m.remove(Key::Int(i));
         }
         m.compact();
 
@@ -1891,7 +1923,7 @@ mod tests {
             m.insert(Key::Int(i), Value::int(i));
         }
         for i in (0..100i64).filter(|i| i % 3 == 0) {
-            m.remove(Key::Int(i));
+            let _ = m.remove(Key::Int(i));
         }
 
         let mut seen = Vec::new();
@@ -1911,7 +1943,7 @@ mod tests {
         for i in 0..8i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
-        m.remove(Key::Int(3));
+        let _ = m.remove(Key::Int(3));
         // The old shape of this wrote a whole `Value` into the slot by
         // hand to stand in for a barrier. The element field is private
         // now and that write does not compile, so what is left to check is
@@ -1946,7 +1978,8 @@ mod tests {
         m.insert(Key::Str(a), Value::int(1));
         m.insert(Key::Int(9), Value::int(2));
         m.insert(Key::Str(b), Value::int(3));
-        m.remove(Key::Str(a));
+        // Ownership unmodelled here too; `array::entity` measures it.
+        let _ = m.remove(Key::Str(a));
 
         let mut keys = Vec::new();
         m.for_each_string_key(|s| keys.push(s));
