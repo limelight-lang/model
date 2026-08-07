@@ -646,7 +646,7 @@ mod tests {
             unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
         let owner =
             unsafe { new_constructed(&mut *context_ptr, owner_cls, MemoryCategory::RequestArena) };
-        let array = unsafe { ll_array_new(MemoryCategory::RequestArena, 0x9E37_79B9) };
+        let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
 
         let storage_before = unsafe {
             (*array)
@@ -724,7 +724,7 @@ mod tests {
             unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
         let owner =
             unsafe { new_constructed(&mut *context_ptr, owner_cls, MemoryCategory::RequestArena) };
-        let array = unsafe { ll_array_new(MemoryCategory::RequestArena, 0x9E37_79B9) };
+        let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
 
         let storage_before = unsafe {
             for i in 0..1100i64 {

@@ -1614,7 +1614,7 @@ mod tests {
         use crate::string::ll_string_new;
         let _g = crate::memory::block_pool::test_guard();
 
-        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         let key = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"k") };
         let value = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"v") };
         unsafe {
@@ -1672,7 +1672,7 @@ mod tests {
         use crate::string::ll_string_new;
         let _g = crate::memory::block_pool::test_guard();
 
-        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         let key = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"k") };
         let value = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"v") };
         unsafe {
@@ -1807,8 +1807,8 @@ mod tests {
         use crate::refcount::{ll_release, ll_retain};
         let _g = crate::memory::block_pool::test_guard();
 
-        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
-        let b = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let b = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         unsafe {
             // Retained before the entry is published, per `Table::insert`.
             ll_retain(b as *mut RcHeader);
@@ -1860,7 +1860,7 @@ mod tests {
         use crate::refcount::{ll_release, ll_retain};
         let _g = crate::memory::block_pool::test_guard();
 
-        let array = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         let boxed = unsafe {
             crate::reference::ll_reference_new(std::ptr::null_mut(), MemoryCategory::GcHeap)
         };

@@ -1325,7 +1325,7 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
         let holder = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        let table = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let table = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         assert!(!table.is_null());
         unsafe {
             // The holder's property takes the array, and the array's only

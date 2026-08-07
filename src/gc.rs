@@ -1333,7 +1333,7 @@ mod tests {
         let arena_ptr: *mut Arena = &mut arena;
         let mut ctx = LLContext { arena: arena_ptr };
         let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
 
         let (storage, capacity) = unsafe {
             // Retained before the entry is published, per `Table::insert`.
@@ -1467,8 +1467,8 @@ mod tests {
         use crate::refcount::ll_retain;
         let _g = crate::memory::block_pool::test_guard();
 
-        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
-        let b = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let b = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         unsafe {
             // The reference is taken before the entry is published, which
             // is `Table::insert`'s contract: an entry a walker can reach
@@ -1526,7 +1526,7 @@ mod tests {
         use crate::refcount::ll_retain;
         let _g = crate::memory::block_pool::test_guard();
 
-        let array = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         let boxed = unsafe {
             crate::reference::ll_reference_new(std::ptr::null_mut(), MemoryCategory::GcHeap)
         };
@@ -1574,7 +1574,7 @@ mod tests {
         use crate::refcount::ll_retain;
         let _g = crate::memory::block_pool::test_guard();
 
-        let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         unsafe {
             ll_retain(a as *mut RcHeader);
             assert!(!ll_release(a as *mut RcHeader));

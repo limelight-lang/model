@@ -8,6 +8,50 @@ never edited or deleted.
 
 ---
 
+## 2026-08-07 — a table starts unsalted; the flood ladder's first rung draws the salt
+
+**Decided (Edmond):** unsalted is the ladder's zeroth rung, not a mode
+anyone selects. A fresh table indexes an integer key by its value, as
+Zend does; the first long chain fires `reseed`, which *draws* the salt —
+the mix of the process seed and the storage address — and rebuilds. The
+second firing escalates, so the bound of one rebuild and one escalation
+per table stands. `ll_array_new` lost its `salt` parameter (twenty call
+sites, every one a test), `Table::empty` takes nothing, and a COW copy
+inherits the salt with the rung bits through `adopt_flood_state`.
+
+**Why:** the salt is worth paying for where keys can come from outside,
+and nothing can classify arrays up front — a compiler flag has to be
+right on every array, fails silently in the unsafe direction, and keys
+arrive through `json_decode`, a database row, `array_keys` and any
+function argument. The ladder needs no prediction: an integer flood
+under by-value indexing builds exactly one long chain, which is the
+first rung's own trigger.
+
+**Found while doing it:** escalation firing from an unsalted table must
+draw the salt on the way, because `strong_hash` is keyed by the salt and
+zero is a key every attacker knows — the design's residual assumption
+("a new colliding set costs a break of a keyed PRF") would be false.
+`draw_salt` is one idempotent place; whichever rung fires first draws,
+and a drawn salt is never moved again. The LCG step over the old salt is
+gone with the redraw it defended: a salt is drawn at most once, so there
+is no orbit to learn.
+
+**Rejected:** the compiler's "external data" flag as the selector
+(above; it stays available later as an optimization on top of the
+ladder); keeping the from-birth salt for the strong key alone (it taxes
+every honest table for a state almost none reach).
+
+**Cost:** the first integer flood on a table pays one long chain and one
+O(used) rebuild before the mix separates it — bounded by the trigger,
+and exactly the price the ladder already charged for a string flood.
+The trigger reads shape, not intent: an honest table whose keys stride
+by a power of two — 33 page offsets is enough — fires the same rung,
+pays the same rebuild, and spends `TABLE_RESEEDED`, so a later string
+chain on that table escalates directly instead of buying its (useless)
+rebuild first. `rfc/model/arrays-hashtable.md` amended the same day.
+
+---
+
 ## 2026-08-07 — an entry's collision link lives inside the element Box
 
 **Decided:** the array table's entry is 32 bytes — `hash_or_key`, `key`,

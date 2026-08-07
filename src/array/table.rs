@@ -42,13 +42,19 @@ pub enum Key {
     Str(*mut LLString),
 }
 
-/// Avalanche mix for an integer key, salted per table.
+/// Avalanche mix for an integer key, salted per table. Runs only once
+/// the flood ladder has drawn the table's salt ([`TABLE_RESEEDED`]);
+/// an unsalted table indexes an integer key by its value, as Zend does.
 ///
-/// Zend indexes an integer key by its value, so `0, 1024, 2048, …` share
-/// one bucket at every table size up to 1024 — a flood that needs no
-/// knowledge of any seed and no hash function at all. Dense integer
-/// arrays are storage strategy 2 and never reach this table, so the
-/// multiply is paid only by sparse and mixed ones.
+/// Indexing by value means `0, 1024, 2048, …` share one bucket at every
+/// table size up to 1024 — a flood that needs no knowledge of any seed
+/// and no hash function at all. It builds exactly one long chain, which
+/// is the first rung's own trigger, so the mix begins where a
+/// flood-shaped chain showed up. The trigger reads shape, not intent:
+/// honest keys striding by a power of two fire the same rung and pay
+/// the mix from then on (Edmond 2026-08-07: the salt is worth paying
+/// for where keys can come from outside, and the ladder needs nobody to
+/// predict where that is).
 #[inline]
 fn mix_int(k: i64, salt: u64) -> u64 {
     let mut x = (k as u64) ^ salt;
@@ -97,7 +103,7 @@ pub(crate) const EQUAL_HASH_LIMIT: u32 = 8;
 /// The second trigger: chain length. This catches families whose hashes
 /// differ but whose slots coincide, including an integer flood. Generous,
 /// since the honest maximum is 4-8 even at millions of keys.
-const CHAIN_LIMIT: u32 = 32;
+pub(crate) const CHAIN_LIMIT: u32 = 32;
 
 /// Round up to a power of two, saturating rather than wrapping.
 #[inline]
@@ -165,6 +171,8 @@ pub struct Table {
     /// Live entries.
     live: usize,
     holes: usize,
+    /// Zero from birth. Meaningful only while [`TABLE_RESEEDED`] is set:
+    /// the ladder's first rung draws it, and nothing else writes it.
     salt: u64,
     /// Bumped twice by every operation that moves entries — growth and
     /// compaction — odd while the move is in progress. A concurrent
@@ -189,9 +197,10 @@ pub struct Table {
 /// backstop's equal-hash trigger.
 const TABLE_STRONG: u8 = 1 << 0;
 
-/// The per-table salt has been redrawn once. It bounds the ladder's
-/// first rung at one firing per table: a second long chain escalates
-/// instead of rebuilding again.
+/// This table has a salt: the ladder's first rung drew one, and integer
+/// keys index through the salted mix rather than by value. Set once —
+/// a second long chain escalates instead of rebuilding again — which
+/// bounds the rung at one firing per table.
 const TABLE_RESEEDED: u8 = 1 << 1;
 
 /// What a copy of an attacked table inherits — everything the flood
@@ -201,10 +210,15 @@ const TABLE_FLOOD_STATE: u8 = TABLE_STRONG | TABLE_RESEEDED;
 impl Table {
     /// An empty table with no storage. The first insert allocates.
     ///
+    /// **Unsalted** — the flood ladder's zeroth rung: integer keys index
+    /// by their value until a long chain fires [`Table::reseed`], which
+    /// draws the salt. No caller selects a mode, because the trigger is
+    /// the flood itself (`PLAN.md` S2.1, Edmond 2026-08-07).
+    ///
     /// No category: which memory this table's storage comes from is the
     /// owning entity's header to say, and this reads it there
     /// ([`Table::category`], `dev/DECISIONS.md` 2026-08-07).
-    pub const fn empty(salt: u64) -> Self {
+    pub const fn empty() -> Self {
         Table {
             storage: AtomicPtr::new(std::ptr::null_mut()),
             storage_capacity: 0,
@@ -215,16 +229,33 @@ impl Table {
             version: AtomicUsize::new(0),
             live: 0,
             holes: 0,
-            salt,
+            salt: 0,
             flags: 0,
         }
     }
 
-    /// The per-table salt, which a COW copy inherits so that a copied
-    /// table indexes its keys exactly as the original did.
-    #[inline]
-    pub fn salt(&self) -> u64 {
+    /// The per-table salt, which a COW copy inherits through
+    /// [`Table::adopt_flood_state`] so that a copied table indexes its
+    /// keys exactly as the original did. [`TABLE_RESEEDED`] is the
+    /// authority on whether one has been drawn; zero happens to mean
+    /// "not drawn" as well, because the draw never yields it.
+    ///
+    /// A test window on purpose: on an escalated table the salt keys
+    /// `strong_hash`, and an accessor exported past the crate would hand
+    /// that key to anything linking against the runtime. The inheritance
+    /// itself runs through [`Table::adopt_flood_state`], which reads the
+    /// field directly.
+    #[cfg(test)]
+    pub(crate) fn salt(&self) -> u64 {
         self.salt
+    }
+
+    /// Whether the ladder's first rung has drawn this table's salt —
+    /// the test window for pinning rung state; the code branches on the
+    /// flag directly.
+    #[cfg(test)]
+    pub(crate) fn is_reseeded(&self) -> bool {
+        self.flags & TABLE_RESEEDED != 0
     }
 
     /// The memory an array's storage comes from, read from `owner`'s
@@ -267,11 +298,14 @@ impl Table {
         self.flags & TABLE_STRONG != 0
     }
 
-    /// Take `source`'s flood state, which is what a copy of an attacked
-    /// table owes: an escalated table copied through a fresh
-    /// [`Table::empty`] would otherwise re-insert the attacker's whole
-    /// collision set under the hash it escalated away from, and copying
-    /// an array is the ordinary thing the language does.
+    /// Take `source`'s flood state — the salt and both rung bits, which
+    /// is what a copy of an attacked table owes: an escalated table
+    /// copied through a fresh [`Table::empty`] would otherwise re-insert
+    /// the attacker's whole collision set under the hash it escalated
+    /// away from, and copying an array is the ordinary thing the
+    /// language does. The salt travels with [`TABLE_RESEEDED`], because
+    /// a copy that kept the bit and not the number would index through
+    /// `mix_int(k, 0)` — a mix every attacker can compute offline.
     ///
     /// **Call it before the first insert.** The mode decides how a key is
     /// hashed, so a table that adopts it afterwards has already indexed
@@ -279,6 +313,11 @@ impl Table {
     #[inline]
     pub(crate) fn adopt_flood_state(&mut self, source: &Table) {
         debug_assert_eq!(self.used(), 0, "the mode decides how a key is indexed");
+        debug_assert!(
+            source.flags & TABLE_STRONG == 0 || source.flags & TABLE_RESEEDED != 0,
+            "an escalated table always holds a drawn salt: escalate draws on the way"
+        );
+        self.salt = source.salt;
         self.flags = (self.flags & !TABLE_FLOOD_STATE) | (source.flags & TABLE_FLOOD_STATE);
     }
 
@@ -541,7 +580,13 @@ impl Table {
     #[inline]
     fn slot_hash(&self, key: Key) -> u64 {
         match key {
-            Key::Int(k) => mix_int(k, self.salt),
+            Key::Int(k) => {
+                if self.flags & TABLE_RESEEDED != 0 {
+                    mix_int(k, self.salt)
+                } else {
+                    k as u64
+                }
+            }
             Key::Str(s) => {
                 if self.flags & TABLE_STRONG != 0 {
                     strong_hash(unsafe { LLString::bytes(s) }, self.salt)
@@ -557,7 +602,11 @@ impl Table {
     #[inline]
     fn entry_slot_hash(&self, e: &Entry) -> u64 {
         if e.is_int_key() {
-            mix_int(e.hash_or_key as i64, self.salt)
+            if self.flags & TABLE_RESEEDED != 0 {
+                mix_int(e.hash_or_key as i64, self.salt)
+            } else {
+                e.hash_or_key
+            }
         } else if self.flags & TABLE_STRONG != 0 {
             strong_hash(unsafe { LLString::bytes(e.key) }, self.salt)
         } else {
@@ -1008,45 +1057,86 @@ impl Table {
         std::ptr::null_mut()
     }
 
+    /// The one draw of the per-table salt: the storage address run
+    /// through `hash_bytes`, and the flag saying the table has one.
+    /// Idempotent by the flag, so whichever rung fires first draws and
+    /// the other inherits. Never zero — `hash_bytes` remaps zero away —
+    /// so a drawn salt cannot masquerade as the unsalted state.
+    ///
+    /// `hash_bytes` rather than an avalanche of `address ^ seed`: the
+    /// avalanche is a bijection, so one recovered salt would hand back
+    /// `address ^ seed` exactly, and one leaked address the seed itself.
+    /// Behind rapidhash the seed sits where every cached string hash
+    /// already puts it. What this does not buy: storage addresses
+    /// recycle across arena resets, so a salt can repeat, and under
+    /// `hash-folding` the seed is a build constant — the durable key for
+    /// an escalated table is the long-key slot's per-process never-folded
+    /// key (`rfc/model/strings.md`), which `strong_hash`'s own doc names
+    /// as the unfilled slot this stands in for.
+    ///
+    /// The triggers fire during an insert's chain walk, which needs
+    /// entries, so the storage is never null here — asserted, because a
+    /// null address would draw the same salt for every such table.
+    fn draw_salt(&mut self) {
+        if self.flags & TABLE_RESEEDED != 0 {
+            return;
+        }
+        debug_assert!(
+            !self.storage().is_null(),
+            "a draw before the first entry would salt every table alike"
+        );
+        self.flags |= TABLE_RESEEDED;
+        self.salt = crate::hash::hash_bytes(&(self.storage() as u64).to_le_bytes());
+    }
+
     /// Escalate to the keyed byte hash, once and one way. The response
     /// to *equal full hashes*: redrawing a salt cannot separate keys whose
     /// hashes agree, and doing so on that trigger is what made Perl's
     /// REHASH exploitable (CVE-2013-1667).
+    ///
+    /// Firing from an unsalted table draws the salt on the way, because
+    /// the keyed hash's key *is* the salt: left at zero it would be a
+    /// key every attacker knows, and the design's residual assumption —
+    /// a new colliding set costs a break of a keyed PRF — needs the key
+    /// unpredictable. That is a draw, not the redraw the Perl defect is
+    /// about: a salt already drawn is left exactly as it was.
     fn escalate(&mut self) {
         if self.flags & TABLE_STRONG != 0 {
             return;
         }
+        self.draw_salt();
         self.flags |= TABLE_STRONG;
         if !self.storage().is_null() {
             self.rebuild_index();
         }
     }
 
-    /// Redraw the per-table salt and rebuild the index. The response to a
-    /// long chain of keys whose hashes *differ* — an accident, an integer
-    /// flood, or a leaked salt. **A second firing escalates instead**,
-    /// which is what bounds the attacker at one rebuild and one
-    /// escalation per table (`rfc/model/arrays-hashtable.md`, "What the
-    /// attacker can drive"). Without that bound the chain trigger fires
-    /// on every insert an attacker chooses, each firing an O(`used`)
-    /// rebuild, and the promised O(n) is O(n²).
+    /// Draw the per-table salt and rebuild the index — the ladder's
+    /// first rung, moving integer keys off by-value indexing. The
+    /// response to a long chain of keys whose hashes *differ* — an
+    /// accident or an integer flood. **A second firing escalates
+    /// instead**, which is what bounds the attacker at one rebuild and
+    /// one escalation per table (`rfc/model/arrays-hashtable.md`, "What
+    /// the attacker can drive"). Without that bound the chain trigger
+    /// fires on every insert an attacker chooses, each firing an
+    /// O(`used`) rebuild, and the promised O(n) is O(n²).
     ///
     /// **The two rungs defend different key kinds**, which is why both
-    /// exist and why the order is this one. A redraw moves integer keys,
-    /// whose slot is `mix_int(k, salt)`, and cannot move string keys at
-    /// all: below `strong` a string's slot *is* its cached hash, which no
-    /// salt enters. Escalation is the reverse — it rehashes string keys
-    /// with a keyed function over their bytes and leaves `mix_int`
-    /// exactly as it was. So a pure string flood spends one useless
-    /// rebuild before the rung that answers it, and a pure integer flood
-    /// is answered by the first rung or not at all.
+    /// exist and why the order is this one. The draw moves integer keys,
+    /// whose slot becomes `mix_int(k, salt)`, and cannot move string
+    /// keys at all: below `strong` a string's slot *is* its cached hash,
+    /// which no salt enters. Escalation answers the string side — it
+    /// rehashes string keys with a keyed function over their bytes — and
+    /// moves integer keys only in the one case where it also had to
+    /// draw, firing on a still-unsalted table ([`Table::escalate`]). So
+    /// a pure string flood spends one useless rebuild before the rung
+    /// that answers it, and a pure integer flood is answered by the
+    /// first rung or not at all.
     ///
-    /// The new salt mixes the process seed and the storage address into
-    /// the step, because the step alone is a public LCG: an attacker who
-    /// learns the initial salt would otherwise know the whole orbit
-    /// offline and could aim the redraw as easily as the original. Under
-    /// `hash-folding` the process seed is a build constant, so a folding
-    /// build's redraw is only as unpredictable as its storage address.
+    /// The salt is drawn at most once per table ([`Table::draw_salt`]),
+    /// so there is no orbit to learn and no redraw to aim. A COW copy
+    /// inherits the drawn salt rather than drawing again
+    /// ([`Table::adopt_flood_state`]): its second long chain escalates.
     fn reseed(&mut self) {
         if self.flags & TABLE_STRONG != 0 {
             return;
@@ -1055,15 +1145,7 @@ impl Table {
             self.escalate();
             return;
         }
-        self.flags |= TABLE_RESEEDED;
-        let step = self
-            .salt
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        self.salt = mix_int(
-            step as i64,
-            crate::hash::seed::raw() ^ (self.storage() as u64),
-        );
+        self.draw_salt();
         if !self.storage().is_null() {
             self.rebuild_index();
         }
@@ -1223,10 +1305,8 @@ mod tests {
         }
     }
 
-    const TEST_SALT: u64 = 0x243F_6A88_85A3_08D3;
-
     fn t() -> Owned {
-        Owned(unsafe { crate::array::entity::ll_array_new(MemoryCategory::GcHeap, TEST_SALT) })
+        Owned(unsafe { crate::array::entity::ll_array_new(MemoryCategory::GcHeap) })
     }
 
     #[test]
@@ -1389,18 +1469,58 @@ mod tests {
         }
     }
 
-    /// The flood the design names: Zend indexes an integer key by its
-    /// value, so a stride of the table size collides everywhere. The
-    /// salted mix is what stops it, and this pins that the mix is applied.
+    /// The ladder's zeroth rung: a fresh table indexes an integer key by
+    /// its value, as Zend does, and pays no mix. Three stride keys
+    /// sharing one bucket is the by-value signature — a salted mix would
+    /// scatter them (`PLAN.md` S2.1, Edmond 2026-08-07: the salt is paid
+    /// where a flood shows up, not by every honest table).
     #[test]
-    fn integer_keys_on_a_power_of_two_stride_do_not_share_one_bucket() {
+    fn a_fresh_table_indexes_an_integer_key_by_its_value() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        for i in 0..3i64 {
+            m.insert(Key::Int(i * 1024), Value::int(i));
+        }
+        assert!(
+            !m.is_reseeded(),
+            "three keys are far below the chain trigger"
+        );
+        assert_eq!(m.salt, 0, "an unsalted table holds no number to mix with");
+        let mut chain = 0usize;
+        let mut i = unsafe { *m.slots().add(0) };
+        while i != NONE {
+            chain += 1;
+            i = m.entry(i as usize).link();
+        }
+        assert_eq!(
+            chain, 3,
+            "stride keys share slot 0 only when indexed by value"
+        );
+        for i in 0..3i64 {
+            assert_eq!(m.get(Key::Int(i * 1024)).unwrap().as_int(), i);
+        }
+    }
+
+    /// The flood the zeroth rung admits by design: indexed by value, a
+    /// power-of-two stride builds exactly one chain — which is the first
+    /// rung's own trigger, so nobody had to predict where keys come
+    /// from. The rung draws a salt and rebuilds; the mix scatters the
+    /// rest of the flood and no key is lost across the rebuild.
+    #[test]
+    fn an_integer_flood_fires_the_first_rung_and_the_drawn_salt_scatters_it() {
         let _g = crate::memory::block_pool::test_guard();
         let mut m = t();
         for i in 0..512i64 {
             m.insert(Key::Int(i * 1024), Value::int(i));
         }
-        // Longest chain: with the mix this is a handful; indexing by the
-        // key's low bits would put all 512 in one bucket.
+        assert!(m.is_reseeded(), "the flood's own chain is the trigger");
+        assert!(
+            !m.is_strong(),
+            "differing hashes never take the strong rung"
+        );
+        assert_ne!(m.salt, 0, "the rung drew nothing");
+        // Longest chain: with the drawn salt this is a handful; by-value
+        // indexing would put all 512 in one bucket.
         let mut longest = 0usize;
         for slot in 0..m.nslots() {
             let mut n = 0usize;
@@ -1413,8 +1533,15 @@ mod tests {
         }
         assert!(
             longest < 16,
-            "longest chain {longest} — the integer mix is not being applied"
+            "longest chain {longest} — the drawn salt is not being applied"
         );
+        for i in 0..512i64 {
+            assert_eq!(
+                m.get(Key::Int(i * 1024)).unwrap().as_int(),
+                i,
+                "a key was lost across the rung's rebuild"
+            );
+        }
     }
 
     #[test]
@@ -1540,10 +1667,11 @@ mod tests {
             .collect()
     }
 
-    /// The ladder's two rungs, in order and each once. A long chain of
-    /// keys whose hashes differ redraws the salt; the next one escalates
-    /// instead of redrawing again, which is what bounds the attacker at
-    /// one rebuild and one escalation per table.
+    /// The ladder's rungs above the zeroth, in order and each once. A
+    /// long chain of keys whose hashes differ draws the salt a fresh
+    /// table does not have; the next one escalates instead of drawing
+    /// again, which is what bounds the attacker at one rebuild and one
+    /// escalation per table.
     ///
     /// Seen failing at the escalation: without the reseed counter the
     /// chain trigger redraws forever, and for string keys it cannot even
@@ -1551,13 +1679,14 @@ mod tests {
     /// which no salt enters — so every later insert pays another O(used)
     /// rebuild and the chain stays exactly as long.
     #[test]
-    fn a_long_chain_redraws_the_salt_once_and_then_escalates() {
+    fn a_long_chain_draws_the_salt_once_and_then_escalates() {
         let _g = crate::memory::block_pool::test_guard();
         let mut m = t();
-        let before = m.salt;
+        assert_eq!(m.salt, 0, "a fresh table is the zeroth rung");
 
         let first = extend_one_chain(&mut m, 0, CHAIN_LIMIT as usize + 1);
-        assert_ne!(m.salt, before, "the first long chain redraws the salt");
+        assert!(m.is_reseeded(), "the first long chain draws the salt");
+        assert_ne!(m.salt, 0, "and the drawn salt is a real one");
         assert!(!m.is_strong(), "and does not escalate on the first firing");
         let redrawn = m.salt;
 
@@ -1577,6 +1706,9 @@ mod tests {
         }
     }
 
+    /// Equal full hashes take the strong rung directly — and firing from
+    /// an unsalted table draws the salt on the way, because the keyed
+    /// hash's key *is* the salt and zero is a key every attacker knows.
     #[test]
     fn equal_full_hashes_escalate_the_table_to_the_keyed_hash() {
         let _g = crate::memory::block_pool::test_guard();
@@ -1586,6 +1718,14 @@ mod tests {
         assert!(
             m.is_strong(),
             "a set of equal full hashes must escalate, not reseed"
+        );
+        assert!(
+            m.is_reseeded(),
+            "strong implies a drawn salt: the two bits never separate"
+        );
+        assert_ne!(
+            m.salt, 0,
+            "escalation from the zeroth rung left the keyed hash keyed by zero"
         );
     }
 
@@ -1643,15 +1783,22 @@ mod tests {
         );
     }
 
+    /// A salt that is already drawn stays exactly as it was across
+    /// escalation: redrawing in response to equal-hash keys is what made
+    /// Perl's REHASH exploitable. The *draw* an unsalted escalation
+    /// makes is pinned by the test above; this pins that it never
+    /// becomes a redraw.
     #[test]
-    fn escalation_happens_once_and_the_salt_is_not_redrawn_on_equal_hashes() {
+    fn escalation_happens_once_and_a_drawn_salt_is_not_redrawn_on_equal_hashes() {
         let _g = crate::memory::block_pool::test_guard();
         let mut m = t();
-        let before = m.salt;
+        extend_one_chain(&mut m, 0, CHAIN_LIMIT as usize + 1);
+        assert!(m.is_reseeded(), "the chain draws the salt first");
+        let drawn = m.salt;
         force_equal_hashes(&mut m, 64);
         assert!(m.is_strong());
         assert_eq!(
-            m.salt, before,
+            m.salt, drawn,
             "redrawing the salt on equal hashes is the Perl REHASH defect"
         );
     }
@@ -1975,8 +2122,7 @@ mod tests {
 
         // An arena array, because an arena table's storage is routed by
         // the header in front of it like every other table's.
-        let a =
-            unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena, TEST_SALT) };
+        let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena) };
         let owner = a as *const RcHeader;
         let m = unsafe { &mut (*a).table };
         for i in 0..1100i64 {
@@ -2023,8 +2169,7 @@ mod tests {
         let context_ptr: *mut LLContext = &mut context;
         set_current_context(context_ptr);
 
-        let a =
-            unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena, TEST_SALT) };
+        let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena) };
         let owner = a as *const RcHeader;
         let m = unsafe { &mut (*a).table };
         for i in 0..8i64 {

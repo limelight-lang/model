@@ -226,7 +226,10 @@ What to take next, in this order and for these reasons.
    assertion. Three regression tests in `gc.rs`, each seen failing: a
    ring of two arrays with no object in it, an array forgetting its
    candidacy as it dies, and a collection fired from a destructor
-   reclaiming nothing.
+   reclaiming nothing. Miri closed the stage's verification a session
+   later, 2026-08-07, both logs read whole: rc-walk 320 passed, 0
+   failed, 6 ignored; rc-trace — the configuration where the gate
+   predicate is live — 308 passed, 0 failed, 3 ignored.
 
    **Left, and both are leaks rather than misses:** a ring taking its
    last external release on a ReferenceBox (`$a['x'] = &$a`) or on a
@@ -637,7 +640,7 @@ separated copy carries the source's salt state, flood state and
 `next_free`; and a store into an element holding a ReferenceBox is
 readable through the box.
 
-- [ ] S2.1 A table starts unsalted, and the ladder's first rung draws the
+- [x] S2.1 A table starts unsalted, and the ladder's first rung draws the
       salt
       done: a fresh table indexes an integer key by its value; a chain
         long enough to fire the first rung draws a salt, rebuilds the
@@ -655,6 +658,29 @@ readable through the box.
         exactly one long chain, which is the rung's own trigger. The flag
         stays available later as an extra optimization, when a compiler
         exists that can prove rather than assume.
+      Критик 2026-08-07 round 1: nine findings — the drawn salt exposed
+        `addr ^ seed` through a bijective finalizer with nowhere left to
+        add entropy; escalate now moves integer keys while reseed's doc
+        denied it; honest power-of-two strides burn the first rung and
+        Cost did not say so; `salt()` exported the strong-hash key; plus
+        five smaller (null-storage draw, RFC key contradiction, RFC bit
+        count, "never pays" overpromise, missing unsalted-copy test).
+        All accepted: the draw became `hash_bytes` over the storage
+        address, docs, DECISIONS and the RFC corrected, `salt()` is a
+        `#[cfg(test)]` window, STRONG⇒RESEEDED asserted, the third
+        inheritance state tested.
+      Критик 2026-08-07 round 2: eight of nine confirmed cleared against
+        the diff and a re-run gate; the tail — `mix_int`'s doc still
+        promising "never pay" — fixed in the same commit. No dispute
+        left, so no Мудрец.
+      handoff: the step's one addition beyond its own text — `escalate`
+        firing from an unsalted table draws the salt on the way
+        (`draw_salt`, idempotent), because the strong hash is keyed by
+        the salt and zero is a key every attacker knows. The draw is
+        `hash_bytes(storage address)`, never zero. `ll_array_new` takes
+        only the category. `dev/DECISIONS.md` 2026-08-07 and the RFC
+        amendment (rfc 556704e) carry the reasoning; the gate and both
+        Miri results are in this commit's message.
 - [ ] S2.2 Dropping a key returns it to the caller; storing one consumes
       the caller's
       done: two distinct string entities with equal bytes — one inserted,
@@ -713,8 +739,10 @@ salt", and it sits in the same byte as `TABLE_STRONG`, which that path
 reads anyway. The documents' bound — one rebuild and one escalation per
 table — does not move, because the first rung now *draws* where it used to
 redraw. Where the entropy comes from stops being an open question with it:
-the draw happens only inside `reseed`, which already mixes the process seed
-and the storage address. Separately, `ll_array_new`'s `salt` parameter has
+the draw is `hash_bytes` over the storage address, in `draw_salt`, reached
+from whichever rung fires first — escalation from an unsalted table draws
+too, since the strong hash is keyed by the salt (found in the step, not
+foreseen here). Separately, `ll_array_new`'s `salt` parameter has
 twenty call sites, sixteen passing one literal (five in `array/entity.rs`,
 eleven across `promote.rs`, `gc.rs`, `collector.rs`, `walk.rs`), three in
 `array/table.rs` passing another, and one — `new_empty_copy` — handing the

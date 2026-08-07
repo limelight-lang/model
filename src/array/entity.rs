@@ -50,7 +50,7 @@ pub struct LLArray {
 ///
 /// # Safety
 /// Standard factory contract: the result is a fresh entity at count 1.
-pub unsafe fn ll_array_new(category: MemoryCategory, salt: u64) -> *mut LLArray {
+pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
     let size = size_of::<LLArray>();
     // No context to pass: an array factory takes none, so the arena is
     // the mounted one either way.
@@ -61,7 +61,7 @@ pub unsafe fn ll_array_new(category: MemoryCategory, salt: u64) -> *mut LLArray 
     }
     let a = mem as *mut LLArray;
     unsafe {
-        (&raw mut (*a).table).write(Table::empty(salt));
+        (&raw mut (*a).table).write(Table::empty());
         publish_header(
             a as *mut RcHeader,
             RcHeader::new(category, COW | EntityKind::Array.to_flags()),
@@ -180,8 +180,7 @@ pub unsafe fn separate(
 /// # Safety
 /// `src` is a live array entity.
 unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LLArray {
-    let salt = unsafe { (*src).table.salt() };
-    let dst = unsafe { ll_array_new(category, salt) };
+    let dst = unsafe { ll_array_new(category) };
     if dst.is_null() {
         return std::ptr::null_mut();
     }
@@ -555,7 +554,7 @@ mod tests {
         let mut arena = crate::memory::arena::Arena::new();
         let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
 
-        let src = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         let key = mk(b"k");
         let value = mk(b"v");
         unsafe {
@@ -632,7 +631,7 @@ mod tests {
             crate::object::new_constructed(context_ptr, holder_class, MemoryCategory::GcHeap)
         };
 
-        let src = unsafe { ll_array_new(MemoryCategory::RequestArena, 0x9E37_79B9) };
+        let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
         let element =
             unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"in the arena") };
         unsafe {
@@ -704,10 +703,10 @@ mod tests {
         // below it under key 0, and the source stays entirely in the
         // arena, where COW children are shared rather than copied.
         let mut levels = Vec::with_capacity(DEPTH);
-        let innermost = unsafe { ll_array_new(MemoryCategory::RequestArena, 0x9E37_79B9) };
+        let innermost = unsafe { ll_array_new(MemoryCategory::RequestArena) };
         levels.push(innermost);
         for _ in 1..DEPTH {
-            let outer = unsafe { ll_array_new(MemoryCategory::RequestArena, 0x9E37_79B9) };
+            let outer = unsafe { ll_array_new(MemoryCategory::RequestArena) };
             let inner = *levels.last().unwrap();
             unsafe {
                 crate::refcount::ll_retain(inner as *mut RcHeader);
@@ -782,7 +781,7 @@ mod tests {
     }
 
     fn arr() -> *mut LLArray {
-        unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) }
+        unsafe { ll_array_new(MemoryCategory::GcHeap) }
     }
 
     #[test]
@@ -1137,6 +1136,114 @@ mod tests {
             crate::object::ll_entity_die(src as *mut RcHeader);
             assert!(ll_release(colliders[0] as *mut RcHeader));
             crate::object::ll_entity_die(colliders[0] as *mut RcHeader);
+        }
+    }
+
+    /// A copy of a table whose salt the first rung drew indexes exactly
+    /// as the source does. The bit without the number would mean
+    /// `mix_int(k, 0)` — a mix every attacker computes offline — and a
+    /// fresh draw would break the ladder's bound: a copy's second long
+    /// chain must escalate, not rebuild again. Seen failing on the salt
+    /// equality.
+    #[test]
+    fn a_copy_of_a_reseeded_table_inherits_the_drawn_salt() {
+        use crate::array::table::CHAIN_LIMIT;
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = crate::memory::arena::Arena::new();
+        let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+
+        let src = arr();
+        for i in 0..(CHAIN_LIMIT as i64 + 1) {
+            unsafe {
+                (*src)
+                    .table
+                    .insert(src as *const RcHeader, Key::Int(i * 1024), Value::int(i));
+            }
+        }
+        assert!(
+            unsafe { (*src).table.is_reseeded() },
+            "the stride flood did not fire the rung, so this proves nothing"
+        );
+        let drawn = unsafe { (*src).table.salt() };
+
+        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        assert!(!copy.is_null());
+        assert!(unsafe { (*copy).table.is_reseeded() });
+        assert_eq!(
+            unsafe { (*copy).table.salt() },
+            drawn,
+            "the copy indexes under a salt of its own"
+        );
+        for i in 0..(CHAIN_LIMIT as i64 + 1) {
+            assert_eq!(
+                unsafe { (*copy).table.get(Key::Int(i * 1024)) }
+                    .unwrap()
+                    .as_int(),
+                i
+            );
+        }
+
+        unsafe {
+            assert!(ll_release(copy as *mut RcHeader));
+            crate::object::ll_entity_die(copy as *mut RcHeader);
+            assert!(ll_release(src as *mut RcHeader));
+            crate::object::ll_entity_die(src as *mut RcHeader);
+        }
+    }
+
+    /// The third state a copy can inherit: nothing. A copy of an
+    /// unsalted source starts unsalted — by-value integer indexing, no
+    /// mix — and stays a full citizen of the ladder: its own flood fires
+    /// its own first rung, drawing a salt of its own.
+    #[test]
+    fn a_copy_of_an_unsalted_table_is_unsalted_and_climbs_its_own_ladder() {
+        use crate::array::table::CHAIN_LIMIT;
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = crate::memory::arena::Arena::new();
+        let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+
+        let src = arr();
+        for i in 0..3i64 {
+            unsafe {
+                (*src)
+                    .table
+                    .insert(src as *const RcHeader, Key::Int(i * 1024), Value::int(i));
+            }
+        }
+        assert!(unsafe { !(*src).table.is_reseeded() });
+
+        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        assert!(!copy.is_null());
+        assert!(
+            unsafe { !(*copy).table.is_reseeded() },
+            "a copy of an unsalted table drew a salt from nowhere"
+        );
+
+        for i in 3..(CHAIN_LIMIT as i64 + 1) {
+            unsafe {
+                (*copy)
+                    .table
+                    .insert(copy as *const RcHeader, Key::Int(i * 1024), Value::int(i));
+            }
+        }
+        assert!(
+            unsafe { (*copy).table.is_reseeded() },
+            "the copy's own flood must fire the copy's own rung"
+        );
+        for i in 0..(CHAIN_LIMIT as i64 + 1) {
+            assert_eq!(
+                unsafe { (*copy).table.get(Key::Int(i * 1024)) }
+                    .unwrap()
+                    .as_int(),
+                i
+            );
+        }
+
+        unsafe {
+            assert!(ll_release(copy as *mut RcHeader));
+            crate::object::ll_entity_die(copy as *mut RcHeader);
+            assert!(ll_release(src as *mut RcHeader));
+            crate::object::ll_entity_die(src as *mut RcHeader);
         }
     }
 
