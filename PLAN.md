@@ -608,6 +608,36 @@ make visible. The repair is a crate-internal barrier entry that publishes
 an already-retained reference: `store_category_barrier` is that operation
 already, minus the slot write. It must land with or before item 12's arm.
 
+## Then: arrays as a performance problem
+
+Opened 2026-08-07 at Edmond's request, and it gathers work the plan had
+scattered rather than adding any. Everything here is measurement or
+representation; nothing in it is a defect.
+
+**The representation.** Two bits of `Table::flags` name the storage
+strategy, which nothing sets yet because only strategy 3 is built and a
+tag with one occupant is a field nobody reads. Behind it: the generic
+element write dispatches on the tag and performs the 1 → 2 transition
+`arrays.md` says never happens — it must, because separation copies the
+storage in its current representation and a callee can then store a
+pointer into a proven `array<int>`. Then the 2 → 3 migration, walking
+the vector in order and appending each element under its integer key, so
+insertion order survives by construction.
+
+**The numbers, and every one of them is unmeasured.** The 40-byte entry
+against a 32-byte one, which costs the inline full hash serving two
+masters — the equality pre-check that avoids touching the string, and
+the index rebuild that reads no strings at all. The string-key check's
+reversal threshold, the compaction threshold borrowed from Zend at ~3 %
+rather than measured, and the two flood constants. None of these can be
+settled on this box: `dev/BENCHMARKS.md` puts its noise floor at 1.5–3 %,
+and every effect above is smaller than that.
+
+**What has to come first**, because it changes the shape rather than the
+speed: the `RcHeader` rule of 2026-08-07 (`dev/DECISIONS.md`) takes
+`category` out of `Table`, and a strategy tag added before that would be
+written into a struct whose fields are about to move.
+
 ### Beside the hashtable: the memory categories
 
 Opened 2026-08-06, out of the same review chain, and independent of the

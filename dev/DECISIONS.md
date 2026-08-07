@@ -8,6 +8,30 @@ never edited or deleted.
 
 ---
 
+## 2026-08-07 — the `RcHeader` is the only authority on which memory an entity lives in
+
+Edmond's ruling, and it is a rule rather than a repair: **an entity's `RcHeader`
+says which memory that entity lives in, and everything it owns out of line lives
+in the same memory.** A body is allocated from the category its header names and
+is freed to it; the two cannot differ, and no structure keeps a second copy of
+the category to be asked instead.
+
+What it overturns is the 2026-08-06 decision that the table keeps its own copy so
+it can be used without an entity around it. A copy is a fact that can drift from
+the fact it copies, and this one already did: a refused promotion left
+`Table::category` reading `RequestArena` under a heap array, so the next storage
+came from whatever request arena was mounted and its reset returned the chunk
+under a live holder (`2e55036`). The repair then was to rewrite the copy in every
+outcome — which is the maintenance a copy demands, paid forever, on every path
+that touches the header.
+
+The consequences, in order of who owes them. `Table` loses its `category` field
+and reads the owning entity's header instead. `Table::carry_out_of` loses its
+four rewrites of the copy: promotion rewrites the header and the table follows by
+construction. `Table::empty` loses its category parameter. Tests that build a
+bare table build an array instead — a headerless table has no memory identity to
+answer with, which is exactly what the rule says.
+
 ## 2026-08-07 — the deep copy walks a list, and teardown is the half still on the stack
 
 The escape copy of a nested arena array no longer recurses. A nested arena COW
