@@ -1332,11 +1332,12 @@ mod tests {
         let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
 
         let (storage, capacity) = unsafe {
+            // Retained before the entry is published, per `Table::insert`.
+            ll_retain(obj as *mut RcHeader);
             (*a).table.insert(
                 Key::Int(0),
                 Value::entity(Tag::Object, obj as *mut RcHeader),
             );
-            ll_retain(obj as *mut RcHeader);
             (*a).table.storage_and_capacity()
         };
         assert!(!storage.is_null(), "the insert allocated storage to lose");

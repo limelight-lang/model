@@ -1674,12 +1674,13 @@ mod tests {
         let key = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"k") };
         let value = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"v") };
         unsafe {
+            // Retained before the entry is published, per `Table::insert`.
+            crate::refcount::ll_retain(key as *mut RcHeader);
+            crate::refcount::ll_retain(value as *mut RcHeader);
             (*a).table.insert(
                 Key::Str(key),
                 Value::entity(Tag::String, value as *mut RcHeader),
             );
-            crate::refcount::ll_retain(key as *mut RcHeader);
-            crate::refcount::ll_retain(value as *mut RcHeader);
         }
 
         let mut seen = Vec::new();
@@ -1806,12 +1807,13 @@ mod tests {
         let a = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
         let b = unsafe { ll_array_new(MemoryCategory::GcHeap, 0x9E37_79B9) };
         unsafe {
+            // Retained before the entry is published, per `Table::insert`.
+            ll_retain(b as *mut RcHeader);
             (*a).table
                 .insert(Key::Int(0), Value::entity(Tag::Array, b as *mut RcHeader));
-            ll_retain(b as *mut RcHeader);
+            ll_retain(a as *mut RcHeader);
             (*b).table
                 .insert(Key::Int(0), Value::entity(Tag::Array, a as *mut RcHeader));
-            ll_retain(a as *mut RcHeader);
             // Drop the creation references: each array is now held by the
             // other and by nothing else, which is the ring.
             assert!(!ll_release(a as *mut RcHeader), "a is still held by b");

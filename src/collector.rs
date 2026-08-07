@@ -1332,11 +1332,14 @@ mod tests {
             // element takes the holder back: one ring, one edge of it
             // inside a table.
             Object::prop_at(holder, 16).write(Value::entity(Tag::Array, table as *mut RcHeader));
+            // Retain before the entry is published, which is
+            // `Table::insert`'s contract: an entry a walker can reach must
+            // already be backed by a count.
+            crate::refcount::ll_retain(holder as *mut RcHeader);
             (*table).table.insert(
                 Key::Int(0),
                 Value::entity(Tag::Object, holder as *mut RcHeader),
             );
-            crate::refcount::ll_retain(holder as *mut RcHeader);
         }
         assert!(!unsafe { ll_release(holder as *mut RcHeader) });
 

@@ -339,14 +339,16 @@ mod tests {
         let key = mk(b"k");
         let value = mk(b"v");
         unsafe {
+            // `insert` writes the entry raw and leaves the counting to the
+            // caller, so these are the source array's own references — and
+            // they are taken first, because an entry a walker can reach
+            // must already be backed by a count.
+            crate::refcount::ll_retain(key as *mut RcHeader);
+            crate::refcount::ll_retain(value as *mut RcHeader);
             (*src).table.insert(
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, value as *mut RcHeader),
             );
-            // `insert` writes the entry raw and leaves the counting to the
-            // caller, so these are the source array's own references.
-            crate::refcount::ll_retain(key as *mut RcHeader);
-            crate::refcount::ll_retain(value as *mut RcHeader);
         }
         // A second holder is what makes the write a separation.
         unsafe { crate::refcount::ll_retain(src as *mut RcHeader) };
@@ -413,11 +415,11 @@ mod tests {
         let element =
             unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"in the arena") };
         unsafe {
+            crate::refcount::ll_retain(element as *mut RcHeader);
             (*src).table.insert(
                 Key::Int(1),
                 Value::entity(crate::value::Tag::String, element as *mut RcHeader),
             );
-            crate::refcount::ll_retain(element as *mut RcHeader);
         }
 
         unsafe {
@@ -505,14 +507,14 @@ mod tests {
         let key = mk(b"shared");
         let child = mk(b"child-value");
         unsafe {
+            crate::refcount::ll_retain(key as *mut RcHeader);
+            crate::refcount::ll_retain(child as *mut RcHeader);
             (*src).table.insert(Key::Int(1), Value::int(10));
             (*src).table.insert(
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, child as *mut RcHeader),
             );
             (*src).table.insert(Key::Int(2), Value::int(20));
-            crate::refcount::ll_retain(key as *mut RcHeader);
-            crate::refcount::ll_retain(child as *mut RcHeader);
         }
 
         let before_key = unsafe { (*(key as *mut RcHeader)).refcount };
