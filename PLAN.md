@@ -556,15 +556,18 @@ one compare — the set that would catch `$a['x'] = &$a`, which
 `{Object, Array}` does not, the last external release landing on the
 ReferenceBox. The crate itself is clean: every use is symbolic, `is_object`
 survives because Object stays 0, and the compiler holds no kind constant.
-The RFC is not: thirteen documents key on the numbers, `layouts.md` is
-organized by them, and `dev/DECISIONS.md` records them in dated entries
-that cannot be edited without falsifying history. And `classes.md` builds
-an argument that kinds 4–6 are one family whose codes may later be
-consolidated to reclaim a kind bit — the crate's only recorded route to
-one — which the proposed numbering scatters. Above all the ordering is
-wrong: until 15 and 16 landed, the wider set would have bought a
-mechanism that could not free an array ring at all. Revisit it when
-`resource` needs the last code, and price the Proxy family then.
+The RFC was not, and by 2026-08-07 it is: Edmond ruled the codes out of
+it altogether, so the documents name kinds and the assignment is
+normative in `EntityKind` alone (`rfc` `f170662`). Two of the three
+reasons recorded here went with that ruling. **The third was wrong
+arithmetic and is corrected rather than kept:** consolidating the Proxy
+family buys codes, not a bit — seven kinds take three bits and five kinds
+take three bits — so the family's adjacency was never a route to a free
+bit, and `layouts.md` had been counting codes all along. What remains
+against the renumbering is that the set-membership gate makes it
+unnecessary, and that a numbering fix expires at the next kind that needs
+admitting. Revisit it when `resource` needs a code, and price the Proxy
+family then.
 
 **Ruling on the escape copy's recursion, and on the two depths.** An
 explicit work list, not a depth limit. A limit would have to refuse

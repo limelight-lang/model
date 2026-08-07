@@ -218,6 +218,32 @@ obligation (no message pickup between a committing zero store and the end of a
 dispose), so both configurations now count teardown depth, each for its own
 strategy.
 
+## 2026-08-07 — this crate's `EntityKind` is the normative kind assignment
+
+Edmond ruled the entity-kind codes out of the RFC: a design document names
+a kind and never prints its number, because the number is a detail of the
+encoding (`rfc` `f170662`, and `rfc/dev/DECISIONS.md` of the same date).
+The assignment therefore has one normative home, `EntityKind` in
+`refcount.rs`, and this repository is free to print numbers — the ban is
+on the design, not on the implementation of it.
+
+**What that obliges, and it is not built:** a foreign consumer — the
+compiler, when its repository exists — must take the codes from an
+exported ABI surface rather than transcribe them. Building that export
+now was rejected: it has no consumer, and the kind codes are one row of a
+surface whose shape belongs to its main load (`ll_retain`, `ll_release`,
+the `RcHeader` offsets, the ValueBox layout). When it is built it is
+pinned to the enum by `const` assertions, so agreement is checked by the
+compiler rather than by eye. Until then a hardcoded kind code in a
+consumer is a defect even when its value is right.
+
+The gate change of the same date is what made the coupling visible, and
+`rfc/model/classes.md` carried the same defect in prose — a parenthetical
+claiming the candidate buffer holds objects and arrays, separated by bit
+13. Corrected in `rfc` `cc50370`, together with a second error the pass
+found: consolidating the Proxy family reclaims **codes and not a bit**,
+since seven kinds and five kinds both need three.
+
 ## 2026-08-07 — the candidate gate is a set of kinds, not a mask over their codes
 
 `rc-trace` admits an entity to the candidate buffer when its kind is in
