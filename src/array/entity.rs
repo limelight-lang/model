@@ -61,7 +61,7 @@ pub unsafe fn ll_array_new(category: MemoryCategory, salt: u64) -> *mut LLArray 
     }
     let a = mem as *mut LLArray;
     unsafe {
-        (&raw mut (*a).table).write(Table::empty(category, salt));
+        (&raw mut (*a).table).write(Table::empty(salt));
         publish_header(
             a as *mut RcHeader,
             RcHeader::new(category, COW | EntityKind::Array.to_flags()),

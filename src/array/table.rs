@@ -166,7 +166,6 @@ pub struct Table {
     live: usize,
     holes: usize,
     salt: u64,
-    category: MemoryCategory,
     /// Bumped twice by every operation that moves entries — growth and
     /// compaction — odd while the move is in progress. A concurrent
     /// walker reads it, then `storage`, `nslots` and `used`, then reads it
@@ -185,6 +184,11 @@ pub struct Table {
     flags: u8,
 }
 
+/// A table is embedded in an [`LLArray`](crate::array::entity::LLArray)
+/// at this offset and lives nowhere else, so its owner's header is a
+/// fixed step back from its own address.
+const OWNER_OFFSET: usize = size_of::<RcHeader>();
+
 /// A string key's slot comes from a keyed hash over its bytes rather
 /// than from the cached hash at +16. Set once and one way, by the flood
 /// backstop's equal-hash trigger.
@@ -201,7 +205,11 @@ const TABLE_FLOOD_STATE: u8 = TABLE_STRONG | TABLE_RESEEDED;
 
 impl Table {
     /// An empty table with no storage. The first insert allocates.
-    pub const fn empty(category: MemoryCategory, salt: u64) -> Self {
+    ///
+    /// No category: which memory this table's storage comes from is the
+    /// owning entity's header to say, and this reads it there
+    /// ([`Table::category`], `dev/DECISIONS.md` 2026-08-07).
+    pub const fn empty(salt: u64) -> Self {
         Table {
             storage: AtomicPtr::new(std::ptr::null_mut()),
             storage_capacity: 0,
@@ -213,7 +221,6 @@ impl Table {
             live: 0,
             holes: 0,
             salt,
-            category,
             flags: 0,
         }
     }
@@ -223,6 +230,31 @@ impl Table {
     #[inline]
     pub fn salt(&self) -> u64 {
         self.salt
+    }
+
+    /// The memory this table's storage comes from, read from the owning
+    /// entity's header — **the only authority there is**. A copy of the
+    /// category here would be a second fact to keep in step with the
+    /// first, and it drifted once already: a refused promotion left it
+    /// reading `RequestArena` under a heap array, so the next storage
+    /// came from whatever request arena was mounted (`2e55036`,
+    /// `dev/DECISIONS.md` 2026-08-07).
+    ///
+    /// Reads the header a fixed step back from `self`, which holds
+    /// because a table is embedded in its array and never moved out of
+    /// it. The debug assertion is what says so out loud: a table read
+    /// somewhere else answers with whatever precedes it in memory.
+    #[inline]
+    pub(crate) fn category(&self) -> MemoryCategory {
+        let owner =
+            unsafe { (self as *const Table as *const u8).sub(OWNER_OFFSET) as *const RcHeader };
+        let flags = unsafe { crate::refcount::header_flags(owner) };
+        debug_assert_eq!(
+            (flags & crate::refcount::ENTITY_KIND_MASK) >> crate::refcount::ENTITY_KIND_SHIFT,
+            crate::refcount::EntityKind::Array as u32,
+            "a table read a header that is not an array's: moved out of its entity?"
+        );
+        MemoryCategory::from_flags(flags)
     }
 
     /// True once the table has escalated to the keyed byte hash.
@@ -425,12 +457,11 @@ impl Table {
     /// mid-reset.
     pub(crate) unsafe fn carry_out_of(&mut self, arena: *mut crate::memory::arena::Arena) -> bool {
         debug_assert_eq!(
-            self.category,
+            self.category(),
             MemoryCategory::RequestArena,
             "only an arena table is carried out of a reset"
         );
         if self.storage().is_null() {
-            self.category = MemoryCategory::GcHeap;
             return true;
         }
 
@@ -443,13 +474,14 @@ impl Table {
             // run's own header.
             let forgotten = unsafe { (*arena).forget_large(self.storage()) };
             debug_assert!(forgotten, "an OS-direct storage the arena never logged");
-            self.category = MemoryCategory::GcHeap;
             return true;
         }
 
-        // The destination is named rather than taken from `self.category`,
-        // which still says `RequestArena` here — it is rewritten below,
-        // once the outcome is known.
+        // The destination is named rather than read from the header,
+        // which still says `RequestArena` here: promotion rewrites it
+        // after the carry, so that everything the survivor owns moves
+        // while the category still describes where it lives
+        // (`promote.rs`).
         let (fresh, granted) = unsafe {
             crate::memory::routing::body_alloc(
                 std::ptr::null_mut(),
@@ -458,20 +490,11 @@ impl Table {
             )
         };
         if fresh.is_null() {
-            // The refusal rewrites the category like the other three
-            // exits, and the reason is the allocation side rather than
-            // the free side the paragraph above worries about: `alloc`
-            // routes by this field, so a table left at `RequestArena`
-            // would take its next growth from whatever arena is mounted
-            // then, and that arena's reset would return the storage to
-            // the pool under a heap array still pointing at it.
-            self.category = MemoryCategory::GcHeap;
             return false;
         }
         unsafe { std::ptr::copy_nonoverlapping(self.storage(), fresh, self.storage_capacity) };
         self.set_storage(fresh);
         self.storage_capacity = granted;
-        self.category = MemoryCategory::GcHeap;
         true
     }
 
@@ -825,7 +848,7 @@ impl Table {
     /// allocate it, and the buffer block carries the owner and the stack
     /// such a free posts to.
     fn alloc(&self, bytes: usize) -> (*mut u8, usize) {
-        unsafe { crate::memory::routing::body_alloc(std::ptr::null_mut(), self.category, bytes) }
+        unsafe { crate::memory::routing::body_alloc(std::ptr::null_mut(), self.category(), bytes) }
     }
 
     /// Sever every live entry: null its element, drop its key, and
@@ -875,11 +898,11 @@ impl Table {
     /// requested one: the buffer arena's free is size-carrying and a
     /// chunk holds no metadata.
     ///
-    /// `self.category` is this table's copy of what the header says, and
-    /// `carry_out_of` rewrites it in every outcome for exactly this
-    /// reader.
+    /// The category comes from the owning entity's header
+    /// ([`Table::category`]), so a promotion that moves this storage
+    /// needs no second field kept in step with it.
     fn free_storage(&self, p: *mut u8, capacity: usize) {
-        unsafe { crate::memory::routing::body_free(self.category, p, capacity) };
+        unsafe { crate::memory::routing::body_free(self.category(), p, capacity) };
     }
 
     /// Turn the element under `key` into a reference and hand the box
@@ -908,7 +931,7 @@ impl Table {
                 if current.tag() == crate::value::Tag::Reference {
                     return current.entity_ptr() as *mut crate::reference::LLReference;
                 }
-                let category = self.category;
+                let category = self.category();
                 let boxed =
                     unsafe { crate::reference::ll_reference_new(std::ptr::null_mut(), category) };
                 if boxed.is_null() {
@@ -1075,26 +1098,42 @@ mod tests {
     /// A table whose storage is released when the binding is dropped, so
     /// a test cannot leak blocks into the pool's free-list order and
     /// disturb an unrelated test (which is exactly what happened once).
-    struct Owned(Table);
+    /// A table **inside its array**, which is the only place a table
+    /// lives: the memory its storage comes from is the owning entity's
+    /// header to say, so a headerless table has nothing to answer with
+    /// (`Table::category`, `dev/DECISIONS.md` 2026-08-07). Derefs to the
+    /// table, so a test reads as if it held one.
+    struct Owned(*mut crate::array::entity::LLArray);
     impl std::ops::Deref for Owned {
         type Target = Table;
         fn deref(&self) -> &Table {
-            &self.0
+            unsafe { &(*self.0).table }
         }
     }
     impl std::ops::DerefMut for Owned {
         fn deref_mut(&mut self) -> &mut Table {
-            &mut self.0
+            unsafe { &mut (*self.0).table }
         }
     }
     impl Drop for Owned {
         fn drop(&mut self) {
-            self.0.dispose()
+            unsafe {
+                (*self.0).table.dispose();
+                // The entity's own slot, by hand rather than through
+                // `ll_entity_die`: these tests own the children and give
+                // them back themselves, and teardown would release them a
+                // second time. The count goes to zero first because that
+                // is what a slot reaching the free list must read.
+                (*self.0).rc.refcount = 0;
+                crate::memory::stdapi::ll_free(self.0 as *mut u8);
+            }
         }
     }
 
+    const TEST_SALT: u64 = 0x243F_6A88_85A3_08D3;
+
     fn t() -> Owned {
-        Owned(Table::empty(MemoryCategory::GcHeap, 0x243F_6A88_85A3_08D3))
+        Owned(unsafe { crate::array::entity::ll_array_new(MemoryCategory::GcHeap, TEST_SALT) })
     }
 
     #[test]
@@ -1636,7 +1675,7 @@ mod tests {
         // Simulate a barrier writing the full Value into the dead slot.
         m.for_each_value_mut(|_| {});
         unsafe {
-            let e = m.0.entries().add(3);
+            let e = m.entries().add(3);
             (*e).value = Value::int(0xDEAD);
         }
         let mut seen = Vec::new();
@@ -1677,8 +1716,8 @@ mod tests {
         for i in 0..500i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
-        let base = m.0.storage() as usize;
-        let bytes = super::storage_bytes(m.0.nslots(), m.0.cap).unwrap();
+        let base = m.storage() as usize;
+        let bytes = super::storage_bytes(m.nslots(), m.cap).unwrap();
         for k in 0..m.used() {
             let e = m.entry(k);
             for word in [e.hash_or_key, e.key as u64, e.value.as_int() as u64] {
@@ -1708,7 +1747,7 @@ mod tests {
         use crate::memory::buffer_arena::with_buffer_arena;
         let _g = crate::memory::block_pool::test_guard();
 
-        let mut m = Table::empty(MemoryCategory::GcHeap, 0x243F_6A88_85A3_08D3);
+        let mut m = t();
         m.insert(Key::Int(1), Value::int(1));
         let storage = m.storage();
         let capacity = m.storage_capacity;
@@ -1749,11 +1788,11 @@ mod tests {
             m.insert(Key::Int(i), Value::int(i));
         }
         assert!(
-            m.0.storage_capacity > BLOCK_PAYLOAD,
+            m.storage_capacity > BLOCK_PAYLOAD,
             "the table never grew past one block, so this proves nothing"
         );
 
-        let kind = unsafe { *(((m.0.storage() as usize) & !BLOCK_MASK) as *const u32) };
+        let kind = unsafe { *(((m.storage() as usize) & !BLOCK_MASK) as *const u32) };
         assert_eq!(
             kind, BLOCK_KIND_LARGE_RUN,
             "a storage larger than a block is a run of blocks, which is what \
@@ -1778,21 +1817,29 @@ mod tests {
 
         let mut m = t();
         m.insert(Key::Int(1), Value::int(1));
-        let storage = m.0.storage() as usize;
+        let storage = m.storage() as usize;
 
-        // A `Table` holds raw pointers, so it is not `Send` by inference.
-        // Handing one to another thread to die on is the case the buffer
-        // arena's ownership protocol exists for, not a violation of it.
-        struct HandOver(Table);
+        // The **array** crosses, not the table: a table is embedded in
+        // its entity and reads its category from the header in front of
+        // it, so handing one over on its own would hand over a header
+        // that is not there. An array pointer is a raw pointer and not
+        // `Send` by inference; a dying entity crossing threads is the
+        // case the buffer arena's ownership protocol exists for, not a
+        // violation of it.
+        struct HandOver(*mut crate::array::entity::LLArray);
         unsafe impl Send for HandOver {}
-        let carried = HandOver(std::mem::replace(
-            &mut m.0,
-            Table::empty(MemoryCategory::GcHeap, 0),
-        ));
+        let handed = std::mem::replace(&mut m, t());
+        let carried = HandOver(handed.0);
+        // The other thread disposes it; this one must not.
+        std::mem::forget(handed);
 
         std::thread::spawn(move || {
-            let mut carried = carried;
-            carried.0.dispose();
+            let carried = carried;
+            unsafe {
+                (*carried.0).table.dispose();
+                (*carried.0).rc.refcount = 0;
+                crate::memory::stdapi::ll_free(carried.0 as *mut u8);
+            }
         })
         .join()
         .unwrap();
@@ -1823,7 +1870,11 @@ mod tests {
         let context_ptr: *mut LLContext = &mut context;
         set_current_context(context_ptr);
 
-        let mut m = Table::empty(MemoryCategory::RequestArena, 0x243F_6A88_85A3_08D3);
+        // An arena array, because an arena table's storage is routed by
+        // the header in front of it like every other table's.
+        let a =
+            unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena, TEST_SALT) };
+        let m = unsafe { &mut (*a).table };
         for i in 0..1100i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
@@ -1840,16 +1891,21 @@ mod tests {
         arena.reset(|_| {});
     }
 
-    /// A refused carry leaves the storage where it is, but the table is a
-    /// heap table from that moment on and `alloc` routes by this very
-    /// field. Left at `RequestArena` it would take its next storage from
-    /// whatever arena is mounted then, and that arena's reset would return
-    /// the storage to the pool with the promoted heap array still pointing
-    /// at it — a use-after-free rather than the leak the refusal looks
-    /// like. Seen failing: without the rewrite the next allocation's block
-    /// reads arena rather than buffer.
+    /// A refused carry leaves the storage where it is, and the array is a
+    /// heap array from that moment on: promotion clears the category bits
+    /// whether the carry succeeded or not. What the table must do is
+    /// follow — route its next storage to the heap — and it does that by
+    /// reading the header rather than a field of its own, which is why
+    /// the four rewrites `carry_out_of` used to make are gone
+    /// (`dev/DECISIONS.md`, 2026-08-07).
+    ///
+    /// The danger the rewrites guarded is unchanged: a table still
+    /// answering `RequestArena` would take its next storage from whatever
+    /// arena is mounted then, and that arena's reset would return the
+    /// chunk to the pool with a heap array still pointing at it — a
+    /// use-after-free rather than the leak a refusal looks like.
     #[test]
-    fn a_refused_carry_still_moves_the_table_into_the_heap() {
+    fn a_refused_carry_leaves_the_next_storage_to_the_header() {
         use crate::memory::arena::Arena;
         use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK, BLOCK_PAYLOAD, FORCE_OOM};
         use crate::memory::buffer_arena::buffer_free_longlived_payload;
@@ -1863,7 +1919,9 @@ mod tests {
         let context_ptr: *mut LLContext = &mut context;
         set_current_context(context_ptr);
 
-        let mut m = Table::empty(MemoryCategory::RequestArena, 0x243F_6A88_85A3_08D3);
+        let a =
+            unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena, TEST_SALT) };
+        let m = unsafe { &mut (*a).table };
         for i in 0..8i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
@@ -1876,6 +1934,16 @@ mod tests {
         let carried = unsafe { m.carry_out_of(arena_ptr) };
         FORCE_OOM.store(false, Ordering::Relaxed);
         assert!(!carried, "the copy was meant to be refused and was not");
+        assert_eq!(
+            m.category(),
+            MemoryCategory::RequestArena,
+            "the carry decided a category of its own instead of leaving it to the header"
+        );
+
+        // What promotion does to a survivor a moment later, and the whole
+        // of what the table needs from it: clear the category bits, which
+        // leaves 00 — the GC heap (`promote.rs`).
+        unsafe { (*a).rc.flags &= !crate::refcount::MEMORY_CATEGORY_MASK };
 
         // The storage itself stays in the arena block, which promotion
         // stamps retained a moment later; what must have moved is where
