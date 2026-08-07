@@ -608,6 +608,78 @@ make visible. The repair is a crate-internal barrier entry that publishes
 an already-retained reference: `store_category_barrier` is that operation
 already, minus the slot write. It must land with or before item 12's arm.
 
+## Then: `Map`, whose keys may be objects
+
+Edmond's, 2026-08-07. A `Map` is the ordered hash again — strategy 3's
+structure unchanged, one chunk of `u32` index slots over a dense array of
+entries in insertion order — with the key widened from "integer or
+string" to "integer, string or object". The design is not written; what
+follows is the list of questions it has to answer, each verified against
+the code as it stands rather than guessed.
+
+**An object key is compared by identity, and the identity already
+exists.** `spl_object_id` is the JVM trick: derived from the address
+while the object stays put, lazily stored in the object and carried with
+it when the arena reset evacuates one (`rfc/model/memory/arena-reset.md`).
+So the hash of an object key is that id, and equality is pointer
+equality — no user code on the lookup path, which is what makes this a
+different type from a `Map` keyed by `__equals`.
+
+**The entry cannot tell an object key from a string key today, and that
+is the first thing to build.** `Entry::key` distinguishes its three
+states by value: `KEY_INT = 0`, `KEY_HOLE = 1`, anything above is a
+string pointer — and that last test is what a *walker* makes on the raw
+word (`array/entry.rs`). An object pointer passes it, so a Map would
+hand the tracer an `LLString` that is an `Object`. The kind has to move
+somewhere the walker reads: `Entry::meta` is the reserved `u32` beside
+`next` and is the obvious home, at the cost of one more load per walked
+entry.
+
+**An object key is a counted child**, exactly as a string key is: the
+table owes it a reference, `for_each_counted_child` has to yield it, and
+`trace_cells` has to see it, or a ring closing through a key leaks with
+no pass finding it. The sever path owes the same — a cleared entry drops
+its key.
+
+**`MapMixed` takes any key at all** — integer, string, object, array —
+and the array key is the one that changes the shape rather than widening
+it. An object is compared by identity; an array is a *value*, so it is
+compared by content, and a content comparison needs a content hash. Three
+things follow.
+
+The hash of an array key is O(size) and recursive over nested arrays,
+which is the deep copy's problem again in a new place: depth is the
+program's to choose, so the walk that hashes needs the same explicit list
+`array::entity::separate` now uses, not the machine stack. Nothing exists
+to cache it: an array carries no hash field, the way a string carries one
+at +16, and adding one costs eight bytes on every array or a bit saying
+"not computed" in a byte that has room.
+
+**A key that is an array cannot change under the map, and the reason is
+already in the crate.** The map holds a reference, so the key's count is
+at least two, so any write by any holder separates first
+(`refcount::cow_separation_needed`) and leaves the map's key untouched.
+Value keys are therefore sound without freezing anything — but the
+argument rests on count-equals-holders, the same invariant the deep
+copy's termination rests on, and it should be written down where a
+reader of the map finds it.
+
+Equality between two array keys is structural and has to stop early: the
+content hashes differ for almost every pair, so the byte-by-byte walk
+runs only after 64 bits already agree, exactly as a string key's does
+today.
+
+**What is Edmond's to decide**, and none of it is implied by the above:
+whether `Map` and `MapMixed` are one type with a key-kind set or two;
+whether they are a second entity kind or the array kind with another
+storage strategy — kind codes are nearly spent, `7` is reserved and
+`4`–`6` are one family the RFC wants to consolidate; whether an object
+key's id defends against flooding by itself, ASLR being its only
+entropy, or whether it goes through the same salted mix an integer key
+does; whether an array key's content hash is cached and where; and
+whether a map is COW like `array` or a reference type, which decides
+whether copying a map copies its keys.
+
 ## Then: arrays as a performance problem
 
 Opened 2026-08-07 at Edmond's request, and it gathers work the plan had
