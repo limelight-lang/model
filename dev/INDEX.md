@@ -121,6 +121,17 @@ versions live in `docs/history/`, marked at the top.
   by size, so a storage over one block payload is a dedicated run. It
   never comes from `entity_alloc`, whose blocks the collector reads as
   entities.
+  `element.rs` is the generic element layer above the table, and the layer
+  `Map` will share: `canonical_key` turns a numeric string into the integer
+  key PHP means by it, and `set` is the element store, which takes the
+  holder's slot and returns `bool` like every other store-side barrier.
+  The whole separation composition is inside it — publish the copy, spend
+  its creation reference, drop the displaced original, in that order,
+  because `drop_ref` runs `__destruct` bodies that can displace the copy
+  from the slot just written (`dev/DECISIONS.md`, 2026-08-08). Three
+  refusals report `false` with every array unchanged: the separation's
+  copy, the publication of an arena COW value or key, and the table's
+  growth.
   `entity.rs` is the wrapper supplying the `RcHeader`: an array carries no
   class pointer, the same construction as a string, because the entity
   kind already says what it is. Its children — elements **and** string

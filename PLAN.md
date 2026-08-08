@@ -732,7 +732,7 @@ readable through the box.
         **Assumption, Edmond's to overturn:** PHP 8.3 semantics — a
         negative key moves the cursor, `$a[-5]=1; $a[]=2;` appends at
         −4; pinned by test, the pre-8.3 answer is one comparison away.
-- [ ] S2.5 The store: separate, publish, release, refuse
+- [x] S2.5 The store: separate, publish, release, refuse
       done: `set(ctx, owner_cat, slot, key, value) -> bool` — a store
         through one holder of a shared array leaves the other holder's
         entries unchanged, leaves the displaced original at count one so a
@@ -740,6 +740,36 @@ readable through the box.
         refusals, the separation's and the table's, with every array
         involved unchanged
       tier: T2 · role: Критик
+      Критик 2026-08-07 round 1: the round's list did not survive the
+        session boundary. What is verifiable is the two fixes it left in
+        the code under its name: the creation reference is spent before
+        the displaced original's `drop_ref`, and `destroy_private_copy`
+        calls `ll_entity_die` unconditionally, because `ll_release`
+        reports no death on an arena entity.
+      Критик 2026-08-08 round 2, two lenses over the diff — ownership on
+        every path, and the order of publication and teardown. Ownership
+        found no arithmetic defect and four branches no test executed;
+        order found the doc printing the composition the code had
+        rejected. All acted on: the `set` doc's order corrected with its
+        reason, the same order carried into `ll_cow_separate` and
+        `string::separate` with a `dev/DECISIONS.md` entry, the entry
+        assertion widened from `is_refcounted` to a `Tag::Array` test
+        (a ReferenceBox passed the old one and would have been written
+        over as an array), the refusal count corrected from two to three,
+        three tests added and one repaired. No dispute left, so no
+        Мудрец.
+      handoff: `array::element::set` is the store, and the composition is
+        publish, spend the creation reference, drop the displaced
+        original — that order, because `drop_ref` runs `__destruct`
+        bodies that can displace the copy from the slot just written.
+        Three refusals, each an allocation: the separation's copy, the
+        publication of an arena COW value or key (`escape_copy`), and the
+        table's growth; the `store_box` arm cannot fire while
+        `separation_category` maps an arena holder to an arena copy.
+        Eleven tests, four seen failing under targeted reverts — the
+        displaced element's giveback, the escape copy's, the arena
+        separation category, and the entity-slot probe without which the
+        growth-refusal test silently measures the separation refusal.
 - [ ] S2.6 Read, append and unset over the store's composition
       done: appending through one holder of a shared array leaves the
         other holder's length unchanged; `unset` gives the key back by

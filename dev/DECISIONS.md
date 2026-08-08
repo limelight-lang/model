@@ -8,6 +8,31 @@ never edited or deleted.
 
 ---
 
+## 2026-08-08 — the creation reference is spent before the displaced original is dropped
+
+**Decided:** the COW store composition runs store, release the creation
+reference, drop the displaced original. This supersedes the order named
+in the 2026-08-04 entry below and in the doc comments that carried it,
+`object::ll_cow_separate` and `string::separate`, which put the drop
+second and the release last.
+
+**Why:** `drop_ref` runs `__destruct` bodies, so the store site is
+reentrant between the drop and the release. A destructor reaching the
+slot just written displaces the copy; with the creation reference still
+outstanding that displacement takes the copy to one rather than to zero,
+and the release that follows returns a death verdict the store site
+discards. The copy is then never torn down, and every child it holds
+keeps a reference nothing will give back.
+
+**Why it stayed invisible:** a displaced string runs no user code, so
+both orders measure the same at the only site that existed until now.
+`array::element::set` is the first store of an entity whose teardown can
+call back into the language.
+
+**Cost:** none at the store. The release now runs while the slot alone
+holds the copy, so it cannot be the death — asserted in debug builds
+rather than branched on.
+
 ## 2026-08-07 — a table starts unsalted; the flood ladder's first rung draws the salt
 
 **Decided (Edmond):** unsalted is the ladder's zeroth rung, not a mode

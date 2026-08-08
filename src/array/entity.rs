@@ -437,7 +437,7 @@ impl WorkList {
 /// `drop_ref`'s to settle: a bare release double-frees the first at the
 /// reset and leaves the second counted forever.
 #[inline]
-unsafe fn give_value_back(category: MemoryCategory, v: &Value) {
+pub(crate) unsafe fn give_value_back(category: MemoryCategory, v: &Value) {
     if v.is_refcounted() {
         unsafe { crate::memory::barrier::drop_ref(category, v.entity_ptr()) };
     }

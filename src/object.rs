@@ -757,10 +757,16 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
 /// entity is copied and the copy comes back.
 ///
 /// **A separated copy comes back at +1, owned by the caller**, and the
-/// full composition — store, drop the displaced original, release the
-/// creation reference — is written out in [`crate::string::separate`].
-/// Getting it wrong does not merely leak: a copy left at two reads as
-/// shared on every later write and separates forever.
+/// full composition is written out in [`crate::string::separate`]:
+/// store, release the creation reference, drop the displaced original.
+/// The last two are in that order because dropping the original runs
+/// `__destruct` bodies, and one of them can displace the copy from the
+/// slot just written. With the creation reference still outstanding,
+/// that displacement takes the copy to one rather than to zero, and the
+/// release that follows returns a death verdict the store site
+/// discards, so the copy and every child it holds are leaked.
+/// Getting the release wrong instead does not merely leak: a copy left
+/// at two reads as shared on every later write and separates forever.
 ///
 /// `owner_cat` is the **holder's** category, supplied by the compiler as
 /// it is to every other store-side barrier (`memory/barrier.rs`), and

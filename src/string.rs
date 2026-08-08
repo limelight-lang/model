@@ -336,17 +336,27 @@ pub(crate) unsafe fn new_with_hash(
 /// ```text
 /// let copy = ll_cow_separate(ctx, owner_cat, old);  // copy[1]
 /// store_ptr(arena, owner_cat, slot, copy);          // copy[2], slot registered
-/// drop_ref(owner_cat, old);                         // old loses this holder
 /// ll_release(copy);                                 // copy[1] — the creation
 ///                                                   //   reference, now spent
+/// drop_ref(owner_cat, old);                         // old loses this holder
 /// ```
 ///
-/// Skipping that last release leaves the copy at two for one holder: it
-/// never reaches zero, and — worse than the leak — the sharing test reads
-/// `2 > 1` on every later write, so the value separates forever and COW
-/// is off for the rest of its life. Skipping the `store_ptr` instead, and
-/// writing the slot raw to "transfer" the reference, loses the escape
-/// registration that store performs.
+/// Skipping the release leaves the copy at two for one holder: it never
+/// reaches zero, and the sharing test then reads `2 > 1` on every later
+/// write, so the value separates forever and COW is off for the rest of
+/// its life. Skipping the `store_ptr` instead, and writing the slot raw
+/// to "transfer" the reference, loses the escape registration that store
+/// performs.
+///
+/// **The release precedes the drop, and the order is load-bearing for
+/// kinds a string is not.** `drop_ref` runs `__destruct` bodies, and one
+/// of them can displace the copy from the slot just written; with the
+/// creation reference still outstanding, that displacement takes the
+/// copy to one rather than to zero, and the release that follows returns
+/// a death verdict the store site discards. A displaced string runs no
+/// user code, so either order measures the same here — which is why the
+/// order is stated rather than left to the example
+/// (`array::element::set` is the site that needs it).
 ///
 /// **The original is not released here.** That is the holder's
 /// `drop_ref` above: the copy's creation reference and the original's
@@ -853,8 +863,8 @@ mod tests {
                 &raw mut slot,
                 copy,
             ));
-            crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, original as *mut RcHeader);
             assert!(!ll_release(copy), "the creation reference, spent");
+            crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, original as *mut RcHeader);
         }
 
         assert_eq!(unsafe { (*copy).refcount }, 1, "the slot alone holds it");
