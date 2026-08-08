@@ -148,7 +148,10 @@ versions live in `docs/history/`, marked at the top.
   which reads the entries through `Table::coherent_entries`: a version
   counter brackets growth and compaction, and a walker that cannot get a
   coherent reading skips the array for that epoch rather than striding a
-  fresh count over a stale chunk. `entity::for_each_counted_child` is an
+  fresh count over a stale chunk. Both ends of that bracket are ordered by
+  a fence rather than by a release store and an acquire load, and
+  `version_bracket_model.rs` is the loom model that exhibits what the
+  other shape admits (`dev/WORKFLOW.md`, "Loom"). `entity::for_each_counted_child` is an
   adapter over it, and `ll_entity_die`'s Array arm goes through that; the
   release side uses the barrier's `drop_ref`, so a child the array held
   last is torn down rather than only decremented. An arena array that

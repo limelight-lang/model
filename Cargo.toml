@@ -70,6 +70,12 @@ rc-walk = []
 # with them lives in the runtime, and a mismatch is silent otherwise.
 hash-folding = []
 
+[lints.rust]
+# `loom` is a build-time selector rather than a feature: the model it gates
+# (`src/array/version_bracket_model.rs`) replaces the standard atomics with
+# loom's own, which no ordinary build may link.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
 [dependencies]
 
 [dev-dependencies]
@@ -81,6 +87,11 @@ bumpalo = "3"
 # Windows TLS path is inline `asm!`, which Miri cannot execute), and no
 # Linux C toolchain exists on a Windows dev box — so building this under
 # Miri fails before a single test runs. Nothing outside `benches/` uses it.
+# Only under `RUSTFLAGS="--cfg loom"`, so an ordinary build never resolves
+# it: the model in `src/array/version_bracket_model.rs` is the sole user.
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"
+
 [target.'cfg(not(miri))'.dev-dependencies]
 mimalloc = "0.1"
 # jemalloc (tikv-jemallocator) intentionally omitted: jemalloc-sys does

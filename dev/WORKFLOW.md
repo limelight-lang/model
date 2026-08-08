@@ -233,6 +233,30 @@ actually has. Taking a fresh `&mut` per call retags and invalidates the
 pointer `set_current_context` parked in TLS, producing a failure that
 is an artefact of the test, not of the runtime.
 
+## Loom
+
+Loom explores the executions the C11 model permits, which is how an
+ordering defect is exhibited on a box whose hardware reorders nothing.
+One model exists, `src/array/version_bracket_model.rs`:
+
+```
+RUSTFLAGS="--cfg loom" cargo test --lib version_bracket
+```
+
+It is outside the commit gate, and the dependency is gated the same way
+(`[target.'cfg(loom)'.dev-dependencies]`), so an ordinary build neither
+resolves nor compiles it.
+
+Two limits decide what a loom model is worth here. Loom replaces every
+atomic, cell and thread with its own types, so code that allocates, holds
+raw pointers or reaches thread-locals cannot run under it — a model is a
+hand-written **copy of the protocol**, and it drifts from the code
+silently unless someone keeps the two in step. And loom's own README
+records gaps in its model, load buffering among them, so a green run is
+weak evidence while a red one exhibits an execution. Write the model so
+that the defective configurations stay pinned as `should_panic` tests:
+that is the half of the run that proves something.
+
 ## Benchmarks
 
 See `BENCHMARKS.md`. The short version: this crate is

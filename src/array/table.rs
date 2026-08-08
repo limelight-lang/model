@@ -23,7 +23,7 @@
 //! obligation for arrays). An implementer reaching for a pointer here
 //! would break promotion silently.
 
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering, fence};
 
 use crate::array::entry::{Entry, MAX_ENTRIES, NONE};
 use crate::memory::block_pool::BLOCK_PAYLOAD;
@@ -424,14 +424,27 @@ impl Table {
     /// Open a window in which entries move. The version goes odd, and a
     /// walker that sees an odd reading — or two different readings around
     /// its own — starts over (`PLAN.md`, item 12).
+    ///
+    /// The odd value is stored plainly and the fence comes **after** it,
+    /// because what must stay on this side of the fence is everything the
+    /// move writes next. A release store orders the opposite side (what
+    /// precedes it) and leaves the moves free to become visible before the
+    /// odd version, which is the reading a walker would then accept as
+    /// coherent. This is `ck_sequence_write_begin`'s shape and the reason
+    /// for it (`dev/RESEARCH.md`, Concurrency Kit).
     #[inline]
     fn begin_entry_move(&self) {
         let v = self.version.load(Ordering::Relaxed);
-        self.version.store(v + 1, Ordering::Release);
+        self.version.store(v + 1, Ordering::Relaxed);
+        fence(Ordering::Release);
     }
 
     /// Close it. Even again, and everything the move wrote is published
     /// before the walker can accept the reading.
+    ///
+    /// A release store is the right instrument here and the asymmetry with
+    /// [`begin_entry_move`](Self::begin_entry_move) is deliberate: the
+    /// writes to order are the ones that precede this call.
     #[inline]
     fn end_entry_move(&self) {
         let v = self.version.load(Ordering::Relaxed);
@@ -476,7 +489,14 @@ impl Table {
             let storage = storage_word.load(Ordering::Relaxed);
             let nslots = nslots_word.load(Ordering::Relaxed);
             let used = used_word.load(Ordering::Relaxed);
-            if version.load(Ordering::Acquire) != before {
+            // The fence, not the load, is what keeps the three readings
+            // above from being taken after the closing check: an acquire
+            // *load* orders what follows it, so the words it is meant to
+            // validate could be read past it and the check would validate
+            // nothing. `ck_sequence_read_retry` fences and then loads
+            // plainly, for this reason (`dev/RESEARCH.md`).
+            fence(Ordering::Acquire);
+            if version.load(Ordering::Relaxed) != before {
                 continue;
             }
             if storage.is_null() {

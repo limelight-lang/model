@@ -10,3 +10,9 @@ pub mod element;
 pub mod entity;
 pub mod entry;
 pub mod table;
+
+// A model of the table's version bracket, checked by `loom` rather than by
+// the suite: it exists only under `--cfg loom`, where the dev-dependency
+// exists too. How to run it, and what it demonstrated, are in the file.
+#[cfg(loom)]
+mod version_bracket_model;

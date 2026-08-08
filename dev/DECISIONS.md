@@ -8,6 +8,36 @@ never edited or deleted.
 
 ---
 
+## 2026-08-08 — the table's version bracket orders both sides with fences
+
+**Decided:** `begin_entry_move` stores the odd version relaxed and then
+runs `fence(Release)`; `Table::coherent_entries` runs `fence(Acquire)`
+and then loads the version plainly. `end_entry_move` keeps its release
+store, and the reader keeps its acquire load at the opening check.
+
+**Why:** a release store orders what precedes it, so the odd version was
+free to become visible after the entry moves it is meant to announce; an
+acquire load orders what follows it, so the three words the closing check
+validates were free to be read after it. Each half admits the same
+execution, in which a walker accepts a storage pointer from one table
+state with an entry count from another and strides a fresh count over a
+stale chunk. That is an edge which never existed, and no later phase
+repairs it. The reference seqlock this counter reimplements,
+`ck_sequence.h`, writes the odd value plainly and fences after it, and
+fences before the closing load (`dev/RESEARCH.md`, Concurrency Kit).
+
+**Demonstrated rather than argued.** `src/array/version_bracket_model.rs`
+is a loom model of the bracket alone, and it exhibits the accepting
+execution for the old bracket and for either fence taken by itself,
+while the pair holds. It models a copy of the protocol, since the table
+cannot run under `--cfg loom`; three `should_panic` tests keep the three
+failing configurations from being quietly re-adopted.
+
+**Cost:** none on x86-64, measured with rustc 1.96.0 at `-O`: both fences
+emit `#MEMBARRIER`, a compiler barrier and no instruction. On aarch64 it
+is one `dmb` per bracket, and a bracket runs around growth, compaction
+and a walker's read rather than on the element path.
+
 ## 2026-08-08 — the creation reference is spent before the displaced original is dropped
 
 **Decided:** the COW store composition runs store, release the creation

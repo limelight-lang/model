@@ -637,7 +637,7 @@ it — legal, since the entry writes are relaxed atomics and `used` and
 `nslots` are ordinary writes. The hardware exposure is aarch64, ppc64le
 and riscv64, and we have none of them.
 
-- [ ] S2.V The bracket fences on both sides, and something demonstrates it
+- [x] S2.V The bracket fences on both sides, and something demonstrates it
       done: `begin_entry_move` stores relaxed and then `fence(Release)`;
         `coherent_entries` runs `fence(Acquire)` before its closing load;
         the reordering is demonstrated failing before the fix rather than
@@ -668,6 +668,18 @@ and riscv64, and we have none of them.
         nothing. The claim is about what the model permits, so a litmus
         test under `herd7` is the proof if one is wanted beyond
         `ck_sequence.h` itself.
+      handoff: the fix is in `array/table.rs` and the demonstration
+        succeeded, so the fallback of recording a failed attempt was not
+        taken. `src/array/version_bracket_model.rs` is the loom model,
+        run by `RUSTFLAGS="--cfg loom" cargo test --lib version_bracket`
+        and gated by `[target.'cfg(loom)'.dev-dependencies]` so no
+        ordinary build resolves loom. It exhibits the accepting execution
+        for the old bracket **and for either fence taken alone**, which is
+        why three of its four tests are `should_panic`. `dev/DECISIONS.md`
+        2026-08-08 carries the ordering argument; `dev/WORKFLOW.md` gains
+        a "Loom" section with what a model of this kind is worth. The
+        `#MEMBARRIER` measurement was re-taken on this box before being
+        written down.
 
 ### Beside it: `deferred_free.rs:47` says cross-thread frees do not park
 
