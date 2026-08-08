@@ -123,15 +123,18 @@ versions live in `docs/history/`, marked at the top.
   entities.
   `element.rs` is the generic element layer above the table, and the layer
   `Map` will share: `canonical_key` turns a numeric string into the integer
-  key PHP means by it, and `set` is the element store, which takes the
-  holder's slot and returns `bool` like every other store-side barrier.
-  The whole separation composition is inside it — publish the copy, spend
-  its creation reference, drop the displaced original, in that order,
+  key PHP means by it, and `get`, `set`, `append` and `unset` are the
+  operations, each taking the holder's slot and the writes returning `bool`
+  like every other store-side barrier. One function holds the separation
+  composition for all three writes, `write_through` — publish the copy,
+  spend its creation reference, drop the displaced original, in that order,
   because `drop_ref` runs `__destruct` bodies that can displace the copy
   from the slot just written (`dev/DECISIONS.md`, 2026-08-08). Three
   refusals report `false` with every array unchanged: the separation's
   copy, the publication of an arena COW value or key, and the table's
-  growth.
+  growth; `append` has a fourth that allocates nothing, an append cursor
+  with no successor left. `get` never separates and reads a boxed element
+  through its box. Taking a reference is S2.8's.
   `entity.rs` is the wrapper supplying the `RcHeader`: an array carries no
   class pointer, the same construction as a string, because the entity
   kind already says what it is. Its children — elements **and** string

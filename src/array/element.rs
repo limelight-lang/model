@@ -1,11 +1,13 @@
 //! The generic element layer over the table (`PLAN.md`, stage S2).
 //!
-//! The five element operations — read, store, append, unset, take a
-//! reference — are built here with S2.5, over the key constructor,
-//! because every one of them starts by settling what the key *is*.
-//! Canonicalisation sits in this layer rather than inside
-//! `Table` on purpose: `Map` is the table's second customer and keys a
-//! map exactly, so a table that canonicalised would be unusable there.
+//! Four of the five element operations are here — `get`, `set`,
+//! `append` and `unset`; taking a reference (`&$a[k]`) waits on S2.8.
+//! Every write goes through one composition, `write_through`, and every
+//! operation starts by settling what the key *is*, which is why the key
+//! constructor lives here too. Canonicalisation sits in this layer
+//! rather than inside `Table` on purpose: `Map` is the table's second
+//! customer and keys a map exactly, so a table that canonicalised would
+//! be unusable there.
 
 use crate::array::entity::{LLArray, give_value_back};
 use crate::array::table::{Key, Table};
@@ -14,66 +16,49 @@ use crate::refcount::{MemoryCategory, RcHeader};
 use crate::string::LLString;
 use crate::value::{Tag, Value};
 
-/// The element store: `$a[k] = v` through the holder's slot, with the
-/// whole separation composition inside.
+/// The separation composition every write here goes through: separate
+/// the holder's array if it is shared, run `write` on the array the
+/// write must reach, publish the result, and settle the three
+/// references.
 ///
 /// `slot` names the array (`Tag::Array`); `owner_cat` is the holder's
 /// category, a compiler parameter as at every store-side barrier. On a
-/// shared array the operation separates first, fills the private copy,
-/// and publishes only then, in this order: `store_box` writes the copy
-/// into `slot`, `ll_release` spends the copy's creation reference, and
-/// `drop_ref` takes this holder off the displaced original. The last
-/// two are in that order and not in `string::separate`'s, because
-/// `drop_ref` runs `__destruct` bodies and one of them can displace the
-/// copy from this very slot; the creation reference is therefore spent
-/// while no user code can run. Composed in one place, the "copy left at
-/// two separates forever" trap is unreachable from any call site.
+/// shared array the copy is filled privately and published only then, in
+/// this order: `store_box` writes the copy into `slot`, `ll_release`
+/// spends the copy's creation reference, and `drop_ref` takes this
+/// holder off the displaced original. The last two are in that order and
+/// not in `string::separate`'s, because `drop_ref` runs `__destruct`
+/// bodies and one of them can displace the copy from this very slot; the
+/// creation reference is therefore spent while no user code can run
+/// (`dev/DECISIONS.md`, 2026-08-08). Held in one function, the "copy
+/// left at two separates forever" trap is unreachable from any call
+/// site — which is why [`set`], [`append`] and [`unset`] differ only in
+/// what they pass as `write`.
 ///
 /// **`false` reports a refusal with the arrays unchanged**: the slot
 /// still names the original at its old count, every table holds its old
 /// entries, and every reference the caller brought is still the
-/// caller's. Three refusals report this way, each an allocation no
-/// reserve funds: the separation's copy, the publication of an arena
-/// COW value or key into a longer-lived array (`escape_copy`, inside
-/// `store_category_barrier`), and the table's growth. A copy refused
-/// part-way dies whole ([`destroy_private_copy`]). One state does move
-/// on a refused insert: a long chain draws the salt before growth is
-/// asked to allocate and rung state is one-way, so the flood ladder may
-/// have advanced.
+/// caller's. A copy refused part-way dies whole
+/// ([`destroy_private_copy`]).
 ///
 /// **The displaced original ends at one holder — up to the reset log.**
 /// A heap array displaced from an *arena* holder's slot is owed its
 /// release by the log, not by this `drop_ref`, so its count stays high
-/// until the reset and a later store through another holder separates
+/// until the reset and a later write through another holder separates
 /// once more: conservative — a count above the holders can only copy
 /// more, never corrupt — and inherent to log ownership rather than a
 /// defect here.
 ///
-/// **No caller reference is consumed.** The operation takes references
-/// of its own for what the array keeps: the value's entity is retained
-/// and published through `store_category_barrier` (which may hand back
-/// a copy — an arena COW value crossing into a longer-lived array), and
-/// a string key follows S2.2's rule — consumed by a new entry, given
-/// back through `drop_ref` when the overwrite arm kept the entry's
-/// original key. The displaced element goes back the same way.
-///
-/// `key` is already canonical (`canonical_key`); a debug build asserts
-/// that rather than re-canonicalising on every store.
-///
 /// # Safety
 /// `ctx` per `ll_arena_alloc`; `slot` a live slot of a live holder of
-/// category `owner_cat`, holding a live array; `value`'s entity, if
-/// any, live and **holding a reference independent of `slot`** — a
-/// subscript RHS in PHP is a temporary with a reference of its own, so
-/// `$a[0] = $a` reaches here at count 2 and separates. Handed the
-/// slot's own array at count 1, this would build `$a[0] === $a`, a
-/// cycle PHP's value semantics cannot produce.
-pub unsafe fn set(
+/// category `owner_cat`, holding a live array. `write` gets an array no
+/// other holder can see once a copy was made, and reports whether it
+/// wrote.
+unsafe fn write_through(
     ctx: *mut LLContext,
     owner_cat: MemoryCategory,
     slot: *mut Value,
-    key: Key,
-    value: Value,
+    write: impl FnOnce(*mut LLArray, *mut crate::memory::arena::Arena) -> bool,
 ) -> bool {
     // The tag, not `is_refcounted`: a ReferenceBox passes the flag test,
     // and `ll_cow_separate` has no arm for that kind — in release it
@@ -83,13 +68,6 @@ pub unsafe fn set(
         matches!(unsafe { (*slot).tag() }, Tag::Array),
         "the slot names an array"
     );
-    #[cfg(debug_assertions)]
-    if let Key::Str(s) = key {
-        debug_assert!(
-            matches!(unsafe { canonical_key(s) }, Key::Str(_)),
-            "the layer canonicalises before it stores"
-        );
-    }
     let current = unsafe { (*slot).entity_ptr() } as *mut LLArray;
     let arena = crate::memory::context::resolve_arena(ctx);
     let separated =
@@ -99,17 +77,18 @@ pub unsafe fn set(
         return false;
     }
     if separated == current {
-        return unsafe { store_into(current, arena, key, value) };
+        return write(current, arena);
     }
     // The copy is private until published, so a refusal from here on
     // destroys it whole and leaves the slot and the original untouched.
-    // `store_box` is not one of the three refusals today: it refuses
-    // only when it must copy an arena COW entity out for a longer-lived
-    // holder, and `separation_category` puts the copy in the arena
-    // exactly when `owner_cat` is the arena. Tested rather than assumed,
-    // because the day that mapping changes, an ignored `false` leaves
-    // the slot naming the original while the copy holds every child.
-    if !unsafe { store_into(separated, arena, key, value) }
+    // `store_box` is not one of the operations' named refusals: it
+    // refuses only when it must copy an arena COW entity out for a
+    // longer-lived holder, and `separation_category` puts the copy in the
+    // arena exactly when `owner_cat` is the arena. Tested rather than
+    // assumed, because the day that mapping changes, an ignored `false`
+    // leaves the slot naming the original while the copy holds every
+    // child.
+    if !write(separated, arena)
         || !unsafe {
             crate::memory::barrier::store_box(
                 arena,
@@ -135,6 +114,153 @@ pub unsafe fn set(
         crate::memory::barrier::drop_ref(owner_cat, current as *mut RcHeader);
     }
     true
+}
+
+/// The element store: `$a[k] = v` through the holder's slot.
+///
+/// **Three refusals report `false`**, each an allocation no reserve
+/// funds: the separation's copy, the publication of an arena COW value
+/// or key into a longer-lived array (`escape_copy`, inside
+/// `store_category_barrier`), and the table's growth. All three leave
+/// every array unchanged, per [`write_through`]. One state does move on
+/// a refused insert: a long chain draws the salt before growth is asked
+/// to allocate and rung state is one-way, so the flood ladder may have
+/// advanced.
+///
+/// **No caller reference is consumed.** The operation takes references
+/// of its own for what the array keeps: the value's entity is retained
+/// and published through `store_category_barrier` (which may hand back
+/// a copy — an arena COW value crossing into a longer-lived array), and
+/// a string key follows S2.2's rule — consumed by a new entry, given
+/// back through `drop_ref` when the overwrite arm kept the entry's
+/// original key. The displaced element goes back the same way.
+///
+/// `key` is already canonical (`canonical_key`); a debug build asserts
+/// that rather than re-canonicalising on every store.
+///
+/// # Safety
+/// Per [`write_through`], plus: `value`'s entity, if any, live and
+/// **holding a reference independent of `slot`** — a subscript RHS in
+/// PHP is a temporary with a reference of its own, so `$a[0] = $a`
+/// reaches here at count 2 and separates. Handed the slot's own array at
+/// count 1, this would build `$a[0] === $a`, a cycle PHP's value
+/// semantics cannot produce.
+pub unsafe fn set(
+    ctx: *mut LLContext,
+    owner_cat: MemoryCategory,
+    slot: *mut Value,
+    key: Key,
+    value: Value,
+) -> bool {
+    #[cfg(debug_assertions)]
+    if let Key::Str(s) = key {
+        debug_assert!(
+            matches!(unsafe { canonical_key(s) }, Key::Str(_)),
+            "the layer canonicalises before it stores"
+        );
+    }
+    unsafe {
+        write_through(ctx, owner_cat, slot, |a, arena| {
+            store_into(a, arena, key, value)
+        })
+    }
+}
+
+/// The append: `$a[] = v` under the table's own cursor, which is the
+/// highest integer key ever inserted plus one (`Table::append_key`).
+///
+/// **The cursor is read before the separation, and that is not a
+/// shortcut**: a copy adopts the source's cursor
+/// (`Table::adopt_append_state`), so both arrays answer with the same
+/// key, and reading first means an exhausted cursor refuses without
+/// paying for a copy first.
+///
+/// `false` for [`set`]'s three refusals, and for a fourth that is not an
+/// allocation: `i64::MAX` has been a key, so no successor exists and the
+/// append refuses rather than wrapping onto a live entry (`PLAN.md`
+/// S2.4). Every array is unchanged either way.
+///
+/// # Safety
+/// Per [`set`], with `value` in place of the key-and-value pair.
+pub unsafe fn append(
+    ctx: *mut LLContext,
+    owner_cat: MemoryCategory,
+    slot: *mut Value,
+    value: Value,
+) -> bool {
+    debug_assert!(
+        matches!(unsafe { (*slot).tag() }, Tag::Array),
+        "the slot names an array"
+    );
+    let current = unsafe { (*slot).entity_ptr() } as *mut LLArray;
+    let Some(key) = (unsafe { (*current).table.append_key() }) else {
+        return false;
+    };
+    unsafe {
+        write_through(ctx, owner_cat, slot, |a, arena| {
+            store_into(a, arena, Key::Int(key), value)
+        })
+    }
+}
+
+/// `unset($a[k])`: drop the element and give both of the table's
+/// references back — the value's by the barrier, the key's by S2.2's
+/// rule.
+///
+/// **An absent key is not an error**, and neither is it a reason to skip
+/// the separation: the write barrier fires on the operation rather than
+/// on the outcome, so `unset($a['nope'])` through a shared holder still
+/// separates. The alternative — look the key up first — would read a
+/// table this holder does not exclusively own, and would make the
+/// holder's sharing state depend on the argument.
+///
+/// `false` reports the separation's refusal, the only one here: removal
+/// allocates nothing.
+///
+/// # Safety
+/// Per [`write_through`].
+pub unsafe fn unset(
+    ctx: *mut LLContext,
+    owner_cat: MemoryCategory,
+    slot: *mut Value,
+    key: Key,
+) -> bool {
+    unsafe {
+        write_through(ctx, owner_cat, slot, |a, _arena| {
+            remove_from(a, key);
+            true
+        })
+    }
+}
+
+/// `$a[k]` by value: the element, with a `ReferenceBox` element read
+/// **through** the box, or `None` when the key is absent.
+///
+/// **The read never separates**, so it takes no category and no context:
+/// both holders of a shared array still name it afterwards. That is
+/// `values.md`'s by-value read of an element in a reference state — the
+/// box is the element's identity, and a reader of `$a['x']` wants what
+/// the box currently holds.
+///
+/// **The returned `Value` carries no reference.** A caller keeping it
+/// retains for itself, as with `Table::get`, and must do so before any
+/// write to this array: a later `unset` or overwrite gives the table's
+/// reference back and can be the entity's last.
+///
+/// # Safety
+/// `slot` a live slot holding a live array.
+pub unsafe fn get(slot: *const Value, key: Key) -> Option<Value> {
+    debug_assert!(
+        matches!(unsafe { (*slot).tag() }, Tag::Array),
+        "the slot names an array"
+    );
+    let a = unsafe { (*slot).entity_ptr() } as *const LLArray;
+    let element = unsafe { (*a).table.get(key) }?;
+    if element.tag() == Tag::Reference {
+        let boxed = element.entity_ptr() as *const crate::reference::LLReference;
+        return Some(unsafe { (*boxed).value });
+    }
+    Some(element)
 }
 
 /// Tear a refused, never-published copy down — children given back,
@@ -225,6 +351,25 @@ unsafe fn store_into(
             }
             true
         }
+    }
+}
+
+/// The table half of [`unset`]: remove the entry and give the table's
+/// two references back. Silent on an absent key, which PHP's `unset` is
+/// too.
+///
+/// `drop_ref` rather than a bare release for both, by S2.2's rule: the
+/// arena reset log or an escape hold-count may own either reference, and
+/// it absorbs the integer key's null itself.
+///
+/// # Safety
+/// `a` a live, exclusively owned array.
+unsafe fn remove_from(a: *mut LLArray, key: Key) {
+    let owner = a as *const RcHeader;
+    let category = Table::category_of(owner);
+    if let Some((old, removed_key)) = unsafe { (*a).table.remove(key) } {
+        unsafe { give_value_back(category, &old) };
+        unsafe { crate::memory::barrier::drop_ref(category, removed_key as *mut RcHeader) };
     }
 }
 
@@ -1062,6 +1207,189 @@ mod tests {
 
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
+    }
+
+    /// The append's three clauses: it writes under the cursor's key, a
+    /// shared array separates so the other holder's length stays put,
+    /// and an exhausted cursor refuses instead of wrapping onto a live
+    /// entry.
+    #[test]
+    fn an_append_through_one_holder_leaves_the_other_holders_length_alone() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        unsafe {
+            for i in 0..2i64 {
+                (*src)
+                    .table
+                    .insert(src as *const RcHeader, Key::Int(i), Value::int(10 + i));
+            }
+        }
+        let (h, slot_a, slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
+
+        assert!(unsafe { append(context_ptr, MemoryCategory::GcHeap, slot_a, Value::int(99)) });
+
+        unsafe {
+            let copy = (*slot_a).entity_ptr() as *mut LLArray;
+            assert_ne!(copy, src, "the shared table separated");
+            assert_eq!(
+                (*copy).table.get(Key::Int(2)).unwrap().as_int(),
+                99,
+                "the append took the cursor's key"
+            );
+            assert_eq!((*copy).table.len(), 3);
+            assert_eq!(
+                (*src).table.len(),
+                2,
+                "the other holder's length followed the append"
+            );
+            assert!((*src).table.get(Key::Int(2)).is_none());
+
+            // The original is exclusively `slot_b`'s now, so the highest
+            // integer key goes straight in: the cursor has no successor
+            // and the next append must refuse.
+            (*src)
+                .table
+                .insert(src as *const RcHeader, Key::Int(i64::MAX), Value::int(1));
+            assert!(
+                !append(context_ptr, MemoryCategory::GcHeap, slot_b, Value::int(0)),
+                "an exhausted cursor appended anyway"
+            );
+            assert_eq!((*src).table.len(), 3, "a refused append wrote an entry");
+            assert_eq!(
+                (*slot_b).entity_ptr() as *mut LLArray,
+                src,
+                "a refused append separated"
+            );
+
+            assert!(ll_release(h as *mut RcHeader));
+            ll_object_die(h);
+        }
+    }
+
+    /// `unset` through one holder of a shared array: the copy loses the
+    /// entry, the other holder keeps it, and both of the table's
+    /// references come back — the key's by S2.2's rule, the value's by
+    /// the barrier. The separation replays the entry and the removal
+    /// gives it back, so the measurement is a net zero on each entity.
+    #[test]
+    fn an_unset_gives_the_key_back_and_leaves_the_other_holder_standing() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let key = mk(b"gone");
+        let value = mk(b"payload");
+        unsafe {
+            crate::refcount::ll_retain(key as *mut RcHeader);
+            crate::refcount::ll_retain(value as *mut RcHeader);
+            (*src).table.insert(
+                src as *const RcHeader,
+                Key::Str(key),
+                Value::entity(Tag::String, value as *mut RcHeader),
+            );
+        }
+        let key_shared = unsafe { (*key).rc.refcount };
+        let value_shared = unsafe { (*value).rc.refcount };
+        let (h, slot_a, _slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
+
+        assert!(unsafe { unset(context_ptr, MemoryCategory::GcHeap, slot_a, Key::Str(key)) });
+
+        unsafe {
+            let copy = (*slot_a).entity_ptr() as *mut LLArray;
+            assert_ne!(copy, src, "the shared table separated");
+            assert!(
+                (*copy).table.get(Key::Str(key)).is_none(),
+                "the copy kept the unset entry"
+            );
+            assert!(
+                (*src).table.get(Key::Str(key)).is_some(),
+                "the other holder lost its entry"
+            );
+            assert_eq!(
+                (*key).rc.refcount,
+                key_shared,
+                "the removed key did not come back"
+            );
+            assert_eq!(
+                (*value).rc.refcount,
+                value_shared,
+                "the removed element did not come back"
+            );
+
+            // An absent key is not an error, and it still separates:
+            // `slot_a`'s array is exclusively its own by now, so the
+            // observable part is only the report.
+            assert!(unset(
+                context_ptr,
+                MemoryCategory::GcHeap,
+                slot_a,
+                Key::Int(7)
+            ));
+
+            assert!(ll_release(h as *mut RcHeader));
+            ll_object_die(h);
+            assert_eq!(
+                (*key).rc.refcount,
+                key_shared - 1,
+                "the dying array kept it"
+            );
+            assert_eq!((*value).rc.refcount, value_shared - 1);
+            for s in [key, value] {
+                assert!(ll_release(s as *mut RcHeader));
+                crate::object::ll_entity_die(s as *mut RcHeader);
+            }
+        }
+    }
+
+    /// The by-value read of an element in a reference state yields what
+    /// the box holds rather than the box, and reading separates nothing:
+    /// both holders still name the one array afterwards.
+    #[test]
+    fn a_read_goes_through_a_reference_box_and_separates_nothing() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        unsafe {
+            (*src)
+                .table
+                .insert(src as *const RcHeader, Key::Int(0), Value::int(5));
+            let boxed = (*src).table.make_ref(src as *const RcHeader, Key::Int(0));
+            assert!(!boxed.is_null(), "the element was meant to be boxed");
+            assert_eq!(
+                (*src).table.get(Key::Int(0)).unwrap().tag(),
+                Tag::Reference,
+                "the entry does not hold a box, so the read proves nothing"
+            );
+        }
+        let (h, slot_a, slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
+
+        unsafe {
+            let read = get(slot_a, Key::Int(0)).expect("the key is there");
+            assert_eq!(read.tag(), Tag::Int, "the read handed the box back");
+            assert_eq!(read.as_int(), 5);
+            assert!(get(slot_a, Key::Int(1)).is_none(), "an absent key answered");
+            assert_eq!(
+                (*slot_a).entity_ptr() as *mut LLArray,
+                src,
+                "the read separated"
+            );
+            assert_eq!((*slot_b).entity_ptr() as *mut LLArray, src);
+
+            assert!(ll_release(h as *mut RcHeader));
+            ll_object_die(h);
+        }
     }
 
     /// The five non-canonical spellings of the done criterion stay

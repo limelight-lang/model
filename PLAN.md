@@ -770,13 +770,26 @@ readable through the box.
         displaced element's giveback, the escape copy's, the arena
         separation category, and the entity-slot probe without which the
         growth-refusal test silently measures the separation refusal.
-- [ ] S2.6 Read, append and unset over the store's composition
+- [x] S2.6 Read, append and unset over the store's composition
       done: appending through one holder of a shared array leaves the
         other holder's length unchanged; `unset` gives the key back by
         S2.2's rule and leaves the other holder's entry standing; `get`
         yields the value through a ReferenceBox rather than the box, and
         leaves both holders naming the same array
       tier: T1 · role: —
+      handoff: the composition moved into `element::write_through`, which
+        takes the write as a closure, so `set`, `append` and `unset`
+        differ only in what they pass and the "copy left at two" trap
+        stays unreachable without being written three times. `append`
+        reads `Table::append_key` before separating — a copy adopts the
+        cursor, so both arrays answer alike, and an exhausted cursor
+        refuses without paying for a copy first; that refusal is a fourth
+        `false` beside `set`'s three allocations. `unset` separates even
+        for an absent key, because the write barrier fires on the
+        operation rather than on the outcome. `get` takes neither context
+        nor category and never separates. Three tests, each seen failing
+        under a targeted revert: the key giveback, the box dereference,
+        and the exhausted cursor.
 - [ ] S2.7 A store into an element holding a ReferenceBox goes through the
       box, and through the barrier
       done: built against `Table::make_ref`, which exists — after boxing
