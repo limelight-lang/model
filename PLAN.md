@@ -26,8 +26,12 @@ what S4 touched stand in until it lands. Whether a whole-suite run
 belongs at every stage or at a release is a question for Edmond that has
 not been put to him.
 
-The five stages below were ordered by the Sage on 2026-08-08 and approved
-by Edmond the same day. The order is the argument: S4 finishes a defect
+The stages below are in **work order, which is the file's order rather
+than the numbers' one**: a number is never reissued once given, so a stage
+added later sits where it is to be done. S9 is such a stage.
+
+The five that were there first were ordered by the Sage on 2026-08-08 and
+approved by Edmond the same day. The order is the argument: S4 finishes a defect
 whose other half is already built, and `dev/WORKFLOW.md` puts a known bug
 before new work; S5 is Edmond's own item, placed ahead of the refactor
 queue on 2026-08-06, and it arrives before the next stage whose failures
@@ -36,7 +40,9 @@ would copy, `Map` being the element layer's second customer by the ruling
 of 2026-08-07; S7 gives the strategy tag the second occupant it was
 deferred for, which is also what makes two of `Map`'s design questions
 answerable; S8 writes that design, since building it first would decide
-by accident what Edmond has reserved. The prose sections after the stages
+by accident what Edmond has reserved. S9 was added on 2026-08-08 at
+Edmond's request and placed between S6 and S7 for the reason its own
+section gives. The prose sections after the stages
 are the reasoning behind them and the backlog they were drawn from.
 
 ## S5 — The opt-in event journal
@@ -334,6 +340,57 @@ both configurations with behaviour unchanged.
         module has had no row since it was born on 2026-08-06, which is
         why the next argument about where code belongs has nothing to
         decide by.
+
+## S9 — The crate reads without its own noise
+
+Edmond's, 2026-08-08, both halves of it: there are too many comments to
+read past, and they break rule 19 of the working rules — a comment adds a
+level the code does not have, above it or below it, and one at the same
+level is a retelling that should not have been written. And the tests
+have outgrown the bodies they live in.
+
+**Placed here rather than earlier or later, and the reason is the two
+neighbours.** S6 moves bodies between modules and merges two of them, so
+a comment pass before it would be redone; S7 writes new code, and new code
+copies the density of what sits beside it, so a pass after it is a pass
+over more. Between the two, each file is touched once and the next module
+written inherits the leaner shape.
+
+Goal: every comment that remains carries something the code does not, and
+a test can be found by what it is about.
+
+Done when: the comment count per file is recorded before and after, no
+public declaration lost its contract, every test still runs in both
+configurations, and `dev/INDEX.md` states the new arrangement.
+
+- [ ] S9.1 The comment pass over `src/memory/`
+      done: comment lines counted before and after and the drop recorded
+        in this step; every comment left is one of rule 19's six kinds;
+        no `///` on a public declaration removed, since 19.2 makes those
+        obligatory; behaviour untouched, so the gate is green with no
+        test edited
+      tier: T2 · role: Code Reviewer
+- [ ] S9.2 The comment pass over the entity modules
+      done: the same, over `object`, `string`, `array/`, `template`,
+        `reference`, `weak`, `intern`, `value`, `class` and `hash/`
+      tier: T2 · role: Code Reviewer
+- [ ] S9.3 The comment pass over the runtime spine
+      done: the same, over `refcount`, `gc`, `walk`, `collector`,
+        `epoch`, `promote`, `static_block` and `journal/` — the last of
+        which is where this session's own density came from
+      tier: T2 · role: Code Reviewer
+- [ ] S9.4 Tests leave the module bodies and arrive grouped
+      done: every `#[cfg(test)] mod tests` in `src/` is its own file,
+        each grouped into named submodules that say what is being pinned
+        rather than which function is called; the suite's count is
+        unchanged in both configurations; `dev/INDEX.md`'s line "inline
+        `#[cfg(test)]` per module, no `tests/` directory" is rewritten,
+        that being a convention this step overturns
+      tier: T2 · role: —
+      One pass per file, not two: the tests move and are grouped in the
+        same edit, because touching every file in `src/` twice costs
+        twice and diffs worse.
+
 
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
 
