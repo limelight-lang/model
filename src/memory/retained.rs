@@ -218,16 +218,21 @@ mod tests {
     /// range they lie in. A constant would be a guess about an address
     /// space the process is also carving regions out of.
     ///
-    /// The cells come back beside their addresses, because a test that
-    /// occupies one writes through **the slice** rather than through the
-    /// address: an address that has been through `usize` carries no
-    /// provenance to write with, which Miri rejects and no amount of
-    /// casting repairs.
-    fn walkable_index(n: usize) -> (usize, Vec<usize>, &'static mut [u64]) {
+    /// The cells come back as raw pointers beside their addresses, and a
+    /// test that occupies one writes through **the pointer its address
+    /// was taken from**. Neither half of that is optional: an address
+    /// that has been through `usize` carries no provenance to write
+    /// with, and writing through the leaked slice's reference instead
+    /// pops the exposed raw tags off the borrow stack, so the read the
+    /// registry itself performs becomes the violation. Miri rejects
+    /// both mistakes, one per run.
+    fn walkable_index(n: usize) -> (usize, Vec<usize>, Vec<*mut u64>) {
         let cells: &'static mut [u64] = Box::leak(vec![0u64; n].into_boxed_slice());
-        let addresses: Vec<usize> = cells.iter().map(|c| c as *const u64 as usize).collect();
+        let base = cells.as_mut_ptr();
+        let pointers: Vec<*mut u64> = (0..n).map(|i| unsafe { base.add(i) }).collect();
+        let addresses: Vec<usize> = pointers.iter().map(|&p| p as usize).collect();
         let block = addresses[0] & !crate::memory::block_pool::BLOCK_MASK;
-        (block, addresses, cells)
+        (block, addresses, pointers)
     }
 
     /// Registration sorts, because the census binary-searches the index
@@ -254,16 +259,20 @@ mod tests {
     fn the_last_live_occupant_empties_the_block() {
         let _g = crate::memory::block_pool::test_guard();
         let (block, cells, live) = walkable_index(2);
-        live[0] = 1;
-        live[1] = 1;
+        unsafe {
+            live[0].write(1);
+            live[1].write(1);
+        }
         let _empty = unsafe { register(block, cells.clone()) };
         assert!(snapshot().iter().any(|&(b, _)| b == block));
         assert!(!occupant_freed(block), "one of two occupants emptied it");
         assert!(snapshot().iter().any(|&(b, _)| b == block));
         assert!(occupant_freed(block), "the second death left it occupied");
         assert!(!snapshot().iter().any(|&(b, _)| b == block));
-        live[0] = 0;
-        live[1] = 0;
+        unsafe {
+            live[0].write(0);
+            live[1].write(0);
+        }
     }
 
     /// An occupant already dead when the index is built is not counted,
@@ -272,11 +281,13 @@ mod tests {
     fn an_occupant_dead_at_registration_holds_nothing() {
         let _g = crate::memory::block_pool::test_guard();
         let (block, cells, live) = walkable_index(2);
-        live[0] = 1;
-        let _empty = unsafe { register(block, cells.clone()) };
+        let _empty = unsafe {
+            live[0].write(1);
+            register(block, cells.clone())
+        };
         assert!(occupant_freed(block), "the dead occupant was counted live");
         assert!(!snapshot().iter().any(|&(b, _)| b == block));
-        live[0] = 0;
+        unsafe { live[0].write(0) };
     }
 
     /// A block retained for a payload it could not carry out stays out
@@ -287,14 +298,16 @@ mod tests {
         let _g = crate::memory::block_pool::test_guard();
         let (block, cells, live) = walkable_index(1);
         pin(block);
-        live[0] = 1;
-        let _empty = unsafe { register(block, cells.clone()) };
+        let _empty = unsafe {
+            live[0].write(1);
+            register(block, cells.clone())
+        };
         assert!(!occupant_freed(block), "a pinned block was handed back");
         assert!(
             snapshot().iter().any(|&(b, _)| b == block),
             "registration cleared the pin set before it"
         );
-        live[0] = 0;
+        unsafe { live[0].write(0) };
         drop_index(block);
     }
 
