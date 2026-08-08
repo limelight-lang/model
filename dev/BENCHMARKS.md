@@ -490,9 +490,10 @@ from the flags word it already holds — and calls an `#[inline(never)]`
 smaller hot function and a cold tail, the same shape as `Heap::alloc`'s
 split, and this box cannot resolve differences of that size.
 
-**Correction to the audit that prompted it.** The finding read "early-out
-`buffer_candidate` за границей вызова, каждый ненулевой декремент платит
-call + перезагрузку flags". That was not true: LLVM had inlined the
+**Correction to the audit that prompted it.** The finding read "the
+early-out `buffer_candidate` sits behind a call boundary, so every
+non-zero decrement pays a call plus a reload of flags" (translated from
+the Russian it was written in). That was not true: LLVM had inlined the
 callee, so there was no call — the cost was the opposite, the whole
 buffering machinery sitting in the hot function. Hoisting the test and
 forcing the callee out of line is what the finding should have said.

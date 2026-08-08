@@ -724,7 +724,7 @@ readable through the box.
         long enough to fire the first rung draws a salt, rebuilds the
         index and finds every key again; a COW copy inherits whichever
         state its source is in; `ll_array_new` no longer takes a salt
-      tier: T2 · role: Критик
+      tier: T2 · role: Critic
       Edmond 2026-08-07: the salt is worth paying for where the keys can
         come from outside and not otherwise, so unsalted becomes the
         ladder's zeroth rung rather than a mode somebody has to select.
@@ -736,7 +736,7 @@ readable through the box.
         exactly one long chain, which is the rung's own trigger. The flag
         stays available later as an extra optimization, when a compiler
         exists that can prove rather than assume.
-      Критик 2026-08-07 round 1: nine findings — the drawn salt exposed
+      Critic 2026-08-07 round 1: nine findings — the drawn salt exposed
         `addr ^ seed` through a bijective finalizer with nowhere left to
         add entropy; escalate now moves integer keys while reseed's doc
         denied it; honest power-of-two strides burn the first rung and
@@ -747,10 +747,10 @@ readable through the box.
         address, docs, DECISIONS and the RFC corrected, `salt()` is a
         `#[cfg(test)]` window, STRONG⇒RESEEDED asserted, the third
         inheritance state tested.
-      Критик 2026-08-07 round 2: eight of nine confirmed cleared against
+      Critic 2026-08-07 round 2: eight of nine confirmed cleared against
         the diff and a re-run gate; the tail — `mix_int`'s doc still
         promising "never pay" — fixed in the same commit. No dispute
-        left, so no Мудрец.
+        left, so no Sage.
       handoff: the step's one addition beyond its own text — `escalate`
         firing from an unsalted table draws the salt on the way
         (`draw_salt`, idempotent), because the strong hash is keyed by
@@ -764,8 +764,8 @@ readable through the box.
       done: two distinct string entities with equal bytes — one inserted,
         the other overwriting it, then the key removed — both end at the
         counts they started at; seen failing on both arms
-      tier: T2 · role: Критик
-      Критик 2026-08-07 round 1: four findings — the contract prescribed a
+      tier: T2 · role: Critic
+      Critic 2026-08-07 round 1: four findings — the contract prescribed a
         bare `ll_release` for a key whose release the arena reset log or
         an escape hold-count owns (double free on the first arena
         request); the test measured only heap/heap; the two-entities
@@ -775,7 +775,7 @@ readable through the box.
         through an arena table to the reset, `assert_ne!` pins the
         premise, `#[must_use]` guards the pair and nine sites waive it
         explicitly.
-      Критик 2026-08-07 round 2: all four confirmed cleared against the
+      Critic 2026-08-07 round 2: all four confirmed cleared against the
         diff and a re-run suite. Named residue, non-blocking: the
         prescribed `drop_ref` is `pub(crate)` under a `pub` `remove`, so
         the contract's verb is crate-internal — the public door is
@@ -817,14 +817,14 @@ readable through the box.
         second store to it does not separate again, and reports both
         refusals, the separation's and the table's, with every array
         involved unchanged
-      tier: T2 · role: Критик
-      Критик 2026-08-07 round 1: the round's list did not survive the
+      tier: T2 · role: Critic
+      Critic 2026-08-07 round 1: the round's list did not survive the
         session boundary. What is verifiable is the two fixes it left in
         the code under its name: the creation reference is spent before
         the displaced original's `drop_ref`, and `destroy_private_copy`
         calls `ll_entity_die` unconditionally, because `ll_release`
         reports no death on an arena entity.
-      Критик 2026-08-08 round 2, two lenses over the diff — ownership on
+      Critic 2026-08-08 round 2, two lenses over the diff — ownership on
         every path, and the order of publication and teardown. Ownership
         found no arithmetic defect and four branches no test executed;
         order found the doc printing the composition the code had
@@ -835,7 +835,7 @@ readable through the box.
         (a ReferenceBox passed the old one and would have been written
         over as an array), the refusal count corrected from two to three,
         three tests added and one repaired. No dispute left, so no
-        Мудрец.
+        Sage.
       handoff: `array::element::set` is the store, and the composition is
         publish, spend the creation reference, drop the displaced
         original — that order, because `drop_ref` runs `__destruct`
@@ -895,7 +895,7 @@ readable through the box.
       done: `$a=['x'=>1]; $b=$a; $r=&$b['x']; $r=2` leaves `$a['x']` at 1
         **and** `$b['x']` at 2 — the shared table separated before the box
         was written, rather than the reference being refused
-      tier: T2 · role: Критик, over S2.7 and S2.8 together
+      tier: T2 · role: Critic, over S2.7 and S2.8 together
       handoff: `element::make_ref` runs `Table::make_ref` inside
         `write_through`, so taking a reference separates like any other
         write. **Beyond the step's text, and Edmond's to overturn:** an
@@ -904,7 +904,7 @@ readable through the box.
         table's null, which means "absent", through a return value whose
         only other meaning is "refused" — the same wrong signal the escape
         copy's depth limit was rejected for.
-      Критик 2026-08-08, over both steps, two lenses — reference
+      Critic 2026-08-08, over both steps, two lenses — reference
         ownership, and the language rules against PHP 8.3.6 run on this
         box. Fourteen findings. Fixed: `Table::make_ref` took a `ctx`
         instead of resolving a null through the thread's current context,

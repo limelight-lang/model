@@ -108,7 +108,7 @@ unsafe fn write_through(
         // runs `__destruct`s, and one of them may displace the copy from
         // the slot — with the creation reference already spent, that
         // nested displacement is the copy's ordinary death rather than a
-        // count stranded at two (Критик, S2.5 round 1).
+        // count stranded at two (Critic, S2.5 round 1).
         let died = crate::refcount::ll_release(separated as *mut RcHeader);
         debug_assert!(!died, "the slot's reference must outlive the creation one");
         crate::memory::barrier::drop_ref(owner_cat, current as *mut RcHeader);
@@ -351,7 +351,7 @@ pub unsafe fn get(slot: *const Value, key: Key) -> Option<Value> {
 /// reports no death, and a refusal branch that waited for `true` left
 /// every reference the replay published — an arena COW child's count,
 /// a heap child's log record's +1 — held by a corpse until the reset
-/// (Критик, S2.5 round 1).
+/// (Critic, S2.5 round 1).
 ///
 /// # Safety
 /// `copy` is a live array at count 1 that no slot has ever named.
