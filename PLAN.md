@@ -1133,11 +1133,51 @@ the arena.
         `promote::survivor_holding_heap_entity_compensates_the_release_
         log` killed a survivor a live `Slot` object still named — a
         dangling property that only block reuse made visible.
-- [ ] S3.2 A copy unwraps a box with a single holder
+- [x] S3.2 A copy unwraps a box with a single holder
       done: the four measured cases above reproduce through
         `element::set` and `element::make_ref`, in both memory
         categories, each seen failing without the unwrap
       tier: T2 · role: Critic
+      Critic 2026-08-08 round 1: seven findings, three of them the
+        step's own. In the request arena the box's count is an upper
+        bound rather than a holder count — `drop_ref` skips the release
+        an arena container owes, and an arena container does not die
+        until the reset — so the unwrap stops firing for the rest of the
+        request, and the new test hard-codes `GcHeap` for the `$r`
+        binding and so never runs the arena case it claims. `escape_copy`
+        was handed a duplication-only rule although it copies on a store
+        where PHP duplicates nothing, and the test that asserted the
+        unconditional sharing had been neutralised with a fake holder
+        rather than left to speak. The doc block of `element_for_copy`
+        was spliced into `fill_from`'s, leaving `fill_from` with none. A
+        box was leaked by a rewritten test. Acted on: `CopyReason` now
+        separates the duplication from the escape and only the first
+        collapses anything, the sharing test is back to a single-holder
+        box, the docs are split, the box is released. The arena's count
+        went to the Sage.
+      Sage 2026-08-08: the divergence is accepted, the unwrap condition
+        stays `refcount == 1`, and no mechanism is built. Every exact
+        mechanism makes arena-container death an event again, which is
+        the arena's reason to exist; five were walked to their floor and
+        each breaks a named invariant. The error is one-directional —
+        every live holder carries a counted `+1`, so the unwrap never
+        fires on a box another name reaches — and what a program can
+        observe is written down rather than left implicit, with the
+        five-step sequence pinned in both categories. The collector's
+        `__destruct` guard window is the same rule and the same record.
+        Final.
+      handoff: `array::entity::element_for_copy` is the rule and
+        `CopyReason::Duplication` is its gate; `fill_from` is the one
+        caller. Two tests carry the criterion: the four cases in both
+        categories (`a_copy_unwraps_a_box_with_a_single_holder`, seen
+        failing without the unwrap) and the decided arena divergence
+        (`the_arena_reads_a_box_count_as_an_upper_bound`, `(3, 9)` on
+        the heap against `(9, 9)` in the arena). **A `&` binding must
+        retain the box it is handed** — `Table::make_ref` leaves the
+        caller's reference to the caller — and since this step that
+        convention decides semantics rather than only accounting:
+        forgetting it makes a live `&` read one holder and the next copy
+        unwrap it silently. Nothing enforces it.
 - [ ] S3.3 The RFC says the sharing is conditional
       done: `arrays-hashtable.md` "Element states" and `values.md` carry
         the condition and the collapse point, and `dev/DECISIONS.md`

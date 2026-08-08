@@ -8,6 +8,77 @@ never edited or deleted.
 
 ---
 
+## 2026-08-08 — a copy collapses a reference nobody else names, and the arena reads that count as an upper bound
+
+**Decided (Sage):** duplicating an array unwraps an element's reference
+box when the box's refcount is 1, and nothing else collapses a
+reference. In the request arena that count is an **upper bound** on the
+box's holders rather than a count of them, so the copy errs toward
+sharing there. The divergence is accepted and no mechanism is built
+against it.
+
+**The rule.** `array::entity::element_for_copy`, reached from
+`fill_from`, is the one place a reference collapses — which is PHP's own
+rule: measured on php 8.3.6, neither `unset($r)`, nor a write to that
+element, nor a write to another element collapses it, and
+`zend_array_dup_element` unwraps at refcount 1. Only a **duplication**
+does it: an escape copy is a store crossing a lifetime boundary, where
+the program duplicates nothing, so it carries the box across unchanged
+(`entity::CopyReason`).
+
+**Why the arena's count cannot be exact.** Two things inflate it, and
+the second is the deeper one. `barrier::drop_ref` skips the release when
+an arena container lets go of a heap entity, because the reset log owns
+that release. And an arena COW array whose count reaches zero does not
+tear down at all — the reset reclaims it — so `unset($b)` on an arena
+copy that shares a box gives nothing back. The root cause is one
+sentence: **arena-container death is deliberately not an event in this
+runtime, and PHP's collapse condition is a question about exactly that
+event.** Every mechanism that makes the count exact makes death an event
+again, which is the arena's reason to exist, spent on a rare `&`.
+
+**The mechanisms that were walked to the floor and refused.**
+Subtracting the log's records fails because a record is written at
+publication, not at death, so it cannot tell a live holder from a dead
+one. Eager release with the record cancelled is refused by the log,
+which is append-only with no lookup. Eager release paired with a
+compensating retain-record balances arithmetically but is sound only
+until a box dies mid-request: then the reset's retain fires into a slot
+the walker classifies as free. Cascading teardown of arena COW
+containers at zero puts `__destruct` bodies behind arena drop paths that
+run none today. A second, uncounted hold-count inside the box makes
+liveness a two-word question and puts a kind test back on the arena
+release fast path — the cost the 2026-08-08 box ruling refused.
+
+**The error is one-directional, and that is what makes it safe.** Every
+live holder of a box carries a counted `+1`: a heap slot counts eagerly,
+an arena entry counts at publication, a frame binding retains for
+itself. So `refcount == 1` with the duplicating entry alive proves the
+entry is the only holder — the unwrap never fires on a box another name
+still reaches, and nothing dangles. The divergence can only delay a
+collapse.
+
+**What a PHP program can observe, stated rather than left implicit.** In
+a request-arena array, after the last `&` binding to an element is gone,
+a later `$c = $a` can leave `$a` and `$c` aliasing that element —
+provided that earlier in the same request another array shared the
+element's box and has since been dropped. A write through the new copy
+then reaches `$a`. The pinned sequence is
+`$a=[1]; $r=&$a[0]; $b=$a; $b[0]=3; unset($b); unset($r); $c=$a;
+$c[0]=9;`, which php 8.3.6 answers `(3, 9)` and this runtime answers
+`(3, 9)` in the heap and `(9, 9)` in the arena
+(`element::tests::the_arena_reads_a_box_count_as_an_upper_bound`).
+
+**The collector's guard window is the same rule, not a second one.**
+`gc::run_cyclic_destructors` and the rc-walk drain guard every white
+entity with `refcount += 1` before running `__destruct`, so a
+duplication inside a destructor reads an inflated count and shares where
+PHP unwraps. That guard is memory safety rather than bookkeeping — it is
+what stops a destructor's `$this->x = null` from freeing a white the
+collector is still iterating — and no adjustment at the read side is
+sound, because a destructor also reaches exactly-counted boxes through
+live state. The window closes with the collection.
+
 ## 2026-08-08 — a retained block goes home when its last live occupant dies
 
 **Decided (Sage):** the second half of the retention mechanism is built.

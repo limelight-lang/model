@@ -215,11 +215,16 @@ mod tests {
             .remove(&block);
     }
 
-    fn walkable_index(n: usize) -> (usize, Vec<usize>) {
+    /// The cells come back beside their addresses, because a test that
+    /// occupies one writes through **the slice** rather than through the
+    /// address: an address that has been through `usize` carries no
+    /// provenance to write with, which Miri rejects and no amount of
+    /// casting repairs.
+    fn walkable_index(n: usize) -> (usize, Vec<usize>, &'static mut [u64]) {
         let cells: &'static mut [u64] = Box::leak(vec![0u64; n].into_boxed_slice());
         let addresses: Vec<usize> = cells.iter().map(|c| c as *const u64 as usize).collect();
         let block = addresses[0] & !crate::memory::block_pool::BLOCK_MASK;
-        (block, addresses)
+        (block, addresses, cells)
     }
 
     /// Registration sorts, because the census binary-searches the index
@@ -227,7 +232,7 @@ mod tests {
     #[test]
     fn an_index_is_stored_sorted_whatever_order_it_arrives_in() {
         let _g = crate::memory::block_pool::test_guard();
-        let (block, cells) = walkable_index(3);
+        let (block, cells, _live) = walkable_index(3);
         unsafe { register(block, vec![cells[2], cells[0], cells[1]]) };
         let found = snapshot()
             .into_iter()
@@ -245,21 +250,17 @@ mod tests {
     #[test]
     fn the_last_live_occupant_empties_the_block() {
         let _g = crate::memory::block_pool::test_guard();
-        let (block, cells) = walkable_index(2);
-        unsafe {
-            *(cells[0] as *mut u64) = 1;
-            *(cells[1] as *mut u64) = 1;
-            register(block, cells.clone());
-        }
+        let (block, cells, live) = walkable_index(2);
+        live[0] = 1;
+        live[1] = 1;
+        unsafe { register(block, cells.clone()) };
         assert!(snapshot().iter().any(|&(b, _)| b == block));
         assert!(!occupant_freed(block), "one of two occupants emptied it");
         assert!(snapshot().iter().any(|&(b, _)| b == block));
         assert!(occupant_freed(block), "the second death left it occupied");
         assert!(!snapshot().iter().any(|&(b, _)| b == block));
-        unsafe {
-            *(cells[0] as *mut u64) = 0;
-            *(cells[1] as *mut u64) = 0;
-        }
+        live[0] = 0;
+        live[1] = 0;
     }
 
     /// An occupant already dead when the index is built is not counted,
@@ -267,14 +268,12 @@ mod tests {
     #[test]
     fn an_occupant_dead_at_registration_holds_nothing() {
         let _g = crate::memory::block_pool::test_guard();
-        let (block, cells) = walkable_index(2);
-        unsafe {
-            *(cells[0] as *mut u64) = 1;
-            register(block, cells.clone());
-        }
+        let (block, cells, live) = walkable_index(2);
+        live[0] = 1;
+        unsafe { register(block, cells.clone()) };
         assert!(occupant_freed(block), "the dead occupant was counted live");
         assert!(!snapshot().iter().any(|&(b, _)| b == block));
-        unsafe { *(cells[0] as *mut u64) = 0 };
+        live[0] = 0;
     }
 
     /// A block retained for a payload it could not carry out stays out
@@ -283,18 +282,16 @@ mod tests {
     #[test]
     fn a_pinned_block_never_empties() {
         let _g = crate::memory::block_pool::test_guard();
-        let (block, cells) = walkable_index(1);
+        let (block, cells, live) = walkable_index(1);
         pin(block);
-        unsafe {
-            *(cells[0] as *mut u64) = 1;
-            register(block, cells.clone());
-        }
+        live[0] = 1;
+        unsafe { register(block, cells.clone()) };
         assert!(!occupant_freed(block), "a pinned block was handed back");
         assert!(
             snapshot().iter().any(|&(b, _)| b == block),
             "registration cleared the pin set before it"
         );
-        unsafe { *(cells[0] as *mut u64) = 0 };
+        live[0] = 0;
         drop_index(block);
     }
 
@@ -306,7 +303,7 @@ mod tests {
     #[test]
     fn a_registered_index_is_safe_for_the_enumerator_to_read() {
         let _g = crate::memory::block_pool::test_guard();
-        let (block, cells) = walkable_index(4);
+        let (block, cells, _live) = walkable_index(4);
         unsafe { register(block, cells.clone()) };
         let mut seen = 0usize;
         unsafe {

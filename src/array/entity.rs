@@ -136,6 +136,7 @@ pub unsafe fn separate(
     src: *mut LLArray,
     category: MemoryCategory,
     arena: *mut crate::memory::arena::Arena,
+    reason: CopyReason,
 ) -> *mut LLArray {
     let dst = unsafe { new_empty_copy(src, category) };
     if dst.is_null() {
@@ -154,7 +155,7 @@ pub unsafe fn separate(
             );
             entered.push(s);
         }
-        if !unsafe { fill_from(s, d, arena, &mut pending) } {
+        if !unsafe { fill_from(s, d, arena, &mut pending, reason) } {
             // Refused part-way. Releasing the root's children cascades
             // into every copy this call published, nested ones included:
             // each is held once, by the entry naming it.
@@ -189,6 +190,58 @@ unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LL
     dst
 }
 
+/// Why a copy is being made, which decides one thing and only one: a
+/// duplication collapses a reference nobody else names, and a
+/// relocation out of the dying arena does not.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CopyReason {
+    /// `$b = $a` followed by a write — PHP's own duplication, and the
+    /// one place it collapses a reference.
+    Duplication,
+    /// A value crossing out of the request arena into a longer-lived
+    /// holder. The program stores, it does not duplicate: the copy is
+    /// owed by the lifetime rather than by sharing, so an element's
+    /// reference state is carried across unchanged.
+    Escape,
+}
+
+/// What the copy takes for an element of the source: the element
+/// itself, except that a **reference box with a single holder is
+/// unwrapped** and the copy takes the value behind it.
+///
+/// This is where PHP collapses a reference, and it is the only place it
+/// does. Measured against php 8.3.6: `unset($r)` does not collapse the
+/// element, nor does a write to it, nor a write to another element —
+/// the source still reads `reference refcount(1)` after each. The
+/// duplication is what collapses it, and `zend_array_dup_element` is the
+/// same rule (`rfc/model/arrays-hashtable.md`, "Element states").
+///
+/// One holder means the source's own entry and nobody else, so no name
+/// in the program can observe the two arrays sharing the element. Two or
+/// more means a live `&` binding, and then the copy shares the box —
+/// which is how `$r = &$a['x']; $b = $a; $r = 3;` reaches `$b['x']`.
+/// The count is exact because a box is a heap entity in every case
+/// (`dev/DECISIONS.md`, 2026-08-08); that is what the ruling bought.
+///
+/// **Only a duplication collapses anything.** An escape copy is a store
+/// crossing a lifetime boundary, and PHP duplicates nothing there, so a
+/// box travels with the element and both arrays go on naming it — which
+/// is also what keeps the box's identity, the property `escape_copy`'s
+/// own contract rests on.
+///
+/// # Safety
+/// `element` is a live entry's value.
+unsafe fn element_for_copy(element: Value, reason: CopyReason) -> Value {
+    if reason != CopyReason::Duplication || element.tag() != crate::value::Tag::Reference {
+        return element;
+    }
+    let boxed = element.entity_ptr();
+    if unsafe { crate::refcount::header_refcount(boxed) } != 1 {
+        return element;
+    }
+    unsafe { (*(boxed as *const crate::reference::LLReference)).value }
+}
+
 /// Copy `src`'s entries into the empty `dst`, publishing every counted
 /// child for it. False on refusal, with what this call took given back
 /// and `dst` left holding whatever it had published — the caller
@@ -211,6 +264,7 @@ unsafe fn fill_from(
     dst: *mut LLArray,
     arena: *mut crate::memory::arena::Arena,
     pending: &mut WorkList,
+    reason: CopyReason,
 ) -> bool {
     let category = unsafe { (*dst).category() };
     let n = unsafe { (*src).table.used() };
@@ -229,7 +283,7 @@ unsafe fn fill_from(
         // so the barrier can hand back a different entity: an arena COW
         // child crossing into a longer-lived copy is replaced by a copy of
         // its own.
-        let mut v = e.value();
+        let mut v = unsafe { element_for_copy(e.value(), reason) };
         if v.is_refcounted() {
             let child = v.entity_ptr();
             if unsafe { is_nested_arena_array(child, category) } {
@@ -729,7 +783,14 @@ mod tests {
         }
         let src = *levels.last().unwrap();
 
-        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        let copy = unsafe {
+            separate(
+                src,
+                MemoryCategory::GcHeap,
+                arena_ptr,
+                CopyReason::Duplication,
+            )
+        };
         assert!(!copy.is_null(), "the deep copy was refused");
 
         // Every level is a heap array of its own, and none of them is the
@@ -851,7 +912,14 @@ mod tests {
         let before_key = unsafe { (*(key as *mut RcHeader)).refcount };
         let before_child = unsafe { (*(child as *mut RcHeader)).refcount };
 
-        let dst = unsafe { separate(src, MemoryCategory::GcHeap, std::ptr::null_mut()) };
+        let dst = unsafe {
+            separate(
+                src,
+                MemoryCategory::GcHeap,
+                std::ptr::null_mut(),
+                CopyReason::Duplication,
+            )
+        };
         assert!(!dst.is_null());
 
         unsafe {
@@ -900,7 +968,12 @@ mod tests {
             for i in [2i64, 5, 8] {
                 let _ = (*src).table.remove(Key::Int(i));
             }
-            let dst = separate(src, MemoryCategory::GcHeap, std::ptr::null_mut());
+            let dst = separate(
+                src,
+                MemoryCategory::GcHeap,
+                std::ptr::null_mut(),
+                CopyReason::Duplication,
+            );
             assert!(!dst.is_null());
             assert_eq!((*dst).table.len(), 7);
             assert_eq!(
@@ -1126,7 +1199,14 @@ mod tests {
             }
         }
 
-        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        let copy = unsafe {
+            separate(
+                src,
+                MemoryCategory::GcHeap,
+                arena_ptr,
+                CopyReason::Duplication,
+            )
+        };
         assert!(!copy.is_null());
         assert!(
             unsafe { (*copy).table.is_strong() },
@@ -1177,7 +1257,14 @@ mod tests {
         );
         let drawn = unsafe { (*src).table.salt() };
 
-        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        let copy = unsafe {
+            separate(
+                src,
+                MemoryCategory::GcHeap,
+                arena_ptr,
+                CopyReason::Duplication,
+            )
+        };
         assert!(!copy.is_null());
         assert!(unsafe { (*copy).table.is_reseeded() });
         assert_eq!(
@@ -1223,7 +1310,14 @@ mod tests {
         }
         assert!(unsafe { !(*src).table.is_reseeded() });
 
-        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        let copy = unsafe {
+            separate(
+                src,
+                MemoryCategory::GcHeap,
+                arena_ptr,
+                CopyReason::Duplication,
+            )
+        };
         assert!(!copy.is_null());
         assert!(
             unsafe { !(*copy).table.is_reseeded() },
@@ -1355,7 +1449,14 @@ mod tests {
         }
 
         FORCE_OOM.store(true, Ordering::Relaxed);
-        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        let copy = unsafe {
+            separate(
+                src,
+                MemoryCategory::GcHeap,
+                arena_ptr,
+                CopyReason::Duplication,
+            )
+        };
         FORCE_OOM.store(false, Ordering::Relaxed);
         assert!(
             copy.is_null(),
@@ -1462,7 +1563,14 @@ mod tests {
             assert_eq!((*src).table.append_key(), Some(10));
         }
 
-        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr) };
+        let copy = unsafe {
+            separate(
+                src,
+                MemoryCategory::GcHeap,
+                arena_ptr,
+                CopyReason::Duplication,
+            )
+        };
         assert!(!copy.is_null());
         unsafe {
             assert_eq!((*copy).table.len(), 0, "a hole is not worth copying");

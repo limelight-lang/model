@@ -814,6 +814,7 @@ pub unsafe fn ll_cow_separate(
                 entity as *mut crate::array::entity::LLArray,
                 crate::refcount::separation_category(owner_cat),
                 arena,
+                crate::array::entity::CopyReason::Duplication,
             ) as *mut RcHeader
         },
         _ => {
@@ -873,6 +874,7 @@ pub(crate) unsafe fn escape_copy(
                 entity as *mut crate::array::entity::LLArray,
                 crate::refcount::separation_category(owner_cat),
                 arena,
+                crate::array::entity::CopyReason::Escape,
             ) as *mut RcHeader
         },
         _ => {

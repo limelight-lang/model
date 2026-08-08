@@ -143,9 +143,9 @@ versions live in `docs/history/`, marked at the top.
   entry, which logs its release against the reset.
   A store into an element already in a reference state goes
   **through** the box (`barrier::ref_store`), and a copy shares that box
-  rather than copying it — unconditionally, where PHP unwraps a box with
-  one holder, which is an open RFC question recorded beside S2.8 in
-  `PLAN.md`.
+  only while a second name holds it: `entity::element_for_copy` unwraps a
+  box whose refcount is one, which is where PHP collapses a reference and
+  the only place it does (`fill_from`, S3.2 in `PLAN.md`).
   `entity.rs` is the wrapper supplying the `RcHeader`: an array carries no
   class pointer, the same construction as a string, because the entity
   kind already says what it is. Its children — elements **and** string

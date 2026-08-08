@@ -251,8 +251,9 @@ pub unsafe fn unset(
 /// would hand `$b`'s reference a box `$a` also names, and `$r = 2` would
 /// then be visible through `$a['x']`. The order settles the element that
 /// is **not** a box yet; an element already in a reference state comes
-/// out of the separation still shared, which is PHP's own rule and the
-/// open question named beside S2.8 in `PLAN.md`.
+/// out of the separation shared, provided a second name still holds the
+/// box — the separation itself unwraps a box nobody else holds
+/// (`array::entity::element_for_copy`), which is PHP's own rule.
 ///
 /// **An absent key is created as null and referenced**, which is PHP's
 /// rule for `$r = &$a['nope']` and the reason this cannot simply forward
@@ -1009,8 +1010,14 @@ mod tests {
         }
         let before = unsafe { (*child).rc.refcount };
 
-        let copy =
-            unsafe { crate::array::entity::separate(src, MemoryCategory::RequestArena, arena_ptr) };
+        let copy = unsafe {
+            crate::array::entity::separate(
+                src,
+                MemoryCategory::RequestArena,
+                arena_ptr,
+                crate::array::entity::CopyReason::Duplication,
+            )
+        };
         assert!(!copy.is_null());
         unsafe {
             assert_eq!(
@@ -1760,6 +1767,10 @@ mod tests {
             // A heap box is counted like any other heap entity, which is
             // the whole reason the box lives there: the count is what
             // S3.2 reads to decide whether to share or unwrap.
+            // The count is one, and the copy shares the box anyway: an
+            // escape copy is a store crossing a lifetime boundary, not a
+            // duplication, so it collapses nothing (S3.2,
+            // `entity::CopyReason`).
             assert_eq!(
                 (*boxed).rc.refcount,
                 2,
@@ -1792,6 +1803,251 @@ mod tests {
         }
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
+    }
+
+    /// `$a` with one integer element, `&$a[0]` taken or not and the
+    /// binding kept or dropped, then `$b = $a; $b[0] = 3;` — and what the
+    /// two names read afterwards. The whole of S3's criterion runs
+    /// through this, in both memory categories.
+    ///
+    /// The holder is one object with two properties, so both arrays are
+    /// named by real slots and every write goes through the layer rather
+    /// than through the table.
+    unsafe fn reference_then_copy(
+        ctx: *mut crate::memory::context::LLContext,
+        arena: *mut Arena,
+        category: MemoryCategory,
+        take_reference: bool,
+        keep_binding: bool,
+    ) -> (i64, i64) {
+        let class = ClassBuilder::new("RefCopyHolder")
+            .prop("a", true)
+            .prop("b", true)
+            .build();
+        let holder = unsafe { new_constructed(ctx, class, category) };
+        let slot_a = unsafe { Object::prop_at(holder, 16) };
+        let slot_b = unsafe { Object::prop_at(holder, 32) };
+        let a = unsafe { ll_array_new(category) };
+        unsafe {
+            assert!(crate::memory::barrier::ref_store(
+                arena,
+                holder as *mut RcHeader,
+                slot_a,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, a as *mut RcHeader),
+            ));
+            ll_release(a as *mut RcHeader);
+            assert!(set(ctx, category, slot_a, Key::Int(0), Value::int(1)));
+
+            if take_reference {
+                let r = make_ref(ctx, category, slot_a, Key::Int(0));
+                assert!(!r.is_null(), "the reference was refused");
+                // The `$r` binding, taken and — unless it is kept — given
+                // straight back, which is `unset($r)` and leaves the
+                // element a reference with one holder (measured on php
+                // 8.3.6: `unset` does not collapse the element).
+                //
+                // `GcHeap` is the binding's category whatever the array's
+                // is, because `$r` is a frame slot rather than a container
+                // in the arena: its reference is counted and given back
+                // inside the request. Through an arena owner the release
+                // would belong to the reset log, and `unset($r)` would not
+                // take effect until the request ended.
+                crate::refcount::ll_retain(r as *mut RcHeader);
+                if !keep_binding {
+                    crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, r as *mut RcHeader);
+                }
+            }
+
+            // `$b = $a`, then `$b[0] = 3`.
+            assert!(crate::memory::barrier::ref_store(
+                arena,
+                holder as *mut RcHeader,
+                slot_b,
+                std::ptr::null_mut(),
+                *slot_a,
+            ));
+            assert!(set(ctx, category, slot_b, Key::Int(0), Value::int(3)));
+
+            let read_a = get(slot_a, Key::Int(0)).expect("the key is there").as_int();
+            let read_b = get(slot_b, Key::Int(0)).expect("the key is there").as_int();
+            if take_reference && keep_binding {
+                let boxed = match get_element(slot_a) {
+                    Some(v) => v.entity_ptr(),
+                    None => std::ptr::null_mut(),
+                };
+                if !boxed.is_null() {
+                    crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, boxed);
+                }
+            }
+            // The holder goes, and both arrays with it. Left standing,
+            // their storage keeps buffer-arena chunks that the arena's
+            // own tests then find in a shape they did not put it in.
+            if category == MemoryCategory::GcHeap {
+                assert!(ll_release(holder as *mut RcHeader));
+                ll_object_die(holder);
+            }
+            (read_a, read_b)
+        }
+    }
+
+    /// The element as the entry holds it, box included — what [`get`]
+    /// deliberately looks through.
+    unsafe fn get_element(slot: *const Value) -> Option<Value> {
+        let a = unsafe { (*slot).entity_ptr() } as *const LLArray;
+        unsafe { (*a).table.get(Key::Int(0)) }
+    }
+
+    /// S3.2's criterion, four cases against php 8.3.6, in both memory
+    /// categories. The copy unwraps a box nobody else names and shares
+    /// one a live `&` still binds — which is where PHP collapses a
+    /// reference, and the only place it does.
+    #[test]
+    fn a_copy_unwraps_a_box_with_a_single_holder() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        crate::memory::context::set_current_context(context_ptr);
+
+        for category in [MemoryCategory::GcHeap, MemoryCategory::RequestArena] {
+            assert_eq!(
+                unsafe { reference_then_copy(context_ptr, arena_ptr, category, false, false) },
+                (1, 3),
+                "no reference: {category:?}"
+            );
+            assert_eq!(
+                unsafe { reference_then_copy(context_ptr, arena_ptr, category, true, false) },
+                (1, 3),
+                "a dead reference must not alias the copy: {category:?}"
+            );
+            assert_eq!(
+                unsafe { reference_then_copy(context_ptr, arena_ptr, category, true, true) },
+                (3, 3),
+                "a live reference must alias the copy: {category:?}"
+            );
+        }
+
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+        unsafe { crate::promote::arena_reset_full(arena_ptr) };
+    }
+
+    /// The sequence that separates an exact holder count from an upper
+    /// bound, pinned in both categories because the two answers differ
+    /// and the difference is decided rather than accidental
+    /// (`dev/DECISIONS.md`, 2026-08-08, the arena's upper bound).
+    ///
+    /// `$a=[1]; $r=&$a[0]; $b=$a; $b[0]=3; unset($b); unset($r);
+    /// $c=$a; $c[0]=9;` then `($a[0], $c[0])`. php 8.3.6 answers
+    /// `(3, 9)`: by the third copy the box has one holder and is
+    /// collapsed. The heap agrees. The arena answers `(9, 9)`, because
+    /// `unset($b)` gives nothing back there — an arena container is not
+    /// counted, so it dies at the reset and its hold on the box stands
+    /// until then. The copy therefore errs toward sharing, which is the
+    /// safe direction: a count above the holders can only share, never
+    /// unwrap a box a live name still reaches.
+    #[test]
+    fn the_arena_reads_a_box_count_as_an_upper_bound() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        crate::memory::context::set_current_context(context_ptr);
+
+        for (category, expected) in [
+            (MemoryCategory::GcHeap, (3, 9)),
+            (MemoryCategory::RequestArena, (9, 9)),
+        ] {
+            let class = ClassBuilder::new("UpperBoundHolder")
+                .prop("a", true)
+                .prop("b", true)
+                .prop("c", true)
+                .build();
+            let holder = unsafe { new_constructed(context_ptr, class, category) };
+            let slot_a = unsafe { Object::prop_at(holder, 16) };
+            let slot_b = unsafe { Object::prop_at(holder, 32) };
+            let slot_c = unsafe { Object::prop_at(holder, 48) };
+            let a = unsafe { ll_array_new(category) };
+            let answer = unsafe {
+                assert!(crate::memory::barrier::ref_store(
+                    arena_ptr,
+                    holder as *mut RcHeader,
+                    slot_a,
+                    std::ptr::null_mut(),
+                    Value::entity(Tag::Array, a as *mut RcHeader),
+                ));
+                ll_release(a as *mut RcHeader);
+                assert!(set(
+                    context_ptr,
+                    category,
+                    slot_a,
+                    Key::Int(0),
+                    Value::int(1)
+                ));
+
+                // `$r = &$a[0]`, then a copy taken while it is alive.
+                let r = make_ref(context_ptr, category, slot_a, Key::Int(0));
+                assert!(!r.is_null());
+                crate::refcount::ll_retain(r as *mut RcHeader);
+                assert!(crate::memory::barrier::ref_store(
+                    arena_ptr,
+                    holder as *mut RcHeader,
+                    slot_b,
+                    std::ptr::null_mut(),
+                    *slot_a,
+                ));
+                assert!(set(
+                    context_ptr,
+                    category,
+                    slot_b,
+                    Key::Int(0),
+                    Value::int(3)
+                ));
+
+                // `unset($b)` through the holder's own category, which is
+                // the step the arena defers, and `unset($r)` through the
+                // frame's.
+                let held_b = (*slot_b).entity_ptr();
+                assert!(crate::memory::barrier::ref_store(
+                    arena_ptr,
+                    holder as *mut RcHeader,
+                    slot_b,
+                    held_b,
+                    Value::null(),
+                ));
+                crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, r as *mut RcHeader);
+
+                // `$c = $a; $c[0] = 9;`
+                assert!(crate::memory::barrier::ref_store(
+                    arena_ptr,
+                    holder as *mut RcHeader,
+                    slot_c,
+                    std::ptr::null_mut(),
+                    *slot_a,
+                ));
+                assert!(set(
+                    context_ptr,
+                    category,
+                    slot_c,
+                    Key::Int(0),
+                    Value::int(9)
+                ));
+
+                let read_a = get(slot_a, Key::Int(0)).expect("the key is there").as_int();
+                let read_c = get(slot_c, Key::Int(0)).expect("the key is there").as_int();
+                if category == MemoryCategory::GcHeap {
+                    assert!(ll_release(holder as *mut RcHeader));
+                    ll_object_die(holder);
+                }
+                (read_a, read_c)
+            };
+            assert_eq!(answer, expected, "{category:?}");
+        }
+
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+        unsafe { crate::promote::arena_reset_full(arena_ptr) };
     }
 
     /// The other crossing the heap box forces: the element enters a
@@ -2042,6 +2298,11 @@ mod tests {
         // separate, so the box goes into the array both will share.
         let r = unsafe { make_ref(context_ptr, MemoryCategory::GcHeap, slot_a, Key::Int(0)) };
         assert!(!r.is_null());
+        // `$r` is a name, and a name is a holder. The layer hands the box
+        // back at the element's count and leaves the caller's reference to
+        // the caller; without it the box has one holder and the copy below
+        // would unwrap it rather than share it (S3.2).
+        unsafe { crate::refcount::ll_retain(r as *mut RcHeader) };
         assert_eq!(
             unsafe { (*slot_a).entity_ptr() } as *mut LLArray,
             src,
@@ -2082,6 +2343,10 @@ mod tests {
 
             assert!(ll_release(h as *mut RcHeader));
             ll_object_die(h);
+            // `$r` goes out of scope last, and it is the box's final
+            // holder once both arrays are gone.
+            assert!(ll_release(r as *mut RcHeader));
+            crate::object::ll_entity_die(r as *mut RcHeader);
         }
     }
 
