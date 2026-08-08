@@ -140,8 +140,9 @@ Goal: the cut the Code Reviewer asked for on 2026-08-08 — the element
 layer's work leaves the table, the publication idiom exists once, and the
 four contracts read without following a private link.
 
-Done when: all five demands are closed as the review stated them, with
-behaviour unchanged and the gate green in both configurations.
+Done when: all five demands are closed as the review stated them, the
+array module has its rows in the knowledge map, and the gate is green in
+both configurations with behaviour unchanged.
 
 - [ ] S6.1 `Table::make_ref`'s boxing, category crossing and giveback
       move beside `element::set`
@@ -165,6 +166,18 @@ behaviour unchanged and the gate green in both configurations.
       done: the test asserts that reading the key yields null and a write
         through the reference is visible there
       tier: T1 · role: —
+- [ ] S6.6 `src/array/` gets its rows in `dev/ARCHITECTURE.md`
+      done: `table`, `entry`, `element` and `entity` each have a row —
+        what it is responsible for, what it knows, what it must not know,
+        what it depends on — and every upward edge the module has is
+        listed there, the `array::entity` → `gc` one included
+      tier: T2 · role: Critic
+      Last of the stage rather than first, and Edmond agreed the step on
+        2026-08-08: the map records the boundary S6.1 settles, so writing
+        it before the cut would describe a layout about to move. The
+        module has had no row since it was born on 2026-08-06, which is
+        why the next argument about where code belongs has nothing to
+        decide by.
 
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
 
