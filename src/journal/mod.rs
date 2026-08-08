@@ -590,13 +590,11 @@ pub fn finish_thread() {
     if ring.is_null() {
         return;
     }
-    let mut registry = locked();
+    // Under the lock, which is what a reader takes to read it. Nothing
+    // is freed here: this thread is inside its own exit, and what it
+    // owes the allocator waits for a live one (`take_pending`).
+    let registry = locked();
     unsafe { (&raw mut (*ring).finished_after).write(registry.marks) };
-    // Taken here rather than left: this is the last moment the registry
-    // is touched on this thread's behalf, and a ring evicted while its
-    // owner was between the two stamps has no other reader to be handed
-    // to. The frees themselves are not this thread's to make.
-    let _ = &mut registry;
 }
 
 /// Move one ring from the live list to the retired one, closing it, and
@@ -1356,10 +1354,12 @@ mod tests {
         let exiting = std::thread::spawn(move || {
             crate::memory::heap::ll_thread_init();
             record(8, 0, SUBJECT, 0, 0);
-            announce
-                .send(this_thread_identity())
-                .expect("the test hung up");
+            let identity = this_thread_identity();
+            // Retire *before* announcing, or the marks below can both be
+            // taken while the ring is still open and the window is an
+            // ordinary one — which is what Miri's scheduler does.
             retire_thread_ring();
+            announce.send(identity).expect("the test hung up");
             wait.recv().expect("the test hung up");
             finish_thread();
             crate::memory::heap::ll_thread_exit();
