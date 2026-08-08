@@ -8,6 +8,167 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
+Updated: 2026-08-08 · Active: S4
+
+The five stages below were ordered by the Sage on 2026-08-08 and approved
+by Edmond the same day. The order is the argument: S4 finishes a defect
+whose other half is already built, and `dev/WORKFLOW.md` puts a known bug
+before new work; S5 is Edmond's own item, placed ahead of the refactor
+queue on 2026-08-06, and it arrives before the next stage whose failures
+are concurrency-shaped hunts; S6 corrects a boundary every later customer
+would copy, `Map` being the element layer's second customer by the ruling
+of 2026-08-07; S7 gives the strategy tag the second occupant it was
+deferred for, which is also what makes two of `Map`'s design questions
+answerable; S8 writes that design, since building it first would decide
+by accident what Edmond has reserved. The prose sections after the stages
+are the reasoning behind them and the backlog they were drawn from.
+
+## S4 — Teardown off the machine stack  [in progress]
+
+Goal: no caller-chosen nesting depth reaches the machine stack in the
+array's teardown, and the two rules the decisions of 2026-08-08 record as
+owed are built.
+
+Done when: an array nested deeper than a deliberately small thread stack
+tears down on that thread, a block pinned by a refused carry returns to
+the pool, and the gate of `dev/WORKFLOW.md` is green in both
+configurations.
+
+- [ ] S4.1 Array teardown drains a work list instead of recursing
+      done: an array nested deeper than a small test-thread stack tears
+        down on that thread; the same test seen overflowing the stack
+        before the change; both GC configurations green
+      tier: T2 · role: Critic
+- [ ] S4.2 A block pinned by a refused payload carry returns when its
+      last payload is freed
+      done: a test pins a block through a refused carry, frees the
+        payload and finds the block in the pool; seen failing while the
+        pin is permanent
+      tier: T1 · role: —
+- [ ] S4.3 Test call sites retain before they insert
+      done: no call site retains after `Table::insert`; suite green
+      tier: T0 · role: —
+- [ ] S4.4 Correct the plan's stale entries
+      done: `PLAN.md` no longer contradicts the code on the five points
+        the Sage listed on 2026-08-08
+      tier: T0 · role: —
+
+Out of scope, named so it does not read as an oversight: an object chain
+(`$a->next = $b`, and so on) tears down through `dispose` with the same
+shape, and S4.1 does not bound it. The approved plan scoped the step to
+the array chain, an array literal being the cheapest depth a source file
+can build; whether to widen it was put to Edmond and is unanswered. A
+`__destruct` body is user code that re-enters the runtime, so its
+recursion is the program's.
+
+## S5 — The opt-in event journal
+
+Goal: `dev/design/debug-modes.md` §9 built — one ring per thread, 32-byte
+records, a window marked by a cursor snapshot, eviction reported as
+*unknown* rather than *none*.
+
+Done when: the census hunt of 2026-08-06 runs through the journal with no
+ring written by hand, and the gate is green with the feature on and off.
+
+- [ ] S5.1 The ring, the registry and window marking (§9.1–9.4)
+      done: unit tests for wrap-around, cursor-pair membership, a retired
+        thread's ring still readable, and `unknown` on eviction
+      tier: T2 · role: Critic
+- [ ] S5.2 Record sites for the default event set, behind the
+      `debug-journal` feature
+      done: with the feature off no record site appears in the release
+        IR, counted over the emitted IR because the clock on this box
+        cannot resolve the difference; §9.6's two-arm measurement is
+        recorded as owed rather than claimed
+      tier: T2 · role: —
+- [ ] S5.3 The acceptance hunt through the journal
+      done: on the pinned reproducer (`--no-run` binary, `taskset -c
+        0,1`, two spinners) the question "which strings died inside the
+        window" is answered from journal reads alone
+      tier: T2 · role: —
+
+## S6 — The stage-end review's five demands
+
+Goal: the cut the Code Reviewer asked for on 2026-08-08 — the element
+layer's work leaves the table, the publication idiom exists once, and the
+four contracts read without following a private link.
+
+Done when: all five demands are closed as the review stated them, with
+behaviour unchanged and the gate green in both configurations.
+
+- [ ] S6.1 `Table::make_ref`'s boxing, category crossing and giveback
+      move beside `element::set`
+      done: `table.rs` allocates no reference box and calls no store
+        barrier; `Table` hands the old element back and the composition
+        is one layer up
+      tier: T2 · role: —
+- [ ] S6.2 `barrier::publish_child` replaces the idiom's four copies
+      done: one body, and the four sites call it
+      tier: T1 · role: —
+- [ ] S6.3 `destroy_private_copy` and `destroy_empty_box` become one body
+      done: one function, with the divergence in the assertion stated
+        where it is decided rather than split across two sites
+      tier: T1 · role: —
+- [ ] S6.4 `set`, `append`, `unset` and `make_ref` state their ordering
+      guarantee in public text
+      done: `cargo doc` reports no private-link warning on the four
+      tier: T0 · role: —
+- [ ] S6.5 `a_reference_to_an_absent_key_creates_it_as_null` tests the
+      contract instead of the representation
+      done: the test asserts that reading the key yields null and a write
+        through the reference is visible there
+      tier: T1 · role: —
+
+## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
+
+Goal: the mixed vector exists, the strategy tag has the second occupant
+it was deferred for, and insertion order survives the migration by
+construction. Read `rfc/model/arrays.md` first; that design is
+authoritative.
+
+Done when: a fresh array is strategy 2 and migrates to strategy 3 under a
+key it cannot hold, both configurations green, Miri silent.
+
+- [ ] S7.1 The mixed vector as storage strategy 2
+      done: a fresh integer-keyed array is strategy 2, traced, severed
+        and torn down through S4.1's drain, in both configurations
+      tier: T2 · role: Critic
+- [ ] S7.2 Factories stamp the tag and the element write dispatches on it
+      done: a strategy-2 write of a string key migrates through the tag,
+        not through a direct table call
+      tier: T2 · role: —
+- [ ] S7.3 The 2 → 3 migration
+      done: a test pins insertion order across the migration, and the
+        flood state carries over with it
+      tier: T2 · role: —
+- [ ] S7.4 The RFC corrections this stage owes
+      done: `arrays.md`'s "strategy 1 never transitions" and
+        `memory/buffers.md`'s grouping of immortal with long-lived are
+        both amended in `rfc`
+      tier: T1 · role: —
+
+The 1 → 2 transition stays out of the stage: strategy 1 has no producer
+in the crate, and an arm with no producer is what this crate has refused
+twice. Confirm that against `arrays.md` when the stage opens.
+
+## S8 — The Map design, written before it is built
+
+Goal: `Map` and `MapMixed` designed in `rfc`, with every question Edmond
+reserved answered before a line of code.
+
+Done when: the design document exists and its open section is empty or
+explicitly deferred.
+
+- [ ] S8.1 The reserved questions put to Edmond, one at a time
+      done: every question in the `Map` section below is answered and
+        recorded in `dev/DECISIONS.md`
+      tier: T2 · role: —
+- [ ] S8.2 The design document in `rfc/model`
+      done: it covers the key-kind word beside the entry, the object key
+        as a counted child in trace and sever, and `MapMixed`'s content
+        hash on a work list rather than the machine stack
+      tier: T2 · role: Critic
+
 ## First, out of turn: the opt-in event journal — designed, not built
 
 Edmond's, 2026-08-06, and he put it ahead of the refactor below. The design
