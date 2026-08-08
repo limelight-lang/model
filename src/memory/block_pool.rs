@@ -300,10 +300,10 @@ impl BlockPool {
     pub fn get(&self) -> *mut BlockHeader {
         let block = self.take_block();
         // The journal's site sits out here rather than in the body,
-        // because the body holds the cache's `RefCell` in three places
-        // and a record raised under one of them re-enters this pool
-        // through `ll_malloc` if it is some thread's first — a borrow
-        // panic, which this crate aborts on (`debug-modes.md` §9.7).
+        // because the body borrows the cache's `RefCell` and a record
+        // raised under that borrow re-enters this pool through
+        // `ll_malloc` if it is some thread's first — a borrow panic,
+        // which this crate aborts on (`debug-modes.md` §9.7).
         if !block.is_null() {
             journal_event!(
                 crate::journal::kinds::KIND_BLOCK_COMMISSIONED,
@@ -312,11 +312,15 @@ impl BlockPool {
                 0
             );
         }
+
         block
     }
 
-    /// [`get`](Self::get)'s body, with every borrow of the thread cache
-    /// inside it.
+    /// A free block from the thread cache, the global stack or a freshly
+    /// carved region; null when the OS refuses memory.
+    ///
+    /// Every borrow of the thread cache is inside this function, which is
+    /// what lets [`get`](Self::get) raise its record with none held.
     fn take_block(&self) -> *mut BlockHeader {
         // Fault injection, tests only: the OS refusing memory cannot be
         // provoked on demand, and an untested failure path is a guess.
@@ -386,22 +390,22 @@ impl BlockPool {
             "a retained block went back to the pool with its survivors alive"
         );
         self.blocks_out.fetch_sub(1, Ordering::Relaxed);
-        // Read before the store below overwrites it, and only where it is
-        // read: without the feature the site is not there, and neither is
-        // this load (`debug-modes.md` §9.6).
+        // Read before the store below overwrites it, and behind the same
+        // feature as the site that reads it: without `debug-journal` there
+        // is no site and no load (`debug-modes.md` §9.6).
         #[cfg(feature = "debug-journal")]
         let arrived_as = unsafe { (*block).kind };
         unsafe { store_block_kind(&raw mut (*block).kind, BLOCK_KIND_FREE) };
 
-        // The borrow decides and stages; the pushes happen after it ends.
-        // A push takes the global free list's `Mutex`, and a record raised
-        // under that lock — the journal's site below, if it is some
-        // thread's first — comes back into this pool through `ll_malloc`
-        // and finds the cache already borrowed. The failure is a borrow
-        // panic rather than the deadlock §9.7's phrasing suggests, and
-        // under `panic = "abort"` it ends the process. So the flush copies
-        // out and the borrow closes (`debug-modes.md` §9.7, and the Sage's
-        // ruling for S5.2 in `PLAN.md`).
+        // The borrow decides and stages, and everything else happens
+        // after it ends. A record raised under it — the journal's site
+        // below, if it is some thread's first — comes back into this pool
+        // through `ll_malloc` and finds the cache already borrowed. The
+        // failure is a borrow panic rather than the deadlock §9.7's
+        // phrasing suggests, and under `panic = "abort"` it ends the
+        // process. So the flush copies out and the borrow closes
+        // (`debug-modes.md` §9.7, and the Sage's ruling for S5.2 in
+        // `PLAN.md`).
         //
         // `try_with` for the same reason as `get`: this runs from a TLS
         // destructor on the thread-exit path, where the cache may be gone.
@@ -413,11 +417,11 @@ impl BlockPool {
                 return 0;
             }
             let keep = THREAD_CACHE_CAPACITY / 2;
-            // One `put` overflows by one block, so the excess is
-            // `FLUSH_MAX` at most and the array holds it. The `min` is not
-            // belt and braces: it is what keeps a future refill path that
-            // overfills the cache from indexing past the array, which
-            // would panic on a path forbidden to.
+            // The `min` bounds a future refill path that overfills the
+            // cache: `taken` slices `flushed` below, and a `taken` past
+            // that array's width panics on a path that may not panic. One
+            // `put` overflows by a single block, so the bound does not
+            // bind today, and the assert is what says so.
             let excess = cache.blocks.len() - keep;
             debug_assert!(
                 excess <= FLUSH_MAX,
@@ -432,6 +436,20 @@ impl BlockPool {
             }
             taken
         });
+        // Between the two: the borrow has ended, so the record may take
+        // the allocator's own path if it is this thread's first, and the
+        // block has not been handed on, so no other thread can have
+        // commissioned it yet. After the pushes the two records of one
+        // address could arrive in the wrong order — a ring showing a
+        // block taken into service before it was ever returned — and the
+        // rings' own lack of order across threads (§9.1) does not excuse
+        // it: what §9.1 gives up is order, not causality.
+        journal_event!(
+            crate::journal::kinds::KIND_BLOCK_DECOMMISSIONED,
+            block as u64,
+            arrived_as as u64,
+            0
+        );
         match staged {
             Ok(taken) => {
                 for &b in &flushed[..taken] {
@@ -441,12 +459,6 @@ impl BlockPool {
             // No cache to put it in (see `get`'s note) — hand it back.
             Err(_) => self.push_global(block),
         }
-        journal_event!(
-            crate::journal::kinds::KIND_BLOCK_DECOMMISSIONED,
-            block as u64,
-            arrived_as as u64,
-            0
-        );
     }
 
     fn push_global(&self, block: *mut BlockHeader) {
@@ -622,7 +634,7 @@ mod tests {
     /// `put` that overflowed by more than one block would index past the
     /// array — a panic on a path this runtime aborts on.
     #[test]
-    fn an_overflowing_cache_flushes_half_and_keeps_the_rest() {
+    fn an_overflowing_cache_keeps_half_and_flushes_the_rest() {
         let _g = test_guard();
         let pool = BlockPool::global();
         drain_thread_cache();
@@ -643,11 +655,24 @@ mod tests {
             THREAD_CACHE_CAPACITY / 2,
             "the flush kept a number of blocks other than half the cache"
         );
+        // Nothing was dropped on the way out: the five the flush moved
+        // are in the global list, so taking every block back costs no new
+        // region. A staging array too narrow for the excess would lose
+        // the difference here rather than report it — which is the whole
+        // reason its width is a constant with an assertion behind it.
+        let regions = pool.regions_carved();
+        let mut back = Vec::new();
+        for _ in 0..blocks.len() {
+            back.push(pool.get());
+        }
         assert_eq!(
-            blocks.len() - THREAD_CACHE_CAPACITY / 2,
-            FLUSH_MAX,
-            "one put overflowed by more than the staging array holds"
+            pool.regions_carved(),
+            regions,
+            "a block the flush moved never reached the global list"
         );
+        for block in back {
+            pool.put(block);
+        }
 
         drain_thread_cache();
     }

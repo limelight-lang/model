@@ -381,7 +381,7 @@ mod site_tests {
     /// about never happens.
     #[test]
     fn a_pools_own_site_may_be_a_threads_first_record() {
-        let _only = set_sites_for_test(1u64 << KIND_BLOCK_DECOMMISSIONED);
+        let _only = set_sites_for_test(bit(KIND_BLOCK_DECOMMISSIONED));
         let _g = crate::memory::block_pool::test_guard();
 
         let recorded = std::thread::spawn(|| {

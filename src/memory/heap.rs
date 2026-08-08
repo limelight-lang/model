@@ -1518,8 +1518,6 @@ pub extern "C" fn ll_thread_exit() {
     // nothing rebuilds it (`thread_may_free`). It also tells a structure
     // built between here and the end that this sequence will dispose it.
     EXIT_PHASE.with(|phase| phase.set(ExitPhase::Exiting));
-    // The head of the sequence, so every teardown record below it is in
-    // the same ring — which retires as this function's last act.
     journal_event!(crate::journal::kinds::KIND_THREAD_EXIT, 0, 0, 0);
 
     // Thread exit owns the order in which this thread's runtime state
@@ -1783,10 +1781,7 @@ pub extern "C" fn ll_thread_init() {
         }
         // After the reopen, so a pool thread's second life records its
         // start in the ring of that life rather than in the one it
-        // retired. A thread whose *first record* brought it here raises
-        // this from inside the ring's own allocation, where it is
-        // dropped by §9.7's first-record exception; the ring's
-        // registration is what announces such a thread instead.
+        // retired.
         journal_event!(crate::journal::kinds::KIND_THREAD_START, 0, 0, 0);
     }
 }
@@ -2379,11 +2374,10 @@ mod tests {
     /// ```
     #[test]
     fn h9_exiting_thread_returns_its_blocks_without_an_explicit_call() {
-        // A journaling thread takes a ring, and a ring is a block the
-        // registry keeps after that thread is gone — memory held on
-        // purpose, which this count would read as stranded. Before the
-        // pool's guard: the two are taken in this order everywhere, and
-        // the reverse somewhere else is a deadlock.
+        // The ring a journaling thread takes is a block the registry keeps
+        // after that thread is gone, and this test counts the blocks the
+        // pool has out. Before the pool's guard, as `set_sites_for_test`
+        // requires.
         let _quiet = crate::journal::kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         let pool = BlockPool::global();

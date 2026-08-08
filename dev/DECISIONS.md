@@ -8,6 +8,34 @@ never edited or deleted.
 
 ---
 
+## 2026-08-08 — the event journal is one ring per thread
+
+Decided while building §9 of `dev/design/debug-modes.md`, and recorded
+here rather than only there because it shapes the write path: **each
+thread journals into its own ring, and there is no global ring and no
+global sequence number.** A window is marked by reading every registered
+ring's cursor before and after the interval, and membership follows from
+the two readings.
+
+The framing that made a global ring look necessary was that the census
+hunt of 2026-08-06 needed a *global order*. It did not. It needed
+**membership** in a window — "did any string die between my two
+censuses" — and a cursor pair answers membership exactly while costing
+the write path no atomic read-modify-write. Two further properties
+settled it: a single ring of K records holds the last K of the whole
+process, so the thread under investigation loses its history to whichever
+thread allocates hardest, which is the condition the journal is switched
+on under; and thread identity lives in a per-thread ring's header instead
+of in every record, which is what keeps a record at 32 bytes.
+
+What is genuinely given up is order across threads. An investigation that
+needs it stamps a shared counter into a payload word on an event kind of
+its own, and pays the contended increment on that kind alone rather than
+on every record in the process.
+
+Edmond had been asked and had not answered when the session ended; the
+answer stands unless he overturns it.
+
 ## 2026-08-08 — an event kind gets a number when it gets a site
 
 The journal's kinds are declared in `src/journal/kinds.rs`, and only the

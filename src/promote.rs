@@ -268,10 +268,8 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         unsafe { crate::memory::stdapi::ll_free(block as *mut u8) };
     }
 
-    // Last, so that every death this reset caused is between the two
-    // records: what the pair brackets is the whole of the reset, and a
-    // hunt asking whether a reset freed something reads it as an
-    // interval rather than an instant.
+    // After the frees, so that every death this reset caused falls
+    // between the pair (`journal::kinds::KIND_ARENA_RESET_BEGIN`).
     journal_event!(
         crate::journal::kinds::KIND_ARENA_RESET_END,
         arena as u64,

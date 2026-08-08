@@ -39,7 +39,7 @@
 //! aborts on a panic. [`ALLOCATING`] cannot save that case: it is raised
 //! once the first record has already decided to allocate. A refused
 //! allocation turns journaling off for that thread **for good** — the
-//! thread's slot holds [`CLOSED`] from then on, so no later record asks
+//! thread's slot holds [`REFUSED`] from then on, so no later record asks
 //! the allocator again — and the journaled operation proceeds. Refusals
 //! are counted, because a thread with no ring is in no window and the
 //! count is all that keeps its silence from reading as inactivity
@@ -152,7 +152,9 @@ pub struct Record {
 }
 
 /// One event as a reader sees it: plain values, copied out of a ring that
-/// its owner may still be writing.
+/// its owner may still be writing. `kind`, `site`, `subject`, `a` and `b`
+/// carry what [`Record`]'s fields of those names carry; what each `kind`
+/// puts in `subject`, `a` and `b` is [`kinds`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Event {
     pub kind: Kind,
@@ -276,11 +278,11 @@ struct Registry {
     /// histories the window lost.
     evicted: u64,
     /// Threads that will never have a ring — the allocator refused it, or
-    /// the thread could not guarantee its retirement. They journal nothing for
-    /// the rest of their lives and appear in no ring, so without a count
-    /// of them a window's silence about them is indistinguishable from a
-    /// process that never had them — the false *none* by the one door
-    /// that opens under memory pressure, which is when the journal is
+    /// the thread could not guarantee its retirement. They journal nothing
+    /// for the rest of their lives and appear in no ring, so without a
+    /// count of them a window's silence about them is indistinguishable
+    /// from a process that never had them — the false *none* by the one
+    /// door that opens under memory pressure, which is when the journal is
     /// switched on.
     refused: u64,
     /// Marks taken. It stamps each one, so that two marks handed to
@@ -395,7 +397,10 @@ const REFUSED: *mut Ring = std::ptr::without_provenance_mut(usize::MAX - 1);
 
 thread_local! {
     /// This thread's ring: null before the first record site runs,
-    /// [`CLOSED`] once it will never have one, otherwise the ring.
+    /// [`CLOSED`] once its ring is retired, [`REFUSED`] if it never got
+    /// one, otherwise the ring. Which of the two ends it is decides how
+    /// a later record is reported, and that is the whole reason there
+    /// are two of them.
     ///
     /// A `Cell<*mut _>` with no drop glue, under the rule every
     /// per-thread structure reachable from thread exit obeys
@@ -693,13 +698,13 @@ pub struct Mark {
 pub enum Window {
     /// Every record written inside the window, oldest first.
     Records(Vec<Event>),
-    /// This ring cannot answer for the window: it was written past a full
-    /// lap, or the registry freed it before the read, or the two marks
-    /// bound no window at all. `written` counts the records the cursor
-    /// pair spans, and is `None` where there is no pair to count. **Not
-    /// the same as an empty answer**, and the distinction is the reason a
-    /// hunt can trust "nothing happened".
-    Unknown { thread: u64, written: Option<u64> },
+    /// This ring cannot answer for the window: it was written past a
+    /// full lap, or the registry freed it before the read. `written`
+    /// counts the records the cursor pair spans, which is how much was
+    /// lost rather than how much survived. **Not the same as an empty
+    /// answer**, and the distinction is the reason a hunt can trust
+    /// "nothing happened".
+    Unknown { thread: u64, written: u64 },
     /// Rings the registry freed inside the window: whole thread histories
     /// no answer above can carry, the ring having left the registry
     /// between the two marks. Named by count alone, because what is gone
@@ -718,9 +723,9 @@ pub enum Window {
     /// is one a quota may evict and another thread free.
     Lost { records: u64 },
     /// Threads left without a ring, in this process, ever — refused by the
-    /// allocator, or unable to guarantee a ring's retirement. They
-    /// have written nothing and are in no other answer, so a window that
-    /// did not carry this number would spell "these threads did nothing"
+    /// allocator, or unable to guarantee a ring's retirement. They have
+    /// written nothing and are in no other answer, so a window that did
+    /// not carry this number would spell "these threads did nothing"
     /// exactly as it spells "these threads do not exist". Cumulative, and
     /// deliberately: a refusal is for the life of its thread.
     Refused { threads: u64 },
@@ -799,7 +804,7 @@ pub fn between(start: &Mark, end: &Mark) -> Vec<Window> {
                 Some(ring) => window_of(ring, thread, start_at, end_at),
                 None => Window::Unknown {
                     thread,
-                    written: Some(end_at.saturating_sub(start_at)),
+                    written: end_at.saturating_sub(start_at),
                 },
             }
         })
@@ -836,7 +841,7 @@ fn window_of(ring: *mut Ring, thread: u64, start_at: u64, end_at: u64) -> Window
             None => {
                 return Window::Unknown {
                     thread,
-                    written: Some(end_at.saturating_sub(start_at)),
+                    written: end_at.saturating_sub(start_at),
                 };
             }
         }
@@ -847,6 +852,13 @@ fn window_of(ring: *mut Ring, thread: u64, start_at: u64, end_at: u64) -> Window
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The kind a test writes when the kind plays no part: what these
+    /// tests are about is the ring, the window and the registry, and no
+    /// assertion here reads a kind. Past every kind that has a site
+    /// ([`kinds`]), and at the mask's last bit, so that a record written
+    /// here cannot be taken for a record of some site.
+    const ANY_KIND: Kind = 63;
 
     /// How many rings are live and how many retired. Tests only, and the
     /// live count is what a resurrected ring shows up in.
@@ -917,7 +929,7 @@ mod tests {
     fn a_journaling_thread(subject: u64) -> u64 {
         std::thread::spawn(move || {
             crate::memory::heap::ll_thread_init();
-            record(5, 0, subject, 0, 0);
+            record(ANY_KIND, 0, subject, 0, 0);
             let identity = this_thread_identity();
             crate::memory::heap::ll_thread_exit();
             identity
@@ -939,7 +951,7 @@ mod tests {
         let ring = unsafe { &*ring };
 
         for i in 0..(CAPACITY as u64 + 3) {
-            ring.write(1, 0, i, 0, 0);
+            ring.write(ANY_KIND, 0, i, 0, 0);
         }
         assert_eq!(ring.cursor.load(Ordering::Relaxed), CAPACITY as u64 + 3);
         // The three newest are readable and name the last three subjects.
@@ -972,12 +984,12 @@ mod tests {
         const SECOND_INSIDE: u64 = 0x2_22;
         const AFTER: u64 = 0x0AF;
 
-        record(7, 0, BEFORE, 0, 0);
+        record(ANY_KIND, 0, BEFORE, 0, 0);
         let start = mark();
-        record(7, 0, FIRST_INSIDE, 1, 0);
-        record(7, 0, SECOND_INSIDE, 2, 0);
+        record(ANY_KIND, 0, FIRST_INSIDE, 1, 0);
+        record(ANY_KIND, 0, SECOND_INSIDE, 2, 0);
         let end = mark();
-        record(7, 0, AFTER, 0, 0);
+        record(ANY_KIND, 0, AFTER, 0, 0);
 
         let mine = this_thread_identity();
         let inside: Vec<u64> = events(between(&start, &end))
@@ -999,7 +1011,7 @@ mod tests {
         let _g = crate::memory::block_pool::test_guard();
         let start = mark();
         for i in 0..(CAPACITY as u64 * 2) {
-            record(9, 0, i, 0, 0);
+            record(ANY_KIND, 0, i, 0, 0);
         }
         let end = mark();
 
@@ -1009,7 +1021,7 @@ mod tests {
             if let Window::Unknown { thread, written } = window
                 && thread == mine
             {
-                assert_eq!(written, Some(CAPACITY as u64 * 2));
+                assert_eq!(written, CAPACITY as u64 * 2);
                 seen = true;
             }
         }
@@ -1056,10 +1068,10 @@ mod tests {
 
         let identity = std::thread::spawn(|| {
             crate::memory::heap::ll_thread_init();
-            record(3, 0, BEFORE_EXIT, 0, 0);
+            record(ANY_KIND, 0, BEFORE_EXIT, 0, 0);
             let identity = this_thread_identity();
             crate::memory::heap::ll_thread_exit();
-            record(3, 0, AFTER_EXIT, 0, 0);
+            record(ANY_KIND, 0, AFTER_EXIT, 0, 0);
             identity
         })
         .join()
@@ -1111,11 +1123,11 @@ mod tests {
         let identity = std::thread::spawn(|| {
             crate::memory::heap::ll_thread_init();
             FORCE_OOM.store(true, Ordering::Relaxed);
-            record(4, 0, 1, 0, 0);
+            record(ANY_KIND, 0, 1, 0, 0);
             FORCE_OOM.store(false, Ordering::Relaxed);
             // The pressure is gone and this thread still journals
             // nothing: the refusal was final, not a bad moment.
-            record(4, 0, 2, 0, 0);
+            record(ANY_KIND, 0, 2, 0, 0);
             let identity = this_thread_identity();
             crate::memory::heap::ll_thread_exit();
             identity
@@ -1190,7 +1202,7 @@ mod tests {
             answer,
             Some(Window::Unknown {
                 thread: identity,
-                written: Some(1)
+                written: 1
             }),
             "a freed ring was read rather than reported"
         );
@@ -1212,7 +1224,7 @@ mod tests {
         let (go, wait) = std::sync::mpsc::channel();
         let journaling = std::thread::spawn(move || {
             crate::memory::heap::ll_thread_init();
-            record(8, 0, SUBJECT, 0, 0);
+            record(ANY_KIND, 0, SUBJECT, 0, 0);
             sender
                 .send(this_thread_identity())
                 .expect("the test hung up");
@@ -1254,12 +1266,12 @@ mod tests {
 
         let (first, second) = std::thread::spawn(|| {
             crate::memory::heap::ll_thread_init();
-            record(6, 0, FIRST, 0, 0);
+            record(ANY_KIND, 0, FIRST, 0, 0);
             let first = this_thread_identity();
             crate::memory::heap::ll_thread_exit();
 
             crate::memory::heap::ll_thread_init();
-            record(6, 0, SECOND, 0, 0);
+            record(ANY_KIND, 0, SECOND, 0, 0);
             let second = this_thread_identity();
             crate::memory::heap::ll_thread_exit();
             (first, second)
@@ -1321,7 +1333,7 @@ mod tests {
     fn two_marks_in_the_wrong_order_answer_that_they_bound_nothing() {
         let _quiet = kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
-        record(2, 0, 0x0D, 0, 0);
+        record(ANY_KIND, 0, 0x0D, 0, 0);
         let start = mark();
         let end = mark();
 
@@ -1375,12 +1387,12 @@ mod tests {
             /// A `__destruct` that journals, which is what a record site
             /// on the death path will do once §9.5's set is built.
             unsafe extern "C" fn journaling_destructor(_obj: *mut crate::object::Object) {
-                record(1, 0, SUBJECT, 0, 0);
+                record(ANY_KIND, 0, SUBJECT, 0, 0);
             }
 
             crate::memory::heap::ll_thread_init();
             let identity = {
-                record(1, 0, 0, 0, 0);
+                record(ANY_KIND, 0, 0, 0, 0);
                 this_thread_identity()
             };
 
@@ -1505,7 +1517,7 @@ mod tests {
         struct RecordOnDrop;
         impl Drop for RecordOnDrop {
             fn drop(&mut self) {
-                record(2, 0, LATE, 0, 0);
+                record(ANY_KIND, 0, LATE, 0, 0);
             }
         }
         thread_local! {
@@ -1517,7 +1529,7 @@ mod tests {
             // Registered first, so destroyed last.
             LATE_CELL.with(|_| {});
             crate::memory::heap::ll_thread_init();
-            record(2, 0, 0, 0, 0);
+            record(ANY_KIND, 0, 0, 0, 0);
         })
         .join()
         .expect("the journaling thread panicked");
@@ -1758,7 +1770,7 @@ mod tests {
         let identity = std::thread::spawn(|| {
             crate::memory::heap::ll_thread_init();
             FORCE_GUARD_UNARMED.store(true, Ordering::Relaxed);
-            record(4, 0, 5, 0, 0);
+            record(ANY_KIND, 0, 5, 0, 0);
             let identity = this_thread_identity();
             FORCE_GUARD_UNARMED.store(false, Ordering::Relaxed);
             crate::memory::heap::ll_thread_exit();
@@ -1804,13 +1816,13 @@ mod tests {
         let refused = std::thread::spawn(move || {
             crate::memory::heap::ll_thread_init();
             FORCE_OOM.store(true, Ordering::Relaxed);
-            record(4, 0, 1, 0, 0);
+            record(ANY_KIND, 0, 1, 0, 0);
             FORCE_OOM.store(false, Ordering::Relaxed);
             announce.send(()).expect("the test hung up");
 
             wait.recv().expect("the test hung up");
             // Raised while refused, and inside the window below.
-            record(4, 0, 2, 0, 0);
+            record(ANY_KIND, 0, 2, 0, 0);
             announce.send(()).expect("the test hung up");
 
             wait.recv().expect("the test hung up");
@@ -1845,7 +1857,7 @@ mod tests {
         std::thread::spawn(|| {
             crate::memory::heap::ll_thread_init();
             FORCE_OOM.store(true, Ordering::Relaxed);
-            record(4, 0, 3, 0, 0);
+            record(ANY_KIND, 0, 3, 0, 0);
             FORCE_OOM.store(false, Ordering::Relaxed);
             crate::memory::heap::ll_thread_exit();
         })

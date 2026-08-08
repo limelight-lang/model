@@ -375,8 +375,8 @@ impl RcHeader {
 pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
     debug_assert_eq!(slot as usize % 8, 0);
     // Kept out of the record's arguments because the store below consumes
-    // the header, and read only where it is read: without the feature the
-    // site is not there and neither is this copy
+    // the header, and behind the same feature as the site that reads it:
+    // without `debug-journal` there is no site and no copy
     // (`dev/design/debug-modes.md` §9.6).
     #[cfg(feature = "debug-journal")]
     let born_with = header.flags;
