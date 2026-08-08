@@ -574,18 +574,42 @@ keeps writing while the reader copies, the reader re-reads the cursor
 after copying the record at position `p` and discards the copy when
 `cursor - p >= capacity`: the slot was reused underneath it.
 
-The investigator marks a window by snapshotting `(ring, cursor)` for every
-registered ring at the start and again at the end. For each ring the
-records at `[c_start, c_end)` were written inside the window. A thread
-that started inside it has `c_start = 0`, which is the correct answer
-rather than an approximation, and a thread that exited inside it keeps its
-ring (§9.4) with its final cursor as `c_end`.
+**That re-read is a bracket and it takes two fences**, the same pair the
+array table's version bracket takes and for the same reason. The reader's
+closing read of the cursor must be `fence(Acquire)` and then a relaxed
+load: an acquire *load* orders what follows it, so the record it is meant
+to validate could be read past it. And the writer must place
+`fence(Release)` before the record's payload stores, because what the
+reader's relaxed loads read from are relaxed stores, which an acquire
+fence has nothing to synchronize with on their own. Three of the four
+combinations admit a lapped record that passes the check, and the loom
+model exhibits each (`src/journal/ring_model.rs`).
+
+The investigator marks a window by snapshotting `(thread, cursor)` for
+every registered ring at the start and again at the end. **A ring is named
+by identity, never by its address**: the identity is a counter's next
+value stamped at registration, while the address is memory eviction gives
+back to the allocator, and a mark outlives the lock it was taken under. A
+read resolves those identities under the registry's lock and copies while
+holding it, which is what keeps a freed ring out of a reader's hands. For
+each ring the records at `[c_start, c_end)` were written inside the
+window. A thread that started inside it has `c_start = 0`, which is the
+correct answer rather than an approximation, and a thread that exited
+inside it keeps its ring (§9.4) with its final cursor as `c_end`.
 
 **Eviction is reported, never hidden.** When `c_end - c_start >= capacity`
 the window overflowed that ring and its answer is *unknown*, not *none*.
 The hunt turned on the finding that no string died inside the window, and
 a silent eviction converts that finding into a false one. An empty answer
 is worth having only if it can be trusted.
+
+The rule covers the ring that is *gone* as well as the ring that lapped.
+A retired ring freed to bound the list (§9.4) takes a whole thread's
+history with it, and neither mark can name it — one is too early and the
+other too late. The registry therefore counts the rings it frees, a mark
+records that count, and a window whose two counts differ reports the
+difference. Answering with the rings that happen to be left would be the
+same false *none* by another route.
 
 ### 9.4 Where a ring lives, and what happens at thread exit
 
@@ -594,7 +618,12 @@ A ring is allocated on the thread's first record through `ll_malloc`
 The journal has to be readable while the collector holds an epoch and
 while an arena resets, and it has to record events raised from inside the
 allocator without re-entering it. If the allocation fails, journaling is
-off for that thread and the journaled operation proceeds.
+off for that thread **for good** and the journaled operation proceeds: a
+retry would take two process-global mutexes and ask the OS for memory on
+every later record, under exactly the pressure the journal was turned on
+to investigate. The thread's cell therefore holds three states, not two —
+not asked yet, closed, or a ring — since a cell that only says "no ring"
+cannot tell a first record from a thousandth.
 
 Rings outlive their threads, because a thread's records matter most once
 it is gone — the standing hypothesis about the census flake is about a
@@ -610,9 +639,17 @@ order is unspecified. The ring is disposed explicitly from
 `heap::ll_thread_exit`, and it goes **last** in that fixed order, since
 everything disposed before it is worth journaling.
 
+**Retirement closes the cell rather than emptying it.** Last of the exit
+sequence is not last on the thread: the heap teardown that follows frees
+blocks, which is a default event kind (§9.5), and a record from there
+would open a second ring under a thread already gone — one nothing ever
+retires, and one that puts the leak on the list R does not bound.
+
 Retired rings are bounded: the registry keeps the most recent R and frees
 the oldest beyond that. A program that creates a thread per request would
-otherwise accumulate rings for the life of the process.
+otherwise accumulate rings for the life of the process. Each free is
+counted, because it is a window's only evidence that a history existed
+(§9.3).
 
 ### 9.5 What is recorded by default, and what has to be asked for
 

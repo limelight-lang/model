@@ -72,6 +72,25 @@ ring written by hand, and the gate is green with the feature on and off.
         and the retired-ring test calling `retire_thread_ring` by hand,
         so it never walks the path the first defect lives on. All
         accepted, none fixed yet.
+      Fixed 2026-08-08: the thread's cell holds a third state, `CLOSED`,
+        so a refusal and a retirement each close it — a record raised by
+        the heap teardown below step 6 opens no second ring, and a
+        refusal is never retried. A `Mark` names rings by identity and
+        `between` resolves them under the registry's lock, so a freed
+        ring is reported instead of read; the registry counts its
+        evictions and a window reports the histories it lost. The
+        read-back bracket takes a fence on **each** side: the loom model
+        (`journal/ring_model.rs`) showed the reader's alone still accepts
+        a lapped record, because what its relaxed loads read from are
+        relaxed stores — three of four combinations fail, as they do for
+        the table's version bracket. Beside them: the three `expect`s and
+        the `debug_assert` left the path §9.7 forbids them on, a const
+        assertion pins `CAPACITY` to the pooled-block regime, the
+        exit-order comment states the reason that is true, and the
+        retired-ring test goes through `ll_thread_exit`. Four regression
+        tests, each seen failing on its defect; the fence pair is pinned
+        by the loom model instead, there being no `cargo test` for it.
+        Critic round 2 owed before the step closes.
 - [ ] S5.2 Record sites for the default event set, behind the
       `debug-journal` feature
       done: with the feature off no record site appears in the release

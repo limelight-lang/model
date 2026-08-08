@@ -1572,8 +1572,12 @@ pub extern "C" fn ll_thread_exit() {
     // 6. The journal's ring, last of all: everything disposed above is
     //    worth journaling, and the ring is handed to the registry rather
     //    than freed, so it stays readable after this thread is gone
-    //    (`journal.rs`). It has to happen before the heaps below, because
-    //    an evicted ring is freed through `ll_free`.
+    //    (`journal.rs`). Nothing below it is needed for that — a ring is
+    //    one pooled block, so an evicted one goes back to the global pool
+    //    rather than through this thread's heap. What the call does need
+    //    from its position is the opposite direction: it closes this
+    //    thread's slot, so the block frees below journal nothing and no
+    //    second ring is opened under a thread that has exited.
     crate::journal::retire_thread_ring();
 
     let p = tls::get_raw();

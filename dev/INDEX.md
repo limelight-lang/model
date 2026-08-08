@@ -175,20 +175,30 @@ versions live in `docs/history/`, marked at the top.
   overflow (`dev/DECISIONS.md`, 2026-08-07 and 2026-08-08). An object
   chain still tears down through the machine stack.
   What is unbuilt is listed at the head of `PLAN.md`.
-- The event journal: `src/journal.rs` — what the runtime did, as
+- The event journal: `src/journal/` — what the runtime did, as
   32-byte records in a ring per thread, read back by marking a window
   with every ring's cursor before and after (`dev/design/debug-modes.md`
   §9). No global ring and no global sequence number, so the write path
   takes no atomic read-modify-write and a hard-allocating thread cannot
   evict the records of the thread under investigation; the price is that
   records in different rings have no order between them. **An overflowed
-  window answers `unknown`, never `none`** — one rule decides it, the
-  reader's re-read of the cursor after copying a record. A ring comes
-  from `ll_malloc` on the thread's first record, outlives its thread on
-  the registry's retired list (`journal::retire_thread_ring`, called
-  last in `heap::ll_thread_exit`), and the oldest beyond `RETIRED_KEPT`
-  are freed. The module is in every build; what the `debug-journal`
-  feature gates is the record sites on the hot paths, unbuilt.
+  window answers `unknown`, never `none`** — the reader's re-read of the
+  cursor after copying a record decides it, and that re-read is a bracket
+  ordered by a **pair** of fences rather than by a release store and an
+  acquire load, the array table's version bracket again
+  (`journal/ring_model.rs` is the loom model, and three of its four
+  combinations admit a lapped record). A ring the registry has *freed*
+  answers `unknown` too, by a count of evictions each `Mark` carries.
+  A ring comes from `ll_malloc` on the thread's first record, outlives its
+  thread on the registry's retired list (`journal::retire_thread_ring`,
+  called last in `heap::ll_thread_exit`), and the oldest beyond
+  `RETIRED_KEPT` are freed. A `Mark` names rings by identity, never by
+  address, and a read resolves them under the registry's lock — a freed
+  ring's block goes back to the allocator. A refusal and a retirement both
+  **close** the thread's cell, which is why it has three states and not
+  two: a thread journals nothing after its exit, and one refusal is not
+  retried. The module is in every build; what the `debug-journal` feature
+  gates is the record sites on the hot paths, unbuilt.
 - Category → allocator routing: `src/memory/routing.rs` — the one place
   that answers where a memory category's bytes come from.
   `entity_alloc_in` for anything with an `RcHeader`, `body_alloc` /
