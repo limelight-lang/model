@@ -48,9 +48,13 @@
 //! Rings outlive their threads, because a thread's records matter most
 //! once it is gone. At exit the ring is handed to the registry's retired
 //! list, which keeps the most recent [`RETIRED_KEPT`], and the thread's
-//! slot is closed the same way a refusal closes it. What the thread
-//! raises after that — the heap teardown following retirement — is lost,
-//! and the window containing the close says so ([`Window::Closed`]).
+//! slot is closed the same way a refusal closes it. **Closing is an
+//! interval and not an instant**: what the thread raises between the
+//! retirement and the end of its exit — the heap teardown, which
+//! decommissions blocks — is lost, so a window overlapping that interval
+//! answers [`Window::Closed`] rather than an empty list of records.
+//! Nothing this thread still owes is freed there either: its deferral
+//! backlog is gone by then, so an evicted ring waits for a live thread.
 //! `ll_thread_init` reopens a closed slot, so one OS thread running a
 //! pool's tasks journals each life into a ring of its own — and every
 //! self-initialising way back into the runtime runs that function, so a
@@ -189,6 +193,13 @@ pub struct Ring {
     /// Plain, like `thread`: written under the registry's lock and read
     /// under it, and no other path touches it.
     closed_after: u64,
+    /// How many marks had been taken when this ring's owner finished, or
+    /// [`OPEN`] while it has not. Between the close and this the thread
+    /// was still raising events into a ring it could no longer write —
+    /// the heap teardown below step 6 of `heap::ll_thread_exit` — so the
+    /// two together are the interval a window has to report as closed,
+    /// and one instant is not enough to bound it.
+    finished_after: u64,
     records: [Record; CAPACITY],
 }
 
@@ -385,6 +396,11 @@ thread_local! {
     /// so a record site reached from inside the allocator finds no ring
     /// and returns instead of recursing (§9.7, "no re-entry").
     static ALLOCATING: Cell<bool> = const { Cell::new(false) };
+
+    /// The ring this thread retired, between [`retire_thread_ring`] and
+    /// [`finish_thread`]. Null outside that interval, and null again
+    /// afterwards — the ring belongs to the registry from then on.
+    static RETIRING: Cell<*mut Ring> = const { Cell::new(std::ptr::null_mut()) };
 }
 
 /// Record one event on this thread's ring, allocating the ring on first
@@ -431,14 +447,17 @@ fn ring_for_writing() -> *mut Ring {
     // because it allocates.
     crate::memory::heap::ll_thread_init();
     // No ring is opened on a thread whose retirement is not guaranteed.
-    // The guard `ll_thread_init` arms is what calls `retire_thread_ring`,
-    // and it cannot be armed from inside TLS teardown — a destructor
-    // allocating on the way out reaches a record site on a thread whose
-    // exit has already been run or destroyed. A ring opened there is
+    // What retires one is `ll_thread_exit`, reached either through the
+    // guard `ll_thread_init` arms or because an exit is already running —
+    // a record raised by a `__destruct` body inside step 1 is the death
+    // of a *finishing* thread, which is the hypothesis this journal was
+    // built for, and step 6 of that same call will retire its ring. What
+    // is left out is the thread whose guard cannot be armed at all,
+    // because TLS teardown has destroyed the slot. A ring opened there is
     // retired by nothing and stays on the live list for the life of the
     // process, where every later window reads it as a live thread doing
     // nothing: a standing false *none*, and a leak with it.
-    if !crate::memory::heap::exit_guard_armed() {
+    if !crate::memory::heap::thread_exit_will_run() {
         close_this_thread();
         ALLOCATING.with(|cell| cell.set(false));
         return std::ptr::null_mut();
@@ -486,8 +505,25 @@ fn register_ring(ring: *mut Ring) -> Vec<*mut Ring> {
     unsafe {
         (&raw mut (*ring).thread).write(registry.next_thread);
         (&raw mut (*ring).closed_after).write(OPEN);
+        (&raw mut (*ring).finished_after).write(OPEN);
     }
     registry.live.push(ring);
+    take_pending(&mut registry)
+}
+
+/// The rings a retirement left behind, if this thread may free them.
+///
+/// A thread inside its own `ll_thread_exit` may not: the deferral backlog
+/// a parked free needs is disposed within that sequence and nothing
+/// rebuilds it, so the ring would be parked onto a list dropped
+/// unreleased. The exit that runs by itself and the exit a caller invokes
+/// by hand are the same sequence here, and `heap::thread_may_free`
+/// answers for both — the guard's own state does not, being armed
+/// throughout a hand-invoked one.
+fn take_pending(registry: &mut Registry) -> Vec<*mut Ring> {
+    if !crate::memory::heap::thread_may_free() {
+        return Vec::new();
+    }
     std::mem::take(&mut registry.pending_free)
 }
 
@@ -534,7 +570,33 @@ pub fn retire_thread_ring() {
     if ring.is_null() || ring == CLOSED {
         return;
     }
+    RETIRING.with(|cell| cell.set(ring));
     retire_ring(ring);
+}
+
+/// Tell the journal this thread has finished, closing the interval its
+/// retirement opened.
+///
+/// Called from the **end** of `heap::ll_thread_exit`, on every path out
+/// of it. Between [`retire_thread_ring`] and this call the thread goes on
+/// raising events — the heap teardown that follows step 6 decommissions
+/// blocks, a default event kind — into a ring it can no longer write, and
+/// a window over that interval has to report the loss. One instant does
+/// not bound it: a mark taken between the two would otherwise find a
+/// closed ring, an empty range, and answer that the thread did nothing
+/// while it was in fact losing records.
+pub fn finish_thread() {
+    let ring = RETIRING.with(|cell| cell.replace(std::ptr::null_mut()));
+    if ring.is_null() {
+        return;
+    }
+    let mut registry = locked();
+    unsafe { (&raw mut (*ring).finished_after).write(registry.marks) };
+    // Taken here rather than left: this is the last moment the registry
+    // is touched on this thread's behalf, and a ring evicted while its
+    // owner was between the two stamps has no other reader to be handed
+    // to. The frees themselves are not this thread's to make.
+    let _ = &mut registry;
 }
 
 /// Move one ring from the live list to the retired one, closing it, and
@@ -637,6 +699,13 @@ pub enum Window {
     /// between the two marks. Named by count alone, because what is gone
     /// is what would have told a reader whose records they were.
     Evicted { rings: u64 },
+    /// The two marks were handed over in the wrong order, so they bound
+    /// no window: there is no interval to answer for, and no ring's
+    /// silence to report. An answer of its own rather than an empty list
+    /// of answers, which reads as "nothing happened anywhere" — and reads
+    /// that way even when no ring is named, which is where an answer per
+    /// ring cannot reach.
+    Reversed,
     /// Threads left without a ring, in this process, ever — refused by the
     /// allocator, or unable to guarantee a ring's retirement. They
     /// have written nothing and are in no other answer, so a window that
@@ -666,7 +735,7 @@ pub fn mark() -> Mark {
                 refusals: registry.refused,
                 taken,
             },
-            std::mem::take(&mut registry.pending_free),
+            take_pending(&mut registry),
         )
     };
     // An investigator's thread is a live one, so it is one of the two
@@ -694,11 +763,16 @@ pub fn mark() -> Mark {
 /// thread's program order, and records from different rings have no order
 /// between them.
 pub fn between(start: &Mark, end: &Mark) -> Vec<Window> {
-    // A runtime test rather than an assertion, and the answer is
-    // *unknown* rather than a panic: the crate's release profile compiles
+    // A runtime test rather than an assertion, and an answer of its own
+    // rather than a panic: the crate's release profile compiles
     // assertions out, and this is the one mistake whose uncaught answer
-    // is a confident "nothing happened anywhere".
-    let ordered = start.taken <= end.taken;
+    // is a confident "nothing happened anywhere". It is answered before
+    // the rings are walked, because a reversed pair taken when nothing
+    // had journaled yet names no ring at all, and a per-ring answer over
+    // no rings is an empty list — the very answer being refused.
+    if start.taken > end.taken {
+        return vec![Window::Reversed];
+    }
     let registry = locked();
     let mut windows: Vec<Window> = end
         .positions
@@ -710,11 +784,7 @@ pub fn between(start: &Mark, end: &Mark) -> Vec<Window> {
                 .find(|&&(earlier, _)| earlier == thread)
                 .map_or(0, |&(_, at)| at);
             match ring_of(&registry, thread) {
-                Some(ring) if ordered => window_of(ring, thread, start, end, start_at, end_at),
-                Some(_) => Window::Unknown {
-                    thread,
-                    written: None,
-                },
+                Some(ring) => window_of(ring, thread, start, end, start_at, end_at),
                 None => Window::Unknown {
                     thread,
                     written: Some(end_at.saturating_sub(start_at)),
@@ -762,13 +832,16 @@ fn window_of(
             }
         }
     }
-    // The window *contains* the close when the close was dated between
-    // its two marks. A window entirely after it reports records: that
-    // ring is done, and whatever its thread does next — a pool thread
-    // takes another task — goes into the ring `journal::reopen_thread`
-    // lets it open.
+    // The close is an interval, not an instant: from the retirement to
+    // the end of the owner's exit the thread went on raising events into
+    // a ring it could no longer write. A window overlapping that interval
+    // answers `Closed`; one entirely before it, or entirely after the
+    // owner finished, reports records — that ring is done, and whatever
+    // its thread does next, a pool thread taking another task, goes into
+    // the ring `journal::reopen_thread` lets it open.
     let closed_after = unsafe { (*ring).closed_after };
-    if closed_after >= start.taken && closed_after < end.taken {
+    let finished_after = unsafe { (*ring).finished_after };
+    if closed_after < end.taken && finished_after >= start.taken {
         return Window::Closed { thread, events };
     }
     Window::Records(events)
@@ -1225,32 +1298,125 @@ mod tests {
         let _ = evict_retired_ring(identity);
     }
 
-    /// A window's two ends handed over the wrong way round make every
-    /// range empty, and an empty range reads as "nothing happened" — the
-    /// one answer this module may not invent. The answer is *unknown*,
-    /// and it is one in the release build too, which is where an
-    /// assertion would have been compiled out.
+    /// A window's two ends handed over the wrong way round bound no
+    /// interval, and an empty list of answers reads as "nothing happened
+    /// anywhere" — the one answer this module may not invent. It says so
+    /// in one answer of its own, in the release build too, where an
+    /// assertion would have been compiled out, and whether or not any
+    /// ring is named: a pair taken before anything journaled names none,
+    /// and a per-ring answer over no rings is the empty list again.
     #[test]
-    fn two_marks_in_the_wrong_order_answer_unknown_for_every_ring() {
+    fn two_marks_in_the_wrong_order_answer_that_they_bound_nothing() {
         let _g = crate::memory::block_pool::test_guard();
         record(2, 0, 0x0D, 0, 0);
         let start = mark();
         let end = mark();
 
-        let answers = between(&end, &start);
-        assert!(
-            !answers.is_empty()
-                && answers.iter().all(|window| {
-                    matches!(
-                        window,
-                        Window::Unknown { written: None, .. }
-                            | Window::Evicted { .. }
-                            | Window::Refused { .. }
-                    )
-                }),
-            "a reversed pair of marks answered something other than unknown: {answers:?}"
-        );
+        assert_eq!(between(&end, &start), vec![Window::Reversed]);
         retire_thread_ring();
+    }
+
+    /// The same, with no ring in either mark — where a per-ring answer
+    /// has nothing to answer over and the empty list comes back.
+    #[test]
+    fn a_reversed_pair_naming_no_ring_still_answers() {
+        let _g = crate::memory::block_pool::test_guard();
+        let start = Mark {
+            positions: Vec::new(),
+            evictions: 0,
+            refusals: 0,
+            taken: 1,
+        };
+        let end = Mark {
+            positions: Vec::new(),
+            evictions: 0,
+            refusals: 0,
+            taken: 2,
+        };
+        assert_eq!(between(&end, &start), vec![Window::Reversed]);
+    }
+
+    /// Retirement is not the end of the losses it announces: the heap
+    /// teardown that follows it in `heap::ll_thread_exit` decommissions
+    /// blocks, a default event kind, into a ring already closed. A window
+    /// opened inside that interval has to report it, and an empty list of
+    /// records would say the thread did nothing while it was in fact
+    /// unable to tell.
+    ///
+    /// The two halves of the exit are driven by hand here, being the only
+    /// way to have another thread marked inside an interval that lives in
+    /// the middle of one function.
+    #[test]
+    fn a_window_between_the_close_and_the_finish_reports_the_loss() {
+        const SUBJECT: u64 = 0xF1F1;
+        let _g = crate::memory::block_pool::test_guard();
+        let (announce, announced) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel();
+
+        let exiting = std::thread::spawn(move || {
+            crate::memory::heap::ll_thread_init();
+            record(8, 0, SUBJECT, 0, 0);
+            announce
+                .send(this_thread_identity())
+                .expect("the test hung up");
+            retire_thread_ring();
+            wait.recv().expect("the test hung up");
+            finish_thread();
+            crate::memory::heap::ll_thread_exit();
+        });
+
+        let identity = announced.recv().expect("the thread hung up");
+        // Both marks fall between the retirement and the finish.
+        let start = mark();
+        let end = mark();
+        go.send(()).expect("the thread hung up");
+        exiting.join().expect("the exiting thread panicked");
+
+        let answer = between(&start, &end)
+            .into_iter()
+            .find(|window| matches!(window, Window::Closed { thread, .. } if *thread == identity));
+        assert_eq!(
+            answer,
+            Some(Window::Closed {
+                thread: identity,
+                events: Vec::new(),
+            }),
+            "a window inside the teardown reported silence as records"
+        );
+    }
+
+    /// A thread that has begun its own exit frees no evicted ring. Its
+    /// deferral backlog is disposed inside that sequence and nothing
+    /// rebuilds it, so a parked free there is dropped unreleased — and
+    /// the exit a caller invokes by hand is the same sequence, which is
+    /// what the exit guard's own state cannot tell.
+    #[test]
+    fn a_thread_inside_its_own_exit_takes_no_ring_to_free() {
+        const SUBJECT: u64 = 0xF2F2;
+        let _g = crate::memory::block_pool::test_guard();
+        let identity = a_journaling_thread(SUBJECT);
+        {
+            let mut registry = locked();
+            evict_retired(&mut registry, 1);
+        }
+        assert_eq!(pending_count(), 1, "the eviction left nothing to free");
+
+        let taken = std::thread::spawn(|| {
+            crate::memory::heap::ll_thread_init();
+            crate::memory::heap::ll_thread_exit();
+            // Both doors into the pending list go through this.
+            let mut registry = locked();
+            take_pending(&mut registry).len()
+        })
+        .join()
+        .expect("the exiting thread panicked");
+
+        assert_eq!(taken, 0, "a thread past its own exit took a ring to free");
+        assert_eq!(pending_count(), 1, "the ring was taken by somebody");
+        // This thread is live, so it is one that may.
+        let pending = std::mem::take(&mut locked().pending_free);
+        free_rings(pending);
+        let _ = evict_retired_ring(identity);
     }
 
     /// A thread that cannot arm its exit guard gets no ring: the guard is

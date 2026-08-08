@@ -605,8 +605,13 @@ is worth having only if it can be trusted.
 
 The rule covers the ring that has *closed* as well. A retired ring stops
 where its thread's exit left it, and the thread does not stop there
-(§9.4), so the window that **contains** the close answers "the ring closed
-here" and carries the records it does have. An empty list of records under
+(§9.4): between the retirement and the end of that exit it goes on raising
+events into a ring it can no longer write. So closing is an **interval**,
+marked at both ends, and the window that overlaps it answers "the ring
+closed here" and carries the records it does have. One instant would not
+do — a window opened after the retirement and closed before the thread
+finished would find an empty range and report that the thread did
+nothing, which is the conversion this section exists to prevent. An empty list of records under
 that answer says the thread stopped telling; an empty list under `Records`
 says the thread did nothing, and the two must not be spelled the same way.
 
@@ -625,9 +630,11 @@ of what this section is about, and the door it opens under is memory
 pressure — the condition the journal is switched on to investigate.
 
 And it covers the caller's own mistake: two marks handed over in the wrong
-order bound no window, so every ring answers *unknown* rather than an
-empty list. That is a test at run time and not an assertion, the release
-profile compiling assertions out.
+order bound no window, and the answer says exactly that, in one answer of
+its own. Not an answer per ring — a pair taken before anything journaled
+names no ring, and a per-ring answer over no rings is the empty list that
+reads as "nothing happened anywhere". A test at run time and not an
+assertion, the release profile compiling assertions out.
 
 The rule covers the ring that is *gone* as well as the ring that lapped.
 A retired ring freed to bound the list (§9.4) takes a whole thread's
@@ -665,6 +672,9 @@ order is unspecified. The ring is disposed explicitly from
 `heap::ll_thread_exit`, and it goes **last** in that fixed order, since
 everything disposed before it is worth journaling.
 
+**The exit stamps the ring twice**, once when it hands it over and once
+when the thread is done, and the pair is what a window reports against.
+
 **Retirement closes the cell rather than emptying it.** Last of the exit
 sequence is not last on the thread: the heap teardown that follows frees
 blocks, which is a default event kind (§9.5), and a record from there
@@ -692,7 +702,10 @@ ring in it. Testing for an epoch first does not answer it either, since
 one can open between the test and the free. So a retiring thread takes
 the rings out of the registry and leaves them; the next thread to journal
 its first record, or the next investigator to take a mark, frees them
-with a backlog of its own to park into.
+with a backlog of its own to park into. What decides "retiring" is the
+exit sequence having begun, not the exit guard's own state: an exit a
+caller invokes by hand leaves that guard armed throughout, and it is the
+same sequence with the same disposed backlog.
 
 ### 9.5 What is recorded by default, and what has to be asked for
 

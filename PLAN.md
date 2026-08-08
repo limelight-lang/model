@@ -149,6 +149,26 @@ ring written by hand, and the gate is green with the feature on and off.
         close changed sides with the ruling and now pins the opposite:
         such a window reports records, because a thread that lives on
         journals into the ring `reopen_thread` gives it.
+      Critic 2026-08-08 round 4, scoped to the two unexamined commits by
+        the Sage's rule: three contract-class defects. A window opened
+        *after* a ring's close and closed before its thread finished
+        reported `Records([])` while the heap teardown below step 6 was
+        still losing events — the close was an instant, and the losses it
+        announces are an interval. `free_rings` ran on a dying thread
+        whenever `ll_thread_exit` was invoked by hand, the guard staying
+        armed throughout one, so an evicted ring was parked onto a
+        backlog already disposed and never freed. And a reversed pair of
+        marks naming no ring at all still answered the empty list, the
+        per-ring check having nothing to run over.
+      Fixed 2026-08-08 round 4: the ring is stamped twice — at retirement
+        and at the end of `ll_thread_exit` (`journal::finish_thread`,
+        step 7) — and a window overlapping the pair answers `Closed`;
+        `heap::thread_may_free` answers who may free and
+        `thread_exit_will_run` who may open a ring, so a `__destruct`
+        body's first record inside step 1 gets one again while a thread
+        past its exit frees nothing; and a reversed pair answers
+        `Window::Reversed`, one answer of its own, before any ring is
+        walked. Four regression tests, each seen failing.
 - [x] S5.1a Take the journal to the Sage before S5.2 builds on it
       done: he has ruled on how many rounds a module of this shape gets,
         and on the residue named below

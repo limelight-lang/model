@@ -199,13 +199,16 @@ versions live in `docs/history/`, marked at the top.
   two: a thread journals nothing after its exit, and one refusal is not
   retried, though it **is** counted: a refused thread is in no window, and
   the count is what keeps its silence from reading as inactivity. The
-  window that contains a ring's close answers `Closed` rather than a plain
-  list of records, the thread having gone on tearing down heaps after it —
-  dated in marks, since a close dated by the cursor re-dates every window
-  already read; `ll_thread_init` reopens the cell, so a pool thread's
-  second life journals into a ring of its own. An evicted ring is freed by
-  the next thread to journal or to mark, never by the retiring one, whose
-  parked backlog is gone by then. The module is in every build; what the
+  window that overlaps a ring's close answers `Closed` rather than a plain
+  list of records — closing is an interval, from the retirement to the end
+  of `ll_thread_exit`, because the thread goes on tearing down heaps in
+  between; both ends are dated in marks, a close dated by the cursor
+  re-dating every window already read. `ll_thread_init` reopens the cell,
+  so a pool thread's second life journals into a ring of its own. An
+  evicted ring is freed by the next thread to journal or to mark, never by
+  one inside its own exit, whose parked backlog is gone by then — and what
+  decides that is the exit having begun, not the exit guard, which a
+  hand-invoked exit leaves armed throughout. The module is in every build; what the
   `debug-journal` feature gates is the record sites on the hot paths,
   unbuilt — and a site must not sit anywhere the *first* record's path
   reaches, that one initialising the thread, allocating and locking.
