@@ -470,8 +470,11 @@ RFC calls the whole of the first implementation. The Immix-shaped
 listed here until 2026-07-25 and are now **dropped**, not deferred:
 segregated entity blocks solved what Immix was drafted for, and a
 retained block stays out of circulation while its survivors live
-(`rfc/model/memory/arena-reset.md`, Retention). The small mechanism
-left over is returning a fully emptied retained block to the pool.
+(`rfc/model/memory/arena-reset.md`, Retention). An emptied retained
+block goes home since 2026-08-08: the last occupant's death reports
+through `ll_free`'s retained arm, and a block held for a payload the
+reset could not carry out waits for that payload's own free
+(`memory/retained.rs`).
 
 ## What is not here
 

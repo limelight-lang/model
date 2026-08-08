@@ -9,7 +9,10 @@
 //!
 //! There is **no selection mechanism today**, and the module should not
 //! pretend otherwise: `ll_release` calls [`buffer_candidate`] directly,
-//! and the two teardown doors call [`forget_candidate`] directly. A `nogc` or
+//! and the three teardown doors call [`forget_candidate`] directly —
+//! `ll_entity_die`, `ll_object_die`, and the drain inside
+//! `array::entity::array_die`, which a nested array reaches instead of
+//! the first of those. A `nogc` or
 //! pure-`rc` build would compile the buffering away, and the tool for
 //! that is a cargo feature around those call sites — build-time
 //! selection with nothing left behind, which is what the contract asks
@@ -301,8 +304,10 @@ unsafe fn decode_index(entity: *mut RcHeader) -> Option<usize> {
 /// **Every door into teardown calls this**, and none of them delegates
 /// the duty to `dispose`, which is class code: `ll_entity_die` for a
 /// bare pointer of any kind, `ll_object_die` for a statically-known
-/// object, and `ll_object_die` a second time after `dispose` returns,
-/// because a `__destruct` can buffer the object afresh.
+/// object, `ll_object_die` a second time after `dispose` returns because
+/// a `__destruct` can buffer the object afresh, and
+/// `array::entity::array_die`'s drain for a nested array, which reaches
+/// teardown without passing `ll_entity_die` at all.
 ///
 /// # Safety
 /// `entity` must still point at the (dying) entity.

@@ -167,11 +167,14 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                         unsafe { (*header).kind = BLOCK_KIND_RETAINED };
                     }
                     // Pinned, and not merely retained: this block is held
-                    // for bytes rather than for occupants, and the bytes
-                    // have no death event for the occupant count to see.
-                    // Without the pin, a survivor of the same block dying
-                    // would hand the payload back to the pool
-                    // (`retained.rs`, blocks retained for bytes).
+                    // for bytes rather than for occupants, and an
+                    // occupant's death says nothing about them. Without
+                    // the pin, a survivor of the same block dying would
+                    // hand the payload back to the pool. The bytes have a
+                    // death event of their own — the owning entity's free
+                    // — and it spends this pin (`retained.rs`, blocks
+                    // retained for bytes; `dev/DECISIONS.md`,
+                    // 2026-08-08).
                     crate::memory::retained::pin(payload_block);
                 }
             }

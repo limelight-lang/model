@@ -84,12 +84,12 @@ commit (`WORKFLOW.md`).
 | `memory/heap` (hot) | small-object heap, mimalloc model: one block per size class, intrusive free list + bump cursor, per-block MPSC remote-free, thread-exit abandonment / adoption; runs twice per thread (raw + entity heaps); both enumerators — `for_each_entity_slot` and the block snapshots — which cover retained former-arena blocks through their index as well as entity blocks by striding | block pool; slot occupancy (the header word at bytes 0–7); that a retained block has no stride | entity kinds and out-edges; verdicts; classes; the epoch protocol; who built the index | `block_pool`, `reserve` (filled at thread init), `refcount`, `stdapi` (OS-direct runs), `retained` |
 | `memory/immortal` | global bump region: class metadata, interned strings; nothing is ever freed | block pool | the contents of what it hosts | `block_pool` (+ `arena::round_up_8`) |
 | `memory/buffer` | growable `{data, len, capacity}` payload, no header; extend-in-place at the arena bump top, else copy; OS-direct above block payload | the mounted arena's bump; context resolution | entity lifecycle, headers; the long-lived buffer arena | `arena`, `context`, `block_pool` |
-| `memory/buffer_arena` | long-lived buffer blocks (`BLOCK_KIND_BUFFER`): bump + per-block intrusive LIFO free list, pressure modes, per-block live count returning empty blocks | block pool; the buffer pressure protocol | the object heap; entities; GC | `block_pool`, `buffer`, `context`, `stdapi`, `arena` (`round_up_8`) |
+| `memory/buffer_arena` | long-lived buffer blocks (`BLOCK_KIND_BUFFER`): bump + per-block intrusive LIFO free list, pressure modes, per-block live count returning empty blocks | block pool; the buffer pressure protocol | the object heap; entities; GC | `block_pool`, `buffer`, `context`, `stdapi`, `arena` (`round_up_8`), `retained` (a payload's free is a retained block's release event), `deferred_free` (rc-walk) |
 | `memory/reserve` | the two-block per-thread reserve funding store-barrier log growth; drawn only after ordinary refusal; sets the refill flag the poll checks | block pool | what a log records; barrier semantics | `block_pool` |
-| `memory/retained` | the object index of each retained former-arena block: block address → its occupants, sorted; registered by the reset, read by both enumerators | block addresses and arrays of addresses | what lives at those addresses — entities, classes, refcounts, verdicts; the occupancy test its readers apply | — (bottom; a `Mutex<BTreeMap>` and nothing else) |
+| `memory/retained` | the object index of each retained former-arena block: block address → its occupants, sorted; registered by the reset, read by both enumerators | block addresses and arrays of addresses | what lives at those addresses — entities, classes, refcounts, verdicts; the occupancy test its readers apply | `block_pool` (stamping an emptied block and handing it over) |
 | `memory/stats` | block-granular telemetry computed at query time; counters only on pool get/put — zero hot-path tax | pool counters | per-object events (the opt-in event log, unbuilt); arena/heap internals | `block_pool` |
 | `memory/stdapi` | the size-less allocator front door: `ll_malloc`/`ll_free`/`calloc`/`realloc`/aligned + `GlobalAlloc`; routes `ptr & !BLOCK_MASK` → header `kind` | every block kind's free route; the heap's `MAX_SMALL`; the deferred-free parking check | entity semantics; who its callers are | `block_pool`, `heap`, `deferred_free` (rc-walk) |
-| `memory/deferred_free` (rc-walk) | the GC activity flag; the thread-local parked-free list threaded through bytes 8–15 of dead memory; the post-epoch flush | that bytes 0–7 must keep the dead header | which block kinds park (stdapi's filter decides before calling in); verdicts, entity kinds, epoch phases | `stdapi` |
+| `memory/deferred_free` (rc-walk) | the GC activity flag; the thread-local parked-free list threaded through bytes 8–15 of dead memory; the post-epoch flush | that bytes 0–7 must keep the dead header | which block kinds park (stdapi's filter decides before calling in); verdicts, entity kinds, epoch phases | `stdapi`, `retained` (replaying a pinned block's release) |
 | `memory/context` | `LLContext` and the TLS current context (NULL-context fallback); the composition root wiring arena + thread heaps + immortal behind one ABI, `ll_arena_reset` included | the arena mount; which module implements each ABI it fronts | class layout; GC strategy; thread-heap init (heap's `ll_thread_init`, reached from the allocation cold paths) | `arena`, `heap`, `immortal`, `refcount`; upward: `promote` (`ll_arena_reset`) |
 
 ### LB–L2 — mutation and substrate
@@ -110,6 +110,17 @@ commit (`WORKFLOW.md`).
 | `reference` | the `&` reference box, entity kind 3: `RcHeader \| Value` — the model's only extra indirection, self-describing at teardown via the kind field | its own kind | classes; typed slot references (future) | `refcount`, `value`, `context`, `heap`, `immortal`, `stdapi`, `barrier`, `object` |
 | `static_block` | the per-thread registry of static blocks and the teardown pass that releases their roots at thread exit (A6): registration in first-touch order, drained in reverse | that a static block is headerless and laid out by a descriptor; that a `__destruct` may register another block mid-pass | how a static block is allocated; what its slots mean — the release policy is the barrier's, the teardown `object`'s | `class`, `refcount`, `object`, `barrier` |
 | `weak` | the kind-5 weak cell (the canonical `WeakReference` *is* the cell); the per-thread weak table; every notification rule (`notify_death` / `notify_members` / `drain_arena_weak_log`); `ll_weakref_create` / `ll_weakref_get` | the bit-7 gate; that cells always live in the GC heap; that only the owning thread touches the table | *when* to call in — that duty belongs to the death sites (dispose phase 2 first act, both collectors, arena reset) | `refcount`, `arena`, `context`, `heap`, `stdapi`, `object` |
+
+**The array module has no row here yet**, and that is a hole rather than
+a statement: `src/array/` was born 2026-08-06, after this map last moved,
+and it is three modules deep (`table`, `entry`, `element`, `entity`).
+Filling it is a documentation job of its own. What must not wait, because
+the table calls an upward edge a design event: `array::entity` reaches
+**up into `gc`** to spend a dying nested array's candidacy
+(`forget_candidate`), the same edge `object` has and for the same reason
+— since 2026-08-08 a nested array is torn down by `array_die`'s drain and
+never passes `ll_entity_die`, so the duty has two sites until the two
+doors become one.
 
 ### L4 — collectors
 

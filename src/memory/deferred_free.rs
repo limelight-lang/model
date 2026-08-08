@@ -39,9 +39,14 @@
 //! link write, because `free` also decrements the block's live count
 //! and can hand an emptied block back to the pool to be re-stamped as
 //! another kind. Parked chunks are the reason a parked record carries a
-//! size: `BufferArena::free` is size-carrying, the chunk itself holds
-//! no metadata, and the block header would be gone by flush time
-//! anyway. A string payload and an array's table storage both live in
+//! size at all: `BufferArena::free` is size-carrying, the chunk itself
+//! holds no metadata, and the block header would be gone by flush time
+//! anyway. The third rider is a **payload in a retained block**, which
+//! arrives from the same function and hands back no memory of its own —
+//! what it may hand back is the block those bytes pinned
+//! (`retained::payload_freed`). A record therefore names the free it
+//! replays rather than deriving it from a size. A string payload and an
+//! array's table storage both live in
 //! buffer chunks, and since `walk::trace_cells` gained its Array arm the
 //! walker strides an array's entries inside its chunk — so a chunk freed
 //! mid-epoch is memory a walker may be reading, which is what parking it
@@ -53,7 +58,9 @@
 //! block — former arena memory has neither stride nor free list — but
 //! the death of its last live occupant hands the whole block to the
 //! pool (`retained::occupant_freed`), and a block reissued mid-epoch is
-//! exactly the identity loss the queue exists to prevent.
+//! exactly the identity loss the queue exists to prevent. The free of a
+//! payload such a block was pinned for reaches the pool the same way and
+//! parks for the same reason.
 //!
 //! **A cross-thread free rides it like any other.** The epoch test in
 //! `stdapi::ll_free` fires on the block kind alone and stands *before*
@@ -87,32 +94,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// The GC activity bit: an epoch is in flight, park instead of freeing.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// A parked release: the pointer, and how it will be freed.
-///
-/// `size == 0` is the ordinary `ll_free` route, which reads everything
-/// it needs from the block header. A non-zero size is a buffer-arena
-/// chunk and is its granted capacity: `BufferArena::free` takes the size
-/// as an argument, since a chunk carries no metadata of its own
-/// (`buffer_arena.rs`, the zero-metadata contract).
+/// A parked release: the pointer, and the free it owes.
 #[derive(Clone, Copy)]
 struct Parked {
     ptr: *mut u8,
-    size: usize,
-    /// The free this record replays. A size is not enough to name it:
-    /// a payload inside a retained block is freed by neither of the two
-    /// paths a size chooses between, its own free being the block's
-    /// release event rather than any memory's ([`park_retained_payload`]).
-    what: What,
+    free: DeferredFree,
 }
 
-/// Which free a parked record owes.
-#[derive(Clone, Copy, PartialEq)]
-enum What {
-    /// An entity slot or an OS-direct run: `ll_free` by mask.
+/// Which free a parked record replays, named rather than inferred from a
+/// size: the three differ in what they hand back, and only one of them
+/// needs a size at all.
+#[derive(Clone, Copy)]
+enum DeferredFree {
+    /// Anything that reaches `ll_free`, which reads what it needs from
+    /// the block header: an entity slot, a heap buffer, a pooled large
+    /// block, an OS-direct run.
     Allocation,
-    /// A buffer-arena chunk, whose free needs the granted size back.
-    Chunk,
-    /// A payload in a retained block: the bytes stay, the block may go.
+    /// A buffer-arena chunk, with the granted capacity its free takes as
+    /// an argument — a chunk carries no metadata of its own
+    /// (`buffer_arena.rs`, the zero-metadata contract).
+    Chunk { capacity: usize },
+    /// A payload lying in a retained block. Nothing about the bytes
+    /// waits, former arena memory having no free list; what waits is the
+    /// block they pin ([`park_retained_payload`]).
     RetainedPayload,
 }
 
@@ -179,8 +183,7 @@ pub(crate) unsafe fn park(ptr: *mut u8) {
     unsafe {
         (*parked_list()).push(Parked {
             ptr,
-            size: 0,
-            what: What::Allocation,
+            free: DeferredFree::Allocation,
         })
     };
 }
@@ -198,8 +201,7 @@ pub(crate) unsafe fn park_retained_payload(ptr: *mut u8) {
     unsafe {
         (*parked_list()).push(Parked {
             ptr,
-            size: 0,
-            what: What::RetainedPayload,
+            free: DeferredFree::RetainedPayload,
         })
     };
 }
@@ -216,12 +218,11 @@ pub(crate) unsafe fn park_retained_payload(ptr: *mut u8) {
 /// buffer arena, freed by this call and reachable by nothing until
 /// [`flush`] releases it.
 pub(crate) unsafe fn park_buffer_chunk(ptr: *mut u8, capacity: usize) {
-    debug_assert!(capacity > 0, "a zero size is the ll_free route");
+    debug_assert!(capacity > 0, "a chunk's free is size-carrying");
     unsafe {
         (*parked_list()).push(Parked {
             ptr,
-            size: capacity,
-            what: What::Chunk,
+            free: DeferredFree::Chunk { capacity },
         })
     };
 }
@@ -231,10 +232,12 @@ pub(crate) unsafe fn park_buffer_chunk(ptr: *mut u8, capacity: usize) {
 /// # Safety
 /// Runs on the parking thread, with no epoch in flight.
 unsafe fn release(p: Parked) {
-    match p.what {
-        What::Allocation => unsafe { crate::memory::stdapi::ll_free(p.ptr) },
-        What::Chunk => unsafe { crate::memory::buffer_arena::free_parked_chunk(p.ptr, p.size) },
-        What::RetainedPayload => {
+    match p.free {
+        DeferredFree::Allocation => unsafe { crate::memory::stdapi::ll_free(p.ptr) },
+        DeferredFree::Chunk { capacity } => unsafe {
+            crate::memory::buffer_arena::free_parked_chunk(p.ptr, capacity)
+        },
+        DeferredFree::RetainedPayload => {
             let block = crate::memory::block_pool::BlockHeader::of_ptr(p.ptr) as usize;
             if crate::memory::retained::payload_freed(block) {
                 unsafe { crate::memory::retained::give_block_back(block) };

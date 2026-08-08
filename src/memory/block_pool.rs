@@ -310,9 +310,10 @@ impl BlockPool {
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn put(&self, block: *mut BlockHeader) {
         // A retained block carries promoted survivors, and it comes back
-        // only through `stdapi::ll_free`'s retained arm, which restamps it
-        // after `retained::occupant_freed` reports the last live occupant
-        // gone. Arriving here still stamped retained therefore means a
+        // only through `retained::give_block_back`, which restamps it once
+        // the registry reports nothing left holding it — the last live
+        // occupant gone (`ll_free`'s retained arm) or the last pinned
+        // payload freed. Arriving here still stamped retained means a
         // caller took a shortcut past that arm, with survivors possibly
         // alive — not a step of a defect, the defect itself, and catching
         // it here names the thread and the moment. Planted while hunting

@@ -386,7 +386,10 @@ unsafe fn is_nested_arena_array(child: *mut RcHeader, category: MemoryCategory) 
             == EntityKind::Array as u32
 }
 
-/// The arrays a deep copy still owes, as `(source, destination)` pairs.
+/// The work a nesting-deep operation still owes, and the reason it is
+/// generic: the deep copy queues `(source, destination)` pairs, the
+/// teardown queues [`Pending`] lines, and both need the same refusable
+/// growth in the same memory.
 ///
 /// **In a buffer-arena chunk**, which is the decision rather than an
 /// implementation detail. The machine stack is what this replaces. Arena
@@ -408,7 +411,7 @@ struct WorkList<T> {
 }
 
 impl<T: Copy> WorkList<T> {
-    /// The pairs a first growth makes room for. Deep enough that
+    /// The items a first growth makes room for. Deep enough that
     /// ordinary nesting never grows twice, small enough to be one
     /// allocation.
     const FIRST: usize = 8;
@@ -422,8 +425,11 @@ impl<T: Copy> WorkList<T> {
         }
     }
 
-    /// False when the chunk could not grow, which the caller turns into
-    /// a refused copy.
+    /// False when the chunk could not grow. What the caller does with
+    /// that differs and neither answer is this type's: the copy refuses
+    /// and unwinds what it published, the teardown drops that one child
+    /// onto the recursive path, since an entity at count zero has nowhere
+    /// to refuse to.
     fn push(&mut self, item: T) -> bool {
         if self.len == self.capacity && !self.grow() {
             return false;
@@ -468,11 +474,12 @@ impl<T: Copy> WorkList<T> {
         if fresh.is_null() {
             return false;
         }
-        debug_assert_eq!(
-            fresh as usize % align_of::<T>(),
-            0,
-            "the buffer arena hands out 8-aligned chunks"
-        );
+        const {
+            assert!(
+                align_of::<T>() <= 8,
+                "the buffer arena hands out 8-aligned chunks"
+            )
+        };
         let fresh = fresh as *mut T;
         if self.len > 0 {
             unsafe { std::ptr::copy_nonoverlapping(self.items, fresh, self.len) };
@@ -609,8 +616,9 @@ pub(crate) unsafe fn carry_storage_out_of(
 /// Teardown for an array whose count reached zero, or that a collector
 /// owns: children first, then the storage, then the entity's own memory.
 ///
-/// The order is forced rather than chosen. `release_children` reads the
-/// storage to find the children, so the storage cannot already be gone;
+/// The order is forced rather than chosen.
+/// [`release_children_in_order`] reads the storage to find the children,
+/// so the storage cannot already be gone;
 /// and a child's death can run user code, which must not meet a table
 /// half-disposed. The entity's own memory follows the same rule as a
 /// string's: only the GC heap frees here, an arena entity dying with its
@@ -1005,13 +1013,24 @@ mod tests {
     /// unwinding and no record.
     ///
     /// Measured on a thread whose stack is deliberately small, because a
-    /// depth that overflows the ordinary 8 MiB one would cost minutes to
-    /// build. 128 KiB against 20 000 levels leaves under seven bytes a
-    /// level, and the smallest frame set here is far above that.
+    /// depth that overflows the ordinary 8 MiB one costs minutes to build
+    /// and dominates the Miri run. 64 KiB against 2 000 levels leaves
+    /// under 33 bytes a level, and the smallest frame set here is far
+    /// above that; what the drain spends is a fixed frame and one list
+    /// entry, so the margin is total rather than per level. Verified by
+    /// forcing the list to refuse (`FORCE_REFUSE_LONGLIVED`), which
+    /// returns the teardown to the recursive path: the thread dies on the
+    /// guard page at this depth.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "2000 levels of build and teardown is minutes under Miri, which would\
+                  dominate the whole-suite run; the drain's UB surface is covered by the\
+                  destructor-order tests and the deep-copy test, which Miri does run"
+    )]
     fn a_deep_array_tears_down_without_the_machine_stack() {
-        const DEPTH: usize = 20_000;
-        const STACK: usize = 128 * 1024;
+        const DEPTH: usize = 2_000;
+        const STACK: usize = 64 * 1024;
 
         std::thread::Builder::new()
             .stack_size(STACK)
@@ -1093,6 +1112,20 @@ mod tests {
         assert_eq!(destructor_order(Shape::Mixed), "12345");
     }
 
+    /// The refusal path, which is the exhaustion path: a list that cannot
+    /// grow drops each child it could not take onto the recursive one.
+    /// What must survive that is the outcome — everything is torn down,
+    /// in Zend's order — and what does not is the bound on depth, which
+    /// is why this shape is three levels rather than two thousand.
+    ///
+    /// It was untestable until `FORCE_REFUSE_LONGLIVED` existed for the
+    /// refused carry (S4.2); the plan recorded it as owed on the strength
+    /// of `FORCE_OOM` alone, which the buffer arena can go around.
+    #[test]
+    fn a_refused_list_still_tears_everything_down_in_order() {
+        assert_eq!(destructor_order_with(Shape::Mixed, true), "12345");
+    }
+
     enum Shape {
         NestedThenObject,
         TwoNested,
@@ -1120,6 +1153,13 @@ mod tests {
     /// wrote. Every entity is created at +1 and handed to the entry that
     /// takes it, so the outermost array is the only holder.
     fn destructor_order(shape: Shape) -> String {
+        destructor_order_with(shape, false)
+    }
+
+    /// The same, with the drain's list refused for the teardown alone —
+    /// the flag is raised after the shape is built, because it also
+    /// refuses the storage every array here allocates.
+    fn destructor_order_with(shape: Shape, refuse_the_list: bool) -> String {
         let _g = crate::memory::block_pool::test_guard();
         DESTRUCTOR_ORDER.lock().unwrap().clear();
         let mut arena = crate::memory::arena::Arena::new();
@@ -1127,6 +1167,10 @@ mod tests {
             arena: &mut arena as *mut _,
         };
         let ctx_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        // Mounted although every entity here is built with `ctx_ptr` in
+        // hand: a `__destruct` is user code and resolves its own context
+        // from TLS, which is the shape generated code has.
+        crate::memory::context::set_current_context(ctx_ptr);
 
         let array = || unsafe { ll_array_new(MemoryCategory::GcHeap) };
         let put = |owner: *mut LLArray, key: i64, tag: crate::value::Tag, child: *mut RcHeader| unsafe {
@@ -1219,10 +1263,16 @@ mod tests {
             }
         }
 
+        if refuse_the_list {
+            crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         unsafe {
             assert!(ll_release(root as *mut RcHeader), "the root had a holder");
             crate::object::ll_entity_die(root as *mut RcHeader);
         }
+        crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         crate::memory::context::set_current_context(std::ptr::null_mut());
         let written = DESTRUCTOR_ORDER.lock().unwrap().clone();
         written
