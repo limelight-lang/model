@@ -8,6 +8,72 @@ never edited or deleted.
 
 ---
 
+## 2026-08-08 — teardown drains the nesting the copy already drains
+
+An array's teardown walks a list instead of recursing, which closes the half
+the entry of 2026-08-07 left open. The input is the same one the store side
+was rebuilt for — `$deep = [[[…]]]`, then one release instead of one
+assignment — and a frame set per level ends in a stack overflow, which the
+guard page turns into a dead process: no unwinding, no record, nothing an arm
+of this crate can catch.
+
+`array_die` owns the drain. A nested array whose last reference it drops is
+pushed onto a list of its own and torn down by the same loop, so the depth
+costs one iteration rather than one frame set. What made that expressible is
+`barrier::drop_ref_deferred`: the release reports the entity whose count
+reached zero and hands the teardown back, where `drop_ref` runs it. Both are
+one body, the deferring half being the whole of `drop_ref` up to the call it
+does not make.
+
+The list is the copy's `WorkList`, now generic over its element. It lives in
+a buffer-arena chunk for the reasons of 2026-08-06, and a chunk it cannot
+grow puts the child it could not take back on the recursive path. A teardown
+has no channel to refuse through — the array is already at count zero — so
+the choice was between the old shape for one subtree and leaking it.
+
+**Destructor order on the refcount death path is Zend's and is a contract.**
+Depth first, and inside a level the order the entries were inserted in:
+`[[$b], $a]` runs `$b`'s destructor first. The first shape of the drain lost
+that — it released each child where it found it and left only nested arrays
+for the list, so `[[$b], $a]` ran `$a` first and `[[$b], [$c]]` ran `$c`
+first. A program observes this through the bodies it writes, and a runtime
+that executes existing PHP inherits Zend's order whether or not the manual
+promises it.
+
+Keeping it needs no cursor into the table and no second stride. Children are
+released where they are found until the first dying nested array; from there
+the rest of the level becomes **held** lines on the list, their release
+postponed and the reference the storage held passing to the list, and the
+segment is reversed so the LIFO drain returns it in entry order. A held line
+carries its owner's category, since that is what settles the escape ledger
+and the release-at-reset log and one list mixes several owners' children. A
+flat array still pushes nothing and allocates nothing; the cost on that path
+is one flag test per child.
+
+**The guarantee stops at the refcount death path.** The cycle collector
+orders the white set as it walks it and the arena reset orders its own
+destructors, which is the frame PHP itself draws: Zend's GC walks its buffer
+and the manual leaves shutdown order undefined.
+
+Under a refused chunk the order degrades with the bound: a held child
+released on the recursive path runs its destructors ahead of the subtree
+deferred before it. Memory exhaustion is the only way in.
+
+The drain takes one duty over from `ll_entity_die`'s door with the array:
+under rc-trace a dying entity leaves the candidate buffer, and a nested array
+never passes that door again. Removing the call was verified to fire
+`ll_free`'s "entity freed while buffered as a cycle-collector candidate" —
+which is a test-build assertion, so a release build has no net under it.
+
+**What this does not bound** is a chain that leaves the array kind between
+levels: an object chain (`$a->next = $b->next = …`) recurses through
+`dispose`, and so does a chain alternating arrays with reference boxes
+(`$b = [&$a]` in a loop), whose box is not an array and whose own teardown
+enters `array_die` one frame set down. The step was scoped to the array
+chain because an array literal is the cheapest depth a source file can
+build; widening it is open and is Edmond's. Whatever shape a wider drain
+takes, it owes the same held-sibling discipline, or it gives the order back.
+
 ## 2026-08-08 — a copy collapses a reference nobody else names, and the arena reads that count as an upper bound
 
 **Decided (Sage):** duplicating an array unwraps an element's reference

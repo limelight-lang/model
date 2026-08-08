@@ -34,11 +34,33 @@ tears down on that thread, a block pinned by a refused carry returns to
 the pool, and the gate of `dev/WORKFLOW.md` is green in both
 configurations.
 
-- [ ] S4.1 Array teardown drains a work list instead of recursing
+- [x] S4.1 Array teardown drains a work list instead of recursing
       done: an array nested deeper than a small test-thread stack tears
         down on that thread; the same test seen overflowing the stack
         before the change; both GC configurations green
-      tier: T2 · role: Critic
+      tier: T2 · role: Critic → Sage
+      Critic 2026-08-08: the first shape reordered destructors across
+        levels — `[[$b], $a]` ran `$a` first, `[[$b], [$c]]` ran `$c`
+        first — and the refusal fallback recurses every level below it
+        rather than one child. Both accepted; the second is documented
+        rather than removed. Also: a reference box between levels
+        escapes the `is_array` gate, `ll_free`'s candidate assertion is
+        a test-build one, and one existing test's comment was falsified
+        by the new free order. All three taken.
+      Sage 2026-08-08: Zend's order is a contract on the refcount death
+        path and the drain owes it; hold the rest of a level on the list
+        from the first dying nested array and reverse the segment, which
+        needs no cursor into the table and no second stride. The
+        collector and the arena reset keep ordering their own
+        destructors, as Zend's GC and shutdown do. Final.
+      handoff: `array_die` drains `WorkList<Pending>`, whose lines are a
+        dying array or a held child with its owner's category;
+        `barrier::drop_ref_deferred` is `drop_ref` minus the teardown
+        call and is what makes the hand-back possible. Four tests, each
+        seen failing: the 20 000-level teardown on a 128 KiB stack
+        (aborts the process before the fix), the three destructor
+        orders, and the nested candidate-forget in `gc.rs`. Untested:
+        the refusal path, which needs a forced `body_alloc` refusal.
 - [ ] S4.2 A block pinned by a refused payload carry returns when its
       last payload is freed
       done: a test pins a block through a refused carry, frees the
@@ -53,13 +75,16 @@ configurations.
         the Sage listed on 2026-08-08
       tier: T0 · role: —
 
-Out of scope, named so it does not read as an oversight: an object chain
-(`$a->next = $b`, and so on) tears down through `dispose` with the same
-shape, and S4.1 does not bound it. The approved plan scoped the step to
-the array chain, an array literal being the cheapest depth a source file
-can build; whether to widen it was put to Edmond and is unanswered. A
-`__destruct` body is user code that re-enters the runtime, so its
-recursion is the program's.
+Out of scope, named so it does not read as an oversight: a chain that
+leaves the array kind between levels still recurses. An object chain
+(`$a->next = $b`, and so on) goes through `dispose`, and so does a chain
+alternating arrays with reference boxes (`$b = [&$a]` in a loop), which
+the Critic found on 2026-08-08 and which is cheaper to build than the
+object one. The approved plan scoped the step to the array chain;
+whether to widen it was put to Edmond and is unanswered, and a wider
+drain owes the held-sibling discipline of S4.1 or it gives Zend's
+destructor order back. A `__destruct` body is user code that re-enters
+the runtime, so its recursion is the program's.
 
 ## S5 — The opt-in event journal
 
@@ -356,11 +381,10 @@ What to take next, in this order and for these reasons.
    published, and its filling pushed onto `WorkList`, which lives in a
    buffer-arena chunk and refuses rather than aborting when it cannot
    grow. Termination is asserted in debug builds instead of paid for.
-   **Still owed, and it is the same problem's other half:** teardown of
-   what the copy produces is recursive, one nested set of frames per
-   level, so the attacker's depth still reaches the machine stack — at
-   the free rather than at the store. Nothing else in the crate bounds
-   it, and the shape it wants is the drain's, not a limit's.
+   The other half — teardown of what the copy produces, recursive at one
+   frame set per level — was closed as S4.1 on 2026-08-08 by giving
+   `array_die` the same drain. An object chain is still the machine
+   stack's.
 2. ~~**Item 12's concurrent-walk arm together with the publish-first
    repair of the key slot.**~~ — closed. The arm is in `trace_cells`, so
    the array is inside the one tracing dispatch like every other kind, and

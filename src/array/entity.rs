@@ -118,7 +118,9 @@ impl LLArray {
 /// rejected as the answer: it would have to refuse through a channel
 /// whose only meaning is "out of memory", PHP has no depth at which an
 /// assignment becomes invalid, and teardown of whatever the limit
-/// permitted is recursive anyway (`dev/DECISIONS.md`, `PLAN.md` item 11).
+/// permitted was recursive as well — which [`array_die`] answers the same
+/// way rather than by a limit (`dev/DECISIONS.md`, 2026-08-07 and
+/// 2026-08-08).
 /// So a nested arena array is copied empty, published, and its filling
 /// pushed onto [`WorkList`], which lives in a buffer-arena chunk.
 ///
@@ -272,7 +274,7 @@ unsafe fn fill_from(
     src: *mut LLArray,
     dst: *mut LLArray,
     arena: *mut crate::memory::arena::Arena,
-    pending: &mut WorkList,
+    pending: &mut WorkList<(*mut LLArray, *mut LLArray)>,
     reason: CopyReason,
 ) -> bool {
     let category = unsafe { (*dst).category() };
@@ -396,8 +398,8 @@ unsafe fn is_nested_arena_array(child: *mut RcHeader, category: MemoryCategory) 
 ///
 /// Empty until the first nested array, so an ordinary copy allocates
 /// nothing.
-struct WorkList {
-    items: *mut (*mut LLArray, *mut LLArray),
+struct WorkList<T> {
+    items: *mut T,
     len: usize,
     capacity: usize,
     /// Bytes granted, which is what the free needs: the buffer arena's
@@ -405,7 +407,7 @@ struct WorkList {
     granted: usize,
 }
 
-impl WorkList {
+impl<T: Copy> WorkList<T> {
     /// The pairs a first growth makes room for. Deep enough that
     /// ordinary nesting never grows twice, small enough to be one
     /// allocation.
@@ -422,21 +424,35 @@ impl WorkList {
 
     /// False when the chunk could not grow, which the caller turns into
     /// a refused copy.
-    fn push(&mut self, pair: (*mut LLArray, *mut LLArray)) -> bool {
+    fn push(&mut self, item: T) -> bool {
         if self.len == self.capacity && !self.grow() {
             return false;
         }
-        unsafe { self.items.add(self.len).write(pair) };
+        unsafe { self.items.add(self.len).write(item) };
         self.len += 1;
         true
     }
 
-    fn pop(&mut self) -> Option<(*mut LLArray, *mut LLArray)> {
+    fn pop(&mut self) -> Option<T> {
         if self.len == 0 {
             return None;
         }
         self.len -= 1;
         Some(unsafe { self.items.add(self.len).read() })
+    }
+
+    /// Reverse everything pushed since `base`, so that a LIFO drain hands
+    /// the segment back in the order it was pushed. The teardown's whole
+    /// claim to Zend's destructor order rests on this call
+    /// ([`array_die`]); the copy never uses it, order being nothing to a
+    /// copy.
+    fn reverse_from(&mut self, base: usize) {
+        let (mut low, mut high) = (base, self.len);
+        while low + 1 < high {
+            high -= 1;
+            unsafe { std::ptr::swap(self.items.add(low), self.items.add(high)) };
+            low += 1;
+        }
     }
 
     fn grow(&mut self) -> bool {
@@ -445,7 +461,7 @@ impl WorkList {
         } else {
             self.capacity * 2
         };
-        let bytes = capacity * size_of::<(*mut LLArray, *mut LLArray)>();
+        let bytes = capacity * size_of::<T>();
         let (fresh, granted) = unsafe {
             crate::memory::routing::body_alloc(std::ptr::null_mut(), MemoryCategory::GcHeap, bytes)
         };
@@ -453,11 +469,11 @@ impl WorkList {
             return false;
         }
         debug_assert_eq!(
-            fresh as usize % align_of::<(*mut LLArray, *mut LLArray)>(),
+            fresh as usize % align_of::<T>(),
             0,
             "the buffer arena hands out 8-aligned chunks"
         );
-        let fresh = fresh as *mut (*mut LLArray, *mut LLArray);
+        let fresh = fresh as *mut T;
         if self.len > 0 {
             unsafe { std::ptr::copy_nonoverlapping(self.items, fresh, self.len) };
         }
@@ -600,15 +616,161 @@ pub(crate) unsafe fn carry_storage_out_of(
 /// string's: only the GC heap frees here, an arena entity dying with its
 /// reset and an immortal one not dying at all.
 ///
+/// **Nesting is drained, not recursed**, and for the reason the copy above
+/// takes the same shape: depth is the caller's input — `$deep = [[[…]]]`
+/// and then one release — so a frame set per level is a stack overflow,
+/// which the guard page turns into a dead process with no unwinding and
+/// no record. A nested array whose last reference this teardown drops is
+/// pushed onto a list and torn down by this call's own loop. The list
+/// lives in a buffer-arena chunk.
+///
+/// **Destructors keep Zend's order**, which is depth first and, inside a
+/// level, the order the entries were inserted in: `[[$b], $a]` runs
+/// `$b`'s destructor before `$a`'s, exactly as the recursion did. That
+/// order is a contract on this path (`dev/DECISIONS.md`, 2026-08-08);
+/// the collector and the arena reset order their own destructors, as
+/// Zend's GC and its shutdown do.
+///
+/// Holding it costs the list one more kind of line and no cursor into the
+/// table. Until a dying nested array turns up, children are released
+/// where they are found, so a flat array pushes nothing. The first one
+/// turns the rest of that level into **held** lines: their release is
+/// postponed, the reference the freed storage held passes to the list,
+/// and the segment is reversed so that the LIFO drain hands it back in
+/// entry order — the nephews before the next sibling. A held line carries
+/// its owner's category, because that is what settles the escape ledger
+/// and the release-at-reset log, and one list mixes the children of
+/// several owners.
+///
 /// # Safety
 /// `a` must be a live array entity.
 pub(crate) unsafe fn array_die(a: *mut LLArray) {
-    unsafe { release_children(a) };
-    unsafe { (*a).table.dispose(a as *const RcHeader) };
-    if unsafe { crate::object::header_category(a as *const RcHeader) } == MemoryCategory::GcHeap {
-        unsafe { crate::memory::stdapi::ll_free(a as *mut u8) };
+    let mut pending: WorkList<Pending> = WorkList::new();
+    let mut dying = a;
+    loop {
+        unsafe { release_children_in_order(dying, &mut pending) };
+        unsafe { (*dying).table.dispose(dying as *const RcHeader) };
+        if unsafe { crate::object::header_category(dying as *const RcHeader) }
+            == MemoryCategory::GcHeap
+        {
+            unsafe { crate::memory::stdapi::ll_free(dying as *mut u8) };
+        }
+
+        let mut next = None;
+        while let Some(line) = pending.pop() {
+            match line {
+                Pending::DeadArray(array) => {
+                    next = Some(array);
+                    break;
+                }
+                Pending::HeldChild(child, owner_cat) => {
+                    let dead =
+                        unsafe { crate::memory::barrier::drop_ref_deferred(owner_cat, child) };
+                    if dead.is_null() {
+                        continue;
+                    }
+                    if unsafe { is_array(dead) } {
+                        unsafe { leave_the_candidate_buffer(dead) };
+                        next = Some(dead as *mut LLArray);
+                        break;
+                    }
+                    unsafe { crate::object::ll_entity_die(dead) };
+                }
+            }
+        }
+        match next {
+            Some(array) => dying = array,
+            None => break,
+        }
+    }
+    pending.dispose();
+}
+
+/// One line of the teardown's list.
+#[derive(Clone, Copy)]
+enum Pending {
+    /// An array at count zero whose children are still counted, waiting
+    /// its turn in the drain.
+    DeadArray(*mut LLArray),
+    /// A child whose release is postponed so that an earlier sibling's
+    /// subtree runs its destructors first. It is still counted by a
+    /// storage that may already be freed, and the category is its
+    /// owner's — [`crate::memory::barrier::drop_ref_deferred`] reads that
+    /// to settle the escape ledger and the release-at-reset log.
+    HeldChild(*mut RcHeader, MemoryCategory),
+}
+
+/// [`release_children`] for the drain: the cascade becomes lines on
+/// `pending`, and the order the recursion produced is kept. It sits
+/// beside that function rather than replacing it, every other caller
+/// wanting the cascade.
+///
+/// **Refusal.** A list that cannot grow leaves the child it could not
+/// take on the recursive path. Every level below it asks the same
+/// allocator and can be refused again, so while the exhaustion lasts the
+/// depth is the one this drain exists to bound. A held child released
+/// that way also runs its destructors ahead of the subtree deferred
+/// before it, so a refused chunk costs the order as well. A teardown has
+/// no channel to refuse through — the array is already at count zero —
+/// and the alternative to both is leaking the subtree.
+///
+/// # Safety
+/// `a` is a live array entity whose children are still counted.
+unsafe fn release_children_in_order(a: *mut LLArray, pending: &mut WorkList<Pending>) {
+    let owner_cat = unsafe { crate::object::header_category(a as *const RcHeader) };
+    let base = pending.len;
+    let mut deferring = false;
+    unsafe {
+        for_each_counted_child(a, |child| {
+            if deferring && pending.push(Pending::HeldChild(child, owner_cat)) {
+                return;
+            }
+            let dead = crate::memory::barrier::drop_ref_deferred(owner_cat, child);
+            if dead.is_null() {
+                return;
+            }
+            if is_array(dead) && pending.push(Pending::DeadArray(dead as *mut LLArray)) {
+                leave_the_candidate_buffer(dead);
+                deferring = true;
+                return;
+            }
+            crate::object::ll_entity_die(dead);
+        })
+    };
+    pending.reverse_from(base);
+}
+
+/// The kind of an entity whose teardown is owed, read from the flags the
+/// release left behind.
+///
+/// # Safety
+/// `entity` is an entity at count zero whose memory is still there.
+#[inline]
+unsafe fn is_array(entity: *mut RcHeader) -> bool {
+    use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
+    let flags = unsafe { crate::refcount::header_flags(entity) };
+    (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT == EntityKind::Array as u32
+}
+
+/// The duty [`crate::object::ll_entity_die`]'s door performs that the
+/// drain takes over along with the array: under rc-trace a dying entity
+/// leaves the candidate buffer, or a later collection reads a slot that
+/// is gone. Under rc-walk the door has no such duty and neither has this.
+///
+/// # Safety
+/// `entity` is an entity at count zero, taken over by the drain.
+#[cfg(not(feature = "rc-walk"))]
+#[inline]
+unsafe fn leave_the_candidate_buffer(entity: *mut RcHeader) {
+    let flags = unsafe { crate::refcount::header_flags(entity) };
+    if flags & crate::refcount::CYCLE_COLLECTOR_BUFFERED != 0 {
+        unsafe { crate::gc::forget_candidate(entity) };
     }
 }
+
+#[cfg(feature = "rc-walk")]
+#[inline]
+unsafe fn leave_the_candidate_buffer(_entity: *mut RcHeader) {}
 
 #[cfg(test)]
 mod tests {
@@ -757,10 +919,12 @@ mod tests {
     /// depth is well past `WorkList::FIRST`, so the chunk grows more than
     /// once on the way through.
     ///
-    /// **What this does not prove** is a bound on the attacker's depth:
-    /// teardown of the copy is still recursive, one nested set of frames
-    /// per level, which is why the depth here is modest and why the
-    /// remaining half is named in `PLAN.md`.
+    /// The depth is modest because what is measured here is the copy.
+    /// Teardown of the copy is drained rather than recursed since
+    /// 2026-08-08, and the depth that bound is measured at lives in
+    /// `a_deep_array_tears_down_without_the_machine_stack` below, on a
+    /// thread whose stack is small enough for the answer to mean
+    /// something.
     #[test]
     fn a_deep_arena_array_is_copied_out_through_the_work_list() {
         const DEPTH: usize = 200;
@@ -834,6 +998,236 @@ mod tests {
         arena.reset(|_| {});
     }
 
+    /// Teardown of a deep array is a drain, not a recursion. The depth is
+    /// the caller's input — `$deep = [[[…]]]`, then one release — and a
+    /// frame set per level overflows the stack, which no arm of this
+    /// crate can catch: the guard page kills the process with no
+    /// unwinding and no record.
+    ///
+    /// Measured on a thread whose stack is deliberately small, because a
+    /// depth that overflows the ordinary 8 MiB one would cost minutes to
+    /// build. 128 KiB against 20 000 levels leaves under seven bytes a
+    /// level, and the smallest frame set here is far above that.
+    #[test]
+    fn a_deep_array_tears_down_without_the_machine_stack() {
+        const DEPTH: usize = 20_000;
+        const STACK: usize = 128 * 1024;
+
+        std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn(|| {
+                let _g = crate::memory::block_pool::test_guard();
+
+                // `[[[…]]]`, built from the inside out and iteratively:
+                // each level holds the one below it under key 0, so the
+                // outermost is the chain's only holder. The creation
+                // reference `ll_array_new` returns is what the entry
+                // takes, so no level is retained twice and none is
+                // released here.
+                let mut level = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+                for _ in 1..DEPTH {
+                    let outer = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+                    unsafe {
+                        (*outer).table.insert(
+                            outer as *const RcHeader,
+                            Key::Int(0),
+                            Value::entity(crate::value::Tag::Array, level as *mut RcHeader),
+                        );
+                    }
+                    level = outer;
+                }
+
+                // The chain is the thing under test, so its depth is
+                // asserted rather than assumed: a refused insert would
+                // leave a shallow array that tears down on any stack.
+                let mut built = 1;
+                let mut walk = level;
+                while let Some(v) = unsafe { &(*walk).table }.get(Key::Int(0)) {
+                    walk = v.entity_ptr() as *mut LLArray;
+                    built += 1;
+                }
+                assert_eq!(built, DEPTH, "the chain is shallower than it was built");
+
+                unsafe {
+                    assert!(
+                        ll_release(level as *mut RcHeader),
+                        "the outermost array had a second holder"
+                    );
+                    crate::object::ll_entity_die(level as *mut RcHeader);
+                }
+            })
+            .expect("the small-stack thread did not start")
+            .join()
+            .expect("teardown of the deep array killed its thread");
+    }
+
+    /// The order `__destruct` bodies run in when a nested array dies is
+    /// Zend's: depth first, and inside a level the order the entries were
+    /// inserted in. The drain has to reproduce it, because a program
+    /// observes it — a destructor writes a log, closes a handle, or reads
+    /// another object that is about to die.
+    ///
+    /// `[[$b], $a]`: `$b` is one level down and first in the entry order,
+    /// so it goes first. Seen failing as `AB` on the drain's first shape,
+    /// which released `$a` where it found it and left the nested array
+    /// for the pop.
+    #[test]
+    fn a_nested_destructor_runs_before_a_later_sibling() {
+        assert_eq!(destructor_order(Shape::NestedThenObject), "BA");
+    }
+
+    /// Two nested arrays, so the reversal of the held segment is what is
+    /// under test rather than the interleaving: `[[$b], [$c]]` runs `$b`
+    /// before `$c`. Seen failing as `CB`, the LIFO order of the pushes.
+    #[test]
+    fn nested_siblings_run_their_destructors_in_entry_order() {
+        assert_eq!(destructor_order(Shape::TwoNested), "BC");
+    }
+
+    /// The mixed case both of the above are corners of:
+    /// `[$1, [$2, [$3], $4], $5]` runs `1 2 3 4 5`. It exercises a held
+    /// segment inside a held segment, which is where a reversal that
+    /// reversed the whole list rather than the segment would show.
+    #[test]
+    fn a_mixed_nesting_runs_its_destructors_in_zend_order() {
+        assert_eq!(destructor_order(Shape::Mixed), "12345");
+    }
+
+    enum Shape {
+        NestedThenObject,
+        TwoNested,
+        Mixed,
+    }
+
+    static DESTRUCTOR_ORDER: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+    /// A class whose destructor appends one character to
+    /// [`DESTRUCTOR_ORDER`]. Each expansion is a distinct function item,
+    /// which is what makes the character identify the object.
+    macro_rules! recording_class {
+        ($name:literal, $mark:literal) => {{
+            unsafe extern "C" fn record(_o: *mut crate::object::Object) {
+                DESTRUCTOR_ORDER.lock().unwrap().push($mark);
+            }
+            crate::class::ClassBuilder::new($name)
+                .destructor(record as *const ())
+                .build()
+        }};
+    }
+
+    /// Build one of the shapes out of heap arrays and recording objects,
+    /// release the outermost array, and return what the destructors
+    /// wrote. Every entity is created at +1 and handed to the entry that
+    /// takes it, so the outermost array is the only holder.
+    fn destructor_order(shape: Shape) -> String {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTOR_ORDER.lock().unwrap().clear();
+        let mut arena = crate::memory::arena::Arena::new();
+        let mut ctx = crate::memory::context::LLContext {
+            arena: &mut arena as *mut _,
+        };
+        let ctx_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+
+        let array = || unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let put = |owner: *mut LLArray, key: i64, tag: crate::value::Tag, child: *mut RcHeader| unsafe {
+            (*owner).table.insert(
+                owner as *const RcHeader,
+                Key::Int(key),
+                Value::entity(tag, child),
+            );
+        };
+        let object = |cls| unsafe {
+            crate::object::new_constructed(ctx_ptr, cls, MemoryCategory::GcHeap) as *mut RcHeader
+        };
+
+        let root = array();
+        match shape {
+            Shape::NestedThenObject => {
+                let nested = array();
+                put(
+                    nested,
+                    0,
+                    crate::value::Tag::Object,
+                    object(recording_class!("B", 'B')),
+                );
+                put(root, 0, crate::value::Tag::Array, nested as *mut RcHeader);
+                put(
+                    root,
+                    1,
+                    crate::value::Tag::Object,
+                    object(recording_class!("A", 'A')),
+                );
+            }
+            Shape::TwoNested => {
+                let first = array();
+                put(
+                    first,
+                    0,
+                    crate::value::Tag::Object,
+                    object(recording_class!("B", 'B')),
+                );
+                let second = array();
+                put(
+                    second,
+                    0,
+                    crate::value::Tag::Object,
+                    object(recording_class!("C", 'C')),
+                );
+                put(root, 0, crate::value::Tag::Array, first as *mut RcHeader);
+                put(root, 1, crate::value::Tag::Array, second as *mut RcHeader);
+            }
+            Shape::Mixed => {
+                let innermost = array();
+                put(
+                    innermost,
+                    0,
+                    crate::value::Tag::Object,
+                    object(recording_class!("Three", '3')),
+                );
+                let middle = array();
+                put(
+                    middle,
+                    0,
+                    crate::value::Tag::Object,
+                    object(recording_class!("Two", '2')),
+                );
+                put(
+                    middle,
+                    1,
+                    crate::value::Tag::Array,
+                    innermost as *mut RcHeader,
+                );
+                put(
+                    middle,
+                    2,
+                    crate::value::Tag::Object,
+                    object(recording_class!("Four", '4')),
+                );
+                put(
+                    root,
+                    0,
+                    crate::value::Tag::Object,
+                    object(recording_class!("One", '1')),
+                );
+                put(root, 1, crate::value::Tag::Array, middle as *mut RcHeader);
+                put(
+                    root,
+                    2,
+                    crate::value::Tag::Object,
+                    object(recording_class!("Five", '5')),
+                );
+            }
+        }
+
+        unsafe {
+            assert!(ll_release(root as *mut RcHeader), "the root had a holder");
+            crate::object::ll_entity_die(root as *mut RcHeader);
+        }
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+        let written = DESTRUCTOR_ORDER.lock().unwrap().clone();
+        written
+    }
+
     /// The list grows past its first chunk and hands pairs back in
     /// reverse, which is all the copy asks of it. Growth copies what was
     /// already there — losing it would drop whole subtrees of a deep copy
@@ -841,8 +1235,9 @@ mod tests {
     #[test]
     fn the_work_list_grows_and_keeps_what_it_held() {
         let _g = crate::memory::block_pool::test_guard();
-        let n = WorkList::FIRST * 3;
-        let mut list = WorkList::new();
+        type Pairs = WorkList<(*mut LLArray, *mut LLArray)>;
+        let n = Pairs::FIRST * 3;
+        let mut list = Pairs::new();
         let pair = |i: usize| (i as *mut LLArray, (i + 1000) as *mut LLArray);
         for i in 0..n {
             assert!(list.push(pair(i)), "the list refused at {i}");
@@ -1129,10 +1524,12 @@ mod tests {
             assert!(ll_release(outer as *mut RcHeader));
             crate::object::ll_entity_die(outer as *mut RcHeader);
 
-            // Both tables are freed by this teardown — the inner one by
-            // the cascade, the outer one by its own dispose — and the
-            // free list is LIFO, so the inner chunk is the second one
-            // back, not the first.
+            // Both tables are freed by this teardown, the outer one
+            // first: the drain disposes a level before it takes the next
+            // one off the list. Which of the two the free list hands back
+            // first is the allocator's business, so the assertion takes
+            // either — what it is here to catch is the inner storage
+            // never coming back at all.
             set_pressure_mode(PressureMode::Critical);
             let first = with_buffer_arena(|arena| arena.alloc(capacity));
             let second = with_buffer_arena(|arena| arena.alloc(capacity));

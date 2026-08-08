@@ -315,8 +315,36 @@ pub(crate) unsafe fn store_box(
 /// `old` null or the live entity the slot held; `owner_cat` the slot
 /// owner's category.
 pub(crate) unsafe fn drop_ref(owner_cat: MemoryCategory, old: *mut RcHeader) {
+    let dead = unsafe { drop_ref_deferred(owner_cat, old) };
+    if !dead.is_null() {
+        // Last reference gone: tear it down (destructor, release children,
+        // free), dispatched on the entity kind (`ll_entity_die`) — an
+        // object through its class's dispose, a reference box by
+        // releasing its Value.
+        unsafe { crate::object::ll_entity_die(old) };
+    }
+}
+
+/// [`drop_ref`] up to the teardown, which is handed back rather than run:
+/// null when nothing died, otherwise the entity whose count just reached
+/// zero and whose teardown the caller now owes.
+///
+/// It exists for the array's teardown drain, which must not call
+/// `ll_entity_die` on a nested array — that call is the recursion the
+/// drain replaces, one frame set per nesting level of caller-chosen depth
+/// (`crate::array::entity::array_die`). Every other caller wants
+/// [`drop_ref`], which is this function plus the teardown it defers.
+///
+/// # Safety
+/// `old` null or the live entity the slot held; `owner_cat` the slot
+/// owner's category.
+#[inline]
+pub(crate) unsafe fn drop_ref_deferred(
+    owner_cat: MemoryCategory,
+    old: *mut RcHeader,
+) -> *mut RcHeader {
     if old.is_null() {
-        return;
+        return std::ptr::null_mut();
     }
     let old_cat = unsafe { crate::object::header_category(old) };
 
@@ -333,11 +361,9 @@ pub(crate) unsafe fn drop_ref(owner_cat: MemoryCategory, old: *mut RcHeader) {
         owner_cat == MemoryCategory::RequestArena && old_cat == MemoryCategory::GcHeap;
 
     if !old_is_log_owned && unsafe { ll_release(old) } {
-        // Last reference gone: tear it down (destructor, release children,
-        // free), dispatched on the entity kind (`ll_entity_die`) — an
-        // object through its class's dispose, a reference box by
-        // releasing its Value.
-        unsafe { crate::object::ll_entity_die(old) };
+        old
+    } else {
+        std::ptr::null_mut()
     }
 }
 

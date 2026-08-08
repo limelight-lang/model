@@ -1592,6 +1592,52 @@ mod tests {
         assert_eq!(unsafe { collect_cycles() }, 0);
     }
 
+    /// The same duty, one level down and owed by a different party. A
+    /// nested array is torn down by the drain inside
+    /// `array::entity::array_die`, never by `ll_entity_die`, so the
+    /// door's candidate-forget does not run for it and the drain owes it
+    /// instead. Left out, the buffer keeps a root into freed memory —
+    /// the state the door's duty was added to prevent.
+    ///
+    /// Seen failing on the candidacy assertion with the drain's
+    /// `leave_the_candidate_buffer` call removed.
+    #[test]
+    fn a_nested_array_forgets_its_candidacy_when_the_drain_takes_it() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::refcount::ll_retain;
+        use crate::value::Tag;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let outer = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let inner = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        unsafe {
+            // A non-zero decrement is what buffers the inner array; the
+            // entry that follows takes its creation reference, so the
+            // count is one and the entry backs it.
+            ll_retain(inner as *mut RcHeader);
+            assert!(!ll_release(inner as *mut RcHeader));
+            assert!(
+                (*candidate_buffer()).contains(&(inner as *mut RcHeader)),
+                "the non-zero decrement buffered the inner array"
+            );
+            (*outer).table.insert(
+                outer as *const RcHeader,
+                Key::Int(0),
+                Value::entity(Tag::Array, inner as *mut RcHeader),
+            );
+
+            assert!(ll_release(outer as *mut RcHeader), "the last reference");
+            crate::object::ll_entity_die(outer as *mut RcHeader);
+        }
+
+        assert!(
+            !unsafe { (*candidate_buffer()).contains(&(inner as *mut RcHeader)) },
+            "the buffer kept a root pointing at freed memory"
+        );
+        assert_eq!(unsafe { collect_cycles() }, 0);
+    }
+
     /// A freed slot's header word is the enumerators' occupancy test:
     /// `heap::for_each_entity_slot` and the epoch snapshot both read it and
     /// treat a non-zero refcount as a live entity. An ordinary death drives

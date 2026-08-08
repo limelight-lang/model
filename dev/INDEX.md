@@ -169,7 +169,11 @@ versions live in `docs/history/`, marked at the top.
   `object::escape_copy` copies an arena one out, and they are one body —
   `array::entity::separate` — with the destination category supplying the
   depth, each child published through `barrier::store_category_barrier`
-  rather than retained bare. Its recursion is still the machine stack's.
+  rather than retained bare. Neither the copy nor the teardown recurses
+  into nesting: both drain a `WorkList` in a buffer-arena chunk, because
+  the depth is the caller's input and a frame set per level is a stack
+  overflow (`dev/DECISIONS.md`, 2026-08-07 and 2026-08-08). An object
+  chain still tears down through the machine stack.
   What is unbuilt is listed at the head of `PLAN.md`.
 - Category → allocator routing: `src/memory/routing.rs` — the one place
   that answers where a memory category's bytes come from.
