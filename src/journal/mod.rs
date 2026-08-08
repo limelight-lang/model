@@ -52,7 +52,11 @@
 //! raises after that — the heap teardown following retirement — is lost,
 //! and the window containing the close says so ([`Window::Closed`]).
 //! `ll_thread_init` reopens a closed slot, so one OS thread running a
-//! pool's tasks journals each life into a ring of its own.
+//! pool's tasks journals each life into a ring of its own — and every
+//! self-initialising way back into the runtime runs that function, so a
+//! thread still raising events with its slot closed is one being used
+//! after `ll_thread_exit` outside the runtime's contract. The silence
+//! there is deliberate and goes unreported.
 //!
 //! **A ring is named by identity, never by address, everywhere a name
 //! outlives the registry's lock.** The identity is a counter's next value
@@ -276,7 +280,8 @@ struct Registry {
     /// it, and the difference between two marks is how many whole thread
     /// histories the window lost.
     evicted: u64,
-    /// Threads whose ring the allocator refused. They journal nothing for
+    /// Threads that will never have a ring — the allocator refused it, or
+    /// the thread could not guarantee its retirement. They journal nothing for
     /// the rest of their lives and appear in no ring, so without a count
     /// of them a window's silence about them is indistinguishable from a
     /// process that never had them — the false *none* by the one door
@@ -425,17 +430,27 @@ fn ring_for_writing() -> *mut Ring {
     // for the life of the process. Idempotent, and inside the guard
     // because it allocates.
     crate::memory::heap::ll_thread_init();
+    // No ring is opened on a thread whose retirement is not guaranteed.
+    // The guard `ll_thread_init` arms is what calls `retire_thread_ring`,
+    // and it cannot be armed from inside TLS teardown — a destructor
+    // allocating on the way out reaches a record site on a thread whose
+    // exit has already been run or destroyed. A ring opened there is
+    // retired by nothing and stays on the live list for the life of the
+    // process, where every later window reads it as a live thread doing
+    // nothing: a standing false *none*, and a leak with it.
+    if !crate::memory::heap::exit_guard_armed() {
+        close_this_thread();
+        ALLOCATING.with(|cell| cell.set(false));
+        return std::ptr::null_mut();
+    }
     let fresh = allocate_ring();
     if fresh.is_null() {
-        // One refusal closes the thread, and is counted, because a thread
-        // with no ring is in no window and a count is all a reader gets
-        // to know it existed. Retrying instead would ask the OS for a
-        // block and take the registry's lock on every later record, under
-        // exactly the memory pressure the journal is turned on to
-        // investigate — the two things §9.7 forbids this path.
-        locked().refused += 1;
+        // One refusal closes the thread. Retrying instead would ask the
+        // OS for a block and take the registry's lock on every later
+        // record, under exactly the memory pressure the journal is turned
+        // on to investigate — the two things §9.7 forbids this path.
+        close_this_thread();
         ALLOCATING.with(|cell| cell.set(false));
-        RING.with(|cell| cell.set(CLOSED));
         return std::ptr::null_mut();
     }
     let pending = register_ring(fresh);
@@ -443,6 +458,19 @@ fn ring_for_writing() -> *mut Ring {
     free_rings(pending);
     ALLOCATING.with(|cell| cell.set(false));
     fresh
+}
+
+/// End this thread's journaling, and count it.
+///
+/// A thread with no ring is in no window, so the count is the only thing
+/// standing between its silence and a reader's conclusion that it did
+/// nothing ([`Window::Refused`]). The two reasons a thread ends up here
+/// are the allocator refusing the ring and the thread being unable to
+/// guarantee the ring's retirement; both are permanent, and neither
+/// leaves the reader anything else to go on.
+fn close_this_thread() {
+    locked().refused += 1;
+    RING.with(|cell| cell.set(CLOSED));
 }
 
 /// Stamp a fresh ring with its identity, put it on the live list, and
@@ -609,7 +637,8 @@ pub enum Window {
     /// between the two marks. Named by count alone, because what is gone
     /// is what would have told a reader whose records they were.
     Evicted { rings: u64 },
-    /// Threads the allocator refused a ring, in this process, ever. They
+    /// Threads left without a ring, in this process, ever — refused by the
+    /// allocator, or unable to guarantee a ring's retirement. They
     /// have written nothing and are in no other answer, so a window that
     /// did not carry this number would spell "these threads did nothing"
     /// exactly as it spells "these threads do not exist". Cumulative, and
@@ -1222,6 +1251,52 @@ mod tests {
             "a reversed pair of marks answered something other than unknown: {answers:?}"
         );
         retire_thread_ring();
+    }
+
+    /// A thread that cannot arm its exit guard gets no ring: the guard is
+    /// what retires one, and a ring nothing retires stays on the live
+    /// list for the life of the process, where every later window reads
+    /// it as a live thread doing nothing. The state is real — a
+    /// destructor that allocates reaches a record site with the guard's
+    /// slot already destroyed — and it is counted like a refusal, being
+    /// the same silence from the reader's side.
+    #[test]
+    fn a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring() {
+        use crate::memory::heap::FORCE_GUARD_UNARMED;
+        let _g = crate::memory::block_pool::test_guard();
+        let counts_before = registry_counts();
+        let start = mark();
+
+        let identity = std::thread::spawn(|| {
+            crate::memory::heap::ll_thread_init();
+            FORCE_GUARD_UNARMED.store(true, Ordering::Relaxed);
+            record(4, 0, 5, 0, 0);
+            let identity = this_thread_identity();
+            FORCE_GUARD_UNARMED.store(false, Ordering::Relaxed);
+            crate::memory::heap::ll_thread_exit();
+            identity
+        })
+        .join()
+        .expect("the journaling thread panicked");
+
+        let end = mark();
+        assert_eq!(identity, 0, "a thread with no exit guard opened a ring");
+        assert_eq!(
+            registry_counts(),
+            counts_before,
+            "a ring nothing will retire was registered anyway"
+        );
+        let reported = between(&start, &end)
+            .into_iter()
+            .find_map(|window| match window {
+                Window::Refused { threads } => Some(threads),
+                _ => None,
+            });
+        assert_eq!(
+            reported,
+            Some(start.refusals + 1),
+            "the thread left no trace in the window that covered it"
+        );
     }
 
     /// A thread whose ring the allocator refused is in no window at all,

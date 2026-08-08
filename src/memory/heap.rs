@@ -1717,7 +1717,6 @@ pub extern "C" fn ll_thread_init() {
         // Failing to register the guard is the right outcome instead: the
         // thread is already exiting, and its blocks are reclaimed by the
         // teardown in progress.
-        let _ = EXIT_GUARD.try_with(|_| {});
         // This branch is entered once per *life* of a thread — a pool
         // thread that runs init/exit per task enters it again, the exit
         // having cleared the slot — so it is where the journal learns
@@ -1725,9 +1724,45 @@ pub extern "C" fn ll_thread_init() {
         // gets a new ring with a new identity rather than reopening the
         // one it retired, which is on the registry's retired list and no
         // longer its to write.
-        crate::journal::reopen_thread();
+        //
+        // Only when the guard is armed, because the guard is what retires
+        // the ring: opening one on a thread whose retirement nothing will
+        // run leaves it on the live list for the life of the process,
+        // where every later window reads it as a live thread doing
+        // nothing.
+        if exit_guard_armed() {
+            crate::journal::reopen_thread();
+        }
     }
 }
+
+/// Arm this thread's exit guard, and report whether it is armed.
+///
+/// The call **is** the arming: touching the `thread_local!` is what
+/// registers its destructor, so on a live thread this returns `true` and
+/// leaves the guard in place. It returns `false` only when TLS teardown
+/// has already destroyed the slot — a destructor allocating on the way
+/// out — and that answer is permanent for the thread, since nothing
+/// rebuilds a destroyed slot.
+///
+/// Whoever asks is deciding whether to build something this thread's exit
+/// is supposed to dispose of. Under a `false` that exit will not run.
+pub(crate) fn exit_guard_armed() -> bool {
+    // Fault injection, tests only: TLS teardown cannot be entered on
+    // demand, and an untested refusal path is a guess.
+    #[cfg(test)]
+    if FORCE_GUARD_UNARMED.load(Ordering::Relaxed) {
+        return false;
+    }
+    EXIT_GUARD.try_with(|_| {}).is_ok()
+}
+
+/// Makes [`exit_guard_armed`] answer `false`, tests only. It names that
+/// guard and nothing else: the heap, the pool and the arena are
+/// unaffected, so a test using it proves which structure was refused.
+#[cfg(test)]
+pub(crate) static FORCE_GUARD_UNARMED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// This thread's raw heap, or null if it has never allocated.
 ///

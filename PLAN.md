@@ -149,10 +149,31 @@ ring written by hand, and the gate is green with the feature on and off.
         close changed sides with the ruling and now pins the opposite:
         such a window reports records, because a thread that lives on
         journals into the ring `reopen_thread` gives it.
-- [ ] S5.1a Take the journal to the Sage before S5.2 builds on it
+- [x] S5.1a Take the journal to the Sage before S5.2 builds on it
       done: he has ruled on how many rounds a module of this shape gets,
         and on the residue named below
-      tier: T2 · role: Мудрец
+      tier: T2 · role: Sage
+      Sage 2026-08-08: a full-module pass cannot converge, since every
+        repair is fresh code and re-offering the module re-offers the
+        surface the last round made. Past the two dispute rounds a cycle
+        continues only as passes **scoped to the latest unexamined repair
+        batch**, and ends at the first scoped pass confirming no
+        *contract-class* defect in its scope; two consecutive scoped
+        passes that do confirm one send the module back to him for
+        redesign rather than to a further pass. Residue 2 — a ring opened
+        where the exit guard could not be armed — is a standing false
+        *none* and was fixed before the pass: `heap::exit_guard_armed`
+        arms and reports, `ll_thread_init` reopens only under it, and the
+        record path closes and counts the thread otherwise. Residue 1 —
+        an OS thread reused with no `ll_thread_init` — is **not** a
+        defect: every self-initialising door into the runtime runs that
+        function, so a thread still raising events with a closed slot is
+        one used after `ll_thread_exit` outside the contract; one
+        sentence of documentation, no mechanism, and reopening from the
+        record path stays refused. Final.
+      handoff: the rule is `dev/DECISIONS.md`, 2026-08-08 ("a review
+        cycle ends on scope and class"). The class for this module is
+        named in the ruling and goes in the pass's prompt.
       Three passes found 5, 7 and 7 defects, every round in what the
         previous round's repairs added, and every round's findings real.
         Rule 23.6 stops a dispute at two rounds; it says nothing about a

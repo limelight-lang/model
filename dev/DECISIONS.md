@@ -8,6 +8,40 @@ never edited or deleted.
 
 ---
 
+## 2026-08-08 — a review cycle ends on scope and class, not on a silent pass
+
+Ruled by the Sage the same day, after step S5.1's three independent critic
+passes found 5, 7 and 7 defects, every one real and rounds 2 and 3 finding
+theirs almost entirely inside what the previous round's repairs had added.
+
+**A pass over a whole module cannot converge.** Every repair is fresh code
+carrying its own defects, so re-offering the module re-offers a surface that
+the last round manufactured; the count measures the surface, not the health.
+Past the two dispute rounds of the working rules, a cycle therefore continues
+only as passes **scoped to the latest unexamined repair batch**, and it ends
+at the first scoped pass that confirms no defect of the module's *contract
+class* within its scope. The class is named per module and stated to the
+critic: for the journal it is an answer that converts loss or silence into
+"nothing happened", undefined behaviour, a ring freed wrongly or never freed,
+and a ring nothing will retire.
+
+What the two kinds of finding do differs. A contract-class finding is
+repaired with a regression test seen failing, and the repair becomes the next
+pass's scope. Everything else — wordings, comments, test gaps, hardening — is
+repaired too, but renews nothing; the stage-end review carries it.
+
+**And the cycle has an end that is not another pass.** If two consecutive
+scoped passes both confirm contract-class defects, passes stop being the
+instrument: the module goes back to the Sage with the accumulated findings,
+because by then the evidence is against the shape of the thing rather than
+against its details, and the answer is a redesign rather than a review.
+
+The alternative was to close by exhaustion — to stop when the reviewer is
+tired rather than when the work is sound — which is what this rule exists to
+refuse.
+
+---
+
 ## 2026-08-08 — a pinned block goes home when its last payload is freed
 
 A block the arena reset kept for bytes it could not carry out returns to the
