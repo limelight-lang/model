@@ -315,7 +315,9 @@ ring written by hand, and the gate is green with the feature on and off.
         and the test for it was seen aborting on the shape the ruling
         forbids. `debug-journal` is a gate arm now, both GC
         configurations, and `dev/WORKFLOW.md` says why it needs its own
-        runs rather than one.
+        runs rather than one. Miri over the committed tree with the
+        sites compiled in: `journal` 28 passed, 0 failed, 16.8 s;
+        `block_pool` 5 passed, 0 failed, 3.0 s.
 - [ ] S5.3 The acceptance hunt through the journal
       done: on the pinned reproducer (`--no-run` binary, `taskset -c
         0,1`, two spinners) the question "which strings died inside the
