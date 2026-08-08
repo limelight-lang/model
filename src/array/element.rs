@@ -1,10 +1,10 @@
 //! The generic element layer over the table (`PLAN.md`, stage S2).
 //!
-//! Four of the five element operations are here — `get`, `set`,
-//! `append` and `unset`; taking a reference (`&$a[k]`) waits on S2.8.
-//! Every write goes through one composition, `write_through`, and every
-//! operation starts by settling what the key *is*, which is why the key
-//! constructor lives here too. Canonicalisation sits in this layer
+//! The five element operations are here — `get`, `set`, `append`,
+//! `unset` and `make_ref`. Every write goes through one composition,
+//! `write_through`, and every operation starts by settling what the key
+//! *is*, which is why the key constructor lives here too.
+//! Canonicalisation sits in this layer
 //! rather than inside `Table` on purpose: `Map` is the table's second
 //! customer and keys a map exactly, so a table that canonicalised would
 //! be unusable there.
@@ -159,6 +159,14 @@ pub unsafe fn set(
             "the layer canonicalises before it stores"
         );
     }
+    // A reference-tagged value would mean two different things for one
+    // call: the element's own box on a fresh key, and a box written into
+    // the existing box on a live one. `$a[k] = &$v` is the rebinding
+    // operation, which is not this one and does not exist yet.
+    debug_assert!(
+        value.tag() != Tag::Reference,
+        "the caller dereferences the right-hand side"
+    );
     unsafe {
         write_through(ctx, owner_cat, slot, |a, arena| {
             store_into(a, arena, key, value)
@@ -233,6 +241,79 @@ pub unsafe fn unset(
     }
 }
 
+/// `&$a[k]`: the element's `ReferenceBox`, boxing the element if it is
+/// not one already, with the holder's array separated first.
+///
+/// **The separation comes before the boxing, and that order is the whole
+/// step.** Taking a reference is a write — it turns the element into a
+/// reference state every later store goes through — so it goes through
+/// [`write_through`] like the other three. Boxing a shared table instead
+/// would hand `$b`'s reference a box `$a` also names, and `$r = 2` would
+/// then be visible through `$a['x']`. The order settles the element that
+/// is **not** a box yet; an element already in a reference state comes
+/// out of the separation still shared, which is PHP's own rule and the
+/// open question named beside S2.8 in `PLAN.md`.
+///
+/// **An absent key is created as null and referenced**, which is PHP's
+/// rule for `$r = &$a['nope']` and the reason this cannot simply forward
+/// `Table::make_ref`'s null: that null means "absent", and the caller
+/// has no way to tell it from the refusal below.
+///
+/// Null reports a refusal with every array unchanged: the separation's
+/// copy, the box, or the vivified element's own insert. One state does
+/// move behind a refusal on an integer key, as it does for [`set`]: the
+/// vivified insert advances the append cursor, and that is one-way.
+///
+/// **A fresh box comes back at one**, held by the element; an element
+/// already in a reference state hands back the box it holds, at whatever
+/// count its holders have given it. Either way a caller keeping the box
+/// retains for its own holder.
+///
+/// # Safety
+/// Per [`write_through`]; `key` canonical, as for [`set`].
+pub unsafe fn make_ref(
+    ctx: *mut LLContext,
+    owner_cat: MemoryCategory,
+    slot: *mut Value,
+    key: Key,
+) -> *mut crate::reference::LLReference {
+    #[cfg(debug_assertions)]
+    if let Key::Str(s) = key {
+        debug_assert!(
+            matches!(unsafe { canonical_key(s) }, Key::Str(_)),
+            "the layer canonicalises before it references"
+        );
+    }
+    let mut boxed = std::ptr::null_mut();
+    let separated = unsafe {
+        write_through(ctx, owner_cat, slot, |a, arena| {
+            let vivified = !(*a).table.contains(key);
+            if vivified && !store_into(a, arena, key, Value::null()) {
+                return false;
+            }
+            boxed = (*a).table.make_ref(ctx, a as *const RcHeader, key);
+            if boxed.is_null() {
+                // The vivified element goes back out. Without this a
+                // refusal would leave the key present on an array this
+                // call promised not to touch — and only on the
+                // exclusively-owned path, where there is no private copy
+                // to throw away, so the two paths would disagree about
+                // what `false` means.
+                if vivified {
+                    remove_from(a, key);
+                }
+                return false;
+            }
+            true
+        })
+    };
+    if separated {
+        boxed
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
 /// `$a[k]` by value: the element, with a `ReferenceBox` element read
 /// **through** the box, or `None` when the key is absent.
 ///
@@ -286,6 +367,20 @@ unsafe fn destroy_private_copy(copy: *mut LLArray) {
 /// refusal with everything given back and `a` unchanged — the same
 /// publication idiom as `fill_from`, which is the worked example.
 ///
+/// **An element already in a reference state is written through its box
+/// instead** ([`store_through_box`]), which is what makes `$r = &$a['x']`
+/// followed by `$a['x'] = 2` readable through `$r`. Because a copy shares
+/// the box rather than copying it, a write through one holder of a
+/// once-shared array is visible to the other — PHP's rule, and the reason
+/// its manual warns about copying an array with a reference in it.
+///
+/// The lookup that decides this is a second chain walk on every store,
+/// on top of `insert`'s own. `Table::get` hands out a copy of the Box
+/// rather than a borrow, because an entry keeps its chain link in the
+/// element's reserved bytes, so the walk cannot be shared with `insert`
+/// without changing what `insert` returns. Unmeasured, and the array
+/// performance stage in `PLAN.md` owns the number.
+///
 /// # Safety
 /// `a` a live, exclusively owned array; `arena` the live mounted arena.
 unsafe fn store_into(
@@ -294,6 +389,12 @@ unsafe fn store_into(
     key: Key,
     value: Value,
 ) -> bool {
+    if let Some(element) = unsafe { (*a).table.get(key) } {
+        if element.tag() == Tag::Reference {
+            let boxed = element.entity_ptr() as *mut crate::reference::LLReference;
+            return unsafe { store_through_box(arena, boxed, value) };
+        }
+    }
     let owner = a as *const RcHeader;
     let category = Table::category_of(owner);
     let mut v = value;
@@ -352,6 +453,39 @@ unsafe fn store_into(
             true
         }
     }
+}
+
+/// Write into an element that is in a reference state: into the box's
+/// own slot, through `barrier::ref_store`.
+///
+/// **`ref_store` rather than a plain store**, and the box being reached
+/// through an entry changes nothing about that: `6afd220` moved the
+/// reference sever onto the barrier because the collector's relaxed
+/// loads race a plain write into a published slot, and this box *is*
+/// published — the entry names it. `Table::make_ref`'s own
+/// `(*boxed).value = current` is legal only because that box is not
+/// published when it runs, which makes it the pattern an implementer
+/// would copy and the wrong one.
+///
+/// The barrier publishes before it releases, so a refusal leaves the box
+/// holding exactly what it held, displaced value included, and reports
+/// `false` rather than dropping a reference it did not replace.
+///
+/// # Safety
+/// `boxed` a live reference box; `arena` the live mounted arena.
+unsafe fn store_through_box(
+    arena: *mut crate::memory::arena::Arena,
+    boxed: *mut crate::reference::LLReference,
+    value: Value,
+) -> bool {
+    let slot = unsafe { &raw mut (*boxed).value };
+    let held = unsafe { *slot };
+    let old = if held.is_refcounted() {
+        held.entity_ptr()
+    } else {
+        std::ptr::null_mut()
+    };
+    unsafe { crate::memory::barrier::ref_store(arena, boxed as *mut RcHeader, slot, old, value) }
 }
 
 /// The table half of [`unset`]: remove the entry and give the table's
@@ -1365,7 +1499,9 @@ mod tests {
             (*src)
                 .table
                 .insert(src as *const RcHeader, Key::Int(0), Value::int(5));
-            let boxed = (*src).table.make_ref(src as *const RcHeader, Key::Int(0));
+            let boxed = (*src)
+                .table
+                .make_ref(context_ptr, src as *const RcHeader, Key::Int(0));
             assert!(!boxed.is_null(), "the element was meant to be boxed");
             assert_eq!(
                 (*src).table.get(Key::Int(0)).unwrap().tag(),
@@ -1386,6 +1522,500 @@ mod tests {
                 "the read separated"
             );
             assert_eq!((*slot_b).entity_ptr() as *mut LLArray, src);
+
+            assert!(ll_release(h as *mut RcHeader));
+            ll_object_die(h);
+        }
+    }
+
+    /// A store into an element in a reference state goes **through** the
+    /// box: the entry still names the box afterwards, the box holds the
+    /// new value, and the value it displaced came back.
+    #[test]
+    fn a_store_into_a_boxed_element_goes_through_the_box() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let class = ClassBuilder::new("BoxHolder").prop("a", true).build();
+        let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
+        let slot = unsafe { Object::prop_at(h, 16) };
+        let first = mk(b"first");
+        let boxed = unsafe {
+            assert!(crate::memory::barrier::ref_store(
+                arena_ptr,
+                h as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, src as *mut RcHeader),
+            ));
+            ll_release(src as *mut RcHeader);
+            crate::refcount::ll_retain(first as *mut RcHeader);
+            (*src).table.insert(
+                src as *const RcHeader,
+                Key::Int(0),
+                Value::entity(Tag::String, first as *mut RcHeader),
+            );
+            let boxed = (*src)
+                .table
+                .make_ref(context_ptr, src as *const RcHeader, Key::Int(0));
+            assert!(!boxed.is_null(), "the element was meant to be boxed");
+            boxed
+        };
+        let first_held = unsafe { (*first).rc.refcount };
+
+        let second = mk(b"second");
+        let second_start = unsafe { (*second).rc.refcount };
+        assert!(unsafe {
+            set(
+                context_ptr,
+                MemoryCategory::GcHeap,
+                slot,
+                Key::Int(0),
+                Value::entity(Tag::String, second as *mut RcHeader),
+            )
+        });
+
+        unsafe {
+            assert_eq!(
+                (*src).table.get(Key::Int(0)).unwrap().entity_ptr(),
+                boxed as *mut RcHeader,
+                "the store replaced the box instead of writing through it"
+            );
+            assert_eq!((*boxed).value.entity_ptr(), second as *mut RcHeader);
+            assert_eq!(
+                get(slot, Key::Int(0)).unwrap().entity_ptr(),
+                second as *mut RcHeader
+            );
+            assert_eq!(
+                (*first).rc.refcount,
+                first_held - 1,
+                "the value the box displaced did not come back"
+            );
+            assert_eq!(
+                (*second).rc.refcount,
+                second_start + 1,
+                "the box took no reference of its own"
+            );
+
+            assert!(ll_release(h as *mut RcHeader));
+            ll_object_die(h);
+            assert_eq!((*second).rc.refcount, second_start);
+            for s in [first, second] {
+                assert!(ll_release(s as *mut RcHeader));
+                crate::object::ll_entity_die(s as *mut RcHeader);
+            }
+        }
+    }
+
+    /// The barrier publishes before it releases, so a store through the
+    /// box that the barrier refuses leaves the box holding exactly what
+    /// it held — the displaced value keeps its reference rather than
+    /// being dropped for a store that never happened.
+    #[test]
+    fn a_refused_store_through_the_box_keeps_the_displaced_value() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        crate::memory::context::set_current_context(context_ptr);
+
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let class = ClassBuilder::new("RefusedBoxHolder")
+            .prop("a", true)
+            .build();
+        let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
+        let slot = unsafe { Object::prop_at(h, 16) };
+        let held = mk(b"held");
+        let boxed = unsafe {
+            assert!(crate::memory::barrier::ref_store(
+                arena_ptr,
+                h as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, src as *mut RcHeader),
+            ));
+            ll_release(src as *mut RcHeader);
+            crate::refcount::ll_retain(held as *mut RcHeader);
+            (*src).table.insert(
+                src as *const RcHeader,
+                Key::Int(0),
+                Value::entity(Tag::String, held as *mut RcHeader),
+            );
+            let boxed = (*src)
+                .table
+                .make_ref(context_ptr, src as *const RcHeader, Key::Int(0));
+            assert!(!boxed.is_null());
+            boxed
+        };
+        let held_start = unsafe { (*held).rc.refcount };
+
+        // An arena COW value crossing into the heap box is copied out,
+        // and that copy is the allocation the refusal lands on.
+        let crossing =
+            unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"crossing") };
+        let crossing_start = unsafe { (*crossing).rc.refcount };
+
+        FORCE_OOM.store(true, Ordering::Relaxed);
+        let fillers = unsafe { exhaust_string_entities(b"crossing".len()) };
+        let stored = unsafe {
+            set(
+                context_ptr,
+                MemoryCategory::GcHeap,
+                slot,
+                Key::Int(0),
+                Value::entity(Tag::String, crossing as *mut RcHeader),
+            )
+        };
+        FORCE_OOM.store(false, Ordering::Relaxed);
+        free_string_fillers(fillers);
+        assert!(!stored, "the crossing value's copy was meant to be refused");
+
+        unsafe {
+            assert_eq!(
+                (*boxed).value.entity_ptr(),
+                held as *mut RcHeader,
+                "a refused store moved the box"
+            );
+            assert_eq!(
+                (*held).rc.refcount,
+                held_start,
+                "the displaced value was released for a store that never happened"
+            );
+            assert_eq!((*crossing).rc.refcount, crossing_start);
+
+            assert!(ll_release(h as *mut RcHeader));
+            ll_object_die(h);
+            assert!(ll_release(held as *mut RcHeader));
+            crate::object::ll_entity_die(held as *mut RcHeader);
+        }
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+        arena.reset(|_| {});
+    }
+
+    /// A box is identity, so the deep copy out of the arena **shares**
+    /// it rather than boxing a second one, and the escape hold-count is
+    /// what keeps the arena box alive for the longer-lived copy.
+    #[test]
+    fn a_copy_over_an_arena_source_shares_the_box() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        crate::memory::context::set_current_context(context_ptr);
+
+        let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+        let boxed = unsafe {
+            (*src)
+                .table
+                .insert(src as *const RcHeader, Key::Int(0), Value::int(7));
+            let boxed = (*src)
+                .table
+                .make_ref(context_ptr, src as *const RcHeader, Key::Int(0));
+            assert!(!boxed.is_null());
+            boxed
+        };
+        assert_eq!(
+            unsafe { (*boxed).rc.flags } & crate::refcount::IS_ESCAPEE,
+            0,
+            "the box escaped before the copy was made"
+        );
+
+        let copy = unsafe {
+            crate::object::escape_copy(arena_ptr, MemoryCategory::GcHeap, src as *mut RcHeader)
+        } as *mut LLArray;
+        assert!(!copy.is_null());
+
+        unsafe {
+            assert_eq!(
+                (*copy).table.get(Key::Int(0)).unwrap().entity_ptr(),
+                boxed as *mut RcHeader,
+                "the copy boxed a second reference instead of sharing this one"
+            );
+            // On an arena entity the count field is the **escape
+            // hold-count** once `IS_ESCAPEE` is set, and the first gain
+            // sets it to one rather than incrementing a holder count:
+            // arena entities are not counted at all until one of them
+            // crosses out (`barrier::escape_gain`).
+            assert_eq!(
+                (*boxed).rc.flags & crate::refcount::IS_ESCAPEE,
+                crate::refcount::IS_ESCAPEE,
+                "the longer-lived copy took no hold on the arena box"
+            );
+            assert_eq!((*boxed).rc.refcount, 1);
+
+            assert!(ll_release(copy as *mut RcHeader));
+            crate::object::ll_entity_die(copy as *mut RcHeader);
+            assert_eq!(
+                (*boxed).rc.flags & crate::refcount::IS_ESCAPEE,
+                0,
+                "the dying copy kept its hold on the box"
+            );
+        }
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+        arena.reset(|_| {});
+    }
+
+    /// S2.8's criterion in full: `$a=['x'=>1]; $b=$a; $r=&$b['x']; $r=2`
+    /// leaves `$a['x']` at 1 and `$b['x']` at 2. The shared table is
+    /// separated before the box is written, so `$a` never names the box
+    /// and the reference is not refused.
+    #[test]
+    fn taking_a_reference_separates_the_shared_table_first() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let x = mk(b"x");
+        unsafe {
+            crate::refcount::ll_retain(x as *mut RcHeader);
+            (*src)
+                .table
+                .insert(src as *const RcHeader, Key::Str(x), Value::int(1));
+        }
+        let x_shared = unsafe { (*x).rc.refcount };
+        // `slot_a` is `$a`, `slot_b` is `$b`.
+        let (h, slot_a, slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
+
+        let r = unsafe { make_ref(context_ptr, MemoryCategory::GcHeap, slot_b, Key::Str(x)) };
+        assert!(!r.is_null(), "the reference was refused");
+
+        unsafe {
+            assert_ne!(
+                (*slot_b).entity_ptr() as *mut LLArray,
+                src,
+                "the shared table was boxed without separating"
+            );
+            assert_eq!(
+                (*slot_a).entity_ptr() as *mut LLArray,
+                src,
+                "the other holder followed the separation"
+            );
+            assert!(
+                (*src).table.get(Key::Str(x)).unwrap().tag() != Tag::Reference,
+                "the original's element was boxed too"
+            );
+
+            // `$r = 2` through the public door: `$b['x']` is in a
+            // reference state, so the store finds the box and writes
+            // into it.
+            assert!(set(
+                context_ptr,
+                MemoryCategory::GcHeap,
+                slot_b,
+                Key::Str(x),
+                Value::int(2)
+            ));
+            assert_eq!((*r).value.as_int(), 2, "the store missed the box");
+            assert_eq!(
+                get(slot_a, Key::Str(x)).unwrap().as_int(),
+                1,
+                "the write through the reference reached the other holder"
+            );
+            assert_eq!(get(slot_b, Key::Str(x)).unwrap().as_int(), 2);
+
+            assert!(ll_release(h as *mut RcHeader));
+            ll_object_die(h);
+            assert_eq!((*x).rc.refcount, x_shared - 1);
+            assert!(ll_release(x as *mut RcHeader));
+            crate::object::ll_entity_die(x as *mut RcHeader);
+        }
+    }
+
+    /// A copy shares the box, so a write through one holder of a
+    /// once-shared array reaches the other: `$a=['x'=>1]; $r=&$a['x'];
+    /// $b=$a; $b['x']=3;` leaves both at 3, which is PHP's rule and the
+    /// reason its manual warns about copying an array holding a
+    /// reference.
+    #[test]
+    fn a_write_through_a_shared_box_reaches_both_holders() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let class = ClassBuilder::new("SharedBoxHolder")
+            .prop("a", true)
+            .prop("b", true)
+            .build();
+        let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
+        let slot_a = unsafe { Object::prop_at(h, 16) };
+        let slot_b = unsafe { Object::prop_at(h, 32) };
+        unsafe {
+            (*src)
+                .table
+                .insert(src as *const RcHeader, Key::Int(0), Value::int(1));
+            assert!(crate::memory::barrier::ref_store(
+                arena_ptr,
+                h as *mut RcHeader,
+                slot_a,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, src as *mut RcHeader),
+            ));
+            ll_release(src as *mut RcHeader);
+        }
+
+        // `$r = &$a['x']` while `$a` is the only holder: nothing to
+        // separate, so the box goes into the array both will share.
+        let r = unsafe { make_ref(context_ptr, MemoryCategory::GcHeap, slot_a, Key::Int(0)) };
+        assert!(!r.is_null());
+        assert_eq!(
+            unsafe { (*slot_a).entity_ptr() } as *mut LLArray,
+            src,
+            "an exclusively owned array separated"
+        );
+
+        unsafe {
+            // `$b = $a`, then `$b['x'] = 3`.
+            assert!(crate::memory::barrier::ref_store(
+                arena_ptr,
+                h as *mut RcHeader,
+                slot_b,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, src as *mut RcHeader),
+            ));
+            assert!(set(
+                context_ptr,
+                MemoryCategory::GcHeap,
+                slot_b,
+                Key::Int(0),
+                Value::int(3)
+            ));
+
+            let copy = (*slot_b).entity_ptr() as *mut LLArray;
+            assert_ne!(copy, src, "the shared table separated");
+            assert_eq!(
+                (*copy).table.get(Key::Int(0)).unwrap().entity_ptr(),
+                r as *mut RcHeader,
+                "the copy boxed a second reference instead of sharing this one"
+            );
+            assert_eq!((*r).value.as_int(), 3);
+            assert_eq!(
+                get(slot_a, Key::Int(0)).unwrap().as_int(),
+                3,
+                "the shared box did not carry the write to the other holder"
+            );
+            assert_eq!(get(slot_b, Key::Int(0)).unwrap().as_int(), 3);
+
+            assert!(ll_release(h as *mut RcHeader));
+            ll_object_die(h);
+        }
+    }
+
+    /// A refused box leaves the array exactly as it was, the key the
+    /// reference would have created included. The exclusively-owned path
+    /// has no private copy to throw away, so that rollback is explicit
+    /// and this is what holds it.
+    #[test]
+    fn a_refused_box_takes_the_vivified_element_back_out() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let class = ClassBuilder::new("RefusedRefHolder")
+            .prop("a", true)
+            .build();
+        let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
+        let slot = unsafe { Object::prop_at(h, 16) };
+        unsafe {
+            assert!(crate::memory::barrier::ref_store(
+                arena_ptr,
+                h as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, src as *mut RcHeader),
+            ));
+            ll_release(src as *mut RcHeader);
+            // One entry buys the storage, so the vivified insert below
+            // needs no growth and the refusal lands on the box alone.
+            (*src)
+                .table
+                .insert(src as *const RcHeader, Key::Int(0), Value::int(1));
+        }
+
+        FORCE_OOM.store(true, Ordering::Relaxed);
+        // A reference box is 24 bytes, the size class an empty inline
+        // string takes.
+        let fillers = unsafe { exhaust_string_entities(0) };
+        let r = unsafe { make_ref(context_ptr, MemoryCategory::GcHeap, slot, Key::Int(9)) };
+        FORCE_OOM.store(false, Ordering::Relaxed);
+        free_string_fillers(fillers);
+        assert!(r.is_null(), "the box was meant to be refused");
+
+        unsafe {
+            assert!(
+                !(*src).table.contains(Key::Int(9)),
+                "the refusal left the vivified element behind"
+            );
+            assert_eq!((*src).table.len(), 1);
+            assert_eq!(
+                (*slot).entity_ptr() as *mut LLArray,
+                src,
+                "a refused reference separated"
+            );
+            assert!(ll_release(h as *mut RcHeader));
+            ll_object_die(h);
+        }
+    }
+
+    /// `$r = &$a['nope']` creates the element as null and references it,
+    /// which is PHP's rule and the reason the layer cannot forward
+    /// `Table::make_ref`'s null: that one means "absent".
+    #[test]
+    fn a_reference_to_an_absent_key_creates_it_as_null() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+
+        let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let class = ClassBuilder::new("VivifyHolder").prop("a", true).build();
+        let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
+        let slot = unsafe { Object::prop_at(h, 16) };
+        unsafe {
+            assert!(crate::memory::barrier::ref_store(
+                arena_ptr,
+                h as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, src as *mut RcHeader),
+            ));
+            ll_release(src as *mut RcHeader);
+        }
+
+        let r = unsafe { make_ref(context_ptr, MemoryCategory::GcHeap, slot, Key::Int(5)) };
+
+        unsafe {
+            assert!(!r.is_null(), "an absent key was reported as a refusal");
+            assert_eq!(
+                (*r).value.tag(),
+                Tag::Null,
+                "the vivified element is not null"
+            );
+            assert_eq!(
+                (*src).table.len(),
+                1,
+                "the vivified element is not in the table"
+            );
+            assert_eq!(
+                (*src).table.get(Key::Int(5)).unwrap().entity_ptr(),
+                r as *mut RcHeader
+            );
+            assert_eq!(get(slot, Key::Int(5)).unwrap().tag(), Tag::Null);
 
             assert!(ll_release(h as *mut RcHeader));
             ll_object_die(h);

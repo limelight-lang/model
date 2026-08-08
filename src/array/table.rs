@@ -1115,6 +1115,7 @@ impl Table {
     /// element's reference to it at the count the factory gave.
     pub fn make_ref(
         &mut self,
+        ctx: *mut crate::memory::context::LLContext,
         owner: *const RcHeader,
         key: Key,
     ) -> *mut crate::reference::LLReference {
@@ -1130,8 +1131,11 @@ impl Table {
                     return current.entity_ptr() as *mut crate::reference::LLReference;
                 }
                 let category = Self::category_of(owner);
-                let boxed =
-                    unsafe { crate::reference::ll_reference_new(std::ptr::null_mut(), category) };
+                // `ctx` rather than a null: `entity_alloc_in` resolves a
+                // null through the thread's current context, and an
+                // arena table reached from a caller that holds a context
+                // but never mounted it would abort in `no_context`.
+                let boxed = unsafe { crate::reference::ll_reference_new(ctx, category) };
                 if boxed.is_null() {
                     return std::ptr::null_mut();
                 }
@@ -1365,7 +1369,7 @@ mod tests {
 
         fn make_ref(&mut self, key: Key) -> *mut crate::reference::LLReference {
             let owner = self.owner();
-            unsafe { (*self.0).table.make_ref(owner, key) }
+            unsafe { (*self.0).table.make_ref(std::ptr::null_mut(), owner, key) }
         }
 
         fn dispose(&mut self) {

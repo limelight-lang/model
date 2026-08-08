@@ -614,6 +614,84 @@ make visible. The repair is a crate-internal barrier entry that publishes
 an already-retained reference: `store_category_barrier` is that operation
 already, minus the slot write. It must land with or before item 12's arm.
 
+## Ahead of S2.7: the table's version bracket is half a barrier short
+
+Found 2026-08-08 by reading `ck_sequence.h` (`dev/RESEARCH.md`), which is
+the reference seqlock our version counter reimplements. Both brackets
+order one side in the wrong direction, so `coherent_entries` can accept a
+reading taken while entries were moving and then stride a fresh count over
+a stale chunk. `WORKFLOW.md` puts a known bug ahead of new work, which is
+why this sits before S2.7 rather than after S2.8.
+
+`begin_entry_move` (`array/table.rs:428`) publishes the odd version with a
+release *store*, which orders what precedes it; the entry moves that
+follow may become visible first. `coherent_entries`' closing check
+(`table.rs:479`) is an acquire *load*, which orders what follows it; the
+three data loads it validates may be sunk past it. ck writes the odd value
+plainly and then fences, and fences before the closing load. Closing the
+window is already correct.
+
+**Nothing observed, and no instrument here can observe it.** On x86-64
+the hardware reorders neither pair, so only compiler reordering can fire
+it — legal, since the entry writes are relaxed atomics and `used` and
+`nslots` are ordinary writes. The hardware exposure is aarch64, ppc64le
+and riscv64, and we have none of them.
+
+- [ ] S2.V The bracket fences on both sides, and something demonstrates it
+      done: `begin_entry_move` stores relaxed and then `fence(Release)`;
+        `coherent_entries` runs `fence(Acquire)` before its closing load;
+        the reordering is demonstrated failing before the fix rather than
+        argued, or the attempt is recorded as failed and the fix lands on
+        the reading alone
+      tier: T1
+      order: the fix lands first and does not wait for the instrument.
+        Measured 2026-08-08 with rustc 1.96.0 at `-O`: both fences emit
+        `#MEMBARRIER` on x86-64, which is a compiler barrier and no
+        instruction, so the fix costs nothing on the target we build for.
+        On aarch64 it costs one `dmb` per bracket, and a bracket runs
+        around growth, compaction and a walker's read rather than on the
+        element path.
+      then the instrument, time-boxed: `loom` (`tokio-rs/loom`) permutes
+        executions under the C11 model, so it needs no aarch64 box, but it
+        replaces every atomic, cell and thread with its own types under
+        `--cfg loom`, which this table cannot do while it allocates, holds
+        raw pointers and reaches thread-locals. What can run is a ~40-line
+        model of the bracket alone — a counter, three words, one mover and
+        one reader — asserting the reader's triple is coherent. It tests a
+        copy of the protocol, not the code, and loom's own README records
+        that it does not explore load buffering, so a green run proves
+        nothing while a red one demonstrates the defect.
+      Miri is likely blind: its weak-memory emulation lets a load return a
+        stale value and does not reorder.
+      not a stress test: on x86-64 no run can fail, since the hardware
+        reorders neither pair, and on aarch64 a green run would say
+        nothing. The claim is about what the model permits, so a litmus
+        test under `herd7` is the proof if one is wanted beyond
+        `ck_sequence.h` itself.
+
+### Beside it: `deferred_free.rs:47` says cross-thread frees do not park
+
+Found the same day, by tracing the free path to answer whether the parked
+list already batches anything (it does not — it delays, and the flush
+replays record by record through `ll_free`). The module doc's exception
+list is false: the epoch test in `stdapi.rs:265` fires on block kind alone
+and stands **before** the owner dispatch, so during an epoch a free of
+another thread's heap or entity slot parks first and reaches `free_remote`
+or `free_foreign` only at the flush. Behaviour is right, and only the
+sentence is wrong — which is worse than it sounds, because the next
+person to reason about actors will reason from it.
+
+- [ ] S2.D The exception list says what the code does
+      done: line 47 no longer claims cross-thread frees skip the queue;
+        what replaces it says that the park test precedes the owner
+        dispatch, so a foreign free parks like any other and is posted
+        remotely at the flush
+      tier: T0
+      keep while rewriting: the queue is a delay and not a batch, and the
+        list is thread-local, so the flush runs on the parking thread.
+        Both are already correct in the doc and both are what a reader
+        needs when actors reopen cross-thread frees.
+
 ## S2 — The generic element interface  [ ]
 
 Goal: the five element operations exist as one layer over the table —
@@ -790,7 +868,7 @@ readable through the box.
         nor category and never separates. Three tests, each seen failing
         under a targeted revert: the key giveback, the box dereference,
         and the exhausted cursor.
-- [ ] S2.7 A store into an element holding a ReferenceBox goes through the
+- [x] S2.7 A store into an element holding a ReferenceBox goes through the
       box, and through the barrier
       done: built against `Table::make_ref`, which exists — after boxing
         an element, a store into it is readable through the box, goes
@@ -799,11 +877,57 @@ readable through the box.
         refuses; a copy with a heap destination over an arena source
         shares the box rather than copying it, and `escape_copy` holds it
       tier: T2 · role: — (judged in S2.8's call)
-- [ ] S2.8 `&$a[k]`, separating first
+      handoff: `store_into` looks the element up before inserting and,
+        finding a `Tag::Reference`, hands the write to
+        `store_through_box`, which goes through `barrier::ref_store` —
+        publish, then release, so a refused barrier keeps the displaced
+        value. That lookup is a second chain walk per store, unmeasured
+        and owned by the array performance stage: `Table::get` hands out a
+        copy rather than a borrow, because an entry keeps its chain link
+        in the element's reserved bytes. **The criterion's last clause was
+        already true and is now pinned rather than built** — a box has no
+        COW flag, so `fill_from`'s publication takes `escape_gain` rather
+        than `escape_copy`, and the copy shares the box while the escape
+        hold-count holds it. On an arena entity that count field *is* the
+        hold-count: the first gain sets it to one instead of incrementing,
+        which cost one wrong assertion to learn.
+- [x] S2.8 `&$a[k]`, separating first
       done: `$a=['x'=>1]; $b=$a; $r=&$b['x']; $r=2` leaves `$a['x']` at 1
         **and** `$b['x']` at 2 — the shared table separated before the box
         was written, rather than the reference being refused
       tier: T2 · role: Критик, over S2.7 and S2.8 together
+      handoff: `element::make_ref` runs `Table::make_ref` inside
+        `write_through`, so taking a reference separates like any other
+        write. **Beyond the step's text, and Edmond's to overturn:** an
+        absent key is created as null and referenced, PHP's rule for
+        `$r = &$a['nope']`. Without it the layer would forward the
+        table's null, which means "absent", through a return value whose
+        only other meaning is "refused" — the same wrong signal the escape
+        copy's depth limit was rejected for.
+      Критик 2026-08-08, over both steps, two lenses — reference
+        ownership, and the language rules against PHP 8.3.6 run on this
+        box. Fourteen findings. Fixed: `Table::make_ref` took a `ctx`
+        instead of resolving a null through the thread's current context,
+        which aborts on an arena table outside tests; a refused box left
+        the vivified key behind on the exclusively-owned path, where
+        `write_through` has no private copy to throw away; `set` now
+        refuses a reference-tagged value in debug, `make_ref` asserts the
+        canonical key like `set`; the S2.8 test drives `$r = 2` through
+        `set` rather than a private helper; two tests added, the shared
+        box reaching both holders and the refused box rolling back; four
+        doc corrections and the "five clauses" recount above. Left to
+        Edmond as a design question, below.
+      **Open for Edmond, found by the language critic and verified on
+        PHP 8.3.6:** a copy shares the box unconditionally, while Zend's
+        `zend_array_dup_element` unwraps a reference whose refcount is 1.
+        So `$a=['x'=>1]; $r=&$a['x']; unset($r); $b=$a; $b['x']=3;`
+        leaves `$a['x']` at 1 in PHP and at 3 here, and the same
+        divergence reaches S2.8's own criterion when the element was
+        already a reference. The crate follows `arrays-hashtable.md`
+        "Element states" and `values.md`, which both state the sharing
+        unconditionally, so this is the RFC's answer rather than a
+        defect in these steps — and the RFC is Edmond's. Not built, not
+        worked around.
 
 ### What the steps rest on, verified against the code
 
@@ -860,11 +984,14 @@ allocation no reserve funds, and the table's growth — and they leave
 different numbers of arrays behind. `memory::block_pool::FORCE_OOM` drives
 both; `array/table.rs` already uses it for a table allocation refusal.
 
-**S2.7 and S2.8 carry five clauses of `arrays-hashtable.md` "Element
+**S2.7 and S2.8 carry four clauses of `arrays-hashtable.md` "Element
 states"**: an element store writes through the box, taking the reference
-on a shared table separates first, a by-value read dereferences the box,
-the COW separator retains the box without recursing, and `escape_copy`
-treats it as identity-bearing. S2.7 builds against `Table::make_ref`,
+on a shared table separates first, the COW separator retains the box
+without recursing, and `escape_copy` treats it as identity-bearing. The
+fifth is the **iterator's** by-value dereference, and no iterator exists;
+this paragraph read it as a by-value *read*, which `element::get` does
+answer, so the count said five. Corrected 2026-08-08 by the language
+critic. S2.7 builds against `Table::make_ref`,
 which is `pub` and already boxes an element, so it does not wait on S2.8's
 separating wrapper. The write goes through `barrier::ref_store` rather
 than a plain store into the box's slot: `6afd220` moved the reference
@@ -1693,6 +1820,42 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
 ## Residual / carried-over items
 
 Memory manager, still open:
+
+- [ ] **Batch the cross-thread free, once a workload exists** — gated on
+  measurement, and the gate comes first. Today `Heap::free` posts each
+  foreign slot with its own CAS onto the owning block's `remote_free`
+  stack (`heap.rs:967`), and `buffer_arena::post_remote` does the same for
+  a chunk (`buffer_arena.rs:733`), so the cost is linear in items freed.
+  snmalloc gathers the same work into one message queue per owning
+  allocator and pays one atomic operation per batch instead
+  (`dev/RESEARCH.md`, 2026-08-08).
+
+  The shape, if it is ever wanted: stage foreign frees in a bounded
+  thread-local buffer with no atomics, group them by block on flush —
+  `ptr & !BLOCK_MASK`, one AND, and a 64 KiB block holds thousands of
+  slots, so a batch lands in a handful of blocks — link each group into a
+  chain through the dead slots themselves, and CAS each chain onto its
+  block's head once. No per-object memory: the links live in the freed
+  slots, as they do now. The staging buffer is the only new memory, one
+  fixed-size array per thread.
+
+  What it costs is not memory but **return latency**: freed memory
+  reaches its owner a batch late, so peak RSS rises by the batch, which
+  is a real change of behaviour in a runtime whose ordinary free is
+  immediate. A thread exiting with a staged batch must flush it or leak
+  it; `deferred_free::dispose` is the existing shape for that.
+
+  Removing the atomic entirely means a per-thread-pair SPSC ring
+  (`ck_ring`), which costs memory per pair. That is the trade snmalloc
+  declines, and so should we.
+
+  **Why not now.** Our CAS is already spread across blocks, which is
+  mimalloc's contention argument, so the win would be in the count of
+  atomic operations and not in contention. Nothing today drives the path:
+  the crate is single-mutator, and the only caller is
+  `heap.rs:2532`'s test plus whatever reaches the raw C ABI from another
+  thread. Order: a program that frees another thread's objects in bulk,
+  then a measurement, then this.
 
 - [x] **Grow a long-lived buffer in place off the bump top** — done
   2026-08-05, `3c25db8`. `buffer_ensure_longlived` moves the bump when

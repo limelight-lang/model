@@ -134,7 +134,13 @@ versions live in `docs/history/`, marked at the top.
   copy, the publication of an arena COW value or key, and the table's
   growth; `append` has a fourth that allocates nothing, an append cursor
   with no successor left. `get` never separates and reads a boxed element
-  through its box. Taking a reference is S2.8's.
+  through its box, and `make_ref` boxes one inside `write_through`, so
+  `&$a[k]` separates before it boxes and an absent key is created as null
+  first. A store into an element already in a reference state goes
+  **through** the box (`barrier::ref_store`), and a copy shares that box
+  rather than copying it — unconditionally, where PHP unwraps a box with
+  one holder, which is an open RFC question recorded beside S2.8 in
+  `PLAN.md`.
   `entity.rs` is the wrapper supplying the `RcHeader`: an array carries no
   class pointer, the same construction as a string, because the entity
   kind already says what it is. Its children — elements **and** string
@@ -307,6 +313,16 @@ Miri against a UNIX target. 2026-07-21: the barrier owns the whole slot
 and publishes it before teardown; a destructor is owed by the
 constructor, not the factory; a refused destructor record fails the
 creation; the store barrier is funded by a per-thread reserve.
+
+## Outside code
+
+`dev/RESEARCH.md` — what was read in other projects, at which revision,
+and what of it applies here. Entries so far: Concurrency Kit (the seqlock
+that found the version-bracket defect ahead of S2.7, the epoch proof,
+event counts, the per-bucket probe bound), `ankerl::unordered_dense` (the
+fingerprint byte, for the array-performance stage), mimalloc and snmalloc
+(the two answers to cross-thread free). Read it before evaluating one of
+those again.
 
 ## Diagrams
 
