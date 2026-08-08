@@ -16,15 +16,20 @@ pinned block's release, and the plan hygiene. What survives it is in
 test heavy enough to stop the Miri gate finishing) and the code's own
 doc blocks.
 
-**One verification is owed rather than done:** the whole-suite Miri run
-against S4. It is not part of the stage's criterion — `dev/WORKFLOW.md`
-keeps Miri beside the commit gate rather than inside it — and it stopped
-being a quarter-hour job: 86 tests in 28 minutes on 2026-08-08, against
-356 tests in 933 s measured four commits earlier, with the array
-module's own tests taking 19 minutes by themselves. Targeted runs over
-what S4 touched stand in until it lands. Whether a whole-suite run
-belongs at every stage or at a release is a question for Edmond that has
-not been put to him.
+**The whole-suite Miri run is done, in both configurations**, and it
+covers S4 and S5.1: rc-walk 384 passed, 0 failed, 7 ignored in 948 s;
+rc-trace 373 passed, 0 failed, 4 ignored in 724 s (2026-08-08, HEAD
+`6ab0bcf`). It is not part of a stage's criterion — `dev/WORKFLOW.md`
+keeps Miri beside the commit gate rather than inside it.
+
+**It is a quarter-hour job again, and the figure that said otherwise was
+one test.** The 28 minutes for 86 tests measured earlier that day was
+`a_deep_array_tears_down_without_the_machine_stack` dominating the run;
+its repair is in `dev/POSTMORTEM.md` under the same date, and the whole
+suite has cost 12 and 16 minutes since. So the question of whether such a
+run belongs at every stage or only at a release is cheap to answer either
+way, and it is still Edmond's: half an hour for both configurations buys
+the one class of defect no other tool in this crate can see.
 
 The stages below are in **work order, which is the file's order rather
 than the numbers' one**: a number is never reissued once given, so a stage
