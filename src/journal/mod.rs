@@ -57,11 +57,17 @@
 //! owes the allocator is freed there: its deferral backlog is gone by
 //! then, so an evicted ring waits for a live thread.
 //! `ll_thread_init` reopens a closed slot, so one OS thread running a
-//! pool's tasks journals each life into a ring of its own — and every
-//! self-initialising way back into the runtime runs that function, so a
-//! thread still raising events with its slot closed is one being used
-//! after `ll_thread_exit` outside the runtime's contract. The silence
-//! there is deliberate and goes unreported.
+//! pool's tasks journals each life into a ring of its own.
+//!
+//! **Completeness ends where the runtime's exit ends, and honesty does
+//! not.** A thread's own `thread_local!`s are destroyed after that exit
+//! wherever TLS goes in reverse registration order, so what they raise
+//! has no ring left to go in; the runtime's own handovers are drained
+//! inside the exit so as not to be among them, and everything else that
+//! arrives on a closed slot is counted and reported
+//! ([`Window::Lost`]). It is not saved: saving it would mean writing
+//! into a retired ring, which a quota may evict and another thread
+//! free.
 //!
 //! **A ring is named by identity, never by address, everywhere a name
 //! outlives the registry's lock.** The identity is a counter's next value
@@ -344,6 +350,22 @@ fn ring_of(registry: &Registry, thread: u64) -> Option<*mut Ring> {
         .find(|&ring| unsafe { (*ring).thread } == thread)
 }
 
+/// Records raised on a thread whose journaling had already ended, over
+/// the life of the process.
+///
+/// They are lost by construction and the count is the report: a thread's
+/// own TLS destructors run after `heap::ll_thread_exit` on any platform
+/// that destroys in reverse registration order, and what they raise has
+/// no ring to go in. The runtime's own handovers are drained inside the
+/// exit so that they are not among these (`heap::ll_thread_exit`); what
+/// is left is a user destructor registered before the runtime's, and a
+/// thread used past its exit.
+///
+/// A relaxed read-modify-write, on the one path that writes no record —
+/// §9.1's "no atomic RMW" is the write path's rule, and the threads
+/// contending here have stopped journaling.
+static LOST: AtomicU64 = AtomicU64::new(0);
+
 /// A ring this thread will never have. It is an address no allocation can
 /// return and is never dereferenced — the value exists only to be
 /// compared against, so that "not asked yet" and "asked and answered no"
@@ -394,6 +416,7 @@ pub fn record(kind: Kind, site: u32, subject: u64, a: u64, b: u64) {
 fn ring_for_writing() -> *mut Ring {
     let existing = RING.with(|cell| cell.get());
     if existing == CLOSED {
+        LOST.fetch_add(1, Ordering::Relaxed);
         return std::ptr::null_mut();
     }
     if !existing.is_null() {
@@ -606,6 +629,12 @@ pub struct Mark {
     /// difference: a thread refused before the window journals nothing
     /// inside it either.
     refusals: u64,
+    /// [`LOST`] at this moment. A difference, unlike the refusals: a
+    /// dropped record is a point event inside one window, and a
+    /// cumulative count would mark every later window as degraded by it —
+    /// "can tell" converted into "cannot tell", which is this module's
+    /// own rule broken in the mirror.
+    lost: u64,
     /// Which mark this is, so [`between`] can tell its two ends apart and
     /// date a ring's close against them.
     taken: u64,
@@ -635,6 +664,11 @@ pub enum Window {
     /// that way even when no ring is named, which is where an answer per
     /// ring cannot reach.
     Reversed,
+    /// Records raised inside this window on a thread whose journaling had
+    /// already ended, and therefore dropped. The count is the report:
+    /// they cannot be saved, since the ring is retired and a retired ring
+    /// is one a quota may evict and another thread free.
+    Lost { records: u64 },
     /// Threads left without a ring, in this process, ever — refused by the
     /// allocator, or unable to guarantee a ring's retirement. They
     /// have written nothing and are in no other answer, so a window that
@@ -662,6 +696,7 @@ pub fn mark() -> Mark {
                 positions,
                 evictions: registry.evicted,
                 refusals: registry.refused,
+                lost: LOST.load(Ordering::Relaxed),
                 taken,
             },
             take_pending(&mut registry),
@@ -724,6 +759,10 @@ pub fn between(start: &Mark, end: &Mark) -> Vec<Window> {
     let vanished = end.evictions.saturating_sub(start.evictions);
     if vanished > 0 {
         windows.push(Window::Evicted { rings: vanished });
+    }
+    let dropped = end.lost.saturating_sub(start.lost);
+    if dropped > 0 {
+        windows.push(Window::Lost { records: dropped });
     }
     if end.refusals > 0 {
         windows.push(Window::Refused {
@@ -979,16 +1018,23 @@ mod tests {
             "the thread retired a number of rings other than its one"
         );
 
-        // The post-exit record is not in it, and its silence is not
-        // reported: a thread raising events after `ll_thread_exit` is
-        // being used outside the runtime's contract, and that is the one
-        // silence at exit this module leaves unreported.
-        let subjects: Vec<u64> = events(between(&start, &end))
+        // The post-exit record is not in the ring, and it is not silent
+        // either: it is counted, because a window that carried neither
+        // the record nor a word about it would say the thread stopped
+        // after `BEFORE_EXIT`, which is not what happened.
+        let answers = between(&start, &end);
+        let subjects: Vec<u64> = events(answers.clone())
             .into_iter()
             .filter(|event| event.thread == identity)
             .map(|event| event.subject)
             .collect();
         assert_eq!(subjects, vec![BEFORE_EXIT]);
+        assert!(
+            answers
+                .iter()
+                .any(|window| matches!(window, Window::Lost { records } if *records >= 1)),
+            "the record raised after the exit was dropped without a word: {answers:?}"
+        );
     }
 
     /// A refused allocation closes the thread instead of queueing a
@@ -1223,12 +1269,14 @@ mod tests {
             positions: Vec::new(),
             evictions: 0,
             refusals: 0,
+            lost: 0,
             taken: 1,
         };
         let end = Mark {
             positions: Vec::new(),
             evictions: 0,
             refusals: 0,
+            lost: 0,
             taken: 2,
         };
         assert_eq!(between(&end, &start), vec![Window::Reversed]);
@@ -1349,6 +1397,85 @@ mod tests {
         let pending = std::mem::take(&mut locked().pending_free);
         free_rings(pending);
         let _ = evict_retired_ring(identity);
+    }
+
+    /// A record raised by a thread's *own* destructor after the runtime's
+    /// exit is either in the ring or counted as lost, and never neither.
+    ///
+    /// A `thread_local!` registered before `ll_thread_init` is destroyed
+    /// after the runtime's guard wherever TLS goes in reverse
+    /// registration order, which is where this crate's own comment puts
+    /// glibc — so the record arrives with the ring already retired. Which
+    /// of the two answers comes back is the platform's to decide; that
+    /// one of them does is this module's.
+    ///
+    /// The drop glue here is deliberate and is a test's own: the rule
+    /// against it (`dev/DECISIONS.md`, 2026-08-03) exists so that runtime
+    /// structures do not depend on TLS order, and this test depends on
+    /// nothing but its own cell.
+    #[test]
+    fn a_destructor_running_after_the_exit_is_recorded_or_counted() {
+        const LATE: u64 = 0x1A7E;
+        let _g = crate::memory::block_pool::test_guard();
+
+        struct RecordOnDrop;
+        impl Drop for RecordOnDrop {
+            fn drop(&mut self) {
+                record(2, 0, LATE, 0, 0);
+            }
+        }
+        thread_local! {
+            static LATE_CELL: RecordOnDrop = const { RecordOnDrop };
+        }
+
+        let start = mark();
+        std::thread::spawn(|| {
+            // Registered first, so destroyed last.
+            LATE_CELL.with(|_| {});
+            crate::memory::heap::ll_thread_init();
+            record(2, 0, 0, 0, 0);
+        })
+        .join()
+        .expect("the journaling thread panicked");
+        let end = mark();
+
+        let answers = between(&start, &end);
+        let recorded = events(answers.clone())
+            .into_iter()
+            .any(|event| event.subject == LATE);
+        let counted = answers
+            .iter()
+            .any(|window| matches!(window, Window::Lost { records } if *records >= 1));
+        assert!(
+            recorded || counted,
+            "a record after the exit was neither kept nor counted: {answers:?}"
+        );
+    }
+
+    /// The runtime's own block handovers are drained inside the exit, so
+    /// that they happen while there is still a ring to record them in.
+    /// What is left for the two destructors afterwards is nothing.
+    #[test]
+    fn the_exit_hands_back_the_reserve_and_the_block_cache_itself() {
+        let _g = crate::memory::block_pool::test_guard();
+        let (reserve, cache) = std::thread::spawn(|| {
+            crate::memory::heap::ll_thread_init();
+            // Something to hand back: the reserve is filled at init, and
+            // a small allocation and its free leave a block cached.
+            let p = unsafe { crate::memory::stdapi::ll_malloc(64) };
+            assert!(!p.is_null());
+            unsafe { crate::memory::stdapi::ll_free(p) };
+            crate::memory::heap::ll_thread_exit();
+            (
+                crate::memory::reserve::blocks_held(),
+                crate::memory::block_pool::thread_cache_len(),
+            )
+        })
+        .join()
+        .expect("the exiting thread panicked");
+
+        assert_eq!(reserve, 0, "the exit left blocks in the reserve");
+        assert_eq!(cache, 0, "the exit left blocks in the thread cache");
     }
 
     /// A thread that cannot arm its exit guard gets no ring: the guard is

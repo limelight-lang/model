@@ -8,6 +8,43 @@ never edited or deleted.
 
 ---
 
+## 2026-08-08 — the journal is complete to the exit's last act and honest past it
+
+Ruled by the Sage after the scoped pass over the retire-last redesign
+found the one thing that redesign's premise got wrong: the last act of
+`ll_thread_exit` is not the last act of the *thread*. A thread's own
+`thread_local!`s are destroyed after the runtime's guard wherever TLS goes
+in reverse registration order — which is where this crate already places
+glibc — so records raised there arrived on a closed slot, were dropped,
+and were counted nowhere: a window over that thread's death answered a
+complete list of records where the truth was that some were lost.
+
+**The runtime's own teardown events stop being post-exit at all.** The
+barrier reserve and the block pool's thread cache are drained by hand
+inside `ll_thread_exit`, before the ring retires, rather than left to
+their `Drop` impls. Both structures are alive there, and their handovers
+are a default event kind, so once the record sites exist those events land
+in the ring. The `Drop` impls stay as the fallback for a thread that never
+ran the exit — the pool serves threads this runtime never initialised —
+and on the contract path they find nothing left to hand back. This also
+retires the standing exception to the 2026-08-03 rule that every
+per-thread structure reachable from thread exit is disposed by hand.
+
+**What still arrives on a closed slot is counted**, by one relaxed
+read-modify-write on the branch that writes no record, and reported as
+`Window::Lost`. Not saved: saving would mean writing into a retired ring,
+which the quota may evict and another thread free, and that is the
+raw-pointer-across-teardown defect this module has already paid for. The
+count is a **difference** between two marks rather than a running total —
+a dropped record is a point event inside one window, and a cumulative
+count would degrade every later window, converting "can tell" into
+"cannot tell" in the mirror direction.
+
+So the contract is two-part and the parts are named: **complete** to the
+last act of the runtime's exit, **honest** past it.
+
+---
+
 ## 2026-08-08 — the journal's ring retires last, and closing is an instant
 
 Supersedes the same day's "closing is an interval", which this entry

@@ -603,6 +603,15 @@ The hunt turned on the finding that no string died inside the window, and
 a silent eviction converts that finding into a false one. An empty answer
 is worth having only if it can be trusted.
 
+It covers the records that arrived after their thread's journal ended,
+which are dropped by construction — the ring is retired, and a retired
+ring is one the quota may evict and another thread free, so writing into
+it is the defect this design has already paid for once. The count of them
+is a **difference** between the two marks, not a running total: a dropped
+record is a point event inside one window, and a cumulative count would
+mark every later window as degraded by it, which is this section's rule
+broken in the mirror.
+
 It covers the thread that was **refused** a ring, which is in no window at
 all and cannot be: it has no ring to be in. The registry counts refusals
 and every window carries the count, because the difference between "these
@@ -664,7 +673,13 @@ under a thread already gone, and that was the only argument for retiring
 it earlier.
 
 **Retirement closes the cell rather than emptying it**, and the thread
-journals nothing afterwards.
+journals nothing afterwards. What it *raises* afterwards is counted: a
+thread's own `thread_local!`s are destroyed after the runtime's exit
+wherever TLS goes in reverse registration order, and a record arriving
+there has no ring left. So completeness ends at the exit's last act and
+honesty continues past it — the count is the report (§9.3), and the
+runtime's own block handovers are drained inside the exit rather than
+left to those destructors, so that they are not among the losses.
 
 **`ll_thread_init` reopens what an exit closed.** One OS thread is a
 sequence of thread *lives* when a pool runs init and exit per task, and

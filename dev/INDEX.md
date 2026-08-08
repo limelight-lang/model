@@ -200,9 +200,12 @@ versions live in `docs/history/`, marked at the top.
   retried, though it **is** counted: a refused thread is in no window, and
   the count is what keeps its silence from reading as inactivity. The
   ring is retired by the **last act** of `ll_thread_exit`, after every
-  step of the teardown, so a `__destruct` body's records and the heap
-  drop's block frees are all inside it and a window over a thread's death
-  is complete. `ll_thread_init` reopens the cell, so a pool thread's
+  step of the teardown — the reserve and the pool's thread cache are
+  drained there by hand rather than by their own destructors, which run
+  later — so a `__destruct` body's records and every block handover are
+  inside it and a window over a thread's death is complete. Past that act
+  completeness ends and honesty does not: a record arriving on a closed
+  slot is counted and reported as `Lost`. `ll_thread_init` reopens the cell, so a pool thread's
   second life journals into a ring of its own. An evicted ring is freed by
   the next thread to journal or to mark, never by one inside its own exit,
   whose parked backlog is gone by then — the three-valued

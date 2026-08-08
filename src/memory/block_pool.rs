@@ -205,11 +205,44 @@ struct ThreadCache {
 }
 
 impl Drop for ThreadCache {
-    /// A dying thread must not take cached blocks with it.
+    /// The fallback for a thread that never ran `ll_thread_exit` — this
+    /// pool serves threads the runtime never initialised. On the contract
+    /// path [`drain_thread_cache`] has already emptied this.
+    ///
+    /// A dying thread must not take cached blocks with it either way.
     fn drop(&mut self) {
         for &block in &self.blocks {
             GLOBAL_POOL.push_global(block);
         }
+    }
+}
+
+/// How many blocks this thread's cache holds. Tests only.
+#[cfg(test)]
+pub(crate) fn thread_cache_len() -> usize {
+    THREAD_CACHE
+        .try_with(|cache| cache.borrow().blocks.len())
+        .unwrap_or(0)
+}
+
+/// Flush this thread's cached blocks to the global list, by hand, while
+/// the thread still exists.
+///
+/// Called from `heap::ll_thread_exit` before the journal's ring retires,
+/// so that the handovers land inside the ring rather than after it: a
+/// block going back to the pool is a default event kind
+/// (`dev/design/debug-modes.md` §9.5), and this cell's destructor runs
+/// after the exit wherever TLS is destroyed in reverse registration
+/// order.
+///
+/// `try_with`, because it can be reached from a destructor after this
+/// cell's own has run. Idempotent: a flushed cache flushes nothing.
+pub(crate) fn drain_thread_cache() {
+    let blocks = THREAD_CACHE
+        .try_with(|cache| std::mem::take(&mut cache.borrow_mut().blocks))
+        .unwrap_or_default();
+    for block in blocks {
+        GLOBAL_POOL.push_global(block);
     }
 }
 

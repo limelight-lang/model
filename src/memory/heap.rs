@@ -1612,6 +1612,19 @@ pub extern "C" fn ll_thread_exit() {
 /// The phase is stamped here rather than by the caller, so that the two
 /// paths out of the exit cannot disagree about it.
 fn retire_the_journal() {
+    // The two per-thread caches are handed back here rather than by their
+    // own destructors, which run *after* this function wherever TLS is
+    // destroyed in reverse registration order — `ll_thread_init` touches
+    // both before it arms the guard, so on glibc the guard goes first.
+    // A block returning to the pool is a default event kind
+    // (`dev/design/debug-modes.md` §9.5), and after the retirement below
+    // there is no ring to put one in. The reserve first: its route back
+    // is `BlockPool::put`, which can push into the cache the next call
+    // flushes.
+
+    crate::memory::reserve::drain();
+    crate::memory::block_pool::drain_thread_cache();
+
     crate::journal::retire_thread_ring();
     EXIT_PHASE.with(|phase| phase.set(ExitPhase::Exited));
 }

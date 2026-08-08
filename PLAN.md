@@ -189,6 +189,28 @@ ring written by hand, and the gate is green with the feature on and off.
         past its exit frees nothing; and a reversed pair answers
         `Window::Reversed`, one answer of its own, before any ring is
         walked. Four regression tests, each seen failing.
+      Critic 2026-08-08 round 6, scoped to the redesign: one
+        contract-class defect, at the far end of the path the redesign
+        reasoned about. `ll_thread_exit`'s last act is not the thread's:
+        a `thread_local!` registered before `ll_thread_init` is destroyed
+        after the runtime's guard, so what it raises finds a closed slot,
+        is dropped, and is counted nowhere — a window over that thread's
+        death answers a complete list of records. The state machine
+        itself it could not break.
+      Sage 2026-08-08 (third ruling): split the silence. The runtime's
+        own handovers stop being post-exit — the barrier reserve and the
+        pool's thread cache are drained inside the exit, before the ring
+        retires, rather than left to their destructors — and everything
+        still arriving on a closed slot is **counted** and reported
+        (`Window::Lost`, a difference between marks, not a total). Not
+        saved: saving means writing into a retired ring, which is the
+        defect already paid for. The contract is two-part — complete to
+        the last act of the runtime's exit, honest past it. A seventh
+        scoped pass runs over this batch; the step closes on the
+        stage-end Code Reviewer only if that pass confirms nothing of the
+        class. Final; `dev/DECISIONS.md`.
+      Fixed 2026-08-08 round 6: the two drains, the counter, `Mark.lost`
+        and `Window::Lost`; three regression tests, each seen failing.
 - [x] S5.1a Take the journal to the Sage before S5.2 builds on it
       done: he has ruled on how many rounds a module of this shape gets,
         and on the residue named below
@@ -225,6 +247,17 @@ ring written by hand, and the gate is green with the feature on and off.
         opened during TLS teardown would never be retired.
 - [ ] S5.2 Record sites for the default event set, behind the
       `debug-journal` feature
+      Sage 2026-08-08, before the step opens: §9.7 stands and
+        `BlockPool::put` moves instead. It holds the thread cache's
+        `borrow_mut` across `push_global`, so a decommission site there
+        whose record is some thread's first re-enters the cache through
+        `ll_malloc` and aborts on the borrow. Narrow the borrow: decide
+        and stage under it — the overflow drain copies into a fixed stack
+        array, bounded by `THREAD_CACHE_CAPACITY / 2 + 1` — end it, then
+        push to the global list, and put the site at `put`'s tail with
+        nothing held. `put` is the single door for the event; the
+        commissioning site goes at `get`'s tail. This code motion belongs
+        to this step's batch.
       done: with the feature off no record site appears in the release
         IR, counted over the emitted IR because the clock on this box
         cannot resolve the difference; §9.6's two-arm measurement is

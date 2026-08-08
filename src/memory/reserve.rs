@@ -50,13 +50,39 @@ struct Reserve {
 }
 
 impl Drop for Reserve {
-    /// A dying thread must not take the blocks with it — same rule as
-    /// the pool's thread cache, and the reserve is pure spare memory, so
-    /// there is nothing to decide here.
+    /// The fallback for a thread that never ran `ll_thread_exit` — the
+    /// pool serves threads this runtime never initialised. On the
+    /// contract path [`drain`] has already emptied this, so the loop
+    /// finds nothing.
+    ///
+    /// A dying thread must not take the blocks with it either way — same
+    /// rule as the pool's thread cache, and the reserve is pure spare
+    /// memory, so there is nothing to decide here.
     fn drop(&mut self) {
         for &block in &self.blocks {
             BlockPool::global().put(block);
         }
+    }
+}
+
+/// Give the reserve's blocks back to the pool, by hand, while the thread
+/// still exists.
+///
+/// Called from `heap::ll_thread_exit` before the journal's ring retires,
+/// so that the handovers are inside the ring rather than after it: a
+/// block going back to the pool is a default event kind
+/// (`dev/design/debug-modes.md` §9.5), and a TLS destructor runs after
+/// the exit on any platform that destroys in reverse registration order,
+/// which is where this cell sits (`heap::ll_thread_exit`).
+///
+/// `try_with`, because it can be reached from a destructor after this
+/// cell's own has run. Idempotent: a drained reserve drains to nothing.
+pub(crate) fn drain() {
+    let blocks = RESERVE
+        .try_with(|reserve| std::mem::take(&mut reserve.borrow_mut().blocks))
+        .unwrap_or_default();
+    for block in blocks {
+        BlockPool::global().put(block);
     }
 }
 
@@ -127,16 +153,12 @@ pub(crate) fn blocks_held() -> usize {
 }
 
 /// Tests only: give the blocks back and forget them, so a test that
-/// exhausts the pool starts from a known state.
+/// exhausts the pool starts from a known state. The giving back is
+/// [`drain`]'s; what is test-only is forgetting that a block was drawn.
 #[cfg(test)]
 pub(crate) fn drain_for_test() {
-    RESERVE.with(|r| {
-        let mut r = r.borrow_mut();
-        for block in r.blocks.drain(..) {
-            BlockPool::global().put(block);
-        }
-        r.drawn = false;
-    });
+    drain();
+    RESERVE.with(|r| r.borrow_mut().drawn = false);
 }
 
 #[cfg(test)]
