@@ -603,25 +603,6 @@ The hunt turned on the finding that no string died inside the window, and
 a silent eviction converts that finding into a false one. An empty answer
 is worth having only if it can be trusted.
 
-The rule covers the ring that has *closed* as well. A retired ring stops
-where its thread's exit left it, and the thread does not stop there
-(§9.4): between the retirement and the end of that exit it goes on raising
-events into a ring it can no longer write. So closing is an **interval**,
-marked at both ends, and the window that overlaps it answers "the ring
-closed here" and carries the records it does have. One instant would not
-do — a window opened after the retirement and closed before the thread
-finished would find an empty range and report that the thread did
-nothing, which is the conversion this section exists to prevent. An empty list of records under
-that answer says the thread stopped telling; an empty list under `Records`
-says the thread did nothing, and the two must not be spelled the same way.
-
-A close is dated in marks, not in the ring's own cursor: marks are the
-only clock a window has, and a cursor-dated close re-dates itself every
-time a thread exits — a window that was complete when it was read turns
-into a closed one afterwards, and an answer that changes under the reader
-stops meaning anything. A window *after* the close carries records
-truthfully, since a thread that lives on gets a new ring (§9.4).
-
 It covers the thread that was **refused** a ring, which is in no window at
 all and cannot be: it has no ring to be in. The registry counts refusals
 and every window carries the count, because the difference between "these
@@ -672,16 +653,18 @@ order is unspecified. The ring is disposed explicitly from
 `heap::ll_thread_exit`, and it goes **last** in that fixed order, since
 everything disposed before it is worth journaling.
 
-**The exit stamps the ring twice**, once when it hands it over and once
-when the thread is done, and the pair is what a window reports against.
+**Retirement is the exit's last act**, after every step of the teardown.
+Everything above it is worth journaling — the `__destruct` bodies the
+first step runs, and the block frees of the heap teardown, which are a
+default event kind (§9.5) — so nothing a dying thread does inside the
+contract goes unrecorded, and a window over its death is complete rather
+than merely honest about a gap. The position costs nothing: the ring
+stays in the thread's cell until the call, so no second ring can open
+under a thread already gone, and that was the only argument for retiring
+it earlier.
 
-**Retirement closes the cell rather than emptying it.** Last of the exit
-sequence is not last on the thread: the heap teardown that follows frees
-blocks, which is a default event kind (§9.5), and a record from there
-would open a second ring under a thread already gone — one nothing ever
-retires, and one that puts the leak on the list R does not bound. Those
-events are lost, and the window says so rather than reporting none
-(§9.3).
+**Retirement closes the cell rather than emptying it**, and the thread
+journals nothing afterwards.
 
 **`ll_thread_init` reopens what an exit closed.** One OS thread is a
 sequence of thread *lives* when a pool runs init and exit per task, and

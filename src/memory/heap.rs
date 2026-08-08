@@ -1512,11 +1512,11 @@ mod tls {
 /// Idempotent, and safe to call on a thread that never allocated.
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_exit() {
-    // Raised for the whole sequence and lowered by the next
-    // `ll_thread_init`: from here this thread may not free anything whose
-    // release can be parked, because step 3 below disposes the backlog a
-    // park needs and nothing rebuilds it (`thread_may_free`).
-    EXIT_RUNNING.with(|running| running.set(true));
+    // From here this thread may not free anything whose release can be
+    // parked, because step 3 below disposes the backlog a park needs and
+    // nothing rebuilds it (`thread_may_free`). It also tells a structure
+    // built between here and the end that this sequence will dispose it.
+    EXIT_PHASE.with(|phase| phase.set(ExitPhase::Exiting));
 
     // Thread exit owns the order in which this thread's runtime state
     // goes away, and owns it *explicitly*, because TLS destructor order
@@ -1575,20 +1575,11 @@ pub extern "C" fn ll_thread_exit() {
     //    thread, so nothing below needs it.
     crate::memory::buffer_arena::dispose();
 
-    // 6. The journal's ring, last of all: everything disposed above is
-    //    worth journaling, and the ring is handed to the registry rather
-    //    than freed, so it stays readable after this thread is gone
-    //    (`journal.rs`). Nothing below it is needed for that — a ring is
-    //    one pooled block, so an evicted one goes back to the global pool
-    //    rather than through this thread's heap. What the call does need
-    //    from its position is the opposite direction: it closes this
-    //    thread's slot, so the block frees below journal nothing and no
-    //    second ring is opened under a thread that has exited.
-    crate::journal::retire_thread_ring();
-
+    // 6 is the last act of this function rather than the sixth of six,
+    //    and `retire_the_journal` says why.
     let p = tls::get_raw();
     if p.is_null() {
-        crate::journal::finish_thread();
+        retire_the_journal();
         return;
     }
     // Clear the slot first: `abandon_all` must not be re-entered, and any
@@ -1603,12 +1594,26 @@ pub extern "C" fn ll_thread_exit() {
     // reclaims them identically.
     unsafe { drop(Box::from_raw(p as *mut ThreadHeaps)) };
 
-    // 7. The journal is told the thread is done. Between step 6 and here
-    //    the teardown above raised events into a closed ring — block
-    //    decommissioning is a default event kind — and a window over that
-    //    interval has to report the loss rather than an empty list of
-    //    records (`journal::finish_thread`).
-    crate::journal::finish_thread();
+    retire_the_journal();
+}
+
+/// Step 6, and the last act of [`ll_thread_exit`] on either path: the
+/// journal's ring is handed to the registry, which keeps it readable
+/// after this thread is gone (`journal.rs`).
+///
+/// **Last, not sixth of seven.** Everything above it is worth journaling,
+/// the block frees of the heap teardown included — those are a default
+/// event kind — and a ring retired before them would be closed while its
+/// owner still had events to raise. The position costs nothing: the ring
+/// stays in this thread's cell until the call, so no second ring can open
+/// under it, and an evicted ring goes back to the process-global pool
+/// rather than through a heap this function has just dropped.
+///
+/// The phase is stamped here rather than by the caller, so that the two
+/// paths out of the exit cannot disagree about it.
+fn retire_the_journal() {
+    crate::journal::retire_thread_ring();
+    EXIT_PHASE.with(|phase| phase.set(ExitPhase::Exited));
 }
 
 /// The two heap instances a thread owns: raw C-ABI allocations and GC
@@ -1744,46 +1749,77 @@ pub extern "C" fn ll_thread_init() {
         // run leaves it on the live list for the life of the process,
         // where every later window reads it as a live thread doing
         // nothing.
-        EXIT_RUNNING.with(|running| running.set(false));
-        if exit_guard_armed() {
-            crate::journal::reopen_thread();
+        // A heap rebuilt in the middle of an exit is that exit repairing
+        // itself — a destructor allocating on the way out — and not a new
+        // life. Lowering the phase there would tell every caller below
+        // that this thread may free again, on a thread whose deferral
+        // backlog is already gone.
+        if !thread_exit_running() {
+            EXIT_PHASE.with(|phase| phase.set(ExitPhase::Live));
+            if exit_guard_armed() {
+                crate::journal::reopen_thread();
+            }
         }
     }
 }
 
+/// Where a thread stands with respect to its own teardown.
+///
+/// Three states rather than a flag, because the three answer differently
+/// and a boolean made two of them one: a heap rebuilt in the middle of an
+/// exit is the teardown repairing itself, and a heap built after one is a
+/// new life on the same OS thread.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExitPhase {
+    /// No exit has begun. The thread may free, and what retires its
+    /// per-thread structures is the guard.
+    Live,
+    /// Inside [`ll_thread_exit`]. Its own steps are the teardown, so
+    /// anything built here is disposed by the sequence in progress — and
+    /// nothing may be freed, the deferral backlog being disposed within
+    /// it and never rebuilt.
+    Exiting,
+    /// The exit has run. Nothing will dispose what is built now, and
+    /// nothing may be freed either.
+    Exited,
+}
+
 thread_local! {
-    /// Set while this thread is inside [`ll_thread_exit`], and left set
-    /// afterwards: a thread that has run its exit is a thread whose
-    /// runtime state is gone. [`ll_thread_init`] lowers it, that being
-    /// where a new life begins.
-    ///
-    /// A `Cell<bool>` with no drop glue, under the rule every per-thread
-    /// structure reachable from thread exit obeys (`dev/DECISIONS.md`,
-    /// 2026-08-03).
-    static EXIT_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// This thread's [`ExitPhase`]. A `Cell` with no drop glue, under the
+    /// rule every per-thread structure reachable from thread exit obeys
+    /// (`dev/DECISIONS.md`, 2026-08-03).
+    static EXIT_PHASE: std::cell::Cell<ExitPhase> = const { std::cell::Cell::new(ExitPhase::Live) };
 }
 
 /// Whether this thread may still hand memory back.
 ///
-/// `false` from the moment [`ll_thread_exit`] begins. The deferral
-/// backlog a parked free needs is disposed inside that sequence and
-/// nothing rebuilds it, so a free arriving afterwards is parked onto a
-/// list that is dropped unreleased — the memory is leaked rather than
-/// returned. A caller holding memory to give back at that point must
+/// `false` from the moment [`ll_thread_exit`] begins, and afterwards. The
+/// deferral backlog a parked free needs is disposed inside that sequence
+/// and nothing rebuilds it, so a free arriving from then on is parked
+/// onto a list that is dropped unreleased — the memory is leaked rather
+/// than returned. A caller holding memory to give back at that point must
 /// leave it for another thread.
 pub(crate) fn thread_may_free() -> bool {
-    !EXIT_RUNNING.with(|running| running.get())
+    EXIT_PHASE.with(|phase| phase.get()) == ExitPhase::Live
+}
+
+/// Whether this thread is inside its own [`ll_thread_exit`].
+///
+/// What is built here is disposed by the steps still to run, so a caller
+/// needs neither the guard nor an initialisation of its own — and must
+/// not reach for either, since `ll_thread_init` in the middle of an exit
+/// rebuilds the heap the exit has torn down.
+pub(crate) fn thread_exit_running() -> bool {
+    EXIT_PHASE.with(|phase| phase.get()) == ExitPhase::Exiting
 }
 
 /// Whether something will run this thread's teardown.
 ///
-/// True while an exit is in progress — that exit is the teardown, and it
-/// has not reached the steps that dispose per-thread structures yet — and
-/// otherwise whatever [`exit_guard_armed`] says. A caller building a
-/// per-thread structure that thread exit is supposed to dispose of asks
-/// this first: under a `false` nothing will ever dispose it.
+/// A caller building a per-thread structure that thread exit is supposed
+/// to dispose of asks this first: under a `false` nothing will ever
+/// dispose it.
 pub(crate) fn thread_exit_will_run() -> bool {
-    EXIT_RUNNING.with(|running| running.get()) || exit_guard_armed()
+    thread_exit_running() || exit_guard_armed()
 }
 
 /// Arm this thread's exit guard, and report whether it is armed.

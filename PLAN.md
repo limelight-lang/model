@@ -160,6 +160,26 @@ ring written by hand, and the gate is green with the feature on and off.
         backlog already disposed and never freed. And a reversed pair of
         marks naming no ring at all still answered the empty list, the
         per-ring check having nothing to run over.
+      Critic 2026-08-08 round 5, scoped to round 4's repairs: one
+        contract-class defect, and it fired the ruling's last clause.
+        `finish_thread` stored through a raw ring pointer parked in a
+        thread-local across the whole heap teardown; `RETIRED_KEPT`
+        retirements inside that gap evict the ring, a live thread frees
+        it, and the store lands in a pooled block already handed on. The
+        critic reproduced the corruption in a scratch copy. Two
+        consecutive scoped passes confirming contract-class defects, so
+        the module went back to the Sage rather than to a sixth pass.
+      Sage 2026-08-08 (second ruling): the shape is refuted by **one
+        misplaced instant** rather than by its state count. The ring
+        retired at step 6, before the teardown whose events it exists to
+        catch, and everything built afterwards — the second stamp, the
+        parked pointer, the close-as-interval, `Window::Closed` — is
+        compensation for that. Retirement moves to the exit's last act
+        and the compensation is deleted, not repaired; the exit's phase
+        becomes three-valued, a boolean having conflated a heap rebuilt
+        mid-exit with a new life on a pooled thread — which was a live
+        defect no pass had reached. Final; recorded in `dev/DECISIONS.md`
+        superseding the same day's close-as-interval entry.
       Fixed 2026-08-08 round 4: the ring is stamped twice — at retirement
         and at the end of `ll_thread_exit` (`journal::finish_thread`,
         step 7) — and a window overlapping the pair answers `Closed`;

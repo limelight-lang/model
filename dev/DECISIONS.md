@@ -8,6 +8,48 @@ never edited or deleted.
 
 ---
 
+## 2026-08-08 — the journal's ring retires last, and closing is an instant
+
+Supersedes the same day's "closing is an interval", which this entry
+deletes the machinery of rather than refining. Ruled by the Sage after two
+scoped critic passes over that machinery each confirmed a contract-class
+defect, the second of them a store through a raw ring pointer parked in a
+thread-local across the whole heap teardown — reproducible corruption of a
+block the allocator had already handed on.
+
+**One misplaced instant explains all of it.** The ring was retired at step
+6 of `ll_thread_exit`, *before* the heap teardown whose events it exists
+to catch. Everything built afterwards — a second stamp on the ring, a
+thread-local carrying its address between the two, a window answer for
+the interval between them — was compensation for that ordering, and each
+piece of the compensation carried its own defect.
+
+Retirement moves to the exit's last act. Nothing a dying thread does
+inside the contract goes unrecorded then, so a window over a thread's
+death is *complete* rather than honest about a gap, and there is no name
+to carry across the teardown because there is nothing left to stamp after
+it. The design's own argument for the early position — that a record
+raised later would open a second ring under a thread already gone — does
+not survive inspection: the ring stays in the thread's cell until the
+retirement runs, and no second ring can open while it is there.
+
+**The exit's phase is three-valued** (`heap::ExitPhase`), because a
+boolean conflated a heap rebuilt in the middle of an exit with a heap
+built for a new life on a pooled thread. Under the boolean, a first record
+raised by a `__destruct` in step 1 called `ll_thread_init`, which lowered
+the flag mid-exit and told every later caller the thread could free again
+— the same defect the previous entry's repair had just closed, through a
+door no pass had opened. A thread inside its own exit now needs neither
+initialisation nor an armed guard to journal: the retirement still to run
+is its guarantee.
+
+What the position costs, named: the teardown's own events occupy ring
+slots and can lap the records before them. The overflow answer reports
+that honestly, and the hypothesis this journal was built for is about a
+finishing thread — those are the records it wants.
+
+---
+
 ## 2026-08-08 — a review cycle ends on scope and class, not on a silent pass
 
 Ruled by the Sage the same day, after step S5.1's three independent critic

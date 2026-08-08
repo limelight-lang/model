@@ -46,15 +46,16 @@
 //! ([`Window::Refused`]).
 //!
 //! Rings outlive their threads, because a thread's records matter most
-//! once it is gone. At exit the ring is handed to the registry's retired
-//! list, which keeps the most recent [`RETIRED_KEPT`], and the thread's
-//! slot is closed the same way a refusal closes it. **Closing is an
-//! interval and not an instant**: what the thread raises between the
-//! retirement and the end of its exit — the heap teardown, which
-//! decommissions blocks — is lost, so a window overlapping that interval
-//! answers [`Window::Closed`] rather than an empty list of records.
-//! Nothing this thread still owes is freed there either: its deferral
-//! backlog is gone by then, so an evicted ring waits for a live thread.
+//! once it is gone. **The ring is retired by the last act of
+//! `heap::ll_thread_exit`**, after every step of the teardown — the
+//! `__destruct` bodies of step 1 and the block frees of the heap drop
+//! alike — so nothing a dying thread does inside the contract goes
+//! unrecorded, and a window over its death is complete rather than
+//! confessed. The ring is handed to the registry's retired list, which
+//! keeps the most recent [`RETIRED_KEPT`], and the thread's slot is
+//! closed the same way a refusal closes it. Nothing this thread still
+//! owes the allocator is freed there: its deferral backlog is gone by
+//! then, so an evicted ring waits for a live thread.
 //! `ll_thread_init` reopens a closed slot, so one OS thread running a
 //! pool's tasks journals each life into a ring of its own — and every
 //! self-initialising way back into the runtime runs that function, so a
@@ -117,11 +118,6 @@ pub type Kind = u32;
 /// The unset kind, and the reason a fresh ring reads as empty.
 pub const KIND_UNSET: Kind = 0;
 
-/// A ring whose owner may still write to it, in [`Ring::closed_after`].
-/// No mark count reaches it: a window's two ends are two marks, so
-/// `u64::MAX` of them is the same impossibility as `u64::MAX` records.
-const OPEN: u64 = u64::MAX;
-
 /// One event, 32 bytes and fixed width — the ring is an array and the
 /// cursor is an index into it, and a reader walking backwards from the
 /// cursor cannot walk a variable-width record from that end.
@@ -178,28 +174,6 @@ pub struct Ring {
     /// registry's lock and before the ring is reachable from it, so a
     /// reader that found the ring found the identity too.
     thread: u64,
-    /// How many marks had been taken when this ring closed, or [`OPEN`]
-    /// while its owner may still write. A closed ring is not an idle one:
-    /// its thread goes on tearing down heaps after retirement
-    /// (`heap::ll_thread_exit`), and those events are raised with nowhere
-    /// to put them — so the window that *contains* the close answers
-    /// [`Window::Closed`] rather than a plain list of records.
-    ///
-    /// Marks rather than the ring's own cursor, because a window is
-    /// bounded by marks: dating the close by the cursor it stopped at
-    /// re-dates it whenever a thread exits, and a window that was
-    /// complete when it was read turns into a closed one afterwards.
-    ///
-    /// Plain, like `thread`: written under the registry's lock and read
-    /// under it, and no other path touches it.
-    closed_after: u64,
-    /// How many marks had been taken when this ring's owner finished, or
-    /// [`OPEN`] while it has not. Between the close and this the thread
-    /// was still raising events into a ring it could no longer write —
-    /// the heap teardown below step 6 of `heap::ll_thread_exit` — so the
-    /// two together are the interval a window has to report as closed,
-    /// and one instant is not enough to bound it.
-    finished_after: u64,
     records: [Record; CAPACITY],
 }
 
@@ -396,11 +370,6 @@ thread_local! {
     /// so a record site reached from inside the allocator finds no ring
     /// and returns instead of recursing (§9.7, "no re-entry").
     static ALLOCATING: Cell<bool> = const { Cell::new(false) };
-
-    /// The ring this thread retired, between [`retire_thread_ring`] and
-    /// [`finish_thread`]. Null outside that interval, and null again
-    /// afterwards — the ring belongs to the registry from then on.
-    static RETIRING: Cell<*mut Ring> = const { Cell::new(std::ptr::null_mut()) };
 }
 
 /// Record one event on this thread's ring, allocating the ring on first
@@ -439,28 +408,31 @@ fn ring_for_writing() -> *mut Ring {
     // would allocate a second ring and re-enter the registry's lock,
     // which is not reentrant.
     ALLOCATING.with(|cell| cell.set(true));
-    // A thread can reach a record site without ever having initialised
-    // the runtime: the ring is larger than a heap slot, so its allocation
-    // takes the large path and touches no thread heap. Without this the
-    // exit guard is never registered and the ring stays on the live list
-    // for the life of the process. Idempotent, and inside the guard
-    // because it allocates.
-    crate::memory::heap::ll_thread_init();
-    // No ring is opened on a thread whose retirement is not guaranteed.
-    // What retires one is `ll_thread_exit`, reached either through the
-    // guard `ll_thread_init` arms or because an exit is already running —
-    // a record raised by a `__destruct` body inside step 1 is the death
-    // of a *finishing* thread, which is the hypothesis this journal was
-    // built for, and step 6 of that same call will retire its ring. What
-    // is left out is the thread whose guard cannot be armed at all,
-    // because TLS teardown has destroyed the slot. A ring opened there is
-    // retired by nothing and stays on the live list for the life of the
-    // process, where every later window reads it as a live thread doing
-    // nothing: a standing false *none*, and a leak with it.
-    if !crate::memory::heap::thread_exit_will_run() {
-        close_this_thread();
-        ALLOCATING.with(|cell| cell.set(false));
-        return std::ptr::null_mut();
+    // A thread inside its own exit needs neither of the two calls below.
+    // Its retirement is the step still to run, so nothing has to be armed
+    // for it — and `ll_thread_init` there would rebuild the heap that
+    // exit has just torn down and tell every later caller the thread may
+    // free again. A record raised by a `__destruct` body in step 1 is the
+    // death of a *finishing* thread, which is the hypothesis this journal
+    // was built for, so it gets its ring.
+    if !crate::memory::heap::thread_exit_running() {
+        // A thread can reach a record site without ever having
+        // initialised the runtime: the ring is larger than a heap slot,
+        // so its allocation takes the large path and touches no thread
+        // heap. Without this the exit guard is never registered.
+        // Idempotent, and inside the guard because it allocates.
+        crate::memory::heap::ll_thread_init();
+        // No ring is opened on a thread whose retirement is not
+        // guaranteed. A ring opened where the guard cannot be armed —
+        // TLS teardown has destroyed the slot — is retired by nothing and
+        // stays on the live list for the life of the process, where every
+        // later window reads it as a live thread doing nothing: a
+        // standing false *none*, and a leak with it.
+        if !crate::memory::heap::thread_exit_will_run() {
+            close_this_thread();
+            ALLOCATING.with(|cell| cell.set(false));
+            return std::ptr::null_mut();
+        }
     }
     let fresh = allocate_ring();
     if fresh.is_null() {
@@ -504,8 +476,6 @@ fn register_ring(ring: *mut Ring) -> Vec<*mut Ring> {
     registry.next_thread += 1;
     unsafe {
         (&raw mut (*ring).thread).write(registry.next_thread);
-        (&raw mut (*ring).closed_after).write(OPEN);
-        (&raw mut (*ring).finished_after).write(OPEN);
     }
     registry.live.push(ring);
     take_pending(&mut registry)
@@ -570,44 +540,13 @@ pub fn retire_thread_ring() {
     if ring.is_null() || ring == CLOSED {
         return;
     }
-    RETIRING.with(|cell| cell.set(ring));
     retire_ring(ring);
-}
-
-/// Tell the journal this thread has finished, closing the interval its
-/// retirement opened.
-///
-/// Called from the **end** of `heap::ll_thread_exit`, on every path out
-/// of it. Between [`retire_thread_ring`] and this call the thread goes on
-/// raising events — the heap teardown that follows step 6 decommissions
-/// blocks, a default event kind — into a ring it can no longer write, and
-/// a window over that interval has to report the loss. One instant does
-/// not bound it: a mark taken between the two would otherwise find a
-/// closed ring, an empty range, and answer that the thread did nothing
-/// while it was in fact losing records.
-pub fn finish_thread() {
-    let ring = RETIRING.with(|cell| cell.replace(std::ptr::null_mut()));
-    if ring.is_null() {
-        return;
-    }
-    // Under the lock, which is what a reader takes to read it. Nothing
-    // is freed here: this thread is inside its own exit, and what it
-    // owes the allocator waits for a live one (`take_pending`).
-    let registry = locked();
-    unsafe { (&raw mut (*ring).finished_after).write(registry.marks) };
 }
 
 /// Move one ring from the live list to the retired one, closing it, and
 /// leave whatever the quota pushes off the end for a live thread.
 fn retire_ring(ring: *mut Ring) {
     let mut registry = locked();
-    // The mark counter is the only clock a window has, so a close is
-    // dated in marks: a window contains it when the count it was closed
-    // after falls inside the window's own two stamps. Dating it by the
-    // ring's cursor instead re-dates it every time a thread exits, and
-    // windows that were complete when they were read turn into closed
-    // ones afterwards.
-    unsafe { (&raw mut (*ring).closed_after).write(registry.marks) };
     registry.live.retain(|&live| live != ring);
     registry.retired.push(ring);
     let over = registry.retired.len().saturating_sub(RETIRED_KEPT);
@@ -684,14 +623,6 @@ pub enum Window {
     /// the same as an empty answer**, and the distinction is the reason a
     /// hunt can trust "nothing happened".
     Unknown { thread: u64, written: Option<u64> },
-    /// The ring stopped inside this window, and the thread did not: the
-    /// records are here, and everything its owner raised after the ring
-    /// closed — the heap teardown that follows retirement in
-    /// `heap::ll_thread_exit` frees blocks, a default event kind — went
-    /// nowhere. An empty `events` on this answer is the difference
-    /// between "that thread did nothing" and "that thread stopped
-    /// telling", which is the distinction the whole module is for.
-    Closed { thread: u64, events: Vec<Event> },
     /// Rings the registry freed inside the window: whole thread histories
     /// no answer above can carry, the ring having left the registry
     /// between the two marks. Named by count alone, because what is gone
@@ -782,7 +713,7 @@ pub fn between(start: &Mark, end: &Mark) -> Vec<Window> {
                 .find(|&&(earlier, _)| earlier == thread)
                 .map_or(0, |&(_, at)| at);
             match ring_of(&registry, thread) {
-                Some(ring) => window_of(ring, thread, start, end, start_at, end_at),
+                Some(ring) => window_of(ring, thread, start_at, end_at),
                 None => Window::Unknown {
                     thread,
                     written: Some(end_at.saturating_sub(start_at)),
@@ -810,14 +741,7 @@ pub fn between(start: &Mark, end: &Mark) -> Vec<Window> {
 ///
 /// `ring` is resolved from the registry under its lock, and the caller
 /// still holds it.
-fn window_of(
-    ring: *mut Ring,
-    thread: u64,
-    start: &Mark,
-    end: &Mark,
-    start_at: u64,
-    end_at: u64,
-) -> Window {
+fn window_of(ring: *mut Ring, thread: u64, start_at: u64, end_at: u64) -> Window {
     let mut events = Vec::new();
     for at in start_at..end_at {
         match unsafe { (*ring).read_at(at) } {
@@ -829,18 +753,6 @@ fn window_of(
                 };
             }
         }
-    }
-    // The close is an interval, not an instant: from the retirement to
-    // the end of the owner's exit the thread went on raising events into
-    // a ring it could no longer write. A window overlapping that interval
-    // answers `Closed`; one entirely before it, or entirely after the
-    // owner finished, reports records — that ring is done, and whatever
-    // its thread does next, a pool thread taking another task, goes into
-    // the ring `journal::reopen_thread` lets it open.
-    let closed_after = unsafe { (*ring).closed_after };
-    let finished_after = unsafe { (*ring).finished_after };
-    if closed_after < end.taken && finished_after >= start.taken {
-        return Window::Closed { thread, events };
     }
     Window::Records(events)
 }
@@ -897,13 +809,11 @@ mod tests {
     }
 
     /// Every event the answers carry, in the order the windows came in.
-    /// Two of the four answers carry records, and a caller after the
-    /// records rather than after the losses wants both.
     fn events(windows: Vec<Window>) -> Vec<Event> {
         windows
             .into_iter()
             .flat_map(|window| match window {
-                Window::Records(events) | Window::Closed { events, .. } => events,
+                Window::Records(events) => events,
                 _ => Vec::new(),
             })
             .collect()
@@ -1069,24 +979,16 @@ mod tests {
             "the thread retired a number of rings other than its one"
         );
 
-        let answer = between(&start, &end)
+        // The post-exit record is not in it, and its silence is not
+        // reported: a thread raising events after `ll_thread_exit` is
+        // being used outside the runtime's contract, and that is the one
+        // silence at exit this module leaves unreported.
+        let subjects: Vec<u64> = events(between(&start, &end))
             .into_iter()
-            .find(|window| matches!(window, Window::Closed { thread, .. } if *thread == identity));
-        assert_eq!(
-            answer,
-            Some(Window::Closed {
-                thread: identity,
-                events: vec![Event {
-                    kind: 3,
-                    site: 0,
-                    subject: BEFORE_EXIT,
-                    a: 0,
-                    b: 0,
-                    thread: identity,
-                }],
-            }),
-            "the record after the exit was lost without the window saying so"
-        );
+            .filter(|event| event.thread == identity)
+            .map(|event| event.subject)
+            .collect();
+        assert_eq!(subjects, vec![BEFORE_EXIT]);
     }
 
     /// A refused allocation closes the thread instead of queueing a
@@ -1219,15 +1121,13 @@ mod tests {
         let answer = between(&start, &end)
             .into_iter()
             .find(|window| match window {
-                Window::Records(events) | Window::Closed { events, .. } => {
-                    events.iter().any(|event| event.thread == identity)
-                }
+                Window::Records(events) => events.iter().any(|event| event.thread == identity),
                 _ => false,
             })
             .expect("the window lost the thread it was taken around");
         assert!(
             matches!(answer, Window::Records(_)),
-            "a later close reclassified a window that was complete: {answer:?}"
+            "a window that was complete stopped being one: {answer:?}"
         );
     }
 
@@ -1334,54 +1234,86 @@ mod tests {
         assert_eq!(between(&end, &start), vec![Window::Reversed]);
     }
 
-    /// Retirement is not the end of the losses it announces: the heap
-    /// teardown that follows it in `heap::ll_thread_exit` decommissions
-    /// blocks, a default event kind, into a ring already closed. A window
-    /// opened inside that interval has to report it, and an empty list of
-    /// records would say the thread did nothing while it was in fact
-    /// unable to tell.
-    ///
-    /// The two halves of the exit are driven by hand here, being the only
-    /// way to have another thread marked inside an interval that lives in
-    /// the middle of one function.
+    /// A `__destruct` body runs in step 1 of `heap::ll_thread_exit` and
+    /// journals like any other code; the ring is retired by the last act
+    /// of that same function, so the record lands in it. That ordering is
+    /// the whole of what this journal was built for — the census
+    /// hypothesis is about a *finishing* thread — and a retirement placed
+    /// earlier loses exactly those records.
     #[test]
-    fn a_window_between_the_close_and_the_finish_reports_the_loss() {
-        const SUBJECT: u64 = 0xF1F1;
+    fn a_destructor_at_thread_exit_is_recorded_before_the_ring_retires() {
+        const SUBJECT: u64 = 0xD1E;
         let _g = crate::memory::block_pool::test_guard();
-        let (announce, announced) = std::sync::mpsc::channel();
-        let (go, wait) = std::sync::mpsc::channel();
-
-        let exiting = std::thread::spawn(move || {
-            crate::memory::heap::ll_thread_init();
-            record(8, 0, SUBJECT, 0, 0);
-            let identity = this_thread_identity();
-            // Retire *before* announcing, or the marks below can both be
-            // taken while the ring is still open and the window is an
-            // ordinary one — which is what Miri's scheduler does.
-            retire_thread_ring();
-            announce.send(identity).expect("the test hung up");
-            wait.recv().expect("the test hung up");
-            finish_thread();
-            crate::memory::heap::ll_thread_exit();
-        });
-
-        let identity = announced.recv().expect("the thread hung up");
-        // Both marks fall between the retirement and the finish.
         let start = mark();
-        let end = mark();
-        go.send(()).expect("the thread hung up");
-        exiting.join().expect("the exiting thread panicked");
 
-        let answer = between(&start, &end)
+        let identity = std::thread::spawn(|| {
+            use crate::class::ClassBuilder;
+            use crate::memory::arena::Arena;
+            use crate::memory::context::LLContext;
+            use crate::refcount::MemoryCategory;
+            use crate::value::{Tag, Value};
+
+            /// A `__destruct` that journals, which is what a record site
+            /// on the death path will do once §9.5's set is built.
+            unsafe extern "C" fn journaling_destructor(_obj: *mut crate::object::Object) {
+                record(1, 0, SUBJECT, 0, 0);
+            }
+
+            crate::memory::heap::ll_thread_init();
+            let identity = {
+                record(1, 0, 0, 0, 0);
+                this_thread_identity()
+            };
+
+            // A static holding the object is what makes thread exit the
+            // point its destructor runs (`static_block.rs`).
+            let cls = ClassBuilder::new("JournalingAtExit")
+                .destructor(journaling_destructor as *const ())
+                .build();
+            let holder = ClassBuilder::new("StaticsOfJournalingAtExit")
+                .prop("kept", true)
+                .build();
+            let size = unsafe { (*holder).object_size } as usize;
+            let block = unsafe {
+                std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align(size, 16).unwrap())
+            };
+            assert!(!block.is_null());
+
+            let mut arena = Arena::new();
+            let mut ctx = LLContext { arena: &mut arena };
+            let obj =
+                unsafe { crate::object::new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+            unsafe {
+                let slot = block.add(16) as *mut Value;
+                assert!(crate::memory::barrier::store_box(
+                    &mut arena,
+                    MemoryCategory::LongLived,
+                    slot,
+                    Value::entity(Tag::Object, obj as *mut crate::refcount::RcHeader),
+                ));
+                crate::static_block::ll_static_block_register(block, holder);
+                // The static's store took the second reference.
+                assert!(!crate::refcount::ll_release(
+                    obj as *mut crate::refcount::RcHeader
+                ));
+            }
+
+            crate::memory::heap::ll_thread_exit();
+            identity
+        })
+        .join()
+        .expect("the journaling thread panicked");
+
+        let end = mark();
+        let subjects: Vec<u64> = events(between(&start, &end))
             .into_iter()
-            .find(|window| matches!(window, Window::Closed { thread, .. } if *thread == identity));
+            .filter(|event| event.thread == identity)
+            .map(|event| event.subject)
+            .collect();
         assert_eq!(
-            answer,
-            Some(Window::Closed {
-                thread: identity,
-                events: Vec::new(),
-            }),
-            "a window inside the teardown reported silence as records"
+            subjects,
+            vec![0, SUBJECT],
+            "the destructor's record was raised into a ring already retired"
         );
     }
 
