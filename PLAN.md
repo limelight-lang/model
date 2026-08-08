@@ -121,6 +121,47 @@ ring written by hand, and the gate is green with the feature on and off.
         naming the lost rings — the count is honest, a per-ring answer
         would have to invent a `written` it cannot know, and R is the
         knob §9.8 already leaves open for an investigation under churn.
+      Critic 2026-08-08 round 3, narrowed to what round 2 added: seven
+        more. A thread the allocator **refused** a ring is in no window
+        at all — the false *none* by the one door that opens under memory
+        pressure, which is when the journal is on. `between` still
+        answered a confident none in the release build, the order check
+        being an assertion the profile compiles out, and from
+        `Mark::default()` in every build. The epoch check did not close
+        the eviction leak: an epoch can open between the check and the
+        free. Dating the close by the ring's cursor re-dated it at every
+        thread exit, so a window that was complete when it was read
+        turned into a closed one afterwards. Plus a suspicion — reopening
+        a cell where the exit guard may not have been armed — and two
+        wordings: §9.7's site rule names `ll_malloc`'s locks while the
+        first record now also runs `ll_thread_init`, and the failure it
+        predicts is an abort rather than a deadlock.
+      Fixed 2026-08-08 round 3: refusals are counted and reported
+        (`Window::Refused`); the order check is a run-time one answering
+        *unknown* per ring and `Mark` lost its `Default`; the retiring
+        thread frees nothing at all, leaving evicted rings for the next
+        thread to journal or to mark — a live thread, whose parked
+        backlog is still its own — which removes the epoch check and the
+        difference between the two GC configurations with it; a close is
+        dated in marks, so only the window containing it answers
+        `Closed`; and both wordings are corrected. Four regression tests,
+        each seen failing. The step's own test for a window *after* a
+        close changed sides with the ruling and now pins the opposite:
+        such a window reports records, because a thread that lives on
+        journals into the ring `reopen_thread` gives it.
+- [ ] S5.1a Take the journal to the Sage before S5.2 builds on it
+      done: he has ruled on how many rounds a module of this shape gets,
+        and on the residue named below
+      tier: T2 · role: Мудрец
+      Three passes found 5, 7 and 7 defects, every round in what the
+        previous round's repairs added, and every round's findings real.
+        Rule 23.6 stops a dispute at two rounds; it says nothing about a
+        module that keeps yielding new defects, and stopping by exhaustion
+        is not a criterion. The residue to put to him with it: an OS
+        thread reused *without* `ll_thread_init` stays closed and journals
+        nothing, and `ll_thread_init` reopens the cell without knowing
+        whether the exit guard it just tried to arm was armed, so a ring
+        opened during TLS teardown would never be retired.
 - [ ] S5.2 Record sites for the default event set, behind the
       `debug-journal` feature
       done: with the feature off no record site appears in the release

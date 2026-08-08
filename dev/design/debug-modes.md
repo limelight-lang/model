@@ -605,10 +605,29 @@ is worth having only if it can be trusted.
 
 The rule covers the ring that has *closed* as well. A retired ring stops
 where its thread's exit left it, and the thread does not stop there
-(§9.4), so a window reaching that position answers "the ring closed here"
-and carries the records it does have. An empty list of records under that
-answer says the thread stopped telling; an empty list under `Records` says
-the thread did nothing, and the two must not be spelled the same way.
+(§9.4), so the window that **contains** the close answers "the ring closed
+here" and carries the records it does have. An empty list of records under
+that answer says the thread stopped telling; an empty list under `Records`
+says the thread did nothing, and the two must not be spelled the same way.
+
+A close is dated in marks, not in the ring's own cursor: marks are the
+only clock a window has, and a cursor-dated close re-dates itself every
+time a thread exits — a window that was complete when it was read turns
+into a closed one afterwards, and an answer that changes under the reader
+stops meaning anything. A window *after* the close carries records
+truthfully, since a thread that lives on gets a new ring (§9.4).
+
+It covers the thread that was **refused** a ring, which is in no window at
+all and cannot be: it has no ring to be in. The registry counts refusals
+and every window carries the count, because the difference between "these
+threads did nothing" and "these threads could not tell you" is the whole
+of what this section is about, and the door it opens under is memory
+pressure — the condition the journal is switched on to investigate.
+
+And it covers the caller's own mistake: two marks handed over in the wrong
+order bound no window, so every ring answers *unknown* rather than an
+empty list. That is a test at run time and not an assertion, the release
+profile compiling assertions out.
 
 The rule covers the ring that is *gone* as well as the ring that lapped.
 A retired ring freed to bound the list (§9.4) takes a whole thread's
@@ -665,12 +684,15 @@ Retired rings are bounded: the registry keeps the most recent R and frees
 the oldest beyond that. A program that creates a thread per request would
 otherwise accumulate rings for the life of the process. Each free is
 counted, because it is a window's only evidence that a history existed
-(§9.3). **The bound waits for a collector epoch**: a ring is one pooled
-block, so its free parks while an epoch is in flight, onto a backlog the
-exit sequence disposed several steps earlier — the list would be rebuilt
-on a dying thread and leaked with the ring in it. The eviction happens at
-the next retirement outside an epoch instead, which is the deferral
-parking would have performed.
+(§9.3). **The free happens on a live thread, never on the retiring one**:
+a ring is one pooled block, so its free parks while a collector epoch is
+in flight, onto a backlog the exit sequence disposed several steps
+earlier — the list would be rebuilt on a dying thread and leaked with the
+ring in it. Testing for an epoch first does not answer it either, since
+one can open between the test and the free. So a retiring thread takes
+the rings out of the registry and leaves them; the next thread to journal
+its first record, or the next investigator to take a mark, frees them
+with a backlog of its own to park into.
 
 ### 9.5 What is recorded by default, and what has to be asked for
 
@@ -722,11 +744,15 @@ the same obligation §2 records for sampled mode.
 - **No re-entry.** A site touches its own ring and returns; a site inside
   the allocator that journaled through an allocating path would recurse.
 - **The first record on a thread obeys none of the three**, and cannot:
-  it is what allocates the ring and registers it. So the rules describe
-  the steady state, and what they leave for §9.5 to obey is a
-  requirement on the *sites* — a site must not sit inside a lock that
-  `ll_malloc` takes, the block pool's free list among them, or a thread's
-  first record deadlocks against the lock its own event was raised under.
+  it initialises the thread, allocates the ring and registers it. So the
+  rules describe the steady state, and what they leave for §9.5 to obey
+  is a requirement on the *sites* — a site must not sit anywhere that
+  path can reach: thread initialisation and everything under it, the
+  block pool's free list, and the pool's thread cache, whose `RefCell` is
+  held across a push to the global list. Against a lock the failure is a
+  deadlock; against the `RefCell` it is a borrow panic, and this runtime
+  aborts on a panic, so the bullet above is broken by the same
+  misplacement.
 - **No panic and no unwinding.** An argument that makes no sense is
   recorded as it is; the journal reports, it does not judge.
 - **Order within a ring is that thread's program order.** Across rings

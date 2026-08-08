@@ -197,15 +197,18 @@ versions live in `docs/history/`, marked at the top.
   ring's block goes back to the allocator. A refusal and a retirement both
   **close** the thread's cell, which is why it has three states and not
   two: a thread journals nothing after its exit, and one refusal is not
-  retried. A closed ring's window answers `Closed` rather than an empty
-  list of records, the thread having gone on tearing down heaps after it;
-  `ll_thread_init` reopens the cell, so a pool thread's second life
-  journals into a ring of its own. The eviction that bounds the retired
-  list waits for a collector epoch to end, its `ll_free` parking onto a
-  backlog thread exit disposed earlier. The module is in every build; what
-  the `debug-journal` feature gates is the record sites on the hot paths,
-  unbuilt — and a site must not sit inside a lock `ll_malloc` takes, since
-  a thread's *first* record allocates and locks.
+  retried, though it **is** counted: a refused thread is in no window, and
+  the count is what keeps its silence from reading as inactivity. The
+  window that contains a ring's close answers `Closed` rather than a plain
+  list of records, the thread having gone on tearing down heaps after it —
+  dated in marks, since a close dated by the cursor re-dates every window
+  already read; `ll_thread_init` reopens the cell, so a pool thread's
+  second life journals into a ring of its own. An evicted ring is freed by
+  the next thread to journal or to mark, never by the retiring one, whose
+  parked backlog is gone by then. The module is in every build; what the
+  `debug-journal` feature gates is the record sites on the hot paths,
+  unbuilt — and a site must not sit anywhere the *first* record's path
+  reaches, that one initialising the thread, allocating and locking.
 - Category → allocator routing: `src/memory/routing.rs` — the one place
   that answers where a memory category's bytes come from.
   `entity_alloc_in` for anything with an `RcHeader`, `body_alloc` /
