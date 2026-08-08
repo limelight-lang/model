@@ -161,10 +161,11 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 // reason. Reset has no caller left to report to, which is
                 // why there is a fallback here at all.
                 let payload_block = unsafe { external_memory_block(surv) };
-                if payload_block != 0 && retained.insert(payload_block) {
-                    unsafe { (*(payload_block as *mut BlockHeader)).kind = BLOCK_KIND_RETAINED };
-                }
                 if payload_block != 0 {
+                    let header = payload_block as *mut BlockHeader;
+                    if retained.insert(payload_block) {
+                        unsafe { (*header).kind = BLOCK_KIND_RETAINED };
+                    }
                     // Pinned, and not merely retained: this block is held
                     // for bytes rather than for occupants, and the bytes
                     // have no death event for the occupant count to see.
@@ -258,15 +259,6 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     }
 }
 
-/// Group the settled survivors by the block holding them and hand each
-/// group to the retained-index registry.
-///
-/// One index per block rather than one per reset: both enumerators
-/// reach a block first — the census by the 64 KiB alignment mask, the
-/// synchronous walk by scanning the region registry — so an index found
-/// from a block address costs no second mapping (`dev/DECISIONS.md`,
-/// 2026-08-03). A survivor whose block was *not* retained cannot occur
-/// here: retention is decided from this same list.
 /// Bring a survivor's out-of-line memory with it, if its kind has any.
 /// One call, kind-dispatched, so nothing about any layout leaks into the
 /// reset: promotion holds a block by the address of a header and does
@@ -334,6 +326,17 @@ unsafe fn external_memory_block(surv: *mut RcHeader) -> usize {
     BlockHeader::of_ptr(memory as *const u8) as usize
 }
 
+/// Group the settled survivors by the block holding them and hand each
+/// group to the retained-index registry. The blocks that came back empty
+/// — every occupant already dead when the index was built — are returned,
+/// and their disposal is the caller's.
+///
+/// One index per block rather than one per reset: both enumerators
+/// reach a block first — the census by the 64 KiB alignment mask, the
+/// synchronous walk by scanning the region registry — so an index found
+/// from a block address costs no second mapping (`dev/DECISIONS.md`,
+/// 2026-08-03). A survivor whose block was *not* retained cannot occur
+/// here: retention is decided from this same list.
 fn index_retained_blocks(survivors: &[*mut RcHeader]) -> Vec<usize> {
     let mut emptied = Vec::new();
     let mut by_block: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -892,10 +895,10 @@ mod tests {
 
         // Keeper dies for real, and it dies **through its holder**: the
         // `Slot` object's property is the reference keeping it alive, so
-        // releasing behind the holder's back would leave a live object
-        // naming freed memory. That mattered from the day a retained
-        // block could go back to the pool — until then the freed slot
-        // was never reissued and the dangling property read refcount 0.
+        // releasing behind the holder's back leaves a live object naming
+        // freed memory. Only block reuse makes that visible — a freed
+        // slot nobody reissues still reads refcount 0, which is what
+        // makes the dangling property look harmless.
         unsafe {
             let slot = Object::prop_at(holder, 16);
             assert!(crate::memory::barrier::ref_store(

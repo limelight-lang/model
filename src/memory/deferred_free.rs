@@ -28,9 +28,11 @@
 //! cost: the park path may allocate (a `Vec` push, cold, epoch-only),
 //! which the in-slot draft avoided.
 //!
-//! What rides the queue: all four freeable block kinds that reach
-//! `ll_free` (heap raw buffers, entity slots, pooled large, OS-direct
-//! runs), and **buffer-arena chunks**, which do not. A chunk is freed
+//! What rides the queue: every block kind that reaches `ll_free` and can
+//! put memory back in circulation — heap raw buffers, entity slots,
+//! pooled large, OS-direct runs and retained blocks (the last for the
+//! reason given below) — and **buffer-arena chunks**, which do not reach
+//! `ll_free` at all. A chunk is freed
 //! by `buffer_arena::buffer_free_longlived_payload` calling
 //! `BufferArena::free` directly, so it never passes `ll_free`'s test;
 //! that branch does its own, and parks the whole call rather than the
@@ -47,7 +49,7 @@
 //!
 //! What does not ride it: the arena kind, which recycles nothing, so
 //! identity holds without parking. A **retained** block rides it, and
-//! for a reason worth stating: nothing is recycled *inside* such a
+//! not for the usual reason: nothing is recycled *inside* such a
 //! block — former arena memory has neither stride nor free list — but
 //! the death of its last live occupant hands the whole block to the
 //! pool (`retained::occupant_freed`), and a block reissued mid-epoch is

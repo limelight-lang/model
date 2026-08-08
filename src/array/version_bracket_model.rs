@@ -52,8 +52,9 @@ struct Bracket {
 ///
 /// `writer_fenced` selects a plain store followed by `fence(Release)` over
 /// a release store; `reader_fenced` selects `fence(Acquire)` before a plain
-/// closing load over an acquire load. Both false is the bracket as it stood
-/// before 2026-08-08.
+/// closing load over an acquire load. Both false is the unfenced bracket —
+/// a release store closed by an acquire load, each ordering the side the
+/// other needs.
 fn execution(writer_fenced: bool, reader_fenced: bool) {
     let table = Arc::new(Bracket {
         version: AtomicUsize::new(0),

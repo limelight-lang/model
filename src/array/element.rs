@@ -3,11 +3,10 @@
 //! The five element operations are here — `get`, `set`, `append`,
 //! `unset` and `make_ref`. Every write goes through one composition,
 //! `write_through`, and every operation starts by settling what the key
-//! *is*, which is why the key constructor lives here too.
-//! Canonicalisation sits in this layer
-//! rather than inside `Table` on purpose: `Map` is the table's second
-//! customer and keys a map exactly, so a table that canonicalised would
-//! be unusable there.
+//! *is*, which is why the key constructor lives here too. Canonicalisation
+//! sits above `Table` rather than inside it because `Map` is the table's
+//! second customer and keys a map exactly: a table that canonicalised
+//! would be unusable there.
 
 use crate::array::entity::{LLArray, give_value_back};
 use crate::array::table::{Key, Table};
@@ -263,9 +262,9 @@ pub unsafe fn unset(
 /// Null reports a refusal with every array unchanged: the separation's
 /// copy, the box, the publication of an arena COW element into the heap
 /// box (`escape_copy`, which copies the element rather than sharing it),
-/// or the vivified element's own insert. One state does
-/// move behind a refusal on an integer key, as it does for [`set`]: the
-/// vivified insert advances the append cursor, and that is one-way.
+/// or the vivified element's own insert. One state does move behind a
+/// refusal on an integer key, as it does for [`set`]: the vivified insert
+/// advances the append cursor, and that is one-way.
 ///
 /// **A fresh box comes back at one**, held by the element; an element
 /// already in a reference state hands back the box it holds, at whatever
@@ -580,6 +579,12 @@ mod tests {
         s
     }
 
+    /// A table's first storage: 8 index slots and 8 entries.
+    const FIRST_STORAGE_BYTES: usize = 288;
+
+    /// What the first growth asks for: 16 index slots and 16 entries.
+    const DOUBLED_STORAGE_BYTES: usize = 576;
+
     /// Eat every buffer-arena source that could serve `size` — warm
     /// block tails and recycled holes left by earlier tests on this
     /// thread — so the next such allocation must draw a pool block,
@@ -826,8 +831,7 @@ mod tests {
         let val = mk(b"unstored");
 
         FORCE_OOM.store(true, Ordering::Relaxed);
-        // The copy's first storage: 8 index slots and 8 entries, 288 bytes.
-        let fillers = unsafe { exhaust_buffer_sources(288) };
+        let fillers = unsafe { exhaust_buffer_sources(FIRST_STORAGE_BYTES) };
         let stored = unsafe {
             set(
                 context_ptr,
@@ -895,8 +899,7 @@ mod tests {
         }
 
         FORCE_OOM.store(true, Ordering::Relaxed);
-        // The doubled storage: 16 index slots and 16 entries, 576 bytes.
-        let fillers = unsafe { exhaust_buffer_sources(576) };
+        let fillers = unsafe { exhaust_buffer_sources(DOUBLED_STORAGE_BYTES) };
         let stored = unsafe {
             set(
                 context_ptr,
@@ -940,8 +943,7 @@ mod tests {
         let val = mk(b"unstored");
 
         FORCE_OOM.store(true, Ordering::Relaxed);
-        // The copy's first storage: 8 index slots and 8 entries, 288 bytes.
-        let fillers = unsafe { exhaust_buffer_sources(288) };
+        let fillers = unsafe { exhaust_buffer_sources(FIRST_STORAGE_BYTES) };
         // The separation must not be the refusal, or this measures
         // `a_refused_separation_reports_and_changes_nothing` a second
         // time — its assertions are these. The copy's entity comes from
@@ -1108,7 +1110,7 @@ mod tests {
             let k3 = mk(b"other");
             let k3_start = (*k3).rc.refcount;
             FORCE_OOM.store(true, Ordering::Relaxed);
-            let fillers = exhaust_buffer_sources(576);
+            let fillers = exhaust_buffer_sources(DOUBLED_STORAGE_BYTES);
             let stored = set(
                 context_ptr,
                 MemoryCategory::GcHeap,
@@ -1765,12 +1767,12 @@ mod tests {
                 "the copy boxed a second reference instead of sharing this one"
             );
             // A heap box is counted like any other heap entity, which is
-            // the whole reason the box lives there: the count is what
-            // S3.2 reads to decide whether to share or unwrap.
-            // The count is one, and the copy shares the box anyway: an
-            // escape copy is a store crossing a lifetime boundary, not a
-            // duplication, so it collapses nothing (S3.2,
-            // `entity::CopyReason`).
+            // the whole reason the box lives there: that count is what
+            // S3.2 reads to decide between sharing and unwrapping. It
+            // stood at one before this copy, and the copy shared anyway,
+            // because an escape copy is a store crossing a lifetime
+            // boundary rather than a duplication and collapses nothing
+            // (`entity::CopyReason`).
             assert_eq!(
                 (*boxed).rc.refcount,
                 2,

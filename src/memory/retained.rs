@@ -103,6 +103,7 @@ fn registry() -> &'static Mutex<Registry> {
 /// # Safety
 /// Every address in `occupants` must be readable, as the module doc
 /// requires of anything registered here.
+#[must_use = "true means the block is empty and the caller owes it to the pool"]
 pub(crate) unsafe fn register(block: usize, mut occupants: Vec<usize>) -> bool {
     occupants.sort_unstable();
     let live = occupants
@@ -148,6 +149,7 @@ pub(crate) fn pin(block: usize) {
 /// once on the block's own behalf ([`register`] told it to). Double-free
 /// protection is not this counter's job — `ll_free` asserts on the
 /// refcount word in test builds, one layer down.
+#[must_use = "true means the block is empty and the caller owes it to the pool"]
 pub(crate) fn occupant_freed(block: usize) -> bool {
     let mut map = registry().lock().expect("retained index registry poisoned");
     let Some(index) = map.get_mut(&block) else {
@@ -191,6 +193,15 @@ pub(crate) fn snapshot() -> Vec<(usize, Arc<[usize]>)> {
 mod tests {
     use super::*;
 
+    /// Take an index out of the process-global registry, which a test
+    /// that registered one owes whether or not it emptied it.
+    fn drop_index(block: usize) {
+        registry()
+            .lock()
+            .expect("retained index registry poisoned")
+            .remove(&block);
+    }
+
     /// A block address and occupants a walk may dereference, which is
     /// what the module doc requires of anything registered here.
     ///
@@ -206,15 +217,7 @@ mod tests {
     /// The block address is derived from the cells so that it names the
     /// range they lie in. A constant would be a guess about an address
     /// space the process is also carving regions out of.
-    /// Take an index out of the process-global registry, which a test
-    /// that registered one owes whether or not it emptied it.
-    fn drop_index(block: usize) {
-        registry()
-            .lock()
-            .expect("retained index registry poisoned")
-            .remove(&block);
-    }
-
+    ///
     /// The cells come back beside their addresses, because a test that
     /// occupies one writes through **the slice** rather than through the
     /// address: an address that has been through `usize` carries no
@@ -233,7 +236,7 @@ mod tests {
     fn an_index_is_stored_sorted_whatever_order_it_arrives_in() {
         let _g = crate::memory::block_pool::test_guard();
         let (block, cells, _live) = walkable_index(3);
-        unsafe { register(block, vec![cells[2], cells[0], cells[1]]) };
+        let _empty = unsafe { register(block, vec![cells[2], cells[0], cells[1]]) };
         let found = snapshot()
             .into_iter()
             .find(|&(b, _)| b == block)
@@ -253,7 +256,7 @@ mod tests {
         let (block, cells, live) = walkable_index(2);
         live[0] = 1;
         live[1] = 1;
-        unsafe { register(block, cells.clone()) };
+        let _empty = unsafe { register(block, cells.clone()) };
         assert!(snapshot().iter().any(|&(b, _)| b == block));
         assert!(!occupant_freed(block), "one of two occupants emptied it");
         assert!(snapshot().iter().any(|&(b, _)| b == block));
@@ -270,7 +273,7 @@ mod tests {
         let _g = crate::memory::block_pool::test_guard();
         let (block, cells, live) = walkable_index(2);
         live[0] = 1;
-        unsafe { register(block, cells.clone()) };
+        let _empty = unsafe { register(block, cells.clone()) };
         assert!(occupant_freed(block), "the dead occupant was counted live");
         assert!(!snapshot().iter().any(|&(b, _)| b == block));
         live[0] = 0;
@@ -285,7 +288,7 @@ mod tests {
         let (block, cells, live) = walkable_index(1);
         pin(block);
         live[0] = 1;
-        unsafe { register(block, cells.clone()) };
+        let _empty = unsafe { register(block, cells.clone()) };
         assert!(!occupant_freed(block), "a pinned block was handed back");
         assert!(
             snapshot().iter().any(|&(b, _)| b == block),
@@ -304,7 +307,7 @@ mod tests {
     fn a_registered_index_is_safe_for_the_enumerator_to_read() {
         let _g = crate::memory::block_pool::test_guard();
         let (block, cells, _live) = walkable_index(4);
-        unsafe { register(block, cells.clone()) };
+        let _empty = unsafe { register(block, cells.clone()) };
         let mut seen = 0usize;
         unsafe {
             crate::memory::heap::for_each_entity_slot(|slot| {

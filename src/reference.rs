@@ -22,6 +22,10 @@ pub struct LLReference {
 
 /// Allocate a reference box, its Value slot `null`. Null is a refusal.
 ///
+/// The box comes back at count one and that reference is the caller's:
+/// whatever slot the box is published into either takes it over or takes
+/// one of its own, and nothing else holds the box until then.
+///
 /// **The box is always a GC-heap entity, and the caller has no say in
 /// it** (`dev/DECISIONS.md`, 2026-08-08). The rule a copy of an array
 /// applies — share a box with two holders, unwrap one with a single

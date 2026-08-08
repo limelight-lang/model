@@ -614,592 +614,49 @@ make visible. The repair is a crate-internal barrier entry that publishes
 an already-retained reference: `store_category_barrier` is that operation
 already, minus the slot write. It must land with or before item 12's arm.
 
-## Ahead of S2.7: the table's version bracket is half a barrier short
+## What the stage-end review of S2 and S3 demanded, and none of it is closed
 
-Found 2026-08-08 by reading `ck_sequence.h` (`dev/RESEARCH.md`), which is
-the reference seqlock our version counter reimplements. Both brackets
-order one side in the wrong direction, so `coherent_entries` can accept a
-reading taken while entries were moving and then stride a fresh count over
-a stale chunk. `WORKFLOW.md` puts a known bug ahead of new work, which is
-why this sits before S2.7 rather than after S2.8.
+The Code Reviewer's verdict on the two stages together, 2026-08-08: the
+element layer is the first subsystem in this crate a caller can learn
+from five doc blocks without reading a body, and `table.rs` absorbed a
+layer that is not its own. Everything below is behaviour-preserving; the
+review's own style and comment fixes are already in the code.
 
-`begin_entry_move` (`array/table.rs:428`) publishes the odd version with a
-release *store*, which orders what precedes it; the entry moves that
-follow may become visible first. `coherent_entries`' closing check
-(`table.rs:479`) is an acquire *load*, which orders what follows it; the
-three data loads it validates may be sunk past it. ck writes the odd value
-plainly and then fences, and fences before the closing load. Closing the
-window is already correct.
-
-**Nothing observed, and no instrument here can observe it.** On x86-64
-the hardware reorders neither pair, so only compiler reordering can fire
-it — legal, since the entry writes are relaxed atomics and `used` and
-`nslots` are ordinary writes. The hardware exposure is aarch64, ppc64le
-and riscv64, and we have none of them.
-
-- [x] S2.V The bracket fences on both sides, and something demonstrates it
-      done: `begin_entry_move` stores relaxed and then `fence(Release)`;
-        `coherent_entries` runs `fence(Acquire)` before its closing load;
-        the reordering is demonstrated failing before the fix rather than
-        argued, or the attempt is recorded as failed and the fix lands on
-        the reading alone
-      tier: T1
-      order: the fix lands first and does not wait for the instrument.
-        Measured 2026-08-08 with rustc 1.96.0 at `-O`: both fences emit
-        `#MEMBARRIER` on x86-64, which is a compiler barrier and no
-        instruction, so the fix costs nothing on the target we build for.
-        On aarch64 it costs one `dmb` per bracket, and a bracket runs
-        around growth, compaction and a walker's read rather than on the
-        element path.
-      then the instrument, time-boxed: `loom` (`tokio-rs/loom`) permutes
-        executions under the C11 model, so it needs no aarch64 box, but it
-        replaces every atomic, cell and thread with its own types under
-        `--cfg loom`, which this table cannot do while it allocates, holds
-        raw pointers and reaches thread-locals. What can run is a ~40-line
-        model of the bracket alone — a counter, three words, one mover and
-        one reader — asserting the reader's triple is coherent. It tests a
-        copy of the protocol, not the code, and loom's own README records
-        that it does not explore load buffering, so a green run proves
-        nothing while a red one demonstrates the defect.
-      Miri is likely blind: its weak-memory emulation lets a load return a
-        stale value and does not reorder.
-      not a stress test: on x86-64 no run can fail, since the hardware
-        reorders neither pair, and on aarch64 a green run would say
-        nothing. The claim is about what the model permits, so a litmus
-        test under `herd7` is the proof if one is wanted beyond
-        `ck_sequence.h` itself.
-      handoff: the fix is in `array/table.rs` and the demonstration
-        succeeded, so the fallback of recording a failed attempt was not
-        taken. `src/array/version_bracket_model.rs` is the loom model,
-        run by `RUSTFLAGS="--cfg loom" cargo test --lib version_bracket`
-        and gated by `[target.'cfg(loom)'.dev-dependencies]` so no
-        ordinary build resolves loom. It exhibits the accepting execution
-        for the old bracket **and for either fence taken alone**, which is
-        why three of its four tests are `should_panic`. `dev/DECISIONS.md`
-        2026-08-08 carries the ordering argument; `dev/WORKFLOW.md` gains
-        a "Loom" section with what a model of this kind is worth. The
-        `#MEMBARRIER` measurement was re-taken on this box before being
-        written down.
-
-### Beside it: `deferred_free.rs:47` says cross-thread frees do not park
-
-Found the same day, by tracing the free path to answer whether the parked
-list already batches anything (it does not — it delays, and the flush
-replays record by record through `ll_free`). The module doc's exception
-list is false: the epoch test in `stdapi.rs:265` fires on block kind alone
-and stands **before** the owner dispatch, so during an epoch a free of
-another thread's heap or entity slot parks first and reaches `free_remote`
-or `free_foreign` only at the flush. Behaviour is right, and only the
-sentence is wrong — which is worse than it sounds, because the next
-person to reason about actors will reason from it.
-
-- [x] S2.D The exception list says what the code does
-      done: line 47 no longer claims cross-thread frees skip the queue;
-        what replaces it says that the park test precedes the owner
-        dispatch, so a foreign free parks like any other and is posted
-        remotely at the flush
-      tier: T0
-      keep while rewriting: the queue is a delay and not a batch, and the
-        list is thread-local, so the flush runs on the parking thread.
-        Both are already correct in the doc and both are what a reader
-        needs when actors reopen cross-thread frees.
-      handoff: the paragraph now says that the park test fires on block
-        kind alone and precedes the owner dispatch, so a foreign free
-        parks on the freeing thread and reaches `free_foreign` when
-        `release` replays it. Verified by reading `stdapi.rs`'s order and
-        `deferred_free::release`, which replays through `ll_free`. **One
-        stale sentence beside it was corrected in the same pass:** the doc
-        still said the walker chases only entity slots and that array
-        tracing was owed, which stopped being true when `trace_cells`
-        gained its Array arm.
-
-## S2 — The generic element interface  [ ]
-
-Goal: the five element operations exist as one layer over the table —
-read, store, append, unset, take a reference — each separating a shared
-array before it writes, each settling who owns the key, and the layer
-canonicalising a numeric string into an integer key. `Map` is the layer's
-second customer, which is why the canonicalisation lives above `Table`
-rather than inside it.
-
-**The operations take the holder's slot** and return `bool`, as every
-store-side barrier in this crate does (`ll_store_ptr`, `ll_store_box`,
-`ll_ref_store`). `ll_cow_separate` hands its copy back instead only
-because an FFI handle has no slot to write, which its own doc says. The
-consequence is the point: the separation's full composition — publish the
-copy, drop the displaced original, release the creation reference — lives
-inside the operation, so the "copy left at two separates forever" trap is
-unreachable from any call site.
-
-Done when: the five operations are each one call taking the holder's slot,
-each with a test over a **shared** array; a numeric-string key finds what
-the integer key stored; two string entities with equal bytes come out of
-an insert-overwrite-remove cycle at the counts they started at; a
-separated copy carries the source's salt state, flood state and
-`next_free`; and a store into an element holding a ReferenceBox is
-readable through the box.
-
-- [x] S2.1 A table starts unsalted, and the ladder's first rung draws the
-      salt
-      done: a fresh table indexes an integer key by its value; a chain
-        long enough to fire the first rung draws a salt, rebuilds the
-        index and finds every key again; a COW copy inherits whichever
-        state its source is in; `ll_array_new` no longer takes a salt
-      tier: T2 · role: Critic
-      Edmond 2026-08-07: the salt is worth paying for where the keys can
-        come from outside and not otherwise, so unsalted becomes the
-        ladder's zeroth rung rather than a mode somebody has to select.
-        Against a compiler-supplied "external data" flag: the classification
-        has to be right on every array, it fails silently in the unsafe
-        direction, and keys arrive through `json_decode`, a database row,
-        `array_keys` of another array and any function argument. The
-        ladder needs nobody to predict anything — an integer flood builds
-        exactly one long chain, which is the rung's own trigger. The flag
-        stays available later as an extra optimization, when a compiler
-        exists that can prove rather than assume.
-      Critic 2026-08-07 round 1: nine findings — the drawn salt exposed
-        `addr ^ seed` through a bijective finalizer with nowhere left to
-        add entropy; escalate now moves integer keys while reseed's doc
-        denied it; honest power-of-two strides burn the first rung and
-        Cost did not say so; `salt()` exported the strong-hash key; plus
-        five smaller (null-storage draw, RFC key contradiction, RFC bit
-        count, "never pays" overpromise, missing unsalted-copy test).
-        All accepted: the draw became `hash_bytes` over the storage
-        address, docs, DECISIONS and the RFC corrected, `salt()` is a
-        `#[cfg(test)]` window, STRONG⇒RESEEDED asserted, the third
-        inheritance state tested.
-      Critic 2026-08-07 round 2: eight of nine confirmed cleared against
-        the diff and a re-run gate; the tail — `mix_int`'s doc still
-        promising "never pay" — fixed in the same commit. No dispute
-        left, so no Sage.
-      handoff: the step's one addition beyond its own text — `escalate`
-        firing from an unsalted table draws the salt on the way
-        (`draw_salt`, idempotent), because the strong hash is keyed by
-        the salt and zero is a key every attacker knows. The draw is
-        `hash_bytes(storage address)`, never zero. `ll_array_new` takes
-        only the category. `dev/DECISIONS.md` 2026-08-07 and the RFC
-        amendment (rfc 556704e) carry the reasoning; the gate and both
-        Miri results are in this commit's message.
-- [x] S2.2 Dropping a key returns it to the caller; storing one consumes
-      the caller's
-      done: two distinct string entities with equal bytes — one inserted,
-        the other overwriting it, then the key removed — both end at the
-        counts they started at; seen failing on both arms
-      tier: T2 · role: Critic
-      Critic 2026-08-07 round 1: four findings — the contract prescribed a
-        bare `ll_release` for a key whose release the arena reset log or
-        an escape hold-count owns (double free on the first arena
-        request); the test measured only heap/heap; the two-entities
-        premise was unasserted; the pair was droppable silently, with
-        exemplars in the contract's own file. All accepted: the verb is
-        the barrier's `drop_ref`, a cross-category test runs a heap key
-        through an arena table to the reset, `assert_ne!` pins the
-        premise, `#[must_use]` guards the pair and nine sites waive it
-        explicitly.
-      Critic 2026-08-07 round 2: all four confirmed cleared against the
-        diff and a re-run suite. Named residue, non-blocking: the
-        prescribed `drop_ref` is `pub(crate)` under a `pub` `remove`, so
-        the contract's verb is crate-internal — the public door is
-        S2.5's layer.
-      handoff: `Table::remove` returns `(Value, *mut LLString)` — the
-        table's one reference per stored key travels out, null for an
-        integer key; the overwrite arm of `insert` leaves the caller's
-        key reference with the caller, signalled by `added == false`;
-        giving either up goes through `barrier::drop_ref` with the
-        owner's category. Both arms and the cross-category cycle seen
-        failing under targeted reverts.
-- [x] S2.3 The layer's key constructor canonicalises a numeric string
-      done: `"1"`, `"-1"` and `"9223372036854775807"` find what the
-        integer keys stored, while `"011"`, `"1.0"`, `" 1"`, `"-0"` and
-        `"9223372036854775808"` stay string keys — one pinned pair each
-      tier: T1 · role: —
-      handoff: `array::element::canonical_key` in the new
-        `src/array/element.rs` — the layer's home, where S2.5's five
-        operations land. The overflow edge goes through `str::parse`;
-        `i64::MIN`'s spelling and `""`/`"+1"`/`"-"` are pinned beside
-        the criterion's eight.
-- [x] S2.4 `next_free`, its overflow, and a copy that inherits it
-      done: append after `[0,1,2]` with key 1 removed yields 3; append
-        after an explicit key 9 yields 10; a COW copy of an array whose
-        only high key was removed appends at 10 rather than 0; append
-        after `i64::MAX` is refused rather than wrapping
-      tier: T1 · role: —
-      handoff: `Table::append_key` (None once `i64::MAX` was a key —
-        `TABLE_APPEND_EXHAUSTED`, bit 4, bits 2–3 stay the strategy
-        tag's), `next_free` maintained by insert's added arm, carried by
-        a copy through `adopt_append_state` — seen failing without it.
-        **Assumption, Edmond's to overturn:** PHP 8.3 semantics — a
-        negative key moves the cursor, `$a[-5]=1; $a[]=2;` appends at
-        −4; pinned by test, the pre-8.3 answer is one comparison away.
-- [x] S2.5 The store: separate, publish, release, refuse
-      done: `set(ctx, owner_cat, slot, key, value) -> bool` — a store
-        through one holder of a shared array leaves the other holder's
-        entries unchanged, leaves the displaced original at count one so a
-        second store to it does not separate again, and reports both
-        refusals, the separation's and the table's, with every array
-        involved unchanged
-      tier: T2 · role: Critic
-      Critic 2026-08-07 round 1: the round's list did not survive the
-        session boundary. What is verifiable is the two fixes it left in
-        the code under its name: the creation reference is spent before
-        the displaced original's `drop_ref`, and `destroy_private_copy`
-        calls `ll_entity_die` unconditionally, because `ll_release`
-        reports no death on an arena entity.
-      Critic 2026-08-08 round 2, two lenses over the diff — ownership on
-        every path, and the order of publication and teardown. Ownership
-        found no arithmetic defect and four branches no test executed;
-        order found the doc printing the composition the code had
-        rejected. All acted on: the `set` doc's order corrected with its
-        reason, the same order carried into `ll_cow_separate` and
-        `string::separate` with a `dev/DECISIONS.md` entry, the entry
-        assertion widened from `is_refcounted` to a `Tag::Array` test
-        (a ReferenceBox passed the old one and would have been written
-        over as an array), the refusal count corrected from two to three,
-        three tests added and one repaired. No dispute left, so no
-        Sage.
-      handoff: `array::element::set` is the store, and the composition is
-        publish, spend the creation reference, drop the displaced
-        original — that order, because `drop_ref` runs `__destruct`
-        bodies that can displace the copy from the slot just written.
-        Three refusals, each an allocation: the separation's copy, the
-        publication of an arena COW value or key (`escape_copy`), and the
-        table's growth; the `store_box` arm cannot fire while
-        `separation_category` maps an arena holder to an arena copy.
-        Eleven tests, four seen failing under targeted reverts — the
-        displaced element's giveback, the escape copy's, the arena
-        separation category, and the entity-slot probe without which the
-        growth-refusal test silently measures the separation refusal.
-- [x] S2.6 Read, append and unset over the store's composition
-      done: appending through one holder of a shared array leaves the
-        other holder's length unchanged; `unset` gives the key back by
-        S2.2's rule and leaves the other holder's entry standing; `get`
-        yields the value through a ReferenceBox rather than the box, and
-        leaves both holders naming the same array
-      tier: T1 · role: —
-      handoff: the composition moved into `element::write_through`, which
-        takes the write as a closure, so `set`, `append` and `unset`
-        differ only in what they pass and the "copy left at two" trap
-        stays unreachable without being written three times. `append`
-        reads `Table::append_key` before separating — a copy adopts the
-        cursor, so both arrays answer alike, and an exhausted cursor
-        refuses without paying for a copy first; that refusal is a fourth
-        `false` beside `set`'s three allocations. `unset` separates even
-        for an absent key, because the write barrier fires on the
-        operation rather than on the outcome. `get` takes neither context
-        nor category and never separates. Three tests, each seen failing
-        under a targeted revert: the key giveback, the box dereference,
-        and the exhausted cursor.
-- [x] S2.7 A store into an element holding a ReferenceBox goes through the
-      box, and through the barrier
-      done: built against `Table::make_ref`, which exists — after boxing
-        an element, a store into it is readable through the box, goes
-        through `barrier::ref_store` rather than a plain write, and
-        suppresses the displaced value's `drop_ref` when the barrier
-        refuses; a copy with a heap destination over an arena source
-        shares the box rather than copying it, and `escape_copy` holds it
-      tier: T2 · role: — (judged in S2.8's call)
-      handoff: `store_into` looks the element up before inserting and,
-        finding a `Tag::Reference`, hands the write to
-        `store_through_box`, which goes through `barrier::ref_store` —
-        publish, then release, so a refused barrier keeps the displaced
-        value. That lookup is a second chain walk per store, unmeasured
-        and owned by the array performance stage: `Table::get` hands out a
-        copy rather than a borrow, because an entry keeps its chain link
-        in the element's reserved bytes. **The criterion's last clause was
-        already true and is now pinned rather than built** — a box has no
-        COW flag, so `fill_from`'s publication takes `escape_gain` rather
-        than `escape_copy`, and the copy shares the box while the escape
-        hold-count holds it. On an arena entity that count field *is* the
-        hold-count: the first gain sets it to one instead of incrementing,
-        which cost one wrong assertion to learn.
-- [x] S2.8 `&$a[k]`, separating first
-      done: `$a=['x'=>1]; $b=$a; $r=&$b['x']; $r=2` leaves `$a['x']` at 1
-        **and** `$b['x']` at 2 — the shared table separated before the box
-        was written, rather than the reference being refused
-      tier: T2 · role: Critic, over S2.7 and S2.8 together
-      handoff: `element::make_ref` runs `Table::make_ref` inside
-        `write_through`, so taking a reference separates like any other
-        write. **Beyond the step's text, and Edmond's to overturn:** an
-        absent key is created as null and referenced, PHP's rule for
-        `$r = &$a['nope']`. Without it the layer would forward the
-        table's null, which means "absent", through a return value whose
-        only other meaning is "refused" — the same wrong signal the escape
-        copy's depth limit was rejected for.
-      Critic 2026-08-08, over both steps, two lenses — reference
-        ownership, and the language rules against PHP 8.3.6 run on this
-        box. Fourteen findings. Fixed: `Table::make_ref` took a `ctx`
-        instead of resolving a null through the thread's current context,
-        which aborts on an arena table outside tests; a refused box left
-        the vivified key behind on the exclusively-owned path, where
-        `write_through` has no private copy to throw away; `set` now
-        refuses a reference-tagged value in debug, `make_ref` asserts the
-        canonical key like `set`; the S2.8 test drives `$r = 2` through
-        `set` rather than a private helper; two tests added, the shared
-        box reaching both holders and the refused box rolling back; four
-        doc corrections and the "five clauses" recount above. Left to
-        Edmond as a design question, below.
-      **Answered by stage S3, and the RFC amended with it** (rfc
-        `e00b508`). What the entry said when it was open: a copy shares
-        the box unconditionally, while Zend's
-        `zend_array_dup_element` unwraps a reference whose refcount is 1.
-        So `$a=['x'=>1]; $r=&$a['x']; unset($r); $b=$a; $b['x']=3;`
-        leaves `$a['x']` at 1 in PHP and at 3 here, and the same
-        divergence reaches S2.8's own criterion when the element was
-        already a reference. The crate follows `arrays-hashtable.md`
-        "Element states" and `values.md`, which both state the sharing
-        unconditionally, so this is the RFC's answer rather than a
-        defect in these steps — and the RFC is Edmond's. Not built, not
-        worked around.
-
-### What the steps rest on, verified against the code
-
-**S2.1.** Below `strong` a string key's slot is its cached hash and no
-salt enters it, so the salt is paid by integer keys only — and a dense
-integer array is strategy 2 and never reaches this table, which leaves
-sparse and mixed ones as the whole population that pays. The zeroth rung
-needs no new state: `TABLE_RESEEDED` already means "this table has a
-salt", and it sits in the same byte as `TABLE_STRONG`, which that path
-reads anyway. The documents' bound — one rebuild and one escalation per
-table — does not move, because the first rung now *draws* where it used to
-redraw. Where the entropy comes from stops being an open question with it:
-the draw is `hash_bytes` over the storage address, in `draw_salt`, reached
-from whichever rung fires first — escalation from an unsalted table draws
-too, since the strong hash is keyed by the salt (found in the step, not
-foreseen here). Separately, `ll_array_new`'s `salt` parameter has
-twenty call sites, sixteen passing one literal (five in `array/entity.rs`,
-eleven across `promote.rs`, `gc.rs`, `collector.rs`, `walk.rs`), three in
-`array/table.rs` passing another, and one — `new_empty_copy` — handing the
-source's salt over so a copy indexes its keys as the original did. A grep
-for the literal is not a criterion: `strong_hash` uses
-`0x9E37_79B9_7F4A_7C15`, the golden ratio, unrelated to the salt.
-
-**S2.2 is the prerequisite every write step waits on.** The table owes one
-reference per string key: `fill_from` retains each key before inserting it
-and `release_children` gives key and element back. Two sites break the
-symmetry and they are one rule rather than two defects. `Table::remove`
-returns the element and calls `Entry::make_hole`, which overwrites the key
-word, so the table's reference is dropped with nothing to release it.
-`Table::insert`'s overwrite arm keeps the entry's original key and never
-sees the caller's, so the caller's retain is stranded. Two distinct string
-entities are needed in the test because one measurement over one entity
-catches one arm and not the other.
-
-**S2.3.** `Key`'s own doc says the caller canonicalises and no caller
-does. The `i64::MAX` pair is the boundary where a hand-rolled digit
-accumulator overflows and `str::parse` does not.
-
-**S2.4.** `Table` has no `next_free` field, and `new_empty_copy` copies
-the salt and the flood state and nothing else while `fill_from` skips
-holes — so a copy of `[9 => 'x']` with key 9 removed would append at 0
-where PHP appends at 10. Overflow is checked rather than wrapped, which is
-what `storage_bytes`' `checked_add` and `pow2ge`'s saturating loop already
-do. **Open, a language question rather than a design one:** PHP 8.3
-changed `$a[-5]=1; $a[]=2;` from key 0 to key −4.
-
-**S2.5 fixes the operations' shape**, the most expensive thing to change
-once four other call sites exist. `ll_cow_separate` returns its copy at +1
-and its doc names the full composition, with `string::separate` as the
-worked example; skipping the middle term does not merely leak, since a
-copy left at two reads as shared on every later write and separates
-forever. There are two refusals rather than one — the separation's, an
-allocation no reserve funds, and the table's growth — and they leave
-different numbers of arrays behind. `memory::block_pool::FORCE_OOM` drives
-both; `array/table.rs` already uses it for a table allocation refusal.
-
-**S2.7 and S2.8 carry four clauses of `arrays-hashtable.md` "Element
-states"**: an element store writes through the box, taking the reference
-on a shared table separates first, the COW separator retains the box
-without recursing, and `escape_copy` treats it as identity-bearing. The
-fifth is the **iterator's** by-value dereference, and no iterator exists;
-this paragraph read it as a by-value *read*, which `element::get` does
-answer, so the count said five. Corrected 2026-08-08 by the language
-critic. S2.7 builds against `Table::make_ref`,
-which is `pub` and already boxes an element, so it does not wait on S2.8's
-separating wrapper. The write goes through `barrier::ref_store` rather
-than a plain store into the box's slot: `6afd220` moved the reference
-sever onto the barrier because the collector's relaxed loads race a plain
-store into a published slot. `make_ref`'s own `(*boxed).value = current`
-is legal only because that box is not published yet, which makes it the
-pattern an implementer would copy and the wrong one.
-
-### Named, and outside these two stages
-
-Teardown of a deeply nested array is recursive at the free while the deep
-copy walks a work list at the store (item 11's tail). S2 produces the
-input that reaches it; the fix is the drain's shape rather than an element
-operation.
-
-Compaction moves entries, and `arrays-hashtable.md` says the table carries
-a count of live iterators and repairs them. No iterator exists yet.
-
-`string.rs` answers the RFC's "the cached string hash becomes a relaxed
-atomic, and this lands with the table" the other way: a string in either
-category a second thread can reach is hashed at creation, so the lazy
-plain store is single-owner by construction. The crate's answer looks
-sound and the RFC still prescribes the other one; the correction is owed
-there, beside the RFC debts already under task 11.
-
-## S3 — A reference element behaves as PHP's does  [ ]
-
-Goal: an array that has had `&` applied to one of its elements goes back
-to being a value. Today a copy shares the box unconditionally, so the
-array is aliased on that element for the rest of its life; PHP shares the
-box only while a second name holds it.
-
-Done when: the four cases below reproduce, measured against php 8.3.6 —
-a dead reference leaves `$a['x']` at 1 and `$b['x']` at 3; a live one
-gives 3 and 3; no reference gives 1 and 3; and `f(&$a['x'])` followed by
-a copy and a write gives 1 and 3.
-
-**What was measured, so it is not re-derived** (php 8.3.6, on this box).
-`$r = &$a['x']` rewrites the element in place: `var_dump` shows
-`&int(1)`, `debug_zval_dump` shows `reference refcount(2)`. Both spellings
-produce the same state — `$c['x'] = &$q` is indistinguishable from
-`$q = &$c['x']`, and writing through either name is read through the
-other, so `&` joins two slots into one container rather than pointing one
-at the other. The box is **not** collapsed by `unset` (the element stays
-`reference refcount(1)`), **not** collapsed by a write to that element
-(the write goes through the box), and **not** collapsed by a write to
-another element. The one place it collapses is the duplication itself:
-after `$d = $c; $d['y'] = 3;` the source still reads
-`reference refcount(1)` and the copy reads `int(3)`. So the rule belongs
-in `fill_from` and nowhere else.
-
-**Sage's ruling, 2026-08-08: a reference box is allocated in the GC heap,
-always.** The rule needs an exact holder count at the moment of
-duplication, and the heap is where the crate already keeps one: a heap
-non-COW box is counted by `ll_retain`/`ll_release` with no change at all.
-The alternatives both make the box counted *in the arena*, which breaks
-the invariant "counted or escaping, never both" and makes `Reference` a
-second everywhere-counted kind after COW. The Sage walked `promote.rs`
-and named what that would cost: `mark_one` must stop zeroing the box's
-count, the count must travel in `cow_at_promotion` and settle by edges
-with a delta, `escape_gain` must branch on kind because it writes
-`refcount = 1`, and the retain/release fast path gains a kind test on
-every arena entity. That price is spread over the whole runtime for a
-rare `&`. Growing `LLReference` to 32 bytes buys only one thing over
-that — an escapee released before the reset is not promoted in vain —
-and costs eight bytes on every box.
-
-**The price of the ruling, stated rather than hidden.** Every `&` becomes
-a heap allocation, which is Zend's own cost class (`zend_reference` is
-always heap). An arena COW value is copied to the heap when it is boxed,
-once per boxing. A heap box inside an arena array is one
-`log_release_at_reset` record, a mechanism that exists. The lifetime
-objection is answered: the lift is bounded by the box's own life —
-`reference_die` calls `drop_ref`, which calls `escape_lose` — so a box
-whose holders do not outlive the request dies at the reset from the log.
-What becomes impossible: arena-speed `&`, and a box dying for free with
-the arena.
-
-- [x] S3.1 A reference box lives in the GC heap in every case
-      done: a box made for an arena array reads `GcHeap`; the arena
-        array's entry logs a release at reset; a request that takes a
-        reference and ends leaves no block held and no entity alive;
-        `a_copy_over_an_arena_source_shares_the_box` is rewritten around
-        a heap box rather than muted, its instrument having died with
-        arena boxes
-      tier: T2 · role: Critic
-      Critic 2026-08-08 round 1: three findings. `$r = &$a[0]` on an
-        arena object element retires a 64 KiB block per request — the
-        element escapes, is promoted in vain, and its block never comes
-        back; the box's Value was written with a plain 16-byte store,
-        whose old justification ("the box is private") died when every
-        box became a census-visible heap entity, so the collector's
-        relaxed reader can take a refcounted tag with a null payload;
-        and `element::make_ref`'s refusal list lost the escape copy of
-        an arena COW element. The second and third fixed
-        (`barrier::write_value_slot`, the doc). The first was verified
-        against the criterion's own test — with an object element it
-        failed — and went to the Sage, being a price the ruling had not
-        named.
-      Sage 2026-08-08: build the retained-block release, now, inside
-        S3.1; the criterion stands unamended. The vain promotion is
-        sound — at settle time the element is held by the box, and
-        telling a doomed box from a surviving keeper first is trial
-        deletion — and the reset's order cannot swap, so what was wrong
-        is that the block never came home. `dev/DECISIONS.md`
-        2026-08-08 carries the reasoning, the pinned payload block and
-        the reset-time hand-over. Final.
-      handoff: `ll_reference_new` takes neither a category nor a
-        context and every box is `GcHeap`, so an arena box cannot be
-        built; `Table::make_ref` publishes the element into the box
-        through `store_category_barrier` with `GcHeap` and the box into
-        the entry with the array's category, then gives the entry's old
-        reference back. `memory::retained` counts live occupants and
-        `stdapi::ll_free`'s retained arm returns the emptied block,
-        which is now a parked kind. Two old tests were rewritten rather
-        than muted: `a_copy_over_an_arena_source_shares_the_box` reads
-        the sharing off a refcount instead of an arena hold-count, and
-        `promote::survivor_holding_heap_entity_compensates_the_release_
-        log` killed a survivor a live `Slot` object still named — a
-        dangling property that only block reuse made visible.
-- [x] S3.2 A copy unwraps a box with a single holder
-      done: the four measured cases above reproduce through
-        `element::set` and `element::make_ref`, in both memory
-        categories, each seen failing without the unwrap
-      tier: T2 · role: Critic
-      Critic 2026-08-08 round 1: seven findings, three of them the
-        step's own. In the request arena the box's count is an upper
-        bound rather than a holder count — `drop_ref` skips the release
-        an arena container owes, and an arena container does not die
-        until the reset — so the unwrap stops firing for the rest of the
-        request, and the new test hard-codes `GcHeap` for the `$r`
-        binding and so never runs the arena case it claims. `escape_copy`
-        was handed a duplication-only rule although it copies on a store
-        where PHP duplicates nothing, and the test that asserted the
-        unconditional sharing had been neutralised with a fake holder
-        rather than left to speak. The doc block of `element_for_copy`
-        was spliced into `fill_from`'s, leaving `fill_from` with none. A
-        box was leaked by a rewritten test. Acted on: `CopyReason` now
-        separates the duplication from the escape and only the first
-        collapses anything, the sharing test is back to a single-holder
-        box, the docs are split, the box is released. The arena's count
-        went to the Sage.
-      Sage 2026-08-08: the divergence is accepted, the unwrap condition
-        stays `refcount == 1`, and no mechanism is built. Every exact
-        mechanism makes arena-container death an event again, which is
-        the arena's reason to exist; five were walked to their floor and
-        each breaks a named invariant. The error is one-directional —
-        every live holder carries a counted `+1`, so the unwrap never
-        fires on a box another name reaches — and what a program can
-        observe is written down rather than left implicit, with the
-        five-step sequence pinned in both categories. The collector's
-        `__destruct` guard window is the same rule and the same record.
-        Final.
-      handoff: `array::entity::element_for_copy` is the rule and
-        `CopyReason::Duplication` is its gate; `fill_from` is the one
-        caller. Two tests carry the criterion: the four cases in both
-        categories (`a_copy_unwraps_a_box_with_a_single_holder`, seen
-        failing without the unwrap) and the decided arena divergence
-        (`the_arena_reads_a_box_count_as_an_upper_bound`, `(3, 9)` on
-        the heap against `(9, 9)` in the arena). **A `&` binding must
-        retain the box it is handed** — `Table::make_ref` leaves the
-        caller's reference to the caller — and since this step that
-        convention decides semantics rather than only accounting:
-        forgetting it makes a live `&` read one holder and the next copy
-        unwrap it silently. Nothing enforces it.
-- [x] S3.3 The RFC says the sharing is conditional
-      done: `arrays-hashtable.md` "Element states" and `values.md` carry
-        the condition and the collapse point, and `dev/DECISIONS.md`
-        carries the Sage's ruling with its price
-      tier: T1 · role: —
-      handoff: rfc `e00b508`. `values.md`'s "ReferenceBox" gained the
-        two facts the condition rests on — the box is a heap entity
-        whatever the holder's category, and in the request arena the
-        holder count is an upper bound — and `arrays-hashtable.md`'s
-        "Element states" gained the condition, the one event that asks
-        it, and the escape copy's exemption. `dev/DECISIONS.md` carries
-        three entries of 2026-08-08: the heap box with its price, the
-        retained-block release the price forced, and the arena's upper
-        bound with the five mechanisms refused and the sequence a
-        program can observe.
-
-**Not in this stage, and deliberately.** Collapsing a single-holder box
-on a write to an exclusively owned array is invisible to the program and
-would keep the box population down, but PHP does not do it and the gain
-is unmeasured. It is an optimization with a measurement owed, not a
-semantic debt.
+1. **`Table::make_ref` is the element layer's work living in the table.**
+   The module header promises index slots, a dense entry array and three
+   operations over them, and nothing that knows what an entity is. That
+   function now allocates a reference box, crosses two memory categories
+   through the store barrier, runs an escape copy and gives the entry's
+   reference back — the composition `element::store_into` performs one
+   layer up. A reader who wants to know how `&$a['x']` settles ownership
+   must hold four contracts at once. The cut: leave `Table` an
+   entry-replacement primitive that hands the old element back, and move
+   the boxing, the crossing and the giveback beside `element::set`.
+2. **The publication idiom is written four times.** Retain, then
+   `store_category_barrier`, then on null release and refuse, then on a
+   different pointer release and swap the Value — at `element.rs`'s two
+   sites, `Table::element_for_box` and `entity::fill_from`. It wants one
+   helper (`barrier::publish_child(arena, category, Value) -> Option<Value>`),
+   and until it exists a fix to the rule has to be found in four places.
+   `element_for_box` is `store_into`'s value arm with `GcHeap` written in.
+3. **`destroy_private_copy` and `destroy_empty_box` are the same two
+   calls with contradictory assertions** — one asserts the release did
+   not report death, the other that it did. Both tear down an
+   unpublished entity at count one, and the divergence in the assertion
+   is the knowledge; it is invisible from either site.
+4. ~~**Neither `bool` return in `retained.rs` was `#[must_use]`**~~ —
+   closed in the same pass. Dropping either answer leaks a 64 KiB block
+   silently.
+5. **Four public contracts are stated by pointing at a private
+   function.** `set`, `append`, `unset` and `make_ref` link to
+   `write_through`, which no caller can read, so the ordering guarantee
+   they sell exists in full only inside the module. The crate has 47
+   private-doc-link warnings overall, so the pattern is older than this
+   stage; here it hollows out four contracts at once.
+6. **`a_reference_to_an_absent_key_creates_it_as_null` pins the
+   implementation.** It asserts the entry holds the box itself. The
+   contract is that reading `$a[5]` yields null and a write through `$r`
+   is visible there, which survives any other reference representation.
 
 ## Then: arrays as a performance problem
 
@@ -1207,13 +664,15 @@ Opened 2026-08-07 at Edmond's request, and it gathers work the plan had
 scattered rather than adding any. Everything here is measurement or
 representation; nothing in it is a defect.
 
-**The generic element write is S2 above and runs first**, by Edmond's
-ruling of 2026-08-07: the strategy tag exists for the dispatch inside that
-write, so the write comes before the tag rather than after it.
+**The generic element write ran first**, by Edmond's ruling of
+2026-08-07: the strategy tag exists for the dispatch inside that write,
+so the write came before the tag rather than after it. That write is
+`src/array/element.rs`, built and closed as stage S2.
 
 **The representation, and the tag waits for its second occupant.** Two
 bits of `Table::flags` name the storage strategy, which nothing sets yet.
-It was drafted as the last step of S2 and taken out: with one strategy
+It was drafted as the last step of the element-write stage and taken
+out: with one strategy
 built the dispatch has one arm, no test can tell a write that reads the
 tag from one that calls the table directly, and `arrays.md` makes a fresh
 dense array strategy 2 — so a test pinning "a fresh array is strategy 3"

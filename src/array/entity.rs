@@ -129,6 +129,12 @@ impl LLArray {
 /// than entered. A debug build checks that claim rather than paying for
 /// it.
 ///
+/// **`reason` decides one element case and nothing else**
+/// ([`CopyReason`], and `element_for_copy` below): a duplication unwraps a
+/// reference box the source's entry alone holds, an escape carries every
+/// box across untouched. It reaches every level of the nesting, because
+/// a nested array is duplicated for the same reason its root is.
+///
 /// # Safety
 /// `src` is a live array entity; `arena` the live mounted arena, which
 /// the barrier needs to count an escape or log a release at reset.
@@ -255,6 +261,9 @@ unsafe fn element_for_copy(element: Value, reason: CopyReason) -> Value {
 /// The destination's category comes from `dst` rather than from the
 /// caller, because a nested copy's category is not the root's: it is
 /// `separation_category` of it, which the empty copy already carries.
+///
+/// `reason` is the root call's, carried down every level unchanged, and
+/// only `element_for_copy` reads it.
 ///
 /// # Safety
 /// `src` and `dst` are live arrays, `dst` empty; `arena` the live
