@@ -113,10 +113,11 @@ versions live in `docs/history/`, marked at the top.
   way out so a link never travels in a copy (`dev/DECISIONS.md`,
   2026-08-07).
   `table.rs` is the core — lookup, insert, remove, growth by compaction or
-  doubling, the flood backstop that escalates a table once to a keyed hash
-  over the key bytes, and element references, which are `ReferenceBox`es
-  because growth moves an entry. Storage is a **buffer-arena** chunk in
-  the two long-lived categories, a request-arena body in a request array
+  doubling, and the flood backstop that escalates a table once to a keyed
+  hash over the key bytes. It allocates no entity and calls no store
+  barrier: both are `element.rs`'s, and `Table::insert` hands the
+  displaced element back for that layer to release (S6.1).
+  Storage is a **buffer-arena** chunk in the two long-lived categories, a request-arena body in a request array
   and an immortal-region allocation in an immortal one; both arenas split
   by size, so a storage over one block payload is a dedicated run. It
   never comes from `entity_alloc`, whose blocks the collector reads as
@@ -134,9 +135,10 @@ versions live in `docs/history/`, marked at the top.
   copy, the publication of an arena COW value or key, and the table's
   growth; `append` has a fourth that allocates nothing, an append cursor
   with no successor left. `get` never separates and reads a boxed element
-  through its box, and `make_ref` boxes one inside `write_through`, so
-  `&$a[k]` separates before it boxes and an absent key is created as null
-  first. The box is a heap entity whatever the array's category, so
+  through its box, and `make_ref` boxes one inside `write_through` —
+  `element::box_element` is that composition, an element reference being
+  a `ReferenceBox` because growth moves an entry — so `&$a[k]` separates
+  before it boxes and an absent key is created as null first. The box is a heap entity whatever the array's category, so
   boxing an element of an arena array crosses the boundary twice: the
   element enters a longer-lived holder — copied if it is an arena COW
   value, counted as an escape otherwise — and the box enters the arena

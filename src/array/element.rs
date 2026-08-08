@@ -7,6 +7,15 @@
 //! sits above `Table` rather than inside it because `Map` is the table's
 //! second customer and keys a map exactly: a table that canonicalised
 //! would be unusable there.
+//!
+//! **The barrier and the entity factories are this layer's, and the
+//! table below only stores what it is handed** (S6.1). `store_into`
+//! publishes a value and a key through `store_category_barrier` and
+//! hands `Table::insert` values it may keep; `box_element` allocates the
+//! `ReferenceBox`, crosses the category boundary twice for it, and gives
+//! the displaced element back. `Table` allocates no entity and calls no
+//! barrier, which is what lets `Map` reuse it under a different set of
+//! those rules.
 
 use crate::array::entity::{LLArray, give_value_back};
 use crate::array::table::{Key, Table};
@@ -301,7 +310,7 @@ pub unsafe fn make_ref(
             if vivified && !store_into(a, arena, key, Value::null()) {
                 return false;
             }
-            boxed = (*a).table.make_ref(arena, a as *const RcHeader, key);
+            boxed = box_element(a, arena, key);
             if boxed.is_null() {
                 // The vivified element goes back out. Without this a
                 // refusal would leave the key present on an array this
@@ -472,9 +481,9 @@ unsafe fn store_into(
 /// through an entry changes nothing about that: `6afd220` moved the
 /// reference sever onto the barrier because the collector's relaxed
 /// loads race a plain write into a published slot, and this box *is*
-/// published — the entry names it. `Table::make_ref`'s own
-/// `(*boxed).value = current` is legal only because that box is not
-/// published when it runs, which makes it the pattern an implementer
+/// published — the entry names it. [`box_element`]'s own
+/// `write_value_slot` into a fresh box is legal only because that box is
+/// not published when it runs, which makes it the pattern an implementer
 /// would copy and the wrong one.
 ///
 /// The barrier publishes before it releases, so a refusal leaves the box
@@ -496,6 +505,144 @@ unsafe fn store_through_box(
         std::ptr::null_mut()
     };
     unsafe { crate::memory::barrier::ref_store(arena, boxed as *mut RcHeader, slot, old, value) }
+}
+
+/// Turn the element under `key` into a reference and hand the box back,
+/// creating the box if the element is not one already. Null when the key
+/// is absent, the box could not be allocated, or the element could not be
+/// published into it.
+///
+/// **A reference into an element is a `ReferenceBox`, never a pointer to
+/// the slot.** The other form `values.md` offers — an owner plus a slot
+/// pointer — is for slots that never move, and an element moves whenever
+/// growth or compaction reallocates the storage: `$r = &$a['x']` followed
+/// by enough inserts to grow would leave `$r` pointing into freed
+/// storage. Boxing means growth moves sixteen bytes containing a pointer,
+/// and the box stays put.
+///
+/// **The box is a heap entity even when the array is an arena one**
+/// ([`crate::reference::ll_reference_new`]), so boxing an element of an
+/// arena array crosses a category boundary twice and both crossings go
+/// through `store_category_barrier`. The element enters a longer-lived
+/// holder, so an arena COW element is copied to the heap and an arena
+/// non-COW one counts an escape; the box then enters the arena entry, so
+/// its release is logged against the reset. The array's own reference on
+/// the element is given back afterwards, publication before release as
+/// everywhere else.
+///
+/// **This is the layer that composes it, and the table below only stores
+/// what it is handed** (S6.1): the box, the barrier and the giveback are
+/// this file's, and `Table::insert` hands the displaced element back the
+/// way it does for [`store_into`].
+///
+/// # Safety
+/// `a` a live, exclusively owned array; `arena` the live mounted arena.
+unsafe fn box_element(
+    a: *mut LLArray,
+    arena: *mut crate::memory::arena::Arena,
+    key: Key,
+) -> *mut crate::reference::LLReference {
+    let current = match unsafe { (*a).table.get(key) } {
+        Some(element) => element,
+        None => return std::ptr::null_mut(),
+    };
+    if current.tag() == Tag::Reference {
+        return current.entity_ptr() as *mut crate::reference::LLReference;
+    }
+    let owner = a as *const RcHeader;
+    let category = Table::category_of(owner);
+    let boxed = crate::reference::ll_reference_new();
+    if boxed.is_null() {
+        return std::ptr::null_mut();
+    }
+    let held = match unsafe { element_for_box(arena, current) } {
+        Some(v) => v,
+        None => {
+            unsafe { destroy_empty_box(boxed) };
+            return std::ptr::null_mut();
+        }
+    };
+    // Through `write_value_slot`, not a plain assignment: the factory
+    // publishes the header before it returns, so the box is a counted
+    // entity in the census from that instant and the collector's relaxed
+    // reader can be striding it. A plain 16-byte assignment orders the
+    // payload and the meta word not at all, and a reader that sees the
+    // meta half first takes a refcounted tag with a null payload. No
+    // holder but the entry below names the box yet, which is why the
+    // store need not be `ref_store`'s composition.
+    unsafe { crate::memory::barrier::write_value_slot(&raw mut (*boxed).value, held) };
+    let published = unsafe {
+        crate::memory::barrier::store_category_barrier(arena, category, boxed as *mut RcHeader)
+    };
+    debug_assert_eq!(
+        published, boxed as *mut RcHeader,
+        "a heap non-COW entity is never copied by the barrier"
+    );
+    let element = Value::entity(Tag::Reference, boxed as *mut RcHeader);
+    // The key is present, so the entry is overwritten rather than added:
+    // no growth, nothing to refuse, and the key this call passes is never
+    // the one the entry keeps.
+    let displaced = match unsafe { (*a).table.insert(owner, key, element) } {
+        Some((_, displaced)) => displaced,
+        None => {
+            debug_assert!(false, "an overwrite of a present key cannot be refused");
+            unsafe { destroy_empty_box(boxed) };
+            return std::ptr::null_mut();
+        }
+    };
+    // The entry's own reference on the element, given back only now: the
+    // box already holds one of its own, and `drop_ref` runs `__destruct`
+    // bodies.
+    if let Some(old) = displaced {
+        unsafe { give_value_back(category, &old) };
+    }
+    boxed
+}
+
+/// The element as the box must hold it: retained for the box, and
+/// published into it through the category barrier, so an arena COW
+/// element becomes a heap copy and an arena non-COW one counts its
+/// escape. `None` is a refused escape copy, with nothing spent.
+///
+/// # Safety
+/// `current` is the element the entry holds; `arena` the live mounted
+/// arena.
+unsafe fn element_for_box(
+    arena: *mut crate::memory::arena::Arena,
+    current: Value,
+) -> Option<Value> {
+    if !current.is_refcounted() {
+        return Some(current);
+    }
+    let child = current.entity_ptr();
+    unsafe { crate::refcount::ll_retain(child) };
+    let stored = unsafe {
+        crate::memory::barrier::store_category_barrier(arena, MemoryCategory::GcHeap, child)
+    };
+    if stored.is_null() {
+        unsafe { crate::refcount::ll_release(child) };
+        return None;
+    }
+    if stored == child {
+        return Some(current);
+    }
+    // The barrier copied an arena COW element out: the copy at +1 is the
+    // box's and the retain above goes back.
+    unsafe { crate::refcount::ll_release(child) };
+    Some(Value::entity(current.tag(), stored))
+}
+
+/// Tear down a box that was allocated and never published, its Value slot
+/// still null.
+///
+/// # Safety
+/// `boxed` is a live box at count 1 that no slot has ever named.
+unsafe fn destroy_empty_box(boxed: *mut crate::reference::LLReference) {
+    unsafe {
+        let died = crate::refcount::ll_release(boxed as *mut RcHeader);
+        debug_assert!(died, "a heap box at one dies when its only count goes");
+        crate::object::ll_entity_die(boxed as *mut RcHeader);
+    }
 }
 
 /// The table half of [`unset`]: remove the entry and give the table's
@@ -1518,9 +1665,7 @@ mod tests {
             (*src)
                 .table
                 .insert(src as *const RcHeader, Key::Int(0), Value::int(5));
-            let boxed = (*src)
-                .table
-                .make_ref(arena_ptr, src as *const RcHeader, Key::Int(0));
+            let boxed = box_element(src, arena_ptr, Key::Int(0));
             assert!(!boxed.is_null(), "the element was meant to be boxed");
             assert_eq!(
                 (*src).table.get(Key::Int(0)).unwrap().tag(),
@@ -1544,6 +1689,117 @@ mod tests {
 
             assert!(ll_release(h as *mut RcHeader));
             ll_object_die(h);
+        }
+    }
+
+    // ---- a reference into an element ---------------------------------
+
+    /// The box outlives the storage the element lived in. A slot pointer
+    /// would be dangling after the growth below; the box is not, which is
+    /// the whole reason an element reference is boxed
+    /// ([`box_element`]).
+    #[test]
+    fn a_reference_into_an_element_survives_growth() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let owner = a as *const RcHeader;
+        unsafe {
+            (*a).table.insert(owner, Key::Int(1), Value::int(41));
+
+            let r = box_element(a, arena_ptr, Key::Int(1));
+            assert!(!r.is_null());
+            assert_eq!((*r).value.as_int(), 41);
+
+            // Enough inserts to reallocate the storage several times.
+            for i in 2..5000i64 {
+                (*a).table.insert(owner, Key::Int(i), Value::int(i));
+            }
+            (*r).value = Value::int(99);
+            assert_eq!((*r).value.as_int(), 99);
+
+            // The element still holds the same box.
+            let again = box_element(a, arena_ptr, Key::Int(1));
+            assert_eq!(again, r, "asking twice must not build a second box");
+
+            // Released to zero before the kill: a slot reaching the free
+            // list with a live-looking header is the trap `ll_free`
+            // asserts on, and two tests planted it once already.
+            assert!(ll_release(a as *mut RcHeader));
+            crate::object::ll_entity_die(a as *mut RcHeader);
+        }
+    }
+
+    /// Compaction slides live entries down inside the same chunk, which
+    /// moves the element without moving the storage — the case a double
+    /// read of the storage pointer cannot see, and the box does not care
+    /// about either.
+    #[test]
+    fn a_reference_into_an_element_survives_compaction() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let owner = a as *const RcHeader;
+        unsafe {
+            for i in 0..200i64 {
+                (*a).table.insert(owner, Key::Int(i), Value::int(i));
+            }
+            let r = box_element(a, arena_ptr, Key::Int(150));
+            assert!(!r.is_null());
+            for i in 0..150i64 {
+                let _ = (*a).table.remove(Key::Int(i));
+            }
+            (*a).table.compact();
+
+            assert_eq!(
+                box_element(a, arena_ptr, Key::Int(150)),
+                r,
+                "compaction moved the element, not the box"
+            );
+            (*r).value = Value::int(-1);
+            assert_eq!(
+                (*a).table.get(Key::Int(150)).unwrap().tag(),
+                Tag::Reference,
+                "the element holds the box, not the value"
+            );
+
+            // Released to zero before the kill: a slot reaching the free
+            // list with a live-looking header is the trap `ll_free`
+            // asserts on, and two tests planted it once already.
+            assert!(ll_release(a as *mut RcHeader));
+            crate::object::ll_entity_die(a as *mut RcHeader);
+        }
+    }
+
+    /// An absent key is null here, and the layer above is what turns that
+    /// into a vivified element ([`make_ref`]): the two nulls mean
+    /// different things and only one of them is a refusal.
+    #[test]
+    fn box_element_reports_on_an_absent_key() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        unsafe {
+            (*a).table
+                .insert(a as *const RcHeader, Key::Int(1), Value::int(1));
+            assert!(box_element(a, arena_ptr, Key::Int(2)).is_null());
+
+            let absent = mk(b"nope");
+            assert!(box_element(a, arena_ptr, Key::Str(absent)).is_null());
+            assert!(ll_release(absent as *mut RcHeader));
+            crate::object::ll_entity_die(absent as *mut RcHeader);
+
+            // Released to zero before the kill: a slot reaching the free
+            // list with a live-looking header is the trap `ll_free`
+            // asserts on, and two tests planted it once already.
+            assert!(ll_release(a as *mut RcHeader));
+            crate::object::ll_entity_die(a as *mut RcHeader);
         }
     }
 
@@ -1578,9 +1834,7 @@ mod tests {
                 Key::Int(0),
                 Value::entity(Tag::String, first as *mut RcHeader),
             );
-            let boxed = (*src)
-                .table
-                .make_ref(arena_ptr, src as *const RcHeader, Key::Int(0));
+            let boxed = box_element(src, arena_ptr, Key::Int(0));
             assert!(!boxed.is_null(), "the element was meant to be boxed");
             boxed
         };
@@ -1665,9 +1919,7 @@ mod tests {
                 Key::Int(0),
                 Value::entity(Tag::String, held as *mut RcHeader),
             );
-            let boxed = (*src)
-                .table
-                .make_ref(arena_ptr, src as *const RcHeader, Key::Int(0));
+            let boxed = box_element(src, arena_ptr, Key::Int(0));
             assert!(!boxed.is_null());
             boxed
         };
@@ -1733,9 +1985,7 @@ mod tests {
             (*src)
                 .table
                 .insert(src as *const RcHeader, Key::Int(0), Value::int(7));
-            let boxed = (*src)
-                .table
-                .make_ref(arena_ptr, src as *const RcHeader, Key::Int(0));
+            let boxed = box_element(src, arena_ptr, Key::Int(0));
             assert!(!boxed.is_null());
             boxed
         };

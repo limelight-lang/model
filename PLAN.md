@@ -62,12 +62,22 @@ Done when: all five demands are closed as the review stated them, the
 array module has its rows in the knowledge map, and the gate is green in
 both configurations with behaviour unchanged.
 
-- [ ] S6.1 `Table::make_ref`'s boxing, category crossing and giveback
+- [x] S6.1 `Table::make_ref`'s boxing, category crossing and giveback
       move beside `element::set`
       done: `table.rs` allocates no reference box and calls no store
         barrier; `Table` hands the old element back and the composition
         is one layer up
       tier: T2 · role: —
+      handoff: `element::box_element` is the composition, beside
+        `store_into` and shaped like it — it publishes through
+        `store_category_barrier` and takes the displaced element from
+        `Table::insert`, so no method of `Table` had to be added for the
+        giveback. `Table::make_ref`, `element_for_box` and
+        `destroy_empty_box` are gone from `table.rs` along with the
+        `Owned::make_ref` test wrapper, and the three tests that proved
+        a box survives growth and compaction moved to `element.rs` with
+        the code they exercise. No behaviour changed; the gate is green
+        in all six arms.
 - [ ] S6.2 `barrier::publish_child` replaces the idiom's four copies
       done: one body, and the four sites call it
       tier: T1 · role: —
