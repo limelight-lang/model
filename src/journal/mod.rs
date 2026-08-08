@@ -361,21 +361,33 @@ fn ring_of(registry: &Registry, thread: u64) -> Option<*mut Ring> {
 /// is left is a user destructor registered before the runtime's, and a
 /// thread used past its exit.
 ///
-/// A relaxed read-modify-write, on the one path that writes no record —
-/// §9.1's "no atomic RMW" is the write path's rule, and the threads
-/// contending here have stopped journaling.
+/// A relaxed read-modify-write, on a path that writes no record — §9.1's
+/// "no atomic RMW" is the write path's rule, and the threads contending
+/// here have stopped journaling. It is not the *only* such path: a
+/// refused thread is reported by [`Window::Refused`] instead, for its
+/// whole life rather than per window, and a record raised from inside the
+/// ring's own allocation is §9.7's documented first-record exception.
+/// So this counts records lost to a retirement, and a reader after every
+/// record the process dropped reads it beside those two.
 static LOST: AtomicU64 = AtomicU64::new(0);
 
-/// A ring this thread will never have. It is an address no allocation can
-/// return and is never dereferenced — the value exists only to be
-/// compared against, so that "not asked yet" and "asked and answered no"
-/// stop being the same state.
+/// A ring this thread will never have. Neither value is an address any
+/// allocation can return and neither is ever dereferenced — they exist to
+/// be compared against, so that the states a thread can be in stop being
+/// one.
 ///
-/// Null means the first record site has not run yet. `CLOSED` means the
-/// allocator refused, or the thread has retired its ring, and in both
-/// cases journaling on this thread is over: the record path returns
-/// without a lock and without an allocation.
+/// Null means the first record site has not run yet. [`CLOSED`] means the
+/// thread had a ring and has retired it; [`REFUSED`] means it never got
+/// one. Both end journaling on the thread and the record path returns
+/// without a lock and without an allocation — what separates them is the
+/// report: a record arriving after a retirement is a **loss**, counted
+/// per window, while a refused thread's silence is already reported for
+/// its whole life by [`Window::Refused`] and counting its records again
+/// would degrade every window it runs through.
 const CLOSED: *mut Ring = std::ptr::without_provenance_mut(usize::MAX);
+
+/// The thread never had a ring: see [`CLOSED`].
+const REFUSED: *mut Ring = std::ptr::without_provenance_mut(usize::MAX - 1);
 
 thread_local! {
     /// This thread's ring: null before the first record site runs,
@@ -417,6 +429,9 @@ fn ring_for_writing() -> *mut Ring {
     let existing = RING.with(|cell| cell.get());
     if existing == CLOSED {
         LOST.fetch_add(1, Ordering::Relaxed);
+        return std::ptr::null_mut();
+    }
+    if existing == REFUSED {
         return std::ptr::null_mut();
     }
     if !existing.is_null() {
@@ -484,7 +499,7 @@ fn ring_for_writing() -> *mut Ring {
 /// leaves the reader anything else to go on.
 fn close_this_thread() {
     locked().refused += 1;
-    RING.with(|cell| cell.set(CLOSED));
+    RING.with(|cell| cell.set(REFUSED));
 }
 
 /// Stamp a fresh ring with its identity, put it on the live list, and
@@ -559,8 +574,19 @@ fn allocate_ring() -> *mut Ring {
 /// backlog a park needs was disposed three steps earlier
 /// ([`Registry::pending_free`]).
 pub fn retire_thread_ring() {
-    let ring = RING.with(|cell| cell.replace(CLOSED));
-    if ring.is_null() || ring == CLOSED {
+    // Only a thread that has a ring closes: a cell already holding a
+    // sentinel keeps the one it has, so a refusal is not turned into a
+    // retirement and the records after it are not counted twice — once as
+    // a refused thread's for its whole life, once per window as a loss.
+    let ring = RING.with(|cell| {
+        let ring = cell.get();
+        if ring.is_null() || ring == CLOSED || ring == REFUSED {
+            return std::ptr::null_mut();
+        }
+        cell.set(CLOSED);
+        ring
+    });
+    if ring.is_null() {
         return;
     }
     retire_ring(ring);
@@ -584,12 +610,16 @@ fn retire_ring(ring: *mut Ring) {
 /// and without this its second life journals nothing at all while looking
 /// exactly like a thread that did nothing.
 ///
-/// A cell holding a live ring is left alone: `ll_thread_init` is
-/// idempotent, and reopening a thread that already has one would strand
-/// the ring on the live list and start a second under a second identity.
+/// Both sentinels reopen: a refusal is final for the life it happened in,
+/// and a new life on the same OS thread is a new thread by everything
+/// else this module counts. A cell holding a live ring is left alone —
+/// `ll_thread_init` is idempotent, and reopening a thread that already
+/// has one would strand the ring on the live list and start a second
+/// under a second identity.
 pub fn reopen_thread() {
     RING.with(|cell| {
-        if cell.get() == CLOSED {
+        let ring = cell.get();
+        if ring == CLOSED || ring == REFUSED {
             cell.set(std::ptr::null_mut());
         }
     });
@@ -805,7 +835,7 @@ mod tests {
     /// a reason to ask for its own.
     fn this_thread_identity() -> u64 {
         let ring = RING.with(|cell| cell.get());
-        if ring.is_null() || ring == CLOSED {
+        if ring.is_null() || ring == CLOSED || ring == REFUSED {
             return 0;
         }
         unsafe { (*ring).thread }
@@ -1443,6 +1473,9 @@ mod tests {
         let recorded = events(answers.clone())
             .into_iter()
             .any(|event| event.subject == LATE);
+        // `Lost` names no thread — the ring that would have named it is
+        // retired — so this is a count over the window, and what keeps it
+        // this test's own is the guard serialising the journal's tests.
         let counted = answers
             .iter()
             .any(|window| matches!(window, Window::Lost { records } if *records >= 1));
@@ -1455,6 +1488,12 @@ mod tests {
     /// The runtime's own block handovers are drained inside the exit, so
     /// that they happen while there is still a ring to record them in.
     /// What is left for the two destructors afterwards is nothing.
+    ///
+    /// It pins the drain, not its **position**: the assertions are read
+    /// after the exit has returned, so moving the two calls below the
+    /// retirement keeps this green while reopening exactly the defect the
+    /// drain closed. Nothing can pin the position until §9.5's record
+    /// sites exist and a block handover is a record to look for.
     #[test]
     fn the_exit_hands_back_the_reserve_and_the_block_cache_itself() {
         let _g = crate::memory::block_pool::test_guard();
@@ -1521,6 +1560,50 @@ mod tests {
             reported,
             Some(start.refusals + 1),
             "the thread left no trace in the window that covered it"
+        );
+    }
+
+    /// A refused thread's later records are not counted as losses. Its
+    /// silence is already reported for the whole of its life by
+    /// [`Window::Refused`], and counting every record it goes on to raise
+    /// would mark every window it runs through as having lost something —
+    /// the degradation the per-window difference exists to avoid, through
+    /// a second door.
+    #[test]
+    fn a_refused_threads_later_records_are_not_counted_as_losses() {
+        use crate::memory::block_pool::FORCE_OOM;
+        let _g = crate::memory::block_pool::test_guard();
+
+        let (announce, announced) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel();
+        let refused = std::thread::spawn(move || {
+            crate::memory::heap::ll_thread_init();
+            FORCE_OOM.store(true, Ordering::Relaxed);
+            record(4, 0, 1, 0, 0);
+            FORCE_OOM.store(false, Ordering::Relaxed);
+            announce.send(()).expect("the test hung up");
+
+            wait.recv().expect("the test hung up");
+            // Raised while refused, and inside the window below.
+            record(4, 0, 2, 0, 0);
+            announce.send(()).expect("the test hung up");
+
+            wait.recv().expect("the test hung up");
+            crate::memory::heap::ll_thread_exit();
+        });
+
+        announced.recv().expect("the thread hung up");
+        let start = mark();
+        go.send(()).expect("the thread hung up");
+        announced.recv().expect("the thread hung up");
+        let end = mark();
+        go.send(()).expect("the thread hung up");
+        refused.join().expect("the refused thread panicked");
+        assert!(
+            !between(&start, &end)
+                .iter()
+                .any(|window| matches!(window, Window::Lost { .. })),
+            "a refused thread's records were counted as losses"
         );
     }
 

@@ -1767,11 +1767,15 @@ pub extern "C" fn ll_thread_init() {
         // life. Lowering the phase there would tell every caller below
         // that this thread may free again, on a thread whose deferral
         // backlog is already gone.
-        if !thread_exit_running() {
+        //
+        // Nor is a heap rebuilt by a destructor *after* the exit, and the
+        // guard is what tells the two apart: a new life on a pooled
+        // thread can arm one, a thread in TLS teardown cannot. Leaving
+        // the phase `Exited` there is what keeps `thread_may_free` from
+        // answering yes on a thread whose deferral backlog is gone.
+        if !thread_exit_running() && exit_guard_armed() {
             EXIT_PHASE.with(|phase| phase.set(ExitPhase::Live));
-            if exit_guard_armed() {
-                crate::journal::reopen_thread();
-            }
+            crate::journal::reopen_thread();
         }
     }
 }

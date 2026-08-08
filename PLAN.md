@@ -48,7 +48,7 @@ records, a window marked by a cursor snapshot, eviction reported as
 Done when: the census hunt of 2026-08-06 runs through the journal with no
 ring written by hand, and the gate is green with the feature on and off.
 
-- [~] S5.1 The ring, the registry and window marking (§9.1–9.4)
+- [x] S5.1 The ring, the registry and window marking (§9.1–9.4)
       done: unit tests for wrap-around, cursor-pair membership, a retired
         thread's ring still readable, and `unknown` on eviction
       tier: T2 · role: Critic
@@ -211,6 +211,27 @@ ring written by hand, and the gate is green with the feature on and off.
         class. Final; `dev/DECISIONS.md`.
       Fixed 2026-08-08 round 6: the two drains, the counter, `Mark.lost`
         and `Window::Lost`; three regression tests, each seen failing.
+      Critic 2026-08-08 round 7, scoped to that batch: **no
+        contract-class defect**, which is the ruling's terminator, so the
+        cycle ends here. Four non-contract findings repaired with it,
+        none renewing it: `LOST` counted a refused thread's later records
+        too, so a refusal now has a sentinel of its own and its silence
+        stays reported by `Window::Refused` alone (regression seen
+        failing); `ll_thread_init` lowered the exit phase to `Live` for a
+        heap rebuilt *after* the exit, re-enabling `thread_may_free` on a
+        thread whose backlog is gone, so the guard now decides that too;
+        and two claims were corrected where they are made — the drain
+        test pins the drain and not its position, and `Window::Lost`
+        names no thread.
+      handoff: `src/journal/` — the ring, the registry, the window and
+        the loom model of the read-back bracket. Seven critic passes and
+        three Sage rulings; 24 defects, all repaired or deleted. The
+        contract is two-part and is stated in the module doc: complete to
+        the last act of `heap::ll_thread_exit`, honest past it. Gate
+        green in both configurations, Miri silent over `journal::`.
+        What has no test and says so: the retirement's *position* at the
+        end of the exit, which nothing can pin until S5.2's record sites
+        exist.
 - [x] S5.1a Take the journal to the Sage before S5.2 builds on it
       done: he has ruled on how many rounds a module of this shape gets,
         and on the residue named below
