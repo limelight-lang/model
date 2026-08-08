@@ -48,10 +48,30 @@ records, a window marked by a cursor snapshot, eviction reported as
 Done when: the census hunt of 2026-08-06 runs through the journal with no
 ring written by hand, and the gate is green with the feature on and off.
 
-- [ ] S5.1 The ring, the registry and window marking (§9.1–9.4)
+- [~] S5.1 The ring, the registry and window marking (§9.1–9.4)
       done: unit tests for wrap-around, cursor-pair membership, a retired
         thread's ring still readable, and `unknown` on eviction
       tier: T2 · role: Critic
+      Critic 2026-08-08: five real defects in the committed shape
+        (`af3dcaa`), each verified against the code. A retired thread
+        resurrects its ring, because null `RING` means both "never
+        allocated" and "retired" and thread exit keeps journaling after
+        step 6 — so two rings share one identity and `RETIRED_KEPT`
+        bounds nothing. `Mark` holds raw ring pointers and `between`
+        dereferences them without the lock, so eviction is a
+        use-after-free with an ABA that reports another caller's bytes as
+        records. A ring evicted between two marks contributes nothing
+        instead of `unknown`, which is the one conversion the module
+        exists to prevent. The validating re-read is an `Acquire` load
+        where the payload loads before it need `fence(Acquire)` — S2.V's
+        defect class, and its fences-plus-loom answer is the precedent.
+        A refused allocation is retried on every record, taking two
+        global mutexes and a 2 MiB request each time. Beside them:
+        panics on a path §9.7 forbids them on, one inside a TLS
+        destructor; `CAPACITY` silently deciding the allocator regime;
+        and the retired-ring test calling `retire_thread_ring` by hand,
+        so it never walks the path the first defect lives on. All
+        accepted, none fixed yet.
 - [ ] S5.2 Record sites for the default event set, behind the
       `debug-journal` feature
       done: with the feature off no record site appears in the release
