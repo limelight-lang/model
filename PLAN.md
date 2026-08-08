@@ -318,11 +318,29 @@ ring written by hand, and the gate is green with the feature on and off.
         runs rather than one. Miri over the committed tree with the
         sites compiled in: `journal` 28 passed, 0 failed, 16.8 s;
         `block_pool` 5 passed, 0 failed, 3.0 s.
-- [ ] S5.3 The acceptance hunt through the journal
+- [x] S5.3 The acceptance hunt through the journal
       done: on the pinned reproducer (`--no-run` binary, `taskset -c
         0,1`, two spinners) the question "which strings died inside the
         window" is answered from journal reads alone
       tier: T2 · role: —
+      Ran 2026-08-08 on that reproducer, the `debug-journal` binary at
+        `--test-threads 4` against two spinners on the same two cores:
+        the hunt alone 60 of 60, the whole suite 60 of 60. The first
+        forty runs found one real flake and it was mine — three site
+        tests named an entity by address alone, and a block is
+        process-global, so another thread's `put` of the same address
+        inside the window read as a decommission before the commission.
+        They name a ring as well now.
+      handoff: `journal::tests::
+        which_strings_died_inside_the_window_is_answered_from_the_journal`
+        is the hunt. Four strings are created before any dies, so the
+        four addresses are distinct while the window is marked, and the
+        read-back is per ring — an address is a name only while its
+        thread is the one that wrote it. Seen failing twice: with the
+        death record's subject zeroed, and with `between` forgetting
+        where the window started, which puts a string that died before it
+        inside it. Every test of the ring mechanism now holds
+        `kinds::disable_sites_for_test`, the reason being on the guard.
 
 ## S6 — The stage-end review's five demands
 

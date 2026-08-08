@@ -165,9 +165,15 @@ pub fn set_enabled_kinds(mask: u64) {
 /// it is the only thing journaling, and with the sites compiled in it is
 /// not: a thread that allocates takes a ring, and a ring is a block. The
 /// mask is process-wide, so quieting it is only sound while no other such
-/// test runs — which is what the lock is for. Tests that assert nothing
-/// about the journal take neither, and go on exercising the sites, which
-/// is where a site on a forbidden path is caught.
+/// test runs — which is what the lock is for.
+///
+/// **Every test of the ring mechanism takes it**, rather than the ones
+/// that were seen failing without it: which of them notices depends on
+/// whether its runner thread had been initialised already, so the ones
+/// that pass today are the same test on a different day. What does not
+/// take it is the rest of the suite, which goes on exercising the sites
+/// — that is where a site on a path §9.7 forbids is caught — and the
+/// site tests below, which hold [`DEFAULT_KINDS`] instead.
 #[cfg(test)]
 pub(crate) fn disable_sites_for_test() -> SitesHeld {
     set_sites_for_test(0)
@@ -267,7 +273,7 @@ mod tests {
 #[cfg(all(test, feature = "debug-journal"))]
 mod site_tests {
     use super::*;
-    use crate::journal::{Event, Window, between, mark};
+    use crate::journal::{Event, Window, between, mark, this_thread_identity};
     use crate::memory::block_pool::BlockPool;
     use crate::refcount::{EntityKind, MemoryCategory};
 
@@ -308,9 +314,13 @@ mod site_tests {
         }
         let end = mark();
 
+        // By ring as well as by address: a slot is reused, and another
+        // thread's entity born at this address inside the window would
+        // answer under the same name.
+        let ring = this_thread_identity();
         let mine: Vec<(u32, u64)> = events(between(&start, &end))
             .into_iter()
-            .filter(|event| event.subject == subject)
+            .filter(|event| event.thread == ring && event.subject == subject)
             .map(|event| (event.kind, event.a))
             .collect();
         assert_eq!(
@@ -342,9 +352,14 @@ mod site_tests {
         pool.put(block);
         let end = mark();
 
+        // By ring as well as by address. A block is process-global: the
+        // one this thread is handed may have been returned by another
+        // inside the same window, which reads as a decommission before
+        // the commission — seen once in forty runs under contention.
+        let ring = this_thread_identity();
         let mine: Vec<u32> = events(between(&start, &end))
             .into_iter()
-            .filter(|event| event.subject == block as u64)
+            .filter(|event| event.thread == ring && event.subject == block as u64)
             .map(|event| event.kind)
             .collect();
         assert_eq!(
@@ -385,9 +400,10 @@ mod site_tests {
                 pool.put(block);
             }
             let end = mark();
+            let ring = this_thread_identity();
             events(between(&start, &end))
                 .into_iter()
-                .filter(|event| event.kind == KIND_BLOCK_DECOMMISSIONED)
+                .filter(|event| event.thread == ring && event.kind == KIND_BLOCK_DECOMMISSIONED)
                 .count()
         })
         .join()
@@ -407,6 +423,13 @@ mod site_tests {
         let _quiet = disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         let pool = BlockPool::global();
+        // One record through the door that ignores the mask, so that this
+        // thread has a ring to be silent in: with no ring the silence
+        // below would be the wrong silence, and the test would pass on a
+        // thread the journal never reached.
+        crate::journal::record(KIND_BLOCK_COMMISSIONED, 0, 0, 0, 0);
+        let ring = this_thread_identity();
+        assert_ne!(ring, 0, "the thread has no ring, so it is silent anyway");
 
         let start = mark();
         let block = pool.get();
@@ -416,7 +439,7 @@ mod site_tests {
         assert_eq!(
             events(between(&start, &end))
                 .into_iter()
-                .filter(|event| event.subject == block as u64)
+                .filter(|event| event.thread == ring && event.subject == block as u64)
                 .count(),
             0,
             "a disabled kind reached the ring"

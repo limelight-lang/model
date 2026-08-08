@@ -410,6 +410,20 @@ thread_local! {
     static ALLOCATING: Cell<bool> = const { Cell::new(false) };
 }
 
+/// This thread's ring identity, or `0` when it has none. Tests only:
+/// identity is the registry's business, and no caller outside one has a
+/// reason to ask for its own — what a test wants it for is to read back
+/// only what **it** wrote, an address being a name shared with every
+/// other thread the allocator has ever served.
+#[cfg(test)]
+pub(crate) fn this_thread_identity() -> u64 {
+    let ring = RING.with(|cell| cell.get());
+    if ring.is_null() || ring == CLOSED || ring == REFUSED {
+        return 0;
+    }
+    unsafe { (*ring).thread }
+}
+
 /// Record one event on this thread's ring, allocating the ring on first
 /// use. Silent and infallible from the caller's side: a thread whose ring
 /// could not be allocated journals nothing, and the operation being
@@ -834,17 +848,6 @@ fn window_of(ring: *mut Ring, thread: u64, start_at: u64, end_at: u64) -> Window
 mod tests {
     use super::*;
 
-    /// This thread's ring identity, or `0` when it has none. Tests only:
-    /// identity is the registry's business, and no caller outside one has
-    /// a reason to ask for its own.
-    fn this_thread_identity() -> u64 {
-        let ring = RING.with(|cell| cell.get());
-        if ring.is_null() || ring == CLOSED || ring == REFUSED {
-            return 0;
-        }
-        unsafe { (*ring).thread }
-    }
-
     /// How many rings are live and how many retired. Tests only, and the
     /// live count is what a resurrected ring shows up in.
     fn registry_counts() -> (usize, usize) {
@@ -929,6 +932,7 @@ mod tests {
     /// positions.
     #[test]
     fn a_ring_wraps_and_its_cursor_does_not() {
+        let _quiet = kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         let ring = allocate_ring();
         assert!(!ring.is_null());
@@ -961,6 +965,7 @@ mod tests {
     /// is the whole of "what happened between these two moments".
     #[test]
     fn a_cursor_pair_names_exactly_what_was_written_inside_it() {
+        let _quiet = kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         const BEFORE: u64 = 0x0B4;
         const FIRST_INSIDE: u64 = 0x1_11;
@@ -990,6 +995,7 @@ mod tests {
     /// that finding false.
     #[test]
     fn an_overflowed_window_answers_unknown_rather_than_none() {
+        let _quiet = kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         let start = mark();
         for i in 0..(CAPACITY as u64 * 2) {
@@ -1019,6 +1025,7 @@ mod tests {
     /// thread — so a retired ring stays readable and stays in the window.
     #[test]
     fn a_retired_threads_ring_is_still_read_by_a_window() {
+        let _quiet = kinds::disable_sites_for_test();
         const SUBJECT: u64 = 0xDEAD;
         let _g = crate::memory::block_pool::test_guard();
         let start = mark();
@@ -1133,6 +1140,7 @@ mod tests {
     /// module exists to prevent.
     #[test]
     fn a_ring_freed_inside_the_window_is_reported_rather_than_missing() {
+        let _quiet = kinds::disable_sites_for_test();
         const SUBJECT: u64 = 0x105E;
         let _g = crate::memory::block_pool::test_guard();
 
@@ -1195,6 +1203,7 @@ mod tests {
     /// meaning anything.
     #[test]
     fn a_window_that_ended_before_the_close_is_not_reclassified_by_it() {
+        let _quiet = kinds::disable_sites_for_test();
         const SUBJECT: u64 = 0xC105;
         let _g = crate::memory::block_pool::test_guard();
 
@@ -1310,6 +1319,7 @@ mod tests {
     /// and a per-ring answer over no rings is the empty list again.
     #[test]
     fn two_marks_in_the_wrong_order_answer_that_they_bound_nothing() {
+        let _quiet = kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         record(2, 0, 0x0D, 0, 0);
         let start = mark();
@@ -1323,6 +1333,7 @@ mod tests {
     /// has nothing to answer over and the empty list comes back.
     #[test]
     fn a_reversed_pair_naming_no_ring_still_answers() {
+        let _quiet = kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         let start = Mark {
             positions: Vec::new(),
@@ -1487,6 +1498,7 @@ mod tests {
     /// nothing but its own cell.
     #[test]
     fn a_destructor_running_after_the_exit_is_recorded_or_counted() {
+        let _quiet = kinds::disable_sites_for_test();
         const LATE: u64 = 0x1A7E;
         let _g = crate::memory::block_pool::test_guard();
 
@@ -1541,6 +1553,7 @@ mod tests {
     /// this one.
     #[test]
     fn the_exit_hands_back_the_reserve_and_the_block_cache_itself() {
+        let _quiet = kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         let (reserve, cache) = std::thread::spawn(|| {
             crate::memory::heap::ll_thread_init();
@@ -1560,6 +1573,106 @@ mod tests {
 
         assert_eq!(reserve, 0, "the exit left blocks in the reserve");
         assert_eq!(cache, 0, "the exit left blocks in the thread cache");
+    }
+
+    /// The hunt of 2026-08-06, run through the journal: **which strings
+    /// died inside this window**, answered from journal reads and nothing
+    /// else. It is this stage's acceptance criterion
+    /// (`dev/design/debug-modes.md` §9, `PLAN.md` S5.3), and what it
+    /// replaces is a ring of `(thread, address)` written by hand for that
+    /// one question.
+    ///
+    /// The four strings are created before any of them dies, so that the
+    /// four addresses are distinct while the window is being marked: a
+    /// death frees the slot, and the next string born there would answer
+    /// under the same address. Deaths are then read back per ring, which
+    /// is the other half of the same care — an address is only a name
+    /// while its thread is the one that wrote it.
+    ///
+    /// The trustworthy *none* is the point, so the two rings that matter
+    /// are checked to have answered with records rather than with
+    /// `Unknown`: a hunt that concludes "no string died" from a lapped
+    /// ring has concluded nothing.
+    #[cfg(feature = "debug-journal")]
+    #[test]
+    fn which_strings_died_inside_the_window_is_answered_from_the_journal() {
+        use crate::refcount::{EntityKind, MemoryCategory, RcHeader};
+        let _sites = kinds::set_sites_for_test(kinds::DEFAULT_KINDS);
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = crate::memory::arena::Arena::new();
+        let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
+
+        let make = |ctx: &mut crate::memory::context::LLContext, bytes: &[u8]| unsafe {
+            let s = crate::string::ll_string_new(ctx, MemoryCategory::GcHeap, bytes);
+            assert!(!s.is_null());
+            s
+        };
+        let kill = |s: *mut crate::string::LLString| unsafe {
+            assert!(crate::refcount::ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+        };
+
+        let early = make(&mut ctx, b"before");
+        let inside = make(&mut ctx, b"inside");
+        let survivor = make(&mut ctx, b"survives");
+        let late = make(&mut ctx, b"after");
+        kill(early);
+
+        let start = mark();
+        kill(inside);
+        let here = this_thread_identity();
+        let (there, elsewhere) = std::thread::spawn(move || {
+            crate::memory::heap::ll_thread_init();
+            let mut arena = crate::memory::arena::Arena::new();
+            let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
+            let s = unsafe {
+                crate::string::ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"elsewhere")
+            };
+            assert!(!s.is_null());
+            let identity = this_thread_identity();
+            unsafe {
+                assert!(crate::refcount::ll_release(s as *mut RcHeader));
+                crate::object::ll_entity_die(s as *mut RcHeader);
+            }
+            (identity, s as u64)
+        })
+        .join()
+        .expect("the second thread panicked");
+        let end = mark();
+        kill(late);
+
+        let answers = between(&start, &end);
+        for identity in [here, there] {
+            assert_ne!(identity, 0, "a thread of this test journaled nothing");
+            let lapped = answers.iter().any(
+                |window| matches!(window, Window::Unknown { thread, .. } if *thread == identity),
+            );
+            assert!(!lapped, "ring {identity} could not answer for the window");
+        }
+
+        let died: Vec<u64> = events(answers)
+            .into_iter()
+            .filter(|event| event.thread == here || event.thread == there)
+            .filter(|event| {
+                event.kind == kinds::KIND_ENTITY_DEATH && event.a == EntityKind::String as u64
+            })
+            .map(|event| event.subject)
+            .collect();
+
+        assert!(
+            died.contains(&(inside as u64)) && died.contains(&elsewhere),
+            "a string that died inside the window is missing from it: {died:x?}"
+        );
+        assert!(
+            !died.contains(&(early as u64)),
+            "a string that died before the window is inside it"
+        );
+        assert!(
+            !died.contains(&(survivor as u64)) && !died.contains(&(late as u64)),
+            "a string that outlived the window is in it"
+        );
+
+        kill(survivor);
     }
 
     /// The retirement is the exit's **last** act, and this is what says
@@ -1682,6 +1795,7 @@ mod tests {
     /// a second door.
     #[test]
     fn a_refused_threads_later_records_are_not_counted_as_losses() {
+        let _quiet = kinds::disable_sites_for_test();
         use crate::memory::block_pool::FORCE_OOM;
         let _g = crate::memory::block_pool::test_guard();
 
