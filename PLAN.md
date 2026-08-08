@@ -938,8 +938,9 @@ readable through the box.
         box reaching both holders and the refused box rolling back; four
         doc corrections and the "five clauses" recount above. Left to
         Edmond as a design question, below.
-      **Open for Edmond, found by the language critic and verified on
-        PHP 8.3.6:** a copy shares the box unconditionally, while Zend's
+      **Answered by stage S3, and the RFC amended with it** (rfc
+        `e00b508`). What the entry said when it was open: a copy shares
+        the box unconditionally, while Zend's
         `zend_array_dup_element` unwraps a reference whose refcount is 1.
         So `$a=['x'=>1]; $r=&$a['x']; unset($r); $b=$a; $b['x']=3;`
         leaves `$a['x']` at 1 in PHP and at 3 here, and the same
@@ -1178,11 +1179,21 @@ the arena.
         convention decides semantics rather than only accounting:
         forgetting it makes a live `&` read one holder and the next copy
         unwrap it silently. Nothing enforces it.
-- [ ] S3.3 The RFC says the sharing is conditional
+- [x] S3.3 The RFC says the sharing is conditional
       done: `arrays-hashtable.md` "Element states" and `values.md` carry
         the condition and the collapse point, and `dev/DECISIONS.md`
         carries the Sage's ruling with its price
       tier: T1 · role: —
+      handoff: rfc `e00b508`. `values.md`'s "ReferenceBox" gained the
+        two facts the condition rests on — the box is a heap entity
+        whatever the holder's category, and in the request arena the
+        holder count is an upper bound — and `arrays-hashtable.md`'s
+        "Element states" gained the condition, the one event that asks
+        it, and the escape copy's exemption. `dev/DECISIONS.md` carries
+        three entries of 2026-08-08: the heap box with its price, the
+        retained-block release the price forced, and the arena's upper
+        bound with the five mechanisms refused and the sequence a
+        program can observe.
 
 **Not in this stage, and deliberately.** Collapsing a single-holder box
 on a write to an exclusively owned array is invisible to the program and
