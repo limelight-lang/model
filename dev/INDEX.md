@@ -364,7 +364,9 @@ Design only, nothing implemented.
 ## Traps
 
 `dev/POSTMORTEM.md` — benchmarking against a stale baseline
-(2026-07-20).
+(2026-07-20); an entity killed at refcount 1, which read as a census
+flake (2026-08-06); a test heavy enough to stop the Miri gate from
+finishing (2026-08-08).
 
 Also worth knowing before touching this crate:
 

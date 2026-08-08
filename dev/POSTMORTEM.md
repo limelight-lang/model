@@ -203,7 +203,7 @@ next. They were removed before the change landed.
 
 ---
 
-# An entity killed at refcount 1 (2026-08-06)
+## 2026-08-06 — an entity killed at refcount 1
 
 **What happened.** `walk::tests::census_counts_objects_and_their_edges`
 failed at roughly 5 in 30 under load, and stayed unexplained for a
@@ -243,3 +243,32 @@ reading.
   part to remember: the free-list link is written at bytes 8-15, where
   the class pointer was, so a walk that believes such a slot follows a
   free-list link as a `*const Class`.
+
+## 2026-08-08 — a test that dominates the Miri run stops the Miri run
+
+`a_deep_array_tears_down_without_the_machine_stack` built and tore down
+20 000 nested arrays. Natively it costs 0.04 s, which is why the number
+looked free. Under Miri it had not finished after eighteen minutes, and
+three whole-suite runs launched against the same commit were all killed
+by their timeout — one of them after the commit message had already said
+Miri was running against it.
+
+**What it costs.** Miri is the only tool that sees the formal-UB class of
+defect in this crate (`dev/WORKFLOW.md`), and its whole-suite run is how
+a stage's verification closes. A single test three orders of magnitude
+above the others does not fail the gate; it makes the gate not finish,
+which reads exactly like nobody having run it. The stage-end review found
+it by measuring; the killed runs were dismissed as environment until
+then.
+
+**The depth was also larger than its own argument.** The test's comment
+justified 20 000 levels by a per-level stack budget, but the drain spends
+a fixed frame and one list entry: what the test demonstrates is a total,
+not a margin per level. 2 000 levels on a 64 KiB stack proves the same
+thing and was seen aborting the process with the list forced to refuse.
+
+**What changed so it cannot repeat.** The depth is 2 000, the stack is
+64 KiB, and the test carries `#[cfg_attr(miri, ignore = "…")]` with the
+reason and with what covers the same code under Miri instead. Before
+quoting a Miri run in a commit message, read the log to its result line —
+a killed run leaves an empty file, and an empty file is not a green one.
