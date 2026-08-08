@@ -78,13 +78,24 @@ configurations.
         The end-to-end test needed `buffer_arena::FORCE_REFUSE_LONGLIVED`
         — `FORCE_OOM` refuses the pool, which the buffer arena can go
         around by adopting a block, and the test was flaky 5 in 40 on it.
-- [ ] S4.3 Test call sites retain before they insert
+- [x] S4.3 Test call sites retain before they insert
       done: no call site retains after `Table::insert`; suite green
       tier: T0 · role: —
-- [ ] S4.4 Correct the plan's stale entries
+      handoff: nothing to change. Every `table.insert` of an entity value
+        in the crate already takes the count first — the sites in
+        `array/entity.rs`, `array/element.rs`, `gc.rs`, `walk.rs`,
+        `collector.rs` and `promote.rs` were read one by one on
+        2026-08-08. The leftover note in item 12 was stale and is
+        corrected there.
+- [x] S4.4 Correct the plan's stale entries
       done: `PLAN.md` no longer contradicts the code on the five points
         the Sage listed on 2026-08-08
       tier: T0 · role: —
+      handoff: corrected — Phase C's strings and arrays, the
+        `dev/ARCHITECTURE.md` line, `retained::release`'s missing caller,
+        the ReferenceBox/Lazy candidate leak that the kind set closed,
+        and the telemetry entry that predates S5. Item 12's test-call-site
+        note went with them (S4.3).
 
 Out of scope, named so it does not read as an oversight: a chain that
 leaves the array kind between levels still recurses. An object chain
@@ -405,8 +416,9 @@ What to take next, in this order and for these reasons.
    (`Table::coherent_entries`); failing it skips the array for one epoch,
    which leaks rather than frees early. The publish-first contract is
    stated on `Table::insert` and worked in `array::entity::separate`.
-   **Left:** test call sites that still retain after inserting rather than
-   before, which is the pattern to copy and now the wrong one.
+   The test call sites this entry once owed are already publish-first:
+   every `table.insert` of an entity value in the crate takes its count
+   before the entry exists, checked site by site on 2026-08-08 (S4.3).
 3. ~~**Item 20, the candidate gate**~~ — closed. The gate masks
    `0b101` of the kind field, so `{Object 000, Array 010}` pass in the
    one compare the object-only test already was
@@ -427,13 +439,15 @@ What to take next, in this order and for these reasons.
    failed, 6 ignored; rc-trace — the configuration where the gate
    predicate is live — 308 passed, 0 failed, 3 ignored.
 
-   **Left, and both are leaks rather than misses:** a ring taking its
-   last external release on a ReferenceBox (`$a['x'] = &$a`) or on a
-   Lazy proxy produces no candidate. Lazy carries an object's counted
-   slots and is traced like one, so it belongs in the buffer by the same
-   argument as Array; no factory stamps that kind yet, and no mask admits
-   `110` without admitting `Box 100`. Take it with the numbering, when
-   `resource` needs the last code.
+   **The two leaks this entry named are closed with it.** A ring taking
+   its last external release on a ReferenceBox (`$a['x'] = &$a`) or on a
+   Lazy proxy produced no candidate while the gate was a mask, and no
+   mask could admit `Reference 011` without admitting `String 001`. The
+   gate became a **set of kinds** the same day —
+   `refcount::CANDIDATE_KINDS` is `{Object, Array, Reference, Lazy}`,
+   a kind belonging to it exactly when it holds counted slots a cycle can
+   close through (`dev/DECISIONS.md`, 2026-08-07) — so nothing here waits
+   on the renumbering.
 
 Both questions that were open on 2026-08-06 are answered, neither by
 Edmond. The recursion bound of the deep escape copy is an explicit work
@@ -1618,8 +1632,10 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
   a ring living entirely among promoted survivors used to be
   uncollectable forever. Design and the three settled obligations:
   `rfc/model/gc/retained-block-walk.md`, `dev/DECISIONS.md` 2026-08-03.
-  Left open: `retained::release` has no caller until a fully emptied
-  retained block can return to the pool.
+  A fully emptied retained block returns to the pool since 2026-08-08:
+  the last occupant's death reports through `stdapi::ll_free`'s retained
+  arm (S3.1), and a block held for a payload the reset could not carry
+  waits for that payload's own free (S4.2).
 - [x] Run `__destruct` of cyclically-dead objects (2026-07-25) — Zend-style
   discipline (`run_cyclic_destructors`): restore the white set's real
   counts, guard, run each `__destruct` once through the ordinary teardown,
@@ -1630,18 +1646,17 @@ Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
 - [ ] `rc-satb` as a second build-time GC strategy (needs the `WRITING`
   bit from A5). `rfc/model/gc/satb.md`.
 
-### Phase C — new subsystems (not started; each its own RFC + code)
+### Phase C — new subsystems (each its own RFC + code)
 
-- [ ] **Strings — the chosen next task** (decided 2026-08-03, see "Next"
-  at the top). String-as-class and the interpolated-template class
-  (`rfc/model/strings.md`). A2's entity-kind switch is what unblocked
-  it. Where to start: an interned name is already a valid immortal
-  string entity that the future machinery is meant to read as-is
-  (`dev/ARCHITECTURE.md`, invariant 13), so the layout is half-pinned
-  before a line is written.
-- [ ] Arrays — one `array` class, three storage strategies; the hashtable
-  design (bucket layout, collision strategy) is still a future document
-  (`rfc/model/arrays.md`).
+- [x] **Strings** — done 2026-08-05, all sixteen tasks. Both layouts of
+  the string entity, the rapidhash V3 port with its seed and the
+  `hash-folding` option, the interpolated template as its own class
+  (`src/string.rs`, `src/hash/`, `src/template.rs`,
+  `rfc/model/strings.md`).
+- [~] **Arrays** — storage strategy 3 is built (`src/array/`): the
+  ordered hash of `rfc/model/arrays-hashtable.md`, its entry layout, the
+  flood ladder, element references, the generic element write. Strategy 2
+  and the strategy tag are S7 above; strategy 1 has no producer.
 - [ ] Further out, listed in `rfc/BACKLOG.md`: exceptions runtime
   (table-driven unwind + error-return channel, `runtime/exceptions.md`),
   actors (`runtime/actors.md`), closures, enums, generators/fibers,
@@ -1733,8 +1748,9 @@ Object model, deferred by design:
   whether this is the same mechanism as the deferred CHA-style optimistic
   devirtualization (`classes.md` Deferred).
 - [ ] Allocation telemetry layer 2 / debug mode — full design in
-  `dev/design/debug-modes.md`; build order is its section 10. Designed, not
-  scheduled.
+  `dev/design/debug-modes.md`; build order is its section 10. Designed,
+  and its first item is scheduled: the event journal is stage S5 above.
+  The rest of the section is unscheduled.
 - [x] **The opt-in event journal, designed to completion** — design done
   2026-08-06, `dev/design/debug-modes.md` §9. One ring per thread, 32-byte
   fixed records, a window marked by a cursor snapshot across the registry,
@@ -1747,5 +1763,7 @@ Object model, deferred by design:
   and criterion benchmarks per `dev/BENCHMARKS.md` — follow the protocol,
   do not improvise. Benches do not cross the C ABI; ABI-entry work is shown
   by IR/asm.
-- `dev/ARCHITECTURE.md` — the crate's knowledge map, still absent and
-  agreed to be written; the obvious documentation job over ~9k lines.
+- `dev/ARCHITECTURE.md` — the crate's knowledge map: layers and their
+  sanctioned edges, the per-module "does not know" table, the header-bit
+  ledger, the five end-to-end paths. Written; it moves with behaviour
+  like any other document (`dev/WORKFLOW.md`).
