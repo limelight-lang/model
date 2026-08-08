@@ -8,7 +8,23 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-08 · Active: S4
+Updated: 2026-08-08 · Active: S5
+
+**S4 is closed and deleted by rule 23.1.3** — the teardown drain, the
+pinned block's release, and the plan hygiene. What survives it is in
+`dev/DECISIONS.md` (two entries of 2026-08-08), `dev/POSTMORTEM.md` (a
+test heavy enough to stop the Miri gate finishing) and the code's own
+doc blocks.
+
+**One verification is owed rather than done:** the whole-suite Miri run
+against S4. It is not part of the stage's criterion — `dev/WORKFLOW.md`
+keeps Miri beside the commit gate rather than inside it — and it stopped
+being a quarter-hour job: 86 tests in 28 minutes on 2026-08-08, against
+356 tests in 933 s measured four commits earlier, with the array
+module's own tests taking 19 minutes by themselves. Targeted runs over
+what S4 touched stand in until it lands. Whether a whole-suite run
+belongs at every stage or at a release is a question for Edmond that has
+not been put to him.
 
 The five stages below were ordered by the Sage on 2026-08-08 and approved
 by Edmond the same day. The order is the argument: S4 finishes a defect
@@ -22,91 +38,6 @@ deferred for, which is also what makes two of `Map`'s design questions
 answerable; S8 writes that design, since building it first would decide
 by accident what Edmond has reserved. The prose sections after the stages
 are the reasoning behind them and the backlog they were drawn from.
-
-## S4 — Teardown off the machine stack  [in progress]
-
-Goal: no caller-chosen nesting depth reaches the machine stack in the
-array's teardown, and the two rules the decisions of 2026-08-08 record as
-owed are built.
-
-Done when: an array nested deeper than a deliberately small thread stack
-tears down on that thread, a block pinned by a refused carry returns to
-the pool, and the gate of `dev/WORKFLOW.md` is green in both
-configurations.
-
-- [x] S4.1 Array teardown drains a work list instead of recursing
-      done: an array nested deeper than a small test-thread stack tears
-        down on that thread; the same test seen overflowing the stack
-        before the change; both GC configurations green
-      tier: T2 · role: Critic → Sage
-      Critic 2026-08-08: the first shape reordered destructors across
-        levels — `[[$b], $a]` ran `$a` first, `[[$b], [$c]]` ran `$c`
-        first — and the refusal fallback recurses every level below it
-        rather than one child. Both accepted; the second is documented
-        rather than removed. Also: a reference box between levels
-        escapes the `is_array` gate, `ll_free`'s candidate assertion is
-        a test-build one, and one existing test's comment was falsified
-        by the new free order. All three taken.
-      Sage 2026-08-08: Zend's order is a contract on the refcount death
-        path and the drain owes it; hold the rest of a level on the list
-        from the first dying nested array and reverse the segment, which
-        needs no cursor into the table and no second stride. The
-        collector and the arena reset keep ordering their own
-        destructors, as Zend's GC and shutdown do. Final.
-      handoff: `array_die` drains `WorkList<Pending>`, whose lines are a
-        dying array or a held child with its owner's category;
-        `barrier::drop_ref_deferred` is `drop_ref` minus the teardown
-        call and is what makes the hand-back possible. Four tests, each
-        seen failing: the 20 000-level teardown on a 128 KiB stack
-        (aborts the process before the fix), the three destructor
-        orders, and the nested candidate-forget in `gc.rs`. Untested:
-        the refusal path, which needs a forced `body_alloc` refusal.
-- [x] S4.2 A block pinned by a refused payload carry returns when its
-      last payload is freed
-      done: a test pins a block through a refused carry, frees the
-        payload and finds the block in the pool; seen failing while the
-        pin is permanent
-      tier: T2 · role: —
-      tier raised from T1 on the day: the payload's free had to become an
-        event the deferred-free queue can replay, which the estimate had
-        not counted.
-      handoff: the pin is a count on the retained index, spent by
-        `retained::payload_freed` from
-        `buffer_arena::buffer_free_longlived_payload`'s retained arm and
-        parked during an epoch as `What::RetainedPayload`; both call
-        sites hand the block over through `retained::give_block_back`.
-        The end-to-end test needed `buffer_arena::FORCE_REFUSE_LONGLIVED`
-        — `FORCE_OOM` refuses the pool, which the buffer arena can go
-        around by adopting a block, and the test was flaky 5 in 40 on it.
-- [x] S4.3 Test call sites retain before they insert
-      done: no call site retains after `Table::insert`; suite green
-      tier: T0 · role: —
-      handoff: nothing to change. Every `table.insert` of an entity value
-        in the crate already takes the count first — the sites in
-        `array/entity.rs`, `array/element.rs`, `gc.rs`, `walk.rs`,
-        `collector.rs` and `promote.rs` were read one by one on
-        2026-08-08. The leftover note in item 12 was stale and is
-        corrected there.
-- [x] S4.4 Correct the plan's stale entries
-      done: `PLAN.md` no longer contradicts the code on the five points
-        the Sage listed on 2026-08-08
-      tier: T0 · role: —
-      handoff: corrected — Phase C's strings and arrays, the
-        `dev/ARCHITECTURE.md` line, `retained::release`'s missing caller,
-        the ReferenceBox/Lazy candidate leak that the kind set closed,
-        and the telemetry entry that predates S5. Item 12's test-call-site
-        note went with them (S4.3).
-
-Out of scope, named so it does not read as an oversight: a chain that
-leaves the array kind between levels still recurses. An object chain
-(`$a->next = $b`, and so on) goes through `dispose`, and so does a chain
-alternating arrays with reference boxes (`$b = [&$a]` in a loop), which
-the Critic found on 2026-08-08 and which is cheaper to build than the
-object one. The approved plan scoped the step to the array chain;
-whether to widen it was put to Edmond and is unanswered, and a wider
-drain owes the held-sibling discipline of S4.1 or it gives Zend's
-destructor order back. A `__destruct` body is user code that re-enters
-the runtime, so its recursion is the program's.
 
 ## S5 — The opt-in event journal
 
