@@ -1569,6 +1569,13 @@ pub extern "C" fn ll_thread_exit() {
     //    thread, so nothing below needs it.
     crate::memory::buffer_arena::dispose();
 
+    // 6. The journal's ring, last of all: everything disposed above is
+    //    worth journaling, and the ring is handed to the registry rather
+    //    than freed, so it stays readable after this thread is gone
+    //    (`journal.rs`). It has to happen before the heaps below, because
+    //    an evicted ring is freed through `ll_free`.
+    crate::journal::retire_thread_ring();
+
     let p = tls::get_raw();
     if p.is_null() {
         return;

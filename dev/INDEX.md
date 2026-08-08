@@ -175,6 +175,20 @@ versions live in `docs/history/`, marked at the top.
   overflow (`dev/DECISIONS.md`, 2026-08-07 and 2026-08-08). An object
   chain still tears down through the machine stack.
   What is unbuilt is listed at the head of `PLAN.md`.
+- The event journal: `src/journal.rs` — what the runtime did, as
+  32-byte records in a ring per thread, read back by marking a window
+  with every ring's cursor before and after (`dev/design/debug-modes.md`
+  §9). No global ring and no global sequence number, so the write path
+  takes no atomic read-modify-write and a hard-allocating thread cannot
+  evict the records of the thread under investigation; the price is that
+  records in different rings have no order between them. **An overflowed
+  window answers `unknown`, never `none`** — one rule decides it, the
+  reader's re-read of the cursor after copying a record. A ring comes
+  from `ll_malloc` on the thread's first record, outlives its thread on
+  the registry's retired list (`journal::retire_thread_ring`, called
+  last in `heap::ll_thread_exit`), and the oldest beyond `RETIRED_KEPT`
+  are freed. The module is in every build; what the `debug-journal`
+  feature gates is the record sites on the hot paths, unbuilt.
 - Category → allocator routing: `src/memory/routing.rs` — the one place
   that answers where a memory category's bytes come from.
   `entity_alloc_in` for anything with an `RcHeader`, `body_alloc` /

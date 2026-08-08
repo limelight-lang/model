@@ -13,6 +13,7 @@ pub(crate) mod epoch;
 pub mod gc;
 pub mod hash;
 pub mod intern;
+pub mod journal;
 pub mod memory;
 pub mod object;
 pub mod promote;
