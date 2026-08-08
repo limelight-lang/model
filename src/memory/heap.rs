@@ -1718,6 +1718,14 @@ pub extern "C" fn ll_thread_init() {
         // thread is already exiting, and its blocks are reclaimed by the
         // teardown in progress.
         let _ = EXIT_GUARD.try_with(|_| {});
+        // This branch is entered once per *life* of a thread — a pool
+        // thread that runs init/exit per task enters it again, the exit
+        // having cleared the slot — so it is where the journal learns
+        // that a thread closed at its last exit may journal again. It
+        // gets a new ring with a new identity rather than reopening the
+        // one it retired, which is on the registry's retired list and no
+        // longer its to write.
+        crate::journal::reopen_thread();
     }
 }
 

@@ -90,7 +90,37 @@ ring written by hand, and the gate is green with the feature on and off.
         retired-ring test goes through `ll_thread_exit`. Four regression
         tests, each seen failing on its defect; the fence pair is pinned
         by the loom model instead, there being no `cargo test` for it.
-        Critic round 2 owed before the step closes.
+      Critic 2026-08-08 round 2: the five repairs hold — the fence pair,
+        the lock-held read, the third cell state and the eviction count
+        were each attacked and stood — and seven further defects, all
+        verified against the code. A closed ring answered `Records([])`,
+        which is the false *none* again by another door: its thread goes
+        on tearing down heaps after retirement, and a pool thread running
+        init/exit per task journaled nothing at all in its second life.
+        An evicted ring leaks under rc-walk, its `ll_free` parking onto a
+        backlog thread exit disposed three steps earlier. §9.7's three
+        rules are broken by the *first* record on a thread, which is by
+        design and was written as though it were not. A thread that
+        journals without `ll_thread_init` never registers an exit guard,
+        so its ring stays live for the process's life. Two marks passed
+        the wrong way round answer a confident "nothing anywhere". And
+        four test defects: a dead assertion in the refusal test, the
+        quota arithmetic exercised by nothing, "the three newest"
+        checking two, and the use-after-free pin being Miri's rather than
+        the suite's.
+      Fixed 2026-08-08 round 2: a ring records the cursor it closed at
+        and a window reaching it answers `Closed` with whatever records
+        it has; `ll_thread_init` reopens a closed cell, so a second life
+        gets its own ring and identity; the quota waits for the epoch to
+        end; the first record self-initialises the thread; a mark carries
+        a stamp and `between` refuses its ends reversed in debug builds.
+        The §9.7 exception is written down as a rule for S5.2's sites — a
+        site must not sit inside a lock `ll_malloc` takes. Five more
+        tests, the three behavioural ones seen failing first. **Rejected
+        with reason:** the eviction *count* stays coarse rather than
+        naming the lost rings — the count is honest, a per-ring answer
+        would have to invent a `written` it cannot know, and R is the
+        knob §9.8 already leaves open for an investigation under churn.
 - [ ] S5.2 Record sites for the default event set, behind the
       `debug-journal` feature
       done: with the feature off no record site appears in the release

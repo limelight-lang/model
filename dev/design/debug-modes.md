@@ -603,6 +603,13 @@ The hunt turned on the finding that no string died inside the window, and
 a silent eviction converts that finding into a false one. An empty answer
 is worth having only if it can be trusted.
 
+The rule covers the ring that has *closed* as well. A retired ring stops
+where its thread's exit left it, and the thread does not stop there
+(§9.4), so a window reaching that position answers "the ring closed here"
+and carries the records it does have. An empty list of records under that
+answer says the thread stopped telling; an empty list under `Records` says
+the thread did nothing, and the two must not be spelled the same way.
+
 The rule covers the ring that is *gone* as well as the ring that lapped.
 A retired ring freed to bound the list (§9.4) takes a whole thread's
 history with it, and neither mark can name it — one is too early and the
@@ -643,13 +650,27 @@ everything disposed before it is worth journaling.
 sequence is not last on the thread: the heap teardown that follows frees
 blocks, which is a default event kind (§9.5), and a record from there
 would open a second ring under a thread already gone — one nothing ever
-retires, and one that puts the leak on the list R does not bound.
+retires, and one that puts the leak on the list R does not bound. Those
+events are lost, and the window says so rather than reporting none
+(§9.3).
+
+**`ll_thread_init` reopens what an exit closed.** One OS thread is a
+sequence of thread *lives* when a pool runs init and exit per task, and
+the second life gets a ring and an identity of its own. Without that it
+journals nothing at all while reading exactly like a thread doing
+nothing. It is init that decides this, not the record path: reopening on
+a record would undo the rule above.
 
 Retired rings are bounded: the registry keeps the most recent R and frees
 the oldest beyond that. A program that creates a thread per request would
 otherwise accumulate rings for the life of the process. Each free is
 counted, because it is a window's only evidence that a history existed
-(§9.3).
+(§9.3). **The bound waits for a collector epoch**: a ring is one pooled
+block, so its free parks while an epoch is in flight, onto a backlog the
+exit sequence disposed several steps earlier — the list would be rebuilt
+on a dying thread and leaked with the ring in it. The eviction happens at
+the next retirement outside an epoch instead, which is the deferral
+parking would have performed.
 
 ### 9.5 What is recorded by default, and what has to be asked for
 
@@ -700,6 +721,12 @@ the same obligation §2 records for sampled mode.
   exit and by an investigator, never to write a record.
 - **No re-entry.** A site touches its own ring and returns; a site inside
   the allocator that journaled through an allocating path would recurse.
+- **The first record on a thread obeys none of the three**, and cannot:
+  it is what allocates the ring and registers it. So the rules describe
+  the steady state, and what they leave for §9.5 to obey is a
+  requirement on the *sites* — a site must not sit inside a lock that
+  `ll_malloc` takes, the block pool's free list among them, or a thread's
+  first record deadlocks against the lock its own event was raised under.
 - **No panic and no unwinding.** An argument that makes no sense is
   recorded as it is; the journal reports, it does not judge.
 - **Order within a ring is that thread's program order.** Across rings
