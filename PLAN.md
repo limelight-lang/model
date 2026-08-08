@@ -1017,6 +1017,84 @@ plain store is single-owner by construction. The crate's answer looks
 sound and the RFC still prescribes the other one; the correction is owed
 there, beside the RFC debts already under task 11.
 
+## S3 — A reference element behaves as PHP's does  [ ]
+
+Goal: an array that has had `&` applied to one of its elements goes back
+to being a value. Today a copy shares the box unconditionally, so the
+array is aliased on that element for the rest of its life; PHP shares the
+box only while a second name holds it.
+
+Done when: the four cases below reproduce, measured against php 8.3.6 —
+a dead reference leaves `$a['x']` at 1 and `$b['x']` at 3; a live one
+gives 3 and 3; no reference gives 1 and 3; and `f(&$a['x'])` followed by
+a copy and a write gives 1 and 3.
+
+**What was measured, so it is not re-derived** (php 8.3.6, on this box).
+`$r = &$a['x']` rewrites the element in place: `var_dump` shows
+`&int(1)`, `debug_zval_dump` shows `reference refcount(2)`. Both spellings
+produce the same state — `$c['x'] = &$q` is indistinguishable from
+`$q = &$c['x']`, and writing through either name is read through the
+other, so `&` joins two slots into one container rather than pointing one
+at the other. The box is **not** collapsed by `unset` (the element stays
+`reference refcount(1)`), **not** collapsed by a write to that element
+(the write goes through the box), and **not** collapsed by a write to
+another element. The one place it collapses is the duplication itself:
+after `$d = $c; $d['y'] = 3;` the source still reads
+`reference refcount(1)` and the copy reads `int(3)`. So the rule belongs
+in `fill_from` and nowhere else.
+
+**Sage's ruling, 2026-08-08: a reference box is allocated in the GC heap,
+always.** The rule needs an exact holder count at the moment of
+duplication, and the heap is where the crate already keeps one: a heap
+non-COW box is counted by `ll_retain`/`ll_release` with no change at all.
+The alternatives both make the box counted *in the arena*, which breaks
+the invariant "counted or escaping, never both" and makes `Reference` a
+second everywhere-counted kind after COW. The Sage walked `promote.rs`
+and named what that would cost: `mark_one` must stop zeroing the box's
+count, the count must travel in `cow_at_promotion` and settle by edges
+with a delta, `escape_gain` must branch on kind because it writes
+`refcount = 1`, and the retain/release fast path gains a kind test on
+every arena entity. That price is spread over the whole runtime for a
+rare `&`. Growing `LLReference` to 32 bytes buys only one thing over
+that — an escapee released before the reset is not promoted in vain —
+and costs eight bytes on every box.
+
+**The price of the ruling, stated rather than hidden.** Every `&` becomes
+a heap allocation, which is Zend's own cost class (`zend_reference` is
+always heap). An arena COW value is copied to the heap when it is boxed,
+once per boxing. A heap box inside an arena array is one
+`log_release_at_reset` record, a mechanism that exists. The lifetime
+objection is answered: the lift is bounded by the box's own life —
+`reference_die` calls `drop_ref`, which calls `escape_lose` — so a box
+whose holders do not outlive the request dies at the reset from the log.
+What becomes impossible: arena-speed `&`, and a box dying for free with
+the arena.
+
+- [ ] S3.1 A reference box lives in the GC heap in every case
+      done: a box made for an arena array reads `GcHeap`; the arena
+        array's entry logs a release at reset; a request that takes a
+        reference and ends leaves no block held and no entity alive;
+        `a_copy_over_an_arena_source_shares_the_box` is rewritten around
+        a heap box rather than muted, its instrument having died with
+        arena boxes
+      tier: T2 · role: Critic
+- [ ] S3.2 A copy unwraps a box with a single holder
+      done: the four measured cases above reproduce through
+        `element::set` and `element::make_ref`, in both memory
+        categories, each seen failing without the unwrap
+      tier: T2 · role: Critic
+- [ ] S3.3 The RFC says the sharing is conditional
+      done: `arrays-hashtable.md` "Element states" and `values.md` carry
+        the condition and the collapse point, and `dev/DECISIONS.md`
+        carries the Sage's ruling with its price
+      tier: T1 · role: —
+
+**Not in this stage, and deliberately.** Collapsing a single-holder box
+on a write to an exclusively owned array is invisible to the program and
+would keep the box population down, but PHP does not do it and the gain
+is unmeasured. It is an optimization with a measurement owed, not a
+semantic debt.
+
 ## Then: arrays as a performance problem
 
 Opened 2026-08-07 at Edmond's request, and it gathers work the plan had
