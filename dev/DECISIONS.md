@@ -8,7 +8,38 @@ never edited or deleted.
 
 ---
 
-## 2026-08-08 — teardown drains the nesting the copy already drains
+## 2026-08-08 — a pinned block goes home when its last payload is freed
+
+A block the arena reset kept for bytes it could not carry out returns to the
+pool like any other retained block, and what returns it is the payload's own
+free. The rule the entry of the same day left owed ("a block retained for a
+payload is pinned and never returns") was a leak of 64 KiB per refused carry,
+for the life of the process.
+
+The block is held by two populations and goes home when both are empty: its
+live occupants, and the payloads it was pinned for. The pin is therefore a
+count rather than a flag — one block can hold the payloads of several
+survivors, and each is freed on its own.
+
+The payload's death event was said not to exist. It does:
+`buffer_arena::buffer_free_longlived_payload` already reads the block kind
+under the pointer and recognises `BLOCK_KIND_RETAINED`, where it did nothing
+at all. That arm now spends one pin, and hands the block over when it was the
+last holder. The bytes are still left where they are — former arena memory
+has no free list to take them back — so what is reclaimed is the block.
+
+During a collector epoch the call parks, for the reason `ll_free` parks a
+slot in a retained block: the walker holds addresses inside it and a block
+handed to the pool is re-stamped as another kind under them. A parked record
+now names the free it replays instead of inferring it from a size, because
+this one is neither of the two the size chose between.
+
+**The test needed a fault injection of its own.** `block_pool::FORCE_OOM`
+refuses the pool, and the buffer arena can serve a carry out of a block it
+already owns or adopts, so the refusal did not happen 5 runs in 40 and the
+test passed proving nothing. `buffer_arena::FORCE_REFUSE_LONGLIVED` refuses
+the two allocations a carry can make and nothing else, which is what "prove
+which allocation was refused" costs here.
 
 An array's teardown walks a list instead of recursing, which closes the half
 the entry of 2026-08-07 left open. The input is the same one the store side

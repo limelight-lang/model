@@ -98,6 +98,22 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 struct Parked {
     ptr: *mut u8,
     size: usize,
+    /// The free this record replays. A size is not enough to name it:
+    /// a payload inside a retained block is freed by neither of the two
+    /// paths a size chooses between, its own free being the block's
+    /// release event rather than any memory's ([`park_retained_payload`]).
+    what: What,
+}
+
+/// Which free a parked record owes.
+#[derive(Clone, Copy, PartialEq)]
+enum What {
+    /// An entity slot or an OS-direct run: `ll_free` by mask.
+    Allocation,
+    /// A buffer-arena chunk, whose free needs the granted size back.
+    Chunk,
+    /// A payload in a retained block: the bytes stay, the block may go.
+    RetainedPayload,
 }
 
 thread_local! {
@@ -160,7 +176,32 @@ pub(crate) fn end_epoch() {
 /// owned by this call (nothing may recycle it until [`flush`]
 /// releases it for real).
 pub(crate) unsafe fn park(ptr: *mut u8) {
-    unsafe { (*parked_list()).push(Parked { ptr, size: 0 }) };
+    unsafe {
+        (*parked_list()).push(Parked {
+            ptr,
+            size: 0,
+            what: What::Allocation,
+        })
+    };
+}
+
+/// Park the free of a payload lying in a retained block. Nothing about
+/// the bytes waits — former arena memory has no free list — but the block
+/// they pin may become empty, and handing a block to the pool while a
+/// walker still holds addresses inside it is what this queue exists to
+/// prevent.
+///
+/// # Safety
+/// `ptr` must be a live payload inside a retained block, freed by this
+/// call and reachable by nothing until [`flush`] replays it.
+pub(crate) unsafe fn park_retained_payload(ptr: *mut u8) {
+    unsafe {
+        (*parked_list()).push(Parked {
+            ptr,
+            size: 0,
+            what: What::RetainedPayload,
+        })
+    };
 }
 
 /// Park a buffer-arena chunk, which does not pass `ll_free` and whose
@@ -180,19 +221,25 @@ pub(crate) unsafe fn park_buffer_chunk(ptr: *mut u8, capacity: usize) {
         (*parked_list()).push(Parked {
             ptr,
             size: capacity,
+            what: What::Chunk,
         })
     };
 }
 
-/// Release one parked record through the free path its size names.
+/// Release one parked record through the free path it names.
 ///
 /// # Safety
 /// Runs on the parking thread, with no epoch in flight.
 unsafe fn release(p: Parked) {
-    if p.size == 0 {
-        unsafe { crate::memory::stdapi::ll_free(p.ptr) };
-    } else {
-        unsafe { crate::memory::buffer_arena::free_parked_chunk(p.ptr, p.size) };
+    match p.what {
+        What::Allocation => unsafe { crate::memory::stdapi::ll_free(p.ptr) },
+        What::Chunk => unsafe { crate::memory::buffer_arena::free_parked_chunk(p.ptr, p.size) },
+        What::RetainedPayload => {
+            let block = crate::memory::block_pool::BlockHeader::of_ptr(p.ptr) as usize;
+            if crate::memory::retained::payload_freed(block) {
+                unsafe { crate::memory::retained::give_block_back(block) };
+            }
+        }
     }
 }
 

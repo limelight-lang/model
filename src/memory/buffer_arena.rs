@@ -824,6 +824,10 @@ pub fn dispose() {
 /// string's bytes, an array's table storage — carries no knowledge of how
 /// big a block is. `Arena::alloc_body` is the request-arena counterpart.
 pub fn buffer_alloc_longlived_payload(size: usize) -> (*mut u8, usize) {
+    #[cfg(test)]
+    if FORCE_REFUSE_LONGLIVED.load(std::sync::atomic::Ordering::Relaxed) {
+        return (std::ptr::null_mut(), 0);
+    }
     if size <= BLOCK_PAYLOAD {
         return with_buffer_arena(|a| a.alloc(size));
     }
@@ -837,6 +841,17 @@ pub fn buffer_alloc_longlived_payload(size: usize) -> (*mut u8, usize) {
 /// + free-old. Size routing per `rfc/model/memory/buffers.md`: payloads
 /// over a block payload are OS-direct.
 pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usize) -> *mut u8 {
+    // Fault injection, tests only, and narrower than
+    // `block_pool::FORCE_OOM` on purpose: that flag refuses the *pool*,
+    // and this arena can serve a request from a block it already owns or
+    // adopts, so a test that needs this allocation refused cannot get one
+    // deterministically through the pool (a promote test was flaky 5 runs
+    // in 40 before this existed). Named for the one allocation it
+    // refuses, so a test using it says which.
+    #[cfg(test)]
+    if FORCE_REFUSE_LONGLIVED.load(std::sync::atomic::Ordering::Relaxed) {
+        return std::ptr::null_mut();
+    }
     if buf.capacity >= min_capacity {
         return buf.data;
     }
@@ -892,9 +907,24 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
     let kind = unsafe { *(((ptr as usize) & !BLOCK_MASK) as *const u32) };
     if kind == crate::memory::block_pool::BLOCK_KIND_RETAINED {
         // A payload promotion could not carry: the reset kept its block
-        // out of circulation instead, so the bytes outlive the entity and
-        // the block goes home only when the retained block itself does
-        // (`string::carry_payload_out_of`).
+        // out of circulation instead (`string::carry_payload_out_of`).
+        // The bytes stay where they are — former arena memory has no free
+        // list to take them back — and this call is the payload's death
+        // event, which is what the block was waiting for. With its last
+        // occupant and its last payload gone the block goes home.
+        //
+        // During an epoch the whole call parks, for the reason `ll_free`
+        // parks a slot in such a block: the walker holds addresses inside
+        // it, and a block handed to the pool is re-stamped as another
+        // kind under them.
+        let block = (ptr as usize) & !BLOCK_MASK;
+        #[cfg(feature = "rc-walk")]
+        if crate::memory::deferred_free::active() {
+            return unsafe { crate::memory::deferred_free::park_retained_payload(ptr) };
+        }
+        if crate::memory::retained::payload_freed(block) {
+            unsafe { crate::memory::retained::give_block_back(block) };
+        }
     } else if kind == BLOCK_KIND_BUFFER {
         // The epoch test `ll_free` makes, made here instead, because this
         // free never reaches `ll_free`. The whole call parks, not the
@@ -912,6 +942,13 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         unsafe { crate::memory::stdapi::ll_free(ptr) };
     }
 }
+
+/// Makes [`buffer_ensure_longlived`] report exhaustion. Test-only, and
+/// the only deterministic way to reach the refused-carry path: see the
+/// note at that function.
+#[cfg(test)]
+pub(crate) static FORCE_REFUSE_LONGLIVED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Free a chunk without building this thread's arena to do it.
 ///

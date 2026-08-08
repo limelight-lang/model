@@ -335,13 +335,7 @@ unsafe fn ll_free_large(block: *mut u8, kind: u32) {
             // registered address without testing that its block still
             // exists (`retained.rs`, the readable-address contract).
             if crate::memory::retained::occupant_freed(block as usize) {
-                unsafe {
-                    crate::memory::block_pool::store_block_kind(
-                        &raw mut (*(block as *mut BlockHeader)).kind,
-                        crate::memory::block_pool::BLOCK_KIND_FREE,
-                    )
-                };
-                BlockPool::global().put(block as *mut BlockHeader);
+                unsafe { crate::memory::retained::give_block_back(block as usize) };
             }
         }
         _ => { /* not ours / double free — ignore in release, catch in tests */ }

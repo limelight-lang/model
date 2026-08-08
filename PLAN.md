@@ -61,12 +61,23 @@ configurations.
         (aborts the process before the fix), the three destructor
         orders, and the nested candidate-forget in `gc.rs`. Untested:
         the refusal path, which needs a forced `body_alloc` refusal.
-- [ ] S4.2 A block pinned by a refused payload carry returns when its
+- [x] S4.2 A block pinned by a refused payload carry returns when its
       last payload is freed
       done: a test pins a block through a refused carry, frees the
         payload and finds the block in the pool; seen failing while the
         pin is permanent
-      tier: T1 · role: —
+      tier: T2 · role: —
+      tier raised from T1 on the day: the payload's free had to become an
+        event the deferred-free queue can replay, which the estimate had
+        not counted.
+      handoff: the pin is a count on the retained index, spent by
+        `retained::payload_freed` from
+        `buffer_arena::buffer_free_longlived_payload`'s retained arm and
+        parked during an epoch as `What::RetainedPayload`; both call
+        sites hand the block over through `retained::give_block_back`.
+        The end-to-end test needed `buffer_arena::FORCE_REFUSE_LONGLIVED`
+        — `FORCE_OOM` refuses the pool, which the buffer arena can go
+        around by adopting a block, and the test was flaky 5 in 40 on it.
 - [ ] S4.3 Test call sites retain before they insert
       done: no call site retains after `Table::insert`; suite green
       tier: T0 · role: —

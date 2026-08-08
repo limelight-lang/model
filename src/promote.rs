@@ -738,6 +738,95 @@ mod tests {
         }
     }
 
+    /// A carry the buffer arena refuses leaves the bytes where they are,
+    /// and the reset keeps their block out of circulation instead. The
+    /// block is then held by a payload rather than by occupants, and what
+    /// hands it back is the payload's own free — the promoted array's
+    /// death. Before 2026-08-08 the pin was permanent and the block was
+    /// gone for the life of the process; the test was seen failing on the
+    /// kind still reading retained after the array died.
+    ///
+    /// The refusal is aimed at one allocation rather than at the pool:
+    /// `FORCE_OOM` leaves the buffer arena free to serve the carry from a
+    /// block it already owns or adopts, which made this test pass 35
+    /// times in 40 and prove nothing the other five. The assertion that
+    /// the storage did not move is what says the refusal landed where the
+    /// test needs it.
+    #[test]
+    fn a_refused_carry_pins_the_block_and_the_payload_frees_it() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_MASK};
+        use crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED;
+        use std::sync::atomic::Ordering;
+        let _g = crate::memory::block_pool::test_guard();
+        let holder_cls = ClassBuilder::new("RefusedCache").prop("last", true).build();
+        let owner_cls = ClassBuilder::new("RefusedOwner")
+            .prop("items", true)
+            .build();
+
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut context = LLContext { arena: arena_ptr };
+        let context_ptr: *mut LLContext = &mut context;
+        crate::memory::context::set_current_context(context_ptr);
+
+        let holder =
+            unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+        let owner =
+            unsafe { new_constructed(&mut *context_ptr, owner_cls, MemoryCategory::RequestArena) };
+        let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+
+        let storage_before = unsafe {
+            (*array)
+                .table
+                .insert(array as *const RcHeader, Key::Int(1), Value::int(11));
+            crate::array::entity::storage_address(array)
+        };
+        assert!(!storage_before.is_null());
+        let payload_block = (storage_before as usize) & !BLOCK_MASK;
+
+        unsafe {
+            let slot = Object::prop_at(owner, 16);
+            assert!(ref_store(
+                arena_ptr,
+                owner as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, array as *mut RcHeader),
+            ));
+            store_prop(arena_ptr, holder, 16, owner);
+        }
+
+        FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
+        unsafe { arena_reset_full(&mut *arena_ptr) };
+        FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+
+        unsafe {
+            assert_eq!(
+                crate::array::entity::storage_address(array),
+                storage_before,
+                "the carry was not refused, so this test proves nothing"
+            );
+            assert_eq!(
+                *(payload_block as *const u32),
+                crate::memory::block_pool::BLOCK_KIND_RETAINED,
+                "a refused carry did not retain the block its bytes lie in"
+            );
+
+            // The promoted array dies with its holder, and its storage is
+            // freed into a block that has been waiting for exactly that.
+            assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+            crate::object::ll_object_die(holder);
+            assert_eq!(
+                *(payload_block as *const u32),
+                BLOCK_KIND_FREE,
+                "the block outlived the payload it was pinned for"
+            );
+        }
+    }
+
     /// The other route out: a storage larger than a block payload is an
     /// OS-direct run the arena logged, and carrying it is making the arena
     /// forget the record rather than copying anything. Getting that wrong
