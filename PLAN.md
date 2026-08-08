@@ -277,7 +277,7 @@ ring written by hand, and the gate is green with the feature on and off.
         nothing, and `ll_thread_init` reopens the cell without knowing
         whether the exit guard it just tried to arm was armed, so a ring
         opened during TLS teardown would never be retired.
-- [ ] S5.2 Record sites for the default event set, behind the
+- [x] S5.2 Record sites for the default event set, behind the
       `debug-journal` feature
       Sage 2026-08-08, before the step opens: §9.7 stands and
         `BlockPool::put` moves instead. It holds the thread cache's
@@ -295,6 +295,27 @@ ring written by hand, and the gate is green with the feature on and off.
         cannot resolve the difference; §9.6's two-arm measurement is
         recorded as owed rather than claimed
       tier: T2 · role: —
+      Counted 2026-08-08 over one release module per arm
+        (`codegen-units = 1`): loads of the enabled mask, which is what a
+        site is, are **0** in the default build and 34 with the feature —
+        fourteen sites, copied by inlining. The default build's one
+        remaining load is inside `enabled_kinds`, the module's own public
+        accessor, which no runtime path reaches. IR grows 55 043 → 55 758
+        lines. The timing arm is owed and says so (`dev/BENCHMARKS.md`,
+        2026-08-08).
+      handoff: `src/journal/kinds.rs` is the vocabulary, the enabled mask
+        and `journal_event!` — the macro expands to nothing without the
+        feature and evaluates its payload only after the mask test, which
+        is why a site may read a header to fill its words. The sites are
+        listed in `dev/INDEX.md`; the two decisions they needed are in
+        `dev/DECISIONS.md` (a kind gets a number when it gets a site; a
+        block leaving the walk's reach is the decommission record). The
+        Sage's code motion landed with them: `BlockPool::put` stages its
+        overflow flush in a fixed array and pushes with nothing borrowed,
+        and the test for it was seen aborting on the shape the ruling
+        forbids. `debug-journal` is a gate arm now, both GC
+        configurations, and `dev/WORKFLOW.md` says why it needs its own
+        runs rather than one.
 - [ ] S5.3 The acceptance hunt through the journal
       done: on the pinned reproducer (`--no-run` binary, `taskset -c
         0,1`, two spinners) the question "which strings died inside the

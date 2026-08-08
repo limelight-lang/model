@@ -22,6 +22,7 @@
 //! invariant 13).
 
 use crate::hash::hash_bytes;
+use crate::journal::kinds::journal_event;
 use crate::memory::buffer::Buffer;
 use crate::memory::context::LLContext;
 use crate::refcount::{COW, EntityKind, MemoryCategory, RcHeader, publish_header};
@@ -634,6 +635,12 @@ pub(crate) unsafe fn carry_payload_out_of(
 /// # Safety
 /// `s` must be a live string entity.
 pub(crate) unsafe fn string_die(s: *mut LLString) {
+    journal_event!(
+        crate::journal::kinds::KIND_ENTITY_DEATH,
+        s as u64,
+        EntityKind::String as u64,
+        0
+    );
     let owner_cat = unsafe { crate::object::header_category(s as *const RcHeader) };
     let inline = unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW != 0;
     if !inline && owner_cat != MemoryCategory::RequestArena {

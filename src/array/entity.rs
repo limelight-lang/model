@@ -28,6 +28,7 @@
 //! will build the wrong thing.
 
 use crate::array::table::{Key, Table};
+use crate::journal::kinds::journal_event;
 use crate::refcount::{COW, EntityKind, MemoryCategory, RcHeader, publish_header};
 use crate::value::Value;
 
@@ -656,6 +657,15 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
     let mut pending: WorkList<Pending> = WorkList::new();
     let mut dying = a;
     loop {
+        // Inside the loop rather than above it: the drain tears down
+        // every nested array here, and those pass no other death door —
+        // `ll_entity_die` sees the outermost one only.
+        journal_event!(
+            crate::journal::kinds::KIND_ENTITY_DEATH,
+            dying as u64,
+            EntityKind::Array as u64,
+            0
+        );
         unsafe { release_children_in_order(dying, &mut pending) };
         unsafe { (*dying).table.dispose(dying as *const RcHeader) };
         if unsafe { crate::object::header_category(dying as *const RcHeader) }

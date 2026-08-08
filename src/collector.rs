@@ -20,6 +20,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::epoch as protocol;
+use crate::journal::kinds::journal_event;
 use crate::memory::deferred_free;
 use crate::memory::heap::{EntityBlockSnapshot, snapshot_entity_blocks};
 #[cfg(test)]
@@ -136,6 +137,7 @@ impl Epoch {
     /// a slot the snapshot would include (`memory/deferred_free.rs`).
     pub fn open() -> Epoch {
         let number = next_epoch_number();
+        journal_event!(crate::journal::kinds::KIND_EPOCH_BEGIN, 0, number as u64, 0);
         deferred_free::begin_epoch();
         let acks_needed = protocol::handshake_acks() + 1;
         protocol::request_handshake();
@@ -376,6 +378,12 @@ impl Epoch {
         debug_assert!(self.can_close(), "epoch closed with verdicts in flight");
         self.closed = true;
         deferred_free::end_epoch();
+        journal_event!(
+            crate::journal::kinds::KIND_EPOCH_END,
+            0,
+            self.number as u64,
+            self.stats.confirmed as u64
+        );
         self.stats
     }
 }

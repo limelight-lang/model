@@ -10,6 +10,7 @@
 //! bare pointer self-describing at teardown
 //! (`rfc/model/classes.md`, "Entity kind and non-object teardown").
 
+use crate::journal::kinds::journal_event;
 use crate::refcount::{EntityKind, MemoryCategory, RcHeader};
 use crate::value::Value;
 
@@ -80,6 +81,12 @@ pub extern "C" fn ll_reference_new_abi() -> *mut LLReference {
 /// # Safety
 /// `boxed` must be a live reference box.
 pub(crate) unsafe fn reference_die(boxed: *mut LLReference) {
+    journal_event!(
+        crate::journal::kinds::KIND_ENTITY_DEATH,
+        boxed as u64,
+        EntityKind::Reference as u64,
+        0
+    );
     let owner_cat = unsafe { crate::object::header_category(boxed as *const RcHeader) };
     debug_assert_eq!(
         owner_cat,

@@ -64,6 +64,23 @@ refused by a `const` assertion in `hash/seed.rs`, because
 `cargo build --features hash-folding` runs no tests and an artifact from
 such a build hashes identically to every other one.
 
+Since 2026-08-08 there is a third build-time axis, `debug-journal`
+(`src/journal/kinds.rs`), and it needs **more** than one run rather than
+less. Without the feature the record sites are not compiled at all, so
+their bodies are never name-resolved and a site that does not build is
+invisible to every command above. With it they are on the allocation and
+the death paths, which is where a site on a path §9.7 forbids shows up as
+an abort rather than a failure. So both GC configurations run again with
+it:
+
+```
+cargo test --lib --features debug-journal -- --test-threads=4
+cargo test --lib --no-default-features --features debug-journal -- --test-threads=4
+```
+
+Three times each, for the reason the two above are run three times: what
+this axis adds is a re-entry into the allocator from inside itself.
+
 Both GC configurations run because GC strategy selection is a build-time
 feature (the two collectors claim the same header bits — see the
 feature's note in `Cargo.toml`). Since 2026-07-27 **rc-walk is the

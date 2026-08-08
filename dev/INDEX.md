@@ -211,9 +211,25 @@ versions live in `docs/history/`, marked at the top.
   whose parked backlog is gone by then — the three-valued
   `heap::ExitPhase` is what tells those apart, a boolean having conflated
   a heap rebuilt mid-exit with a new life. The module is in every build; what the
-  `debug-journal` feature gates is the record sites on the hot paths,
-  unbuilt — and a site must not sit anywhere the *first* record's path
-  reaches, that one initialising the thread, allocating and locking.
+  `debug-journal` feature gates is the record **sites**, and those are
+  built now. `journal/kinds.rs` holds the vocabulary, the enabled mask
+  and `journal_event!`, which is how a site is written: it expands to
+  nothing without the feature, and with it evaluates its payload only
+  after the mask says the kind is on, so a disabled site costs a load and
+  a branch and reads nothing. Fourteen sites carry §9.5's default set —
+  entity birth at `refcount::publish_header` and death at each kind's own
+  teardown body (`ll_object_die`, `string_die`, `array_die`,
+  `reference_die`, `weakref_die`, since the kind switch above them is
+  reached by one of the two object doors only and by a nested array not
+  at all); the arena reset's two ends in `promote::arena_reset_full`; a
+  block's two in `BlockPool::get` and `put`, the second carrying the kind
+  the block arrived with, which is how §9.5's third block event is asked
+  for; the thread's two in `heap`; and the epoch's two in `collector`,
+  under `rc-walk`. A site must not sit anywhere the *first* record's path
+  reaches, that one initialising the thread, allocating and locking —
+  which is why `BlockPool::put` stages its overflow flush in a fixed
+  array and pushes with nothing borrowed (`dev/DECISIONS.md`,
+  2026-08-08).
 - Category → allocator routing: `src/memory/routing.rs` — the one place
   that answers where a memory category's bytes come from.
   `entity_alloc_in` for anything with an `RcHeader`, `body_alloc` /

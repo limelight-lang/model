@@ -100,6 +100,38 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-08 — the journal's record sites: counted in the IR, and the clock's answer is owed
+
+The sites of `dev/design/debug-modes.md` §9.5 landed behind the
+`debug-journal` feature (S5.2). §9.6 makes two claims about their cost and
+only the first is settled here.
+
+**Claim one — off means absent — is settled, and counted rather than
+timed.** A site is a load of the enabled mask and a branch, and the clock
+on this box cannot resolve fourteen of those against a 750 µs benchmark.
+The count is over the emitted release IR, one module per arm
+(`cargo rustc --release --lib -- --emit=llvm-ir`, `codegen-units = 1`):
+
+| | mask loads | IR lines |
+|---|---|---|
+| default build | 0 | 55 043 |
+| `--features debug-journal` | 34 | 55 758 |
+
+The one load the default build does contain is inside `enabled_kinds`,
+the module's own public accessor, and no runtime path reaches it — the
+number above excludes it. Fourteen sites are written by hand; 34 is what
+inlining makes of them, a site copied into each caller it is inlined
+through.
+
+**Claim two — the cost with the feature on and the kind disabled — is
+owed, not claimed.** It is one relaxed load of a line nobody writes and
+one predictable branch, on the allocation and the death paths, and this
+crate does not accept "probably negligible". The measurement to make is
+the ordinary two-arm one, `lifecycle` and `standard`, default build
+against `--features debug-journal` with the default mask, back to back.
+Until it exists the feature belongs in a development build only, which is
+what §9.6 already says and what `Cargo.toml`'s note repeats.
+
 ## 2026-08-05 — growing a long-lived buffer off the bump top: no resolvable difference
 
 `buffer_ensure_longlived` now extends a payload in place when it is still

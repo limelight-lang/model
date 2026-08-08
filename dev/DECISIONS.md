@@ -8,6 +8,67 @@ never edited or deleted.
 
 ---
 
+## 2026-08-08 — an event kind gets a number when it gets a site
+
+The journal's kinds are declared in `src/journal/kinds.rs`, and only the
+ones a site writes are declared at all. §9.5 of `dev/design/debug-modes.md`
+names an on-demand set beside the default one — retain and release,
+store-barrier publishes, buffer chunk allocation and free — and none of
+those has a number, because none has a site.
+
+The alternative is to number the whole vocabulary up front, so that an
+investigator's mask constants stay stable as sites arrive. What that buys
+is a reader who can enable a kind, get silence, and have no way to tell a
+runtime that did not do the thing from a runtime that never learned to
+record it — the false *none* the whole module is built against, arriving
+this time through the vocabulary rather than through the ring. It is also
+the arm-with-no-producer shape this crate has refused twice already
+(`PLAN.md`, on strategy 1 and on the candidate gate).
+
+The cost is that kind numbers are not stable across builds of different
+ages, so a mask written down by hand ages badly. The mask is set through
+named constants, and an external reader has no ABI yet (§9.8), so nothing
+today pays it.
+
+## 2026-08-08 — a block leaving the entity walk's reach is the decommission record
+
+§9.5 lists three block events: commissioning, decommissioning, and a block
+leaving the set the region registry's walk reaches. The third has no kind
+of its own.
+
+A block leaves that set by exactly one route — its kind stops reading
+`BLOCK_KIND_ENTITY` — and every path that does so hands the block to
+`BlockPool::put` in the same breath (`heap.rs`'s two `store_block_kind(…,
+0)` sites, and `retained::give_block_back` for a retained one). So `put`'s
+record carries the kind the block arrived with, and the departure is that
+record with an entity kind in `a`. A kind of its own would have fired
+exactly where this one does and nowhere else, and would have needed a
+second site on the same path to do it.
+
+What this decision would cost if the premise moved: a future path that
+changes an entity block's kind *without* returning it to the pool would
+leave the walk silently. The premise is stated on
+`KIND_BLOCK_DECOMMISSIONED` where anyone adding such a path will read it.
+
+## 2026-08-08 — the pool's thread cache stages its overflow flush
+
+`BlockPool::put` held the thread cache's `RefCell` borrow across
+`push_global`, which takes the free list's `Mutex`. That is sound while
+nothing else runs there, and the journal's decommission site is something
+else: a record that is its thread's first allocates a ring through
+`ll_malloc`, which comes back into this pool and borrows the same cell.
+The failure is a borrow panic, and a panic in a `try_with` closure does
+not unwind — the process aborts. Ruled by the Sage before S5.2 opened,
+against the alternative of amending §9.7 to let a site sit under a lock.
+
+So the borrow decides and stages, and the pushes happen after it ends: the
+overflow flush copies into a fixed stack array of
+`THREAD_CACHE_CAPACITY / 2 + 1`, which is the most one `put` can overflow
+by. The width is load-bearing rather than defensive — a path that
+overfilled the cache would index past the array, which is the same abort
+by another door — so the excess is clamped and the assumption is a
+`debug_assert` beside it.
+
 ## 2026-08-08 — the journal is complete to the exit's last act and honest past it
 
 Ruled by the Sage after the scoped pass over the retire-last redesign

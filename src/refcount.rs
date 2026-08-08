@@ -9,6 +9,8 @@
 //! (`rfc/model/gc/rc-walk.md`, "The two header bytes"). Still no atomic
 //! read-modify-write anywhere.
 
+use crate::journal::kinds::journal_event;
+
 /// Mask of the memory-category *field* — flags bits 0-1.
 pub const MEMORY_CATEGORY_MASK: u32 = 0b11;
 
@@ -372,6 +374,12 @@ impl RcHeader {
 #[inline]
 pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
     debug_assert_eq!(slot as usize % 8, 0);
+    // Kept out of the record's arguments because the store below consumes
+    // the header, and read only where it is read: without the feature the
+    // site is not there and neither is this copy
+    // (`dev/design/debug-modes.md` §9.6).
+    #[cfg(feature = "debug-journal")]
+    let born_with = header.flags;
     let word = unsafe { core::mem::transmute::<RcHeader, u64>(header) };
     #[cfg(not(feature = "rc-walk"))]
     unsafe {
@@ -382,6 +390,15 @@ pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
         (*(slot as *const core::sync::atomic::AtomicU64))
             .store(word, core::sync::atomic::Ordering::Relaxed)
     };
+    // After the publication, never before it: a reader resolving the
+    // record's subject must find a live entity there, and until the store
+    // above the slot reads refcount 0.
+    journal_event!(
+        crate::journal::kinds::KIND_ENTITY_BIRTH,
+        slot as u64,
+        ((born_with & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT) as u64,
+        (born_with & MEMORY_CATEGORY_MASK) as u64
+    );
 }
 
 /// Relaxed-atomic load of the whole header word: refcount in the low

@@ -30,7 +30,7 @@
 //! **The first record on a thread is the exception to §9.7, and it is one
 //! by design**: it initialises the thread, allocates the ring and takes
 //! the registry's lock, and only the records after it are free of all
-//! three. What follows for a record site (§9.5, unbuilt) is a rule rather
+//! three. What follows for a record site ([`kinds`], §9.5) is a rule rather
 //! than a caveat — **a site must not sit anywhere that path can reach**:
 //! `ll_thread_init` and everything under it, the block pool's free list,
 //! and the pool's thread cache, whose `RefCell` is held across a push to
@@ -90,6 +90,10 @@ use std::sync::{Mutex, MutexGuard};
 // in the file.
 #[cfg(loom)]
 mod ring_model;
+
+/// What a record's `kind` means, and the two gates a site passes: the
+/// `debug-journal` feature and the enabled mask.
+pub mod kinds;
 
 /// Records per ring. A guess until a hunt runs against it
 /// (`dev/design/debug-modes.md` §9.8): 1024 records is 32 KiB a thread,
@@ -853,6 +857,23 @@ mod tests {
         locked().pending_free.len()
     }
 
+    /// How many live rings and how many retired ones carry this
+    /// identity. Tests only, and the answer a test wants where the
+    /// registry's totals are somebody else's: `RETIRED_KEPT` bounds the
+    /// retired list, so a suite whose threads journal keeps it full and
+    /// a count of the whole list moves for reasons the test is not
+    /// about.
+    fn rings_named(thread: u64) -> (usize, usize) {
+        let registry = locked();
+        let carrying = |rings: &Vec<*mut Ring>| {
+            rings
+                .iter()
+                .filter(|&&ring| unsafe { (*ring).thread } == thread)
+                .count()
+        };
+        (carrying(&registry.live), carrying(&registry.retired))
+    }
+
     /// Free one retired ring by identity, the way the quota's eviction
     /// frees the oldest. Tests only: firing the quota takes
     /// `RETIRED_KEPT + 1` threads and 2 MiB of rings to observe one line
@@ -1019,10 +1040,11 @@ mod tests {
     /// `RETIRED_KEPT` bound a list the leak is not on.
     #[test]
     fn a_thread_that_journals_after_its_exit_starts_no_second_ring() {
+        let _quiet = kinds::disable_sites_for_test();
         const BEFORE_EXIT: u64 = 0xE1;
         const AFTER_EXIT: u64 = 0xE2;
         let _g = crate::memory::block_pool::test_guard();
-        let (live_before, retired_before) = registry_counts();
+        let (live_before, _) = registry_counts();
         let start = mark();
 
         let identity = std::thread::spawn(|| {
@@ -1037,15 +1059,15 @@ mod tests {
         .expect("the journaling thread panicked");
 
         let end = mark();
-        let (live_after, retired_after) = registry_counts();
+        let (live_after, _) = registry_counts();
         assert_eq!(
             live_after, live_before,
             "the exited thread left a live ring behind"
         );
         assert_eq!(
-            retired_after,
-            retired_before + 1,
-            "the thread retired a number of rings other than its one"
+            rings_named(identity),
+            (0, 1),
+            "the thread ended with a number of rings other than its one, retired"
         );
 
         // The post-exit record is not in the ring, and it is not silent
@@ -1074,6 +1096,7 @@ mod tests {
     /// "no allocation, no lock" is worth the most.
     #[test]
     fn a_refused_ring_is_not_asked_for_a_second_time() {
+        let _quiet = kinds::disable_sites_for_test();
         use crate::memory::block_pool::FORCE_OOM;
         let _g = crate::memory::block_pool::test_guard();
         let counts_before = registry_counts();
@@ -1140,6 +1163,7 @@ mod tests {
     /// one.
     #[test]
     fn a_ring_freed_after_the_mark_is_not_read_through_its_address() {
+        let _quiet = kinds::disable_sites_for_test();
         const SUBJECT: u64 = 0x5EE;
         let _g = crate::memory::block_pool::test_guard();
 
@@ -1213,6 +1237,7 @@ mod tests {
     /// nothing at all and looks exactly like a thread doing nothing.
     #[test]
     fn a_second_life_on_one_thread_journals_into_a_ring_of_its_own() {
+        let _quiet = kinds::disable_sites_for_test();
         const FIRST: u64 = 0x11FE;
         const SECOND: u64 = 0x21FE;
         let _g = crate::memory::block_pool::test_guard();
@@ -1250,9 +1275,13 @@ mod tests {
     /// way out — an investigator taking a mark is one.
     #[test]
     fn an_evicted_ring_is_freed_by_a_live_thread_rather_than_a_dying_one() {
+        let _quiet = kinds::disable_sites_for_test();
         const SUBJECT: u64 = 0xEB0;
         let _g = crate::memory::block_pool::test_guard();
         let identity = a_journaling_thread(SUBJECT);
+        // A delta rather than a total: the quota evicts other tests'
+        // rings into this same list whenever the suite journals.
+        let pending_before = pending_count();
 
         {
             let mut registry = locked();
@@ -1260,7 +1289,7 @@ mod tests {
         }
         assert_eq!(
             pending_count(),
-            1,
+            pending_before + 1,
             "the eviction freed on the spot instead of leaving the ring"
         );
 
@@ -1320,6 +1349,7 @@ mod tests {
     /// earlier loses exactly those records.
     #[test]
     fn a_destructor_at_thread_exit_is_recorded_before_the_ring_retires() {
+        let _quiet = kinds::disable_sites_for_test();
         const SUBJECT: u64 = 0xD1E;
         let _g = crate::memory::block_pool::test_guard();
         let start = mark();
@@ -1402,14 +1432,22 @@ mod tests {
     /// what the exit guard's own state cannot tell.
     #[test]
     fn a_thread_inside_its_own_exit_takes_no_ring_to_free() {
+        let _quiet = kinds::disable_sites_for_test();
         const SUBJECT: u64 = 0xF2F2;
         let _g = crate::memory::block_pool::test_guard();
         let identity = a_journaling_thread(SUBJECT);
+        // A delta rather than a total: the quota evicts other tests'
+        // rings into this same list whenever the suite journals.
+        let pending_before = pending_count();
         {
             let mut registry = locked();
             evict_retired(&mut registry, 1);
         }
-        assert_eq!(pending_count(), 1, "the eviction left nothing to free");
+        assert_eq!(
+            pending_count(),
+            pending_before + 1,
+            "the eviction left nothing to free"
+        );
 
         let taken = std::thread::spawn(|| {
             crate::memory::heap::ll_thread_init();
@@ -1422,7 +1460,11 @@ mod tests {
         .expect("the exiting thread panicked");
 
         assert_eq!(taken, 0, "a thread past its own exit took a ring to free");
-        assert_eq!(pending_count(), 1, "the ring was taken by somebody");
+        assert_eq!(
+            pending_count(),
+            pending_before + 1,
+            "the ring was taken by somebody"
+        );
         // This thread is live, so it is one that may.
         let pending = std::mem::take(&mut locked().pending_free);
         free_rings(pending);
@@ -1492,8 +1534,11 @@ mod tests {
     /// It pins the drain, not its **position**: the assertions are read
     /// after the exit has returned, so moving the two calls below the
     /// retirement keeps this green while reopening exactly the defect the
-    /// drain closed. Nothing can pin the position until §9.5's record
-    /// sites exist and a block handover is a record to look for.
+    /// drain closed. What the record sites did make testable is the
+    /// **retirement's** own position —
+    /// [`a_dying_threads_block_handovers_are_inside_its_own_ring`], under
+    /// the `debug-journal` feature — and that is a different claim from
+    /// this one.
     #[test]
     fn the_exit_hands_back_the_reserve_and_the_block_cache_itself() {
         let _g = crate::memory::block_pool::test_guard();
@@ -1517,6 +1562,71 @@ mod tests {
         assert_eq!(cache, 0, "the exit left blocks in the thread cache");
     }
 
+    /// The retirement is the exit's **last** act, and this is what says
+    /// so: a dying thread's block handovers are records in its own ring
+    /// rather than losses. Everything the teardown gives back — the
+    /// barrier reserve, the pool's thread cache, and the heap's own
+    /// blocks — goes through `BlockPool::put`, which is a default event
+    /// kind, so a ring retired one step earlier would answer this window
+    /// with the exit record and nothing after it.
+    ///
+    /// The order inside the ring is the claim, not the count: `THREAD_EXIT`
+    /// is written at the head of the sequence and every handover below it
+    /// has to be in the same ring. Seen failing with the retirement moved
+    /// to its old position above the heap teardown, where the window
+    /// answers commissions, a start and an exit and nothing after.
+    ///
+    /// What it does **not** reach is the last step of all: the two
+    /// hand-drains sit between the heap teardown and the retirement, and
+    /// moving them below it would keep this green, the heap's own blocks
+    /// being recorded either way. That half stays where
+    /// [`the_exit_hands_back_the_reserve_and_the_block_cache_itself`]
+    /// leaves it.
+    #[cfg(feature = "debug-journal")]
+    #[test]
+    fn a_dying_threads_block_handovers_are_inside_its_own_ring() {
+        // The default set, held: a test that quiets the sites would
+        // otherwise turn them off underneath this one.
+        let _sites = kinds::set_sites_for_test(kinds::DEFAULT_KINDS);
+        let _g = crate::memory::block_pool::test_guard();
+        let start = mark();
+
+        let identity = std::thread::spawn(|| {
+            crate::memory::heap::ll_thread_init();
+            // Something to hand back: the reserve is filled at init, and
+            // a small allocation and its free leave a block cached.
+            let p = unsafe { crate::memory::stdapi::ll_malloc(64) };
+            assert!(!p.is_null());
+            unsafe { crate::memory::stdapi::ll_free(p) };
+            let identity = this_thread_identity();
+            crate::memory::heap::ll_thread_exit();
+            identity
+        })
+        .join()
+        .expect("the exiting thread panicked");
+
+        let end = mark();
+        assert_ne!(identity, 0, "the thread journaled nothing at all");
+        let kinds_in_order: Vec<Kind> = events(between(&start, &end))
+            .into_iter()
+            .filter(|event| event.thread == identity)
+            .map(|event| event.kind)
+            .collect();
+
+        let exited_at = kinds_in_order
+            .iter()
+            .position(|&kind| kind == kinds::KIND_THREAD_EXIT)
+            .expect("the thread's own exit is not in its ring");
+        let handovers = kinds_in_order[exited_at..]
+            .iter()
+            .filter(|&&kind| kind == kinds::KIND_BLOCK_DECOMMISSIONED)
+            .count();
+        assert!(
+            handovers > 0,
+            "the ring retired before the teardown handed its blocks back: {kinds_in_order:?}"
+        );
+    }
+
     /// A thread that cannot arm its exit guard gets no ring: the guard is
     /// what retires one, and a ring nothing retires stays on the live
     /// list for the life of the process, where every later window reads
@@ -1526,6 +1636,7 @@ mod tests {
     /// the same silence from the reader's side.
     #[test]
     fn a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring() {
+        let _quiet = kinds::disable_sites_for_test();
         use crate::memory::heap::FORCE_GUARD_UNARMED;
         let _g = crate::memory::block_pool::test_guard();
         let counts_before = registry_counts();
@@ -1612,6 +1723,7 @@ mod tests {
     /// reader and the conclusion that they did nothing.
     #[test]
     fn a_thread_refused_a_ring_is_counted_since_it_is_in_no_window() {
+        let _quiet = kinds::disable_sites_for_test();
         use crate::memory::block_pool::FORCE_OOM;
         let _g = crate::memory::block_pool::test_guard();
         let start = mark();
@@ -1646,6 +1758,7 @@ mod tests {
     /// held for the life of the process.
     #[test]
     fn the_retired_list_keeps_the_newest_and_drops_the_oldest() {
+        let _quiet = kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         let (_, retired_before) = registry_counts();
 

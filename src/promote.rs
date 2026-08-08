@@ -40,6 +40,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::journal::kinds::journal_event;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_KIND_RETAINED, BlockHeader};
 use crate::object::Object;
@@ -74,6 +75,12 @@ const ARENA_RESET_MAX_ROUNDS: usize = 10_000;
 /// The arena must not be reachable by running PHP code anymore (no
 /// live stack); destructors invoked here may still allocate into it.
 pub unsafe fn arena_reset_full(arena: *mut Arena) {
+    journal_event!(
+        crate::journal::kinds::KIND_ARENA_RESET_BEGIN,
+        arena as u64,
+        0,
+        0
+    );
     let mut survivors: Vec<*mut RcHeader> = Vec::new();
     // Each COW survivor's count at the instant it was promoted, which is
     // the last instant the reset can attribute it to arena holders. What
@@ -260,6 +267,17 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     for block in emptied {
         unsafe { crate::memory::stdapi::ll_free(block as *mut u8) };
     }
+
+    // Last, so that every death this reset caused is between the two
+    // records: what the pair brackets is the whole of the reset, and a
+    // hunt asking whether a reset freed something reads it as an
+    // interval rather than an instant.
+    journal_event!(
+        crate::journal::kinds::KIND_ARENA_RESET_END,
+        arena as u64,
+        survivors.len() as u64,
+        retained.len() as u64
+    );
 }
 
 /// Bring a survivor's out-of-line memory with it, if its kind has any.

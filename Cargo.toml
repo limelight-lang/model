@@ -52,6 +52,19 @@ checked-refcount = []
 # writes, not the mutator's.
 rc-walk = []
 
+# Compile the event journal's record sites into the runtime
+# (`dev/design/debug-modes.md` §9.6). Off by default, and off means the
+# sites are not there at all rather than switched off at run time: the
+# sites sit on the allocation and death paths, where a runtime check is
+# itself the cost being measured. The journal module is in every build
+# regardless — what this gates is the calls into it.
+#
+# On, and every default kind still costs one relaxed load of the enabled
+# mask and one predictable branch per site, which is **not** claimed to be
+# free: the two-arm measurement is owed before this is turned on anywhere
+# but a development build (`dev/BENCHMARKS.md`).
+debug-journal = []
+
 # The compiler folds the hash of every literal key into the program, and
 # the seed is therefore fixed at build time from `LL_HASH_SEED` rather than
 # drawn from the OS per process. The two halves are one option because a

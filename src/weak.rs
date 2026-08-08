@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 
+use crate::journal::kinds::journal_event;
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::refcount::{
     ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind, HAS_WEAK_REFERENCES, MemoryCategory, RcHeader,
@@ -225,6 +226,12 @@ pub(crate) unsafe fn notify_members(members: &[*mut RcHeader]) {
 /// `cell` must be a weak cell whose count just reached zero (or that a
 /// collector owns).
 pub(crate) unsafe fn weakref_die(cell: *mut LLWeakRef) {
+    journal_event!(
+        crate::journal::kinds::KIND_ENTITY_DEATH,
+        cell as u64,
+        EntityKind::WeakRef as u64,
+        0
+    );
     let target = unsafe { (*cell).target };
     if !target.is_null() {
         let removed = unsafe { (*weak_table()).remove(&(target as usize)) };

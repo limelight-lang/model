@@ -12,6 +12,7 @@
 //! specialized to its layout (`dev/DECISIONS.md`, 2026-07-25).
 
 use crate::class::{Class, NO_DESTRUCT_SLOT};
+use crate::journal::kinds::journal_event;
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::refcount::{DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHeader};
 use crate::value::Value;
@@ -637,6 +638,18 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
 /// `obj` a live object whose count just reached zero (or a collector owns).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
+    // Objects and lazies alike, and the kind is read rather than assumed:
+    // this door takes both, and a reader hunting one of them cannot tell
+    // them apart by address. Before `dispose`, because a `__destruct`
+    // body's own records belong after the death that caused them.
+    journal_event!(
+        crate::journal::kinds::KIND_ENTITY_DEATH,
+        obj as u64,
+        ((unsafe { crate::refcount::header_flags(obj as *const RcHeader) }
+            & crate::refcount::ENTITY_KIND_MASK)
+            >> crate::refcount::ENTITY_KIND_SHIFT) as u64,
+        0
+    );
     // Teardown bracket (rc-walk): no epoch-message pickup between the
     // death's committing store and this dispose's completion — a drain
     // destructor's `WeakRef::get` could reach the committed-dead

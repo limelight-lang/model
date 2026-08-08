@@ -14,6 +14,8 @@ use std::cell::RefCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::journal::kinds::journal_event;
+
 /// Block size, and with it the number of slots a size class gets per block.
 ///
 /// 64 KB, matching mimalloc's small page (`MI_SMALL_PAGE_SHIFT`). The number
@@ -37,6 +39,12 @@ pub(crate) const BLOCKS_PER_REGION: usize = REGION_SIZE / BLOCK_SIZE;
 
 const THREAD_CACHE_CAPACITY: usize = 8;
 const REFILL_BATCH: usize = 4;
+
+/// Blocks one overflow flush can move, and the width of the stack array
+/// [`BlockPool::put`] stages them in. A `put` overflows the cache by one
+/// block and the flush keeps half, so the excess is
+/// `THREAD_CACHE_CAPACITY / 2 + 1` and never more.
+const FLUSH_MAX: usize = THREAD_CACHE_CAPACITY / 2 + 1;
 
 /// Store a block header's `kind` discriminant. Under `rc-walk` the
 /// store is a release atomic: the collector's snapshot reads kinds of
@@ -290,6 +298,26 @@ impl BlockPool {
     /// rather than assumed — `with` panics there, and panicking while a
     /// thread unwinds is not a real option.
     pub fn get(&self) -> *mut BlockHeader {
+        let block = self.take_block();
+        // The journal's site sits out here rather than in the body,
+        // because the body holds the cache's `RefCell` in three places
+        // and a record raised under one of them re-enters this pool
+        // through `ll_malloc` if it is some thread's first — a borrow
+        // panic, which this crate aborts on (`debug-modes.md` §9.7).
+        if !block.is_null() {
+            journal_event!(
+                crate::journal::kinds::KIND_BLOCK_COMMISSIONED,
+                block as u64,
+                0,
+                0
+            );
+        }
+        block
+    }
+
+    /// [`get`](Self::get)'s body, with every borrow of the thread cache
+    /// inside it.
+    fn take_block(&self) -> *mut BlockHeader {
         // Fault injection, tests only: the OS refusing memory cannot be
         // provoked on demand, and an untested failure path is a guess.
         #[cfg(test)]
@@ -358,24 +386,67 @@ impl BlockPool {
             "a retained block went back to the pool with its survivors alive"
         );
         self.blocks_out.fetch_sub(1, Ordering::Relaxed);
+        // Read before the store below overwrites it, and only where it is
+        // read: without the feature the site is not there, and neither is
+        // this load (`debug-modes.md` §9.6).
+        #[cfg(feature = "debug-journal")]
+        let arrived_as = unsafe { (*block).kind };
         unsafe { store_block_kind(&raw mut (*block).kind, BLOCK_KIND_FREE) };
 
+        // The borrow decides and stages; the pushes happen after it ends.
+        // A push takes the global free list's `Mutex`, and a record raised
+        // under that lock — the journal's site below, if it is some
+        // thread's first — comes back into this pool through `ll_malloc`
+        // and finds the cache already borrowed. The failure is a borrow
+        // panic rather than the deadlock §9.7's phrasing suggests, and
+        // under `panic = "abort"` it ends the process. So the flush copies
+        // out and the borrow closes (`debug-modes.md` §9.7, and the Sage's
+        // ruling for S5.2 in `PLAN.md`).
+        //
         // `try_with` for the same reason as `get`: this runs from a TLS
         // destructor on the thread-exit path, where the cache may be gone.
-        let cached = THREAD_CACHE.try_with(|c| {
+        let mut flushed = [std::ptr::null_mut::<BlockHeader>(); FLUSH_MAX];
+        let staged = THREAD_CACHE.try_with(|c| {
             let mut cache = c.borrow_mut();
             cache.blocks.push(block);
-
-            if cache.blocks.len() > THREAD_CACHE_CAPACITY {
-                let keep = THREAD_CACHE_CAPACITY / 2;
-                for b in cache.blocks.drain(keep..) {
+            if cache.blocks.len() <= THREAD_CACHE_CAPACITY {
+                return 0;
+            }
+            let keep = THREAD_CACHE_CAPACITY / 2;
+            // One `put` overflows by one block, so the excess is
+            // `FLUSH_MAX` at most and the array holds it. The `min` is not
+            // belt and braces: it is what keeps a future refill path that
+            // overfills the cache from indexing past the array, which
+            // would panic on a path forbidden to.
+            let excess = cache.blocks.len() - keep;
+            debug_assert!(
+                excess <= FLUSH_MAX,
+                "the cache overflowed by more than one put"
+            );
+            let taken = excess.min(FLUSH_MAX);
+            for (slot, b) in flushed
+                .iter_mut()
+                .zip(cache.blocks.drain(keep..keep + taken))
+            {
+                *slot = b;
+            }
+            taken
+        });
+        match staged {
+            Ok(taken) => {
+                for &b in &flushed[..taken] {
                     self.push_global(b);
                 }
             }
-        });
-        if cached.is_err() {
-            self.push_global(block);
+            // No cache to put it in (see `get`'s note) — hand it back.
+            Err(_) => self.push_global(block),
         }
+        journal_event!(
+            crate::journal::kinds::KIND_BLOCK_DECOMMISSIONED,
+            block as u64,
+            arrived_as as u64,
+            0
+        );
     }
 
     fn push_global(&self, block: *mut BlockHeader) {
@@ -542,6 +613,43 @@ mod tests {
         assert_eq!(again, block, "thread cache must hand the block back");
         assert_eq!(pool.regions_carved(), regions_before);
         pool.put(again);
+    }
+
+    /// The overflow flush keeps half the cache and hands the rest to the
+    /// global list, and it does that by staging into a fixed array whose
+    /// width is [`FLUSH_MAX`]. The width is the load-bearing part: the
+    /// staging exists so the cache's borrow ends before the push, and a
+    /// `put` that overflowed by more than one block would index past the
+    /// array — a panic on a path this runtime aborts on.
+    #[test]
+    fn an_overflowing_cache_flushes_half_and_keeps_the_rest() {
+        let _g = test_guard();
+        let pool = BlockPool::global();
+        drain_thread_cache();
+
+        let mut blocks = Vec::new();
+        for _ in 0..=THREAD_CACHE_CAPACITY {
+            blocks.push(pool.get());
+        }
+        // The refill batch leaves blocks in the cache, so empty it again:
+        // what this counts is what the puts below put there.
+        drain_thread_cache();
+        for block in &blocks {
+            pool.put(*block);
+        }
+
+        assert_eq!(
+            thread_cache_len(),
+            THREAD_CACHE_CAPACITY / 2,
+            "the flush kept a number of blocks other than half the cache"
+        );
+        assert_eq!(
+            blocks.len() - THREAD_CACHE_CAPACITY / 2,
+            FLUSH_MAX,
+            "one put overflowed by more than the staging array holds"
+        );
+
+        drain_thread_cache();
     }
 
     #[test]
