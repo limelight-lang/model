@@ -164,6 +164,15 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 if payload_block != 0 && retained.insert(payload_block) {
                     unsafe { (*(payload_block as *mut BlockHeader)).kind = BLOCK_KIND_RETAINED };
                 }
+                if payload_block != 0 {
+                    // Pinned, and not merely retained: this block is held
+                    // for bytes rather than for occupants, and the bytes
+                    // have no death event for the occupant count to see.
+                    // Without the pin, a survivor of the same block dying
+                    // would hand the payload back to the pool
+                    // (`retained.rs`, blocks retained for bytes).
+                    crate::memory::retained::pin(payload_block);
+                }
             }
             unsafe {
                 if (*surv).flags & COW != 0 {
@@ -230,9 +239,23 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // (`rfc/model/gc/retained-block-walk.md`). Registered after the
     // fixpoint has settled and before the blocks are disposed of, so
     // every entry describes a survivor that is staying.
-    index_retained_blocks(&survivors);
+    let emptied = index_retained_blocks(&survivors);
 
     unsafe { (*arena).finish_reset(|block| retained.contains(&(block as usize))) };
+
+    // Blocks whose every survivor died inside this reset — the shape a
+    // heap reference box produces, where the element it made an escapee
+    // is promoted and then torn down by the box's own logged release. No
+    // later death will report such a block empty, so the reset hands it
+    // over itself, and only **after** `finish_reset`: the arena's block
+    // chain is threaded through the very headers the pool overwrites, so
+    // a block returned before that walk cuts the chain under it. The
+    // route is `ll_free` rather than the pool directly, because the block
+    // still reads `BLOCK_KIND_RETAINED` and that is the one path which
+    // both parks it under a live epoch and drops the index first.
+    for block in emptied {
+        unsafe { crate::memory::stdapi::ll_free(block as *mut u8) };
+    }
 }
 
 /// Group the settled survivors by the block holding them and hand each
@@ -311,15 +334,21 @@ unsafe fn external_memory_block(surv: *mut RcHeader) -> usize {
     BlockHeader::of_ptr(memory as *const u8) as usize
 }
 
-fn index_retained_blocks(survivors: &[*mut RcHeader]) {
+fn index_retained_blocks(survivors: &[*mut RcHeader]) -> Vec<usize> {
+    let mut emptied = Vec::new();
     let mut by_block: HashMap<usize, Vec<usize>> = HashMap::new();
     for &surv in survivors {
         let block = BlockHeader::of_ptr(surv as *const u8) as usize;
         by_block.entry(block).or_default().push(surv as usize);
     }
     for (block, occupants) in by_block {
-        crate::memory::retained::register(block, occupants);
+        // The addresses are this reset's own survivors, so they are
+        // readable, which is what `register` asks of its caller.
+        if unsafe { crate::memory::retained::register(block, occupants) } {
+            emptied.push(block);
+        }
     }
+    emptied
 }
 
 /// Entity teardown dispatch from a bare header — the uniform kind
@@ -560,12 +589,20 @@ mod tests {
         second.reset(|_| {});
     }
 
-    /// A surviving reference box carries its referent with it. Promotion
-    /// used to gate recursion on `is_object`, so every other entity kind
-    /// was a leaf and the arena object behind an arena `&` was never
-    /// marked: it died with the reset while a promoted box still pointed
-    /// at it. `walk::trace_entity` is the crate's one kind-dispatched
-    /// tracer and already knew a reference box has one counted child.
+    /// An arena referent behind a surviving reference box outlives the
+    /// reset, and comes out of it with exactly one holder.
+    ///
+    /// **What carries it is the escape count, since the box moved to the
+    /// heap** (S3.1): storing an arena object into a heap box is a
+    /// crossing, so the object is an escapee in its own right and the
+    /// reset promotes it from the escapee log. The test was written for a
+    /// different mechanism — promotion gated recursion on `is_object`, so
+    /// every other kind was a leaf and the arena object behind an *arena*
+    /// `&` was never marked, dying with the reset while a promoted box
+    /// still pointed at it. That configuration cannot be built any more,
+    /// because no box is an arena entity; the assertions below are worth
+    /// keeping for the survival and the count, not as a guard on the
+    /// recursion.
     #[test]
     fn a_surviving_reference_box_carries_its_referent() {
         let _g = crate::memory::block_pool::test_guard();
@@ -576,8 +613,7 @@ mod tests {
         let mut ctx = LLContext { arena: &mut arena };
         let holder = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
         let target = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
-        let r =
-            unsafe { crate::reference::ll_reference_new(&mut ctx, MemoryCategory::RequestArena) };
+        let r = crate::reference::ll_reference_new();
 
         unsafe {
             assert!(ref_store(
@@ -587,8 +623,8 @@ mod tests {
                 std::ptr::null_mut(),
                 Value::entity(Tag::Object, target as *mut RcHeader),
             ));
-            // The heap holder takes the box: the escape that makes it
-            // survive, and the only reason the referent is reachable.
+            // The heap holder takes the box, which is what keeps the box
+            // — and through it the referent — reachable past the reset.
             let slot = Object::prop_at(holder, 16);
             assert!(ref_store(
                 &mut arena,
@@ -854,16 +890,31 @@ mod tests {
         // keeper legitimately holds cfg.
         assert_eq!(unsafe { (*cfg).rc.refcount }, 2);
 
-        // Keeper dies for real: phase 2 releases cfg.
+        // Keeper dies for real, and it dies **through its holder**: the
+        // `Slot` object's property is the reference keeping it alive, so
+        // releasing behind the holder's back would leave a live object
+        // naming freed memory. That mattered from the day a retained
+        // block could go back to the pool — until then the freed slot
+        // was never reissued and the dangling property read refcount 0.
         unsafe {
-            assert!(crate::refcount::ll_release(keeper as *mut RcHeader));
-            ll_object_die(keeper);
+            let slot = Object::prop_at(holder, 16);
+            assert!(crate::memory::barrier::ref_store(
+                &mut arena,
+                holder as *mut RcHeader,
+                slot,
+                keeper as *mut RcHeader,
+                Value::null(),
+            ));
         }
         assert_eq!(
             unsafe { (*cfg).rc.refcount },
             1,
             "exactly one release at real death"
         );
+        unsafe {
+            assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+            ll_object_die(holder);
+        }
     }
 
     #[test]

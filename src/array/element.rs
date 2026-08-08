@@ -260,7 +260,9 @@ pub unsafe fn unset(
 /// has no way to tell it from the refusal below.
 ///
 /// Null reports a refusal with every array unchanged: the separation's
-/// copy, the box, or the vivified element's own insert. One state does
+/// copy, the box, the publication of an arena COW element into the heap
+/// box (`escape_copy`, which copies the element rather than sharing it),
+/// or the vivified element's own insert. One state does
 /// move behind a refusal on an integer key, as it does for [`set`]: the
 /// vivified insert advances the append cursor, and that is one-way.
 ///
@@ -268,6 +270,14 @@ pub unsafe fn unset(
 /// already in a reference state hands back the box it holds, at whatever
 /// count its holders have given it. Either way a caller keeping the box
 /// retains for its own holder.
+///
+/// **The box is a GC-heap entity even for an arena array**
+/// (`dev/DECISIONS.md`, 2026-08-08), so boxing an element of an arena
+/// array pays twice at the boundary: an arena COW element is copied to
+/// the heap and an arena non-COW one counts an escape, and the entry
+/// holding the heap box logs a release against the reset. Both are
+/// `Table::make_ref`'s, and both are what buys an exact holder count on
+/// the box.
 ///
 /// # Safety
 /// Per [`write_through`]; `key` canonical, as for [`set`].
@@ -291,7 +301,7 @@ pub unsafe fn make_ref(
             if vivified && !store_into(a, arena, key, Value::null()) {
                 return false;
             }
-            boxed = (*a).table.make_ref(ctx, a as *const RcHeader, key);
+            boxed = (*a).table.make_ref(arena, a as *const RcHeader, key);
             if boxed.is_null() {
                 // The vivified element goes back out. Without this a
                 // refusal would leave the key present on an array this
@@ -1501,7 +1511,7 @@ mod tests {
                 .insert(src as *const RcHeader, Key::Int(0), Value::int(5));
             let boxed = (*src)
                 .table
-                .make_ref(context_ptr, src as *const RcHeader, Key::Int(0));
+                .make_ref(arena_ptr, src as *const RcHeader, Key::Int(0));
             assert!(!boxed.is_null(), "the element was meant to be boxed");
             assert_eq!(
                 (*src).table.get(Key::Int(0)).unwrap().tag(),
@@ -1561,7 +1571,7 @@ mod tests {
             );
             let boxed = (*src)
                 .table
-                .make_ref(context_ptr, src as *const RcHeader, Key::Int(0));
+                .make_ref(arena_ptr, src as *const RcHeader, Key::Int(0));
             assert!(!boxed.is_null(), "the element was meant to be boxed");
             boxed
         };
@@ -1648,7 +1658,7 @@ mod tests {
             );
             let boxed = (*src)
                 .table
-                .make_ref(context_ptr, src as *const RcHeader, Key::Int(0));
+                .make_ref(arena_ptr, src as *const RcHeader, Key::Int(0));
             assert!(!boxed.is_null());
             boxed
         };
@@ -1716,14 +1726,24 @@ mod tests {
                 .insert(src as *const RcHeader, Key::Int(0), Value::int(7));
             let boxed = (*src)
                 .table
-                .make_ref(context_ptr, src as *const RcHeader, Key::Int(0));
+                .make_ref(arena_ptr, src as *const RcHeader, Key::Int(0));
             assert!(!boxed.is_null());
             boxed
         };
         assert_eq!(
+            unsafe { crate::object::header_category(boxed as *const RcHeader) },
+            MemoryCategory::GcHeap,
+            "an arena array's box is still a heap entity (S3.1)"
+        );
+        assert_eq!(
             unsafe { (*boxed).rc.flags } & crate::refcount::IS_ESCAPEE,
             0,
-            "the box escaped before the copy was made"
+            "a heap box is never an escapee"
+        );
+        assert_eq!(
+            unsafe { (*boxed).rc.refcount },
+            1,
+            "the source's entry is the box's one holder"
         );
 
         let copy = unsafe {
@@ -1737,28 +1757,181 @@ mod tests {
                 boxed as *mut RcHeader,
                 "the copy boxed a second reference instead of sharing this one"
             );
-            // On an arena entity the count field is the **escape
-            // hold-count** once `IS_ESCAPEE` is set, and the first gain
-            // sets it to one rather than incrementing a holder count:
-            // arena entities are not counted at all until one of them
-            // crosses out (`barrier::escape_gain`).
+            // A heap box is counted like any other heap entity, which is
+            // the whole reason the box lives there: the count is what
+            // S3.2 reads to decide whether to share or unwrap.
             assert_eq!(
-                (*boxed).rc.flags & crate::refcount::IS_ESCAPEE,
-                crate::refcount::IS_ESCAPEE,
-                "the longer-lived copy took no hold on the arena box"
+                (*boxed).rc.refcount,
+                2,
+                "the copy took no hold of its own on the shared box"
             );
-            assert_eq!((*boxed).rc.refcount, 1);
 
             assert!(ll_release(copy as *mut RcHeader));
             crate::object::ll_entity_die(copy as *mut RcHeader);
             assert_eq!(
-                (*boxed).rc.flags & crate::refcount::IS_ESCAPEE,
-                0,
+                (*boxed).rc.refcount,
+                1,
                 "the dying copy kept its hold on the box"
             );
+
+            // The source's own reference is the reset's to give back, and
+            // the record is what makes that happen. Draining it here is
+            // the reset's release, done by hand so the box's death is
+            // visible to this test.
+            let mut logged = Vec::new();
+            arena.drain_release_log(|e| logged.push(e));
+            assert!(
+                logged.contains(&(boxed as *mut RcHeader)),
+                "the arena entry holding a heap box logged no release"
+            );
+            for e in logged {
+                if ll_release(e) {
+                    crate::object::ll_entity_die(e);
+                }
+            }
         }
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
+    }
+
+    /// The other crossing the heap box forces: the element enters a
+    /// longer-lived holder, so an arena element becomes an escapee and
+    /// outlives the request that made it. Without the gain the reset
+    /// frees the object while the box still names it, which the
+    /// destructor count sees as a death one reset too early.
+    #[test]
+    fn boxing_an_arena_element_counts_its_escape() {
+        let _g = crate::memory::block_pool::test_guard();
+        use std::sync::atomic::AtomicUsize;
+        static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn counting(_o: *mut Object) {
+            DESTRUCTS.fetch_add(1, Ordering::Relaxed);
+        }
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("Boxed")
+            .destructor(counting as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        crate::memory::context::set_current_context(context_ptr);
+
+        let a = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+        let mut named = Value::entity(Tag::Array, a as *mut RcHeader);
+        let slot: *mut Value = &raw mut named;
+        let (keeper, keeper_slot, boxed) = unsafe {
+            let target = new_constructed(context_ptr, cls, MemoryCategory::RequestArena);
+            assert!(set(
+                context_ptr,
+                MemoryCategory::RequestArena,
+                slot,
+                Key::Int(0),
+                Value::entity(Tag::Object, target as *mut RcHeader),
+            ));
+            let boxed = make_ref(context_ptr, MemoryCategory::RequestArena, slot, Key::Int(0));
+            assert!(!boxed.is_null());
+
+            // A heap holder for the box, so the box is what outlives the
+            // request and the object's survival is the box's doing.
+            let holder_cls = ClassBuilder::new("BoxKeeper").prop("r", true).build();
+            let keeper = new_constructed(context_ptr, holder_cls, MemoryCategory::GcHeap);
+            let keeper_slot = Object::prop_at(keeper, 16);
+            assert!(crate::memory::barrier::ref_store(
+                arena_ptr,
+                keeper as *mut RcHeader,
+                keeper_slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Reference, boxed as *mut RcHeader),
+            ));
+            (keeper, keeper_slot, boxed)
+        };
+
+        named = Value::null();
+        let _ = named;
+        unsafe { crate::promote::arena_reset_full(arena_ptr) };
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            0,
+            "the reset freed an arena object a heap box still named"
+        );
+
+        unsafe {
+            let survivor = (*boxed).value;
+            assert_eq!(survivor.tag(), Tag::Object, "the box lost its element");
+            assert_eq!(
+                crate::object::header_category(survivor.entity_ptr()),
+                MemoryCategory::GcHeap,
+                "the survivor was not promoted out of the arena"
+            );
+            crate::memory::barrier::write_value_slot(keeper_slot, Value::null());
+            crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, boxed as *mut RcHeader);
+            assert_eq!(
+                DESTRUCTS.load(Ordering::Relaxed),
+                1,
+                "the object outlived the last holder of its box"
+            );
+            assert!(ll_release(keeper as *mut RcHeader));
+            ll_object_die(keeper);
+        }
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+    }
+
+    /// S3.1's third criterion: a whole request that takes a reference
+    /// ends with the box freed and no arena block retained. The box is a
+    /// heap entity inside an arena array, so the only thing that can free
+    /// it is the release the entry logged — the mechanism the ruling
+    /// leans on, exercised through `arena_reset_full` rather than by
+    /// draining the log by hand.
+    #[test]
+    fn a_request_that_takes_a_reference_ends_holding_nothing() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        crate::memory::context::set_current_context(context_ptr);
+        let retained_before = crate::memory::retained::snapshot().len();
+
+        let cls = ClassBuilder::new("Plain").build();
+        let a = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+        let mut holder = Value::entity(Tag::Array, a as *mut RcHeader);
+        let slot: *mut Value = &raw mut holder;
+        let boxed = unsafe {
+            let target = new_constructed(context_ptr, cls, MemoryCategory::RequestArena);
+            assert!(set(
+                context_ptr,
+                MemoryCategory::RequestArena,
+                slot,
+                Key::Int(0),
+                Value::entity(Tag::Object, target as *mut RcHeader),
+            ));
+            make_ref(context_ptr, MemoryCategory::RequestArena, slot, Key::Int(0))
+        };
+        assert!(!boxed.is_null());
+        assert_eq!(
+            unsafe { crate::object::header_category(boxed as *const RcHeader) },
+            MemoryCategory::GcHeap
+        );
+
+        // The request ends: no live stack, so the local names go first.
+        holder = Value::null();
+        let _ = holder;
+        unsafe { crate::promote::arena_reset_full(arena_ptr) };
+
+        let mut alive = Vec::new();
+        unsafe { crate::memory::heap::for_each_entity_slot(|e| alive.push(e as usize)) };
+        assert!(
+            !alive.contains(&(boxed as usize)),
+            "the reference box outlived the request that made it"
+        );
+        assert_eq!(
+            crate::memory::retained::snapshot().len(),
+            retained_before,
+            "the request retained a block on the way out"
+        );
+        crate::memory::context::set_current_context(std::ptr::null_mut());
     }
 
     /// S2.8's criterion in full: `$a=['x'=>1]; $b=$a; $r=&$b['x']; $r=2`

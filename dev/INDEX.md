@@ -136,7 +136,12 @@ versions live in `docs/history/`, marked at the top.
   with no successor left. `get` never separates and reads a boxed element
   through its box, and `make_ref` boxes one inside `write_through`, so
   `&$a[k]` separates before it boxes and an absent key is created as null
-  first. A store into an element already in a reference state goes
+  first. The box is a heap entity whatever the array's category, so
+  boxing an element of an arena array crosses the boundary twice: the
+  element enters a longer-lived holder — copied if it is an arena COW
+  value, counted as an escape otherwise — and the box enters the arena
+  entry, which logs its release against the reset.
+  A store into an element already in a reference state goes
   **through** the box (`barrier::ref_store`), and a copy shares that box
   rather than copying it — unconditionally, where PHP unwraps a box with
   one holder, which is an open RFC question recorded beside S2.8 in
@@ -173,11 +178,18 @@ versions live in `docs/history/`, marked at the top.
   own slot. A factory that has a category to refuse refuses it itself,
   before calling.
 - Retained-block object indexes: `src/memory/retained.rs` — block
-  address → its occupants, sorted. Registered by `promote` at reset,
-  read by both of `heap`'s enumerators. This is what makes a
-  bump-filled former-arena block walkable at all; without it its
-  occupants are root sources and a ring among them never dies
-  (`rfc/model/gc/retained-block-walk.md`, built 2026-08-03).
+  address → its occupants, sorted, and how many of them are still
+  alive. Registered by `promote` at reset, read by both of `heap`'s
+  enumerators. This is what makes a bump-filled former-arena block
+  walkable at all; without it its occupants are root sources and a ring
+  among them never dies (`rfc/model/gc/retained-block-walk.md`, built
+  2026-08-03). The live count is what returns the block: each
+  occupant's death reports through `stdapi::ll_free`'s retained arm, and
+  the last one drops the index, restamps the block and hands it to the
+  pool (`dev/DECISIONS.md`, 2026-08-08). Two shapes sit beside that — a
+  block retained for a **payload** the reset could not carry out is
+  pinned and never returns, and a block whose every occupant died inside
+  the reset is handed over by the reset itself, after `finish_reset`.
 - rc-walk epoch protocol, mutator side (`rc-walk` builds):
   `src/epoch.rs` — the soft-handshake ack, the verdict message queue
   (confirm + acquit), and the non-reentrant checkpoint; checkpoints
@@ -208,7 +220,8 @@ versions live in `docs/history/`, marked at the top.
   `src/memory/heap.rs` (`ll_entity_reserve` / `ll_entity_cells_return`
   — bulk cell reservation, `rfc/model/memory/bulk-operations.md`),
   `src/reference.rs` (`ll_reference_new` — the `&` reference box,
-  kind 3),
+  kind 3; it takes neither a category nor a context, because a box is a
+  GC-heap entity in every case — `dev/DECISIONS.md`, 2026-08-08),
   `src/memory/stdapi.rs` (`ll_malloc`/`ll_c_free`/aligned),
   `src/memory/barrier.rs` (`ll_store_ptr`/`ll_store_box`/`ll_drop`/
   `ll_ref_store`), `src/object.rs`

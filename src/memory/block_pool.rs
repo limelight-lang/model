@@ -309,14 +309,15 @@ impl BlockPool {
     /// pool is its sole authority, so this internal API stays safe.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn put(&self, block: *mut BlockHeader) {
-        // A retained block carries promoted survivors and has **no**
-        // release path in this crate — `retained::release` has no caller,
-        // and the design keeps such a block out of circulation for as long
-        // as its survivors live (`rfc/model/memory/arena-reset.md`). So its
-        // arrival here is not a step of a defect, it is the defect, and
-        // catching it here names the thread and the moment. Planted while
-        // hunting the loaded-box flake in `census_counts_objects_and_their_
-        // _edges`, where a walk sees a block that should not be reachable.
+        // A retained block carries promoted survivors, and it comes back
+        // only through `stdapi::ll_free`'s retained arm, which restamps it
+        // after `retained::occupant_freed` reports the last live occupant
+        // gone. Arriving here still stamped retained therefore means a
+        // caller took a shortcut past that arm, with survivors possibly
+        // alive — not a step of a defect, the defect itself, and catching
+        // it here names the thread and the moment. Planted while hunting
+        // the loaded-box flake in `census_counts_objects_and_their_edges`,
+        // where a walk sees a block that should not be reachable.
         debug_assert_ne!(
             unsafe { (*block).kind },
             BLOCK_KIND_RETAINED,

@@ -257,16 +257,23 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         );
     }
 
-    // While an rc-walk epoch is in flight, every freeable kind parks
-    // instead of recycling — identity of walked slots and chased buffers
-    // (`deferred_free`, one relaxed load + predicted branch, per
-    // `rfc/model/gc/rc-walk.md`). The no-op kinds (arena, retained) fall
-    // through: they recycle nothing, so identity holds without parking.
+    // While an rc-walk epoch is in flight, every kind whose free can put
+    // memory back in circulation parks instead — identity of walked
+    // slots and chased buffers (`deferred_free`, one relaxed load +
+    // predicted branch, per `rfc/model/gc/rc-walk.md`). A retained block
+    // recycles nothing inside itself, but its last occupant's death
+    // hands the **whole block** to the pool, so it parks with the rest.
+    // The arena kind is the one that falls through: it recycles nothing
+    // at all, so identity holds without parking.
     #[cfg(feature = "rc-walk")]
     if crate::memory::deferred_free::active()
         && matches!(
             kind,
-            BLOCK_KIND_HEAP | BLOCK_KIND_ENTITY | BLOCK_KIND_LARGE | BLOCK_KIND_LARGE_RUN
+            BLOCK_KIND_HEAP
+                | BLOCK_KIND_ENTITY
+                | BLOCK_KIND_LARGE
+                | BLOCK_KIND_LARGE_RUN
+                | crate::memory::block_pool::BLOCK_KIND_RETAINED
         )
     {
         return unsafe { crate::memory::deferred_free::park(ptr) };
@@ -317,6 +324,25 @@ unsafe fn ll_free_large(block: *mut u8, kind: u32) {
                 false,
                 "a buffer-arena chunk frees through buffer_free_longlived_payload, which carries its size"
             );
+        }
+        crate::memory::block_pool::BLOCK_KIND_RETAINED => {
+            // A promoted survivor died. The block it was promoted in is
+            // former arena memory with no free list and no stride, so
+            // nothing is recycled inside it; what the death changes is
+            // the block's live-occupant count, and at zero the whole
+            // block goes home. The registry drops the index before
+            // saying so, because both enumerators dereference a
+            // registered address without testing that its block still
+            // exists (`retained.rs`, the readable-address contract).
+            if crate::memory::retained::occupant_freed(block as usize) {
+                unsafe {
+                    crate::memory::block_pool::store_block_kind(
+                        &raw mut (*(block as *mut BlockHeader)).kind,
+                        crate::memory::block_pool::BLOCK_KIND_FREE,
+                    )
+                };
+                BlockPool::global().put(block as *mut BlockHeader);
+            }
         }
         _ => { /* not ours / double free — ignore in release, catch in tests */ }
     }

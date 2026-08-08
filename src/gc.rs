@@ -826,7 +826,7 @@ mod tests {
         let mut ctx = LLContext { arena: &mut arena };
 
         let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        let r = unsafe { crate::reference::ll_reference_new(&mut ctx, MemoryCategory::GcHeap) };
+        let r = unsafe { crate::reference::ll_reference_new() };
         unsafe {
             // a.next owns the box's initial ref; the box owns a's second.
             Object::prop_at(a, 16).write(Value::entity(Tag::Reference, r as *mut RcHeader));
@@ -1527,9 +1527,7 @@ mod tests {
         let _g = crate::memory::block_pool::test_guard();
 
         let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
-        let boxed = unsafe {
-            crate::reference::ll_reference_new(std::ptr::null_mut(), MemoryCategory::GcHeap)
-        };
+        let boxed = unsafe { crate::reference::ll_reference_new() };
         unsafe {
             // `&$a` moves the variable's hold onto the box rather than
             // adding one, so the box takes the array's creation reference.

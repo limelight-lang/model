@@ -8,6 +8,103 @@ never edited or deleted.
 
 ---
 
+## 2026-08-08 — a retained block goes home when its last live occupant dies
+
+**Decided (Sage):** the second half of the retention mechanism is built.
+`memory::retained` counts a retained block's live occupants;
+`stdapi::ll_free`'s retained arm reports each occupant's death; at zero
+the index is dropped, the block is restamped and returned to the pool.
+The block rides the parked-free queue like every other kind whose free
+can put memory back in circulation, because its last occupant's death
+hands over the whole block.
+
+**Why now, and why inside S3.1.** A reference box behind `&` made this a
+blocking defect rather than a future item. Boxing an element of an arena
+array makes an arena element an escapee, so the reset promotes it and
+retains its block; the box dies one step later, from the release the
+array's entry logged, and takes the element with it. Before, the block
+stayed out of circulation for the life of the process, so
+`$r = &$a[0]` on an array of objects — which `foreach ($a as &$v)` does
+once per element — retired 64 KiB per request in a runtime whose premise
+is running requests forever. S3.1's own criterion ("a request that takes
+a reference and ends leaves no block held") measured exactly that, so
+the step could not close over it.
+
+**Why the vain promotion is not the thing to fix.** At settle time the
+element's hold-count is 1, held by the box, and whether the box is
+doomed depends on whether its arena holder survives — which is what
+settle computes. Telling a doomed box from a surviving keeper before the
+fixpoint is trial deletion, a reset-time cycle collector. And the
+reset's order is load-bearing in the other direction: the survivors'
+compensating retains must land before the release-log releases, or a
+heap child held only by an arena survivor hits zero and is freed while
+the survivor still names it. So promotion is the sound answer at the
+only instant the reset can decide; what was wrong is that the block
+never came back.
+
+**Two shapes the mechanism had to grow.** A block retained for **bytes**
+rather than for occupants — the refused-carry fallback, where a
+survivor's payload could not leave the dying arena — is *pinned*: the
+payload has no death event, so no occupant count can speak for it, and
+such a block keeps permanent retention. The rule that would release it,
+the last live payload gone, is owed and not built. And a block whose
+every occupant died *inside* the reset has nobody left to report the
+last death, so `register` says so and the reset hands the block over
+itself — after `finish_reset`, because the arena's block chain is
+threaded through the very headers the pool overwrites.
+
+**What it exposed, and it was a real defect.**
+`promote::survivor_holding_heap_entity_compensates_the_release_log`
+killed a promoted survivor by hand while a live `Slot` object still
+named it through a property. The dangling property was invisible while a
+retained block was never reissued — it read refcount 0 and was skipped.
+With the block recycled it named a live object, and a whole-heap
+collection then judged a genuine garbage ring reachable. The test now
+kills the survivor through its holder's slot, which is how anything else
+in the runtime would.
+
+## 2026-08-08 — a reference box is allocated in the GC heap, always
+
+**Decided (Sage):** every `&` box is a GC-heap entity.
+`reference::ll_reference_new` takes neither a category nor a context,
+because it has nothing to choose and nothing to resolve, and
+`reference_die` frees unconditionally.
+
+**Why:** the rule a copy of an array must apply — share a box that has
+two holders, unwrap one that has a single holder — needs an exact holder
+count at the instant of duplication, and the heap is where this runtime
+already keeps one: a heap non-COW box is counted by `ll_retain` and
+`ll_release` with no special case anywhere. Both alternatives make the
+box counted **in the arena**, which breaks "counted or escaping, never
+both" and makes `Reference` a second everywhere-counted kind after COW.
+What that costs is spread over the whole runtime for a rare `&`:
+`mark_one` must stop zeroing the box's count, the count must travel in
+`cow_at_promotion` and settle by edges with a delta, `escape_gain` must
+branch on kind because it writes `refcount = 1`, and the retain/release
+fast path gains a kind test on every arena entity. Growing `LLReference`
+to 32 bytes buys one thing over that — an escapee released before the
+reset is not promoted in vain — and costs eight bytes on every box.
+
+**The price, stated rather than hidden.** Every `&` is a heap
+allocation, which is Zend's own cost class (`zend_reference` is always
+heap). Boxing an element of an arena array crosses the boundary twice:
+the element enters a longer-lived holder, so an arena COW value is
+copied to the heap once per boxing and an arena non-COW one counts an
+escape; and the box enters the arena entry, so its release is logged
+against the reset. What becomes impossible is arena-speed `&` and a box
+dying for free with the arena. The lifetime objection is answered by the
+box's own life: `reference_die` calls `drop_ref`, which calls
+`escape_lose`, so a box whose holders do not outlive the request dies at
+the reset from the log.
+
+**What the ruling took with it:** an arena box cannot be built any more,
+so two tests lost their instrument rather than their subject.
+`a_copy_over_an_arena_source_shares_the_box` now reads the sharing off
+the box's refcount, which is the count S3.2 will decide on;
+`a_surviving_reference_box_carries_its_referent` still asserts survival
+and the holder count, but the referent now survives by its own escape
+count rather than by promotion recursing through a promoted box.
+
 ## 2026-08-08 — the table's version bracket orders both sides with fences
 
 **Decided:** `begin_entry_move` stores the odd version relaxed and then

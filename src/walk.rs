@@ -1296,7 +1296,7 @@ mod tests {
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
         let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        let r = unsafe { crate::reference::ll_reference_new(&mut ctx, MemoryCategory::GcHeap) };
+        let r = crate::reference::ll_reference_new();
         unsafe {
             // a.child owns the box's initial ref; the box owns a's.
             Object::prop_at(a, 16).write(Value::entity(Tag::Reference, r as *mut RcHeader));
@@ -1743,9 +1743,7 @@ mod tests {
         let mut ctx = LLContext { arena: &mut arena };
         let holder = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         let child = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-        let boxed = unsafe {
-            crate::reference::ll_reference_new(std::ptr::null_mut(), MemoryCategory::GcHeap)
-        };
+        let boxed = crate::reference::ll_reference_new();
         unsafe {
             tie(holder, 16, child);
             // The second property stays empty, so an unoccupied cell has
@@ -1861,9 +1859,7 @@ mod tests {
         let _g = crate::memory::block_pool::test_guard();
 
         let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
-        let boxed = unsafe {
-            crate::reference::ll_reference_new(std::ptr::null_mut(), MemoryCategory::GcHeap)
-        };
+        let boxed = crate::reference::ll_reference_new();
         unsafe {
             // The box takes the array's creation reference, as `&$a` does.
             (*boxed).value = Value::entity(Tag::Array, array as *mut RcHeader);

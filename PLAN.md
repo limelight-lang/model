@@ -1091,7 +1091,7 @@ whose holders do not outlive the request dies at the reset from the log.
 What becomes impossible: arena-speed `&`, and a box dying for free with
 the arena.
 
-- [ ] S3.1 A reference box lives in the GC heap in every case
+- [x] S3.1 A reference box lives in the GC heap in every case
       done: a box made for an arena array reads `GcHeap`; the arena
         array's entry logs a release at reset; a request that takes a
         reference and ends leaves no block held and no entity alive;
@@ -1099,6 +1099,40 @@ the arena.
         a heap box rather than muted, its instrument having died with
         arena boxes
       tier: T2 · role: Critic
+      Critic 2026-08-08 round 1: three findings. `$r = &$a[0]` on an
+        arena object element retires a 64 KiB block per request — the
+        element escapes, is promoted in vain, and its block never comes
+        back; the box's Value was written with a plain 16-byte store,
+        whose old justification ("the box is private") died when every
+        box became a census-visible heap entity, so the collector's
+        relaxed reader can take a refcounted tag with a null payload;
+        and `element::make_ref`'s refusal list lost the escape copy of
+        an arena COW element. The second and third fixed
+        (`barrier::write_value_slot`, the doc). The first was verified
+        against the criterion's own test — with an object element it
+        failed — and went to the Sage, being a price the ruling had not
+        named.
+      Sage 2026-08-08: build the retained-block release, now, inside
+        S3.1; the criterion stands unamended. The vain promotion is
+        sound — at settle time the element is held by the box, and
+        telling a doomed box from a surviving keeper first is trial
+        deletion — and the reset's order cannot swap, so what was wrong
+        is that the block never came home. `dev/DECISIONS.md`
+        2026-08-08 carries the reasoning, the pinned payload block and
+        the reset-time hand-over. Final.
+      handoff: `ll_reference_new` takes neither a category nor a
+        context and every box is `GcHeap`, so an arena box cannot be
+        built; `Table::make_ref` publishes the element into the box
+        through `store_category_barrier` with `GcHeap` and the box into
+        the entry with the array's category, then gives the entry's old
+        reference back. `memory::retained` counts live occupants and
+        `stdapi::ll_free`'s retained arm returns the emptied block,
+        which is now a parked kind. Two old tests were rewritten rather
+        than muted: `a_copy_over_an_arena_source_shares_the_box` reads
+        the sharing off a refcount instead of an arena hold-count, and
+        `promote::survivor_holding_heap_entity_compensates_the_release_
+        log` killed a survivor a live `Slot` object still named — a
+        dangling property that only block reuse made visible.
 - [ ] S3.2 A copy unwraps a box with a single holder
       done: the four measured cases above reproduce through
         `element::set` and `element::make_ref`, in both memory

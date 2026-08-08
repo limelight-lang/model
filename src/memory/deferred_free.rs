@@ -45,8 +45,13 @@
 //! mid-epoch is memory a walker may be reading, which is what parking it
 //! answers.
 //!
-//! What does not ride it: the no-op kinds (arena, retained), which
-//! recycle nothing, so identity holds without parking.
+//! What does not ride it: the arena kind, which recycles nothing, so
+//! identity holds without parking. A **retained** block rides it, and
+//! for a reason worth stating: nothing is recycled *inside* such a
+//! block — former arena memory has neither stride nor free list — but
+//! the death of its last live occupant hands the whole block to the
+//! pool (`retained::occupant_freed`), and a block reissued mid-epoch is
+//! exactly the identity loss the queue exists to prevent.
 //!
 //! **A cross-thread free rides it like any other.** The epoch test in
 //! `stdapi::ll_free` fires on the block kind alone and stands *before*

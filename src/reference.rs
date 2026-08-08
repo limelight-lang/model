@@ -10,7 +10,6 @@
 //! bare pointer self-describing at teardown
 //! (`rfc/model/classes.md`, "Entity kind and non-object teardown").
 
-use crate::memory::context::LLContext;
 use crate::refcount::{EntityKind, MemoryCategory, RcHeader};
 use crate::value::Value;
 
@@ -21,18 +20,29 @@ pub struct LLReference {
     pub value: Value,
 }
 
-/// Allocate a reference box in `category`, its Value slot `null`.
+/// Allocate a reference box, its Value slot `null`. Null is a refusal.
+///
+/// **The box is always a GC-heap entity, and the caller has no say in
+/// it** (`dev/DECISIONS.md`, 2026-08-08). The rule a copy of an array
+/// applies — share a box with two holders, unwrap one with a single
+/// holder — needs an exact holder count at the moment of duplication,
+/// and the heap is the one place this runtime keeps one: a heap non-COW
+/// box is counted by `ll_retain` and `ll_release` with no special case
+/// anywhere. Counting a box *in the arena* would break "counted or
+/// escaping, never both" and put a kind test on the retain/release fast
+/// path of every arena entity. That is why the factory takes neither a
+/// category nor a context: it has nothing to choose and nothing to
+/// resolve.
 ///
 /// Same commissioning contract as the object factory: body first, the
 /// header published LAST as one 8-byte store, so an entity-block slot
 /// reads refcount 0 until the box is fully formed
 /// (`rfc/model/gc/rc-walk.md`, Phase 1).
-///
-/// # Safety
-/// `ctx` per [`crate::memory::context::ll_arena_alloc`].
-pub unsafe fn ll_reference_new(ctx: *mut LLContext, category: MemoryCategory) -> *mut LLReference {
+pub fn ll_reference_new() -> *mut LLReference {
     let size = size_of::<LLReference>();
-    let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
+    let mem = unsafe {
+        crate::memory::routing::entity_alloc_in(std::ptr::null_mut(), MemoryCategory::GcHeap, size)
+    };
     if mem.is_null() {
         return std::ptr::null_mut();
     }
@@ -41,35 +51,37 @@ pub unsafe fn ll_reference_new(ctx: *mut LLContext, category: MemoryCategory) ->
         (*boxed).value = Value::null();
         crate::refcount::publish_header(
             boxed as *mut RcHeader,
-            RcHeader::new(category, EntityKind::Reference.to_flags()),
+            RcHeader::new(MemoryCategory::GcHeap, EntityKind::Reference.to_flags()),
         );
     }
     boxed
 }
 
-/// C ABI entry for [`ll_reference_new`]; the category crosses as a plain
-/// `u32` for the same reason as `ll_object_new`'s wrapper.
-///
-/// # Safety
-/// As [`ll_reference_new`]; `category` must be a valid code (`0..=3`).
+/// C ABI entry for [`ll_reference_new`].
 #[unsafe(export_name = "ll_reference_new")]
-pub unsafe extern "C" fn ll_reference_new_abi(
-    ctx: *mut LLContext,
-    category: u32,
-) -> *mut LLReference {
-    debug_assert!(category <= MemoryCategory::Immortal as u32);
-    unsafe { ll_reference_new(ctx, MemoryCategory::from_flags(category)) }
+pub extern "C" fn ll_reference_new_abi() -> *mut LLReference {
+    ll_reference_new()
 }
 
 /// Teardown for a reference box whose count reached zero (or that a
 /// collector owns): release the one Value through the barrier's drop,
-/// then free the memory by category. No destructor, no resurrection —
-/// a box holds a slot, not behavior.
+/// then free the slot. No destructor, no resurrection — a box holds a
+/// slot, not behavior.
+///
+/// The free is unconditional because [`ll_reference_new`] is the only
+/// door and every box it makes is a GC-heap entity; a box in any other
+/// category would be memory this call leaks rather than frees, so the
+/// category is asserted rather than branched on.
 ///
 /// # Safety
 /// `boxed` must be a live reference box.
 pub(crate) unsafe fn reference_die(boxed: *mut LLReference) {
     let owner_cat = unsafe { crate::object::header_category(boxed as *const RcHeader) };
+    debug_assert_eq!(
+        owner_cat,
+        MemoryCategory::GcHeap,
+        "a reference box is a heap entity in every case"
+    );
     let v = unsafe { (*boxed).value };
     if v.is_refcounted() {
         unsafe {
@@ -77,9 +89,7 @@ pub(crate) unsafe fn reference_die(boxed: *mut LLReference) {
             crate::memory::barrier::drop_ref(owner_cat, v.entity_ptr());
         }
     }
-    if owner_cat == MemoryCategory::GcHeap {
-        unsafe { crate::memory::stdapi::ll_free(boxed as *mut u8) };
-    }
+    unsafe { crate::memory::stdapi::ll_free(boxed as *mut u8) };
 }
 
 #[cfg(test)]
@@ -87,6 +97,7 @@ mod tests {
     use super::*;
     use crate::class::ClassBuilder;
     use crate::memory::arena::Arena;
+    use crate::memory::context::LLContext;
     use crate::object::new_constructed;
     use crate::refcount::{DESTRUCTOR_PENDING, ll_release};
     use crate::value::Tag;
@@ -99,8 +110,7 @@ mod tests {
         assert_eq!(core::mem::offset_of!(LLReference, value), 8);
 
         let mut arena = Arena::new();
-        let mut ctx = LLContext { arena: &mut arena };
-        let r = unsafe { ll_reference_new(&mut ctx, MemoryCategory::GcHeap) };
+        let r = ll_reference_new();
         let rc = unsafe { &(*r).rc };
         assert_eq!(rc.refcount, 1);
         assert_eq!(
@@ -136,7 +146,7 @@ mod tests {
         let mut ctx = LLContext { arena: &mut arena };
         let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         assert_ne!(unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING, 0);
-        let r = unsafe { ll_reference_new(&mut ctx, MemoryCategory::GcHeap) };
+        let r = ll_reference_new();
         // The box's slot takes over the object's initial reference.
         unsafe { (*r).value = Value::entity(Tag::Object, obj as *mut RcHeader) };
 

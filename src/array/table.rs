@@ -1130,12 +1130,27 @@ impl Table {
     /// pointing into freed storage. Boxing means growth moves sixteen
     /// bytes containing a pointer, and the box stays put.
     ///
-    /// Null when the key is absent or the box could not be allocated.
-    /// The caller retains the box for its own holder; this leaves the
-    /// element's reference to it at the count the factory gave.
-    pub fn make_ref(
+    /// Null when the key is absent, the box could not be allocated, or
+    /// the element could not be published into it. The caller retains the
+    /// box for its own holder; this leaves the element's reference to it
+    /// at the count the factory gave.
+    ///
+    /// **The box is a heap entity even when the table is an arena one**
+    /// ([`crate::reference::ll_reference_new`]), so boxing an element of
+    /// an arena array crosses a category boundary twice and both
+    /// crossings go through `store_category_barrier`. The element enters
+    /// a longer-lived holder, so an arena COW element is copied to the
+    /// heap and an arena non-COW one counts an escape; the box then
+    /// enters the arena entry, so its release is logged against the
+    /// reset. The array's own reference on the element is given back
+    /// afterwards, publication before release as everywhere else.
+    ///
+    /// # Safety
+    /// `owner` is the live entity holding this table; `arena` the live
+    /// mounted arena.
+    pub unsafe fn make_ref(
         &mut self,
-        ctx: *mut crate::memory::context::LLContext,
+        arena: *mut crate::memory::arena::Arena,
         owner: *const RcHeader,
         key: Key,
     ) -> *mut crate::reference::LLReference {
@@ -1151,15 +1166,38 @@ impl Table {
                     return current.entity_ptr() as *mut crate::reference::LLReference;
                 }
                 let category = Self::category_of(owner);
-                // `ctx` rather than a null: `entity_alloc_in` resolves a
-                // null through the thread's current context, and an
-                // arena table reached from a caller that holds a context
-                // but never mounted it would abort in `no_context`.
-                let boxed = unsafe { crate::reference::ll_reference_new(ctx, category) };
+                let boxed = crate::reference::ll_reference_new();
                 if boxed.is_null() {
                     return std::ptr::null_mut();
                 }
-                unsafe { (*boxed).value = current };
+                let held = match unsafe { Self::element_for_box(arena, current) } {
+                    Some(v) => v,
+                    None => {
+                        unsafe { Self::destroy_empty_box(boxed) };
+                        return std::ptr::null_mut();
+                    }
+                };
+                // Through `write_value_slot`, not a plain assignment: the
+                // factory publishes the header before it returns, so the
+                // box is a counted entity in the census from that instant
+                // and the collector's relaxed reader can be striding it.
+                // A plain 16-byte assignment orders the payload and the
+                // meta word not at all, and a reader that sees the meta
+                // half first takes a refcounted tag with a null payload.
+                // No holder but this entry names the box yet, which is
+                // why the store need not be `ref_store`'s composition.
+                unsafe { crate::memory::barrier::write_value_slot(&raw mut (*boxed).value, held) };
+                let published = unsafe {
+                    crate::memory::barrier::store_category_barrier(
+                        arena,
+                        category,
+                        boxed as *mut RcHeader,
+                    )
+                };
+                debug_assert_eq!(
+                    published, boxed as *mut RcHeader,
+                    "a heap non-COW entity is never copied by the barrier"
+                );
                 unsafe {
                     Entry::store_element(
                         self.entry_ptr(i as usize),
@@ -1169,11 +1207,63 @@ impl Table {
                         ),
                     )
                 };
+                // The entry's own reference on the element, given back
+                // only now: the box already holds one of its own, and
+                // `drop_ref` runs `__destruct` bodies.
+                if current.is_refcounted() {
+                    unsafe { crate::memory::barrier::drop_ref(category, current.entity_ptr()) };
+                }
                 return boxed;
             }
             i = self.entry(i as usize).link();
         }
         std::ptr::null_mut()
+    }
+
+    /// The element as the box must hold it: retained for the box, and
+    /// published into it through the category barrier, so an arena COW
+    /// element becomes a heap copy and an arena non-COW one counts its
+    /// escape. `None` is a refused escape copy, with nothing spent.
+    ///
+    /// # Safety
+    /// `current` is the element the entry holds; `arena` the live mounted
+    /// arena.
+    unsafe fn element_for_box(
+        arena: *mut crate::memory::arena::Arena,
+        current: Value,
+    ) -> Option<Value> {
+        if !current.is_refcounted() {
+            return Some(current);
+        }
+        let child = current.entity_ptr();
+        unsafe { crate::refcount::ll_retain(child) };
+        let stored = unsafe {
+            crate::memory::barrier::store_category_barrier(arena, MemoryCategory::GcHeap, child)
+        };
+        if stored.is_null() {
+            unsafe { crate::refcount::ll_release(child) };
+            return None;
+        }
+        if stored == child {
+            return Some(current);
+        }
+        // The barrier copied an arena COW element out: the copy at +1 is
+        // the box's and the retain above goes back.
+        unsafe { crate::refcount::ll_release(child) };
+        Some(Value::entity(current.tag(), stored))
+    }
+
+    /// Tear down a box that was allocated and never published, its Value
+    /// slot still null.
+    ///
+    /// # Safety
+    /// `boxed` is a live box at count 1 that no slot has ever named.
+    unsafe fn destroy_empty_box(boxed: *mut crate::reference::LLReference) {
+        unsafe {
+            let died = crate::refcount::ll_release(boxed as *mut RcHeader);
+            debug_assert!(died, "a heap box at one dies when its only count goes");
+            crate::object::ll_entity_die(boxed as *mut RcHeader);
+        }
     }
 
     /// The one draw of the per-table salt: the storage address run
