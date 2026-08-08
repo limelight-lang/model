@@ -8,13 +8,18 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-08 · Active: S5
+Updated: 2026-08-08 · Active: S6
 
-**S4 is closed and deleted by rule 23.1.3** — the teardown drain, the
-pinned block's release, and the plan hygiene. What survives it is in
-`dev/DECISIONS.md` (two entries of 2026-08-08), `dev/POSTMORTEM.md` (a
-test heavy enough to stop the Miri gate finishing) and the code's own
-doc blocks.
+**S4 and S5 are closed and deleted by rule 23.1.3.** S4 was the teardown
+drain, the pinned block's release and the plan hygiene. S5 was the opt-in
+event journal, built end to end: the ring, the registry and the window,
+then the record sites of §9.5 behind the `debug-journal` feature, then
+the acceptance hunt of 2026-08-06 run through it with no ring written by
+hand. What survives them is in `dev/DECISIONS.md` (seven entries of
+2026-08-08), `dev/POSTMORTEM.md`, `dev/BENCHMARKS.md` (the journal's IR
+count, and the timing arm it still owes), `dev/INDEX.md` and the code's
+own doc blocks. `dev/design/debug-modes.md` §9 is the journal's design
+and stays.
 
 **The whole-suite Miri run is done, in both configurations**, and it
 covers S4 and S5.1: rc-walk 384 passed, 0 failed, 7 ignored in 948 s;
@@ -36,12 +41,9 @@ than the numbers' one**: a number is never reissued once given, so a stage
 added later sits where it is to be done. S9 is such a stage.
 
 The five that were there first were ordered by the Sage on 2026-08-08 and
-approved by Edmond the same day. The order is the argument: S4 finishes a defect
-whose other half is already built, and `dev/WORKFLOW.md` puts a known bug
-before new work; S5 is Edmond's own item, placed ahead of the refactor
-queue on 2026-08-06, and it arrives before the next stage whose failures
-are concurrency-shaped hunts; S6 corrects a boundary every later customer
-would copy, `Map` being the element layer's second customer by the ruling
+approved by Edmond the same day; the two at the head of that order are
+done and gone, and the argument for the rest is unchanged. S6 corrects a
+boundary every later customer would copy, `Map` being the element layer's second customer by the ruling
 of 2026-08-07; S7 gives the strategy tag the second occupant it was
 deferred for, which is also what makes two of `Map`'s design questions
 answerable; S8 writes that design, since building it first would decide
@@ -49,298 +51,6 @@ by accident what Edmond has reserved. S9 was added on 2026-08-08 at
 Edmond's request and placed between S6 and S7 for the reason its own
 section gives. The prose sections after the stages
 are the reasoning behind them and the backlog they were drawn from.
-
-## S5 — The opt-in event journal
-
-Goal: `dev/design/debug-modes.md` §9 built — one ring per thread, 32-byte
-records, a window marked by a cursor snapshot, eviction reported as
-*unknown* rather than *none*.
-
-Done when: the census hunt of 2026-08-06 runs through the journal with no
-ring written by hand, and the gate is green with the feature on and off.
-
-- [x] S5.1 The ring, the registry and window marking (§9.1–9.4)
-      done: unit tests for wrap-around, cursor-pair membership, a retired
-        thread's ring still readable, and `unknown` on eviction
-      tier: T2 · role: Critic
-      Critic 2026-08-08: five real defects in the committed shape
-        (`af3dcaa`), each verified against the code. A retired thread
-        resurrects its ring, because null `RING` means both "never
-        allocated" and "retired" and thread exit keeps journaling after
-        step 6 — so two rings share one identity and `RETIRED_KEPT`
-        bounds nothing. `Mark` holds raw ring pointers and `between`
-        dereferences them without the lock, so eviction is a
-        use-after-free with an ABA that reports another caller's bytes as
-        records. A ring evicted between two marks contributes nothing
-        instead of `unknown`, which is the one conversion the module
-        exists to prevent. The validating re-read is an `Acquire` load
-        where the payload loads before it need `fence(Acquire)` — S2.V's
-        defect class, and its fences-plus-loom answer is the precedent.
-        A refused allocation is retried on every record, taking two
-        global mutexes and a 2 MiB request each time. Beside them:
-        panics on a path §9.7 forbids them on, one inside a TLS
-        destructor; `CAPACITY` silently deciding the allocator regime;
-        and the retired-ring test calling `retire_thread_ring` by hand,
-        so it never walks the path the first defect lives on. All
-        accepted, none fixed yet.
-      Fixed 2026-08-08: the thread's cell holds a third state, `CLOSED`,
-        so a refusal and a retirement each close it — a record raised by
-        the heap teardown below step 6 opens no second ring, and a
-        refusal is never retried. A `Mark` names rings by identity and
-        `between` resolves them under the registry's lock, so a freed
-        ring is reported instead of read; the registry counts its
-        evictions and a window reports the histories it lost. The
-        read-back bracket takes a fence on **each** side: the loom model
-        (`journal/ring_model.rs`) showed the reader's alone still accepts
-        a lapped record, because what its relaxed loads read from are
-        relaxed stores — three of four combinations fail, as they do for
-        the table's version bracket. Beside them: the three `expect`s and
-        the `debug_assert` left the path §9.7 forbids them on, a const
-        assertion pins `CAPACITY` to the pooled-block regime, the
-        exit-order comment states the reason that is true, and the
-        retired-ring test goes through `ll_thread_exit`. Four regression
-        tests, each seen failing on its defect; the fence pair is pinned
-        by the loom model instead, there being no `cargo test` for it.
-      Critic 2026-08-08 round 2: the five repairs hold — the fence pair,
-        the lock-held read, the third cell state and the eviction count
-        were each attacked and stood — and seven further defects, all
-        verified against the code. A closed ring answered `Records([])`,
-        which is the false *none* again by another door: its thread goes
-        on tearing down heaps after retirement, and a pool thread running
-        init/exit per task journaled nothing at all in its second life.
-        An evicted ring leaks under rc-walk, its `ll_free` parking onto a
-        backlog thread exit disposed three steps earlier. §9.7's three
-        rules are broken by the *first* record on a thread, which is by
-        design and was written as though it were not. A thread that
-        journals without `ll_thread_init` never registers an exit guard,
-        so its ring stays live for the process's life. Two marks passed
-        the wrong way round answer a confident "nothing anywhere". And
-        four test defects: a dead assertion in the refusal test, the
-        quota arithmetic exercised by nothing, "the three newest"
-        checking two, and the use-after-free pin being Miri's rather than
-        the suite's.
-      Fixed 2026-08-08 round 2: a ring records the cursor it closed at
-        and a window reaching it answers `Closed` with whatever records
-        it has; `ll_thread_init` reopens a closed cell, so a second life
-        gets its own ring and identity; the quota waits for the epoch to
-        end; the first record self-initialises the thread; a mark carries
-        a stamp and `between` refuses its ends reversed in debug builds.
-        The §9.7 exception is written down as a rule for S5.2's sites — a
-        site must not sit inside a lock `ll_malloc` takes. Five more
-        tests, the three behavioural ones seen failing first. **Rejected
-        with reason:** the eviction *count* stays coarse rather than
-        naming the lost rings — the count is honest, a per-ring answer
-        would have to invent a `written` it cannot know, and R is the
-        knob §9.8 already leaves open for an investigation under churn.
-      Critic 2026-08-08 round 3, narrowed to what round 2 added: seven
-        more. A thread the allocator **refused** a ring is in no window
-        at all — the false *none* by the one door that opens under memory
-        pressure, which is when the journal is on. `between` still
-        answered a confident none in the release build, the order check
-        being an assertion the profile compiles out, and from
-        `Mark::default()` in every build. The epoch check did not close
-        the eviction leak: an epoch can open between the check and the
-        free. Dating the close by the ring's cursor re-dated it at every
-        thread exit, so a window that was complete when it was read
-        turned into a closed one afterwards. Plus a suspicion — reopening
-        a cell where the exit guard may not have been armed — and two
-        wordings: §9.7's site rule names `ll_malloc`'s locks while the
-        first record now also runs `ll_thread_init`, and the failure it
-        predicts is an abort rather than a deadlock.
-      Fixed 2026-08-08 round 3: refusals are counted and reported
-        (`Window::Refused`); the order check is a run-time one answering
-        *unknown* per ring and `Mark` lost its `Default`; the retiring
-        thread frees nothing at all, leaving evicted rings for the next
-        thread to journal or to mark — a live thread, whose parked
-        backlog is still its own — which removes the epoch check and the
-        difference between the two GC configurations with it; a close is
-        dated in marks, so only the window containing it answers
-        `Closed`; and both wordings are corrected. Four regression tests,
-        each seen failing. The step's own test for a window *after* a
-        close changed sides with the ruling and now pins the opposite:
-        such a window reports records, because a thread that lives on
-        journals into the ring `reopen_thread` gives it.
-      Critic 2026-08-08 round 4, scoped to the two unexamined commits by
-        the Sage's rule: three contract-class defects. A window opened
-        *after* a ring's close and closed before its thread finished
-        reported `Records([])` while the heap teardown below step 6 was
-        still losing events — the close was an instant, and the losses it
-        announces are an interval. `free_rings` ran on a dying thread
-        whenever `ll_thread_exit` was invoked by hand, the guard staying
-        armed throughout one, so an evicted ring was parked onto a
-        backlog already disposed and never freed. And a reversed pair of
-        marks naming no ring at all still answered the empty list, the
-        per-ring check having nothing to run over.
-      Critic 2026-08-08 round 5, scoped to round 4's repairs: one
-        contract-class defect, and it fired the ruling's last clause.
-        `finish_thread` stored through a raw ring pointer parked in a
-        thread-local across the whole heap teardown; `RETIRED_KEPT`
-        retirements inside that gap evict the ring, a live thread frees
-        it, and the store lands in a pooled block already handed on. The
-        critic reproduced the corruption in a scratch copy. Two
-        consecutive scoped passes confirming contract-class defects, so
-        the module went back to the Sage rather than to a sixth pass.
-      Sage 2026-08-08 (second ruling): the shape is refuted by **one
-        misplaced instant** rather than by its state count. The ring
-        retired at step 6, before the teardown whose events it exists to
-        catch, and everything built afterwards — the second stamp, the
-        parked pointer, the close-as-interval, `Window::Closed` — is
-        compensation for that. Retirement moves to the exit's last act
-        and the compensation is deleted, not repaired; the exit's phase
-        becomes three-valued, a boolean having conflated a heap rebuilt
-        mid-exit with a new life on a pooled thread — which was a live
-        defect no pass had reached. Final; recorded in `dev/DECISIONS.md`
-        superseding the same day's close-as-interval entry.
-      Fixed 2026-08-08 round 4: the ring is stamped twice — at retirement
-        and at the end of `ll_thread_exit` (`journal::finish_thread`,
-        step 7) — and a window overlapping the pair answers `Closed`;
-        `heap::thread_may_free` answers who may free and
-        `thread_exit_will_run` who may open a ring, so a `__destruct`
-        body's first record inside step 1 gets one again while a thread
-        past its exit frees nothing; and a reversed pair answers
-        `Window::Reversed`, one answer of its own, before any ring is
-        walked. Four regression tests, each seen failing.
-      Critic 2026-08-08 round 6, scoped to the redesign: one
-        contract-class defect, at the far end of the path the redesign
-        reasoned about. `ll_thread_exit`'s last act is not the thread's:
-        a `thread_local!` registered before `ll_thread_init` is destroyed
-        after the runtime's guard, so what it raises finds a closed slot,
-        is dropped, and is counted nowhere — a window over that thread's
-        death answers a complete list of records. The state machine
-        itself it could not break.
-      Sage 2026-08-08 (third ruling): split the silence. The runtime's
-        own handovers stop being post-exit — the barrier reserve and the
-        pool's thread cache are drained inside the exit, before the ring
-        retires, rather than left to their destructors — and everything
-        still arriving on a closed slot is **counted** and reported
-        (`Window::Lost`, a difference between marks, not a total). Not
-        saved: saving means writing into a retired ring, which is the
-        defect already paid for. The contract is two-part — complete to
-        the last act of the runtime's exit, honest past it. A seventh
-        scoped pass runs over this batch; the step closes on the
-        stage-end Code Reviewer only if that pass confirms nothing of the
-        class. Final; `dev/DECISIONS.md`.
-      Fixed 2026-08-08 round 6: the two drains, the counter, `Mark.lost`
-        and `Window::Lost`; three regression tests, each seen failing.
-      Critic 2026-08-08 round 7, scoped to that batch: **no
-        contract-class defect**, which is the ruling's terminator, so the
-        cycle ends here. Four non-contract findings repaired with it,
-        none renewing it: `LOST` counted a refused thread's later records
-        too, so a refusal now has a sentinel of its own and its silence
-        stays reported by `Window::Refused` alone (regression seen
-        failing); `ll_thread_init` lowered the exit phase to `Live` for a
-        heap rebuilt *after* the exit, re-enabling `thread_may_free` on a
-        thread whose backlog is gone, so the guard now decides that too;
-        and two claims were corrected where they are made — the drain
-        test pins the drain and not its position, and `Window::Lost`
-        names no thread.
-      handoff: `src/journal/` — the ring, the registry, the window and
-        the loom model of the read-back bracket. Seven critic passes and
-        three Sage rulings; 24 defects, all repaired or deleted. The
-        contract is two-part and is stated in the module doc: complete to
-        the last act of `heap::ll_thread_exit`, honest past it. Gate
-        green in both configurations, Miri silent over `journal::`.
-        What has no test and says so: the retirement's *position* at the
-        end of the exit, which nothing can pin until S5.2's record sites
-        exist.
-- [x] S5.1a Take the journal to the Sage before S5.2 builds on it
-      done: he has ruled on how many rounds a module of this shape gets,
-        and on the residue named below
-      tier: T2 · role: Sage
-      Sage 2026-08-08: a full-module pass cannot converge, since every
-        repair is fresh code and re-offering the module re-offers the
-        surface the last round made. Past the two dispute rounds a cycle
-        continues only as passes **scoped to the latest unexamined repair
-        batch**, and ends at the first scoped pass confirming no
-        *contract-class* defect in its scope; two consecutive scoped
-        passes that do confirm one send the module back to him for
-        redesign rather than to a further pass. Residue 2 — a ring opened
-        where the exit guard could not be armed — is a standing false
-        *none* and was fixed before the pass: `heap::exit_guard_armed`
-        arms and reports, `ll_thread_init` reopens only under it, and the
-        record path closes and counts the thread otherwise. Residue 1 —
-        an OS thread reused with no `ll_thread_init` — is **not** a
-        defect: every self-initialising door into the runtime runs that
-        function, so a thread still raising events with a closed slot is
-        one used after `ll_thread_exit` outside the contract; one
-        sentence of documentation, no mechanism, and reopening from the
-        record path stays refused. Final.
-      handoff: the rule is `dev/DECISIONS.md`, 2026-08-08 ("a review
-        cycle ends on scope and class"). The class for this module is
-        named in the ruling and goes in the pass's prompt.
-      Three passes found 5, 7 and 7 defects, every round in what the
-        previous round's repairs added, and every round's findings real.
-        Rule 23.6 stops a dispute at two rounds; it says nothing about a
-        module that keeps yielding new defects, and stopping by exhaustion
-        is not a criterion. The residue to put to him with it: an OS
-        thread reused *without* `ll_thread_init` stays closed and journals
-        nothing, and `ll_thread_init` reopens the cell without knowing
-        whether the exit guard it just tried to arm was armed, so a ring
-        opened during TLS teardown would never be retired.
-- [x] S5.2 Record sites for the default event set, behind the
-      `debug-journal` feature
-      Sage 2026-08-08, before the step opens: §9.7 stands and
-        `BlockPool::put` moves instead. It holds the thread cache's
-        `borrow_mut` across `push_global`, so a decommission site there
-        whose record is some thread's first re-enters the cache through
-        `ll_malloc` and aborts on the borrow. Narrow the borrow: decide
-        and stage under it — the overflow drain copies into a fixed stack
-        array, bounded by `THREAD_CACHE_CAPACITY / 2 + 1` — end it, then
-        push to the global list, and put the site at `put`'s tail with
-        nothing held. `put` is the single door for the event; the
-        commissioning site goes at `get`'s tail. This code motion belongs
-        to this step's batch.
-      done: with the feature off no record site appears in the release
-        IR, counted over the emitted IR because the clock on this box
-        cannot resolve the difference; §9.6's two-arm measurement is
-        recorded as owed rather than claimed
-      tier: T2 · role: —
-      Counted 2026-08-08 over one release module per arm
-        (`codegen-units = 1`): loads of the enabled mask, which is what a
-        site is, are **0** in the default build and 34 with the feature —
-        fourteen sites, copied by inlining. The default build's one
-        remaining load is inside `enabled_kinds`, the module's own public
-        accessor, which no runtime path reaches. IR grows 55 043 → 55 758
-        lines. The timing arm is owed and says so (`dev/BENCHMARKS.md`,
-        2026-08-08).
-      handoff: `src/journal/kinds.rs` is the vocabulary, the enabled mask
-        and `journal_event!` — the macro expands to nothing without the
-        feature and evaluates its payload only after the mask test, which
-        is why a site may read a header to fill its words. The sites are
-        listed in `dev/INDEX.md`; the two decisions they needed are in
-        `dev/DECISIONS.md` (a kind gets a number when it gets a site; a
-        block leaving the walk's reach is the decommission record). The
-        Sage's code motion landed with them: `BlockPool::put` stages its
-        overflow flush in a fixed array and pushes with nothing borrowed,
-        and the test for it was seen aborting on the shape the ruling
-        forbids. `debug-journal` is a gate arm now, both GC
-        configurations, and `dev/WORKFLOW.md` says why it needs its own
-        runs rather than one. Miri over the committed tree with the
-        sites compiled in: `journal` 28 passed, 0 failed, 16.8 s;
-        `block_pool` 5 passed, 0 failed, 3.0 s.
-- [x] S5.3 The acceptance hunt through the journal
-      done: on the pinned reproducer (`--no-run` binary, `taskset -c
-        0,1`, two spinners) the question "which strings died inside the
-        window" is answered from journal reads alone
-      tier: T2 · role: —
-      Ran 2026-08-08 on that reproducer, the `debug-journal` binary at
-        `--test-threads 4` against two spinners on the same two cores:
-        the hunt alone 60 of 60, the whole suite 60 of 60. The first
-        forty runs found one real flake and it was mine — three site
-        tests named an entity by address alone, and a block is
-        process-global, so another thread's `put` of the same address
-        inside the window read as a decommission before the commission.
-        They name a ring as well now.
-      handoff: `journal::tests::
-        which_strings_died_inside_the_window_is_answered_from_the_journal`
-        is the hunt. Four strings are created before any dies, so the
-        four addresses are distinct while the window is marked, and the
-        read-back is per ring — an address is a name only while its
-        thread is the one that wrote it. Seen failing twice: with the
-        death record's subject zeroed, and with `between` forgetting
-        where the window started, which puts a string that died before it
-        inside it. Every test of the ring mechanism now holds
-        `kinds::disable_sites_for_test`, the reason being on the guard.
 
 ## S6 — The stage-end review's five demands
 
@@ -487,41 +197,6 @@ explicitly deferred.
         as a counted child in trace and sever, and `MapMixed`'s content
         hash on a work list rather than the machine stack
       tier: T2 · role: Critic
-
-## First, out of turn: the opt-in event journal — designed, not built
-
-Edmond's, 2026-08-06, and he put it ahead of the refactor below. The design
-is `dev/design/debug-modes.md` §9, and it is complete enough to build from:
-the record and its width, the ring, how a window is marked and read back,
-what is recorded by default, the cost when the option is off, and the rules
-the record path obeys. Three things are left open there and each is named as
-open. Build order moved with it — the journal is now item 1 of §10, ahead of
-the registry.
-
-**The ring question was answered without Edmond**, who had been asked and had
-not answered when the session ended. **One ring per thread**, no global ring
-and no global sequence number; a window is marked by reading every ring's
-cursor before and after. The reasoning that decided it, and the part he may
-want to overturn: the framing that the hunt needed a *global order* is wrong.
-It needed *membership* in a window, and a cursor pair answers membership
-exactly while costing no atomic read-modify-write on the write path. Two
-properties settled the rest — a single ring lets the hardest-allocating
-thread evict the records of the thread under investigation, and thread
-identity in a per-thread ring lives in the header rather than in every
-record. What is genuinely lost is order across threads, and an investigation
-needing it stamps a shared counter into a payload word on its own event kind,
-paying the contention on that kind alone.
-
-**The acceptance criterion is the hunt of that day** and is written into the
-design. Under load the whole-heap census lost two live strings. What settled
-it was a hand-made ring of `(thread, address)` recorded at string death, with
-the window between two censuses marked by the ring's own sequence number. It
-answered only because the shape was picked by hand for that one question; the
-journal is finished when that hunt runs through it with no ring written by
-hand. One consequence of the criterion is worth repeating outside the design:
-when a window overflows a ring, the answer is *unknown* rather than *none* —
-the hunt turned on "no string died inside the window", and a silent eviction
-would have made that finding false.
 
 ## Closed: the census flake was two tests killing an entity at refcount 1
 
