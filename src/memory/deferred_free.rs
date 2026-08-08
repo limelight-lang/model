@@ -40,14 +40,23 @@
 //! size: `BufferArena::free` is size-carrying, the chunk itself holds
 //! no metadata, and the block header would be gone by flush time
 //! anyway. A string payload and an array's table storage both live in
-//! buffer chunks; the walker today chases only entity slots, and array
-//! tracing, which will make it chase raw buffers of any size, is still
-//! owed (`walk.rs`).
+//! buffer chunks, and since `walk::trace_cells` gained its Array arm the
+//! walker strides an array's entries inside its chunk — so a chunk freed
+//! mid-epoch is memory a walker may be reading, which is what parking it
+//! answers.
 //!
-//! What does not ride it: cross-thread frees (`free_foreign` — the
-//! crate is single-mutator; actors will reopen this) and the no-op
-//! kinds (arena, retained: nothing is recycled, so identity holds
-//! without parking).
+//! What does not ride it: the no-op kinds (arena, retained), which
+//! recycle nothing, so identity holds without parking.
+//!
+//! **A cross-thread free rides it like any other.** The epoch test in
+//! `stdapi::ll_free` fires on the block kind alone and stands *before*
+//! the owner dispatch, so during an epoch a free of another thread's heap
+//! or entity slot parks on the freeing thread and reaches `free_foreign`
+//! only when [`release`] replays it at the flush. The crate is
+//! single-mutator today, so nothing depends on that ordering yet; actors
+//! will reopen the question, and the answer to read then is this
+//! paragraph rather than the block below, which is about where the flush
+//! runs.
 //!
 //! Known limit: a thread that parks and exits before flushing leaks its
 //! parked list until process end — bounded by what that thread freed

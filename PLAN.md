@@ -693,7 +693,7 @@ or `free_foreign` only at the flush. Behaviour is right, and only the
 sentence is wrong — which is worse than it sounds, because the next
 person to reason about actors will reason from it.
 
-- [ ] S2.D The exception list says what the code does
+- [x] S2.D The exception list says what the code does
       done: line 47 no longer claims cross-thread frees skip the queue;
         what replaces it says that the park test precedes the owner
         dispatch, so a foreign free parks like any other and is posted
@@ -703,6 +703,15 @@ person to reason about actors will reason from it.
         list is thread-local, so the flush runs on the parking thread.
         Both are already correct in the doc and both are what a reader
         needs when actors reopen cross-thread frees.
+      handoff: the paragraph now says that the park test fires on block
+        kind alone and precedes the owner dispatch, so a foreign free
+        parks on the freeing thread and reaches `free_foreign` when
+        `release` replays it. Verified by reading `stdapi.rs`'s order and
+        `deferred_free::release`, which replays through `ll_free`. **One
+        stale sentence beside it was corrected in the same pass:** the doc
+        still said the walker chases only entity slots and that array
+        tracing was owed, which stopped being true when `trace_cells`
+        gained its Array arm.
 
 ## S2 — The generic element interface  [ ]
 
