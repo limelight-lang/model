@@ -272,3 +272,34 @@ thing and was seen aborting the process with the list forced to refuse.
 reason and with what covers the same code under Miri instead. Before
 quoting a Miri run in a commit message, read the log to its result line —
 a killed run leaves an empty file, and an empty file is not a green one.
+
+## 2026-08-09 — a private teardown for an entity the barrier had published
+
+`element::box_element` allocates the reference box, fills it, publishes
+it through `store_category_barrier` and only then inserts it into the
+entry. The refusal arm after that insert tore the box down with
+`destroy_unpublished`, whose contract is "an entity at count one that no
+slot has ever named": it releases and calls `ll_entity_die`
+unconditionally. For an arena array the publication had already written
+a release-at-reset record naming that box, so the arm freed a cell the
+reset would release again.
+
+**What made it invisible.** The arm is unreachable — `Table::insert`
+returns before it can allocate when the key is present, which is the only
+way `box_element` reaches it — and it carries `debug_assert!(false)`
+saying so. A branch nobody runs is a branch nobody reads either, and the
+teardown it called was the correct one for the *other* refusal arm twenty
+lines above, where the box is genuinely unpublished. The two arms differ
+by one call that happens between them.
+
+**The rule the arm broke.** A publication is undone by `drop_ref`, never
+by a release: `drop_ref` mirrors the category barrier — it skips the
+release for a heap entity displaced from an arena container, because the
+log record owns that release — and any private teardown re-derives that
+mirror and gets it wrong. The repair is one call.
+
+**What to check when writing one.** Ask what has happened to the entity
+between its factory and this line, not what the function is called: the
+same pointer at count one is "never published" before a barrier call and
+"published" after it, and the type says nothing. Found by the stage-end
+review of S6, 2026-08-09.

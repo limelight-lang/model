@@ -8,9 +8,18 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-08 · Active: S6
+Updated: 2026-08-09 · Active: S9
 
-**S4 and S5 are closed and deleted by rule 23.1.3.** S4 was the teardown
+**S4, S5 and S6 are closed and deleted by rule 23.1.3.** S6 was the
+stage-end review's five demands, all of them behaviour-preserving: the
+element reference's composition left `table.rs`, the publication idiom
+became `barrier::publish_child` and `entity::publish_key`, the two
+teardowns of an unpublished entity became `element::destroy_unpublished`,
+the four element operations state their order without linking a private
+function, the vivification test asks what a caller can observe, and
+`src/array/` has its four rows in `dev/ARCHITECTURE.md`. What survives it
+is in that map, in `dev/POSTMORTEM.md` (2026-08-09, the private teardown
+of a published box) and in the code's doc blocks. S4 was the teardown
 drain, the pinned block's release and the plan hygiene. S5 was the opt-in
 event journal, built end to end: the ring, the registry and the window,
 then the record sites of §9.5 behind the `debug-journal` feature, then
@@ -25,7 +34,9 @@ and stays.
 covers S4 and S5.1: rc-walk 384 passed, 0 failed, 7 ignored in 948 s;
 rc-trace 373 passed, 0 failed, 4 ignored in 724 s (2026-08-08, HEAD
 `6ab0bcf`). It is not part of a stage's criterion — `dev/WORKFLOW.md`
-keeps Miri beside the commit gate rather than inside it.
+keeps Miri beside the commit gate rather than inside it. S6 is covered by
+a targeted run over the module it touched: `array::` 91 passed, 0 failed,
+1 ignored in 155 s (2026-08-09, HEAD `b126240`).
 
 **It is a quarter-hour job again, and the figure that said otherwise was
 one test.** The 28 minutes for 86 tests measured earlier that day was
@@ -41,121 +52,48 @@ than the numbers' one**: a number is never reissued once given, so a stage
 added later sits where it is to be done. S9 is such a stage.
 
 The five that were there first were ordered by the Sage on 2026-08-08 and
-approved by Edmond the same day; the two at the head of that order are
-done and gone, and the argument for the rest is unchanged. S6 corrects a
-boundary every later customer would copy, `Map` being the element layer's second customer by the ruling
-of 2026-08-07; S7 gives the strategy tag the second occupant it was
-deferred for, which is also what makes two of `Map`'s design questions
-answerable; S8 writes that design, since building it first would decide
-by accident what Edmond has reserved. S9 was added on 2026-08-08 at
-Edmond's request and placed between S6 and S7 for the reason its own
-section gives. The prose sections after the stages
-are the reasoning behind them and the backlog they were drawn from.
+approved by Edmond the same day; the three at the head of that order are
+done and gone, and the argument for the rest is unchanged. S7 gives the
+strategy tag the second occupant it was deferred for, which is also what
+makes two of `Map`'s design questions answerable; S8 writes that design,
+since building it first would decide by accident what Edmond has
+reserved. S9 was added on 2026-08-08 at
+Edmond's request and placed after S6, now gone, and before S7, for the
+reason its own section gives. S10 was added on 2026-08-09, also at
+Edmond's request, and stands first because S9.2's comment pass runs over
+`src/array/`: moving seven signatures after that pass means passing over
+them twice. The prose sections after the stages are the reasoning behind
+them and the backlog they were drawn from.
 
-## S6 — The stage-end review's five demands
+## S10 — The table takes a category, not a header
 
-Goal: the cut the Code Reviewer asked for on 2026-08-08 — the element
-layer's work leaves the table, the publication idiom exists once, and the
-four contracts read without following a private link.
+Edmond's, 2026-08-09, out of the S6.6 critic's finding that `Table` reads
+the owner's header and asserts the kind is Array. The category has two
+possible homes and both were tried: a field of its own drifted from the
+header at promotion (removed 2026-08-07, `2e55036`), and reading the
+header couples a generic hash to one entity kind. The third home is the
+one the barrier already uses — `owner_cat` is a parameter there, not a
+load, and for the same reason: a destination need not have a header at
+all.
 
-Done when: all five demands are closed as the review stated them, the
-array module has its rows in the knowledge map, and the gate is green in
-both configurations with behaviour unchanged.
+Goal: `Table` stops naming an entity, so `Map` inherits the reuse without
+first widening an assertion.
 
-- [x] S6.1 `Table::make_ref`'s boxing, category crossing and giveback
-      move beside `element::set`
-      done: `table.rs` allocates no reference box and calls no store
-        barrier; `Table` hands the old element back and the composition
-        is one layer up
+Done when: no `Table` function takes `*const RcHeader` to reach a
+category, `category_of` lives in `array::entity` where an array's header
+is the module's own business, the kind assertion is gone with the read,
+behaviour is unchanged and the gate is green in both configurations.
+
+- [ ] S10.1 The seven allocating paths take `MemoryCategory`
+      done: `insert`, `grow`, `realloc_storage`, `alloc`, `free_storage`,
+        `dispose` and `carry_out_of` take the category; every caller
+        passes what it already computed; `dev/ARCHITECTURE.md`'s
+        `array/table` row loses the owner-header clause and the `Map`
+        obligation paragraph goes with it
       tier: T2 · role: —
-      handoff: `element::box_element` is the composition, beside
-        `store_into` and shaped like it — it publishes through
-        `store_category_barrier` and takes the displaced element from
-        `Table::insert`, so no method of `Table` had to be added for the
-        giveback. `Table::make_ref`, `element_for_box` and
-        `destroy_empty_box` are gone from `table.rs` along with the
-        `Owned::make_ref` test wrapper, and the three tests that proved
-        a box survives growth and compaction moved to `element.rs` with
-        the code they exercise. No behaviour changed; the gate is green
-        in all six arms.
-- [x] S6.2 `barrier::publish_child` replaces the idiom's four copies
-      done: one body, and the four sites call it
-      tier: T1 · role: —
-      handoff: `barrier::publish_child` takes a `Value` and answers
-        `Option<Value>`, so `store_into`'s value arm, `box_element` and
-        `fill_from`'s value arm call it as they are, and the two string-key
-        sites wrap the key as `Value::entity(Tag::String, …)` — a key being
-        a string entity, which is also why one body serves both. It cost
-        `element_for_box`, which was the same idiom with `GcHeap` written
-        in and is now that one call. `store_ptr` and `store_box` keep their
-        own copies: they are hot paths, so folding them in owes a
-        measurement, and that is said on `publish_child` itself.
-- [x] S6.3 `destroy_private_copy` and `destroy_empty_box` become one body
-      done: one function, with the divergence in the assertion stated
-        where it is decided rather than split across two sites
-      tier: T1 · role: —
-      handoff: `element::destroy_unpublished` takes a bare `*mut RcHeader`
-        and both callers cast to it. The two assertions become one that
-        states the rule they each half-stated — `died` is true exactly for
-        a GC-heap entity, so the arm reads `died || category != GcHeap` —
-        and the category is read from the entity rather than known by the
-        caller, which is why one body can hold it at all.
-- [x] S6.4 `set`, `append`, `unset` and `make_ref` state their ordering
-      guarantee in public text
-      done: `cargo doc` reports no private-link warning on the four
-      tier: T0 · role: —
-      handoff: `set` carries the order the four share — separate, publish
-        into the slot, release the displaced original last — and the other
-        three point at `set`, which is public. Two stale names went with
-        it: `make_ref`'s doc still said `Table::make_ref`, gone since
-        S6.1. The crate's other private-doc links are untouched, the
-        barrier's module list included, where `publish_child` joins the
-        three that were already written that way.
-- [x] S6.5 `a_reference_to_an_absent_key_creates_it_as_null` tests the
-      contract instead of the representation
-      done: the test asserts that reading the key yields null and a write
-        through the reference is visible there
-      tier: T1 · role: —
-      handoff: it reads through `get(slot, …)` now and writes through the
-        box with `barrier::ref_store`, which is the path `$r = 7` takes;
-        the entry-holds-the-box and `table.len()` assertions are gone. The
-        new half was seen failing: with 8 stored and 7 asserted the read
-        answered 8, so the read does follow the write.
-- [x] S6.6 `src/array/` gets its rows in `dev/ARCHITECTURE.md`
-      done: `table`, `entry`, `element` and `entity` each have a row —
-        what it is responsible for, what it knows, what it must not know,
-        what it depends on — and every upward edge the module has is
-        listed there, the `array::entity` → `gc` one included
-      tier: T2 · role: Critic
-      Critic 2026-08-09 round 1: the rows claimed `entry` and `table` know
-        no entity, while `category_of` asserts the owner's kind is Array
-        and `table` calls `LLString::hash`, which caches into the entity;
-        `entry` owns `NONE` and `MAX_ENTRIES`, so "does not know the
-        index" was false; `element` omitted `memory/arena`; and the rows
-        of `walk`, `object`, `gc` and `promote` omit the array they all
-        call. Every finding verified against the code and accepted; the
-        rows and the four caller cells rewritten.
-      Critic 2026-08-09 round 2: the repair kept the `Map` promise beside
-        the kind assertion without saying which of the two must move;
-        "every store into an entry's second word" dropped `make_hole` and
-        the key word the tracer reads; `carry_out_of` names its category
-        rather than reading the header; the sentinel empties an index slot
-        as well as ending a chain; `gc`'s new cell named `array/entity`
-        for a call into `array/table`. All five accepted and written in.
-      Last of the stage rather than first, and Edmond agreed the step on
-        2026-08-08: the map records the boundary S6.1 settles, so writing
-        it before the cut would describe a layout about to move. The
-        module has had no row since it was born on 2026-08-06, which is
-        why the next argument about where code belongs has nothing to
-        decide by.
-      handoff: the four rows are in the L3 table of `dev/ARCHITECTURE.md`
-        with the two upward edges (`array::entity` → `walk`, → `gc`) in
-        the edge table above them. Two things the Critic forced into the
-        file are worth knowing before `Map`: `Table::category_of` asserts
-        the owner's kind is Array, so a `Map` owner fails it on the first
-        storage growth in a debug build, and the carry out of a dying
-        arena names its destination category instead of reading the
-        header. Four caller rows gained the array they call.
+      No role, and the reason is not economy: the critic ruled on this
+        boundary at S6.6 and the ruling is what opened the stage, so a
+        second pass would judge seven mechanical signatures.
 
 ## S9 — The crate reads without its own noise
 
@@ -830,50 +768,6 @@ but relying on that is exactly the distant dependency item 13 exists to
 make visible. The repair is a crate-internal barrier entry that publishes
 an already-retained reference: `store_category_barrier` is that operation
 already, minus the slot write. It must land with or before item 12's arm.
-
-## What the stage-end review of S2 and S3 demanded, and none of it is closed
-
-The Code Reviewer's verdict on the two stages together, 2026-08-08: the
-element layer is the first subsystem in this crate a caller can learn
-from five doc blocks without reading a body, and `table.rs` absorbed a
-layer that is not its own. Everything below is behaviour-preserving; the
-review's own style and comment fixes are already in the code.
-
-1. **`Table::make_ref` is the element layer's work living in the table.**
-   The module header promises index slots, a dense entry array and three
-   operations over them, and nothing that knows what an entity is. That
-   function now allocates a reference box, crosses two memory categories
-   through the store barrier, runs an escape copy and gives the entry's
-   reference back — the composition `element::store_into` performs one
-   layer up. A reader who wants to know how `&$a['x']` settles ownership
-   must hold four contracts at once. The cut: leave `Table` an
-   entry-replacement primitive that hands the old element back, and move
-   the boxing, the crossing and the giveback beside `element::set`.
-2. **The publication idiom is written four times.** Retain, then
-   `store_category_barrier`, then on null release and refuse, then on a
-   different pointer release and swap the Value — at `element.rs`'s two
-   sites, `Table::element_for_box` and `entity::fill_from`. It wants one
-   helper (`barrier::publish_child(arena, category, Value) -> Option<Value>`),
-   and until it exists a fix to the rule has to be found in four places.
-   `element_for_box` is `store_into`'s value arm with `GcHeap` written in.
-3. **`destroy_private_copy` and `destroy_empty_box` are the same two
-   calls with contradictory assertions** — one asserts the release did
-   not report death, the other that it did. Both tear down an
-   unpublished entity at count one, and the divergence in the assertion
-   is the knowledge; it is invisible from either site.
-4. ~~**Neither `bool` return in `retained.rs` was `#[must_use]`**~~ —
-   closed in the same pass. Dropping either answer leaks a 64 KiB block
-   silently.
-5. **Four public contracts are stated by pointing at a private
-   function.** `set`, `append`, `unset` and `make_ref` link to
-   `write_through`, which no caller can read, so the ordering guarantee
-   they sell exists in full only inside the module. The crate has 47
-   private-doc-link warnings overall, so the pattern is older than this
-   stage; here it hollows out four contracts at once.
-6. **`a_reference_to_an_absent_key_creates_it_as_null` pins the
-   implementation.** It asserts the entry holds the box itself. The
-   contract is that reading `$a[5]` yields null and a write through `$r`
-   is visible there, which survives any other reference representation.
 
 ## Then: arrays as a performance problem
 
