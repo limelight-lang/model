@@ -47,7 +47,7 @@ use crate::value::{Tag, Value};
 /// still names the original at its old count, every table holds its old
 /// entries, and every reference the caller brought is still the
 /// caller's. A copy refused part-way dies whole
-/// ([`destroy_private_copy`]).
+/// ([`destroy_unpublished`]).
 ///
 /// **The displaced original ends at one holder — up to the reset log.**
 /// A heap array displaced from an *arena* holder's slot is owed its
@@ -106,7 +106,7 @@ unsafe fn write_through(
             )
         }
     {
-        unsafe { destroy_private_copy(separated) };
+        unsafe { destroy_unpublished(separated as *mut RcHeader) };
         return false;
     }
     unsafe {
@@ -363,21 +363,31 @@ pub unsafe fn get(slot: *const Value, key: Key) -> Option<Value> {
     Some(element)
 }
 
-/// Tear a refused, never-published copy down — children given back,
-/// storage returned, the heap slot freed. `ll_entity_die` runs
-/// **unconditionally** after the count is dropped, because the release
-/// verdict cannot be trusted here: on an arena entity `ll_release`
-/// reports no death, and a refusal branch that waited for `true` left
-/// every reference the replay published — an arena COW child's count,
-/// a heap child's log record's +1 — held by a corpse until the reset
-/// (Critic, S2.5 round 1).
+/// Tear an entity at count one down that no slot has ever named —
+/// children given back, out-of-line memory returned, the cell freed. Two
+/// callers: the copy [`write_through`] could not finish, and the box
+/// [`box_element`] could not fill.
+///
+/// `ll_entity_die` runs **unconditionally** after the count is dropped,
+/// because the release verdict answers a narrower question than the
+/// caller is asking: an arena entity reports no death at any count, its
+/// cell being the reset's, and a refusal branch that waited for `true`
+/// left every reference the replay published — an arena COW child's
+/// count, a heap child's log record's +1 — held by a corpse until the
+/// reset (Critic, S2.5 round 1). On the GC heap the verdict *is* death,
+/// which is all the assertion pins: the two callers differ in the
+/// category they can arrive with, never in what they owe.
 ///
 /// # Safety
-/// `copy` is a live array at count 1 that no slot has ever named.
-unsafe fn destroy_private_copy(copy: *mut LLArray) {
+/// `entity` is a live entity at count 1 that no slot has ever named.
+unsafe fn destroy_unpublished(entity: *mut RcHeader) {
     unsafe {
-        crate::refcount::ll_release(copy as *mut RcHeader);
-        crate::object::ll_entity_die(copy as *mut RcHeader);
+        let died = crate::refcount::ll_release(entity);
+        debug_assert!(
+            died || crate::object::header_category(entity) != MemoryCategory::GcHeap,
+            "a heap entity at one dies when its only count goes"
+        );
+        crate::object::ll_entity_die(entity);
     }
 }
 
@@ -550,7 +560,7 @@ unsafe fn box_element(
     } {
         Some(element) => element,
         None => {
-            unsafe { destroy_empty_box(boxed) };
+            unsafe { destroy_unpublished(boxed as *mut RcHeader) };
             return std::ptr::null_mut();
         }
     };
@@ -578,7 +588,7 @@ unsafe fn box_element(
         Some((_, displaced)) => displaced,
         None => {
             debug_assert!(false, "an overwrite of a present key cannot be refused");
-            unsafe { destroy_empty_box(boxed) };
+            unsafe { destroy_unpublished(boxed as *mut RcHeader) };
             return std::ptr::null_mut();
         }
     };
@@ -589,19 +599,6 @@ unsafe fn box_element(
         unsafe { give_value_back(category, &old) };
     }
     boxed
-}
-
-/// Tear down a box that was allocated and never published, its Value slot
-/// still null.
-///
-/// # Safety
-/// `boxed` is a live box at count 1 that no slot has ever named.
-unsafe fn destroy_empty_box(boxed: *mut crate::reference::LLReference) {
-    unsafe {
-        let died = crate::refcount::ll_release(boxed as *mut RcHeader);
-        debug_assert!(died, "a heap box at one dies when its only count goes");
-        crate::object::ll_entity_die(boxed as *mut RcHeader);
-    }
 }
 
 /// The table half of [`unset`]: remove the entry and give the table's
@@ -1133,7 +1130,7 @@ mod tests {
                 before + 1,
                 "the replay was meant to take a reference of its own"
             );
-            destroy_private_copy(copy);
+            destroy_unpublished(copy as *mut RcHeader);
             assert_eq!(
                 (*child).rc.refcount,
                 before,

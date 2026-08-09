@@ -90,10 +90,16 @@ both configurations with behaviour unchanged.
         in and is now that one call. `store_ptr` and `store_box` keep their
         own copies: they are hot paths, so folding them in owes a
         measurement, and that is said on `publish_child` itself.
-- [ ] S6.3 `destroy_private_copy` and `destroy_empty_box` become one body
+- [x] S6.3 `destroy_private_copy` and `destroy_empty_box` become one body
       done: one function, with the divergence in the assertion stated
         where it is decided rather than split across two sites
       tier: T1 · role: —
+      handoff: `element::destroy_unpublished` takes a bare `*mut RcHeader`
+        and both callers cast to it. The two assertions become one that
+        states the rule they each half-stated — `died` is true exactly for
+        a GC-heap entity, so the arm reads `died || category != GcHeap` —
+        and the category is read from the entity rather than known by the
+        caller, which is why one body can hold it at all.
 - [ ] S6.4 `set`, `append`, `unset` and `make_ref` state their ordering
       guarantee in public text
       done: `cargo doc` reports no private-link warning on the four
