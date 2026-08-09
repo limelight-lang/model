@@ -126,13 +126,22 @@ unsafe fn write_through(
 
 /// The element store: `$a[k] = v` through the holder's slot.
 ///
+/// **The order every write here guarantees**, and the three below rest on
+/// it: a shared array is separated first, because a write is a write
+/// whatever it turns out to change; the copy is written into `slot`
+/// before this holder is taken off the displaced original; and the
+/// original's release comes last, so a `__destruct` body it runs finds
+/// the slot already naming the copy.
+///
 /// **Three refusals report `false`**, each an allocation no reserve
 /// funds: the separation's copy, the publication of an arena COW value
 /// or key into a longer-lived array (`escape_copy`, inside
 /// `store_category_barrier`), and the table's growth. All three leave
-/// every array unchanged, per [`write_through`]. One state does move on
-/// a refused insert: a long chain draws the salt before growth is asked
-/// to allocate and rung state is one-way, so the flood ladder may have
+/// every array unchanged — the slot names the original at its old count,
+/// every table holds the entries it held, and every reference the caller
+/// brought is still the caller's. One state does move on a refused
+/// insert: a long chain draws the salt before growth is asked to
+/// allocate and rung state is one-way, so the flood ladder may have
 /// advanced.
 ///
 /// **No caller reference is consumed.** The operation takes references
@@ -147,7 +156,9 @@ unsafe fn write_through(
 /// that rather than re-canonicalising on every store.
 ///
 /// # Safety
-/// Per [`write_through`], plus: `value`'s entity, if any, live and
+/// `ctx` per `ll_arena_alloc`; `slot` a live slot of a live holder of
+/// category `owner_cat`, naming a live array; `key` canonical. And
+/// `value`'s entity, if any, live and
 /// **holding a reference independent of `slot`** — a subscript RHS in
 /// PHP is a temporary with a reference of its own, so `$a[0] = $a`
 /// reaches here at count 2 and separates. Handed the slot's own array at
@@ -231,10 +242,10 @@ pub unsafe fn append(
 /// holder's sharing state depend on the argument.
 ///
 /// `false` reports the separation's refusal, the only one here: removal
-/// allocates nothing.
+/// allocates nothing, and the array is unchanged as it is for [`set`].
 ///
 /// # Safety
-/// Per [`write_through`].
+/// Per [`set`], less the value.
 pub unsafe fn unset(
     ctx: *mut LLContext,
     owner_cat: MemoryCategory,
@@ -254,8 +265,9 @@ pub unsafe fn unset(
 ///
 /// **The separation comes before the boxing, and that order is the whole
 /// step.** Taking a reference is a write — it turns the element into a
-/// reference state every later store goes through — so it goes through
-/// [`write_through`] like the other three. Boxing a shared table instead
+/// reference state every later store goes through — so it separates
+/// first, in [`set`]'s order and for [`set`]'s reason. Boxing a shared
+/// table instead
 /// would hand `$b`'s reference a box `$a` also names, and `$r = 2` would
 /// then be visible through `$a['x']`. The order settles the element that
 /// is **not** a box yet; an element already in a reference state comes
@@ -265,8 +277,8 @@ pub unsafe fn unset(
 ///
 /// **An absent key is created as null and referenced**, which is PHP's
 /// rule for `$r = &$a['nope']` and the reason this cannot simply forward
-/// `Table::make_ref`'s null: that null means "absent", and the caller
-/// has no way to tell it from the refusal below.
+/// the null of the boxing step below it: that null means "absent", and
+/// the caller has no way to tell it from the refusal below.
 ///
 /// Null reports a refusal with every array unchanged: the separation's
 /// copy, the box, the publication of an arena COW element into the heap
@@ -284,12 +296,12 @@ pub unsafe fn unset(
 /// (`dev/DECISIONS.md`, 2026-08-08), so boxing an element of an arena
 /// array pays twice at the boundary: an arena COW element is copied to
 /// the heap and an arena non-COW one counts an escape, and the entry
-/// holding the heap box logs a release against the reset. Both are
-/// `Table::make_ref`'s, and both are what buys an exact holder count on
-/// the box.
+/// holding the heap box logs a release against the reset. Both crossings
+/// are paid where the box is composed (`box_element`), and both are what
+/// buys an exact holder count on the box.
 ///
 /// # Safety
-/// Per [`write_through`]; `key` canonical, as for [`set`].
+/// Per [`set`], less the value.
 pub unsafe fn make_ref(
     ctx: *mut LLContext,
     owner_cat: MemoryCategory,

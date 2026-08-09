@@ -100,10 +100,17 @@ both configurations with behaviour unchanged.
         a GC-heap entity, so the arm reads `died || category != GcHeap` —
         and the category is read from the entity rather than known by the
         caller, which is why one body can hold it at all.
-- [ ] S6.4 `set`, `append`, `unset` and `make_ref` state their ordering
+- [x] S6.4 `set`, `append`, `unset` and `make_ref` state their ordering
       guarantee in public text
       done: `cargo doc` reports no private-link warning on the four
       tier: T0 · role: —
+      handoff: `set` carries the order the four share — separate, publish
+        into the slot, release the displaced original last — and the other
+        three point at `set`, which is public. Two stale names went with
+        it: `make_ref`'s doc still said `Table::make_ref`, gone since
+        S6.1. The crate's other private-doc links are untouched, the
+        barrier's module list included, where `publish_child` joins the
+        three that were already written that way.
 - [ ] S6.5 `a_reference_to_an_absent_key_creates_it_as_null` tests the
       contract instead of the representation
       done: the test asserts that reading the key yields null and a write
