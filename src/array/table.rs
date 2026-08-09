@@ -752,11 +752,12 @@ impl Table {
     /// and the caller's retain the table names a child no reference backs.
     /// While nothing walked an array concurrently that window was
     /// invisible; the tracer reads one now, and a phantom in-edge pushes
-    /// the key toward looking unrooted. `barrier::store_category_barrier`
-    /// is the operation to publish through — it takes an already-retained
-    /// reference and returns the entity the entry must name, which is a
+    /// the key toward looking unrooted. `barrier::publish_child` is the
+    /// operation to publish through — it takes the reference for the
+    /// entry and answers with the value the entry must name, which is a
     /// different one when the barrier copied an arena value out
-    /// (`array::entity::separate` is the worked example).
+    /// (`array::element::store_into` and `array::entity::fill_from` are
+    /// the worked examples, one per key kind).
     ///
     /// Insert or overwrite. Returns `None` when the storage could not
     /// grow — an allocation refusal reports rather than aborting, and the

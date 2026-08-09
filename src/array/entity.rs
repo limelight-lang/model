@@ -320,19 +320,12 @@ unsafe fn fill_from(
                 }
             }
         }
-        let published_key = if let Key::Str(k) = key {
-            // A string key is published the way the element above is, a
-            // key being a string entity the copy owes a reference to.
-            let key_value = Value::entity(Tag::String, k as *mut RcHeader);
-            match unsafe { crate::memory::barrier::publish_child(arena, category, key_value) } {
-                Some(published) => Key::Str(published.entity_ptr() as *mut crate::string::LLString),
-                None => {
-                    unsafe { give_value_back(category, &v) };
-                    return false;
-                }
+        let published_key = match unsafe { publish_key(arena, category, key) } {
+            Some(published) => published,
+            None => {
+                unsafe { give_value_back(category, &v) };
+                return false;
             }
-        } else {
-            key
         };
         if unsafe {
             (*dst)
@@ -515,6 +508,39 @@ pub(crate) unsafe fn give_value_back(category: MemoryCategory, v: &Value) {
     if v.is_refcounted() {
         unsafe { crate::memory::barrier::drop_ref(category, v.entity_ptr()) };
     }
+}
+
+/// Publish a key's string entity for a table of `category`, the operation
+/// [`give_value_back`] undoes on a refusal path. An integer key carries
+/// no reference and comes back unchanged; `None` is the refused copy,
+/// with nothing spent.
+///
+/// A string key is a string entity making the element's crossing, so the
+/// publication is the element's — `barrier::publish_child` under
+/// `Tag::String` — and the wrap is what lets one body serve both halves
+/// of an entry.
+///
+/// # Safety
+/// `key`'s string, if any, live; `arena` the live mounted arena.
+#[inline]
+pub(crate) unsafe fn publish_key(
+    arena: *mut crate::memory::arena::Arena,
+    category: MemoryCategory,
+    key: Key,
+) -> Option<Key> {
+    let Key::Str(s) = key else {
+        return Some(key);
+    };
+    let published = unsafe {
+        crate::memory::barrier::publish_child(
+            arena,
+            category,
+            Value::entity(Tag::String, s as *mut RcHeader),
+        )
+    }?;
+    Some(Key::Str(
+        published.entity_ptr() as *mut crate::string::LLString
+    ))
 }
 
 /// Every counted child of `a` — elements **and** string keys, a table

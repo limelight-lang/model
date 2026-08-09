@@ -17,7 +17,7 @@
 //! barrier, which is what lets `Map` reuse it under a different set of
 //! those rules.
 
-use crate::array::entity::{LLArray, give_value_back};
+use crate::array::entity::{LLArray, give_value_back, publish_key};
 use crate::array::table::{Key, Table};
 use crate::memory::context::LLContext;
 use crate::refcount::{MemoryCategory, RcHeader};
@@ -158,8 +158,8 @@ unsafe fn write_through(
 /// # Safety
 /// `ctx` per `ll_arena_alloc`; `slot` a live slot of a live holder of
 /// category `owner_cat`, naming a live array; `key` canonical. And
-/// `value`'s entity, if any, live and
-/// **holding a reference independent of `slot`** — a subscript RHS in
+/// `value`'s entity, if any, live and **holding a reference independent
+/// of `slot`** — a subscript RHS in
 /// PHP is a temporary with a reference of its own, so `$a[0] = $a`
 /// reaches here at count 2 and separates. Handed the slot's own array at
 /// count 1, this would build `$a[0] === $a`, a cycle PHP's value
@@ -267,8 +267,8 @@ pub unsafe fn unset(
 /// step.** Taking a reference is a write — it turns the element into a
 /// reference state every later store goes through — so it separates
 /// first, in [`set`]'s order and for [`set`]'s reason. Boxing a shared
-/// table instead
-/// would hand `$b`'s reference a box `$a` also names, and `$r = 2` would
+/// table instead would hand `$b`'s reference a box `$a` also names, and
+/// `$r = 2` would
 /// then be visible through `$a['x']`. The order settles the element that
 /// is **not** a box yet; an element already in a reference state comes
 /// out of the separation shared, provided a second name still holds the
@@ -443,20 +443,12 @@ unsafe fn store_into(
         Some(published) => published,
         None => return false,
     };
-    let published_key = if let Key::Str(k) = key {
-        // A string key is a string entity, so it is published exactly as
-        // the element is, and an arena COW key crossing into a
-        // longer-lived array is likewise replaced by its copy.
-        let key_value = Value::entity(Tag::String, k as *mut RcHeader);
-        match unsafe { crate::memory::barrier::publish_child(arena, category, key_value) } {
-            Some(published) => Key::Str(published.entity_ptr() as *mut LLString),
-            None => {
-                unsafe { give_value_back(category, &v) };
-                return false;
-            }
+    let published_key = match unsafe { publish_key(arena, category, key) } {
+        Some(published) => published,
+        None => {
+            unsafe { give_value_back(category, &v) };
+            return false;
         }
-    } else {
-        key
     };
     match unsafe { (*a).table.insert(owner, published_key, v) } {
         None => {
@@ -533,17 +525,19 @@ unsafe fn store_through_box(
 /// arena array crosses a category boundary twice: the element into the
 /// box through `barrier::publish_child`, and the box into the entry
 /// through `store_category_barrier` alone, its factory count being the
-/// entry's. The element enters a longer-lived
-/// holder, so an arena COW element is copied to the heap and an arena
+/// entry's. The element enters a longer-lived holder, so an arena COW
+/// element is copied to the heap and an arena
 /// non-COW one counts an escape; the box then enters the arena entry, so
 /// its release is logged against the reset. The array's own reference on
 /// the element is given back afterwards, publication before release as
 /// everywhere else.
 ///
-/// **This is the layer that composes it, and the table below only stores
-/// what it is handed** (S6.1): the box, the barrier and the giveback are
-/// this file's, and `Table::insert` hands the displaced element back the
-/// way it does for [`store_into`].
+/// **The chain is walked twice**, once to read the element and once by
+/// the insert that replaces it, where the table's own version walked it
+/// once. What the second walk buys is the boundary: the table is handed
+/// a finished element and decides nothing about it. `&$a[k]` is not a
+/// hot path and the overwrite arm returns before any allocation, so the
+/// cost is unmeasured and was not weighed.
 ///
 /// # Safety
 /// `a` a live, exclusively owned array; `arena` the live mounted arena.
@@ -600,7 +594,12 @@ unsafe fn box_element(
         Some((_, displaced)) => displaced,
         None => {
             debug_assert!(false, "an overwrite of a present key cannot be refused");
-            unsafe { destroy_unpublished(boxed as *mut RcHeader) };
+            // Not `destroy_unpublished`: the barrier above published this
+            // box, and for an arena array that publication is a
+            // release-at-reset record naming it. It goes back the way any
+            // published entity does, so the record still has an entity to
+            // release when the reset reaches it.
+            unsafe { crate::memory::barrier::drop_ref(category, boxed as *mut RcHeader) };
             return std::ptr::null_mut();
         }
     };
@@ -1692,9 +1691,8 @@ mod tests {
             let again = box_element(a, arena_ptr, Key::Int(1));
             assert_eq!(again, r, "asking twice must not build a second box");
 
-            // Released to zero before the kill: a slot reaching the free
-            // list with a live-looking header is the trap `ll_free`
-            // asserts on, and two tests planted it once already.
+            // Released to zero before the kill: `ll_free` asserts that
+            // a slot reaching the free list carries a dead header.
             assert!(ll_release(a as *mut RcHeader));
             crate::object::ll_entity_die(a as *mut RcHeader);
         }
@@ -1735,9 +1733,6 @@ mod tests {
                 "the element holds the box, not the value"
             );
 
-            // Released to zero before the kill: a slot reaching the free
-            // list with a live-looking header is the trap `ll_free`
-            // asserts on, and two tests planted it once already.
             assert!(ll_release(a as *mut RcHeader));
             crate::object::ll_entity_die(a as *mut RcHeader);
         }
@@ -1763,9 +1758,6 @@ mod tests {
             assert!(ll_release(absent as *mut RcHeader));
             crate::object::ll_entity_die(absent as *mut RcHeader);
 
-            // Released to zero before the kill: a slot reaching the free
-            // list with a live-looking header is the trap `ll_free`
-            // asserts on, and two tests planted it once already.
             assert!(ll_release(a as *mut RcHeader));
             crate::object::ll_entity_die(a as *mut RcHeader);
         }
@@ -2672,8 +2664,8 @@ mod tests {
                 "the vivified element reads as something other than null"
             );
 
-            // The write `$r = 7` makes: into the box's own slot, which is
-            // where a reference-state element is written.
+            // The write `$r = 7` makes goes into the box's own slot,
+            // which is where a reference-state element is written.
             assert!(crate::memory::barrier::ref_store(
                 arena_ptr,
                 r as *mut RcHeader,

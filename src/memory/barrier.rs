@@ -136,13 +136,15 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 /// caller retains `new` before calling, and a copy arrives at `+1` from
 /// its factory, so the caller releases `new` when they differ.
 ///
-/// **Crate-internal, and with a second consumer beside the two store
-/// micro-ops**: the array publishes every child it takes through
-/// [`publish_child`], which is this operation plus the reference it
-/// assumes, rather than by a bare `ll_retain` — a copy that records no
-/// escape gain spends a hold-count belonging to a real holder when
-/// `drop_ref` gives it back. Callers holding the reference already reach
-/// this directly, the array's element box being the one that does.
+/// **Crate-internal, and publishing without writing a slot is exactly
+/// what it is**: the caller stores what it returns. Four callers, and
+/// two of them are not the store micro-ops — [`publish_child`], which is
+/// this operation plus the reference it assumes, and
+/// `array::element::box_element`, which already holds the box's factory
+/// count and so reaches this directly. The array publishes every child
+/// it takes through the two of them rather than by a bare `ll_retain`,
+/// because a copy that records no escape gain spends a hold-count
+/// belonging to a real holder when `drop_ref` gives it back.
 #[inline]
 pub(crate) unsafe fn store_category_barrier(
     arena: *mut Arena,

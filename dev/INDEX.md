@@ -117,9 +117,10 @@ versions live in `docs/history/`, marked at the top.
   hash over the key bytes. It allocates no entity and calls no store
   barrier: both are `element.rs`'s, and `Table::insert` hands the
   displaced element back for that layer to release (S6.1).
-  Storage is a **buffer-arena** chunk in the two long-lived categories, a request-arena body in a request array
-  and an immortal-region allocation in an immortal one; both arenas split
-  by size, so a storage over one block payload is a dedicated run. It
+  Storage is a **buffer-arena** chunk in the two long-lived categories,
+  a request-arena body in a request array and an immortal-region
+  allocation in an immortal one; both arenas split by size, so a storage
+  over one block payload is a dedicated run. It
   never comes from `entity_alloc`, whose blocks the collector reads as
   entities.
   `element.rs` is the generic element layer above the table — above rather
@@ -140,9 +141,10 @@ versions live in `docs/history/`, marked at the top.
   through its box, and `make_ref` boxes one inside `write_through` —
   `element::box_element` is that composition, an element reference being
   a `ReferenceBox` because growth moves an entry — so `&$a[k]` separates
-  before it boxes and an absent key is created as null first. The box is a heap entity whatever the array's category, so
-  boxing an element of an arena array crosses the boundary twice: the
-  element enters a longer-lived holder — copied if it is an arena COW
+  before it boxes and an absent key is created as null first. The box is
+  a heap entity whatever the array's category, so boxing an element of
+  an arena array crosses the boundary twice: the element enters a
+  longer-lived holder — copied if it is an arena COW
   value, counted as an escape otherwise — and the box enters the arena
   entry, which logs its release against the reset.
   A store into an element already in a reference state goes
@@ -175,9 +177,10 @@ versions live in `docs/history/`, marked at the top.
   depth, each child published through `barrier::publish_child` rather
   than retained bare — the retain, the category barrier and the reference
   reconciliation the array's four publications share, `store_into`'s
-  value and key and `fill_from`'s (S6.2). Neither the copy nor the teardown recurses
-  into nesting: both drain a `WorkList` in a buffer-arena chunk, because
-  the depth is the caller's input and a frame set per level is a stack
+  value and key and `fill_from`'s (S6.2). Neither the copy nor the
+  teardown recurses into nesting: both drain a `WorkList` in a buffer-
+  arena chunk, because the depth is the caller's input and a frame set
+  per level is a stack
   overflow (`dev/DECISIONS.md`, 2026-08-07 and 2026-08-08). An object
   chain still tears down through the machine stack.
   What is unbuilt is listed at the head of `PLAN.md`.
