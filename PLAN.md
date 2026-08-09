@@ -121,18 +121,41 @@ both configurations with behaviour unchanged.
         the entry-holds-the-box and `table.len()` assertions are gone. The
         new half was seen failing: with 8 stored and 7 asserted the read
         answered 8, so the read does follow the write.
-- [ ] S6.6 `src/array/` gets its rows in `dev/ARCHITECTURE.md`
+- [x] S6.6 `src/array/` gets its rows in `dev/ARCHITECTURE.md`
       done: `table`, `entry`, `element` and `entity` each have a row —
         what it is responsible for, what it knows, what it must not know,
         what it depends on — and every upward edge the module has is
         listed there, the `array::entity` → `gc` one included
       tier: T2 · role: Critic
+      Critic 2026-08-09 round 1: the rows claimed `entry` and `table` know
+        no entity, while `category_of` asserts the owner's kind is Array
+        and `table` calls `LLString::hash`, which caches into the entity;
+        `entry` owns `NONE` and `MAX_ENTRIES`, so "does not know the
+        index" was false; `element` omitted `memory/arena`; and the rows
+        of `walk`, `object`, `gc` and `promote` omit the array they all
+        call. Every finding verified against the code and accepted; the
+        rows and the four caller cells rewritten.
+      Critic 2026-08-09 round 2: the repair kept the `Map` promise beside
+        the kind assertion without saying which of the two must move;
+        "every store into an entry's second word" dropped `make_hole` and
+        the key word the tracer reads; `carry_out_of` names its category
+        rather than reading the header; the sentinel empties an index slot
+        as well as ending a chain; `gc`'s new cell named `array/entity`
+        for a call into `array/table`. All five accepted and written in.
       Last of the stage rather than first, and Edmond agreed the step on
         2026-08-08: the map records the boundary S6.1 settles, so writing
         it before the cut would describe a layout about to move. The
         module has had no row since it was born on 2026-08-06, which is
         why the next argument about where code belongs has nothing to
         decide by.
+      handoff: the four rows are in the L3 table of `dev/ARCHITECTURE.md`
+        with the two upward edges (`array::entity` → `walk`, → `gc`) in
+        the edge table above them. Two things the Critic forced into the
+        file are worth knowing before `Map`: `Table::category_of` asserts
+        the owner's kind is Array, so a `Map` owner fails it on the first
+        storage growth in a debug build, and the carry out of a dying
+        arena names its destination category instead of reading the
+        header. Four caller rows gained the array they call.
 
 ## S9 — The crate reads without its own noise
 

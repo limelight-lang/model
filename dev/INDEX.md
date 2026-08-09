@@ -122,8 +122,10 @@ versions live in `docs/history/`, marked at the top.
   by size, so a storage over one block payload is a dedicated run. It
   never comes from `entity_alloc`, whose blocks the collector reads as
   entities.
-  `element.rs` is the generic element layer above the table, and the layer
-  `Map` will share: `canonical_key` turns a numeric string into the integer
+  `element.rs` is the generic element layer above the table — above rather
+  than inside it because what `Map` reuses is the table, and a table that
+  canonicalised keys would be unusable there:
+  `canonical_key` turns a numeric string into the integer
   key PHP means by it, and `get`, `set`, `append` and `unset` are the
   operations, each taking the holder's slot and the writes returning `bool`
   like every other store-side barrier. One function holds the separation

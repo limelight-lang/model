@@ -59,6 +59,8 @@ point:
 | `object → gc` | dispose, before children drop (rc-trace builds) | leave the candidate buffer at refcount 0 — a child release below may fire a collection that would trace the still-buffered corpse as a root (double free) |
 | `barrier → object` | `drop_ref` | the release cascade ends in `ll_entity_die`; `header_category` reads |
 | `class → object` | descriptor construction | carries `ll_default_dispose` as the default dispose pointer (data, not a call) |
+| `array::entity → walk` | `for_each_counted_child` | an array's children come from the one tracing stride (`walk::trace_cells`), so the adapter calls up rather than striding the entries a second time |
+| `array::entity → gc` | the teardown drain, per entity it takes over (rc-trace builds) | spend a dying array's candidacy — the duty `ll_entity_die` performs at its own door, and a nested array is torn down by the drain without passing it |
 | `heap → static_block`, `gc`, `weak`, `deferred_free` | `ll_thread_exit` | thread exit owns the order its per-thread state dies in, because TLS destructor order is unspecified and puts the exit guard last (decision 2026-08-03). These are disposal calls only: `heap` learns nothing about candidates, cells or verdicts, it names four `dispose`-shaped functions in a fixed sequence |
 
 Any new upward edge is a design event: stop, discuss, record in
@@ -106,31 +108,51 @@ commit (`WORKFLOW.md`).
 |---|---|---|---|---|
 | `intern` | interned names as immortal string entities — one address per string for the process lifetime, inline hash; the global lookup table (Rust-owned metadata) | the string entity layout | classes — it serves them names and knows nothing of them | `immortal`, `refcount` |
 | `class` | class descriptors: the inline vtable train (`[Class][vtbl][itables…]`, pure code-pointer arrays), method table, Cohen display; property layout as three typed runs; the trace lists (`ptr_runs` / `box_runs`); link-time construction | immortal allocation; interned names; the default dispose pointer | instance state; memory categories; GC; who calls the methods | `immortal`, `intern`; upward: `object` (dispose default) |
-| `object` | `ll_object_new` factory; `ll_object_constructed` (destructor registration); three-phase `ll_object_die`; the kind-switched `ll_entity_die`; `for_each_counted_child` | class runs; every category's allocator; the weak gate bit; the destructor-debt protocol | collector internals; block internals; per-site barrier composition | `class`, `refcount`, `value`, `context`, `heap`, `immortal`, `stdapi`, `barrier`, `reference`, `gc` (forget candidate), `weak` (notify) |
+| `object` | `ll_object_new` factory; `ll_object_constructed` (destructor registration); three-phase `ll_object_die`; the kind-switched `ll_entity_die`; `for_each_counted_child` | class runs; every category's allocator; the weak gate bit; the destructor-debt protocol | collector internals; block internals; per-site barrier composition | `class`, `refcount`, `value`, `context`, `heap`, `immortal`, `stdapi`, `barrier`, `reference`, `array/entity` (the Array arms of the kind switch and of both COW doors), `gc` (forget candidate), `weak` (notify) |
 | `reference` | the `&` reference box, entity kind 3: `RcHeader \| Value` — the model's only extra indirection, self-describing at teardown via the kind field | its own kind | classes; typed slot references (future) | `refcount`, `value`, `context`, `heap`, `immortal`, `stdapi`, `barrier`, `object` |
 | `static_block` | the per-thread registry of static blocks and the teardown pass that releases their roots at thread exit (A6): registration in first-touch order, drained in reverse | that a static block is headerless and laid out by a descriptor; that a `__destruct` may register another block mid-pass | how a static block is allocated; what its slots mean — the release policy is the barrier's, the teardown `object`'s | `class`, `refcount`, `object`, `barrier` |
 | `weak` | the kind-5 weak cell (the canonical `WeakReference` *is* the cell); the per-thread weak table; every notification rule (`notify_death` / `notify_members` / `drain_arena_weak_log`); `ll_weakref_create` / `ll_weakref_get` | the bit-7 gate; that cells always live in the GC heap; that only the owning thread touches the table | *when* to call in — that duty belongs to the death sites (dispose phase 2 first act, both collectors, arena reset) | `refcount`, `arena`, `context`, `heap`, `stdapi`, `object` |
 
-**The array module has no row here yet**, and that is a hole rather than
-a statement: `src/array/` was born 2026-08-06, after this map last moved,
-and it is three modules deep (`table`, `entry`, `element`, `entity`).
-Filling it is a documentation job of its own. What must not wait, because
-the table calls an upward edge a design event: `array::entity` reaches
-**up into `gc`** to spend a dying nested array's candidacy
-(`forget_candidate`), the same edge `object` has and for the same reason
-— since 2026-08-08 a nested array is torn down by `array_die`'s drain and
-never passes `ll_entity_die`, so the duty has two sites until the two
-doors become one.
+The array is four modules under `mod.rs`, with a loom model beside them
+under `cfg(loom)`, and the cut between them is what the rows record:
+`entry` and `table` are the ordered hash with no entity lifetime in it,
+which is the half `Map` is meant to reuse, while `element` and `entity`
+carry what an entity brings — the store barrier, the reference box, the
+teardown.
+
+| Module | Responsible for | Knows | Does not know | Depends on |
+|---|---|---|---|---|
+| `array/entry` | the 32-byte entry — `hash_or_key`, `key`, and the element Box whose reserved bytes carry the collision link as a `u32` at +28 — the sentinel `NONE`, which ends a chain and empties an index slot alike, with the `MAX_ENTRIES` cap a `u32` index imposes; and every store into a word the collector reads — the element's second word and the key word, `make_hole` included | that the link shares the element's second word, so tag, flags and link publish as one relaxed atomic store of the width the collector loads; which key states the raw word encodes, the hole among them; that an entry above the published count is filled by the plain setters instead, no reader being able to reach it yet | the index's shape and every operation over the entries: it supplies the sentinel and reads no slot, hashes nothing, and does not know what an element points at | `value`, `string` |
+| `array/table` | one storage allocation (`u32` index slots, then the dense entry array in insertion order) and the operations over it: lookup, insert, remove, growth by compaction or doubling, the flood ladder's two rungs, the version bracket a racing walker reads through (`coherent_entries`), and the carry out of a dying arena | the owner header it is handed at every allocating call, which it reads the memory category from and asserts is an **array's** (`category_of`) — except at the carry out of a dying arena, where the destination is named because the header still says `RequestArena`; a string key's bytes and its cached hash; that nothing inside the storage points into it, so promotion copies it whole | how a reference is spent: it allocates no entity, retains none, releases none and calls no store barrier — it states the ownership its callers owe (`insert`'s one reference per stored key, `remove`'s `#[must_use]` pair) and hands the displaced element back for the layer above to act on. It holds no category of its own — that field existed once and drifted (2026-08-07) | `entry`, `refcount`, `value`, `string`, `hash`, `memory/routing`, `memory/arena`, `memory/block_pool` |
+| `array/element` | the generic element layer over the table: `canonical_key`, the five operations, the separation composition every write goes through, the element reference box, and the teardown of anything it could not publish | COW separation and the order it publishes in; that an element reference is a `ReferenceBox` because growth moves an entry, and that the box is a heap entity whatever the array's category; that canonicalisation belongs above the table, a map keying exactly | the entry layout, the index, the chains — it names keys and elements, never an entry | `array/table`, `array/entity`, `barrier`, `reference`, `object` (`ll_cow_separate`, `ll_entity_die`), `refcount`, `value`, `string`, `memory/context`, `memory/arena` |
+| `array/entity` | the `RcHeader` over the table — kind Array, COW set, no class pointer — with the factory, the copy for both depths (`separate`), the child walk, and the teardown drain that takes a nesting down without the machine stack | the entity kind, the memory category and the COW state; that a nested array leaves the candidate buffer here, never having reached `ll_entity_die` | classes, an array having none; the element operations above it; the collector's phases | `array/table`, `refcount`, `value`, `barrier`, `object`, `reference`, `string`, `memory/routing`, `memory/arena`, `memory/stdapi`, `journal`; upward: `walk`, `gc` |
+
+Both upward edges are `array/entity`'s and both are in the table above.
+What `entry` and `table` promise is narrower than "no entity", and the
+narrow form is the one `Map` can rely on: they allocate none, retain
+none and call no barrier, and the only entities they read are the owner
+header handed to them for its category and a string key, whose bytes
+they compare and whose cached hash `LLString::hash` fills on first use.
+One thing in `table` names the array specifically, and it is the price of
+the reuse rather than a refutation of it: `category_of` asserts the
+owner's kind is Array, so the first storage growth under a `Map` owner
+fails that assertion in a debug build. Whether it widens to a kind set or
+the category arrives another way is the `Map` design's to answer
+(`PLAN.md`, S8); this map records the obligation, not the answer.
+`element` and `entity` also close a cycle with `object` — the COW doors
+and `ll_entity_die`'s Array arm dispatch in while the copy and the
+teardown they run call back out — which is why `object` names
+`array/entity` and both array rows name `object`.
 
 ### L4 — collectors
 
 | Module | Responsible for | Knows | Does not know | Depends on |
 |---|---|---|---|---|
-| `gc` | the rc-trace Bacon–Rajan cycle collector: TLS candidate buffer, arm-vs-fire, `mark_gray` / `scan` / white collection, cyclic destructors with re-collect; `ll_gc_collect_cycles` and the `ll_gc_maybe_collect` poll (reserve refill + rc-walk checkpoint) | the color bits (flags 4–5, buffered bit 6); the clean-point rule | the arming policy (compiler's); other strategies' internals | `refcount`, `object`, `walk`, `weak`, `barrier`, `reserve`, `stdapi`; (rc-walk) `epoch` |
-| `walk` | the kind-dispatched tracer and heap census; `collect_cycles` (synchronous whole-heap collection); the Phase-4 drain (`drain_confirmed`, opening with the corpse rule) | entity kinds and each kind's out-edges | slots, blocks, occupancy — the heap's side of the split | `heap`, `refcount`, `object`, `value`, `reference`, `weak`, `barrier` |
+| `gc` | the rc-trace Bacon–Rajan cycle collector: TLS candidate buffer, arm-vs-fire, `mark_gray` / `scan` / white collection, cyclic destructors with re-collect; `ll_gc_collect_cycles` and the `ll_gc_maybe_collect` poll (reserve refill + rc-walk checkpoint) | the color bits (flags 4–5, buffered bit 6); the clean-point rule | the arming policy (compiler's); other strategies' internals | `refcount`, `object`, `walk`, `weak`, `barrier`, `reserve`, `stdapi`, `array/entity` and `array/table` (an array in the white set gives its storage back through `Table::dispose`); (rc-walk) `epoch` |
+| `walk` | the kind-dispatched tracer and heap census; `collect_cycles` (synchronous whole-heap collection); the Phase-4 drain (`drain_confirmed`, opening with the corpse rule) | entity kinds and each kind's out-edges | slots, blocks, occupancy — the heap's side of the split | `heap`, `refcount`, `object`, `value`, `reference`, `weak`, `barrier`, `array/entry` and `array/table` (the Array arm reads entries through the version bracket), `array/entity` |
 | `epoch` (rc-walk) | the mutator side of the epoch protocol: soft-handshake ack, the confirmation queue (global mutex), the non-reentrant checkpoint — ack-only on `ll_release`'s death branch, full pickup at the outermost dispose's exit (`teardown_enter/exit`), the poll and the explicit batched checkpoint (`ll_gc_checkpoint` + `ll_release_batch`) | the message queue and its drain dispatch | the collector's phases; what a confirmation means (the drain decides) | `refcount`, `walk`, `deferred_free` |
 | `collector` (rc-walk) | the collector-side epoch state machine, Phases 1–3: snapshot, walk / three-way classify, judge, condemn (private), snapshot-compare re-check, confirmation posting; steppable for forcing, `run_epoch` as the threaded driver | that its only shared-memory writes are epoch stamps (condemnation is private since the eager-death amendment, 2026-07-27) | freeing — it never frees; the weak table; mutator TLS | `epoch`, `walk`, `heap` (snapshots), `refcount`, `class`, `value`, `deferred_free` |
-| `promote` | arena death with promotion (retention only): the destructor/escapee fixpoint, internal-edge counting, in-place category rewrite to GcHeap, `BLOCK_KIND_RETAINED` stamping, the survivor list handed on as each retained block's object index, the release-at-reset log | escapee hold-count semantics; the retained block kind | copying / evacuation (future); who mounted the arena; how the index is read | `arena`, `block_pool`, `object`, `refcount`, `weak`, `retained` |
+| `promote` | arena death with promotion (retention only): the destructor/escapee fixpoint, internal-edge counting, in-place category rewrite to GcHeap, `BLOCK_KIND_RETAINED` stamping, the survivor list handed on as each retained block's object index, the release-at-reset log | escapee hold-count semantics; the retained block kind | copying / evacuation (future); who mounted the arena; how the index is read | `arena`, `block_pool`, `object`, `refcount`, `weak`, `retained`, `array/entity` (a survivor's storage carries out with it) |
 
 ## Shared resources
 
