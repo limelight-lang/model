@@ -529,9 +529,8 @@ unsafe fn collect_cycles_inner() -> usize {
                         crate::string::string_die(w as *mut crate::string::LLString)
                     }
                     k if k == EntityKind::Array.to_flags() => {
-                        (*(w as *mut crate::array::entity::LLArray))
-                            .table
-                            .dispose(w);
+                        let a = w as *mut crate::array::entity::LLArray;
+                        (*a).table.dispose(crate::array::entity::category_of(a));
                         crate::memory::stdapi::ll_free(w as *mut u8);
                     }
                     _ => crate::memory::stdapi::ll_free(w as *mut u8),
@@ -1344,7 +1343,7 @@ mod tests {
             // Retained before the entry is published, per `Table::insert`.
             ll_retain(obj as *mut RcHeader);
             (*a).table.insert(
-                a as *const RcHeader,
+                crate::array::entity::category_of(a),
                 Key::Int(0),
                 Value::entity(Tag::Object, obj as *mut RcHeader),
             );
@@ -1480,13 +1479,13 @@ mod tests {
             // must already be backed by a count.
             ll_retain(b as *mut RcHeader);
             (*a).table.insert(
-                a as *const RcHeader,
+                crate::array::entity::category_of(a),
                 Key::Int(0),
                 Value::entity(Tag::Array, b as *mut RcHeader),
             );
             ll_retain(a as *mut RcHeader);
             (*b).table.insert(
-                b as *const RcHeader,
+                crate::array::entity::category_of(b),
                 Key::Int(0),
                 Value::entity(Tag::Array, a as *mut RcHeader),
             );
@@ -1540,7 +1539,7 @@ mod tests {
             // Retained before the entry is published, per `Table::insert`.
             ll_retain(boxed as *mut RcHeader);
             (*array).table.insert(
-                array as *const RcHeader,
+                crate::array::entity::category_of(array),
                 Key::Int(0),
                 Value::entity(Tag::Reference, boxed as *mut RcHeader),
             );
@@ -1627,7 +1626,7 @@ mod tests {
                 "the non-zero decrement buffered the inner array"
             );
             (*outer).table.insert(
-                outer as *const RcHeader,
+                crate::array::entity::category_of(outer),
                 Key::Int(0),
                 Value::entity(Tag::Array, inner as *mut RcHeader),
             );

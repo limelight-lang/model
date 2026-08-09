@@ -707,12 +707,16 @@ mod tests {
         let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
 
         let storage_before = unsafe {
-            (*array)
-                .table
-                .insert(array as *const RcHeader, Key::Int(1), Value::int(11));
-            (*array)
-                .table
-                .insert(array as *const RcHeader, Key::Int(2), Value::int(22));
+            (*array).table.insert(
+                crate::array::entity::category_of(array),
+                Key::Int(1),
+                Value::int(11),
+            );
+            (*array).table.insert(
+                crate::array::entity::category_of(array),
+                Key::Int(2),
+                Value::int(22),
+            );
             crate::array::entity::storage_address(array)
         };
         assert!(!storage_before.is_null());
@@ -797,9 +801,11 @@ mod tests {
         let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
 
         let storage_before = unsafe {
-            (*array)
-                .table
-                .insert(array as *const RcHeader, Key::Int(1), Value::int(11));
+            (*array).table.insert(
+                crate::array::entity::category_of(array),
+                Key::Int(1),
+                Value::int(11),
+            );
             crate::array::entity::storage_address(array)
         };
         assert!(!storage_before.is_null());
@@ -875,9 +881,11 @@ mod tests {
 
         let storage_before = unsafe {
             for i in 0..1100i64 {
-                (*array)
-                    .table
-                    .insert(array as *const RcHeader, Key::Int(i), Value::int(i));
+                (*array).table.insert(
+                    crate::array::entity::category_of(array),
+                    Key::Int(i),
+                    Value::int(i),
+                );
             }
             crate::array::entity::storage_address(array)
         };

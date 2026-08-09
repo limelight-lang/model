@@ -17,8 +17,8 @@
 //! barrier, which is what lets `Map` reuse it under a different set of
 //! those rules.
 
-use crate::array::entity::{LLArray, give_value_back, publish_key};
-use crate::array::table::{Key, Table};
+use crate::array::entity::{LLArray, category_of, give_value_back, publish_key};
+use crate::array::table::Key;
 use crate::memory::context::LLContext;
 use crate::refcount::{MemoryCategory, RcHeader};
 use crate::string::LLString;
@@ -437,8 +437,7 @@ unsafe fn store_into(
             return unsafe { store_through_box(arena, boxed, value) };
         }
     }
-    let owner = a as *const RcHeader;
-    let category = Table::category_of(owner);
+    let category = unsafe { category_of(a) };
     let v = match unsafe { crate::memory::barrier::publish_child(arena, category, value) } {
         Some(published) => published,
         None => return false,
@@ -450,7 +449,7 @@ unsafe fn store_into(
             return false;
         }
     };
-    match unsafe { (*a).table.insert(owner, published_key, v) } {
+    match unsafe { (*a).table.insert(category, published_key, v) } {
         None => {
             unsafe { give_value_back(category, &v) };
             if let Key::Str(k) = published_key {
@@ -553,8 +552,7 @@ unsafe fn box_element(
     if current.tag() == Tag::Reference {
         return current.entity_ptr() as *mut crate::reference::LLReference;
     }
-    let owner = a as *const RcHeader;
-    let category = Table::category_of(owner);
+    let category = unsafe { category_of(a) };
     let boxed = crate::reference::ll_reference_new();
     if boxed.is_null() {
         return std::ptr::null_mut();
@@ -590,7 +588,7 @@ unsafe fn box_element(
     // The key is present, so the entry is overwritten rather than added:
     // no growth, nothing to refuse, and the key this call passes is never
     // the one the entry keeps.
-    let displaced = match unsafe { (*a).table.insert(owner, key, element) } {
+    let displaced = match unsafe { (*a).table.insert(category, key, element) } {
         Some((_, displaced)) => displaced,
         None => {
             debug_assert!(false, "an overwrite of a present key cannot be refused");
@@ -623,8 +621,7 @@ unsafe fn box_element(
 /// # Safety
 /// `a` a live, exclusively owned array.
 unsafe fn remove_from(a: *mut LLArray, key: Key) {
-    let owner = a as *const RcHeader;
-    let category = Table::category_of(owner);
+    let category = unsafe { category_of(a) };
     if let Some((old, removed_key)) = unsafe { (*a).table.remove(key) } {
         unsafe { give_value_back(category, &old) };
         unsafe { crate::memory::barrier::drop_ref(category, removed_key as *mut RcHeader) };
@@ -797,10 +794,11 @@ mod tests {
     fn a_canonical_numeric_string_finds_what_the_integer_key_stored() {
         let _g = crate::memory::block_pool::test_guard();
         let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::GcHeap) };
-        let owner = a as *const crate::refcount::RcHeader;
+        let category = unsafe { category_of(a) };
         for (i, k) in [1i64, -1, i64::MAX, i64::MIN].into_iter().enumerate() {
             unsafe {
-                (*a).table.insert(owner, Key::Int(k), Value::int(i as i64));
+                (*a).table
+                    .insert(category, Key::Int(k), Value::int(i as i64));
             }
         }
         for (i, spelling) in [
@@ -830,7 +828,7 @@ mod tests {
             free(s);
         }
         unsafe {
-            (*a).table.dispose(owner);
+            (*a).table.dispose(category);
             (*a).rc.refcount = 0;
             ll_free(a as *mut u8);
         }
@@ -853,7 +851,7 @@ mod tests {
         unsafe {
             (*src)
                 .table
-                .insert(src as *const RcHeader, Key::Int(0), Value::int(10));
+                .insert(category_of(src), Key::Int(0), Value::int(10));
         }
         let (h, slot_a, slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
         let val = mk(b"forty-one");
@@ -939,7 +937,7 @@ mod tests {
         unsafe {
             (*src)
                 .table
-                .insert(src as *const RcHeader, Key::Int(0), Value::int(10));
+                .insert(category_of(src), Key::Int(0), Value::int(10));
         }
         let (h, slot_a, _slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
         let val = mk(b"unstored");
@@ -1008,7 +1006,7 @@ mod tests {
             for i in 0..8i64 {
                 (*src)
                     .table
-                    .insert(src as *const RcHeader, Key::Int(i), Value::int(i));
+                    .insert(category_of(src), Key::Int(i), Value::int(i));
             }
         }
 
@@ -1118,7 +1116,7 @@ mod tests {
         unsafe {
             crate::refcount::ll_retain(child as *mut RcHeader);
             (*src).table.insert(
-                src as *const RcHeader,
+                category_of(src),
                 Key::Int(0),
                 Value::entity(Tag::String, child as *mut RcHeader),
             );
@@ -1219,7 +1217,7 @@ mod tests {
             for i in 0..7i64 {
                 (*src)
                     .table
-                    .insert(src as *const RcHeader, Key::Int(i), Value::int(i));
+                    .insert(category_of(src), Key::Int(i), Value::int(i));
             }
             let k3 = mk(b"other");
             let k3_start = (*k3).rc.refcount;
@@ -1365,7 +1363,7 @@ mod tests {
             ll_release(src as *mut RcHeader);
             (*src)
                 .table
-                .insert(src as *const RcHeader, Key::Int(0), Value::int(0));
+                .insert(category_of(src), Key::Int(0), Value::int(0));
         }
 
         let value = unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"arena") };
@@ -1419,7 +1417,7 @@ mod tests {
         unsafe {
             (*src)
                 .table
-                .insert(src as *const RcHeader, Key::Int(0), Value::int(10));
+                .insert(category_of(src), Key::Int(0), Value::int(10));
         }
         let class = ClassBuilder::new("ArenaHolder")
             .prop("a", true)
@@ -1493,7 +1491,7 @@ mod tests {
             for i in 0..2i64 {
                 (*src)
                     .table
-                    .insert(src as *const RcHeader, Key::Int(i), Value::int(10 + i));
+                    .insert(category_of(src), Key::Int(i), Value::int(10 + i));
             }
         }
         let (h, slot_a, slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
@@ -1521,7 +1519,7 @@ mod tests {
             // and the next append must refuse.
             (*src)
                 .table
-                .insert(src as *const RcHeader, Key::Int(i64::MAX), Value::int(1));
+                .insert(category_of(src), Key::Int(i64::MAX), Value::int(1));
             assert!(
                 !append(context_ptr, MemoryCategory::GcHeap, slot_b, Value::int(0)),
                 "an exhausted cursor appended anyway"
@@ -1558,7 +1556,7 @@ mod tests {
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(value as *mut RcHeader);
             (*src).table.insert(
-                src as *const RcHeader,
+                category_of(src),
                 Key::Str(key),
                 Value::entity(Tag::String, value as *mut RcHeader),
             );
@@ -1631,7 +1629,7 @@ mod tests {
         unsafe {
             (*src)
                 .table
-                .insert(src as *const RcHeader, Key::Int(0), Value::int(5));
+                .insert(category_of(src), Key::Int(0), Value::int(5));
             let boxed = box_element(src, arena_ptr, Key::Int(0));
             assert!(!boxed.is_null(), "the element was meant to be boxed");
             assert_eq!(
@@ -1672,9 +1670,9 @@ mod tests {
         let arena_ptr: *mut Arena = &mut arena;
 
         let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
-        let owner = a as *const RcHeader;
+        let category = unsafe { category_of(a) };
         unsafe {
-            (*a).table.insert(owner, Key::Int(1), Value::int(41));
+            (*a).table.insert(category, Key::Int(1), Value::int(41));
 
             let r = box_element(a, arena_ptr, Key::Int(1));
             assert!(!r.is_null());
@@ -1682,7 +1680,7 @@ mod tests {
 
             // Enough inserts to reallocate the storage several times.
             for i in 2..5000i64 {
-                (*a).table.insert(owner, Key::Int(i), Value::int(i));
+                (*a).table.insert(category, Key::Int(i), Value::int(i));
             }
             (*r).value = Value::int(99);
             assert_eq!((*r).value.as_int(), 99);
@@ -1709,10 +1707,10 @@ mod tests {
         let arena_ptr: *mut Arena = &mut arena;
 
         let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
-        let owner = a as *const RcHeader;
+        let category = unsafe { category_of(a) };
         unsafe {
             for i in 0..200i64 {
-                (*a).table.insert(owner, Key::Int(i), Value::int(i));
+                (*a).table.insert(category, Key::Int(i), Value::int(i));
             }
             let r = box_element(a, arena_ptr, Key::Int(150));
             assert!(!r.is_null());
@@ -1750,7 +1748,7 @@ mod tests {
         let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         unsafe {
             (*a).table
-                .insert(a as *const RcHeader, Key::Int(1), Value::int(1));
+                .insert(category_of(a), Key::Int(1), Value::int(1));
             assert!(box_element(a, arena_ptr, Key::Int(2)).is_null());
 
             let absent = mk(b"nope");
@@ -1790,7 +1788,7 @@ mod tests {
             ll_release(src as *mut RcHeader);
             crate::refcount::ll_retain(first as *mut RcHeader);
             (*src).table.insert(
-                src as *const RcHeader,
+                category_of(src),
                 Key::Int(0),
                 Value::entity(Tag::String, first as *mut RcHeader),
             );
@@ -1875,7 +1873,7 @@ mod tests {
             ll_release(src as *mut RcHeader);
             crate::refcount::ll_retain(held as *mut RcHeader);
             (*src).table.insert(
-                src as *const RcHeader,
+                category_of(src),
                 Key::Int(0),
                 Value::entity(Tag::String, held as *mut RcHeader),
             );
@@ -1944,7 +1942,7 @@ mod tests {
         let boxed = unsafe {
             (*src)
                 .table
-                .insert(src as *const RcHeader, Key::Int(0), Value::int(7));
+                .insert(category_of(src), Key::Int(0), Value::int(7));
             let boxed = box_element(src, arena_ptr, Key::Int(0));
             assert!(!boxed.is_null());
             boxed
@@ -2420,7 +2418,7 @@ mod tests {
             crate::refcount::ll_retain(x as *mut RcHeader);
             (*src)
                 .table
-                .insert(src as *const RcHeader, Key::Str(x), Value::int(1));
+                .insert(category_of(src), Key::Str(x), Value::int(1));
         }
         let x_shared = unsafe { (*x).rc.refcount };
         // `slot_a` is `$a`, `slot_b` is `$b`.
@@ -2495,7 +2493,7 @@ mod tests {
         unsafe {
             (*src)
                 .table
-                .insert(src as *const RcHeader, Key::Int(0), Value::int(1));
+                .insert(category_of(src), Key::Int(0), Value::int(1));
             assert!(crate::memory::barrier::ref_store(
                 arena_ptr,
                 h as *mut RcHeader,
@@ -2593,7 +2591,7 @@ mod tests {
             // needs no growth and the refusal lands on the box alone.
             (*src)
                 .table
-                .insert(src as *const RcHeader, Key::Int(0), Value::int(1));
+                .insert(category_of(src), Key::Int(0), Value::int(1));
         }
 
         FORCE_OOM.store(true, Ordering::Relaxed);

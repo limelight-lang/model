@@ -1619,14 +1619,17 @@ mod tests {
         let value = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"v") };
         unsafe {
             (*a).table.insert(
-                a as *const RcHeader,
+                crate::array::entity::category_of(a),
                 Key::Str(key),
                 Value::entity(Tag::String, value as *mut RcHeader),
             );
             // An integer key with a plain value adds no edge of its own,
             // and a hole must add none either.
-            (*a).table
-                .insert(a as *const RcHeader, Key::Int(7), Value::int(7));
+            (*a).table.insert(
+                crate::array::entity::category_of(a),
+                Key::Int(7),
+                Value::int(7),
+            );
             let _ = (*a).table.remove(Key::Int(7));
         }
 
@@ -1644,7 +1647,7 @@ mod tests {
         assert_eq!(seen.len(), 2, "a hole or an integer key produced an edge");
 
         unsafe {
-            (*a).table.dispose(a as *const RcHeader);
+            (*a).table.dispose(crate::array::entity::category_of(a));
             // Each of the three is released before it is killed, so its
             // slot reaches the free list carrying the refcount-0 header
             // the process-global enumerators use as their occupancy test.
@@ -1680,7 +1683,7 @@ mod tests {
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(value as *mut RcHeader);
             (*a).table.insert(
-                a as *const RcHeader,
+                crate::array::entity::category_of(a),
                 Key::Str(key),
                 Value::entity(Tag::String, value as *mut RcHeader),
             );
@@ -1811,13 +1814,13 @@ mod tests {
             // Retained before the entry is published, per `Table::insert`.
             ll_retain(b as *mut RcHeader);
             (*a).table.insert(
-                a as *const RcHeader,
+                crate::array::entity::category_of(a),
                 Key::Int(0),
                 Value::entity(Tag::Array, b as *mut RcHeader),
             );
             ll_retain(a as *mut RcHeader);
             (*b).table.insert(
-                b as *const RcHeader,
+                crate::array::entity::category_of(b),
                 Key::Int(0),
                 Value::entity(Tag::Array, a as *mut RcHeader),
             );
@@ -1866,7 +1869,7 @@ mod tests {
             // Retained before the entry is published, per `Table::insert`.
             ll_retain(boxed as *mut RcHeader);
             (*array).table.insert(
-                array as *const RcHeader,
+                crate::array::entity::category_of(array),
                 Key::Int(0),
                 Value::entity(Tag::Reference, boxed as *mut RcHeader),
             );

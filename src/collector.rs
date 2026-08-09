@@ -1345,7 +1345,7 @@ mod tests {
             // already be backed by a count.
             crate::refcount::ll_retain(holder as *mut RcHeader);
             (*table).table.insert(
-                table as *const RcHeader,
+                crate::array::entity::category_of(table),
                 Key::Int(0),
                 Value::entity(Tag::Object, holder as *mut RcHeader),
             );

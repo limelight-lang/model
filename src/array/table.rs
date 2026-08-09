@@ -142,8 +142,12 @@ fn storage_bytes(nslots: usize, cap: usize) -> Option<usize> {
         .and_then(|e| e.checked_add(entries_offset(nslots)))
 }
 
-/// The ordered hash. Holds no header of its own: the entity wrapper that
-/// owns it supplies the `RcHeader`, the class pointer and the COW state.
+/// The ordered hash. Holds no header of its own and reads none: the
+/// entity wrapper supplies the `RcHeader`, the COW state and — as a
+/// parameter to every allocating call — the memory category its storage
+/// comes from (`array::entity::category_of`, S10). Nothing here names an
+/// entity kind, which is what leaves the structure usable by a second
+/// one.
 pub struct Table {
     /// Published atomically because the concurrent collector reads it
     /// while this thread writes it: a plain write against a relaxed load
@@ -318,40 +322,6 @@ impl Table {
     #[cfg(test)]
     pub(crate) fn is_reseeded(&self) -> bool {
         self.flags & TABLE_RESEEDED != 0
-    }
-
-    /// The memory an array's storage comes from, read from `owner`'s
-    /// header — **the only authority there is**. A copy of the category
-    /// in the table would be a second fact to keep in step with the
-    /// first, and it drifted once already: a refused promotion left it
-    /// reading `RequestArena` under a heap array, so the next storage
-    /// came from whatever request arena was mounted (`2e55036`,
-    /// `dev/DECISIONS.md` 2026-08-07).
-    ///
-    /// **The owner is a parameter and is never derived from a reference
-    /// to the table.** A table is embedded in its array one `RcHeader`
-    /// past the header, so the address is a subtraction away — but a
-    /// reference to the body carries provenance over the body alone, and
-    /// reading the header is an atomic load, which asks for a write
-    /// permission that a shared reference cannot grant at any offset.
-    /// Only Miri sees it; every other build performs the read and reports
-    /// nothing.
-    ///
-    /// The debug assertion is what states the requirement out loud: given
-    /// anything but an array entity, this answers with whatever that
-    /// memory holds.
-    ///
-    /// Callers hold `owner` as a raw pointer to the live array this table
-    /// belongs to.
-    #[inline]
-    pub(crate) fn category_of(owner: *const RcHeader) -> MemoryCategory {
-        let flags = unsafe { crate::refcount::header_flags(owner) };
-        debug_assert_eq!(
-            (flags & crate::refcount::ENTITY_KIND_MASK) >> crate::refcount::ENTITY_KIND_SHIFT,
-            crate::refcount::EntityKind::Array as u32,
-            "a table read a header that is not an array's: moved out of its entity?"
-        );
-        MemoryCategory::from_flags(flags)
     }
 
     /// True once the table has escalated to the keyed byte hash.
@@ -579,14 +549,15 @@ impl Table {
     ///
     /// # Safety
     /// The table must be a live request-arena table of `arena`,
-    /// mid-reset, and `owner` the array entity holding it.
+    /// mid-reset, and `category` the one its owner still carries, which
+    /// is `RequestArena` until promotion rewrites the header.
     pub(crate) unsafe fn carry_out_of(
         &mut self,
-        owner: *const RcHeader,
+        category: MemoryCategory,
         arena: *mut crate::memory::arena::Arena,
     ) -> bool {
         debug_assert_eq!(
-            Self::category_of(owner),
+            category,
             MemoryCategory::RequestArena,
             "only an arena table is carried out of a reset"
         );
@@ -777,7 +748,7 @@ impl Table {
     /// not count it as stored.
     pub fn insert(
         &mut self,
-        owner: *const RcHeader,
+        category: MemoryCategory,
         key: Key,
         value: Value,
     ) -> Option<(bool, Option<Value>)> {
@@ -822,7 +793,7 @@ impl Table {
         }
         let sh = self.slot_hash(key);
 
-        if self.used() == self.cap && !self.grow(owner) {
+        if self.used() == self.cap && !self.grow(category) {
             return None;
         }
 
@@ -925,9 +896,9 @@ impl Table {
     /// positions has to repair them; that obligation belongs to the
     /// entity wrapper, and this returns whether a compaction happened so
     /// the wrapper can act on it.
-    fn grow(&mut self, owner: *const RcHeader) -> bool {
+    fn grow(&mut self, category: MemoryCategory) -> bool {
         if self.storage().is_null() {
-            return self.realloc_storage(owner, 8);
+            return self.realloc_storage(category, 8);
         }
         // Zend's rule: reclaim holes rather than doubling when they are
         // more than a thirty-second of the live count.
@@ -936,7 +907,7 @@ impl Table {
             return true;
         }
         match self.cap.checked_mul(2) {
-            Some(n) if n <= MAX_ENTRIES => self.realloc_storage(owner, n),
+            Some(n) if n <= MAX_ENTRIES => self.realloc_storage(category, n),
             _ => false,
         }
     }
@@ -999,7 +970,7 @@ impl Table {
     /// into it. False on refusal, with the table left exactly as it was —
     /// an allocation failure reports to a frame that can raise rather
     /// than aborting.
-    fn realloc_storage(&mut self, owner: *const RcHeader, cap: usize) -> bool {
+    fn realloc_storage(&mut self, category: MemoryCategory, cap: usize) -> bool {
         if cap > MAX_ENTRIES {
             return false;
         }
@@ -1008,7 +979,7 @@ impl Table {
             Some(b) => b,
             None => return false,
         };
-        let (mem, granted) = self.alloc(owner, bytes);
+        let (mem, granted) = self.alloc(category, bytes);
         if mem.is_null() {
             return false;
         }
@@ -1032,7 +1003,7 @@ impl Table {
         }
         self.rebuild_index();
         self.end_entry_move();
-        self.free_storage(owner, old_storage, old_capacity);
+        self.free_storage(category, old_storage, old_capacity);
         true
     }
 
@@ -1049,14 +1020,8 @@ impl Table {
     /// a storage chunk is routinely freed by a thread that did not
     /// allocate it, and the buffer block carries the owner and the stack
     /// such a free posts to.
-    fn alloc(&self, owner: *const RcHeader, bytes: usize) -> (*mut u8, usize) {
-        unsafe {
-            crate::memory::routing::body_alloc(
-                std::ptr::null_mut(),
-                Self::category_of(owner),
-                bytes,
-            )
-        }
+    fn alloc(&self, category: MemoryCategory, bytes: usize) -> (*mut u8, usize) {
+        unsafe { crate::memory::routing::body_alloc(std::ptr::null_mut(), category, bytes) }
     }
 
     /// Sever every live entry: null its element, drop its key, and
@@ -1116,8 +1081,8 @@ impl Table {
     /// The category comes from the owning entity's header
     /// ([`Table::category_of`]), so a promotion that moves this storage
     /// needs no second field kept in step with it.
-    fn free_storage(&self, owner: *const RcHeader, p: *mut u8, capacity: usize) {
-        unsafe { crate::memory::routing::body_free(Self::category_of(owner), p, capacity) };
+    fn free_storage(&self, category: MemoryCategory, p: *mut u8, capacity: usize) {
+        unsafe { crate::memory::routing::body_free(category, p, capacity) };
     }
 
     /// The one draw of the per-table salt: the storage address run
@@ -1274,7 +1239,7 @@ impl Table {
     /// The values are **not** released here: their order matters to the
     /// collector, so the entity wrapper walks and releases them first and
     /// then calls this. Nothing here reads a value.
-    pub fn dispose(&mut self, owner: *const RcHeader) {
+    pub fn dispose(&mut self, category: MemoryCategory) {
         let p = self.storage();
         let capacity = self.storage_capacity;
         self.set_storage(std::ptr::null_mut());
@@ -1285,7 +1250,7 @@ impl Table {
         self.set_used(0);
         self.live = 0;
         self.holes = 0;
-        self.free_storage(owner, p, capacity);
+        self.free_storage(category, p, capacity);
     }
 
     /// Iterate live entries in insertion order. This reads no index at
@@ -1312,28 +1277,30 @@ mod tests {
     /// disturb an unrelated test (which is exactly what happened once).
     /// A table **inside its array**, which is the only place a table
     /// lives: the memory its storage comes from is the owning entity's
-    /// header to say, so a headerless table has nothing to answer with
-    /// (`Table::category_of`, `dev/DECISIONS.md` 2026-08-07). Derefs to
-    /// the table, so a test reads as if it held one.
+    /// header to say (`dev/DECISIONS.md` 2026-08-07), so a test needs the
+    /// entity to have a category to pass. Derefs to the table, so a test
+    /// reads as if it held one.
     struct Owned(*mut crate::array::entity::LLArray);
 
-    /// The operations that need the owner, wrapped so that a test writes
-    /// them as if the table found its own header. It cannot: a reference
-    /// to the body carries provenance over the body, so the entity
-    /// pointer has to arrive from outside ([`Table::category_of`]).
+    /// The operations that need the category, wrapped so that a test
+    /// writes them as if the table answered for itself. It cannot: the
+    /// category is read from the array through
+    /// `array::entity::category_of`, and a reference to the body carries
+    /// provenance over the body alone, so the entity pointer has to
+    /// arrive from outside.
     impl Owned {
-        fn owner(&self) -> *const RcHeader {
-            self.0 as *const RcHeader
+        fn category(&self) -> MemoryCategory {
+            unsafe { crate::array::entity::category_of(self.0) }
         }
 
         fn insert(&mut self, key: Key, value: Value) -> Option<(bool, Option<Value>)> {
-            let owner = self.owner();
-            unsafe { (*self.0).table.insert(owner, key, value) }
+            let category = self.category();
+            unsafe { (*self.0).table.insert(category, key, value) }
         }
 
         fn dispose(&mut self) {
-            let owner = self.owner();
-            unsafe { (*self.0).table.dispose(owner) };
+            let category = self.category();
+            unsafe { (*self.0).table.dispose(category) };
         }
     }
 
@@ -1351,7 +1318,9 @@ mod tests {
     impl Drop for Owned {
         fn drop(&mut self) {
             unsafe {
-                (*self.0).table.dispose(self.0 as *const RcHeader);
+                (*self.0)
+                    .table
+                    .dispose(crate::array::entity::category_of(self.0));
                 // The entity's own slot, by hand rather than through
                 // `ll_entity_die`: these tests own the children and give
                 // them back themselves, and teardown would release them a
@@ -2131,7 +2100,9 @@ mod tests {
         std::thread::spawn(move || {
             let carried = carried;
             unsafe {
-                (*carried.0).table.dispose(carried.0 as *const RcHeader);
+                (*carried.0)
+                    .table
+                    .dispose(crate::array::entity::category_of(carried.0));
                 (*carried.0).rc.refcount = 0;
                 crate::memory::stdapi::ll_free(carried.0 as *mut u8);
             }
@@ -2168,10 +2139,13 @@ mod tests {
         // An arena array, because an arena table's storage is routed by
         // the header in front of it like every other table's.
         let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena) };
-        let owner = a as *const RcHeader;
         let m = unsafe { &mut (*a).table };
         for i in 0..1100i64 {
-            m.insert(owner, Key::Int(i), Value::int(i));
+            m.insert(
+                unsafe { crate::array::entity::category_of(a) },
+                Key::Int(i),
+                Value::int(i),
+            );
         }
         assert!(
             m.storage_capacity > BLOCK_PAYLOAD,
@@ -2181,7 +2155,7 @@ mod tests {
             assert_eq!(m.get(Key::Int(i)).unwrap().as_int(), i);
         }
 
-        m.dispose(owner);
+        m.dispose(unsafe { crate::array::entity::category_of(a) });
         set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -2215,10 +2189,13 @@ mod tests {
         set_current_context(context_ptr);
 
         let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena) };
-        let owner = a as *const RcHeader;
         let m = unsafe { &mut (*a).table };
         for i in 0..8i64 {
-            m.insert(owner, Key::Int(i), Value::int(i));
+            m.insert(
+                unsafe { crate::array::entity::category_of(a) },
+                Key::Int(i),
+                Value::int(i),
+            );
         }
         assert!(
             m.storage_capacity <= BLOCK_PAYLOAD,
@@ -2226,11 +2203,11 @@ mod tests {
         );
 
         FORCE_OOM.store(true, Ordering::Relaxed);
-        let carried = unsafe { m.carry_out_of(owner, arena_ptr) };
+        let carried = unsafe { m.carry_out_of(crate::array::entity::category_of(a), arena_ptr) };
         FORCE_OOM.store(false, Ordering::Relaxed);
         assert!(!carried, "the copy was meant to be refused and was not");
         assert_eq!(
-            Table::category_of(owner),
+            unsafe { crate::array::entity::category_of(a) },
             MemoryCategory::RequestArena,
             "the carry decided a category of its own instead of leaving it to the header"
         );
@@ -2243,7 +2220,7 @@ mod tests {
         // The storage itself stays in the arena block, which promotion
         // stamps retained a moment later; what must have moved is where
         // the *next* one comes from.
-        let (fresh, granted) = m.alloc(owner, 64);
+        let (fresh, granted) = m.alloc(unsafe { crate::array::entity::category_of(a) }, 64);
         assert!(!fresh.is_null());
         let kind = unsafe { *(((fresh as usize) & !BLOCK_MASK) as *const u32) };
         assert_eq!(

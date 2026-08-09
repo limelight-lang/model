@@ -84,7 +84,7 @@ category, `category_of` lives in `array::entity` where an array's header
 is the module's own business, the kind assertion is gone with the read,
 behaviour is unchanged and the gate is green in both configurations.
 
-- [ ] S10.1 The seven allocating paths take `MemoryCategory`
+- [x] S10.1 The seven allocating paths take `MemoryCategory`
       done: `insert`, `grow`, `realloc_storage`, `alloc`, `free_storage`,
         `dispose` and `carry_out_of` take the category; every caller
         passes what it already computed; `dev/ARCHITECTURE.md`'s
@@ -94,6 +94,18 @@ behaviour is unchanged and the gate is green in both configurations.
       No role, and the reason is not economy: the critic ruled on this
         boundary at S6.6 and the ruling is what opened the stage, so a
         second pass would judge seven mechanical signatures.
+      handoff: `insert`, `grow`, `realloc_storage`, `alloc`,
+        `free_storage`, `dispose` and `carry_out_of` take a
+        `MemoryCategory`; `Table::category_of` is gone and
+        `array::entity::category_of(*const LLArray)` is the one reader,
+        typed to the array so the kind assertion is the type rather than a
+        `debug_assert`. It replaces `LLArray::category`, whose plain read
+        of the flags word raced the collector's byte stores; the relaxed
+        read is now the only one. 69 call sites moved, most of them tests.
+        The promotion test kept its point by re-reading the category at
+        every call instead of hoisting it — that test exists to prove the
+        header is the authority, and hoisting would have hidden exactly
+        what it measures.
 
 ## S9 — The crate reads without its own noise
 
