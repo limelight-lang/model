@@ -111,11 +111,16 @@ both configurations with behaviour unchanged.
         S6.1. The crate's other private-doc links are untouched, the
         barrier's module list included, where `publish_child` joins the
         three that were already written that way.
-- [ ] S6.5 `a_reference_to_an_absent_key_creates_it_as_null` tests the
+- [x] S6.5 `a_reference_to_an_absent_key_creates_it_as_null` tests the
       contract instead of the representation
       done: the test asserts that reading the key yields null and a write
         through the reference is visible there
       tier: T1 · role: —
+      handoff: it reads through `get(slot, …)` now and writes through the
+        box with `barrier::ref_store`, which is the path `$r = 7` takes;
+        the entry-holds-the-box and `table.len()` assertions are gone. The
+        new half was seen failing: with 8 stored and 7 asserted the read
+        answered 8, so the read does follow the write.
 - [ ] S6.6 `src/array/` gets its rows in `dev/ARCHITECTURE.md`
       done: `table`, `entry`, `element` and `entity` each have a row —
         what it is responsible for, what it knows, what it must not know,

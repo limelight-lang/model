@@ -2630,8 +2630,13 @@ mod tests {
     }
 
     /// `$r = &$a['nope']` creates the element as null and references it,
-    /// which is PHP's rule and the reason the layer cannot forward
-    /// `Table::make_ref`'s null: that one means "absent".
+    /// which is PHP's rule and the reason the layer cannot forward the
+    /// boxing step's null: that one means "absent".
+    ///
+    /// Read through the array rather than out of the entry: what the
+    /// caller is owed is that `$a[5]` is null afterwards and that a write
+    /// through `$r` is visible there. Which entity the entry holds to
+    /// achieve it is this layer's to change.
     #[test]
     fn a_reference_to_an_absent_key_creates_it_as_null() {
         let _g = crate::memory::block_pool::test_guard();
@@ -2660,20 +2665,29 @@ mod tests {
         unsafe {
             assert!(!r.is_null(), "an absent key was reported as a refusal");
             assert_eq!(
-                (*r).value.tag(),
+                get(slot, Key::Int(5))
+                    .expect("the absent key was not created")
+                    .tag(),
                 Tag::Null,
-                "the vivified element is not null"
+                "the vivified element reads as something other than null"
             );
+
+            // The write `$r = 7` makes: into the box's own slot, which is
+            // where a reference-state element is written.
+            assert!(crate::memory::barrier::ref_store(
+                arena_ptr,
+                r as *mut RcHeader,
+                &raw mut (*r).value,
+                std::ptr::null_mut(),
+                Value::int(7),
+            ));
+            let read = get(slot, Key::Int(5)).expect("the key stopped existing");
             assert_eq!(
-                (*src).table.len(),
-                1,
-                "the vivified element is not in the table"
+                read.tag(),
+                Tag::Int,
+                "the write through the reference is not visible at the key"
             );
-            assert_eq!(
-                (*src).table.get(Key::Int(5)).unwrap().entity_ptr(),
-                r as *mut RcHeader
-            );
-            assert_eq!(get(slot, Key::Int(5)).unwrap().tag(), Tag::Null);
+            assert_eq!(read.as_int(), 7);
 
             assert!(ll_release(h as *mut RcHeader));
             ll_object_die(h);
