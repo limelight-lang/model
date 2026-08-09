@@ -2619,6 +2619,77 @@ mod tests {
         }
     }
 
+    /// A promoted array takes its next storage from the heap, and what
+    /// makes it so is that the write reads the owner's category at the
+    /// call. Promotion rewrites the header and nothing else: the array
+    /// answered `RequestArena` a moment ago, and a caller still holding
+    /// that answer would allocate out of whatever arena is mounted, whose
+    /// reset then hands the chunk back with a live heap array pointing
+    /// into it — a use-after-free rather than the leak a refusal looks
+    /// like (`dev/DECISIONS.md`, 2026-08-07).
+    ///
+    /// The table cannot make this test itself since S10: it is handed a
+    /// category and routes by it, so what is under test is the write
+    /// above it. The array is left empty before the header changes, so
+    /// the first storage is the one measured and no old storage has to be
+    /// freed out of an arena block the reset never stamped.
+    #[test]
+    fn a_promoted_array_takes_its_next_storage_from_the_heap() {
+        use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK};
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+        let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+        crate::memory::context::set_current_context(context_ptr);
+
+        let a = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+        // What promotion does to a survivor, and the whole of what the
+        // write needs from it: clear the category bits, which leaves 00 —
+        // the GC heap (`promote.rs`).
+        unsafe { (*a).rc.flags &= !crate::refcount::MEMORY_CATEGORY_MASK };
+
+        let class = ClassBuilder::new("PromotedHolder").prop("a", true).build();
+        let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
+        let slot = unsafe { Object::prop_at(h, 16) };
+        unsafe {
+            assert!(crate::memory::barrier::ref_store(
+                arena_ptr,
+                h as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, a as *mut RcHeader),
+            ));
+            ll_release(a as *mut RcHeader);
+
+            assert!(set(
+                context_ptr,
+                MemoryCategory::GcHeap,
+                slot,
+                Key::Int(1),
+                Value::int(1)
+            ));
+            assert_eq!(
+                (*slot).entity_ptr() as *mut LLArray,
+                a,
+                "the write separated, so the storage below is a copy's"
+            );
+
+            let storage = crate::array::entity::storage_address(a);
+            assert!(!storage.is_null(), "the write allocated no storage");
+            let kind = *(((storage as usize) & !BLOCK_MASK) as *const u32);
+            assert_eq!(
+                kind, BLOCK_KIND_BUFFER,
+                "the storage came from the arena the array was promoted out of"
+            );
+
+            assert!(ll_release(h as *mut RcHeader));
+            ll_object_die(h);
+        }
+        crate::memory::context::set_current_context(std::ptr::null_mut());
+        arena.reset(|_| {});
+    }
+
     /// `$r = &$a['nope']` creates the element as null and references it,
     /// which is PHP's rule and the reason the layer cannot forward the
     /// boxing step's null: that one means "absent".

@@ -240,9 +240,10 @@ impl Table {
     /// draws the salt. No caller selects a mode, because the trigger is
     /// the flood itself (`PLAN.md` S2.1, Edmond 2026-08-07).
     ///
-    /// No category: which memory this table's storage comes from is the
-    /// owning entity's header to say, and this reads it there
-    /// ([`Table::category`], `dev/DECISIONS.md` 2026-08-07).
+    /// No category field, and no read of one: which memory this table's
+    /// storage comes from is the owning entity's header to say, and every
+    /// allocating call is handed the answer (`dev/DECISIONS.md`,
+    /// 2026-08-07).
     pub const fn empty() -> Self {
         Table {
             storage: AtomicPtr::new(std::ptr::null_mut()),
@@ -734,6 +735,17 @@ impl Table {
     /// grow — an allocation refusal reports rather than aborting, and the
     /// table is unchanged. `Some(true)` means a new key was added.
     ///
+    /// **`category` is the owner's, as it stands at this call.** Growth
+    /// allocates from it and teardown frees to it, so a value cached
+    /// across an arena reset frees to an allocator the storage never came
+    /// from: promotion rewrites the owner's header and the next call must
+    /// see the new answer. Read it at the call site — for an array that
+    /// is `array::entity::category_of` — and never keep a copy beside the
+    /// table, which is the field this structure had until it drifted
+    /// (`dev/DECISIONS.md`, 2026-08-07). The parameter is also what keeps
+    /// the table free of entity kinds, so a second kind of owner can use
+    /// it unchanged.
+    ///
     /// The old value of an overwritten key is returned to the caller
     /// rather than dropped here: releasing it is the owner's, because the
     /// order matters to the collector.
@@ -1007,9 +1019,8 @@ impl Table {
         true
     }
 
-    /// The storage, routed by the table's category
-    /// (`memory::routing::body_alloc`), with the bytes really granted
-    /// reported alongside the pointer.
+    /// The storage, routed by `category` (`memory::routing::body_alloc`),
+    /// with the bytes really granted reported alongside the pointer.
     ///
     /// **A body, not an entity**, which is the one thing a reader has to
     /// know here: storage has no `RcHeader`, and the cycle collector
@@ -1078,9 +1089,9 @@ impl Table {
     /// requested one: the buffer arena's free is size-carrying and a
     /// chunk holds no metadata.
     ///
-    /// The category comes from the owning entity's header
-    /// ([`Table::category_of`]), so a promotion that moves this storage
-    /// needs no second field kept in step with it.
+    /// `category` is the owner's, read by the caller at this call
+    /// (`array::entity::category_of`), so a promotion that moves this
+    /// storage needs no second field kept in step with it.
     fn free_storage(&self, category: MemoryCategory, p: *mut u8, capacity: usize) {
         unsafe { crate::memory::routing::body_free(category, p, capacity) };
     }
@@ -1235,6 +1246,10 @@ impl Table {
     }
 
     /// Release the storage and return the table to its empty state.
+    ///
+    /// `category` is the owner's at this call and decides which allocator
+    /// the storage goes back to, so it obeys [`Table::insert`]'s rule: a
+    /// value cached across a promotion frees to the wrong one.
     ///
     /// The values are **not** released here: their order matters to the
     /// collector, so the entity wrapper walks and releases them first and
@@ -2160,24 +2175,24 @@ mod tests {
         arena.reset(|_| {});
     }
 
-    /// A refused carry leaves the storage where it is, and the array is a
-    /// heap array from that moment on: promotion clears the category bits
-    /// whether the carry succeeded or not. What the table must do is
-    /// follow — route its next storage to the heap — and it does that by
-    /// reading the header rather than a field of its own, which is why
-    /// the four rewrites `carry_out_of` used to make are gone
+    /// A refused carry decides no category of its own: it leaves the
+    /// storage where it is and the header saying `RequestArena`, so
+    /// promotion is what changes the answer a moment later, and the four
+    /// rewrites `carry_out_of` used to make are gone
     /// (`dev/DECISIONS.md`, 2026-08-07).
     ///
-    /// The danger the rewrites guarded is unchanged: a table still
-    /// answering `RequestArena` would take its next storage from whatever
-    /// arena is mounted then, and that arena's reset would return the
-    /// chunk to the pool with a heap array still pointing at it — a
-    /// use-after-free rather than the leak a refusal looks like.
+    /// Where the next storage then comes from is no longer the table's to
+    /// decide — since S10 it is handed a category and routes by it — so
+    /// what it does with a promoted array is measured one layer up, in
+    /// `element::tests::a_promoted_array_takes_its_next_storage_from_the_heap`.
+    /// The danger both halves guard is one: an owner still answering
+    /// `RequestArena` takes its next storage from whatever arena is
+    /// mounted then, and that arena's reset returns the chunk to the pool
+    /// with a live heap array pointing at it.
     #[test]
-    fn a_refused_carry_leaves_the_next_storage_to_the_header() {
+    fn a_refused_carry_leaves_the_category_where_it_was() {
         use crate::memory::arena::Arena;
-        use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK, BLOCK_PAYLOAD, FORCE_OOM};
-        use crate::memory::buffer_arena::buffer_free_longlived_payload;
+        use crate::memory::block_pool::{BLOCK_PAYLOAD, FORCE_OOM};
         use crate::memory::context::set_current_context;
         use std::sync::atomic::Ordering;
         let _g = crate::memory::block_pool::test_guard();
@@ -2211,23 +2226,10 @@ mod tests {
             MemoryCategory::RequestArena,
             "the carry decided a category of its own instead of leaving it to the header"
         );
-
-        // What promotion does to a survivor a moment later, and the whole
-        // of what the table needs from it: clear the category bits, which
-        // leaves 00 — the GC heap (`promote.rs`).
-        unsafe { (*a).rc.flags &= !crate::refcount::MEMORY_CATEGORY_MASK };
-
-        // The storage itself stays in the arena block, which promotion
-        // stamps retained a moment later; what must have moved is where
-        // the *next* one comes from.
-        let (fresh, granted) = m.alloc(unsafe { crate::array::entity::category_of(a) }, 64);
-        assert!(!fresh.is_null());
-        let kind = unsafe { *(((fresh as usize) & !BLOCK_MASK) as *const u32) };
-        assert_eq!(
-            kind, BLOCK_KIND_BUFFER,
-            "the table still allocates from the arena it was carried out of"
+        assert!(
+            !m.storage().is_null(),
+            "a refused carry left the array without the storage it had"
         );
-        unsafe { buffer_free_longlived_payload(fresh, granted) };
 
         set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});

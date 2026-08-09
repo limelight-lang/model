@@ -71,28 +71,32 @@ pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
     a
 }
 
-/// The memory category of `a`, and the one place it is read: the array's
-/// header holds it, so nothing can hold a second copy that drifts when
-/// promotion rewrites it (`dev/DECISIONS.md`, 2026-08-07). The table
-/// below takes the answer as a parameter and names no entity at all,
-/// which is what leaves it reusable by a second kind (S10).
+/// The memory category of `a`: the array's header holds it, and holding
+/// a second copy anywhere is the drift that cost a use-after-free once
+/// (`dev/DECISIONS.md`, 2026-08-07). Read it here at the moment it is
+/// needed — promotion rewrites the header, so a value cached across a
+/// reset describes an array that no longer exists.
 ///
-/// A relaxed read under `rc-walk`, like every header read on a path the
-/// collector may be walking: it stores bytes of that header during an
-/// epoch, so a plain read is a data race rather than a stale value.
+/// `object::header_category` is the same read for a bare header and does
+/// the reading; this is the array's spelling of it, taking `*const
+/// LLArray` so that what a `debug_assert` on the kind field used to state
+/// at runtime the type states at compile time. The table below takes the
+/// answer as a parameter and names no entity at all, which is what leaves
+/// it reusable by a second kind (S10).
 ///
 /// **The array is a parameter and is never derived from the table.** A
 /// table sits one `RcHeader` past its array's header, so the address is
 /// a subtraction away — but a reference to the body carries provenance
-/// over the body alone, and this read asks for a permission a shared
-/// reference cannot grant at any offset. Only Miri sees the difference;
-/// every other build performs the read and reports nothing.
+/// over the body alone, and the read underneath is an atomic load, which
+/// asks for a permission a shared reference cannot grant at any offset.
+/// Only Miri sees the difference; every other build performs the read and
+/// reports nothing.
 ///
 /// # Safety
 /// `a` is a live array entity.
 #[inline]
 pub(crate) unsafe fn category_of(a: *const LLArray) -> MemoryCategory {
-    MemoryCategory::from_flags(unsafe { crate::refcount::header_flags(a as *const RcHeader) })
+    unsafe { crate::object::header_category(a as *const RcHeader) }
 }
 
 impl LLArray {
@@ -346,7 +350,7 @@ unsafe fn fill_from(
                 return false;
             }
         };
-        if unsafe { (*dst).table.insert(category_of(dst), published_key, v) }.is_none() {
+        if unsafe { (*dst).table.insert(category, published_key, v) }.is_none() {
             // Out of memory part-way. Give back what this element took —
             // through the barrier, key and value alike; the source is
             // untouched.
@@ -592,7 +596,7 @@ pub unsafe fn for_each_counted_child(a: *mut LLArray, mut visit: impl FnMut(*mut
 /// # Safety
 /// `a` is a live array entity whose children are still counted.
 pub unsafe fn release_children(a: *mut LLArray) {
-    let owner_cat = unsafe { crate::object::header_category(a as *const RcHeader) };
+    let owner_cat = unsafe { category_of(a) };
     unsafe {
         for_each_counted_child(a, |child| {
             crate::memory::barrier::drop_ref(owner_cat, child);
@@ -694,9 +698,7 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
         );
         unsafe { release_children_in_order(dying, &mut pending) };
         unsafe { (*dying).table.dispose(category_of(dying)) };
-        if unsafe { crate::object::header_category(dying as *const RcHeader) }
-            == MemoryCategory::GcHeap
-        {
+        if unsafe { category_of(dying) } == MemoryCategory::GcHeap {
             unsafe { crate::memory::stdapi::ll_free(dying as *mut u8) };
         }
 
@@ -761,7 +763,7 @@ enum Pending {
 /// # Safety
 /// `a` is a live array entity whose children are still counted.
 unsafe fn release_children_in_order(a: *mut LLArray, pending: &mut WorkList<Pending>) {
-    let owner_cat = unsafe { crate::object::header_category(a as *const RcHeader) };
+    let owner_cat = unsafe { category_of(a) };
     let base = pending.len;
     let mut deferring = false;
     unsafe {
