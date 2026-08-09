@@ -222,10 +222,25 @@ all of them pass a normal `cargo test`.
 
 ```
 MIRIFLAGS="-Zmiri-ignore-leaks" cargo +nightly miri test \
-    --target x86_64-unknown-linux-gnu --lib
+    --target x86_64-unknown-linux-gnu --lib -- --test-threads=2
 ```
 
-Three things about that command are load-bearing:
+**Cap the threads and time the run from outside.** The harness defaults
+to one thread per core and each Miri thread carries its own view of the
+interpreted heap; on this box (7.8 GiB, 2 GiB swap) that default took the
+machine down on 2026-08-09. Two threads held, at a load around 2. And the
+`finished in …s` line is Miri's own clock rather than the wall's — two
+runs over different trees reported 154.41 s and 154.59 s while each cost
+tens of minutes — so a Miri run is timed by `time` or by the shell, and a
+figure quoted from its output says nothing about how long it took.
+
+**Run it in slices.** `array::` alone is about an hour at two threads,
+which is longer than any foreground command should hold the box, and a
+background run outlives the session that started it with nobody to stop
+it. Take a submodule at a time — `array::entry`, `array::table`,
+`array::element`, `array::entity` — each under a `timeout`.
+
+Three things about the command itself are load-bearing:
 
 - **UNIX target.** The Windows TLS fast path is inline `asm!`, which
   Miri cannot execute. Against a UNIX target the crate's existing

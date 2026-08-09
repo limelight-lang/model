@@ -8,6 +8,39 @@ never edited or deleted.
 
 ---
 
+## 2026-08-09 — the table is handed its category and reads no header
+
+Edmond's, and it does not overturn the `RcHeader` rule of 2026-08-07 — it
+finishes it. The header stays the only authority on which memory an entity
+lives in; what changes is who reads it. `Table` read the owner's header at
+every allocating call and asserted, while it was there, that the kind was
+Array. A generic ordered hash therefore named one entity kind: `Map` is
+meant to reuse this structure, and its first storage growth would have
+failed that assertion in every debug build.
+
+The category is a parameter now, on `insert`, `grow`, `realloc_storage`,
+`alloc`, `free_storage`, `dispose` and `carry_out_of`. That is the shape
+the store barrier has had since the beginning and for a reason that
+applies here unchanged: `owner_cat` is passed rather than loaded because
+a destination need not have a header at all. Nothing in `array/table.rs`
+reads a header now, and the kind assertion went with the read instead of
+moving.
+
+One reader replaces it, `array::entity::category_of`, which takes a
+`*const LLArray` and delegates to `object::header_category`: what the
+assertion stated at runtime the parameter type states at compile time.
+The obligation the assertion used to carry moves to the callers and is
+written where they look — `Table::insert`'s contract — because it is the
+fact that drifted in 2026-08-07's entry and cost a use-after-free: the
+category passed is the owner's **as it stands at that call**, and one
+cached across an arena reset frees to an allocator the storage never came
+from.
+
+The invariant is tested a layer up as well, since the table can no longer
+break it: `element::tests::a_promoted_array_takes_its_next_storage_from_the_heap`
+drives a write on an array whose header promotion has just rewritten, and
+fails if the write caches a category.
+
 ## 2026-08-08 — the event journal is one ring per thread
 
 Decided while building §9 of `dev/design/debug-modes.md`, and recorded

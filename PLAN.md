@@ -10,7 +10,13 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 
 Updated: 2026-08-09 · Active: S9
 
-**S4, S5 and S6 are closed and deleted by rule 23.1.3.** S6 was the
+**S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
+step: `Table` takes its memory category as a parameter and reads no
+header, so the ordered hash names no entity kind and `Map` inherits the
+reuse. What survives it is `dev/DECISIONS.md` (2026-08-09) and
+`Table::insert`'s contract, which states the rule the deleted assertion
+used to: the category passed is the owner's at that call, never one
+cached across a promotion. S6 was the
 stage-end review's five demands, all of them behaviour-preserving: the
 element reference's composition left `table.rs`, the publication idiom
 became `barrier::publish_child` and `entity::publish_key`, the two
@@ -36,7 +42,15 @@ rc-trace 373 passed, 0 failed, 4 ignored in 724 s (2026-08-08, HEAD
 `6ab0bcf`). It is not part of a stage's criterion — `dev/WORKFLOW.md`
 keeps Miri beside the commit gate rather than inside it. S6 is covered by
 a targeted run over the module it touched: `array::` 91 passed, 0 failed,
-1 ignored in 155 s (2026-08-09, HEAD `b126240`).
+1 ignored (2026-08-09, HEAD `b126240`) — the "155 s" that run reported is
+Miri's emulated clock, not the wall's (`dev/WORKFLOW.md`).
+
+**S10 owes the same run and it is not done.** At two threads the module
+costs about an hour, so it goes in four slices — `array::entry`,
+`array::table`, `array::element`, `array::entity` — each a foreground run
+under a `timeout`. What exists so far is the first 15 tests of the module,
+0 failed, cut off by that timeout. The default thread count is what took
+the machine down on 2026-08-09; two held.
 
 **It is a quarter-hour job again, and the figure that said otherwise was
 one test.** The 28 minutes for 86 tests measured earlier that day was
@@ -59,53 +73,11 @@ makes two of `Map`'s design questions answerable; S8 writes that design,
 since building it first would decide by accident what Edmond has
 reserved. S9 was added on 2026-08-08 at
 Edmond's request and placed after S6, now gone, and before S7, for the
-reason its own section gives. S10 was added on 2026-08-09, also at
-Edmond's request, and stands first because S9.2's comment pass runs over
-`src/array/`: moving seven signatures after that pass means passing over
-them twice. The prose sections after the stages are the reasoning behind
-them and the backlog they were drawn from.
-
-## S10 — The table takes a category, not a header
-
-Edmond's, 2026-08-09, out of the S6.6 critic's finding that `Table` reads
-the owner's header and asserts the kind is Array. The category has two
-possible homes and both were tried: a field of its own drifted from the
-header at promotion (removed 2026-08-07, `2e55036`), and reading the
-header couples a generic hash to one entity kind. The third home is the
-one the barrier already uses — `owner_cat` is a parameter there, not a
-load, and for the same reason: a destination need not have a header at
-all.
-
-Goal: `Table` stops naming an entity, so `Map` inherits the reuse without
-first widening an assertion.
-
-Done when: no `Table` function takes `*const RcHeader` to reach a
-category, `category_of` lives in `array::entity` where an array's header
-is the module's own business, the kind assertion is gone with the read,
-behaviour is unchanged and the gate is green in both configurations.
-
-- [x] S10.1 The seven allocating paths take `MemoryCategory`
-      done: `insert`, `grow`, `realloc_storage`, `alloc`, `free_storage`,
-        `dispose` and `carry_out_of` take the category; every caller
-        passes what it already computed; `dev/ARCHITECTURE.md`'s
-        `array/table` row loses the owner-header clause and the `Map`
-        obligation paragraph goes with it
-      tier: T2 · role: —
-      No role, and the reason is not economy: the critic ruled on this
-        boundary at S6.6 and the ruling is what opened the stage, so a
-        second pass would judge seven mechanical signatures.
-      handoff: `insert`, `grow`, `realloc_storage`, `alloc`,
-        `free_storage`, `dispose` and `carry_out_of` take a
-        `MemoryCategory`; `Table::category_of` is gone and
-        `array::entity::category_of(*const LLArray)` is the one reader,
-        typed to the array so the kind assertion is the type rather than a
-        `debug_assert`. It replaces `LLArray::category`, whose plain read
-        of the flags word raced the collector's byte stores; the relaxed
-        read is now the only one. 69 call sites moved, most of them tests.
-        The promotion test kept its point by re-reading the category at
-        every call instead of hoisting it — that test exists to prove the
-        header is the authority, and hoisting would have hidden exactly
-        what it measures.
+reason its own section gives. S10 was added and closed on 2026-08-09,
+ahead of S9 because S9.2's comment pass runs over `src/array/` and moving
+seven signatures afterwards would have meant passing over those files
+twice. The prose sections after the stages are the reasoning behind them
+and the backlog they were drawn from.
 
 ## S9 — The crate reads without its own noise
 
