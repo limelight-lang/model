@@ -14,6 +14,9 @@
 //!   true**, `drop_ref` — see the failure paragraph below: a refused
 //!   store leaves the slot holding the old entity, so dropping it anyway
 //!   dangles the slot.
+//! - [`publish_child`] — the publish alone, for a holder whose slot this
+//!   module does not write: an array's entry is written by
+//!   `Table::insert` and its string key is no slot at all.
 //! - [`ref_store`] — the convenience composition of `store_box` +
 //!   `drop_ref` for a Box-slot overwrite, kept for callers holding an
 //!   owner header and a whole `Value`.
@@ -134,11 +137,12 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 /// its factory, so the caller releases `new` when they differ.
 ///
 /// **Crate-internal, and with a second consumer beside the two store
-/// micro-ops**: the array's COW copy publishes each child it takes
-/// through this rather than by a bare `ll_retain`, because a copy that
-/// records no escape gain spends a hold-count belonging to a real holder
-/// when `drop_ref` gives it back. Publishing without writing a slot is
-/// exactly what this operation is: the caller stores what it returns.
+/// micro-ops**: the array publishes every child it takes through
+/// [`publish_child`], which is this operation plus the reference it
+/// assumes, rather than by a bare `ll_retain` — a copy that records no
+/// escape gain spends a hold-count belonging to a real holder when
+/// `drop_ref` gives it back. Callers holding the reference already reach
+/// this directly, the array's element box being the one that does.
 #[inline]
 pub(crate) unsafe fn store_category_barrier(
     arena: *mut Arena,
@@ -179,6 +183,56 @@ pub(crate) unsafe fn store_category_barrier(
         unsafe { (*arena).log_release_at_reset(new) };
     }
     stored
+}
+
+/// **Publish** a value into a holder whose slot this operation does not
+/// write: take the reference the holder will own, cross the category
+/// barrier, and give back the value the holder must name. That is the
+/// value passed in, except where an arena COW entity crosses into a
+/// longer-lived holder — then it is the copy, under the original's tag. A
+/// non-entity value (int, bool, null) comes back unchanged with nothing
+/// retained.
+///
+/// `None` is the refused copy, the one failure the barrier has: nothing
+/// was spent, `new` keeps the count it arrived with, and the caller must
+/// store nothing.
+///
+/// The callers are the array's, where the slot is written by
+/// `Table::insert` and a string key is no slot at all.
+/// [`store_box`] is this operation followed by a slot write and
+/// [`store_ptr`] is its pointer form, but both keep their own copy of it:
+/// they are hot paths (`dev/INDEX.md`), so folding them in owes a
+/// measurement this crate does not have.
+///
+/// # Safety
+/// `new`'s entity live if it has one; `arena` the live mounted arena;
+/// `owner_cat` the holder's category.
+#[inline]
+pub(crate) unsafe fn publish_child(
+    arena: *mut Arena,
+    owner_cat: MemoryCategory,
+    new: Value,
+) -> Option<Value> {
+    if !new.is_refcounted() {
+        return Some(new);
+    }
+
+    let child = new.entity_ptr();
+    unsafe { ll_retain(child) };
+    let stored = unsafe { store_category_barrier(arena, owner_cat, child) };
+    if stored.is_null() {
+        unsafe { ll_release(child) };
+        return None;
+    }
+
+    if stored == child {
+        return Some(new);
+    }
+
+    // The copy arrives at +1 from its factory and is what the holder
+    // names, so the reference retained above goes back.
+    unsafe { ll_release(child) };
+    Some(Value::entity(new.tag(), stored))
 }
 
 /// The `store_ptr` micro-op (`rfc/model/gc/strategies.md` §1): **publish** a

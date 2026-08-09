@@ -78,9 +78,18 @@ both configurations with behaviour unchanged.
         a box survives growth and compaction moved to `element.rs` with
         the code they exercise. No behaviour changed; the gate is green
         in all six arms.
-- [ ] S6.2 `barrier::publish_child` replaces the idiom's four copies
+- [x] S6.2 `barrier::publish_child` replaces the idiom's four copies
       done: one body, and the four sites call it
       tier: T1 · role: —
+      handoff: `barrier::publish_child` takes a `Value` and answers
+        `Option<Value>`, so `store_into`'s value arm, `box_element` and
+        `fill_from`'s value arm call it as they are, and the two string-key
+        sites wrap the key as `Value::entity(Tag::String, …)` — a key being
+        a string entity, which is also why one body serves both. It cost
+        `element_for_box`, which was the same idiom with `GcHeap` written
+        in and is now that one call. `store_ptr` and `store_box` keep their
+        own copies: they are hot paths, so folding them in owes a
+        measurement, and that is said on `publish_child` itself.
 - [ ] S6.3 `destroy_private_copy` and `destroy_empty_box` become one body
       done: one function, with the divergence in the assertion stated
         where it is decided rather than split across two sites

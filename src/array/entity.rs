@@ -30,7 +30,7 @@
 use crate::array::table::{Key, Table};
 use crate::journal::kinds::journal_event;
 use crate::refcount::{COW, EntityKind, MemoryCategory, RcHeader, publish_header};
-use crate::value::Value;
+use crate::value::{Tag, Value};
 
 /// The array entity.
 #[repr(C)]
@@ -91,7 +91,7 @@ impl LLArray {
 ///
 /// Every element is copied as a `Value` and every counted child is
 /// published for the copy through the store barrier
-/// (`barrier::store_category_barrier`), which is where the two depths
+/// (`barrier::publish_child`), which is where the two depths
 /// part company. With an arena destination the barrier's copy arm cannot
 /// fire and nothing is walked recursively: both arrays share the children
 /// until one is written, which is the shallow separation. With a
@@ -314,36 +314,23 @@ unsafe fn fill_from(
                 }
                 v = Value::entity(v.tag(), copy as *mut RcHeader);
             } else {
-                unsafe { crate::refcount::ll_retain(child) };
-                let stored = unsafe {
-                    crate::memory::barrier::store_category_barrier(arena, category, child)
-                };
-                if stored.is_null() {
-                    unsafe { crate::refcount::ll_release(child) };
-                    return false;
-                }
-                if stored != child {
-                    // The barrier copied it. The copy arrives at +1 and is
-                    // what the entry names; the retain above goes back.
-                    unsafe { crate::refcount::ll_release(child) };
-                    v = Value::entity(v.tag(), stored);
+                match unsafe { crate::memory::barrier::publish_child(arena, category, v) } {
+                    Some(published) => v = published,
+                    None => return false,
                 }
             }
         }
         let published_key = if let Key::Str(k) = key {
-            let child = k as *mut RcHeader;
-            unsafe { crate::refcount::ll_retain(child) };
-            let stored =
-                unsafe { crate::memory::barrier::store_category_barrier(arena, category, child) };
-            if stored.is_null() {
-                unsafe { crate::refcount::ll_release(child) };
-                unsafe { give_value_back(category, &v) };
-                return false;
+            // A string key is published the way the element above is, a
+            // key being a string entity the copy owes a reference to.
+            let key_value = Value::entity(Tag::String, k as *mut RcHeader);
+            match unsafe { crate::memory::barrier::publish_child(arena, category, key_value) } {
+                Some(published) => Key::Str(published.entity_ptr() as *mut crate::string::LLString),
+                None => {
+                    unsafe { give_value_back(category, &v) };
+                    return false;
+                }
             }
-            if stored != child {
-                unsafe { crate::refcount::ll_release(child) };
-            }
-            Key::Str(stored as *mut crate::string::LLString)
         } else {
             key
         };

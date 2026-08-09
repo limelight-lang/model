@@ -10,7 +10,7 @@
 //!
 //! **The barrier and the entity factories are this layer's, and the
 //! table below only stores what it is handed** (S6.1). `store_into`
-//! publishes a value and a key through `store_category_barrier` and
+//! publishes a value and a key through `barrier::publish_child` and
 //! hands `Table::insert` values it may keep; `box_element` allocates the
 //! `ReferenceBox`, crosses the category boundary twice for it, and gives
 //! the displaced element back. `Table` allocates no entity and calls no
@@ -137,7 +137,7 @@ unsafe fn write_through(
 ///
 /// **No caller reference is consumed.** The operation takes references
 /// of its own for what the array keeps: the value's entity is retained
-/// and published through `store_category_barrier` (which may hand back
+/// and published through `barrier::publish_child` (which may hand back
 /// a copy — an arena COW value crossing into a longer-lived array), and
 /// a string key follows S2.2's rule — consumed by a new entry, given
 /// back through `drop_ref` when the overwrite arm kept the entry's
@@ -383,8 +383,9 @@ unsafe fn destroy_private_copy(copy: *mut LLArray) {
 
 /// The table half of [`set`]: publish the value and the key for `a`,
 /// insert, and settle S2.2's ownership on every outcome. False on
-/// refusal with everything given back and `a` unchanged — the same
-/// publication idiom as `fill_from`, which is the worked example.
+/// refusal with everything given back and `a` unchanged. Both
+/// publications are `barrier::publish_child`, which `fill_from` uses for
+/// the same pair.
 ///
 /// **An element already in a reference state is written through its box
 /// instead** ([`store_through_box`]), which is what makes `$r = &$a['x']`
@@ -416,37 +417,22 @@ unsafe fn store_into(
     }
     let owner = a as *const RcHeader;
     let category = Table::category_of(owner);
-    let mut v = value;
-    if v.is_refcounted() {
-        let child = v.entity_ptr();
-        unsafe { crate::refcount::ll_retain(child) };
-        let stored =
-            unsafe { crate::memory::barrier::store_category_barrier(arena, category, child) };
-        if stored.is_null() {
-            unsafe { crate::refcount::ll_release(child) };
-            return false;
-        }
-        if stored != child {
-            // The barrier copied it: the copy at +1 is the array's, and
-            // the retain above goes back.
-            unsafe { crate::refcount::ll_release(child) };
-            v = Value::entity(v.tag(), stored);
-        }
-    }
+    let v = match unsafe { crate::memory::barrier::publish_child(arena, category, value) } {
+        Some(published) => published,
+        None => return false,
+    };
     let published_key = if let Key::Str(k) = key {
-        let child = k as *mut RcHeader;
-        unsafe { crate::refcount::ll_retain(child) };
-        let stored =
-            unsafe { crate::memory::barrier::store_category_barrier(arena, category, child) };
-        if stored.is_null() {
-            unsafe { crate::refcount::ll_release(child) };
-            unsafe { give_value_back(category, &v) };
-            return false;
+        // A string key is a string entity, so it is published exactly as
+        // the element is, and an arena COW key crossing into a
+        // longer-lived array is likewise replaced by its copy.
+        let key_value = Value::entity(Tag::String, k as *mut RcHeader);
+        match unsafe { crate::memory::barrier::publish_child(arena, category, key_value) } {
+            Some(published) => Key::Str(published.entity_ptr() as *mut LLString),
+            None => {
+                unsafe { give_value_back(category, &v) };
+                return false;
+            }
         }
-        if stored != child {
-            unsafe { crate::refcount::ll_release(child) };
-        }
-        Key::Str(stored as *mut LLString)
     } else {
         key
     };
@@ -522,8 +508,10 @@ unsafe fn store_through_box(
 ///
 /// **The box is a heap entity even when the array is an arena one**
 /// ([`crate::reference::ll_reference_new`]), so boxing an element of an
-/// arena array crosses a category boundary twice and both crossings go
-/// through `store_category_barrier`. The element enters a longer-lived
+/// arena array crosses a category boundary twice: the element into the
+/// box through `barrier::publish_child`, and the box into the entry
+/// through `store_category_barrier` alone, its factory count being the
+/// entry's. The element enters a longer-lived
 /// holder, so an arena COW element is copied to the heap and an arena
 /// non-COW one counts an escape; the box then enters the arena entry, so
 /// its release is logged against the reset. The array's own reference on
@@ -555,8 +543,12 @@ unsafe fn box_element(
     if boxed.is_null() {
         return std::ptr::null_mut();
     }
-    let held = match unsafe { element_for_box(arena, current) } {
-        Some(v) => v,
+    // Into `GcHeap` rather than into `category`: the box is the holder
+    // here, and a box is a heap entity whatever the array is.
+    let held = match unsafe {
+        crate::memory::barrier::publish_child(arena, MemoryCategory::GcHeap, current)
+    } {
+        Some(element) => element,
         None => {
             unsafe { destroy_empty_box(boxed) };
             return std::ptr::null_mut();
@@ -597,39 +589,6 @@ unsafe fn box_element(
         unsafe { give_value_back(category, &old) };
     }
     boxed
-}
-
-/// The element as the box must hold it: retained for the box, and
-/// published into it through the category barrier, so an arena COW
-/// element becomes a heap copy and an arena non-COW one counts its
-/// escape. `None` is a refused escape copy, with nothing spent.
-///
-/// # Safety
-/// `current` is the element the entry holds; `arena` the live mounted
-/// arena.
-unsafe fn element_for_box(
-    arena: *mut crate::memory::arena::Arena,
-    current: Value,
-) -> Option<Value> {
-    if !current.is_refcounted() {
-        return Some(current);
-    }
-    let child = current.entity_ptr();
-    unsafe { crate::refcount::ll_retain(child) };
-    let stored = unsafe {
-        crate::memory::barrier::store_category_barrier(arena, MemoryCategory::GcHeap, child)
-    };
-    if stored.is_null() {
-        unsafe { crate::refcount::ll_release(child) };
-        return None;
-    }
-    if stored == child {
-        return Some(current);
-    }
-    // The barrier copied an arena COW element out: the copy at +1 is the
-    // box's and the retain above goes back.
-    unsafe { crate::refcount::ll_release(child) };
-    Some(Value::entity(current.tag(), stored))
 }
 
 /// Tear down a box that was allocated and never published, its Value slot
