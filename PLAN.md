@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-09 · Active: S9
+Updated: 2026-08-10 · Active: S11
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -63,7 +63,9 @@ the one class of defect no other tool in this crate can see.
 
 The stages below are in **work order, which is the file's order rather
 than the numbers' one**: a number is never reissued once given, so a stage
-added later sits where it is to be done. S9 is such a stage.
+added later sits where it is to be done. S9 is such a stage, and so is
+S11, which sits at the head because `dev/WORKFLOW.md` puts a known bug
+before new work.
 
 The five that were there first were ordered by the Sage on 2026-08-08 and
 approved by Edmond the same day; the three at the head of that order are
@@ -78,6 +80,128 @@ ahead of S9 because S9.2's comment pass runs over `src/array/` and moving
 seven signatures afterwards would have meant passing over those files
 twice. The prose sections after the stages are the reasoning behind them
 and the backlog they were drawn from.
+
+## S11 — An entity larger than one block has no strategy
+
+Goal: an entity whose single allocation exceeds what its category's
+allocator packs has a defined home in every category, and no size a
+program can reach ends the process or drops the entity out of the walk.
+
+Done when: a string and an object past the limit of every category are
+created, traced, torn down and carried through an arena reset; the suite
+covers each limit at the boundary and one byte past it; and no factory
+carries a block size of its own.
+
+**Placed ahead of S9 by `dev/WORKFLOW.md`'s "bugs first".** S11.1 is a
+few lines and closes a size reachable from the C ABI; the rest is the
+strategy the memory manager never had, and it goes at the ordinary pace.
+
+- [ ] S11.1 Oversize is refused, not asserted
+      done: `entity_alloc_in` returns null for a size the category's
+        allocator cannot serve, the factories above it report that
+        refusal the way they already report pool exhaustion, and
+        `Arena::alloc_slow` keeps the size test as a `debug_assert`
+        naming the invariant; one test per category at the limit and at
+        the limit + 1, each seen failing before the change
+      tier: T1 · role: —
+- [ ] S11.2 The limits, answered where routing answers
+      done: one function beside `memory::routing` answers whether a size
+        fits one slot of a category — `RequestArena` and `Immortal` at
+        `BLOCK_PAYLOAD` because both bump-pack, `GcHeap` and `LongLived`
+        at `MAX_SMALL` because past it an inline entity takes a whole
+        64 KiB block and leaves the walk (`heap.rs:1897`) — and no
+        factory tests a block size itself
+      tier: T1 · role: —
+- [ ] S11.3 The design in `rfc`, before the code
+      done: the rule that an entity slot never exceeds one block payload
+        is written down with the two shapes an oversize entity can take,
+        the reason one of them is chosen, and the questions below either
+        answered or deferred in writing
+      tier: T2 · role: Critic
+- [ ] S11.4 A string past the limit is built dynamic
+      done: `ll_string_new` chooses its layout from S11.2's answer
+        instead of always building the inline one; a request-arena
+        string past the limit takes its payload from `body_alloc`,
+        survives a reset with it and tears down without leaking; the COW
+        and separation paths run for a string that is dynamic by size
+        rather than by having been appended to
+      tier: T2 · role: Critic
+- [ ] S11.5 An entity whose oversize is counted cells
+      done: the shape S11.3 chose is built and the walker reaches the
+        cells — an object past the limit is traced, severed and torn
+        down in both configurations, and Miri is silent over the modules
+        it touched
+      tier: T2 · role: Critic
+- [ ] S11.6 The documents that move with it
+      done: `docs/memory-manager.md`'s closing list of what is not
+        implemented, `string.rs`'s module doc on the two layouts,
+        `rfc/model/strings.md` and `rfc/model/memory/arenas.md` all state
+        the rule, and `dev/DECISIONS.md` carries the per-category limit
+        with the reason it differs by category
+      tier: T1 · role: —
+
+### The strategy, as proposed
+
+**The invariant: an entity's slot never exceeds one block payload.**
+Everything past that lives out of line. This is already the rule for a
+dynamic string's payload and a table's storage — `memory/routing.rs`
+states it in its own module doc, and both arenas implement the split,
+since `Arena::alloc_body` sends a body over a block payload to a
+dedicated run and logs it for the reset. What has no rule is the entity
+*slot* itself, and that is the whole of this stage.
+
+**Two kinds of oversize, and they need different answers.** The bytes an
+entity owns are opaque to the collector; the cells it owns are not, and
+the walker strides them inside the slot. So the answer splits by what
+the size is made of.
+
+**Bytes — solved by choosing the layout that already exists.** A string
+past the limit is built in the dynamic layout: a fixed slot of `RcHeader
+| len | capacity | hash | data` and the payload through `body_alloc`.
+Every part of that path is built and tested — the arena's dedicated run,
+the reset's carry (`promote::carry_external_memory` and
+`string::carry_payload_out_of`), the size-carrying free. What is missing
+is one decision at the factory, which today always builds inline. The
+same choice removes the eight-times footprint of a 9 KiB heap string as
+a by-product, because past `MAX_SMALL` an inline string takes a whole
+block while the dynamic one takes a 32-byte slot and a right-sized body.
+
+**Counted cells — two shapes, and the second is proposed.** An object
+with enough fields, or a template instance with enough parts, exceeds
+the limit through cells the tracer must reach.
+
+*Shape A, an out-of-line cell vector.* The slot holds `RcHeader | class
+| pointer`, the cells sit in a body, and `object::for_each_counted_cell`
+follows one more indirection. It reuses the body machinery whole, and it
+puts an indirection on every field read of every object — the hottest
+path a program has — to serve a case that is rare. Rejected unless a
+measurement says the indirection is free, which is not the way to bet.
+
+*Shape B, a dedicated run that is itself an entity block.* The run is
+block-aligned, its first line is a block header whose kind says it holds
+one large entity, and the entity occupies the payload from `+256`. Field
+access is unchanged, since the cells are where they always were. The
+walker learns one more kind and visits exactly one slot in such a block.
+The precedent is `memory/retained.rs`: a bump-filled former arena block
+cannot be strided either, and the answer there was an explicit index of
+its occupants — here the index has length one. An OS-direct run is
+outside the region registry today (`block_pool.rs:180`), so the run
+needs its own registry, which is the same shape `retained.rs` already
+keeps.
+
+**What the design has to settle, and S11.3 is where:** whether the
+registry of large-entity runs is `retained.rs` extended or a table of
+its own; what a run costs the snapshot, which walks a registry per epoch
+already; whether an arena large entity is promoted at reset by the
+existing `forget_large` transfer or copied; and whether `LongLived`
+takes the same shape as `GcHeap` or stays at one pooled block, its
+reclamation policy being undecided anyway.
+
+**What is deliberately not in this stage:** raising `MAX_SMALL`, and the
+band of size classes between 8 KiB and one block. That is a footprint
+question with its own entry in this file's residual list, and it changes
+the same limit from the other side; doing both at once would make either
+one unmeasurable.
 
 ## S9 — The crate reads without its own noise
 
@@ -1623,6 +1747,80 @@ Memory manager, still open:
   needs it (`heap.rs` remote-free is the template).
 - [ ] Per-block dense/sparse reset threshold calibration — **blocked on
   D** (`arena-reset.md`).
+
+Read from rpmalloc 2.0.1 on 2026-08-10 (`dev/RESEARCH.md`). Material to
+think with, not decisions: none of it is measured here, and each entry
+names what would have to be measured first.
+
+- [ ] **Reallocate in place when the class does not change.**
+  `ll_realloc` (`stdapi.rs:369`) allocates, copies and frees on every
+  call, so 40 bytes to 48 costs a block, a `memcpy` and a free to move
+  inside one 48-byte slot. `ll_usable_size` (`stdapi.rs:349`) already
+  reads the class size out of the block header, so the test is one
+  comparison on a path that is cold anyway. rpmalloc also declines to
+  move a huge block that shrinks by less than half, and overallocates to
+  1.375x on a small growth so that a loop growing a few bytes at a time
+  stops reallocating at every step (`rpmalloc.c:2402`, `2413`, `2429`).
+  **What comes first:** a harness. `rptest` in `benches/standard.rs`
+  frees and allocates rather than reallocating, so this path has no
+  measurement at all, and nothing in the runtime calls it either — it
+  serves the raw C surface.
+
+- [ ] **Size classes for the band between 8 KiB and one block.** Classes
+  stop at 8 KiB (`heap.rs:102`) and everything above takes a whole 64 KiB
+  block (`stdapi.rs:154`), so a 9 KiB request holds 64 KiB. Five classes
+  divide the 65280-byte payload without a tail — 10880, 13056, 16320,
+  21760 and 32640, at six slots down to two — and hold the worst case to
+  1.33x at the bottom of the band and 1.5x at the top; past 32 KiB one
+  object per block is already the two-times ceiling. The fast path need
+  not move: `ll_alloc` routes anything past `MAX_SMALL` into a cold
+  function, and the class is chosen there by a short comparison chain, so
+  `CLASS_LUT` stays 514 entries instead of growing to 4082
+  (`heap.rs:130`). Free simplifies, since these become ordinary heap
+  blocks that the existing `BLOCK_KIND_HEAP` arm serves.
+  **What it costs:** five more classes in three per-heap arrays and in
+  the abandoned table, about 120 bytes per thread, and a high block
+  switch rate on a two-slot class — against today's pool get and put per
+  object, which is worse in every case. The routing list in
+  `stdapi.rs:21` and `docs/memory-manager.md` move with the change.
+  **What comes first:** a footprint measurement, and there is none:
+  `benches/alloc.rs` stops at 8192 (`benches/alloc.rs:134`). The metric
+  is `blocks_out` and RSS rather than operations per second.
+  **Settle separately:** entities past 8 KiB take the same path and live
+  outside the walk on purpose (`heap.rs:1897`); a uniform stride would
+  make them walkable, which `rfc/model/gc/rc-walk.md` decided the other
+  way.
+
+- [ ] **A flag saying the block already reads zero.** `Heap::refill`
+  writes eight bytes into every slot of an entity block unconditionally
+  (`heap.rs:1115`) — up to 4080 stores at the 16-byte class, and at a
+  16-byte stride that dirties every line of the 64 KiB block. The
+  invariant is narrower than the pass: the walker reads only slots below
+  `bump` and tests one field (`heap.rs:2020`). Two sources of the same
+  knowledge exist and neither is used. A region taken with `alloc_zeroed`
+  instead of `alloc` (`block_pool.rs:501`) is untouched kernel memory. A
+  block returned empty from an entity heap already satisfies the
+  invariant, because `FreeSlot` preserves the dead entity's final header
+  (`heap.rs:175`) and an entity dies at refcount 0. What breaks it is a
+  block that served as raw or arena memory in between, or a
+  recommissioning at a different stride, so the flag has to name the
+  stride it holds for.
+  **What comes first:** the case that shows the cost. Amortised over the
+  steady-state benchmarks it is small, refill running about 0.00003 times
+  per allocation; the workload to measure is a growing one, where the
+  pass is one extra store per object created.
+
+- [ ] **Return memory to the OS, and cache huge mappings** — blocked on
+  the prerequisite `stdapi.rs:8` already names: regions come from
+  `std::alloc::alloc`, not from mmap. rpmalloc lets free pages accumulate
+  to 16, 8, 4 or 2 per page type and then decommits down to 4, 2, 1 or 1,
+  keeping the header prefix committed (`rpmalloc.c:712`, `2003`,
+  `1249`), and sends a freed huge mapping to a 32-slot cache bounded by
+  committed bytes and evicted by age rather than straight back to the OS
+  (`rpmalloc.c:1600`). Ours never come back (`block_pool.rs:10`) and
+  `LARGE_RUN` unmaps on every free (`stdapi.rs:24`). Either way the block
+  header line stays committed: the walker reads every block's kind across
+  the region (`heap.rs:2003`).
 
 Object model, deferred by design:
 
