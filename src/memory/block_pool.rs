@@ -429,7 +429,7 @@ impl BlockPool {
         // is no site and no load (`debug-modes.md` §9.6).
         #[cfg(feature = "debug-journal")]
         let arrived_as = unsafe { load_block_kind(&raw const (*block).kind) };
-        unsafe { store_block_kind(&raw mut (*block).kind, BLOCK_KIND_FREE) };
+        unsafe { store_block_kind(&raw const (*block).kind, BLOCK_KIND_FREE) };
 
         // The borrow decides and stages, and everything else happens
         // after it ends. A record raised under it — the journal's site
@@ -544,7 +544,7 @@ impl BlockPool {
         for i in 0..BLOCKS_PER_REGION {
             let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut BlockHeader;
             unsafe {
-                store_block_kind(&raw mut (*block).kind, BLOCK_KIND_FREE);
+                store_block_kind(&raw const (*block).kind, BLOCK_KIND_FREE);
                 (*block).reserved = 0;
                 (*block).next = std::ptr::null_mut();
             }

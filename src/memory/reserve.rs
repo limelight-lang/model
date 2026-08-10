@@ -115,7 +115,7 @@ pub(crate) fn replenish() -> bool {
                 // kind of every block in every carved region.
                 unsafe {
                     crate::memory::block_pool::store_block_kind(
-                        &raw mut (*block).kind,
+                        &raw const (*block).kind,
                         BLOCK_KIND_ARENA,
                     )
                 };

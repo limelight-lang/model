@@ -75,7 +75,7 @@ pub fn immortal_alloc(size: usize) -> *mut u8 {
     // acquire-loads every block's kind, so the store is the release one
     // even though nothing here is ever walked.
     unsafe {
-        crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, BLOCK_KIND_IMMORTAL)
+        crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_IMMORTAL)
     };
     let p = BlockHeader::payload_start(block);
     r.bump = p.wrapping_add(size);

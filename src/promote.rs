@@ -179,7 +179,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     if retained.insert(payload_block) {
                         unsafe {
                             crate::memory::block_pool::store_block_kind(
-                                &raw mut (*header).kind,
+                                &raw const (*header).kind,
                                 BLOCK_KIND_RETAINED,
                             )
                         };
@@ -230,7 +230,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             } else if retained.insert(block) {
                 unsafe {
                     crate::memory::block_pool::store_block_kind(
-                        &raw mut (*(block as *mut BlockHeader)).kind,
+                        &raw const (*(block as *mut BlockHeader)).kind,
                         BLOCK_KIND_RETAINED,
                     )
                 };
@@ -427,7 +427,9 @@ fn index_retained_blocks(survivors: &[*mut RcHeader]) -> Vec<usize> {
 #[inline]
 unsafe fn is_in_a_block_of_its_own(surv: *mut RcHeader) -> bool {
     let block = BlockHeader::of_ptr(surv as *const u8);
-    crate::memory::large_entity::is_large_entity(unsafe { *(block as *const u32) })
+    crate::memory::large_entity::is_large_entity(unsafe {
+        crate::memory::block_pool::load_block_kind(&raw const (*block).kind)
+    })
 }
 
 /// Entity teardown dispatch from a bare header — the uniform kind
@@ -804,7 +806,9 @@ mod tests {
                 "the array stayed behind in the dying arena"
             );
             let storage_after = crate::array::entity::storage_address(array);
-            let kind = *(((storage_after as usize) & !BLOCK_MASK) as *const u32);
+            let kind = crate::memory::block_pool::load_block_kind(
+                ((storage_after as usize) & !BLOCK_MASK) as *const std::sync::atomic::AtomicU32,
+            );
             assert_eq!(
                 kind, BLOCK_KIND_BUFFER,
                 "the storage is still arena memory the reset gave back"

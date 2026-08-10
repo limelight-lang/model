@@ -81,12 +81,12 @@ pub(crate) unsafe fn entity_alloc_in(
 /// allocation of its own (`memory::large_entity`) — so this is a routing
 /// switch rather than a refusal.
 ///
-/// Both arenas bump-pack within one block, so a slot either **shares**
-/// cannot exceed a block's payload — and past that bound neither
-/// refuses: the immortal region serves the request from a run of its
-/// own (`immortal_alloc_run`) and the request arena from a large-entity
-/// allocation it logs for the reset. The entity heap
-/// has size classes up to `MAX_SMALL`, and past that a packed slot would
+/// Both arenas bump-pack within one block, so a slot either of them
+/// **shares** cannot exceed a block's payload — and past that bound
+/// neither refuses: the immortal region serves the request from a run of
+/// its own (`immortal_alloc_run`) and the request arena from a
+/// large-entity allocation it logs for the reset. The entity heap has
+/// size classes up to `MAX_SMALL`, and past that a packed slot would
 /// take a whole block and land outside the entity-block population the
 /// walk enumerates (`heap::entity_alloc`) — a leak no pass finds, which
 /// is why the heap's bound is the size class and not the block.
@@ -245,9 +245,6 @@ mod tests {
     /// allocators do: both arenas bump within one block, and the entity
     /// heap has size classes up to `MAX_SMALL`, past which a packed slot
     /// would take a whole block and leave the walk.
-    ///
-    /// Until 2026-08-10 the second half of this was a refusal, and this
-    /// test asserted it. The refusal is what the stage replaced.
     fn served_at_the_limit_and_past_it(
         category: MemoryCategory,
         limit: usize,
@@ -323,8 +320,6 @@ mod tests {
     /// serves `ll_arena_alloc` from the C ABI, where an entity and a byte
     /// buffer are the same request, so the split has to be made by a door
     /// that knows which one it is holding.
-    ///
-    /// Until 2026-08-10 this asserted the refusal for both.
     #[test]
     fn a_request_arena_entity_past_one_block_payload_takes_a_run_of_its_own() {
         let _g = test_guard();

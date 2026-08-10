@@ -7,6 +7,39 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-10 — an atomic field does not survive a `&mut` over the struct
+
+**What happened.** `Heap::alloc` takes `&mut (*block).private` on every
+allocation, and the block's `kind` — which the collector reads for every
+block of every region — was the first field of that struct. The repair
+ruled on was to give the word an atomic type, on the stated ground that a
+retag does not descend into an `UnsafeCell`. The type landed, every
+`.kind` in the crate moved with it, and Miri reported the same race at
+the same line. The second repair was the real one and the crate had
+already made it once: the word left the struct the borrow covers.
+
+**Why it was possible.** The interior-mutability exemption is real and it
+belongs to **shared** references. A `&mut` asserts uniqueness over its
+whole range whatever is inside it, so an `UnsafeCell` buys nothing there.
+Both halves of that sentence are true and only one of them was recalled.
+
+**Why it was not caught earlier.** The premise was checked against the
+rule as remembered rather than against the tool: the fix compiled, the
+suite was green, and the tree looked finished. What caught it was running
+Miri again after the change instead of assuming the change had done its
+job — the same discipline `dev/WORKFLOW.md` states for formal-UB fixes,
+see the violation before and the silence after. The silence is the half
+that is easy to skip.
+
+**The rule.** A word two threads touch does not stay inside a struct
+somebody borrows exclusively, whatever its type. `dev/DECISIONS.md`,
+2026-07-20 already said this for `BlockShared` and `BlockRemote`: making
+it a type rule was the only option that cannot be violated again. The
+atomic type is still right — it says what the word is, and it is what
+makes the write side legal — but it is not what makes the borrow legal.
+
+---
+
 ## 2026-08-04 — an assertion about a global flag, read twice, from two threads
 
 **What happened.** `cargo test --lib -- --test-threads=4` aborted on

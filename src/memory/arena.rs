@@ -119,7 +119,8 @@ impl Arena {
     /// program-visible count wants one of the two doors that split at the
     /// same bound and take the dedicated-run path above it:
     /// [`Arena::alloc_body`] for the bytes an entity owns, and
-    /// [`Arena::alloc_entity`] for an entity slot.
+    /// `Arena::alloc_entity` for an entity slot — named rather than
+    /// linked, being crate-private where this is public.
     #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         let size = round_up_8(size);
@@ -481,7 +482,9 @@ impl Arena {
             // death leaves behind — and an arena entity is uncounted, so
             // it still carries the count its factory wrote. Zeroing it
             // here is that death, stated where it happens.
-            let kind = *(BlockHeader::of_ptr(ptr) as *const u32);
+            let kind = crate::memory::block_pool::load_block_kind(
+                &raw const (*BlockHeader::of_ptr(ptr)).kind,
+            );
             if crate::memory::large_entity::is_large_entity(kind) {
                 (ptr as *mut u64).write(0);
             }
@@ -609,7 +612,7 @@ impl Arena {
             unsafe {
                 (*block).next = self.blocks;
                 crate::memory::block_pool::store_block_kind(
-                    &raw mut (*block).kind,
+                    &raw const (*block).kind,
                     BLOCK_KIND_ARENA,
                 );
             }
@@ -656,7 +659,7 @@ impl Arena {
         // carved region and this one is freshly out of the pool.
         unsafe {
             (*block).next = self.blocks;
-            crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, BLOCK_KIND_ARENA);
+            crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_ARENA);
         }
         self.blocks = block;
         self.bump = BlockHeader::payload_start(block);
@@ -764,9 +767,8 @@ mod tests {
     /// A size no block can hold is refused, and the refusal leaves the
     /// arena serving: the rounding saturates instead of wrapping, so the
     /// request stays huge and fails the bound rather than becoming a
-    /// small one. It used to end the process here — S11.1 made it a
-    /// refusal, because the size arrives through `ll_arena_alloc` and a
-    /// program can name it.
+    /// small one. A refusal rather than an abort, because the size
+    /// arrives through `ll_arena_alloc` and a program can name it.
     #[test]
     fn absurd_size_is_refused_instead_of_wrapping() {
         let _g = crate::memory::block_pool::test_guard();

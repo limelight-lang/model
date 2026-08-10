@@ -47,7 +47,7 @@ use std::sync::atomic::AtomicU32;
 
 use crate::memory::block_pool::{
     BLOCK_KIND_ENTITY, BLOCK_KIND_HEAP, BLOCK_KIND_LARGE, BLOCK_KIND_LARGE_RUN, BLOCK_MASK,
-    BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader, BlockPool, LINE_SIZE,
+    BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader, BlockPool, LINE_SIZE, load_block_kind,
 };
 use crate::memory::heap::MAX_SMALL;
 
@@ -174,7 +174,7 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
             (&raw mut (*block)._pad).write(0);
             (&raw mut (*block).size).write(size);
             (&raw mut (*block).run_bytes).write(0);
-            crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, BLOCK_KIND_LARGE);
+            crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_LARGE);
             (block as *mut u8).add(LINE_SIZE)
         }
     } else {
@@ -199,7 +199,7 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
             (&raw mut (*block).size).write(size);
             (&raw mut (*block).run_bytes).write(run_bytes);
             crate::memory::block_pool::store_block_kind(
-                &raw mut (*block).kind,
+                &raw const (*block).kind,
                 BLOCK_KIND_LARGE_RUN,
             );
             (block as *mut u8).add(LINE_SIZE)
@@ -221,7 +221,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         return;
     }
     let block = block_of(ptr);
-    let kind = unsafe { *(block as *const u32) };
+    let kind = unsafe { load_block_kind(block as *const AtomicU32) };
 
     // An entity slot reaches the free list carrying the final
     // refcount-0 header, because that word is the occupancy test both
@@ -367,6 +367,13 @@ unsafe fn ll_free_large(block: *mut u8, kind: u32) {
             // owes an arm above, and a missing one is a leak nothing
             // reports. Release still ignores it: the populations here are
             // reachable from the C ABI.
+            //
+            // Reading the arm list, `BLOCK_KIND_BUFFER` looks absent and
+            // is not: it has an arm of its own above, asserting, because
+            // a buffer-arena chunk carries no size and only
+            // `buffer_free_longlived_payload` has one. No chunk reaches
+            // this function at all — `body_free` routes the long-lived
+            // categories there by category, never by kind.
             debug_assert!(false, "no free path for block kind {kind}");
         }
     }
@@ -378,12 +385,12 @@ unsafe fn ll_free_large(block: *mut u8, kind: u32) {
 /// `ptr` must be a live allocation from [`ll_alloc`].
 unsafe fn ll_usable_size(ptr: *mut u8) -> usize {
     let block = block_of(ptr);
-    let kind = unsafe { *(block as *const u32) };
+    let kind = unsafe { load_block_kind(block as *const AtomicU32) };
     match kind {
         BLOCK_KIND_HEAP | BLOCK_KIND_ENTITY => {
             // Heap slot: the class size (upper bound on the request).
             use crate::memory::heap::SIZE_CLASSES;
-            let ci = unsafe { *((block as *const u32).add(1)) } as usize;
+            let ci = unsafe { load_block_kind((block as *const AtomicU32).add(1)) } as usize;
             SIZE_CLASSES[ci]
         }
         BLOCK_KIND_LARGE | BLOCK_KIND_LARGE_RUN => unsafe { (*(block as *const LargeHeader)).size },
@@ -407,7 +414,7 @@ pub unsafe fn ll_realloc(ptr: *mut u8, new_size: usize, align: usize) -> *mut u8
     // walk, while the original is freed with its children still counted
     // against it — so this refuses, and the two entity populations are
     // the only kinds that reach it.
-    let kind = unsafe { *(block_of(ptr) as *const u32) };
+    let kind = unsafe { load_block_kind(block_of(ptr) as *const AtomicU32) };
     if kind == BLOCK_KIND_ENTITY || crate::memory::large_entity::is_large_entity(kind) {
         debug_assert!(false, "an entity reached realloc");
         return std::ptr::null_mut();

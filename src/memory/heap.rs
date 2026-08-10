@@ -867,7 +867,7 @@ impl Heap {
                 let b = unsafe { &mut (*block).private };
                 if b.used == 0 {
                     unsafe {
-                        crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, 0)
+                        crate::memory::block_pool::store_block_kind(&raw const (*block).kind, 0)
                     };
                     BlockPool::global().put(block as *mut BlockHeader);
                 } else {
@@ -1063,7 +1063,7 @@ impl Heap {
                 .shared
                 .owner
                 .store(std::ptr::null_mut(), Ordering::Release);
-            crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, 0);
+            crate::memory::block_pool::store_block_kind(&raw const (*block).kind, 0);
         }
         BlockPool::global().put(block as *mut BlockHeader);
     }
@@ -1155,7 +1155,11 @@ impl Heap {
         // pool's 0.
         unsafe {
             let private = &raw mut (*block).private;
-            crate::memory::block_pool::store_block_kind(&raw const (*block).size_class, ci as u32);
+            // Relaxed, and not through `store_block_kind`: that helper
+            // is the kind's write path and says so, while this word is
+            // published by the release store below like every other
+            // field of the header.
+            (*block).size_class.store(ci as u32, Ordering::Relaxed);
             (&raw mut (*private).used).write(0);
             (&raw mut (*private).slots).write(slots);
             (&raw mut (*private).free).write(std::ptr::null_mut());
@@ -1173,7 +1177,7 @@ impl Heap {
                 owned_next: std::ptr::null_mut(),
                 owned_prev: std::ptr::null_mut(),
             });
-            crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, self.block_kind);
+            crate::memory::block_pool::store_block_kind(&raw const (*block).kind, self.block_kind);
         }
         self.own(ci, block);
         self.link(ci, block);

@@ -124,7 +124,7 @@ unsafe fn commission(block: *mut u8, size: usize, run_bytes: usize, kind: u32) -
         (&raw mut (*header).run_bytes).write(run_bytes);
         let entity = block.add(LINE_SIZE);
         (entity as *mut u64).write(0);
-        store_block_kind(&raw mut (*header).kind, kind);
+        store_block_kind(&raw const (*header).kind, kind);
         entity
     }
 }
@@ -182,11 +182,10 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// is reading memory that may be gone.
 ///
 /// **A visitor must not free a run while walking this list.** The
-/// addresses are a snapshot; freeing one leaves every later element
-/// naming memory the system allocator has taken back. The retained index
-/// tolerates it — former arena memory is never unmapped — and this one
-/// does not.
-///
+/// addresses are a snapshot, so a run freed during the walk leaves
+/// whichever element names it pointing at memory the system allocator
+/// has taken back. The retained index tolerates it — former arena memory
+/// is never unmapped — and this one does not.
 pub(crate) fn snapshot() -> Vec<usize> {
     runs().lock().unwrap().iter().copied().collect()
 }

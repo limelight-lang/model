@@ -922,7 +922,7 @@ pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usiz
 /// `(ptr, capacity)` must be a live payload from
 /// [`buffer_ensure_longlived`] on this thread, not freed yet.
 pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
-    let kind = unsafe { *(((ptr as usize) & !BLOCK_MASK) as *const u32) };
+    let kind = unsafe { load_block_kind(((ptr as usize) & !BLOCK_MASK) as *const AtomicU32) };
     if kind == crate::memory::block_pool::BLOCK_KIND_RETAINED {
         // A payload promotion could not carry: the reset kept its block
         // out of circulation instead (`string::carry_payload_out_of`).

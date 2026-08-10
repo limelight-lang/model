@@ -262,7 +262,7 @@ enum Placement {
 /// - the long-lived heap does not, because `string_die` reclaims the GC
 ///   heap alone, so nothing would ever free the payload
 ///   (`rfc/model/strings.md`); refused here rather than left to the
-///   allocator, whose bound this stage lifted;
+///   allocator, which serves a slot that size instead of refusing one;
 /// - the immortal region keeps the inline layout whole, in the
 ///   block-aligned run `immortal_alloc` serves for a request over one
 ///   block payload — an immortal string is never freed, so the payload
@@ -288,8 +288,9 @@ fn placement(category: MemoryCategory, size: usize) -> Placement {
 /// Write all `len` bytes there, then call [`publish_uninit`] to make it a
 /// string. Between the two calls the memory belongs to the caller alone.
 ///
-/// **Refused** when the allocation fails or `len` is over [`MAX_LEN`],
-/// which [`Reserved::is_null`] reports. A payload that fails after the
+/// **Refused** when the allocation fails, when `len` is over [`MAX_LEN`],
+/// and when the category has no layout for that size ([`placement`]);
+/// [`Reserved::is_null`] reports it. A payload that fails after the
 /// entity slot was taken leaves that slot where it is — in the arena it
 /// dies with the reset, in the heap it stays out of circulation until the
 /// thread ends, the same shape every other factory has on refusal.
