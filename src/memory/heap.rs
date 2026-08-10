@@ -1995,9 +1995,17 @@ unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
 /// headers, the factory publishes a header last, and a freed slot keeps
 /// its final refcount-0 header (the free-list link lives in bytes 8–15).
 /// The scan is bounded by each block's bump cursor, so virgin slots are
-/// never read. Blocks of every other kind — arena, retained, large,
-/// buffer, raw heap — are skipped: un-walked memory is a root source,
-/// never an error.
+/// never read. Blocks of every other kind — arena, large, buffer, raw
+/// heap — are skipped: un-walked memory is a root source, never an
+/// error.
+///
+/// **Three populations, not one.** Size-class entity blocks are strided;
+/// retained former-arena blocks carry no stride and are enumerated from
+/// the index the reset left; and an entity too large for a size class
+/// holds a block-aligned allocation alone, contributing exactly one
+/// slot — found by the region scan while it is a pooled block, and from
+/// `memory::large_entity`'s registry once it is an OS-direct run outside
+/// every region.
 ///
 /// # Safety
 /// Requires a quiescent mutator: block kinds, cursors and slot headers
@@ -2014,7 +2022,21 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
             // commissioned — reading `size_class`/`bump` there is reading
             // uninitialized memory (Miri-caught). An entity block's header
             // was fully written by `refill`.
-            if unsafe { (*block).private.kind } != BLOCK_KIND_ENTITY {
+            let kind = unsafe { (*block).private.kind };
+            // A pooled block holding one large entity: no stride and no
+            // cursor, one slot at the payload start, and the same
+            // occupancy word decides. A run of the same population is
+            // outside every region and comes from the registry below.
+            if kind == crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE {
+                let (entity, _) =
+                    unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
+                let slot = entity as *mut crate::refcount::RcHeader;
+                if unsafe { (*slot).refcount } != 0 {
+                    visit(slot);
+                }
+                continue;
+            }
+            if kind != BLOCK_KIND_ENTITY {
                 continue;
             }
             let (size_class, bump) =
@@ -2043,6 +2065,18 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
             }
         }
     }
+
+    // An entity too large even for a pooled block lives in an OS-direct
+    // run, which no region contains, so the registry is the only thing
+    // that names it (`memory/large_entity.rs`). One occupant each, at the
+    // line after the header.
+    for block in crate::memory::large_entity::snapshot() {
+        let (entity, _) = unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
+        let slot = entity as *mut crate::refcount::RcHeader;
+        if unsafe { (*slot).refcount } != 0 {
+            visit(slot);
+        }
+    }
 }
 
 /// What the enumerator sees at `addr`, as text, for a test that found an
@@ -2053,6 +2087,11 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
 /// the block's kind, then its stride and bump, then the header word whose
 /// low half is the refcount. A slot index at or past `bump` is a slot the
 /// walk does not reach.
+///
+/// A large-entity block answers a different set, because it has no
+/// stride and no cursor: its occupant's size, and — the membership that
+/// decides whether a run is enumerated at all — whether the registry
+/// names it.
 #[cfg(test)]
 pub(crate) fn describe_slot(addr: usize) -> String {
     let block = (addr & !BLOCK_MASK) as *mut HeapBlockHeader;
@@ -2060,6 +2099,23 @@ pub(crate) fn describe_slot(addr: usize) -> String {
         let base = r as usize;
         addr >= base && addr < base + crate::memory::block_pool::REGION_SIZE
     });
+    // A large-entity block first, because the header below it is a
+    // different struct: reading a size class and a bump cursor out of it
+    // yields numbers that look like an unreachable slot at exactly the
+    // moment the walk reaches this one unconditionally, and for a run the
+    // cursor's offset is past anything commissioning wrote.
+    let kind_word = unsafe { (*block).private.kind };
+    if crate::memory::large_entity::is_large_entity(kind_word) {
+        let (entity, size) = unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
+        let registered = crate::memory::large_entity::snapshot().contains(&(block as usize));
+        let header = unsafe { *(addr as *const u64) };
+        return format!(
+            "addr {addr:#x} block {:#x} in_region {in_region} kind {kind_word} \
+             large_entity size {size} occupant {:#x} registered_run {registered} \
+             header {header:#018x}",
+            block as usize, entity as usize
+        );
+    }
     let (kind, size_class, used, slots, bump) = unsafe {
         (
             (*block).private.kind,
@@ -2092,20 +2148,26 @@ pub(crate) fn describe_slot(addr: usize) -> String {
 /// relaxed-atomic header helpers; what it holds here is arithmetic and,
 /// for a retained block, the array of addresses that replaces it.
 ///
-/// Two kinds of block are walkable and they differ only in how a slot
+/// Three kinds of block are walkable and they differ only in how a slot
 /// index becomes an address. An **entity block** has one size class, so
 /// slot *s* is `payload + s * class_size` and an address divides back.
 /// A **retained** former-arena block was bump-filled with mixed sizes
 /// and has no stride at all: slot *s* is `index[s]`, and an address is
-/// found by searching the index (`memory/retained.rs`).
+/// found by searching the index (`memory/retained.rs`). A
+/// **large-entity** block holds one occupant, so the division still
+/// works and always answers slot 0
+/// (`rfc/model/memory/large-entities.md`).
 #[cfg(feature = "rc-walk")]
 #[derive(Clone, Debug)]
 pub(crate) struct EntityBlockSnapshot {
-    /// Address of the first slot (block payload).
+    /// Address of the first slot. The block payload for a size-class
+    /// block, and the entity itself for a large-entity one, which is the
+    /// same address by geometry.
     pub payload: usize,
-    /// Slot stride: the block's size class in bytes. Meaningless for a
-    /// retained block, which has none — read it only when `index` is
-    /// `None`.
+    /// Slot stride. The block's size class where slots repeat, and the
+    /// **entity's own size** where the block holds one — either way it is
+    /// what an in-block offset divides by. Meaningless for a retained
+    /// block, which has neither; read it only when `index` is `None`.
     pub class_size: usize,
     /// Every slot of the block, virgin tail included. The walker does
     /// NOT read the bump cursor: commissioning zeroes every slot's
@@ -2119,9 +2181,16 @@ pub(crate) struct EntityBlockSnapshot {
     /// For a retained block this is `index.len()` — the survivors the
     /// reset recorded, which is the whole of that block's population
     /// because nothing allocates into a dead arena.
+    ///
+    /// **For a large-entity block it is 1, and that is soundness rather
+    /// than economy.** The obvious formula, `BLOCK_PAYLOAD / class_size`,
+    /// answers 6 for a 9 632-byte object; the walker would then read five
+    /// fabricated rows out of that object's own cells, and edges invented
+    /// from cell bytes can drive a live component to `RC == IN` and
+    /// confirm it for collection.
     pub slots: usize,
     /// The occupants, ascending, when this is a retained block. `None`
-    /// for an entity block, whose occupants are found by striding.
+    /// for the two populations whose occupants are found by arithmetic.
     pub index: Option<std::sync::Arc<[usize]>>,
 }
 
@@ -2147,6 +2216,22 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
             let kind = unsafe {
                 (*(&raw const (*block).private.kind as *const AtomicU32)).load(Ordering::Acquire)
             };
+            // One large entity in a pooled block. `slots` is 1 and that
+            // is soundness rather than economy: a count above the truth
+            // makes the walker read rows out of the entity's own cells,
+            // and fabricated edges can balance a live component into
+            // collection. The acquire above published the size.
+            if kind == crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE {
+                let (entity, size) =
+                    unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
+                blocks.push(EntityBlockSnapshot {
+                    payload: entity as usize,
+                    class_size: size,
+                    slots: 1,
+                    index: None,
+                });
+                continue;
+            }
             if kind != BLOCK_KIND_ENTITY {
                 continue;
             }
@@ -2176,6 +2261,20 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
             class_size: 0,
             slots: index.len(),
             index: Some(index),
+        });
+    }
+
+    // And the OS-direct runs, for the reason the synchronous walk takes
+    // them from the same registry: no region contains one, so nothing
+    // else names it. Reading a registered run's header is sound for the
+    // epoch, because its free parks — the entry outlives the snapshot.
+    for block in crate::memory::large_entity::snapshot() {
+        let (entity, size) = unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
+        blocks.push(EntityBlockSnapshot {
+            payload: entity as usize,
+            class_size: size,
+            slots: 1,
+            index: None,
         });
     }
 

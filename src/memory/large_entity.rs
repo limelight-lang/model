@@ -156,12 +156,8 @@ pub(crate) unsafe fn free(block: *mut u8, kind: u32) {
 
 /// The entity a large-entity block holds, and how big it is.
 ///
-/// The two enumerators are its production callers and they arrive with
-/// the walk; until then only the tests here ask.
-///
 /// # Safety
 /// `block` is the block header of a live large-entity allocation.
-#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
     let size = unsafe { (*(block as *const LargeEntityHeader)).size };
@@ -174,9 +170,22 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// a visitor runs arbitrary code and must not do it under a lock the
 /// allocator takes.
 ///
-/// The two enumerators are its production callers and they arrive with
-/// the walk; until then only the tests here read the registry back.
-#[cfg_attr(not(test), allow(dead_code))]
+/// **A returned address may be dereferenced, and the reason is worth
+/// stating here rather than at the three sites that rely on it.** Unlike
+/// every other address either enumerator holds, a run's memory can be
+/// **unmapped**: [`free`] hands it to the system allocator. Three things
+/// together make the read sound — the registry entry is removed strictly
+/// before the `dealloc`, a free during a collection epoch parks instead
+/// of running, and the collector waits for the handshake ack that
+/// publishes the epoch before it snapshots. A caller outside those rules
+/// is reading memory that may be gone.
+///
+/// **A visitor must not free a run while walking this list.** The
+/// addresses are a snapshot; freeing one leaves every later element
+/// naming memory the system allocator has taken back. The retained index
+/// tolerates it — former arena memory is never unmapped — and this one
+/// does not.
+///
 pub(crate) fn snapshot() -> Vec<usize> {
     runs().lock().unwrap().iter().copied().collect()
 }

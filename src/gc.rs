@@ -772,6 +772,58 @@ mod tests {
         ClassBuilder::new("CycleNode").prop("next", true).build()
     }
 
+    /// The same ring, in the strategy that finds its roots from
+    /// decrements instead of from a walk. It exercises none of the
+    /// enumerators — this collector never reads a block header — and
+    /// what it pins is the other half: a large entity is an ordinary
+    /// candidate, and the teardown that frees the white set routes by
+    /// block kind (`rfc/model/memory/large-entities.md`).
+    #[test]
+    fn a_cycle_through_large_entities_is_collected_by_the_tracing_strategy() {
+        let _g = crate::memory::block_pool::test_guard();
+        let wide = |name: &str, fillers: usize| {
+            let mut builder = ClassBuilder::new(name).prop("next", true);
+            let names: Vec<String> = (0..fillers).map(|i| format!("f{i}")).collect();
+            for filler in &names {
+                builder = builder.prop(filler, true);
+            }
+            builder.build()
+        };
+        let pooled_cls = wide("PooledTraceNode", 600);
+        let run_cls = wide("RunTraceNode", 4_200);
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        unsafe {
+            let a = new_constructed(&mut ctx, pooled_cls, MemoryCategory::GcHeap);
+            let b = new_constructed(&mut ctx, run_cls, MemoryCategory::GcHeap);
+            let kind_of = |o: *mut Object| {
+                *(((o as usize) & !crate::memory::block_pool::BLOCK_MASK) as *const u32)
+            };
+            assert_eq!(
+                kind_of(a),
+                crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE
+            );
+            assert_eq!(
+                kind_of(b),
+                crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN
+            );
+
+            let run_block = (b as usize) & !crate::memory::block_pool::BLOCK_MASK;
+            link(&mut arena, a, 16, b);
+            link(&mut arena, b, 16, a);
+            assert!(!ll_release(a as *mut RcHeader));
+            assert!(!ll_release(b as *mut RcHeader));
+
+            assert_eq!(collect_cycles(), 2, "the ring is garbage here too");
+            assert!(
+                !crate::memory::large_entity::snapshot().contains(&run_block),
+                "and the run's registry entry went with it"
+            );
+        }
+        arena.reset(|_| {});
+    }
+
     /// A cyclic garbage holder that referenced an arena object still
     /// owes it a `lose`. The trace never sees arena entities — only the
     /// heap is traced — so freeing the white set has to drop those

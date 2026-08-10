@@ -1047,6 +1047,73 @@ mod tests {
         }
     }
 
+    /// A class whose instance no size class serves: one counted `child`
+    /// slot at +16 and `fillers` more, all Boxed and left null, so the
+    /// only edge is the one the ring ties.
+    fn wide_ring_class(name: &str, fillers: usize) -> *const crate::class::Class {
+        let mut builder = ClassBuilder::new(name)
+            .prop("child", true)
+            .destructor(counting_destructor as *const ());
+        let names: Vec<String> = (0..fillers).map(|i| format!("f{i}")).collect();
+        for filler in &names {
+            builder = builder.prop(filler, true);
+        }
+        builder.build()
+    }
+
+    /// A ring whose two nodes are both too large for any size class, one
+    /// in each half of the population: a pooled block of its own, which
+    /// the region scan reaches, and an OS-direct run, which no region
+    /// contains and only `large_entity`'s registry names. The walk has to
+    /// find both, and it has to count one slot in each — a stride would
+    /// read rows out of the nodes' own cells.
+    #[test]
+    fn a_cycle_through_large_entities_is_walked_and_collected() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let pooled_cls = wide_ring_class("PooledRingNode", 600);
+        let run_cls = wide_ring_class("RunRingNode", 4_200);
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let a = unsafe { new_constructed(&mut ctx, pooled_cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, run_cls, MemoryCategory::GcHeap) };
+        unsafe {
+            let kind_of = |o: *mut Object| {
+                *(((o as usize) & !crate::memory::block_pool::BLOCK_MASK) as *const u32)
+            };
+            assert_eq!(
+                kind_of(a),
+                crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE,
+                "the smaller node is a pooled block of its own"
+            );
+            assert_eq!(
+                kind_of(b),
+                crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN,
+                "and the larger one is a run"
+            );
+            tie(a, 16, b);
+            tie(b, 16, a);
+        }
+
+        let seen = walked_addresses();
+        assert!(
+            seen.contains(&(a as usize)) && seen.contains(&(b as usize)),
+            "both halves of the population are enumerated"
+        );
+
+        let stats = unsafe { collect_cycles() };
+        assert!(stats.collected >= 2, "the ring is garbage");
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            2,
+            "__destruct ran for both"
+        );
+        let after = walked_addresses();
+        assert!(!after.contains(&(a as usize)) && !after.contains(&(b as usize)));
+        arena.reset(|_| {});
+    }
+
     /// A pure two-object ring with no external references is exactly what
     /// no refcount path can reclaim — and the whole of this collector's
     /// job. No candidate buffer is involved: the walk finds it from the

@@ -78,7 +78,13 @@
 //! buffer chunks ride it: a dropped 16-byte chunk record leaves `live`
 //! above zero on its block forever, and a block never empties, so it
 //! bounces between the abandoned list and its adopters instead of going
-//! home. One record can therefore pin 64 KiB.
+//! home. One record can therefore pin 64 KiB — and a large-entity run
+//! raises that ceiling to the run's own size, which the class decides:
+//! 192 KiB for the ten-thousand-property instance
+//! `rfc/model/memory/large-entities.md` measures, 3.2 MB for the
+//! 200 000-property one, unbounded in general. A dropped run record also
+//! keeps its registry entry, so the collector walks it once per epoch
+//! for the life of the process.
 //!
 //! Two obligations on the epoch protocol (build step 3, commit 4):
 //! the collector must **publish the flag through a handshake before

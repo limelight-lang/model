@@ -340,7 +340,7 @@ walk cannot be tested before there is something to walk.
         until S11.7. Gate: rc-walk 412 ×3, rc-trace 398 ×3, hash-folding
         412, `debug-journal` 418 ×3 and 404 ×3, both release builds,
         `fmt --check` clean, no warnings.
-- [ ] S11.6 The walk reaches a large entity
+- [x] S11.6 The walk reaches a large entity
       done: both enumerators admit the new kinds — the pooled half by the
         region scan, runs from the registry — with one slot per block and
         the entity's size where a size class would be; `deferred_free`
@@ -349,6 +349,35 @@ walk cannot be tested before there is something to walk.
         configurations, and a large entity freed during an epoch is not
         recycled until the flush
       tier: T2 · role: Critic
+      Critic 2026-08-10: the concurrent enumerator's two new arms were
+        shipped unexecuted — every epoch test builds two-property classes,
+        and the step's own "both configurations" criterion was satisfiable
+        through `walk::collect_cycles` alone, which compiles in both and
+        uses the *other* enumerator. Also: the restated leak bound
+        attributed a 200 000-property figure to the ten-thousand-property
+        instance (rule 0, in a number); `EntityBlockSnapshot`'s field docs
+        still described two populations, with the trap formula
+        `BLOCK_PAYLOAD / class_size` two lines under the new arm;
+        `describe_slot` read a size class and a bump cursor out of a
+        `LargeEntityHeader`, telling a diagnosing engineer the entity is
+        unreachable at the moment the walk reaches it; the rc-trace test
+        asserted emptiness on a process-global registry, the pattern the
+        previous step already rejected; and `large_entity::snapshot`'s doc
+        did not say that its addresses are the first in either enumerator
+        whose memory can be **unmapped**. All accepted. Left standing and
+        named: `Heap::refill` publishes its kind word with a plain struct
+        store under `rc-walk`, which is the race `commission` was
+        rewritten to avoid — a formal-UB fix whose regression test is the
+        Miri run, so it goes with S11.7.
+      handoff: three tests carry the two arms — the ring in `walk.rs` for
+        the synchronous walk, `the_epoch_snapshot_reaches_both_halves_of_a_large_entity_ring`
+        in `collector.rs` for the concurrent one, which reads
+        `snapshot_entity_blocks` directly and asserts `slots == 1`, and
+        `a_run_freed_mid_epoch_is_still_addressable_when_the_snapshot_reads_it`
+        for the parking contract. The walk test was seen failing with both
+        arms removed. Gate: rc-walk 415 ×3, rc-trace 400 ×3, hash-folding
+        415, `debug-journal` 421 ×3 and 406 ×3, both release builds,
+        `fmt --check` clean, no warnings.
 - [ ] S11.7 The request arena's door and the reset
       done: an arena entity past one block payload is allocated through
         the arena's own entity door and logged as a run, while
@@ -359,7 +388,11 @@ walk cannot be tested before there is something to walk.
         freed by the reset; and the first of those four rules has a test,
         since its absence is silent. **The stage's Miri run belongs
         here**, over the modules S11.5–S11.7 touched, one submodule at a
-        time under a `timeout` (`dev/WORKFLOW.md`)
+        time under a `timeout` (`dev/WORKFLOW.md`) — and with it the one
+        defect S11.6 named and left: `Heap::refill` publishes its block
+        kind with a plain struct store while the collector loads that word
+        with an acquire, which is a data race by the model and the reason
+        `large_entity::commission` writes its header field by field
       tier: T2 · role: Critic
 - [ ] S11.8 The documents that move with it
       done: `docs/memory-manager.md`'s closing list of what is not

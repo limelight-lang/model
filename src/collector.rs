@@ -668,6 +668,132 @@ mod tests {
         }
     }
 
+    /// A class whose instance no size class serves: one counted `child`
+    /// slot at +16, `fillers` more left null, and the counting
+    /// destructor every ring test here uses.
+    fn wide_class(name: &str, fillers: usize) -> *const crate::class::Class {
+        let mut builder = ClassBuilder::new(name)
+            .prop("child", true)
+            .destructor(counting_destructor as *const ());
+        let names: Vec<String> = (0..fillers).map(|i| format!("f{i}")).collect();
+        for filler in &names {
+            builder = builder.prop(filler, true);
+        }
+        builder.build()
+    }
+
+    /// The epoch's own snapshot reaches a large entity, which is a
+    /// different question from the synchronous walk reaching one: this is
+    /// the arm that runs on the collector thread, and the rows it builds
+    /// are what `census_row` divides. Both halves of the population are
+    /// here — a pooled block found by the region scan, an OS-direct run
+    /// found only in the registry — and each contributes **one** slot.
+    /// A stride would fabricate rows out of the objects' own cells, and
+    /// fabricated edges can balance a live component into collection.
+    #[test]
+    fn the_epoch_snapshot_reaches_both_halves_of_a_large_entity_ring() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let a = unsafe {
+            new_constructed(
+                &mut ctx,
+                wide_class("EpochPooled", 600),
+                MemoryCategory::GcHeap,
+            )
+        };
+        let b = unsafe {
+            new_constructed(
+                &mut ctx,
+                wide_class("EpochRun", 4_200),
+                MemoryCategory::GcHeap,
+            )
+        };
+        unsafe {
+            tie(a, 16, b);
+            tie(b, 16, a);
+        }
+
+        // The snapshot the epoch will take, read directly: one row per
+        // object, at the object's own address, one slot wide.
+        let rows = crate::memory::heap::snapshot_entity_blocks();
+        for &entity in &[a as usize, b as usize] {
+            let row = rows
+                .iter()
+                .find(|r| r.payload == entity)
+                .expect("a large entity is missing from the epoch's snapshot");
+            assert_eq!(row.slots, 1, "one occupant, whatever its size");
+            assert!(
+                row.index.is_none(),
+                "and it is found by address, not by index"
+            );
+        }
+
+        let first = stepped_epoch();
+        assert!(first.stamped_new >= 2, "creation epoch: allocate-black");
+        assert_eq!(first.confirmed, 0);
+
+        let second = stepped_epoch();
+        assert_eq!(
+            second.confirmed, 1,
+            "the ring is one confirmed component, across both halves"
+        );
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2);
+        let seen = walked_addresses();
+        assert!(!seen.contains(&(a as usize)) && !seen.contains(&(b as usize)));
+        arena.reset(|_| {});
+    }
+
+    /// A run freed while an epoch is in flight stays addressable until
+    /// the flush, which is the whole reason both large-entity kinds park:
+    /// its memory is **unmapped** at the real free, and the snapshot
+    /// dereferences every registered address. The corpse reads refcount 0
+    /// and takes no row — what is being tested is that reading it is
+    /// sound at all.
+    #[test]
+    fn a_run_freed_mid_epoch_is_still_addressable_when_the_snapshot_reads_it() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let obj = unsafe {
+            new_constructed(
+                &mut ctx,
+                wide_class("EpochDying", 4_200),
+                MemoryCategory::GcHeap,
+            )
+        };
+        let block = (obj as usize) & !crate::memory::block_pool::BLOCK_MASK;
+        assert!(crate::memory::large_entity::snapshot().contains(&block));
+
+        let mut e = Epoch::open();
+        checkpoint();
+        unsafe {
+            assert!(ll_release(obj as *mut RcHeader));
+            crate::object::ll_entity_die(obj as *mut RcHeader);
+        }
+        assert!(
+            crate::memory::large_entity::snapshot().contains(&block),
+            "the free parked, so the run is still registered and still mapped"
+        );
+
+        e.snapshot();
+        e.walk();
+        e.judge();
+        assert_eq!(e.stats.candidates, 0, "a corpse is no candidate");
+        let _ = e.close();
+        checkpoint();
+
+        assert!(
+            !crate::memory::large_entity::snapshot().contains(&block),
+            "and the flush gives the run back"
+        );
+        arena.reset(|_| {});
+    }
+
     /// F3 made concrete: a ring created before its first epoch is
     /// stamped new there (allocate-black) and collected only by the
     /// second epoch — destructors, memory and all.
