@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering, fence};
 use crate::array::entry::{Entry, MAX_ENTRIES, NONE};
 use crate::memory::block_pool::BLOCK_PAYLOAD;
 use crate::refcount::{MemoryCategory, RcHeader};
-use crate::string::LLString;
+use crate::string::{LLString, string_bytes};
 use crate::value::Value;
 
 /// A key as the table sees it: the language's `int|string`, already
@@ -643,7 +643,7 @@ impl Table {
             }
             Key::Str(s) => {
                 if self.flags & TABLE_STRONG != 0 {
-                    strong_hash(unsafe { LLString::bytes(s) }, self.salt)
+                    strong_hash(unsafe { string_bytes(s) }, self.salt)
                 } else {
                     unsafe { LLString::hash(s) }
                 }
@@ -662,7 +662,7 @@ impl Table {
                 e.hash_or_key
             }
         } else if self.flags & TABLE_STRONG != 0 {
-            strong_hash(unsafe { LLString::bytes(e.key) }, self.salt)
+            strong_hash(unsafe { string_bytes(e.key) }, self.salt)
         } else {
             e.hash_or_key
         }
@@ -684,8 +684,7 @@ impl Table {
                     return false;
                 }
                 let want = unsafe { LLString::hash(s) };
-                e.hash_or_key == want
-                    && (k == s || unsafe { LLString::bytes(k) == LLString::bytes(s) })
+                e.hash_or_key == want && (k == s || unsafe { string_bytes(k) == string_bytes(s) })
             }
         }
     }
@@ -1687,6 +1686,56 @@ mod tests {
             );
         }
         assert!(m.get(Key::Str(mk(b"absent"))).is_none());
+    }
+
+    /// The same, with a key past what the heap packs in one slot. Such a
+    /// key is out of line, so every comparison has to reach its bytes
+    /// through the layout-agnostic accessor: the inline one would build a
+    /// 16 KiB slice over a 32-byte entity, comparing the payload pointer
+    /// and whatever follows it, and a key that is present would read as
+    /// absent.
+    #[test]
+    fn an_oversize_string_key_is_matched_by_content() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        let content = vec![b'k'; crate::memory::heap::MAX_SMALL * 2];
+        let stored = mk(&content);
+        assert_ne!(
+            unsafe { crate::refcount::header_flags(stored as *const crate::refcount::RcHeader) }
+                & crate::refcount::STRING_OUT_OF_LINE,
+            0,
+            "the key is out of line, or this test proves nothing"
+        );
+        m.insert(Key::Str(stored), Value::int(9));
+
+        let other = mk(&content);
+        assert_ne!(other, stored, "a second entity with the same bytes");
+        assert_eq!(
+            m.get(Key::Str(other)).unwrap().as_int(),
+            9,
+            "an equal oversize key finds the element"
+        );
+
+        let mut different = content.clone();
+        *different.last_mut().unwrap() = b'x';
+        let absent = mk(&different);
+        assert!(
+            m.get(Key::Str(absent)).is_none(),
+            "and one that differs in its last byte does not"
+        );
+
+        // Unlike the small-key tests above, these three own payloads in
+        // the buffer arena, and a leaked payload is not local to this
+        // test: the block-adoption tests read the same thread's arena and
+        // assume nothing is holding a block open.
+        unsafe {
+            for s in [stored, other, absent] {
+                // Down to zero before the kill, whatever the table's
+                // insert took: the free path asserts a dead header.
+                while !crate::refcount::ll_release(s as *mut crate::refcount::RcHeader) {}
+                crate::string::string_die(s);
+            }
+        }
     }
 
     #[test]

@@ -1,14 +1,23 @@
 //! The string entity: `RcHeader | len | hash | bytes`, one allocation,
 //! bytes inline after the fixed fields (`rfc/model/strings.md`).
 //!
-//! This is the **inline** layout, `COW = 1` — the default form and the
-//! only one the crate produces so far. The dynamic layout (`COW = 0`,
-//! bytes out of line with spare capacity) shares `len` at +8 and `hash`
+//! This is the **inline** layout, the default form. The dynamic layout
+//! (bytes out of line with spare capacity) shares `len` at +8 and `hash`
 //! at +16 so that neither read has to decide which layout it is looking
-//! at; only byte access and teardown branch. Nothing promotes between
-//! the two at run time: the compiler picks one at allocation, and moving
-//! between them would rewrite the body under a header the collector may
-//! be reading.
+//! at; only byte access and teardown branch. Which layout a string has is
+//! the header flag [`STRING_OUT_OF_LINE`], and nothing promotes between
+//! the two at run time: it is chosen at allocation, and moving between
+//! them would rewrite the body under a header the collector may be
+//! reading.
+//!
+//! **Layout and copy-on-write are two facts, and the header keeps two
+//! bits.** [`COW`] says the value separates when a second holder writes,
+//! which is also what makes an arena entity counted and what makes it
+//! copied rather than held when it escapes. Out-of-line bytes arrive two
+//! ways: from a compiler proof of single ownership, where `COW` is clear
+//! and writes go in place, and from **size**, where the content exceeds
+//! what the category's allocator packs in one slot and the string is
+//! copy-on-write like any other (`rfc/model/memory/large-entities.md`).
 //!
 //! `len` is 32 bits, so a string holds at most [`MAX_LEN`] bytes. Every
 //! path that creates or grows one passes through [`fits`]: a length
@@ -25,7 +34,9 @@ use crate::hash::hash_bytes;
 use crate::journal::kinds::journal_event;
 use crate::memory::buffer::Buffer;
 use crate::memory::context::LLContext;
-use crate::refcount::{COW, EntityKind, MemoryCategory, RcHeader, publish_header};
+use crate::refcount::{
+    COW, EntityKind, MemoryCategory, RcHeader, STRING_OUT_OF_LINE, publish_header,
+};
 
 /// The most bytes a string can hold: `len` is a `u32`
 /// (`rfc/dev/DECISIONS.md`, 2026-08-04). Language-visible — a program
@@ -164,7 +175,7 @@ impl LLStringDynamic {
 /// `s` must be a live string entity, and must outlive the slice.
 #[inline]
 pub unsafe fn string_bytes<'a>(s: *const LLString) -> &'a [u8] {
-    if unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW != 0 {
+    if unsafe { crate::refcount::header_flags(s as *const RcHeader) } & STRING_OUT_OF_LINE == 0 {
         unsafe { LLString::bytes(s) }
     } else {
         unsafe { LLStringDynamic::bytes(s as *const LLStringDynamic) }
@@ -227,15 +238,21 @@ pub(crate) unsafe fn init_at(
     s
 }
 
-/// Reserve an inline string of exactly `len` bytes and hand back its
-/// **memory**, for a caller that assembles the content in place instead
+/// Reserve a string of exactly `len` bytes and hand back **where to
+/// write it**, for a caller that assembles the content in place instead
 /// of copying a finished buffer in. Not an entity yet: the header is
 /// unpublished, so nothing can reach it.
 ///
-/// Null when the allocation fails or `len` is over [`MAX_LEN`]. Write all
-/// `len` bytes at `mem + size_of::<LLString>()`, then call
-/// [`publish_uninit`] to make it a string. Between the two calls the
-/// memory belongs to the caller alone.
+/// The layout is chosen here by the same rule the copying factory uses,
+/// so the destination is [`Reserved::bytes`] rather than a fixed offset.
+/// Write all `len` bytes there, then call [`publish_uninit`] to make it a
+/// string. Between the two calls the memory belongs to the caller alone.
+///
+/// **Refused** when the allocation fails or `len` is over [`MAX_LEN`],
+/// which [`Reserved::is_null`] reports. A payload that fails after the
+/// entity slot was taken leaves that slot where it is — in the arena it
+/// dies with the reset, in the heap it stays out of circulation until the
+/// thread ends, the same shape every other factory has on refusal.
 ///
 /// # Safety
 /// `ctx` per [`crate::memory::context::ll_arena_alloc`].
@@ -243,17 +260,83 @@ pub(crate) unsafe fn new_uninit(
     ctx: *mut LLContext,
     category: MemoryCategory,
     len: usize,
-) -> *mut u8 {
+) -> Reserved {
     if !fits(len) {
-        return std::ptr::null_mut();
+        return Reserved::refused();
     }
     let size = size_of::<LLString>() + len;
+    // The same size choice the copying factory makes, for the same
+    // reason: past one slot the inline layout has nowhere to go. The
+    // caller sees only where to write, which is what [`Reserved::bytes`]
+    // answers for either layout.
+    if size > crate::memory::routing::slot_limit(category)
+        && matches!(
+            category,
+            MemoryCategory::GcHeap | MemoryCategory::RequestArena
+        )
+    {
+        let mem = unsafe {
+            crate::memory::routing::entity_alloc_in(ctx, category, size_of::<LLStringDynamic>())
+        };
+        if mem.is_null() {
+            return Reserved::refused();
+        }
+        let mut payload = Buffer::new();
+        if !unsafe { grow_payload(ctx, category, &mut payload, len, 0) } {
+            return Reserved::refused();
+        }
+        let s = mem as *mut LLStringDynamic;
+        unsafe {
+            (&raw mut (*s).len).write(len as u32);
+            (&raw mut (*s).capacity).write(stored_capacity(payload.capacity));
+            (&raw mut (*s).data).write(payload.data);
+        }
+        return Reserved {
+            entity: mem,
+            bytes: payload.data,
+            out_of_line: true,
+        };
+    }
     let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     if mem.is_null() {
-        return std::ptr::null_mut();
+        return Reserved::refused();
     }
     unsafe { (&raw mut (*(mem as *mut LLString)).len).write(len as u32) };
-    mem
+    Reserved {
+        entity: mem,
+        bytes: unsafe { mem.add(size_of::<LLString>()) },
+        out_of_line: false,
+    }
+}
+
+/// A string reserved by [`new_uninit`] and not yet an entity: its header
+/// is unpublished, so nothing can reach it, and the bytes are the
+/// caller's to fill exactly once.
+pub(crate) struct Reserved {
+    entity: *mut u8,
+    bytes: *mut u8,
+    out_of_line: bool,
+}
+
+impl Reserved {
+    fn refused() -> Self {
+        Reserved {
+            entity: std::ptr::null_mut(),
+            bytes: std::ptr::null_mut(),
+            out_of_line: false,
+        }
+    }
+
+    /// True when the reservation failed and nothing was allocated.
+    pub(crate) fn is_null(&self) -> bool {
+        self.entity.is_null()
+    }
+
+    /// Where the `len` bytes go: after the fixed fields for the inline
+    /// layout, in the payload for the out-of-line one.
+    pub(crate) fn bytes(&self) -> *mut u8 {
+        self.bytes
+    }
 }
 
 /// Turn filled [`new_uninit`] memory into a live string: hash it when the
@@ -263,26 +346,31 @@ pub(crate) unsafe fn new_uninit(
 /// that are not yet written.
 ///
 /// # Safety
-/// `mem` came from [`new_uninit`] on this thread with the same
-/// `category`, and every one of its bytes has been written exactly once
-/// since.
-pub(crate) unsafe fn publish_uninit(mem: *mut u8, category: MemoryCategory) -> *mut LLString {
-    let s = mem as *mut LLString;
+/// `r` came from [`new_uninit`] on this thread with the same `category`,
+/// was not refused, and every one of its bytes has been written exactly
+/// once since.
+pub(crate) unsafe fn publish_uninit(r: Reserved, category: MemoryCategory) -> *mut LLString {
+    let s = r.entity as *mut LLString;
     let shared = matches!(
         category,
         MemoryCategory::Immortal | MemoryCategory::LongLived
     );
+    let layout = if r.out_of_line { STRING_OUT_OF_LINE } else { 0 };
     unsafe {
         let len = (*s).len as usize;
+        // From the fill pointer rather than from the entity: the two
+        // coincide only in the inline layout, and a shared category is
+        // never out of line — reading past the fixed fields there would
+        // hash the `data` pointer.
         let hash = if shared {
-            hash_bytes(std::slice::from_raw_parts(s.add(1) as *const u8, len))
+            hash_bytes(std::slice::from_raw_parts(r.bytes as *const u8, len))
         } else {
             0
         };
         (&raw mut (*s).hash).write(hash);
         publish_header(
             s as *mut RcHeader,
-            RcHeader::new(category, COW | EntityKind::String.to_flags()),
+            RcHeader::new(category, COW | EntityKind::String.to_flags() | layout),
         );
     }
     s
@@ -320,6 +408,31 @@ pub(crate) unsafe fn new_with_hash(
         return std::ptr::null_mut();
     }
     let size = size_of::<LLString>() + bytes.len();
+    // Past what the category's allocator packs in one slot the inline
+    // layout has nowhere to go: it would be refused, and before the
+    // refusal existed it took a whole block of its own or left the walk.
+    // The dynamic layout is a fixed 32-byte slot and a right-sized
+    // payload, so the same content fits — and it keeps `COW`, because
+    // only the layout changed and the value semantics did not.
+    if size > crate::memory::routing::slot_limit(category) {
+        match category {
+            MemoryCategory::GcHeap | MemoryCategory::RequestArena => {
+                return unsafe { new_out_of_line(ctx, category, bytes, 0, hash, COW) }
+                    as *mut LLString;
+            }
+            // Refused here rather than left to the allocator's own bound,
+            // because that bound is lifted for the immortal region once a
+            // large entity has a shape (`rfc/model/memory/large-entities.md`)
+            // and this refusal must survive the lift: nothing reclaims a
+            // long-lived payload, so a long-lived string has no
+            // out-of-line form until the reclamation policy exists
+            // (`rfc/model/strings.md`).
+            MemoryCategory::LongLived => return std::ptr::null_mut(),
+            // The immortal region keeps the inline layout whole, in the
+            // block-aligned run its allocator already serves.
+            MemoryCategory::Immortal => {}
+        }
+    }
     let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     if mem.is_null() {
         return std::ptr::null_mut();
@@ -380,8 +493,8 @@ pub(crate) unsafe fn new_with_hash(
 /// next read.
 ///
 /// # Safety
-/// `s` must be a live **inline** string; `ctx` per
-/// [`crate::memory::context::ll_arena_alloc`].
+/// `s` must be a live **copy-on-write** string of either layout; `ctx`
+/// per [`crate::memory::context::ll_arena_alloc`].
 pub unsafe fn separate(
     ctx: *mut LLContext,
     owner_cat: MemoryCategory,
@@ -390,9 +503,12 @@ pub unsafe fn separate(
     debug_assert_ne!(
         unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW,
         0,
-        "a dynamic string is outside the COW rule and writes in place"
+        "a non-COW string is outside the COW rule and writes in place"
     );
-    let bytes = unsafe { LLString::bytes(s) };
+    // Through the layout-agnostic accessor, because a string is out of
+    // line by size as well as by proof: taking the inline accessor on one
+    // would copy the `data` pointer and the bytes after it.
+    let bytes = unsafe { string_bytes(s) };
     unsafe {
         new_with_hash(
             ctx,
@@ -445,6 +561,40 @@ pub unsafe fn ll_string_new_dynamic(
     ) {
         return std::ptr::null_mut();
     }
+    unsafe { new_out_of_line(ctx, category, bytes, hint, 0, 0) }
+}
+
+/// The out-of-line form, whichever reason it has: `extra_flags` is `COW`
+/// for a string that is out of line because its content did not fit one
+/// slot, and empty for the proved-single-owner form [`ll_string_new_dynamic`]
+/// builds. `hash` is stored as given; zero leaves it lazy.
+///
+/// **Null** on either allocation failing, leaving nothing half-built.
+///
+/// # Safety
+/// `ctx` per [`crate::memory::context::ll_arena_alloc`]; `bytes.len()`
+/// must have passed [`fits`], and `category` must be one the payload
+/// machinery serves — `GcHeap` or `RequestArena`.
+unsafe fn new_out_of_line(
+    ctx: *mut LLContext,
+    category: MemoryCategory,
+    bytes: &[u8],
+    hint: usize,
+    hash: u64,
+    extra_flags: u32,
+) -> *mut LLStringDynamic {
+    debug_assert!(fits(bytes.len()));
+    debug_assert!(matches!(
+        category,
+        MemoryCategory::GcHeap | MemoryCategory::RequestArena
+    ));
+    // The same trust check [`init_at`] makes, for the same reason: a hash
+    // this build does not produce writes a string nothing finds by
+    // content, and this is the other place both operands exist at once.
+    debug_assert!(
+        hash == 0 || hash == hash_bytes(bytes),
+        "new_out_of_line was given a hash this build does not compute"
+    );
     let mem = unsafe {
         crate::memory::routing::entity_alloc_in(ctx, category, size_of::<LLStringDynamic>())
     };
@@ -472,11 +622,14 @@ pub unsafe fn ll_string_new_dynamic(
     unsafe {
         (&raw mut (*s).len).write(bytes.len() as u32);
         (&raw mut (*s).capacity).write(stored_capacity(payload.capacity));
-        (&raw mut (*s).hash).write(0);
+        (&raw mut (*s).hash).write(hash);
         (&raw mut (*s).data).write(payload.data);
         publish_header(
             s as *mut RcHeader,
-            RcHeader::new(category, EntityKind::String.to_flags()),
+            RcHeader::new(
+                category,
+                EntityKind::String.to_flags() | STRING_OUT_OF_LINE | extra_flags,
+            ),
         );
     }
     s
@@ -516,9 +669,12 @@ unsafe fn grow_payload(
     unsafe { crate::memory::routing::body_ensure(ctx, category, payload, min_capacity, hint) }
 }
 
-/// Append to a dynamic string, in place — no sharing test, no copy: the
-/// non-COW form is the one the compiler allocated because it proved a
-/// single owner (`rfc/model/strings.md`).
+/// Append to an out-of-line string, in place. No sharing test is made
+/// here, and the two callers earn that differently: the non-COW form is
+/// the one the compiler allocated because it proved a single owner
+/// (`rfc/model/strings.md`), and a copy-on-write string reaches this
+/// only through `ll_cow_separate`, which has already given the writer a
+/// sole-owner entity.
 ///
 /// The cached hash is cleared, which is this function's job rather than
 /// the payload's: after this the bytes are different, and nothing
@@ -528,13 +684,28 @@ unsafe fn grow_payload(
 /// with the string exactly as it was.
 ///
 /// # Safety
-/// `s` must be a live dynamic string; `ctx` per
-/// [`crate::memory::context::ll_arena_alloc`].
+/// `s` must be a live out-of-line string that this writer owns alone;
+/// `ctx` per [`crate::memory::context::ll_arena_alloc`].
 pub unsafe fn ll_string_append(ctx: *mut LLContext, s: *mut LLStringDynamic, extra: &[u8]) -> bool {
-    debug_assert_eq!(
-        unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW,
+    let flags = unsafe { crate::refcount::header_flags(s as *const RcHeader) };
+    debug_assert_ne!(
+        flags & STRING_OUT_OF_LINE,
         0,
-        "an inline string separates instead of appending"
+        "an inline string has no spare capacity to append into"
+    );
+    // Out of line no longer implies sole ownership: a string is also out
+    // of line because its content did not fit one slot, and that one is
+    // copy-on-write. Writing into a shared one in place is the language
+    // break the barrier exists to prevent, so the ownership half of the
+    // contract is asserted rather than assumed — through the barrier's
+    // own predicate, because "count is 1" is not the test: retain and
+    // release no-op on an immortal entity, which therefore reads 1
+    // forever while being the most shared thing in the process.
+    debug_assert!(
+        !crate::refcount::cow_separation_needed(flags, unsafe {
+            crate::refcount::header_refcount(s as *mut RcHeader)
+        }),
+        "a shared copy-on-write string separates before it is appended to"
     );
     if extra.is_empty() {
         return true;
@@ -642,7 +813,8 @@ pub(crate) unsafe fn string_die(s: *mut LLString) {
         0
     );
     let owner_cat = unsafe { crate::object::header_category(s as *const RcHeader) };
-    let inline = unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW != 0;
+    let inline =
+        unsafe { crate::refcount::header_flags(s as *const RcHeader) } & STRING_OUT_OF_LINE == 0;
     if !inline && owner_cat != MemoryCategory::RequestArena {
         let d = s as *mut LLStringDynamic;
         let (data, capacity) = unsafe { ((*d).data, (*d).capacity as usize) };
@@ -700,7 +872,11 @@ mod tests {
         let rc = unsafe { &(*s).rc };
         assert_eq!(rc.refcount, 1);
         assert_eq!(rc.flags & ENTITY_KIND_MASK, EntityKind::String.to_flags());
-        assert_ne!(rc.flags & COW, 0, "the inline layout is the COW form");
+        assert_ne!(
+            rc.flags & COW,
+            0,
+            "the ordinary factory builds the COW form"
+        );
         assert_eq!(rc.memory_category(), MemoryCategory::GcHeap);
         assert_eq!(unsafe { LLString::bytes(s) }, b"hello");
         assert_eq!(unsafe { (*s).len }, 5);
@@ -1047,10 +1223,9 @@ mod tests {
 
     /// The two branches no entity in the crate can currently reach, so
     /// they are checked on the predicate rather than on a fabricated
-    /// header: flipping `COW` on a live string would break the design's
-    /// central invariant (the flag is the layout, set at allocation and
-    /// never changed) and, under `rc-walk`, race the collector's byte
-    /// stores.
+    /// header: flipping `COW` on a live string would change its value
+    /// semantics under holders that already have it and, under
+    /// `rc-walk`, race the collector's byte stores.
     ///
     /// **`IS_ESCAPEE`**: no longer an arm of the rule (2026-08-04). The
     /// store barrier copies a COW value out of the arena rather than
@@ -1060,7 +1235,9 @@ mod tests {
     /// produced:
     /// `barrier::tests::a_cow_value_leaving_the_arena_is_copied_rather_than_counted`.
     ///
-    /// **`COW = 0`**: the dynamic layout has no constructor yet.
+    /// **`COW = 0`**: the form the compiler allocates for a proved single
+    /// owner, which `ll_string_new_dynamic` builds and no lowering emits
+    /// yet.
     #[test]
     fn the_rule_reads_the_flag_before_the_category_and_the_count() {
         use crate::refcount::{IS_ESCAPEE, cow_separation_needed};
@@ -1119,7 +1296,17 @@ mod tests {
 
         let rc = unsafe { &(*s).rc };
         assert_eq!(rc.flags & ENTITY_KIND_MASK, EntityKind::String.to_flags());
-        assert_eq!(rc.flags & COW, 0, "the dynamic layout is the non-COW form");
+        assert_ne!(
+            rc.flags & STRING_OUT_OF_LINE,
+            0,
+            "the layout is its own bit"
+        );
+        assert_eq!(
+            rc.flags & COW,
+            0,
+            "and this factory builds the proved-single-owner form, which \
+             is the non-COW one"
+        );
         assert_eq!(unsafe { LLStringDynamic::bytes(s) }, b"grows");
         assert_eq!(
             unsafe { string_bytes(s as *const LLString) },
@@ -1186,6 +1373,203 @@ mod tests {
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
         arena.reset(|_| {});
+    }
+
+    /// Past what the heap's size classes pack, a string is built out of
+    /// line and **stays copy-on-write**: the layout is a bit of its own,
+    /// so a string dynamic by size keeps the semantics an inline one has
+    /// (`rfc/model/memory/large-entities.md`). Before that split the
+    /// factory had no third option and refused.
+    #[test]
+    fn a_heap_string_past_the_size_class_is_out_of_line_and_still_cow() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let big = vec![b'x'; crate::memory::heap::MAX_SMALL];
+        let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, &big) };
+        assert!(!s.is_null(), "an oversize string is served, not refused");
+
+        let flags = unsafe { crate::refcount::header_flags(s as *const RcHeader) };
+        assert_ne!(
+            flags & crate::refcount::STRING_OUT_OF_LINE,
+            0,
+            "the bytes did not fit one slot, so they are out of line"
+        );
+        assert_ne!(flags & COW, 0, "and it is copy-on-write all the same");
+        assert_eq!(unsafe { string_bytes(s) }, &big[..]);
+
+        unsafe {
+            assert!(ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// Where the choice happens, pinned from both sides: the largest
+    /// content one slot holds stays inline, and one byte more does not.
+    /// A field added to `LLString` moves that line, and no other test
+    /// would notice.
+    #[test]
+    fn the_layout_switches_at_the_slot_limit_and_not_a_byte_earlier() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        // From the bound the factory compares against, not from the size
+        // class that happens to equal it today.
+        let last_inline =
+            crate::memory::routing::slot_limit(MemoryCategory::GcHeap) - size_of::<LLString>();
+
+        let s =
+            unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, &vec![b'a'; last_inline]) };
+        assert!(!s.is_null());
+        assert_eq!(
+            unsafe { crate::refcount::header_flags(s as *const RcHeader) }
+                & crate::refcount::STRING_OUT_OF_LINE,
+            0,
+            "exactly one slot's worth stays inline"
+        );
+        let big = unsafe {
+            ll_string_new(
+                &mut ctx,
+                MemoryCategory::GcHeap,
+                &vec![b'a'; last_inline + 1],
+            )
+        };
+        assert!(!big.is_null());
+        assert_ne!(
+            unsafe { crate::refcount::header_flags(big as *const RcHeader) }
+                & crate::refcount::STRING_OUT_OF_LINE,
+            0,
+            "and one byte more does not"
+        );
+
+        unsafe {
+            assert!(ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+            assert!(ll_release(big as *mut RcHeader));
+            crate::object::ll_entity_die(big as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The clause the layout split exists for: a second holder forces a
+    /// copy, and the copy is oversize too, so separation reaches the
+    /// size-choosing factory rather than the inline one.
+    #[test]
+    fn a_shared_oversize_string_separates_on_write() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let big = vec![b'y'; crate::memory::heap::MAX_SMALL * 2];
+        let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, &big) };
+        assert!(!s.is_null());
+        unsafe { crate::refcount::ll_retain(s as *mut RcHeader) };
+
+        let copy = unsafe {
+            crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, s as *mut RcHeader)
+        };
+        assert!(!copy.is_null());
+        assert_ne!(copy as usize, s as usize, "a shared COW string separates");
+        let copy_flags = unsafe { crate::refcount::header_flags(copy) };
+        assert_ne!(
+            copy_flags & crate::refcount::STRING_OUT_OF_LINE,
+            0,
+            "the copy is as oversize as the original"
+        );
+        assert_eq!(unsafe { string_bytes(copy as *const LLString) }, &big[..]);
+        assert_eq!(
+            unsafe { string_bytes(s) },
+            &big[..],
+            "and the other holder still reads the original"
+        );
+
+        unsafe {
+            assert!(ll_release(copy));
+            crate::object::ll_entity_die(copy);
+            assert!(!ll_release(s as *mut RcHeader));
+            assert!(ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// The arena's limit is a whole block payload rather than a size
+    /// class, and past it the same choice is made — with the counting a
+    /// COW arena entity gets, which the non-COW dynamic form does not.
+    #[test]
+    fn an_arena_string_past_a_block_payload_is_out_of_line_and_counted() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let big = vec![b'q'; crate::memory::block_pool::BLOCK_PAYLOAD];
+        let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::RequestArena, &big) };
+        assert!(!s.is_null(), "an oversize arena string is served");
+
+        let flags = unsafe { crate::refcount::header_flags(s as *const RcHeader) };
+        assert_ne!(flags & crate::refcount::STRING_OUT_OF_LINE, 0);
+        assert_ne!(flags & COW, 0);
+        assert_eq!(unsafe { string_bytes(s) }, &big[..]);
+
+        unsafe {
+            crate::refcount::ll_retain(s as *mut RcHeader);
+            assert_eq!(
+                crate::refcount::header_refcount(s as *mut RcHeader),
+                2,
+                "a COW arena string is counted, unlike the non-COW form, \
+                 whose retain is a no-op"
+            );
+            // Both verdicts are false whatever the count does: an arena
+            // entity is reclaimed by the reset, so no caller tears it down.
+            assert!(!ll_release(s as *mut RcHeader));
+            assert!(!ll_release(s as *mut RcHeader));
+            assert_eq!(crate::refcount::header_refcount(s as *mut RcHeader), 0);
+            string_die(s as *mut LLString);
+        }
+        arena.reset(|_| {});
+    }
+
+    /// A by-size arena string escaping into a longer-lived holder is a
+    /// COW entity, so the barrier copies it out rather than counting an
+    /// escape — and the copy is oversize too, so it lands out of line in
+    /// the heap.
+    #[test]
+    fn an_escaping_oversize_arena_string_is_copied_into_the_heap() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let big = vec![b'z'; crate::memory::block_pool::BLOCK_PAYLOAD];
+        let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::RequestArena, &big) };
+        assert!(!s.is_null());
+
+        let mut heap_slot: *mut RcHeader = std::ptr::null_mut();
+        unsafe {
+            assert!(crate::memory::barrier::store_ptr(
+                &raw mut arena,
+                MemoryCategory::GcHeap,
+                &raw mut heap_slot,
+                s as *mut RcHeader,
+            ));
+        }
+        assert_ne!(
+            heap_slot as usize, s as usize,
+            "a COW entity is copied out, never held"
+        );
+        let copy_flags = unsafe { crate::refcount::header_flags(heap_slot) };
+        assert_ne!(copy_flags & crate::refcount::STRING_OUT_OF_LINE, 0);
+        assert_ne!(copy_flags & COW, 0);
+        assert_eq!(
+            unsafe { crate::object::header_category(heap_slot) },
+            MemoryCategory::GcHeap
+        );
+        assert_eq!(
+            unsafe { string_bytes(heap_slot as *const LLString) },
+            &big[..]
+        );
+
+        unsafe {
+            crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, heap_slot);
+            crate::promote::arena_reset_full(&raw mut arena);
+        }
     }
 
     /// An arena dynamic string takes its payload from the arena, so the

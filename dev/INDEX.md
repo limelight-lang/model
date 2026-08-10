@@ -38,12 +38,19 @@ versions live in `docs/history/`, marked at the top.
   unspecified — is `dev/DECISIONS.md`, 2026-08-03. **Rule for anything
   new on that path:** no `thread_local!` it can reach may have drop
   glue.
-- Strings: `src/string.rs` — both layouts of the string entity (kind 1).
-  Inline (`COW = 1`): `RcHeader | len (u32) | hash (u64) | bytes`, one
-  allocation, fixed size, `ll_string_new`. Dynamic (`COW = 0`):
+- Strings: `src/string.rs` — both layouts of the string entity (kind 1),
+  told apart by `STRING_OUT_OF_LINE` (bit 15, string-scoped) rather than
+  by `COW`, which means only copy-on-write.
+  Inline: `RcHeader | len (u32) | hash (u64) | bytes`, one
+  allocation, fixed size, `ll_string_new`. Out of line:
   `… | capacity (u32) | … | data`, payload through the memory manager's
   buffer machinery, `ll_string_new_dynamic` and `ll_string_append`, heap
-  or request arena only. `len` at +8 and `hash` at +16 in both, so only
+  or request arena only. Two things put a string in the second layout: a
+  compiler proof of single ownership, which clears `COW` and lets an
+  append write in place, and **content past what the category packs in
+  one slot**, which keeps `COW` — `ll_string_new` and `new_uninit` make
+  that choice against `routing::slot_limit`
+  (`rfc/model/memory/large-entities.md`). `len` at +8 and `hash` at +16 in both, so only
   byte access and teardown branch — `string_bytes` is the accessor that
   does, and `LLString::hash` goes through it, since hashing the inline
   offset on a dynamic string would hash the payload's address.

@@ -21,7 +21,7 @@ use crate::array::entity::{LLArray, category_of, give_value_back, publish_key};
 use crate::array::table::Key;
 use crate::memory::context::LLContext;
 use crate::refcount::{MemoryCategory, RcHeader};
-use crate::string::LLString;
+use crate::string::{LLString, string_bytes};
 use crate::value::{Tag, Value};
 
 /// The separation composition every write here goes through: separate
@@ -643,7 +643,11 @@ unsafe fn remove_from(a: *mut LLArray, key: Key) {
 /// reference: key ownership starts where the key is stored
 /// (`Table::insert`'s contract), not here.
 pub unsafe fn canonical_key(s: *mut LLString) -> Key {
-    match canonical_int(unsafe { LLString::bytes(s) }) {
+    // Through the layout-agnostic accessor: a key is whatever the string
+    // factory produced, and past what its category packs in one slot that
+    // is the out-of-line layout, where the inline accessor would read the
+    // `data` pointer and the entity's neighbours as content.
+    match canonical_int(unsafe { string_bytes(s) }) {
         Some(n) => Key::Int(n),
         None => Key::Str(s),
     }

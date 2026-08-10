@@ -187,6 +187,11 @@ field is lent to):
   hold-count (see invariant 5);
 - bits 12–14, entity kind — written once at creation, dispatched on by
   `walk` and `ll_entity_die`;
+- bit 15, `STRING_OUT_OF_LINE` — **string entities only**: the bytes
+  live through `data` rather than inline. Shares the bit with the
+  candidate index below and never meets it, since that index is written
+  only for the kinds that can close a cycle and `string` is not one;
+  read by `string` and by `promote`'s survivor classification;
 - bits 15–31, the top of the word — **contested**: rc-trace stores the
   candidate index there (O(1) `forget_candidate`); rc-walk instead
   claims bits 16–23 as the epoch byte (bits 24–31 freed by the

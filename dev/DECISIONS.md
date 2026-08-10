@@ -8,6 +8,43 @@ never edited or deleted.
 
 ---
 
+## 2026-08-10 — a string's layout is its own header bit
+
+The Sage's, on a collision the stage's own design walked into. `COW`
+selected the string layout — set meant inline, clear meant bytes out of
+line — and it also decides three other things: whether a write separates
+(`cow_separation_needed`), whether an arena entity is counted at all
+(retain and release no-op on a non-COW arena entity), and whether an
+escaping arena entity is copied or held (`memory/barrier.rs`). A string
+whose content exceeds what its category's allocator packs in one slot has
+no inline home, so it must be out of line **and** copy-on-write, and one
+bit cannot say both. Building it in the existing dynamic form would have
+made a large string silently mutable under a second holder.
+
+The layout is `STRING_OUT_OF_LINE` now, bit 15, and `COW` means only
+copy-on-write. The bit is free on a string header in both builds: rc-trace
+writes the candidate index into bits 15-31 only for the kinds that can
+close a cycle, and `String` is not one, while rc-walk's epoch byte starts
+at 16. A kind-scoped bit follows `ARENA_RESET_MARK`, which borrows the
+GC-state field for arena entities the same way.
+
+What it bought: `ll_string_new` and `new_uninit` choose the layout
+against `routing::slot_limit`, so a 9 KiB heap string and a 64 KiB arena
+string are served instead of refused, and both keep the value semantics
+an inline string has. Priced with the ruling: a by-size arena string
+never survives a reset as itself, because a COW entity is copied out at
+escape — so the reset gained no rule, and `carry_payload_out_of` still
+sees only proved-single-owner survivors.
+
+Rejected, and not to be reproposed: deriving the layout from kind plus
+size (it cannot tell dynamic-by-proof from dynamic-by-size, and it puts a
+size compare on the hottest path), a third layout for the oversize COW
+case (it differs from the dynamic one in no field), and deferring
+oversize strings to a later stage (a 9 KiB string is ordinary PHP and no
+later stage would know more).
+
+---
+
 ## 2026-08-09 — the table is handed its category and reads no header
 
 Edmond's, and it does not overturn the `RcHeader` rule of 2026-08-07 — it

@@ -312,12 +312,12 @@ enum External {
 /// # Safety
 /// `surv` must be a live entity.
 unsafe fn external_memory(surv: *mut RcHeader) -> External {
-    use crate::refcount::{COW, ENTITY_KIND_MASK, EntityKind};
+    use crate::refcount::{ENTITY_KIND_MASK, EntityKind, STRING_OUT_OF_LINE};
     let flags = unsafe { (*surv).flags };
     match flags & ENTITY_KIND_MASK {
         // Only the dynamic layout holds bytes out of line; an inline
         // string carries them behind its own header and moves with it.
-        k if k == EntityKind::String.to_flags() && flags & COW == 0 => {
+        k if k == EntityKind::String.to_flags() && flags & STRING_OUT_OF_LINE != 0 => {
             External::StringPayload(surv as *mut crate::string::LLStringDynamic)
         }
         k if k == EntityKind::Array.to_flags() => {
@@ -1426,6 +1426,70 @@ mod tests {
                 1,
                 "one surviving holder: the dead one never released twice"
             );
+        }
+    }
+
+    /// An oversize arena string survives with its holder instead of being
+    /// copied out. The store that put it there is arena→arena, so no
+    /// barrier saw it, and the escape that follows promotes the whole
+    /// subgraph — so a copy-on-write string does reach the payload carry,
+    /// which until the layout split only the proved-single-owner form
+    /// could (`rfc/model/memory/large-entities.md`).
+    #[test]
+    fn an_oversize_cow_arena_string_carries_its_payload_through_promotion() {
+        let _g = crate::memory::block_pool::test_guard();
+
+        let holder_cls = ClassBuilder::new("Cache").prop("keep", true).build();
+        let keeper_cls = ClassBuilder::new("Keeper").prop("s", true).build();
+
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut ctx = LLContext { arena: arena_ptr };
+        let ctx_ptr: *mut LLContext = &mut ctx;
+        set_current_context(ctx_ptr);
+
+        let holder = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
+        let keeper = unsafe { new_constructed(ctx_ptr, keeper_cls, MemoryCategory::RequestArena) };
+        let content = vec![b'p'; crate::memory::block_pool::BLOCK_PAYLOAD];
+        let s = unsafe {
+            crate::string::ll_string_new(ctx_ptr, MemoryCategory::RequestArena, &content)
+        } as *mut RcHeader;
+        assert!(!s.is_null());
+        assert_ne!(
+            unsafe { crate::refcount::header_flags(s) } & crate::refcount::STRING_OUT_OF_LINE,
+            0,
+            "out of line, or the payload carry is not on the path"
+        );
+
+        unsafe {
+            let slot = Object::prop_at(keeper, 16);
+            assert!(ref_store(
+                arena_ptr,
+                keeper as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::String, s),
+            ));
+            assert!(!crate::refcount::ll_release(s));
+            store_prop(arena_ptr, holder, 16, keeper);
+            arena_reset_full(arena_ptr);
+        }
+        set_current_context(std::ptr::null_mut());
+
+        unsafe {
+            assert_eq!(
+                (*s).memory_category(),
+                MemoryCategory::GcHeap,
+                "promoted with its holder rather than copied at the barrier"
+            );
+            assert_eq!(
+                crate::string::string_bytes(s as *const crate::string::LLString),
+                &content[..],
+                "and the payload came with it, wherever it now lives"
+            );
+
+            assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+            crate::object::ll_entity_die(holder as *mut RcHeader);
         }
     }
 

@@ -244,13 +244,14 @@ pub unsafe fn flatten(
         }
     }
 
-    let mem = unsafe { crate::string::new_uninit(ctx, category, total) };
-    if mem.is_null() {
+    let reserved = unsafe { crate::string::new_uninit(ctx, category, total) };
+    if reserved.is_null() {
         return std::ptr::null_mut();
     }
 
     // Pass 2: write. One destination, filled once, in order.
-    let mut dst = unsafe { mem.add(size_of::<LLString>()) };
+    let start = reserved.bytes();
+    let mut dst = start;
     for (i, part) in parts.iter().enumerate() {
         let bytes = unsafe { LLString::bytes(*part) };
         unsafe {
@@ -262,11 +263,11 @@ pub unsafe fn flatten(
         }
     }
     debug_assert_eq!(
-        dst as usize - (mem as usize + size_of::<LLString>()),
+        dst as usize - start as usize,
         total,
         "the two passes disagreed about the length"
     );
-    unsafe { crate::string::publish_uninit(mem, category) }
+    unsafe { crate::string::publish_uninit(reserved, category) }
 }
 
 /// Bytes `v` will occupy in a flattened result, or `None` when its text
@@ -460,6 +461,46 @@ mod tests {
                 unsafe { crate::string::string_bytes(out) },
                 "id = -42, name = édouard, ok = 1!".as_bytes()
             );
+        });
+    }
+
+    /// A result past what the category packs in one slot takes the
+    /// out-of-line layout: this is the assemble-in-place factory's half
+    /// of the choice `ll_string_new` makes when it copies, and the two
+    /// write to different places, so it needs its own test.
+    #[test]
+    fn a_flattened_result_past_the_slot_limit_is_out_of_line() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("InterpolatedString").template().build();
+        let shape = shape_of(&["head:", ":tail"]);
+
+        with_ctx(|ctx| {
+            let long = vec![b'v'; crate::memory::heap::MAX_SMALL];
+            let value = unsafe { ll_string_new(ctx, MemoryCategory::GcHeap, &long) };
+            let held = [Value::entity(Tag::String, value as *mut RcHeader)];
+            let t = unsafe { ll_template_new(ctx, cls, &*shape, &held, MemoryCategory::GcHeap) };
+            let out = unsafe { flatten(ctx, t, MemoryCategory::GcHeap) };
+            assert!(!out.is_null());
+            assert_ne!(
+                unsafe { crate::refcount::header_flags(out as *const RcHeader) }
+                    & crate::refcount::STRING_OUT_OF_LINE,
+                0,
+                "the assembled result did not fit one slot"
+            );
+
+            let mut want = b"head:".to_vec();
+            want.extend_from_slice(&long);
+            want.extend_from_slice(b":tail");
+            assert_eq!(unsafe { crate::string::string_bytes(out) }, &want[..]);
+
+            unsafe {
+                assert!(ll_release(out as *mut RcHeader));
+                crate::object::ll_entity_die(out as *mut RcHeader);
+                assert!(ll_release(t as *mut RcHeader));
+                crate::object::ll_entity_die(t as *mut RcHeader);
+                assert!(ll_release(value as *mut RcHeader));
+                crate::object::ll_entity_die(value as *mut RcHeader);
+            }
         });
     }
 

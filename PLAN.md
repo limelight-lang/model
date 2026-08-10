@@ -220,14 +220,71 @@ strategy the memory manager never had, and it goes at the ordinary pace.
         door separate from `Arena::alloc`, arms in `ll_usable_size` and
         `ll_free`'s assertions, the park set's leak bound rising from one
         block to a whole run, and the lifted immortal refusal.
-- [ ] S11.4 A string past the limit is built dynamic
-      done: `ll_string_new` chooses its layout from S11.2's answer
-        instead of always building the inline one; a request-arena
-        string past the limit takes its payload from `body_alloc`,
-        survives a reset with it and tears down without leaking; the COW
-        and separation paths run for a string that is dynamic by size
-        rather than by having been appended to
+- [x] S11.4 A string past the limit is built dynamic
+      done: the layout of a string is a header bit of its own and `COW`
+        means only copy-on-write again; `ll_string_new` chooses the
+        layout from S11.2's answer instead of always building the inline
+        one; a request-arena string past the limit takes its payload from
+        `body_alloc`, survives a reset with it and tears down without
+        leaking; and the COW and separation paths run for a string that
+        is dynamic by size rather than by having been appended to —
+        a shared oversize string separates on write, an oversize arena
+        string reaches a longer-lived holder as a copy, and retain and
+        release count it
       tier: T2 · role: Critic
+      Sage 2026-08-10: `COW` cannot stay the layout tag, because it also
+        decides whether a write separates (`refcount.rs:147`), whether an
+        arena entity is counted at all (`refcount.rs:481`) and whether an
+        escape copies or gains (`barrier.rs:160`) — so a string built
+        dynamic by size would silently stop being copy-on-write, and the
+        step's own third clause asks for the one combination the single
+        bit cannot express. The layout takes a **string-scoped bit 15**:
+        dead on a string header in both builds, since the candidate index
+        there is written only for `CANDIDATE_KINDS`, which excludes
+        String, and rc-walk's epoch byte starts at 16. `ll_string_new`
+        past the limit builds the dynamic layout with **both** bits set
+        for `GcHeap` and `RequestArena`; `ll_string_new_dynamic` keeps
+        producing layout-bit-set, `COW`-clear, so nothing the compiler
+        proves changes. `LongLived` stays refused on the reclamation
+        policy, `Immortal` keeps the inline layout in the run
+        `immortal_alloc` already serves. Priced with it: a by-size arena
+        string never survives a reset as itself — being COW it is copied
+        out at escape — so the reset gains no rule and the second clause
+        is met by two existing paths. Rejected and not to be reproposed:
+        deriving the layout from kind plus size, a third layout, and
+        deferring oversize strings to a later stage. Final.
+      Critic 2026-08-10 round 1: a real defect and four holes. The array's
+        string keys are read with the inline accessor in four places
+        (`canonical_key`, `slot_hash`, `entry_slot_hash`, `entry_matches`),
+        so an oversize key builds a 16 KiB slice over a 32-byte entity —
+        out-of-bounds reads, and a present key reads as absent because the
+        byte comparison runs over the entities' neighbours. Also:
+        `ll_string_append`'s guard used to imply sole ownership and no
+        longer does; the `LongLived` refusal rested on the very gate this
+        stage lifts; bit 15's freedom was pinned by prose alone; and the
+        out-of-line arm of `new_uninit`, the boundary and the promotion
+        path had no tests. All accepted and repaired; the key defect was
+        seen failing by reverting `entry_matches` alone.
+      Critic 2026-08-10 round 2: the repairs close their findings, and the
+        append guard's own repair was half of one — `refcount == 1` is not
+        the ownership test, because retain and release no-op on an
+        immortal entity, which therefore reads 1 forever while being the
+        most shared thing in the process. It asks
+        `cow_separation_needed` now, the barrier's own predicate. Also
+        accepted: the boundary test takes its bound from
+        `routing::slot_limit` rather than from the size class that equals
+        it today, and it checks for null before dereferencing.
+      handoff: the layout is `refcount::STRING_OUT_OF_LINE` and `COW`
+        means only copy-on-write; `string::new_out_of_line` is the shared
+        body of both out-of-line forms, and `Reserved` is what
+        `new_uninit` hands the assemble-in-place caller. **The trap this
+        step walked into:** an oversize string reaches every reader that
+        used to be handed inline strings only, and four of them in
+        `array/` were reading bytes at `s + 24`. Anything that takes a
+        `*mut LLString` from outside its own module reads it through
+        `string_bytes` now. Gate: rc-walk 406 ×3, rc-trace 393 ×3,
+        hash-folding 406, `debug-journal` 412 ×3 and 399 ×3, both release
+        builds, `fmt --check` clean. Miri is owed with S10 and S11.1.
 - [ ] S11.5 An entity whose oversize is counted cells
       done: the shape S11.3 chose is built and the walker reaches the
         cells — an object past the limit is traced, severed and torn

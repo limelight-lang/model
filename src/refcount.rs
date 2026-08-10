@@ -291,6 +291,24 @@ pub fn is_object(flags: u32) -> bool {
 /// (`rfc/model/gc/strategies.md`).
 pub const CANDIDATE_INDEX_SHIFT: u32 = 15;
 pub const CANDIDATE_INDEX_MASK: u32 = 0x0001_FFFF << CANDIDATE_INDEX_SHIFT;
+
+/// **String entities only:** the bytes live out of line, through the
+/// `data` pointer of `string::LLStringDynamic`, rather than inline after
+/// the fixed fields. Set once by the factory and never flipped — nothing
+/// promotes between the two layouts at run time.
+///
+/// It shares bit 15 with the candidate index above, and the two never
+/// meet: the index is written only for [`CANDIDATE_KINDS`], which
+/// excludes `String`, and in an `rc-walk` build the index is dead while
+/// the epoch byte starts at 16. A kind-scoped bit follows the same
+/// precedent as [`ARENA_RESET_MARK`], which borrows the GC-state field
+/// for arena entities.
+///
+/// **[`COW`] used to carry this too, and no longer does** — it means
+/// copy-on-write and nothing else. One bit could not express the
+/// combination an oversize string needs, which is out of line by size
+/// and copy-on-write by semantics (`rfc/model/memory/large-entities.md`).
+pub const STRING_OUT_OF_LINE: u32 = 1 << 15;
 /// Largest buffer position the field can hold. Beyond it the index is
 /// stored as zero: 131 070 candidates is many full thresholds without a
 /// single collection point, and the fallback costs only speed.
@@ -911,6 +929,23 @@ mod tests {
         assert_eq!(DESTRUCTOR_PENDING, 1 << 8);
         assert_eq!(DESTRUCTOR_RAN, 1 << 9);
         assert_eq!(COW, 1 << 10);
+        // The string layout bit deliberately overlaps the candidate
+        // index's lowest bit, and the whole safety of that rests on two
+        // facts nothing else asserts. `encode_index(0)` is `1 << 15`, so
+        // a string admitted to the buffer at position zero would acquire
+        // the layout bit and every later byte access would read its hash
+        // field as a payload pointer.
+        assert_eq!(STRING_OUT_OF_LINE, 1 << CANDIDATE_INDEX_SHIFT);
+        assert_eq!(
+            STRING_OUT_OF_LINE & ENTITY_KIND_MASK,
+            0,
+            "a wider kind field would take the layout bit"
+        );
+        assert_eq!(
+            CANDIDATE_KINDS & (1 << EntityKind::String as u32),
+            0,
+            "String must never take a candidate index: bit 15 is its layout"
+        );
         assert_eq!(IS_ESCAPEE, 1 << 11);
         assert_eq!(ENTITY_KIND_SHIFT, 12);
         assert_eq!(ENTITY_KIND_MASK, 0b111 << 12, "entity kind: bits 12-14");
