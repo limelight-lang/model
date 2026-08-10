@@ -406,7 +406,7 @@ pub mod probe {
     }
 }
 
-/// Bump a [`probe`] counter, or compile to nothing without the feature.
+/// Bump a `probe` counter, or compile to nothing without the feature.
 macro_rules! probe_count {
     ($name:ident) => {
         #[cfg(feature = "probe-counters")]
@@ -887,7 +887,7 @@ impl Heap {
         self.empty_reserve = [std::ptr::null_mut(); NUM_CLASSES];
     }
 
-    /// [`collect_remote`] without touching `self` — for use while the
+    /// [`collect_remote`](Self::collect_remote) without touching `self` — for use while the
     /// abandoned list's lock is held.
     fn collect_remote_locked(&self, block: *mut HeapBlockHeader) {
         // Takes the raw block: it needs both halves, and they must be
@@ -929,16 +929,17 @@ impl Heap {
         self.alloc(size)
     }
 
-    /// Free a slot from [`alloc`]. If this thread owns the block it is a
+    /// Free a slot from [`alloc`](Self::alloc). If this thread owns the block it is a
     /// cheap local free; otherwise the slot is posted to the owner's
     /// lock-free `remote_free` stack.
     ///
+    /// Split fast/cold for the same codegen reason as [`alloc`](Self::alloc)
+    /// — see its doc. The owning-thread push is the whole fast path; the
+    /// cross-thread hand-off and the block-emptied bookkeeping are cold
+    /// tails.
+    ///
     /// # Safety
     /// `ptr` must be a live allocation from some heap and not freed yet.
-    ///
-    /// Split fast/cold for the same codegen reason as [`alloc`] — see its
-    /// doc. The owning-thread push is the whole fast path; the cross-thread
-    /// hand-off and the block-emptied bookkeeping are cold tails.
     #[inline]
     pub unsafe fn free(&mut self, ptr: *mut u8) {
         let block = HeapBlockHeader::of_ptr(ptr);
@@ -1103,11 +1104,13 @@ impl Heap {
     }
 
     /// Take a fresh block from the pool, stamp its header, and link it as
-    /// available. O(1) and touching nothing but the header line: an empty
-    /// free list plus `bump = 0` already means "every slot virgin", so
-    /// there is no side allocation and no per-slot initialization at all
-    /// — unlike both the eager free-list threading and the bitmap this
-    /// replaced (see the module doc for why the bitmap lost).
+    /// available. For a raw heap that is O(1) and touches nothing but the
+    /// header line: an empty free list plus `bump = 0` already means
+    /// "every slot virgin", so there is no side allocation and no
+    /// per-slot initialization at all — unlike both the eager free-list
+    /// threading and the bitmap this replaced (see the module doc for why
+    /// the bitmap lost). An **entity** heap pays one pass over the block
+    /// on top of that, and the body says what buys it.
     /// Null when the pool is empty and the OS refused more; the heap is
     /// left untouched, so the caller can report the failure and the heap
     /// stays usable for smaller classes.
@@ -1127,9 +1130,9 @@ impl Heap {
         // — the explicit 8-bytes-per-slot pass always runs here. Cold path
         // (once per block), ≤ 4080 stores at the smallest class.
         //
-        // Raw blocks skip it: nothing ever reads their dead slots, and the
-        // O(1) "no per-slot initialization" property below is measured
-        // (module doc: why the bitmap lost).
+        // Raw blocks skip it: nothing ever reads their dead slots, and
+        // the "no per-slot initialization" property they keep instead is
+        // measured (module doc: why the bitmap lost).
         if self.block_kind == BLOCK_KIND_ENTITY {
             let base = BlockHeader::payload_start(block as *mut BlockHeader);
             for i in 0..slots as usize {
@@ -1137,10 +1140,6 @@ impl Heap {
             }
         }
 
-        // No side allocation at all: an empty free list plus `bump = 0`
-        // means "every slot virgin" — O(1), touching nothing but the
-        // header line.
-        //
         // The kind is published LAST and through `store_block_kind`,
         // whose `rc-walk` build makes the store a release: the
         // collector's snapshot must not read "entity" before the size
@@ -2231,17 +2230,14 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
     for region in BlockPool::global().regions() {
         for i in 0..BLOCKS_PER_REGION {
             let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut HeapBlockHeader;
-            // Acquire pairs with commissioning's release kind store: a
-            // block reading "entity" has its class, cursor and zeroed
-            // slots visible.
+            // What this acquire publishes: a block reading "entity" has
+            // its class, cursor and zeroed slots visible.
             let kind = unsafe {
                 (*(&raw const (*block).kind as *const AtomicU32)).load(Ordering::Acquire)
             };
-            // One large entity in a pooled block. `slots` is 1 and that
-            // is soundness rather than economy: a count above the truth
-            // makes the walker read rows out of the entity's own cells,
-            // and fabricated edges can balance a live component into
-            // collection. The acquire above published the size.
+            // One large entity in a pooled block; `slots` is 1 for the
+            // reason `EntityBlockSnapshot::slots` states. The acquire
+            // above published the size.
             if kind == crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE {
                 let (entity, size) =
                     unsafe { crate::memory::large_entity::occupant(block as *mut u8) };

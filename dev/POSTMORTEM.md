@@ -7,6 +7,35 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-10 — cutting the duplicate left the copy that overreached
+
+**What happened.** The comment pass over `src/memory/` found `Heap::refill`
+stating the same "no side allocation, no per-slot initialization" property
+twice: once in its doc comment, once in its body after the entity arm's
+zero pass. The body copy was deleted as the retelling. It was the scoped
+one — it sat *after* the loop, so a reader met it as a statement about
+what remained — while the doc copy claims the property for the whole
+function, and `refill` runs a pass over every slot of an entity block.
+Deleting one of two made the survivor a false contract, and a nearby
+comment saying "the property **below** is measured" now pointed at
+nothing.
+
+**Why it was possible.** Two comments saying the same thing are not
+interchangeable. Each one's scope is its position, and position is exactly
+what a diff of the text does not show. The pass compared the sentences and
+not what stood between them.
+
+**Why it was not caught earlier.** The suite cannot see it and neither can
+`fmt`: a comment has no failing state. What caught it was the stage's own
+Code Reviewer, one round, reading the function rather than the diff.
+
+**The rule.** When two comments carry one claim, decide which is scoped
+before deciding which is surplus, and read what stands between them. If
+the survivor has to be widened or narrowed to stay true, the cut is not a
+cut — it is a rewrite, and it is the doc comment that is usually wrong.
+
+---
+
 ## 2026-08-10 — an atomic field does not survive a `&mut` over the struct
 
 **What happened.** `Heap::alloc` takes `&mut (*block).private` on every

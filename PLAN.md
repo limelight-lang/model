@@ -119,13 +119,32 @@ Done when: the comment count per file is recorded before and after, no
 public declaration lost its contract, every test still runs in both
 configurations, and `dev/INDEX.md` states the new arrangement.
 
-- [ ] S9.1 The comment pass over `src/memory/`
+- [x] S9.1 The comment pass over `src/memory/`
       done: comment lines counted before and after and the drop recorded
         in this step; every comment left is one of rule 19's six kinds;
         no `///` on a public declaration removed, since 19.2 makes those
         obligatory; behaviour untouched, so the gate is green with no
         test edited
       tier: T2 · role: Code Reviewer
+      Code Reviewer 2026-08-10: the pass's verdict — that the module was
+        already clean — is wrong in six places. `refill`'s doc promises no
+        per-slot initialization while its entity arm runs one, and the
+        pass had deleted the sentence that scoped it; `immortal.rs` sends
+        `ll_free` to a no-op default that is an assert now;
+        `block_pool.rs`'s free-list doc argues the lock twice; thirteen
+        intra-doc links in the module resolve to nothing; four `# Safety`
+        sections have swallowed prose that is no safety obligation, one of
+        them `store_category_barrier`'s whole refusal protocol; and
+        `ll_usable_size` reads a size class at `kind + 1` with nothing
+        saying why that offset is the class. All accepted and fixed.
+      handoff: 4 024 → 4 019 comment lines, being sixteen lines of
+        retelling and stale text cut against eleven of missing contract
+        added. Two assertion *messages* saying "32K-aligned" were
+        corrected where `BLOCK_SIZE` is 64 KiB, which is the one place a
+        test body was touched and no assertion changed. Nothing was cut
+        for length: what makes the module hard to read past is the size of
+        legal comments, and rule 19 caps no comment's length — Edmond's to
+        answer before S9.2. Lesson in `dev/POSTMORTEM.md`.
 - [ ] S9.2 The comment pass over the entity modules
       done: the same, over `object`, `string`, `array/`, `template`,
         `reference`, `weak`, `intern`, `value`, `class` and `hash/`

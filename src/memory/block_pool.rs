@@ -186,13 +186,10 @@ impl BlockHeader {
 /// field, at an offset no owner view aliases, would — atomic on both
 /// sides, with the existing tag for ABA.
 ///
-/// The lock is a trade, not a necessity. Every user of this chain is
-/// cold: a per-thread cache fronts it and refills in batches, so it is
-/// touched only on a miss or an overflow flush. Measured live, the lock
-/// costs nothing on either benchmark, and it removes the race and the
-/// ABA tag together rather than adding a layout invariant to a union
-/// five modules already share. Revisit if this path ever stops being
-/// cold.
+/// The lock is a trade, not a necessity. Measured live it costs nothing
+/// on either benchmark, and it removes the race and the ABA tag together
+/// rather than adding a layout invariant to a union five modules already
+/// share. Revisit if this path ever stops being cold.
 struct FreeList {
     head: *mut BlockHeader,
 }
@@ -404,7 +401,7 @@ impl BlockPool {
     /// Return a block. Overflowing the thread cache flushes half of it
     /// to the global stack (jemalloc flush pattern).
     ///
-    /// `block` must be a block previously handed out by [`get`]; the
+    /// `block` must be a block previously handed out by [`get`](Self::get); the
     /// pool is its sole authority, so this internal API stays safe.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn put(&self, block: *mut BlockHeader) {
@@ -610,7 +607,11 @@ mod tests {
         let pool = BlockPool::global();
         let block = pool.get();
 
-        assert_eq!(block as usize & BLOCK_MASK, 0, "block must be 32K-aligned");
+        assert_eq!(
+            block as usize & BLOCK_MASK,
+            0,
+            "block must be BLOCK_SIZE-aligned"
+        );
 
         // Any interior pointer maps back to the header with one mask.
         let payload = BlockHeader::payload_start(block);

@@ -125,8 +125,6 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 /// an arena entity into a longer-lived owner counts the escape (`gain`); a
 /// heap entity into an arena owner records a release the reset owns.
 ///
-/// # Safety
-/// `new` a live entity; `arena` the live mounted arena.
 /// Returns **the entity the slot must hold**, which is `new` itself in
 /// every case but one: a COW entity leaving the arena is copied, and the
 /// copy is what the holder gets. Null means the copy could not be made
@@ -145,6 +143,9 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 /// it takes through the two of them rather than by a bare `ll_retain`,
 /// because a copy that records no escape gain spends a hold-count
 /// belonging to a real holder when `drop_ref` gives it back.
+///
+/// # Safety
+/// `new` a live entity; `arena` the live mounted arena.
 #[inline]
 pub(crate) unsafe fn store_category_barrier(
     arena: *mut Arena,

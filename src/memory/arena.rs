@@ -301,7 +301,7 @@ impl Arena {
     /// the failure mode: nothing is allocated, so nothing can be refused
     /// at a point where there is no caller left to report to.
     ///
-    /// The record is zeroed rather than unlinked; [`drain_log`] skips
+    /// The record is zeroed rather than unlinked; [`drain_log`](Self::drain_log) skips
     /// zeros. Returns false when `ptr` was not one of this arena's runs.
     pub fn forget_large(&mut self, ptr: *mut u8) -> bool {
         let mut seg = self.larges;
@@ -390,7 +390,7 @@ impl Arena {
         self.reset_with(run_destructor, |_| {});
     }
 
-    /// [`reset`] with an escape handler receiving every escapee entity.
+    /// [`reset`](Self::reset) with an escape handler receiving every escapee entity.
     /// Composition of the reset primitives below.
     pub fn reset_with(
         &mut self,

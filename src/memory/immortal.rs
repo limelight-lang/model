@@ -7,10 +7,10 @@
 //! races the request threads.
 //!
 //! Blocks come from the shared [`BlockPool`] and are never returned;
-//! `put()` has no call path from here. `ll_free`/`ll_usable_size` on an
-//! immortal pointer fall to their existing no-op default, same as
-//! arena blocks — bump allocation has no per-object size tracking
-//! anyway.
+//! `put()` has no call path from here. `ll_free` on an immortal pointer
+//! takes the arm it shares with arena memory and does nothing;
+//! `ll_usable_size` answers zero from its default. Bump allocation has
+//! no per-object size tracking to answer with anyway.
 
 use std::sync::Mutex;
 

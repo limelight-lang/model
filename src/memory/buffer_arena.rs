@@ -73,18 +73,8 @@ struct FreeChunk {
 
 const MIN_CHUNK: usize = size_of::<FreeChunk>();
 
-/// Per-block header, overlaying the block's first line. Shares offset 0
-/// (`kind`) with the pool's `BlockHeader`.
-///
-/// Split across two cache lines the way `heap.rs` splits its own, and
-/// for free: the block's header line is [`LINE_SIZE`] = 256 bytes and
-/// this uses under a third of it. The owner's fields and `owner` itself
-/// sit on the first 64 bytes — a local free reads `owner` and then
-/// writes `live`/`free`, so they belong together — and `remote_free`,
-/// the only field a non-owner ever touches, sits alone on the next one.
 /// The owner-private half: only the thread named by
-/// [`BufferBlockShared::owner`] may touch these. `kind` stays at offset
-/// 0, shared with the pool's `BlockHeader`.
+/// [`BufferBlockShared::owner`] may touch these.
 #[repr(C)]
 struct BufferBlockPrivate {
     /// Live chunks in this block, **owner-written only**: a cross-thread
@@ -291,7 +281,7 @@ impl BufferArena {
         }
     }
 
-    /// Free a chunk previously handed out by [`alloc`] on this thread.
+    /// Free a chunk previously handed out by [`alloc`](Self::alloc) on this thread.
     /// `size` must be the granted capacity (the owner tracks it as the
     /// buffer's `capacity` anyway) — the zero-metadata contract.
     ///
@@ -463,7 +453,8 @@ impl BufferArena {
     /// there was nothing to adopt, when the block turned out empty and
     /// went home, or when its tail is too short — the block is owned and
     /// swept from then on either way, its tail is reachable through
-    /// [`resume_owned`] and its free list through [`pop_fit`].
+    /// [`resume_owned`](Self::resume_owned) and its free list through
+    /// [`pop_fit`](Self::pop_fit).
     ///
     /// One block per call: a rotation that adopts a block too full to
     /// serve it moves on to the rest of the refill path rather than
@@ -541,7 +532,7 @@ impl BufferArena {
     /// otherwise looked at once, on the rotation that claimed it, and a
     /// smaller request later would never see the 63 KiB it came with.
     ///
-    /// Requires every owned cursor to be settled ([`settle_cursor`]),
+    /// Requires every owned cursor to be settled ([`settle_cursor`](Self::settle_cursor)),
     /// which is what makes the walk read all blocks the same way.
     ///
     /// O(blocks this arena owns), on the path that would otherwise take a

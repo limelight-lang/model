@@ -18,7 +18,7 @@
 //! block, so `ptr & !BLOCK_MASK` finds the block header, whose `kind` routes
 //! the free. No caller-provided size needed. Routing:
 //!
-//! - `≤ 8 KB`, align ≤ 16 → the small-object [`Heap`].
+//! - `≤ 8 KB`, align ≤ 16 → the small-object [`Heap`](crate::memory::heap::Heap).
 //! - `8 KB .. block payload` → one pooled block (`BLOCK_KIND_LARGE`).
 //! - `> block payload` → an OS-direct block-aligned run
 //!   (`BLOCK_KIND_LARGE_RUN`), returned to the OS on free.
@@ -82,13 +82,15 @@ fn round_up_blocks(n: usize) -> Option<usize> {
 /// Allocate `size` bytes with alignment `align`. Returns null on
 /// unsupported alignment (> 256) or OS failure.
 ///
+/// The small path is the whole body here; everything else is a `#[cold]`
+/// tail. Keeping the large-object branches in this function gave it a
+/// stack frame (`push rsi; push rdi; sub rsp, 56`) that every small
+/// `malloc` set up and tore down on its way to a tail call — see
+/// [`Heap::alloc`](crate::memory::heap::Heap::alloc)'s doc for the full
+/// reasoning.
+///
 /// # Safety
 /// Standard allocator contract.
-/// The small path is the whole body here; everything else is a `#[cold]`
-/// tail. Keeping the large-object branches in this function gave it a stack
-/// frame (`push rsi; push rdi; sub rsp, 56`) that every small `malloc` set
-/// up and tore down on its way to a tail call — see [`Heap::alloc`]'s doc
-/// for the full reasoning.
 #[inline]
 pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
     // Small path: the thread-local heap. Its slots are ≥16-aligned.
@@ -210,11 +212,12 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
 /// Free a pointer from [`ll_alloc`]. Dispatches on the owning block's
 /// kind — no size needed.
 ///
+/// Split fast/cold like [`ll_alloc`]: the heap path is the body, the
+/// large and huge kinds are a `#[cold]` tail.
+///
 /// # Safety
 /// `ptr` must be a live allocation from [`ll_alloc`] on this thread (for
 /// small objects) and not already freed.
-/// Split fast/cold like [`ll_alloc`]: the heap path is the body, the large
-/// and huge kinds are a `#[cold]` tail.
 #[inline]
 pub unsafe fn ll_free(ptr: *mut u8) {
     if ptr.is_null() {
@@ -389,6 +392,13 @@ unsafe fn ll_usable_size(ptr: *mut u8) -> usize {
     match kind {
         BLOCK_KIND_HEAP | BLOCK_KIND_ENTITY => {
             // Heap slot: the class size (upper bound on the request).
+            //
+            // The word after `kind` is `HeapBlockHeader::size_class`, and
+            // that adjacency is the whole of this read — the two are
+            // neighbours because both are loaded from another thread, so
+            // both had to leave the owner's private half
+            // (`heap::HeapBlockHeader`). Moving either apart silently
+            // makes this a size class of something else.
             use crate::memory::heap::SIZE_CLASSES;
             let ci = unsafe { load_block_kind((block as *const AtomicU32).add(1)) } as usize;
             SIZE_CLASSES[ci]
@@ -609,7 +619,7 @@ mod tests {
             let size = 200_000; // > block payload -> OS-direct run
             let p = ll_alloc(size, 16);
             assert!(!p.is_null());
-            assert_eq!(p as usize & BLOCK_MASK, LINE_SIZE, "run is 32K-aligned");
+            assert_eq!(p as usize & BLOCK_MASK, LINE_SIZE, "run is block-aligned");
             std::ptr::write_bytes(p, 0xCD, size);
             assert_eq!(*p.add(size - 1), 0xCD);
             ll_free(p);
