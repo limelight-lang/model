@@ -171,6 +171,20 @@ strategy the memory manager never had, and it goes at the ordinary pace.
         extended or a table of its own, reconciling that a retained block
         goes back to the pool while a run must reach `dealloc` — and the
         snapshot cost written as a number. Final.
+      Edmond 2026-08-10: objects with very many fields are supported, and
+        the separate registry that costs is accepted. Measured on this box
+        against PHP 8.6.0-dev, which is why: a class of 10 000 declared
+        properties compiles and runs, one instance costing 163 840 bytes,
+        and 200 000 works too at 3 203 168 bytes — Zend's GC never walks
+        the heap, so size costs it nothing. On our layout those are 2.5
+        and 49 blocks. **Rejected with it, and not to be reproposed:**
+        capping the slot at one block payload (4 079 properties) with the
+        limit enforced at class layout in the compiler. It is cheap and
+        the count is compile-time known, but it refuses a program Zend
+        runs, and that is a compatibility cost this runtime does not
+        take. Dynamic properties never pressure the slot in either
+        engine: PHP puts them in a hash table beside the object, which is
+        our body.
 - [ ] S11.4 A string past the limit is built dynamic
       done: `ll_string_new` chooses its layout from S11.2's answer
         instead of always building the inline one; a request-arena

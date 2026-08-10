@@ -387,3 +387,68 @@ against a mapping page; ours comes from the process allocator as one
 to `sched_yield` after 100 pauses (`rpmalloc.c:409`) is the answer to a
 hand-rolled lock under preemption; our cold paths take a
 `std::sync::Mutex`, which parks.
+
+## 2026-08-10 — Large objects in eight runtimes, and what PHP allows
+
+Read for S11, the stage that gives an entity larger than one block a
+strategy. The question put to each: how is an object too large for the
+ordinary small-object allocator allocated, found by the collector,
+reclaimed, and what does the runtime refuse.
+
+**The split that decides everything is how the collector finds an
+object.** Where it walks memory by address — HotSpot's G1 and ZGC, V8,
+Go, CoreCLR — a large object gets its own aligned chunk and is never
+moved, because moving it is what the alignment buys and one object in a
+chunk has nothing to compact against. G1 calls it humongous at half a
+region and takes a run of contiguous regions, the first marked
+StartsHumongous, the tail filled with filler objects so iteration still
+strides; ZGC gives an object over 256 KB its own page rounded to the
+2 MB granule and never relocates it; V8 cuts at half a page (128 KB of
+256 KB), gives a `LargePage` per object, masks the address to find the
+header and keeps an ordered set of large pages for interior addresses
+that masking cannot resolve; Go's boundary is one 32 KB size class,
+above which a span holds exactly one object over ⌈size/8192⌉ contiguous
+pages, found through the two-level arena map; CoreCLR sends anything
+past 85 000 bytes to the LOH, swept rather than compacted because
+"compacting it can be expensive".
+
+Where the collector follows an explicit list or graph — PHP and
+LuaJIT — size is invisible to it and no strategy is needed at all.
+`zend_gc.c` is refcounting plus trial deletion over the object graph:
+the root buffer holds pointers and an object carries its own buffer
+index, so nothing is ever looked up by address. LuaJIT threads every
+object on a `nextgc` list and marks in the object's own byte.
+
+**Ruby is the closest case to ours and it refuses.** It walks pages by
+alignment, so it caps a slot at the largest of twelve size classes
+(1024 bytes) and puts everything larger outside the GC heap under a
+normal slot that frees it — which is our body rule, arrived at from the
+same constraint.
+
+**Two things taken from this into the design.** The threshold everywhere
+is a fraction of the page or region rather than an absolute number —
+half a region, half a page, an eighth of a page, one span — which is the
+form the S11 invariant takes: the category's packing unit. And a refusal
+by a per-type cap is normal practice rather than an evasion; V8 has
+`FixedArray::kMaxLength`.
+
+**What PHP allows, measured here rather than read** (PHP 8.6.0-dev on
+this box, 2026-08-10). A class of 10 000 declared properties compiles
+and runs; one instance costs 163 840 bytes — 10 000 zvals of 16 bytes
+rounded to a page run inside a 2 MiB chunk. A class of 200 000 works
+too, at 3 203 168 bytes, which is past the chunk and takes Zend's huge
+path with its own mmap. Dynamic properties are not in the slot at all:
+10 000 of them cost 1 299 552 bytes in a hash table beside the object.
+On our layout the same two classes are 2.5 and 49 blocks, and that
+measurement is why S11 supports large slots instead of capping them —
+a cap at one block payload is 4 079 properties, and it would refuse a
+program Zend runs.
+
+Sources: OpenJDK `g1CollectedHeap.cpp` and `zObjectAllocator.cpp`;
+V8 `globals.h` (`kMaxRegularHeapObjectSize`), `large-spaces.cc`,
+`memory-allocator.h`; Go `sizeclasses.go`, `malloc.go`, `mcache.go`;
+CoreCLR `regions_segments.cpp` and Microsoft's LOH documentation;
+php-src `zend_alloc.c`, `zend_alloc_sizes.h`, `zend_gc.c`,
+`zend_object_handlers.c`; ruby `gc/default/default.c`; LuaJIT
+`lj_alloc.c`, `lj_gc.c`; CPython `pycore_obmalloc.h` and the garbage
+collector's internal docs.
