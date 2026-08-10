@@ -121,6 +121,10 @@ impl Arena {
     #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         let size = round_up_8(size);
+        // The bound is this allocator's own — `routing::slot_limit`
+        // reports it to callers that are not the allocator, and asking it
+        // from here would make the arena depend on the module that
+        // depends on the arena.
         if size > BLOCK_PAYLOAD {
             return std::ptr::null_mut();
         }

@@ -29,13 +29,8 @@ use crate::refcount::MemoryCategory;
 /// refusal its caller can raise on.
 ///
 /// **A size past what the category's allocator packs into one slot is
-/// refused here**, and the bound differs by allocator: both arenas bump
-/// within a block, so theirs is `BLOCK_PAYLOAD`, while the entity heap
-/// has size classes to `MAX_SMALL` and hands anything larger to the
-/// standard allocator — where an entity sits outside the entity blocks
-/// and outside the walk, which is a leak rather than a refusal. Neither
-/// answer is one a factory can give, so the test is here and no factory
-/// carries a block size of its own.
+/// refused here** ([`slot_limit`]), so no factory carries a block size of
+/// its own.
 ///
 /// A category that must not hold a given kind of entity is the caller's
 /// to refuse *before* calling — the refusal belongs where its reason is,
@@ -58,17 +53,45 @@ pub(crate) unsafe fn entity_alloc_in(
         // rides along: the walker skips it by category per entity, and the
         // long-lived arena's own reclamation policy is still TBD.
         MemoryCategory::GcHeap | MemoryCategory::LongLived => {
-            if size > crate::memory::heap::MAX_SMALL {
+            if size > slot_limit(category) {
                 return std::ptr::null_mut();
             }
             unsafe { crate::memory::heap::entity_alloc(size) }
         }
         MemoryCategory::Immortal => {
-            if size > BLOCK_PAYLOAD {
+            if size > slot_limit(category) {
                 return std::ptr::null_mut();
             }
             immortal_alloc(size)
         }
+    }
+}
+
+/// The largest entity slot `category`'s allocator serves in one piece.
+/// A factory asks this rather than a block size: what the bound *is*
+/// belongs to the allocator, and it differs by allocator rather than by
+/// taste.
+///
+/// Both arenas bump within one block, so a slot cannot exceed a block's
+/// payload. The entity heap has size classes up to `MAX_SMALL` and hands
+/// anything larger to the standard allocator, where the slot lands
+/// outside the entity blocks and therefore outside the walk
+/// (`heap::entity_alloc`, `rfc/model/gc/rc-walk.md` "Huge objects") —
+/// that is a leak no pass finds, which is why the heap's bound is the
+/// size class and not the block.
+///
+/// This answers for an entity **slot**, never for a body: an out-of-line
+/// body above the same bound is legal and takes the dedicated-run path
+/// ([`body_alloc`]).
+///
+/// The arena enforces its own row rather than reading it here, because
+/// `ll_arena_alloc` reaches `Arena::alloc` without passing this module
+/// and because the reverse dependency would close a cycle.
+#[inline]
+pub(crate) fn slot_limit(category: MemoryCategory) -> usize {
+    match category {
+        MemoryCategory::RequestArena | MemoryCategory::Immortal => BLOCK_PAYLOAD,
+        MemoryCategory::GcHeap | MemoryCategory::LongLived => crate::memory::heap::MAX_SMALL,
     }
 }
 

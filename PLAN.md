@@ -116,7 +116,7 @@ strategy the memory manager never had, and it goes at the ordinary pace.
         this step removes and is now
         `absurd_size_is_refused_instead_of_wrapping`, which also checks
         that a refusal leaves the arena serving.
-- [ ] S11.2 The limits, answered where routing answers
+- [x] S11.2 The limits, answered where routing answers
       done: one function beside `memory::routing` answers whether a size
         fits one slot of a category — `RequestArena` and `Immortal` at
         `BLOCK_PAYLOAD` because both bump-pack, `GcHeap` and `LongLived`
@@ -124,6 +124,15 @@ strategy the memory manager never had, and it goes at the ordinary pace.
         64 KiB block and leaves the walk (`heap.rs:1897`) — and no
         factory tests a block size itself
       tier: T1 · role: —
+      handoff: `memory::routing::slot_limit(category)` is the answer, and
+        `entity_alloc_in` is its only production caller so far. The arena
+        keeps testing `BLOCK_PAYLOAD` in `Arena::alloc` rather than asking
+        it: `ll_arena_alloc` reaches that function without passing
+        routing, and the reverse dependency would close a cycle between
+        two modules of the same layer. No factory outside `memory/` tests
+        a block size for a slot; the two that name `BLOCK_PAYLOAD`
+        (`Table::carry_out_of`, `promote`'s test) are about a body, where
+        the split is legal.
 - [ ] S11.3 The design in `rfc`, before the code
       done: the rule that an entity slot never exceeds one block payload
         is written down with the two shapes an oversize entity can take,
