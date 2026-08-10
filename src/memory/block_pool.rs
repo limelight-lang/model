@@ -12,7 +12,7 @@
 use std::alloc::{Layout, alloc};
 use std::cell::RefCell;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use crate::journal::kinds::journal_event;
 
@@ -46,23 +46,41 @@ const REFILL_BATCH: usize = 4;
 /// `THREAD_CACHE_CAPACITY / 2 + 1` and never more.
 const FLUSH_MAX: usize = THREAD_CACHE_CAPACITY / 2 + 1;
 
-/// Store a block header's `kind` discriminant. Under `rc-walk` the
-/// store is a release atomic: the collector's snapshot reads kinds of
-/// every block in every region concurrently, a racing plain store is
-/// undefined behaviour, and the release ordering is what publishes a
-/// commissioned block's other header fields before its kind says
-/// "entity" (`heap::snapshot_entity_blocks` loads with acquire).
+/// Store a block header's `kind` discriminant, and **the only path that
+/// writes one**. Under `rc-walk` the store is a release: the collector's
+/// snapshot reads the kind of every block in every region concurrently,
+/// and the release ordering is what publishes a commissioned block's
+/// other header fields before its kind says "entity"
+/// (`heap::snapshot_entity_blocks` loads with acquire). Under `rc-trace`
+/// nothing reads across threads and the store is relaxed, which is the
+/// plain write it used to be.
+///
+/// The field's own type carries the rest of the rule. It is an
+/// [`AtomicU32`] in every header that overlays offset 0, so a `&mut` to
+/// the surrounding struct — `Heap::alloc` takes one on the hottest path
+/// in the crate — does not cover this word: a retag does not descend
+/// into an `UnsafeCell` (`PLAN.md`, S11.9). The one access the type does
+/// not defend against is a whole-struct store, which writes these four
+/// bytes plainly along with the rest, so a header is commissioned field
+/// by field and its kind last, through here.
 #[inline]
-pub(crate) unsafe fn store_block_kind(kind_field: *mut u32, kind: u32) {
+pub(crate) unsafe fn store_block_kind(kind_field: *const AtomicU32, kind: u32) {
     #[cfg(not(feature = "rc-walk"))]
     unsafe {
-        kind_field.write(kind)
+        (*kind_field).store(kind, Ordering::Relaxed)
     };
     #[cfg(feature = "rc-walk")]
     unsafe {
-        (*(kind_field as *const std::sync::atomic::AtomicU32))
-            .store(kind, std::sync::atomic::Ordering::Release)
+        (*kind_field).store(kind, Ordering::Release)
     };
+}
+
+/// Read a block header's `kind` on the thread that owns the block, where
+/// no ordering is needed: the owner is the only writer, and a reader on
+/// another thread is the collector, which loads with acquire of its own.
+#[inline]
+pub(crate) unsafe fn load_block_kind(kind_field: *const AtomicU32) -> u32 {
+    unsafe { (*kind_field).load(Ordering::Relaxed) }
 }
 
 /// Block kinds stored in the header.
@@ -111,7 +129,12 @@ pub const BLOCK_KIND_ENTITY: u32 = 8;
 /// set, line marks) get their own lines within the 256-byte header.
 #[repr(C)]
 pub struct BlockHeader {
-    pub kind: u32,
+    /// The tagged union's discriminant, and the one word of a block
+    /// header that two threads touch: the owner writes it through
+    /// [`store_block_kind`], the collector reads it for every block of
+    /// every region. Atomic by type so that a `&mut` to a header — or to
+    /// a private half that contains it — leaves these four bytes alone.
+    pub kind: AtomicU32,
     reserved: u32,
     /// Free-list link while the block sits in the pool. While a block
     /// is owned, the owner may reuse it as its own chain link (the
@@ -396,7 +419,7 @@ impl BlockPool {
         // the loaded-box flake in `census_counts_objects_and_their_edges`,
         // where a walk sees a block that should not be reachable.
         debug_assert_ne!(
-            unsafe { (*block).kind },
+            unsafe { load_block_kind(&raw const (*block).kind) },
             BLOCK_KIND_RETAINED,
             "a retained block went back to the pool with its survivors alive"
         );
@@ -405,7 +428,7 @@ impl BlockPool {
         // feature as the site that reads it: without `debug-journal` there
         // is no site and no load (`debug-modes.md` §9.6).
         #[cfg(feature = "debug-journal")]
-        let arrived_as = unsafe { (*block).kind };
+        let arrived_as = unsafe { load_block_kind(&raw const (*block).kind) };
         unsafe { store_block_kind(&raw mut (*block).kind, BLOCK_KIND_FREE) };
 
         // The borrow decides and stages, and everything else happens

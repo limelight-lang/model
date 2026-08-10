@@ -87,7 +87,7 @@
 //! by what was live at thread exit, and no periodic trim exists yet.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use crate::journal::kinds::journal_event;
 use crate::memory::block_pool::{
@@ -218,10 +218,6 @@ fn population_index(block_kind: u32) -> usize {
 /// share one cache line with [`BlockShared::owner`] (see that type).
 #[repr(C)]
 struct BlockPrivate {
-    /// Offset 0 of the block, shared with the pool `BlockHeader`'s
-    /// tagged-union discriminant: must stay the first field.
-    kind: u32,
-    size_class: u32,
     /// Live slots (owner-written only). Block returns to the pool at 0
     /// (subject to the empty-reserve cap — see `Heap::retire_empty`).
     used: u32,
@@ -315,6 +311,26 @@ struct BlockRemote {
 /// line 1, cold links after it.
 #[repr(C)]
 struct HeapBlockHeader {
+    /// The pool's tagged-union discriminant, at offset 0 of the block
+    /// because a size-less free finds it by masking an address.
+    ///
+    /// **Outside [`BlockPrivate`], and that placement is the invariant.**
+    /// The collector reads this word for every block of every region
+    /// while the owner runs, so an owner that borrows it exclusively —
+    /// and every method here takes `&mut (*block).private` — races that
+    /// read: a retag asserts uniqueness over its whole range, and unlike
+    /// a shared reference it does not stop at an `UnsafeCell`. Splitting
+    /// the word out is what makes the borrow legal, the same medicine
+    /// `BlockShared` and `BlockRemote` were split out with
+    /// (`dev/DECISIONS.md`, 2026-07-20: "making it a type rule was the
+    /// only option that cannot be violated again").
+    kind: AtomicU32,
+    /// The block's size class, and the second word the collector reads
+    /// from another thread (`snapshot_entity_blocks`): written once at
+    /// commissioning, read every epoch. Out here with `kind` and for the
+    /// same reason — the owner's `&mut` over `private` must not cover a
+    /// word another thread is reading.
+    size_class: AtomicU32,
     private: BlockPrivate,
     shared: BlockShared,
     remote: BlockRemote,
@@ -762,7 +778,7 @@ impl Heap {
 
         // Slots freed while it was ownerless are parked; take them now. The
         // borrow lasts exactly this call.
-        self.collect_remote(unsafe { &mut *block });
+        self.collect_remote(block);
 
         let (used, free, bump, slots) = unsafe {
             (
@@ -850,7 +866,9 @@ impl Heap {
 
                 let b = unsafe { &mut (*block).private };
                 if b.used == 0 {
-                    unsafe { crate::memory::block_pool::store_block_kind(&raw mut b.kind, 0) };
+                    unsafe {
+                        crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, 0)
+                    };
                     BlockPool::global().put(block as *mut BlockHeader);
                 } else {
                     b.linked = false;
@@ -946,7 +964,7 @@ impl Heap {
         b.free = slot;
         b.used -= 1;
 
-        let ci = b.size_class as usize;
+        let ci = unsafe { (*block).size_class.load(Ordering::Relaxed) } as usize;
         if b.used == 0 {
             return self.retire_empty(ci, block);
         }
@@ -1045,7 +1063,7 @@ impl Heap {
                 .shared
                 .owner
                 .store(std::ptr::null_mut(), Ordering::Release);
-            crate::memory::block_pool::store_block_kind(&raw mut (*block).private.kind, 0);
+            crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, 0);
         }
         BlockPool::global().put(block as *mut BlockHeader);
     }
@@ -1137,7 +1155,7 @@ impl Heap {
         // pool's 0.
         unsafe {
             let private = &raw mut (*block).private;
-            (&raw mut (*private).size_class).write(ci as u32);
+            crate::memory::block_pool::store_block_kind(&raw const (*block).size_class, ci as u32);
             (&raw mut (*private).used).write(0);
             (&raw mut (*private).slots).write(slots);
             (&raw mut (*private).free).write(std::ptr::null_mut());
@@ -1155,7 +1173,7 @@ impl Heap {
                 owned_next: std::ptr::null_mut(),
                 owned_prev: std::ptr::null_mut(),
             });
-            crate::memory::block_pool::store_block_kind(&raw mut (*private).kind, self.block_kind);
+            crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, self.block_kind);
         }
         self.own(ci, block);
         self.link(ci, block);
@@ -2016,7 +2034,8 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
             // commissioned — reading `size_class`/`bump` there is reading
             // uninitialized memory (Miri-caught). An entity block's header
             // was fully written by `refill`.
-            let kind = unsafe { (*block).private.kind };
+            let kind =
+                unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) };
             // A pooled block holding one large entity: no stride and no
             // cursor, one slot at the payload start, and the same
             // occupancy word decides. A run of the same population is
@@ -2033,8 +2052,12 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
             if kind != BLOCK_KIND_ENTITY {
                 continue;
             }
-            let (size_class, bump) =
-                unsafe { ((*block).private.size_class, (*block).private.bump) };
+            let (size_class, bump) = unsafe {
+                (
+                    (*block).size_class.load(Ordering::Relaxed),
+                    (*block).private.bump,
+                )
+            };
             let class_size = SIZE_CLASSES[size_class as usize];
             let base = unsafe { (block as *mut u8).add(LINE_SIZE) };
             for s in 0..bump as usize {
@@ -2098,7 +2121,7 @@ pub(crate) fn describe_slot(addr: usize) -> String {
     // yields numbers that look like an unreachable slot at exactly the
     // moment the walk reaches this one unconditionally, and for a run the
     // cursor's offset is past anything commissioning wrote.
-    let kind_word = unsafe { (*block).private.kind };
+    let kind_word = unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) };
     if crate::memory::large_entity::is_large_entity(kind_word) {
         let (entity, size) = unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
         let registered = crate::memory::large_entity::snapshot().contains(&(block as usize));
@@ -2112,8 +2135,8 @@ pub(crate) fn describe_slot(addr: usize) -> String {
     }
     let (kind, size_class, used, slots, bump) = unsafe {
         (
-            (*block).private.kind,
-            (*block).private.size_class,
+            crate::memory::block_pool::load_block_kind(&raw const (*block).kind),
+            (*block).size_class.load(Ordering::Relaxed),
             (*block).private.used,
             (*block).private.slots,
             (*block).private.bump,
@@ -2208,7 +2231,7 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
             // block reading "entity" has its class, cursor and zeroed
             // slots visible.
             let kind = unsafe {
-                (*(&raw const (*block).private.kind as *const AtomicU32)).load(Ordering::Acquire)
+                (*(&raw const (*block).kind as *const AtomicU32)).load(Ordering::Acquire)
             };
             // One large entity in a pooled block. `slots` is 1 and that
             // is soundness rather than economy: a count above the truth
@@ -2229,10 +2252,7 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
             if kind != BLOCK_KIND_ENTITY {
                 continue;
             }
-            let size_class = unsafe {
-                (*(&raw const (*block).private.size_class as *const AtomicU32))
-                    .load(Ordering::Relaxed)
-            };
+            let size_class = unsafe { (*block).size_class.load(Ordering::Relaxed) };
             let class_size = SIZE_CLASSES[size_class as usize];
             blocks.push(EntityBlockSnapshot {
                 payload: unsafe { (block as *mut u8).add(LINE_SIZE) } as usize,
@@ -2324,6 +2344,7 @@ pub unsafe fn with_thread_heap<R>(f: impl FnOnce(&mut Heap) -> R) -> R {
 mod tests {
     use super::*;
     use crate::memory::block_pool::BLOCK_PAYLOAD;
+    use std::sync::atomic::Ordering;
 
     /// Cell reservation (`rfc/model/memory/bulk-operations.md`): the
     /// manager answers with 0..=count cells, reports the leading
@@ -2414,8 +2435,9 @@ mod tests {
 
         // `kind` is the pool's tagged-union discriminant: the whole
         // overlay depends on it staying at offset 0 of the block.
-        assert_eq!(offset_of!(HeapBlockHeader, private), 0);
-        assert_eq!(offset_of!(BlockPrivate, kind), 0);
+        assert_eq!(offset_of!(HeapBlockHeader, kind), 0);
+        assert_eq!(offset_of!(HeapBlockHeader, size_class), 4);
+        assert_eq!(offset_of!(HeapBlockHeader, private), 8);
 
         // `owner` is read by every `free` to decide whether the slot is
         // local, so it must stay in the same line as the hot private
@@ -2668,7 +2690,10 @@ mod tests {
             "a raw heap must never serve from an entity block"
         );
         unsafe {
-            assert_eq!((*HeapBlockHeader::of_ptr(p)).private.kind, BLOCK_KIND_HEAP);
+            assert_eq!(
+                (*HeapBlockHeader::of_ptr(p)).kind.load(Ordering::Relaxed),
+                BLOCK_KIND_HEAP
+            );
         }
         unsafe { raw.free(p) };
 
@@ -2697,10 +2722,13 @@ mod tests {
         assert!(!e.is_null() && !r.is_null());
         unsafe {
             assert_eq!(
-                (*HeapBlockHeader::of_ptr(e)).private.kind,
+                (*HeapBlockHeader::of_ptr(e)).kind.load(Ordering::Relaxed),
                 BLOCK_KIND_ENTITY
             );
-            assert_eq!((*HeapBlockHeader::of_ptr(r)).private.kind, BLOCK_KIND_HEAP);
+            assert_eq!(
+                (*HeapBlockHeader::of_ptr(r)).kind.load(Ordering::Relaxed),
+                BLOCK_KIND_HEAP
+            );
         }
         assert_ne!(
             e as usize & !BLOCK_MASK,

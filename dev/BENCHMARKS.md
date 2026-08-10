@@ -100,6 +100,48 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-10 — the block kind becomes an atomic: the clock cannot resolve it, the disassembly can
+
+The word at offset 0 of every block header took an atomic type and left
+the private half of the two headers that have one (S11.9): the collector
+reads it for every block of every region while the owner holds a `&mut`
+over the surrounding struct, and that borrow was a data race Miri
+reports. Owner-side reads are relaxed loads now, writes go through
+`store_block_kind` as before. `size_class` moved out with it, being the
+second word the collector reads.
+
+**The wall clock answers nothing here, and the reason is the box rather
+than the change.** Six runs, the two arms alternating, `cargo bench
+--bench standard -- our_heap`:
+
+| scenario | base (9a65197) | after |
+|---|---|---|
+| `larson_5k_slots_20k_rounds` | 774.9 / 793.6 / 803.5 / 1021.5 µs | 791.6 / 804.2 / 821.6 / 1007.6 µs |
+| `rptest_10k_blocks_40_iters` | 2.170 / 2.197 / 2.256 / 2.276 ms | 1.962 / 2.171 / 2.211 / 2.239 ms |
+
+Identical code varied by 32 % across those four larson runs, and the two
+benchmarks point in opposite directions: larson's median is 1.8 % higher
+after the change, rptest's 1.6 % lower. The effect, whatever it is, is
+under the noise floor of a shared development box, and the interactive
+work beside it is the floor (`Method`, above).
+
+**So the claim is made where it can be checked — in the code the
+compiler emitted.** `ll_heap_alloc` and `ll_heap_free`, the two exported
+entries `Heap::alloc` and `Heap::free` inline into, are 104 instructions
+in both arms and differ by **one**:
+
+    movaps %xmm0,(%rsi)   ->   movups %xmm0,(%rsi)
+
+A relaxed load or a release store of an aligned `u32` is a plain `mov`
+on x86-64, which is why nothing else moved; the one difference is not an
+atomic at all but an alignment proof the compiler lost when the private
+half started at offset 8 instead of 0, and an unaligned 16-byte move
+costs nothing on an aligned address on any x86-64 since Nehalem.
+
+**Verdict: accepted, at parity.** The instruction counts are equal, the
+timings are not resolvable, and what was bought is the removal of a data
+race on every allocation under `rc-walk`.
+
 ## 2026-08-08 — the journal's record sites: counted in the IR, and the clock's answer is owed
 
 The sites of `dev/design/debug-modes.md` §9.5 landed behind the

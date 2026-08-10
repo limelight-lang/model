@@ -51,11 +51,12 @@
 
 use std::cell::Cell;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use crate::memory::arena::round_up_8;
 use crate::memory::block_pool::{
     BLOCK_KIND_BUFFER, BLOCK_MASK, BLOCK_PAYLOAD, BlockHeader, BlockPool, LINE_SIZE,
+    load_block_kind,
 };
 use crate::memory::buffer::{Buffer, PressureMode, pressure_mode};
 
@@ -86,7 +87,6 @@ const MIN_CHUNK: usize = size_of::<FreeChunk>();
 /// 0, shared with the pool's `BlockHeader`.
 #[repr(C)]
 struct BufferBlockPrivate {
-    kind: u32,
     /// Live chunks in this block, **owner-written only**: a cross-thread
     /// free posts to [`BufferBlockRemote::remote_free`] and the owner
     /// accounts for it when it collects. That is what makes zero safe to
@@ -147,6 +147,12 @@ struct BufferBlockRemote {
 /// first cache line, the stack every other thread writes on the second.
 #[repr(C)]
 struct BufferBlockHeader {
+    /// The pool's discriminant at offset 0, and outside the private half
+    /// for the reason `heap::HeapBlockHeader::kind` is outside its own:
+    /// the collector reads it while the owner holds a `&mut` over
+    /// everything below, and a `&mut` retag covers an atomic as readily
+    /// as a plain word.
+    kind: AtomicU32,
     private: BufferBlockPrivate,
     shared: BufferBlockShared,
     remote: BufferBlockRemote,
@@ -294,7 +300,10 @@ impl BufferArena {
     pub unsafe fn free(&mut self, ptr: *mut u8, size: usize) {
         let size = round_up_8(size).max(MIN_CHUNK);
         let block = BufferBlockHeader::of_ptr(ptr);
-        debug_assert_eq!(unsafe { (*block).private.kind }, BLOCK_KIND_BUFFER);
+        debug_assert_eq!(
+            unsafe { load_block_kind(&raw const (*block).kind) },
+            BLOCK_KIND_BUFFER
+        );
 
         // Not ours: post it and touch nothing else. Neither `live` nor
         // `free` may be written from here — they are the owner's, and an
@@ -645,22 +654,27 @@ impl BufferArena {
             return false;
         }
         let id = self.id();
+        // Field by field, and the kind last through `store_block_kind`.
+        // A whole-header store is the one access the atomic type does not
+        // defend against: it writes those four bytes plainly, and the
+        // collector reads the kind of every block of every region
+        // (`block_pool::store_block_kind`, `Heap::refill`).
         unsafe {
-            block.write(BufferBlockHeader {
-                private: BufferBlockPrivate {
-                    kind: BLOCK_KIND_BUFFER,
-                    live: 0,
-                    free: std::ptr::null_mut(),
-                    owned_next: std::ptr::null_mut(),
-                    bump: (block as *mut u8).wrapping_add(LINE_SIZE),
-                },
-                shared: BufferBlockShared {
-                    owner: AtomicPtr::new(id),
-                },
-                remote: BufferBlockRemote {
-                    remote_free: AtomicPtr::new(std::ptr::null_mut()),
-                },
+            let private = &raw mut (*block).private;
+            (&raw mut (*private).live).write(0);
+            (&raw mut (*private).free).write(std::ptr::null_mut());
+            (&raw mut (*private).owned_next).write(std::ptr::null_mut());
+            (&raw mut (*private).bump).write((block as *mut u8).wrapping_add(LINE_SIZE));
+            (&raw mut (*block).shared).write(BufferBlockShared {
+                owner: AtomicPtr::new(id),
             });
+            (&raw mut (*block).remote).write(BufferBlockRemote {
+                remote_free: AtomicPtr::new(std::ptr::null_mut()),
+            });
+            crate::memory::block_pool::store_block_kind(
+                &raw const (*block).kind,
+                BLOCK_KIND_BUFFER,
+            );
         }
         self.own(block);
         self.current = block;
@@ -1048,8 +1062,11 @@ mod tests {
     /// with nothing to notice.
     #[test]
     fn the_header_is_split_by_access_rule() {
-        assert_eq!(std::mem::offset_of!(BufferBlockHeader, private), 0);
-        assert_eq!(std::mem::offset_of!(BufferBlockPrivate, kind), 0);
+        assert_eq!(std::mem::offset_of!(BufferBlockHeader, kind), 0);
+        // The private half starts on the next 8-aligned word, so `kind`
+        // costs four bytes of padding — the price of it being outside a
+        // borrow the owner takes on every free.
+        assert_eq!(std::mem::offset_of!(BufferBlockHeader, private), 8);
         let remote = std::mem::offset_of!(BufferBlockHeader, remote);
         let shared = std::mem::offset_of!(BufferBlockHeader, shared);
         assert_eq!(remote % 64, 0, "the contended half starts a cache line");
@@ -1089,7 +1106,7 @@ mod tests {
         unsafe { other.free(chunk, size) };
         unsafe {
             assert_eq!(
-                (*block).private.kind,
+                (*block).kind.load(Ordering::Relaxed),
                 BLOCK_KIND_BUFFER,
                 "a foreign free sent the owner's block home"
             );
@@ -1113,7 +1130,7 @@ mod tests {
         owner.collect_owned();
         unsafe {
             assert_eq!(
-                (*block).private.kind,
+                (*block).kind.load(Ordering::Relaxed),
                 0,
                 "collected and returned to the pool"
             );
@@ -1136,7 +1153,7 @@ mod tests {
         let block = BufferBlockHeader::of_ptr(chunk);
         unsafe {
             assert_eq!(
-                (*block).private.kind,
+                (*block).kind.load(Ordering::Relaxed),
                 BLOCK_KIND_BUFFER,
                 "the block was dropped on the floor with a live chunk in it"
             );
@@ -1153,7 +1170,7 @@ mod tests {
         let mut next = BufferArena::new();
         unsafe { next.free(chunk, size) };
         for _ in 0..16 {
-            if unsafe { (*block).private.kind } == 0 {
+            if unsafe { (*block).kind.load(Ordering::Relaxed) } == 0 {
                 break;
             }
             if ABANDONED.lock().unwrap().head.is_null() {
@@ -1163,7 +1180,13 @@ mod tests {
             // half of adoption, not whether the tail fits a request.
             next.adopt(0);
         }
-        unsafe { assert_eq!((*block).private.kind, 0, "adopted, collected, and home") };
+        unsafe {
+            assert_eq!(
+                (*block).kind.load(Ordering::Relaxed),
+                0,
+                "adopted, collected, and home"
+            )
+        };
     }
 
     /// Follows the block itself rather than the process-global
@@ -1181,18 +1204,21 @@ mod tests {
             let mut a = BufferArena::new();
             let (p, g) = a.alloc(128); // takes the current block
             block = BlockHeader::of_ptr(p);
-            assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_BUFFER);
+            assert_eq!(
+                unsafe { (*block).kind.load(Ordering::Relaxed) },
+                BLOCK_KIND_BUFFER
+            );
 
             unsafe { a.free(p, g) }; // live → 0, but it is still current
             assert_eq!(
-                unsafe { (*block).kind },
+                unsafe { (*block).kind.load(Ordering::Relaxed) },
                 BLOCK_KIND_BUFFER,
                 "free must not return the block the arena is still bumping into"
             );
         } // drop
 
         assert_eq!(
-            unsafe { (*block).kind },
+            unsafe { (*block).kind.load(Ordering::Relaxed) },
             crate::memory::block_pool::BLOCK_KIND_FREE,
             "Drop returned the empty current block instead of leaking it"
         );

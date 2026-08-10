@@ -1640,7 +1640,7 @@ mod tests {
 
         let block = crate::memory::block_pool::BlockHeader::of_ptr(a as *const u8);
         assert_eq!(
-            unsafe { (*block).kind },
+            unsafe { (*block).kind.load(Ordering::Relaxed) },
             crate::memory::block_pool::BLOCK_KIND_RETAINED,
             "the survivors' block is retained, not returned"
         );

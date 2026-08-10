@@ -378,7 +378,7 @@ walk cannot be tested before there is something to walk.
         arms removed. Gate: rc-walk 415 ×3, rc-trace 400 ×3, hash-folding
         415, `debug-journal` 421 ×3 and 406 ×3, both release builds,
         `fmt --check` clean, no warnings.
-- [~] S11.7 The request arena's door and the reset
+- [x] S11.7 The request arena's door and the reset
       done: an arena entity past one block payload is allocated through
         the arena's own entity door and logged as a run, while
         `Arena::alloc` keeps refusing for the C ABI; a survivor whose
@@ -394,6 +394,67 @@ walk cannot be tested before there is something to walk.
         with an acquire, which is a data race by the model and the reason
         `large_entity::commission` writes its header field by field
       tier: T2 · role: Critic
+      handoff: `Arena::alloc_entity` is the door and `routing`'s arena arm
+        its only caller; `Arena::alloc` keeps refusing and is still pinned
+        doing so by `absurd_size_is_refused_instead_of_wrapping`. The
+        reset's rules live in the survivor loop beside the stamp they
+        replace, behind `is_in_a_block_of_its_own`, and the fourth of them
+        needs no code: `large_entity::alloc` registers a run when it
+        allocates it. **An unpromoted corpse's header is zeroed where the
+        reset hands the memory back** — an arena entity is uncounted, so
+        it reaches the free door with its birth count, and that door asks
+        an entity slot for a dead header. The kind-store race the step
+        named was five more places than `Heap::refill`, all repaired, and
+        the Miri test written to witness them was red on an older defect
+        until S11.9. Gate: rc-walk 418 x3, rc-trace 402 x3, hash-folding
+        418, `debug-journal` 424 x3 and 408 x3, both release builds,
+        `fmt --check` clean. Miri clean over nine slices. Commit 9a65197.
+- [x] S11.9 The block kind is an atomic, and a `&mut` stops covering it
+      done: `kind` is an `AtomicU32` at offset 0 of all five block header
+        types, `store_block_kind` still the one write path and taking the
+        atomic, owner-thread reads relaxed loads and no ordering anywhere
+        new; both configurations build and pass; the pinned
+        `block_header_halves_are_laid_out_as_the_design_requires` passes
+        unchanged; `commissioning_an_entity_block_does_not_race_the_snapshot`
+        passes under Miri; and `dev/BENCHMARKS.md` records the alloc/free
+        comparison
+      tier: T2 · role: Critic
+      Sage 2026-08-10: the `&mut (*block).private` in `Heap::alloc` and
+        eleven siblings retag the shared `kind` word, which the collector
+        acquire-loads — a data race with no store in it, on the hottest
+        path, standing since the concurrent collector landed. The word
+        takes an atomic type in **all five** header types: a retag does
+        not descend into an `UnsafeCell`, so every present and future
+        site is covered by construction, and the layout is untouched
+        because `AtomicU32` has the size, alignment and `repr` of `u32`.
+        Uniform rather than only where a region contains the block,
+        because one discriminant punned across five types with a split
+        typing forces casts at the seams, which is the pattern that bred
+        this. `store_block_kind` keeps being the single write path and
+        loses its cast; so does the collector's load. Parity of the
+        relaxed load against the plain one is **measured once** before
+        the step closes rather than assumed, `Heap::alloc` and `free`
+        being measured paths. Ruled out and not to be reproposed: patching
+        the twelve sites with raw pointers, deferring, splitting the
+        header types between atomic and plain, moving `kind` off offset 0,
+        wrapping `BlockPrivate` in an `UnsafeCell` wholesale, and muting
+        the Miri test. Final.
+      handoff: **the ruling's premise held only for a shared reference.**
+        A retag of `&mut` asserts uniqueness over its whole range and does
+        not stop at an `UnsafeCell`, so the atomic type alone left Miri
+        reporting the same race at the same line. What the type buys is
+        the write side; what closes the race is the crate's own medicine
+        of 2026-07-20 — the word leaves the struct the `&mut` covers.
+        `kind` and `size_class` are fields of `HeapBlockHeader` and
+        `BufferBlockHeader` now, not of their private halves, and the byte
+        layout is unchanged: kind at 0, size class at 4, the private half
+        at 8, exactly where they lay. The pinned layout test asserts the
+        same offsets against the new field paths. `commissioning_an_entity
+        _block_does_not_race_the_snapshot` is silent under Miri and was
+        red before, twice — once on the struct store, once on the retag.
+        The parity measurement is in `dev/BENCHMARKS.md`, 2026-08-10: the
+        clock cannot resolve it on this box, and the two exported hot
+        entries differ by one instruction, an `movaps` become `movups`.
 - [ ] S11.8 The documents that move with it
       done: `docs/memory-manager.md`'s closing list of what is not
         implemented, `string.rs`'s module doc on the two layouts,

@@ -869,7 +869,11 @@ mod tests {
 
         unsafe { crate::promote::arena_reset_full(&mut arena) };
         assert_eq!(
-            unsafe { (*crate::memory::block_pool::BlockHeader::of_ptr(a as *const u8)).kind },
+            unsafe {
+                (*crate::memory::block_pool::BlockHeader::of_ptr(a as *const u8))
+                    .kind
+                    .load(Ordering::Relaxed)
+            },
             crate::memory::block_pool::BLOCK_KIND_RETAINED
         );
         unsafe {

@@ -43,6 +43,7 @@
 //! exists yet.
 
 use std::alloc::{GlobalAlloc, Layout};
+use std::sync::atomic::AtomicU32;
 
 use crate::memory::block_pool::{
     BLOCK_KIND_ENTITY, BLOCK_KIND_HEAP, BLOCK_KIND_LARGE, BLOCK_KIND_LARGE_RUN, BLOCK_MASK,
@@ -57,7 +58,7 @@ const MAX_ALIGN: usize = LINE_SIZE;
 /// first line. Shares offset 0 (`kind`) with the pool `BlockHeader`.
 #[repr(C)]
 struct LargeHeader {
-    kind: u32,
+    kind: AtomicU32,
     _pad: u32,
     /// Requested size (for `realloc` copy length).
     size: usize,
@@ -191,12 +192,12 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
             return std::ptr::null_mut();
         }
         unsafe {
-            block.write(LargeHeader {
-                kind: 0,
-                _pad: 0,
-                size,
-                run_bytes,
-            });
+            // A run lies outside every region, so nothing reads its
+            // kind across threads; the struct store is kept off the word
+            // all the same, so that one rule covers both arms here.
+            (&raw mut (*block)._pad).write(0);
+            (&raw mut (*block).size).write(size);
+            (&raw mut (*block).run_bytes).write(run_bytes);
             crate::memory::block_pool::store_block_kind(
                 &raw mut (*block).kind,
                 BLOCK_KIND_LARGE_RUN,

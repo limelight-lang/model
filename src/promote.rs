@@ -991,7 +991,10 @@ mod tests {
 
         unsafe { store_prop(&mut arena, holder, 16, obj) };
         let block = BlockHeader::of_ptr(obj as *const u8);
-        assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_ARENA);
+        assert_eq!(
+            unsafe { (*block).kind.load(Ordering::Relaxed) },
+            BLOCK_KIND_ARENA
+        );
 
         unsafe { arena_reset_full(&mut arena) };
 
@@ -1003,7 +1006,10 @@ mod tests {
         );
         assert_eq!(o.rc.refcount, 1, "exactly the one external reference");
         assert_eq!(o.rc.flags & ARENA_RESET_MARK, 0, "transient mark cleared");
-        assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_RETAINED);
+        assert_eq!(
+            unsafe { (*block).kind.load(Ordering::Relaxed) },
+            BLOCK_KIND_RETAINED
+        );
 
         // The survivor is an ordinary counted object now: its one
         // reference is the holder's slot, so the holder's death

@@ -115,14 +115,14 @@ fn immortal_alloc_run(size: usize) -> *mut u8 {
         // Same discipline as the pooled path: report, do not abort.
         return std::ptr::null_mut();
     }
-    // The one block kind in the crate still written by a plain store, and
-    // the reason is the allocation rather than the discipline: this run
-    // comes from the system allocator and lies inside no carved region,
-    // so the collector's scan — which reads a region's blocks and nothing
-    // else — never loads this word. Anything pooled goes through
-    // `store_block_kind`.
+    // Through the one write path like every other kind, though nothing
+    // reads this one across threads: the run comes from the system
+    // allocator and lies inside no carved region, so the collector's
+    // scan — which walks a region's blocks and nothing else — never
+    // reaches it. Uniform anyway, because a discriminant punned across
+    // five header types with two disciplines needs casts at the seams.
     unsafe {
-        (*block).kind = BLOCK_KIND_IMMORTAL;
+        crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_IMMORTAL);
         BlockHeader::payload_start(block)
     }
 }
@@ -131,6 +131,7 @@ fn immortal_alloc_run(size: usize) -> *mut u8 {
 mod tests {
     use super::*;
     use crate::memory::block_pool::BLOCK_KIND_FREE;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn allocations_are_sequential_and_aligned() {
@@ -144,7 +145,7 @@ mod tests {
             assert_eq!(b as usize - a as usize, 24);
         }
         assert_eq!(
-            unsafe { (*BlockHeader::of_ptr(a)).kind },
+            unsafe { (*BlockHeader::of_ptr(a)).kind.load(Ordering::Relaxed) },
             BLOCK_KIND_IMMORTAL
         );
     }
@@ -181,8 +182,14 @@ mod tests {
 
         // The block was not recycled: kind untouched, data intact.
         let block = BlockHeader::of_ptr(p);
-        assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_IMMORTAL);
-        assert_ne!(unsafe { (*block).kind }, BLOCK_KIND_FREE);
+        assert_eq!(
+            unsafe { (*block).kind.load(Ordering::Relaxed) },
+            BLOCK_KIND_IMMORTAL
+        );
+        assert_ne!(
+            unsafe { (*block).kind.load(Ordering::Relaxed) },
+            BLOCK_KIND_FREE
+        );
         assert_eq!(unsafe { *(p as *mut u64) }, 0xC0FFEE);
     }
 
@@ -196,7 +203,7 @@ mod tests {
             let p = immortal_alloc(BLOCK_PAYLOAD / 4);
             if BlockHeader::of_ptr(p) != BlockHeader::of_ptr(first) {
                 assert_eq!(
-                    unsafe { (*BlockHeader::of_ptr(p)).kind },
+                    unsafe { (*BlockHeader::of_ptr(p)).kind.load(Ordering::Relaxed) },
                     BLOCK_KIND_IMMORTAL
                 );
                 break;
@@ -220,7 +227,10 @@ mod tests {
         assert_eq!(p as usize % 8, 0);
 
         let block = BlockHeader::of_ptr(p);
-        assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_IMMORTAL);
+        assert_eq!(
+            unsafe { (*block).kind.load(Ordering::Relaxed) },
+            BLOCK_KIND_IMMORTAL
+        );
 
         // Writable end to end, and the tail is really ours.
         unsafe {
@@ -231,7 +241,10 @@ mod tests {
 
         // A free is still a no-op, as for every other immortal pointer.
         unsafe { crate::memory::stdapi::ll_free(p) };
-        assert_eq!(unsafe { (*block).kind }, BLOCK_KIND_IMMORTAL);
+        assert_eq!(
+            unsafe { (*block).kind.load(Ordering::Relaxed) },
+            BLOCK_KIND_IMMORTAL
+        );
         assert_eq!(unsafe { *p }, 0xA5);
     }
 

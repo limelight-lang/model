@@ -29,6 +29,7 @@
 
 use std::alloc::Layout;
 use std::collections::BTreeSet;
+use std::sync::atomic::AtomicU32;
 use std::sync::{Mutex, OnceLock};
 
 use crate::memory::block_pool::{
@@ -41,7 +42,7 @@ use crate::memory::block_pool::{
 /// one load routes a free without a caller-provided size.
 #[repr(C)]
 pub(crate) struct LargeEntityHeader {
-    pub(crate) kind: u32,
+    pub(crate) kind: AtomicU32,
     _pad: u32,
     /// The entity's size in bytes — what a heap block records as a size
     /// class, for a population whose class is one entity wide.
@@ -210,6 +211,7 @@ mod tests {
     use super::*;
     use crate::memory::block_pool::{BLOCK_MASK, test_guard};
     use crate::refcount::MemoryCategory;
+    use std::sync::atomic::Ordering;
 
     /// Up to one block payload the allocation is a pooled block: its
     /// kind says so, the entity sits at `+LINE_SIZE`, its header word
@@ -229,7 +231,11 @@ mod tests {
             "the entity starts after the header line"
         );
         assert_eq!(
-            unsafe { (*(block as *const LargeEntityHeader)).kind },
+            unsafe {
+                (*(block as *const LargeEntityHeader))
+                    .kind
+                    .load(Ordering::Relaxed)
+            },
             BLOCK_KIND_ENTITY_LARGE
         );
         assert_eq!(
@@ -275,7 +281,9 @@ mod tests {
             assert!(!obj.is_null(), "a wide class is instantiable");
             let block = (obj as usize & !BLOCK_MASK) as *mut u8;
             assert_eq!(
-                (*(block as *const LargeEntityHeader)).kind,
+                (*(block as *const LargeEntityHeader))
+                    .kind
+                    .load(Ordering::Relaxed),
                 BLOCK_KIND_ENTITY_LARGE_RUN
             );
 
@@ -321,7 +329,9 @@ mod tests {
         unsafe {
             crate::memory::stdapi::ll_free(entity);
             assert_eq!(
-                (*(block as *const LargeEntityHeader)).kind,
+                (*(block as *const LargeEntityHeader))
+                    .kind
+                    .load(Ordering::Relaxed),
                 crate::memory::block_pool::BLOCK_KIND_FREE,
                 "the pool re-stamps on the way in, which is what makes the \
                  second free legible"
@@ -375,7 +385,11 @@ mod tests {
         assert!(!entity.is_null());
         let block = (entity as usize & !BLOCK_MASK) as *mut u8;
         assert_eq!(
-            unsafe { (*(block as *const LargeEntityHeader)).kind },
+            unsafe {
+                (*(block as *const LargeEntityHeader))
+                    .kind
+                    .load(Ordering::Relaxed)
+            },
             BLOCK_KIND_ENTITY_LARGE_RUN
         );
         assert_eq!(
