@@ -455,7 +455,7 @@ walk cannot be tested before there is something to walk.
         The parity measurement is in `dev/BENCHMARKS.md`, 2026-08-10: the
         clock cannot resolve it on this box, and the two exported hot
         entries differ by one instruction, an `movaps` become `movups`.
-- [ ] S11.8 The documents that move with it
+- [x] S11.8 The documents that move with it
       done: `docs/memory-manager.md`'s closing list of what is not
         implemented, `string.rs`'s module doc on the two layouts,
         `rfc/model/strings.md` and `rfc/model/memory/arenas.md` all state
@@ -466,6 +466,17 @@ walk cannot be tested before there is something to walk.
         (`immortal_alloc_run`), so its bound is this gate's policy rather
         than its allocator's limit
       tier: T1 · role: —
+      handoff: three sections of `docs/memory-manager.md` moved, not one —
+        the header diagram (the two words the collector reads are outside
+        the private half now), the entity-block section, whose closing
+        sentence said a large entity stays **outside** the walk, and the
+        arena's, which gains the second door and the reset's exception.
+        `dev/DECISIONS.md` carries the per-category limit and the rejected
+        compile-time cap with the PHP measurement behind it.
+        `rfc/model/memory/arenas.md` states the rule in the Request Arena
+        section; `rfc/model/strings.md` already carried it from S11.4 and
+        was left alone. `linkcheck` clean but for the one target that
+        predates the stage.
 
 ### The strategy, as proposed
 

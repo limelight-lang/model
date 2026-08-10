@@ -67,11 +67,11 @@ Field order here is a contract, pinned by
 `block_header_halves_are_laid_out_as_the_design_requires`:
 
 ```
-line 0   BlockPrivate  kind, size_class, used, slots, free, bump,
-                       linked, next, prev
-         BlockShared   owner
-line 1   BlockRemote   remote_free, alone
-line 2   BlockLinks    owned_next, owned_prev
+line 0   kind, size_class       the two words the collector reads
+         BlockPrivate           used, slots, free, bump, linked, next, prev
+         BlockShared            owner
+line 1   BlockRemote            remote_free, alone
+line 2   BlockLinks             owned_next, owned_prev
 ```
 
 Two rules produced that layout, and both were measured:
@@ -88,6 +88,15 @@ The split into private and shared halves is not only about cache lines.
 `&mut HeapBlockHeader` was a false claim of exclusivity, since it
 covered atomics other threads read by design. The owner now borrows
 `&mut (*block).private` and cannot name the shared half at all.
+
+`kind` and `size_class` sit outside that half for the same reason, and
+learning it cost a second round: the collector reads both for every
+block of every region, and a `&mut` retag asserts uniqueness over its
+whole range — including an `UnsafeCell`, which is where the atomic type
+alone was not enough (2026-08-10, S11.9 in `PLAN.md`). Both are
+`AtomicU32`; `block_pool::store_block_kind` is the only path that writes
+a kind, and because a whole-header struct store would cover the word
+plainly, every commissioning writes its header field by field.
 
 ## BlockPool
 
@@ -182,9 +191,23 @@ Three rules distinguish the entity population:
 
 `for_each_entity_slot` (the census primitive under `walk.rs`) enumerates
 the registry's regions, skips every non-entity block, and visits
-occupied slots bounded by each block's bump cursor. Entities past the
-small-object range fall back to the large path and stay outside the walk
-— conservative, like every other un-walked region.
+occupied slots bounded by each block's bump cursor.
+
+**An entity past the largest size class is not packed at all**, and it
+is inside the walk rather than outside it. It keeps its inline layout
+whole as the sole occupant of a block-aligned allocation whose first
+line is a block header of its own kind — `BLOCK_KIND_ENTITY_LARGE` for a
+pooled block up to one payload, `BLOCK_KIND_ENTITY_LARGE_RUN` for an
+OS-direct run above it (`memory/large_entity.rs`,
+`rfc/model/memory/large-entities.md`). The kinds are new rather than
+borrowed from the raw large path, which holds C buffers a walker must
+never read as entities. Both enumerators visit exactly one slot in such
+a block, and that count is soundness rather than economy: dividing the
+payload by a class size there fabricates rows out of the object's own
+cells. The pooled half rides the region scan; a run lies outside every
+region and is found from the module's own registry, which is why its
+free parks during an epoch like everything else that can put memory back
+in circulation.
 
 ### Deferred free (rc-walk builds)
 
@@ -254,6 +277,19 @@ A bump allocator whose blocks are chained through their headers. Its
 four logs — escapees, tracked destructors, deferred releases, large
 payloads — live in the arena's **own** bump memory, so there is no side
 `Vec` and everything dies with the arena at once.
+
+**Two doors, split by what the caller is holding.** `Arena::alloc` is
+the C ABI's, reached from `ll_arena_alloc`, where an entity and a byte
+buffer are the same request; it refuses anything past one block payload,
+because a slot that large has no home in a bump-packed block.
+`Arena::alloc_entity` is routing's, and past the same bound it takes a
+block-aligned allocation of its own and logs it with the large payloads,
+so an unpromoted corpse is freed by the reset with every other run. A
+survivor in such a block is the reset's one exception to block
+retention: it is handed over rather than retained — no `BLOCK_KIND_RETAINED`
+stamp, no entry in the retained index, and out of the arena's log through
+`forget_large`. Stamping it retained would send a multi-megabyte OS
+allocation to the 64 KiB block pool at the entity's death.
 
 When that bump memory is exhausted a log segment is carved from the
 thread's reserve instead (see "The log reserve" below), through a

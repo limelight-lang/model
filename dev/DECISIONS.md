@@ -8,6 +8,46 @@ never edited or deleted.
 
 ---
 
+## 2026-08-10 — the entity-slot limit differs by category, and past it nothing is packed
+
+Edmond's ruling and the Sage's shape, from stage S11. **An entity whose
+single allocation exceeds what its category's allocator packs into a
+block it shares is not packed at all**: it keeps its inline layout whole
+as the sole occupant of a block-aligned allocation of its own, first line
+a block header of a new kind pair, entity at `+LINE_SIZE`. Field access
+is unchanged, and the walk visits exactly one slot there.
+
+**The limit is per category because the allocators differ, and
+`routing::slot_limit` is the one place that says so.** Both arenas
+bump-pack within a block, so their bound is `BLOCK_PAYLOAD`: a shared
+block cannot hold a slot larger than its payload. The entity heap packs
+by size class, and its bound is `MAX_SMALL` rather than the block —
+past the largest class a packed slot would take a whole block and land
+outside the population both enumerators walk, which is a leak no pass
+finds. Reading a block size in a factory is what this replaces; six of
+them used to.
+
+Past the bound each category answers differently, and none refuses. The
+two heap categories and the immortal region lift in `entity_alloc_in`;
+the immortal one needed no allocator, `immortal_alloc` having served a
+larger request from a run since before the stage. The request arena
+lifts on a **door of its own**, `Arena::alloc_entity`, while
+`Arena::alloc` keeps refusing — it serves `ll_arena_alloc` from the C
+ABI, where an entity and a byte buffer are the same request, and that is
+the reason the bound lives there at all.
+
+**Rejected, and not to be reproposed:** capping a class's slot at one
+block payload with the limit enforced by the compiler at class layout.
+It is cheap and compile-time known, and it refuses a program Zend runs —
+measured on this box against PHP 8.6.0-dev, where a class of 10 000
+declared properties instantiates at 163 840 bytes and 200 000 works too.
+The compiler warns at `MAX_SMALL` instead, where an object stops sharing
+a block and starts costing one of its own. Also rejected: an out-of-line
+cell vector, chunked entities, reusing the raw large kinds, entering runs
+into the block pool's region registry, and raising `MAX_SMALL`.
+
+Design: `rfc/model/memory/large-entities.md`.
+
 ## 2026-08-10 — a string's layout is its own header bit
 
 The Sage's, on a collision the stage's own design walked into. `COW`

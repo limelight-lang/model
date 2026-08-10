@@ -81,9 +81,11 @@ pub(crate) unsafe fn entity_alloc_in(
 /// allocation of its own (`memory::large_entity`) — so this is a routing
 /// switch rather than a refusal.
 ///
-/// The request arena bumps within one block, so a slot it shares cannot
-/// exceed a block's payload; the immortal region bump-packs the same way
-/// and serves a larger request from a run of its own. The entity heap
+/// Both arenas bump-pack within one block, so a slot either **shares**
+/// cannot exceed a block's payload — and past that bound neither
+/// refuses: the immortal region serves the request from a run of its
+/// own (`immortal_alloc_run`) and the request arena from a large-entity
+/// allocation it logs for the reset. The entity heap
 /// has size classes up to `MAX_SMALL`, and past that a packed slot would
 /// take a whole block and land outside the entity-block population the
 /// walk enumerates (`heap::entity_alloc`) — a leak no pass finds, which
@@ -93,9 +95,12 @@ pub(crate) unsafe fn entity_alloc_in(
 /// body above the same bound is legal and takes the dedicated-run path
 /// ([`body_alloc`]).
 ///
-/// The arena enforces its own row rather than reading it here, because
-/// `ll_arena_alloc` reaches `Arena::alloc` without passing this module
-/// and because the reverse dependency would close a cycle.
+/// The arena's row is enforced twice over rather than read here.
+/// `Arena::alloc` tests the bound itself, because `ll_arena_alloc`
+/// reaches it without passing this module and because the reverse
+/// dependency would close a cycle; `Arena::alloc_entity`, which this
+/// module's arena arm calls, splits at the same bound and serves the
+/// larger request from an allocation of its own.
 #[inline]
 pub(crate) fn slot_limit(category: MemoryCategory) -> usize {
     match category {
