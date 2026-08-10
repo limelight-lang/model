@@ -139,6 +139,38 @@ strategy the memory manager never had, and it goes at the ordinary pace.
         the reason one of them is chosen, and the questions below either
         answered or deferred in writing
       tier: T2 · role: Critic
+      Sage 2026-08-10: the invariant as proposed bounds the wrong thing —
+        it reads as a ban on entities larger than a block, which shape B
+        contradicts. It has two clauses instead: a **shared** block never
+        holds a slot larger than its category's packing unit
+        (`BLOCK_PAYLOAD` where the category bump-packs, `MAX_SMALL` where
+        it packs by size class), and no live counted heap entity is
+        outside the two enumerators' reach. Past its packing unit an
+        entity is not packed at all: it keeps its inline layout whole, as
+        the sole occupant of a block-aligned allocation whose first line
+        is a block header of a large-entity kind, entity at `+LINE_SIZE`.
+        Shape B is built, and it is smaller than proposed — the physical
+        layout exists in `stdapi::ll_alloc_large`, pooled below one
+        payload and OS-direct above it. What S11.5 adds: a **new** kind
+        pair, because `BLOCK_KIND_LARGE`/`LARGE_RUN` also hold raw C
+        buffers and a walker reading one as an `RcHeader` is the mistake
+        segregation exists to prevent; discovery, by region scan for the
+        pooled half and by a registry with `retained.rs`'s contract for
+        runs; the same commissioning order as an entity block; and both
+        kinds in `deferred_free`'s park set, which for a run is soundness
+        rather than hygiene, a run being unmapped at free while an
+        epoch's snapshot still addresses it. `entity_alloc_in` then stops
+        refusing above `slot_limit` for the two heap categories. Ruled
+        out and not to be reproposed: shape A in any form, chunked or
+        discontinuous entities, walking the existing large kinds,
+        entering runs into the region registry, copying a surviving arena
+        large entity at reset (transfer through `forget_large` and
+        register), and raising `MAX_SMALL` as a substitute. Also answered:
+        `LongLived` takes the same shape as `GcHeap`. Left to the
+        document with the Critic: the registry's home — `retained.rs`
+        extended or a table of its own, reconciling that a retained block
+        goes back to the pool while a run must reach `dealloc` — and the
+        snapshot cost written as a number. Final.
 - [ ] S11.4 A string past the limit is built dynamic
       done: `ll_string_new` chooses its layout from S11.2's answer
         instead of always building the inline one; a request-arena
