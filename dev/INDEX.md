@@ -411,8 +411,12 @@ and what of it applies here. Entries so far: Concurrency Kit (the seqlock
 that found the version-bracket defect ahead of S2.7, the epoch proof,
 event counts, the per-bucket probe bound), `ankerl::unordered_dense` (the
 fingerprint byte, for the array-performance stage), mimalloc and snmalloc
-(the two answers to cross-thread free). Read it before evaluating one of
-those again.
+(the two answers to cross-thread free), and rpmalloc 2.0.1, read from
+source — reallocation in place, which `ll_realloc` never does; the band
+between the 8 KiB class and a whole block; the zeroed-block flag that
+would retire `refill`'s per-slot pass; decommit on a threshold; and the
+length carried in the cross-thread free list. Read it before evaluating
+one of those again.
 
 ## Diagrams
 

@@ -111,9 +111,19 @@ impl Arena {
 
     /// The hot path. Sizes are rounded to 8; on a constant size the
     /// rounding folds away at compile time.
+    ///
+    /// **Null for a size past one block payload**, which is a refusal and
+    /// not an abort: the arena bump-packs into blocks, so a slot that
+    /// large has no home here, and the size arrives from the program
+    /// through `ll_arena_alloc`. A caller whose size comes from a
+    /// program-visible count wants `alloc_body`, which splits by size and
+    /// takes the dedicated-run path above the same bound.
     #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         let size = round_up_8(size);
+        if size > BLOCK_PAYLOAD {
+            return std::ptr::null_mut();
+        }
         let p = self.bump;
 
         // checked_add: `size` is caller-controlled ABI input; an
@@ -133,7 +143,10 @@ impl Arena {
 
     #[cold]
     fn alloc_slow(&mut self, size: usize) -> *mut u8 {
-        assert!(
+        // The invariant, stated where the block is taken: `alloc` above
+        // refuses this size, so reaching here with it means a new caller
+        // bypassed the refusal and is about to bump past a block's end.
+        debug_assert!(
             size <= BLOCK_PAYLOAD,
             "large objects take the dedicated-run path, not the arena — a \
              caller whose size comes from the program wants alloc_body"
@@ -689,13 +702,23 @@ mod tests {
         }
     }
 
+    /// A size no block can hold is refused, and the refusal leaves the
+    /// arena serving: the rounding saturates instead of wrapping, so the
+    /// request stays huge and fails the bound rather than becoming a
+    /// small one. It used to end the process here — S11.1 made it a
+    /// refusal, because the size arrives through `ll_arena_alloc` and a
+    /// program can name it.
     #[test]
-    #[should_panic(expected = "large objects take the dedicated-run path")]
-    fn absurd_size_fails_cleanly_instead_of_wrapping() {
+    fn absurd_size_is_refused_instead_of_wrapping() {
         let _g = crate::memory::block_pool::test_guard();
         let mut arena = Arena::new();
         arena.alloc(8); // non-null bump: the fast path is reachable
-        arena.alloc(usize::MAX - 64); // must hit the slow-path assert
+        assert!(arena.alloc(usize::MAX - 64).is_null());
+        assert!(arena.alloc(BLOCK_PAYLOAD + 1).is_null());
+        assert!(
+            !arena.alloc(8).is_null(),
+            "a refusal left the arena unable to serve"
+        );
     }
 
     #[test]

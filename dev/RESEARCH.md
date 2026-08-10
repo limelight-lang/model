@@ -203,6 +203,187 @@ would turn a chain into one CAS per block without new machinery.
 ### Named, not read
 
 `tcmalloc` (per-CPU caches over restartable sequences), `jemalloc`
-(arenas and extent trees), `rpmalloc`, and MMTk, which is a Rust
-framework of collectors rather than an allocator and is the closer
-comparison for the collector side.
+(arenas and extent trees), and MMTk, which is a Rust framework of
+collectors rather than an allocator and is the closer comparison for the
+collector side. `rpmalloc` was read on 2026-08-10; its entry is below.
+
+## 2026-08-10 — rpmalloc
+
+`github.com/mjansson/rpmalloc`, read at `5dacae8`, version 2.0.1,
+Unlicense OR MIT. Read from `rpmalloc/rpmalloc.c` and the README design
+section; every line reference below was opened, and nothing here comes
+from the changelog alone.
+
+2.0.0 replaced the core of the 1.4 series, so anything recalled from the
+older design describes different code. Memory is now span (256 MiB,
+fixed alignment) then page (64 KiB, 1 MiB, 4 MiB or 16 MiB by block
+size) then block, both headers found by masking the block address; the
+per-thread and global span caches are gone, replaced by reserving
+address space and committing per page on demand.
+
+Five mechanisms apply to `src/memory/` and one that looks applicable is
+not. None of them is measured on our side, so each is a proposal and is
+written as one.
+
+### The cross-thread free list carries its own length
+
+`page->thread_free` is one `atomic_ullong` holding the head block's
+index within the page in the low half and the list length in the high
+half (`rpmalloc.c:1213`, `rpmalloc.c:1221`). A remote free reads the
+previous length out of the token it observed and CAS-es the new pair
+(`rpmalloc.c:1404`). The owner takes the list with one CAS to zero and
+gets the count with it, so the used-block counter is corrected without
+reading a single link (`rpmalloc.c:1381`).
+
+Our `collect_remote` (`heap.rs:995`) swaps the list out with one atomic
+and then walks it end to end for one reason: to learn how far `used`
+must drop (`heap.rs:1009`). Every link on that walk was written by
+another thread, so it is a cache miss, and the list is longest exactly
+when the block is most contended. Packing the count beside the head
+removes the walk. Our slot index fits the low half with room to spare
+(4080 slots at the 16-byte class), and the tail is still needed to
+splice onto a non-empty local list — rpmalloc sidesteps that by adopting
+only into an empty one (`rpmalloc.c:1372`), which is the state
+`alloc_block_full` meets by construction, a full block having no local
+list.
+
+The win is smaller than a missing walk suggests, and the reason belongs
+here before anyone builds it. Both collection sites are cold — `refill`
+runs about 0.00003 times per allocation on the steady-state benchmarks —
+and the slots the walk chases are the slots the block is about to hand
+out, so the misses it pays are misses the allocation path would pay a
+moment later. What the count buys is the serial dependency: a pointer
+chase cannot prefetch, while the pops that follow can. Measure first.
+
+### Reallocation in place
+
+rpmalloc returns the same block when the new size still fits it
+(`rpmalloc.c:2402`), refuses to move a huge block that shrinks by less
+than half (`rpmalloc.c:2413`), and on a move that does happen
+overallocates to 1.375x when the growth is smaller than that, so a loop
+growing by a few bytes at a time stops reallocating at every step
+(`rpmalloc.c:2429`).
+
+`ll_realloc` (`stdapi.rs:369`) allocates, copies and frees on every call,
+including when the old and the new size share a class: 40 bytes to 48
+bytes costs a block, a `memcpy` and a free to move inside one 48-byte
+slot. The class size is already recoverable, since `ll_usable_size`
+(`stdapi.rs:349`) reads it from the block header, so the test is one
+comparison on a path that is cold anyway. No entity is involved:
+`realloc` serves the raw C surface, and the walker reads no block of
+that kind.
+
+No benchmark covers it. `rptest` in `benches/standard.rs` frees and
+allocates rather than reallocating, so this path has no measurement at
+all, in either shape.
+
+### The band between the largest class and one whole block
+
+Our classes stop at 8 KiB (`heap.rs:102`), and everything above that up
+to a block payload takes a whole 64 KiB block (`stdapi.rs:154`), so a
+9 KiB request holds 64 KiB — about eight times what it asked for,
+against the "under 25%" that `docs/memory-manager.md` states for the
+classes below. rpmalloc holds a step of roughly 25% up to 128 KiB by
+giving the larger classes their own page sizes (`rpmalloc.c:687`). The
+same band here needs no second page type: classes of two to five slots
+per 64 KiB block keep the stride uniform, which is what the walker's
+stride and the header layout depend on.
+
+Alignment reaches the same path from the other side. A request with
+`align > 16` is routed there whatever its size (`stdapi.rs:147`), so
+`aligned_alloc(64, 40)` costs a 64 KiB block. rpmalloc allocates
+`size + alignment` from the ordinary classes, offsets the pointer and
+marks the page as carrying aligned blocks (`rpmalloc.c:2376`); free
+realigns by the block size only in pages holding that flag
+(`rpmalloc.c:1759`). Worth building only for a caller that wants
+over-16 alignment, and the runtime has none today.
+
+### Knowing a block is already zero
+
+`page->is_zero` records that a page's blocks read zero, and the
+allocator uses it to skip the memset in `rpzalloc` (`rpmalloc.c:1491`).
+The flag is set where the knowledge is free: a page recommitted after
+decommit comes back zeroed by the kernel, so only the header prefix is
+cleared by hand and the rest is declared zero (`rpmalloc.c:1281`).
+
+`Heap::refill` writes eight bytes into every slot of an entity block,
+unconditionally (`heap.rs:1115`). Up to 4080 stores at the 16-byte
+class, and because the stride is 16 bytes it dirties every cache line of
+the 64 KiB block, which is one refill costing the write traffic of the
+whole block. The rule it enforces is narrower than the pass: the walker
+tests one field, `refcount != 0` (`heap.rs:2020`), and reads only slots
+below `bump`.
+
+Two sources of the same knowledge exist here and neither is used. A
+block carved from a fresh region is untouched memory, and regions come
+from `alloc` (`block_pool.rs:501`); `alloc_zeroed` for a 2 MiB
+block-aligned region is served by a fresh kernel mapping, so the
+guarantee costs nothing. A block returned empty from an *entity* heap
+still satisfies the invariant: `FreeSlot` deliberately preserves the
+first eight bytes, holding the dead entity's final header
+(`heap.rs:175`), and an entity dies at refcount 0. What breaks the
+invariant is a block that served as raw or arena memory in between, or a
+recommissioning at a different stride, so the flag has to name the
+stride it holds for.
+
+### Commit on demand, decommit on a threshold, and a huge-mapping cache
+
+Free pages accumulate per page type until the count crosses 16, 8, 4 or
+2 (`rpmalloc.c:712`), at which point the excess is decommitted down to a
+retained 4, 2, 1 or 1 (`rpmalloc.c:715`, applied at `rpmalloc.c:2003`).
+The page header prefix stays committed so the metadata survives, and the
+prefix size is the page size captured at map time, so commit and
+decommit always name the same range (`rpmalloc.c:1249`).
+
+Freed huge mappings go to a 32-slot cache instead of straight back to
+the OS: bounded by committed bytes rather than count, evicted by age,
+and reused when the request fits within a 25% overshoot
+(`rpmalloc.c:1600`, `rpmalloc.c:1708`).
+
+Our pool never returns a region (`block_pool.rs:10`, where the lazy
+purge is recorded as deferred), and our one-block-per-class
+`empty_reserve` (`heap.rs:1031`) is the same hysteresis at a count of
+one. `LARGE_RUN` unmaps on every free (`stdapi.rs:24`), which is the
+allocation shape a huge cache exists for.
+
+### Routing a free into a full block, and why it stays there
+
+A full page is on no list its owner scans, so a foreign free left there
+waits for a local free to touch the page. rpmalloc has the freeing
+thread read `is_full` and push into a per-page-type list on the heap
+instead (`rpmalloc.c:1391`); the owner drains it on the refill path with
+one CAS and frees each block locally (`rpmalloc.c:2133`). We answer the
+same problem from the other end: `collect_owned` (`heap.rs:685`) sweeps
+every block this heap owns of the class before drawing a fresh one, and
+the comment there records what its absence cost (34.2M to 2.3M ops/s on
+`mt_bench`). O(blocks owned) on our side against O(1) on the freeing
+thread looks like a trade worth taking, and it is not available to us.
+
+Two things block it. The freeing thread reads `is_full` while the owner
+writes that packed flag word, which rpmalloc documents as a benign race
+and silences in ThreadSanitizer (`rpmalloc.c:539`); for us it is a data
+race Miri reports, and the gate takes Miri seriously. And the list it
+pushes to belongs to a heap, which in rpmalloc outlives every thread
+(`rpmalloc.c:1952`), while ours dies with its thread — a message posted
+to a dead heap is stranded, and that is exactly why `remote_free` sits
+in the block (`heap.rs:296`).
+
+### What we already do, and rpmalloc does not
+
+Virgin slots. rpmalloc threads a free list through the new blocks of a
+page at first touch, bounded to the current OS page so the work stays
+inside one fault (`rpmalloc.c:1435`). Our bump cursor makes the same
+slots available with no per-slot work at all, which is the trade
+`heap.rs` records the bitmap losing.
+
+### What does not apply
+
+The three-level hierarchy with 256 MiB span alignment answers a problem
+we do not have: we carry one block size and one mask, and our largest
+class is far below the point where a fixed page size wastes. Heap
+packing (`rpmalloc.c:1874`) exists because a thread heap is small
+against a mapping page; ours comes from the process allocator as one
+`ThreadHeaps` pair per thread (`heap.rs:1720`). The spin that escalates
+to `sched_yield` after 100 pauses (`rpmalloc.c:409`) is the answer to a
+hand-rolled lock under preemption; our cold paths take a
+`std::sync::Mutex`, which parks.

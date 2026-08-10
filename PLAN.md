@@ -96,7 +96,7 @@ carries a block size of its own.
 few lines and closes a size reachable from the C ABI; the rest is the
 strategy the memory manager never had, and it goes at the ordinary pace.
 
-- [ ] S11.1 Oversize is refused, not asserted
+- [x] S11.1 Oversize is refused, not asserted
       done: `entity_alloc_in` returns null for a size the category's
         allocator cannot serve, the factories above it report that
         refusal the way they already report pool exhaustion, and
@@ -104,6 +104,18 @@ strategy the memory manager never had, and it goes at the ordinary pace.
         naming the invariant; one test per category at the limit and at
         the limit + 1, each seen failing before the change
       tier: T1 · role: —
+      handoff: the arena refuses in `Arena::alloc` itself, because
+        `ll_arena_alloc` reaches it without passing routing, and
+        `alloc_slow` keeps the bound as a `debug_assert` naming the
+        invariant. `entity_alloc_in` gates the other three: `MAX_SMALL`
+        for both heap categories, `BLOCK_PAYLOAD` for the immortal
+        region. Four tests in `memory::routing`, each seen failing —
+        three on the served-oversize assertion, the arena one on the
+        abort itself. One old test moved with the contract:
+        `absurd_size_fails_cleanly_instead_of_wrapping` pinned the abort
+        this step removes and is now
+        `absurd_size_is_refused_instead_of_wrapping`, which also checks
+        that a refusal leaves the arena serving.
 - [ ] S11.2 The limits, answered where routing answers
       done: one function beside `memory::routing` answers whether a size
         fits one slot of a category — `RequestArena` and `Immortal` at

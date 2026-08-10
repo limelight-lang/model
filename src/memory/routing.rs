@@ -19,6 +19,7 @@
 //! entity block is the mistake this split exists to prevent.
 
 use crate::memory::Buffer;
+use crate::memory::block_pool::BLOCK_PAYLOAD;
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::memory::immortal::immortal_alloc;
 use crate::refcount::MemoryCategory;
@@ -26,6 +27,15 @@ use crate::refcount::MemoryCategory;
 /// Uninitialized memory for an **entity** of `category`, `size` bytes.
 /// Null when the allocation fails, which every factory turns into a
 /// refusal its caller can raise on.
+///
+/// **A size past what the category's allocator packs into one slot is
+/// refused here**, and the bound differs by allocator: both arenas bump
+/// within a block, so theirs is `BLOCK_PAYLOAD`, while the entity heap
+/// has size classes to `MAX_SMALL` and hands anything larger to the
+/// standard allocator — where an entity sits outside the entity blocks
+/// and outside the walk, which is a leak rather than a refusal. Neither
+/// answer is one a factory can give, so the test is here and no factory
+/// carries a block size of its own.
 ///
 /// A category that must not hold a given kind of entity is the caller's
 /// to refuse *before* calling — the refusal belongs where its reason is,
@@ -40,15 +50,25 @@ pub(crate) unsafe fn entity_alloc_in(
     size: usize,
 ) -> *mut u8 {
     match category {
+        // The arena refuses the oversize itself, because `ll_arena_alloc`
+        // reaches it without passing here.
         MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },
         // Counted entities live in the segregated entity-block population
         // the cycle collector walks (`rfc/model/gc/rc-walk.md`). LongLived
         // rides along: the walker skips it by category per entity, and the
         // long-lived arena's own reclamation policy is still TBD.
-        MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-            crate::memory::heap::entity_alloc(size)
-        },
-        MemoryCategory::Immortal => immortal_alloc(size),
+        MemoryCategory::GcHeap | MemoryCategory::LongLived => {
+            if size > crate::memory::heap::MAX_SMALL {
+                return std::ptr::null_mut();
+            }
+            unsafe { crate::memory::heap::entity_alloc(size) }
+        }
+        MemoryCategory::Immortal => {
+            if size > BLOCK_PAYLOAD {
+                return std::ptr::null_mut();
+            }
+            immortal_alloc(size)
+        }
     }
 }
 
@@ -170,5 +190,65 @@ pub(crate) unsafe fn body_free(category: MemoryCategory, ptr: *mut u8, capacity:
         MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
             crate::memory::buffer_arena::buffer_free_longlived_payload(ptr, capacity)
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::arena::Arena;
+    use crate::memory::block_pool::{BLOCK_PAYLOAD, test_guard};
+    use crate::memory::context::LLContext;
+    use crate::memory::heap::MAX_SMALL;
+
+    /// An entity of exactly what a category's allocator can pack is
+    /// served, and the first byte past it is refused with a null rather
+    /// than by ending the process or by a slot the walk cannot reach.
+    /// The limits differ because the allocators do: both arenas bump
+    /// within one block, and the entity heap has size classes up to
+    /// `MAX_SMALL` and hands anything larger to the standard allocator,
+    /// where an entity is outside the walk.
+    fn served_at_the_limit_and_refused_past_it(category: MemoryCategory, limit: usize) {
+        let mut arena = Arena::new();
+        let arena_ptr: *mut Arena = &mut arena;
+        let mut context = LLContext { arena: arena_ptr };
+        let context_ptr: *mut LLContext = &mut context;
+
+        let at = unsafe { entity_alloc_in(context_ptr, category, limit) };
+        assert!(
+            !at.is_null(),
+            "{category:?} refused an entity of exactly what it can pack"
+        );
+        let past = unsafe { entity_alloc_in(context_ptr, category, limit + 1) };
+        assert!(
+            past.is_null(),
+            "{category:?} served an entity larger than one slot"
+        );
+
+        arena.reset(|_| {});
+    }
+
+    #[test]
+    fn a_request_arena_entity_stops_at_one_block_payload() {
+        let _g = test_guard();
+        served_at_the_limit_and_refused_past_it(MemoryCategory::RequestArena, BLOCK_PAYLOAD);
+    }
+
+    #[test]
+    fn a_heap_entity_stops_at_the_largest_size_class() {
+        let _g = test_guard();
+        served_at_the_limit_and_refused_past_it(MemoryCategory::GcHeap, MAX_SMALL);
+    }
+
+    #[test]
+    fn a_long_lived_entity_stops_where_a_heap_entity_does() {
+        let _g = test_guard();
+        served_at_the_limit_and_refused_past_it(MemoryCategory::LongLived, MAX_SMALL);
+    }
+
+    #[test]
+    fn an_immortal_entity_stops_at_one_block_payload() {
+        let _g = test_guard();
+        served_at_the_limit_and_refused_past_it(MemoryCategory::Immortal, BLOCK_PAYLOAD);
     }
 }
