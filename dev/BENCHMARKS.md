@@ -142,6 +142,32 @@ costs nothing on an aligned address on any x86-64 since Nehalem.
 timings are not resolvable, and what was bought is the removal of a data
 race on every allocation under `rc-walk`.
 
+**And the general claim rests on structure rather than on that
+disassembly**, which is the Sage's ruling of the same day, asked because
+one build of one compiler over one benchmark shape is thin evidence for a
+path meant to be inlined into compiler-generated PHP code. What an atomic
+load forecloses — duplication, merging, hoisting out of a loop, elision —
+each needs a **second** read of the same location, at a provably equal
+address, with no intervening write the compiler cannot see through. No
+such site exists here or can arise: `ll_free` and `Heap::free` each load
+once, from an address derived fresh from the incoming pointer, and feed
+the result straight to a branch. Successive frees carry different
+pointers, and the free-list push stores through raw pointers into the
+same block, so alias analysis would refuse to merge a *plain* load across
+it just as readily. Atomicity closes nothing that was open, and
+`Heap::free`'s `size_class` read lands on a header line its own push has
+already dirtied.
+
+Ruled out with it, and not to be reproposed: reading the word
+non-atomically on the ground that the owner is its only writer (no
+codegen to gain, and it puts back the mixed-access subtlety the change
+removed, outside what the Miri test defends); caching either word
+anywhere (a lookup keyed by block costs more than one L1 load from a
+dirty line); giving `rc-trace` a plain `u32` of its own (its store is
+already relaxed, the codegen is identical, and it would split the header
+type across builds and take the instrument off one of them); and
+realigning the private half to win back the `movaps`.
+
 ## 2026-08-08 — the journal's record sites: counted in the IR, and the clock's answer is owed
 
 The sites of `dev/design/debug-modes.md` §9.5 landed behind the
