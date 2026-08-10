@@ -46,9 +46,11 @@ pub(crate) unsafe fn entity_alloc_in(
     size: usize,
 ) -> *mut u8 {
     match category {
-        // The arena refuses the oversize itself, because `ll_arena_alloc`
-        // reaches it without passing here.
-        MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc(size) },
+        // The arena's own entity door, which splits at a block payload
+        // and logs the run it takes above it. `Arena::alloc` is not that
+        // door and keeps refusing: `ll_arena_alloc` reaches it from the C
+        // ABI, where an entity and a byte buffer are the same request.
+        MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc_entity(size) },
         // Counted entities live in the segregated entity-block population
         // the cycle collector walks (`rfc/model/gc/rc-walk.md`). LongLived
         // rides along: the walker skips it by category per entity, and the
@@ -292,7 +294,12 @@ mod tests {
         // commissioning left.
         unsafe {
             crate::memory::stdapi::ll_free(at);
-            crate::memory::stdapi::ll_free(past);
+            // Except the arena's run, which the arena owns: it is in the
+            // large-run log, so the reset below is its free and a second
+            // one here would hand the same memory back twice.
+            if category != MemoryCategory::RequestArena {
+                crate::memory::stdapi::ll_free(past);
+            }
         }
         arena.reset(|_| {});
     }
@@ -304,27 +311,24 @@ mod tests {
         unsafe { *block }
     }
 
+    /// The arena bump-packs up to a block payload and takes a run of its
+    /// own past it, through `Arena::alloc_entity`. `Arena::alloc` keeps
+    /// refusing that size and is pinned doing so by
+    /// `arena::tests::absurd_size_is_refused_instead_of_wrapping`: it
+    /// serves `ll_arena_alloc` from the C ABI, where an entity and a byte
+    /// buffer are the same request, so the split has to be made by a door
+    /// that knows which one it is holding.
+    ///
+    /// Until 2026-08-10 this asserted the refusal for both.
     #[test]
-    fn a_request_arena_entity_stops_at_one_block_payload() {
+    fn a_request_arena_entity_past_one_block_payload_takes_a_run_of_its_own() {
         let _g = test_guard();
-        let mut arena = Arena::new();
-        let arena_ptr: *mut Arena = &mut arena;
-        let mut context = LLContext { arena: arena_ptr };
-        let context_ptr: *mut LLContext = &mut context;
-
-        // The arena is the one category still refusing: its own door for
-        // a large entity is S11.7, and `Arena::alloc` cannot serve one
-        // because `ll_arena_alloc` reaches it from the C ABI, where an
-        // entity and a byte buffer are the same request.
-        let at =
-            unsafe { entity_alloc_in(context_ptr, MemoryCategory::RequestArena, BLOCK_PAYLOAD) };
-        assert!(!at.is_null());
-        let past = unsafe {
-            entity_alloc_in(context_ptr, MemoryCategory::RequestArena, BLOCK_PAYLOAD + 1)
-        };
-        assert!(past.is_null(), "the arena still refuses, and reports it");
-
-        arena.reset(|_| {});
+        served_at_the_limit_and_past_it(
+            MemoryCategory::RequestArena,
+            BLOCK_PAYLOAD,
+            crate::memory::block_pool::BLOCK_KIND_ARENA,
+            crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN,
+        );
     }
 
     #[test]

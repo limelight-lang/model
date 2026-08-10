@@ -382,8 +382,12 @@ impl BufferArena {
                 .shared
                 .owner
                 .store(std::ptr::null_mut(), Ordering::Release);
-            (*block).private.kind = 0;
         }
+        // The kind is not cleared here: `put` stamps `BLOCK_KIND_FREE`
+        // itself, through the release store the collector's acquire load
+        // of every block's kind requires, and it reads the old value on
+        // the way in — the journal's block-release record names the kind
+        // the block arrived with (`debug-modes.md` §9.5).
         BlockPool::global().put(block as *mut BlockHeader);
     }
 
@@ -576,10 +580,8 @@ impl BufferArena {
                     .store(std::ptr::null_mut(), Ordering::Release)
             };
             if empty {
-                unsafe {
-                    (*block).private.kind = 0;
-                    (*block).private.owned_next = std::ptr::null_mut();
-                }
+                // The kind stays for `put` to overwrite, as in `retire`.
+                unsafe { (*block).private.owned_next = std::ptr::null_mut() };
                 BlockPool::global().put(block as *mut BlockHeader);
             } else {
                 unsafe { (*block).private.owned_next = list.head };

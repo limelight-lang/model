@@ -1123,46 +1123,40 @@ impl Heap {
         // means "every slot virgin" — O(1), touching nothing but the
         // header line.
         //
-        // Under `rc-walk` the kind is published LAST with a release
-        // store (`store_block_kind`): the collector's snapshot must not
-        // read "entity" before the size class, cursor and zeroed slots
-        // behind it are visible.
-        #[cfg(not(feature = "rc-walk"))]
-        let commissioned_kind = self.block_kind;
-        #[cfg(feature = "rc-walk")]
-        let commissioned_kind = 0;
+        // The kind is published LAST and through `store_block_kind`,
+        // whose `rc-walk` build makes the store a release: the
+        // collector's snapshot must not read "entity" before the size
+        // class, cursor and zeroed slots behind it are visible.
+        //
+        // Field by field rather than one struct store, for the reason
+        // `large_entity::commission` writes its header the same way: a
+        // struct store covers `kind` too, and the collector loads that
+        // word — of **every** block in every carved region — with an
+        // acquire, so a plain store to it is a data race by the model
+        // however little the value changes. This one wrote 0 over the
+        // pool's 0.
         unsafe {
-            block.write(HeapBlockHeader {
-                private: BlockPrivate {
-                    kind: commissioned_kind,
-                    size_class: ci as u32,
-                    used: 0,
-                    slots,
-                    free: std::ptr::null_mut(),
-                    bump: 0,
-                    linked: false,
-                    next: std::ptr::null_mut(),
-                    prev: std::ptr::null_mut(),
-                },
-                shared: BlockShared {
-                    owner: AtomicPtr::new(self.id()),
-                },
-                remote: BlockRemote {
-                    remote_free: AtomicPtr::new(std::ptr::null_mut()),
-                },
-                links: BlockLinks {
-                    owned_next: std::ptr::null_mut(),
-                    owned_prev: std::ptr::null_mut(),
-                },
+            let private = &raw mut (*block).private;
+            (&raw mut (*private).size_class).write(ci as u32);
+            (&raw mut (*private).used).write(0);
+            (&raw mut (*private).slots).write(slots);
+            (&raw mut (*private).free).write(std::ptr::null_mut());
+            (&raw mut (*private).bump).write(0);
+            (&raw mut (*private).linked).write(false);
+            (&raw mut (*private).next).write(std::ptr::null_mut());
+            (&raw mut (*private).prev).write(std::ptr::null_mut());
+            (&raw mut (*block).shared).write(BlockShared {
+                owner: AtomicPtr::new(self.id()),
             });
+            (&raw mut (*block).remote).write(BlockRemote {
+                remote_free: AtomicPtr::new(std::ptr::null_mut()),
+            });
+            (&raw mut (*block).links).write(BlockLinks {
+                owned_next: std::ptr::null_mut(),
+                owned_prev: std::ptr::null_mut(),
+            });
+            crate::memory::block_pool::store_block_kind(&raw mut (*private).kind, self.block_kind);
         }
-        #[cfg(feature = "rc-walk")]
-        unsafe {
-            crate::memory::block_pool::store_block_kind(
-                &raw mut (*block).private.kind,
-                self.block_kind,
-            )
-        };
         self.own(ci, block);
         self.link(ci, block);
         block
@@ -2925,6 +2919,50 @@ mod tests {
             live, 0,
             "the owner lost track of a slot freed from another thread"
         );
+    }
+
+    /// Commissioning an entity block writes its header while the
+    /// collector reads the kind of every block in every carved region, so
+    /// that word is published through `store_block_kind` and is touched
+    /// by nothing else — including the whole-header struct store that
+    /// used to write it on the way past, with the value that was already
+    /// there.
+    ///
+    /// **Miri's data-race model is the instrument this test is for.**
+    /// Under `cargo test` the two shapes are indistinguishable, which is
+    /// what let the plain store stand until S11.6 read it. Neither thread
+    /// waits on the other: the accesses are unordered whatever the
+    /// interleaving, which is the whole of the report.
+    #[cfg(feature = "rc-walk")]
+    #[test]
+    fn commissioning_an_entity_block_does_not_race_the_snapshot() {
+        let _g = crate::memory::block_pool::test_guard();
+
+        // The collector's first act, and the only part of an epoch that
+        // touches a block being commissioned.
+        let reader = std::thread::spawn(|| {
+            for _ in 0..64 {
+                let _ = snapshot_entity_blocks();
+            }
+        });
+
+        // The largest size class puts seven slots in a block, so a short
+        // run of allocations commissions several.
+        let mut slots = Vec::new();
+        for _ in 0..24 {
+            let slot = unsafe { entity_alloc(MAX_SMALL) };
+            assert!(!slot.is_null(), "the pool refused mid-test");
+            slots.push(slot);
+        }
+
+        reader.join().unwrap();
+
+        // Given back: a leaked slot holds its block off the pool for the
+        // rest of the binary. The headers still read the zero
+        // commissioning left, which is what the free door asks of a slot.
+        for slot in slots {
+            unsafe { crate::memory::stdapi::ll_free(slot) };
+        }
     }
 
     #[test]

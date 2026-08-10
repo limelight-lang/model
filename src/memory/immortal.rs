@@ -71,7 +71,12 @@ pub fn immortal_alloc(size: usize) -> *mut u8 {
         // leaves nothing half-rotated, and a later call can succeed.
         return std::ptr::null_mut();
     }
-    unsafe { (*block).kind = BLOCK_KIND_IMMORTAL };
+    // A pooled block sits inside a carved region, where the collector
+    // acquire-loads every block's kind, so the store is the release one
+    // even though nothing here is ever walked.
+    unsafe {
+        crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, BLOCK_KIND_IMMORTAL)
+    };
     let p = BlockHeader::payload_start(block);
     r.bump = p.wrapping_add(size);
     r.limit = BlockHeader::end(block);
@@ -110,6 +115,12 @@ fn immortal_alloc_run(size: usize) -> *mut u8 {
         // Same discipline as the pooled path: report, do not abort.
         return std::ptr::null_mut();
     }
+    // The one block kind in the crate still written by a plain store, and
+    // the reason is the allocation rather than the discipline: this run
+    // comes from the system allocator and lies inside no carved region,
+    // so the collector's scan — which reads a region's blocks and nothing
+    // else — never loads this word. Anything pooled goes through
+    // `store_block_kind`.
     unsafe {
         (*block).kind = BLOCK_KIND_IMMORTAL;
         BlockHeader::payload_start(block)

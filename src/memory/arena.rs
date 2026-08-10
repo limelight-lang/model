@@ -116,8 +116,10 @@ impl Arena {
     /// not an abort: the arena bump-packs into blocks, so a slot that
     /// large has no home here, and the size arrives from the program
     /// through `ll_arena_alloc`. A caller whose size comes from a
-    /// program-visible count wants `alloc_body`, which splits by size and
-    /// takes the dedicated-run path above the same bound.
+    /// program-visible count wants one of the two doors that split at the
+    /// same bound and take the dedicated-run path above it:
+    /// [`Arena::alloc_body`] for the bytes an entity owns, and
+    /// [`Arena::alloc_entity`] for an entity slot.
     #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         let size = round_up_8(size);
@@ -232,6 +234,40 @@ impl Arena {
             "out of memory recording an arena large run — the record cannot be \n             dropped without leaking the run at reset"
         );
         p
+    }
+
+    /// Allocate an **entity** slot of `size` bytes: bump-packed into a
+    /// shared block while it fits, and past one block payload a
+    /// block-aligned allocation of its own from `memory::large_entity`,
+    /// logged as one of this arena's runs.
+    ///
+    /// A door of its own rather than a lifted bound on [`Arena::alloc`],
+    /// because that one serves `ll_arena_alloc` straight from the C ABI,
+    /// where an entity and a byte buffer are the same request; it keeps
+    /// refusing. And not [`Arena::alloc_large`], which allocates through
+    /// `ll_alloc` and would stamp the raw-buffer kind on memory the
+    /// collector reads as an `RcHeader`
+    /// (`rfc/model/memory/large-entities.md`).
+    ///
+    /// Null on refusal. The run is freed by the reset with every other
+    /// record in the log, unless promotion takes it out of the log first.
+    pub(crate) fn alloc_entity(&mut self, size: usize) -> *mut u8 {
+        if size <= BLOCK_PAYLOAD {
+            return self.alloc(size);
+        }
+        let entity = crate::memory::large_entity::alloc(size);
+        if entity.is_null() {
+            return entity;
+        }
+        if !self.log_push(Log::Larges, entity as usize) {
+            // Where `alloc_large` asserts, this door reports: nothing is
+            // published into the slot yet, so handing the run straight
+            // back leaves no corpse and no leak, and the factory above
+            // raises on it the way it raises on any other refusal.
+            unsafe { crate::memory::stdapi::ll_free(entity) };
+            return std::ptr::null_mut();
+        }
+        entity
     }
 
     /// Allocate an entity's out-of-line body of `size` bytes, in-block
@@ -436,7 +472,20 @@ impl Arena {
         let larges = self.larges;
         self.larges = std::ptr::null_mut();
         Self::drain_log(larges, |rec| unsafe {
-            crate::memory::stdapi::ll_free(rec as *mut u8)
+            let ptr = rec as *mut u8;
+            // An entity in a block of its own is the one record here that
+            // is not a byte payload, and it dies the way every unpromoted
+            // arena entity dies: wholesale, with the memory it sat in.
+            // What differs is that its memory leaves through the free
+            // door, which asks an entity slot for the refcount-0 header a
+            // death leaves behind — and an arena entity is uncounted, so
+            // it still carries the count its factory wrote. Zeroing it
+            // here is that death, stated where it happens.
+            let kind = *(BlockHeader::of_ptr(ptr) as *const u32);
+            if crate::memory::large_entity::is_large_entity(kind) {
+                (ptr as *mut u64).write(0);
+            }
+            crate::memory::stdapi::ll_free(ptr)
         });
 
         // Read the chain link before `put` — the pool reuses the field.
@@ -558,8 +607,11 @@ impl Arena {
                 return std::ptr::null_mut();
             }
             unsafe {
-                (*block).kind = BLOCK_KIND_ARENA;
                 (*block).next = self.blocks;
+                crate::memory::block_pool::store_block_kind(
+                    &raw mut (*block).kind,
+                    BLOCK_KIND_ARENA,
+                );
             }
             self.blocks = block;
             self.log_bump = BlockHeader::payload_start(block);
@@ -599,9 +651,12 @@ impl Arena {
         if block.is_null() {
             return false;
         }
+        // The kind last and through `store_block_kind`, because the
+        // collector acquire-loads that word for every block in every
+        // carved region and this one is freshly out of the pool.
         unsafe {
-            (*block).kind = BLOCK_KIND_ARENA;
             (*block).next = self.blocks;
+            crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, BLOCK_KIND_ARENA);
         }
         self.blocks = block;
         self.bump = BlockHeader::payload_start(block);

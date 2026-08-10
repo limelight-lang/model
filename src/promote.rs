@@ -35,6 +35,12 @@
 //!    category to GcHeap in place (the pointer-tag alternative was
 //!    rejected exactly because this rewrite must be possible), stamp
 //!    the blocks `BLOCK_KIND_RETAINED`, keep them out of the pool.
+//!    A survivor that had a **block to itself** is the exception, and
+//!    the stamp is what it is exempt from: its block is a large entity's
+//!    own allocation, which the arena took through `Arena::alloc_entity`
+//!    and hands over here instead of retaining — out of the arena's
+//!    large-run log, into nothing else, since the run registry has held
+//!    it since it was allocated (`rfc/model/memory/large-entities.md`).
 //! 4. Release-at-reset log: one release per record, with real teardown
 //!    dispatch for entities that die of it.
 
@@ -171,7 +177,12 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 if payload_block != 0 {
                     let header = payload_block as *mut BlockHeader;
                     if retained.insert(payload_block) {
-                        unsafe { (*header).kind = BLOCK_KIND_RETAINED };
+                        unsafe {
+                            crate::memory::block_pool::store_block_kind(
+                                &raw mut (*header).kind,
+                                BLOCK_KIND_RETAINED,
+                            )
+                        };
                     }
                     // Pinned, and not merely retained: this block is held
                     // for bytes rather than for occupants, and an
@@ -195,9 +206,34 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 // 00 (LIVE), the correct fresh heap state.
                 (*surv).flags &= !(MEMORY_CATEGORY_MASK | ARENA_RESET_MARK | IS_ESCAPEE);
             }
+            // A survivor that had a block to itself keeps it, and none of
+            // the retention machinery applies to it: the block is not
+            // shared, so it has nothing to index, and its kind is what
+            // routes the free — restamped `BLOCK_KIND_RETAINED` it would
+            // send a multi-megabyte run to the 64 KiB block pool at the
+            // entity's eventual death. What the reset does instead is
+            // hand ownership over: the run leaves the arena's log, so the
+            // reset stops freeing it, and the registry entry it was given
+            // at allocation is what the walk finds it by from now on
+            // (`rfc/model/memory/large-entities.md`).
+            //
+            // This arm displaces a stamp that ran unconditionally, and an
+            // omitted test would be silent, which is why it is the one of
+            // the four rules that owes a test.
             let block = BlockHeader::of_ptr(surv as *const u8) as usize;
-            if retained.insert(block) {
-                unsafe { (*(block as *mut BlockHeader)).kind = BLOCK_KIND_RETAINED };
+            if unsafe { is_in_a_block_of_its_own(surv) } {
+                let forgotten = unsafe { (*arena).forget_large(surv as *mut u8) };
+                debug_assert!(
+                    forgotten,
+                    "a promoted large entity was not one of this arena's runs"
+                );
+            } else if retained.insert(block) {
+                unsafe {
+                    crate::memory::block_pool::store_block_kind(
+                        &raw mut (*(block as *mut BlockHeader)).kind,
+                        BLOCK_KIND_RETAINED,
+                    )
+                };
             }
         }
         counted = survivors.len();
@@ -360,6 +396,12 @@ fn index_retained_blocks(survivors: &[*mut RcHeader]) -> Vec<usize> {
     let mut emptied = Vec::new();
     let mut by_block: HashMap<usize, Vec<usize>> = HashMap::new();
     for &surv in survivors {
+        // A block with one occupant, whose address is computed from the
+        // block's own, needs no inventory to be walkable — and an entry
+        // here would put it on the path that ends at the block pool.
+        if unsafe { is_in_a_block_of_its_own(surv) } {
+            continue;
+        }
         let block = BlockHeader::of_ptr(surv as *const u8) as usize;
         by_block.entry(block).or_default().push(surv as usize);
     }
@@ -371,6 +413,21 @@ fn index_retained_blocks(survivors: &[*mut RcHeader]) -> Vec<usize> {
         }
     }
     emptied
+}
+
+/// True for a survivor that occupies a block-aligned allocation alone
+/// (`memory::large_entity`), which the arena's entity door gives an
+/// entity past one block payload. Such a block is not shared with
+/// anything, so the reset neither retains nor indexes it; the block kind
+/// is the whole of the test, because a large-entity kind is only ever
+/// stamped on a block that holds exactly one entity.
+///
+/// # Safety
+/// `surv` is a live entity address.
+#[inline]
+unsafe fn is_in_a_block_of_its_own(surv: *mut RcHeader) -> bool {
+    let block = BlockHeader::of_ptr(surv as *const u8);
+    crate::memory::large_entity::is_large_entity(unsafe { *(block as *const u32) })
 }
 
 /// Entity teardown dispatch from a bare header — the uniform kind
@@ -955,6 +1012,111 @@ mod tests {
             assert!(crate::refcount::ll_release(holder as *mut RcHeader));
             ll_object_die(holder);
         }
+    }
+
+    /// A class whose instance is past one block payload, which is what
+    /// sends it through the arena's large-entity door: a boxed property
+    /// is 16 bytes, so 4 200 of them make an object of 67 216 and a run
+    /// of two blocks.
+    fn wide_class(name: &str, props: usize) -> *const crate::class::Class {
+        let mut builder = ClassBuilder::new(name);
+        for i in 0..props {
+            builder = builder.prop(&format!("p{i}"), true);
+        }
+        let class = builder.build();
+        assert!(
+            unsafe { (*class).object_size } as usize > crate::memory::block_pool::BLOCK_PAYLOAD,
+            "the class still fits a shared block, so it tests nothing"
+        );
+        class
+    }
+
+    /// A survivor that had a block to itself keeps it, and the three
+    /// rules the reset applies to one are what make that safe. The stamp
+    /// is the silent one: `BLOCK_KIND_RETAINED` on a run sends a 128 KiB
+    /// OS allocation to the 64 KiB block pool when the entity finally
+    /// dies, and nothing between the reset and that death looks wrong.
+    #[test]
+    fn a_promoted_large_entity_keeps_its_block_and_leaves_the_arenas_log() {
+        let _g = crate::memory::block_pool::test_guard();
+        let wide = wide_class("WideSession", 4_200);
+        let holder_cls = ClassBuilder::new("Cache").prop("last", true).build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let holder = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+        let obj = unsafe { new_constructed(&mut ctx, wide, MemoryCategory::RequestArena) };
+
+        let block = BlockHeader::of_ptr(obj as *const u8) as usize;
+        assert_eq!(
+            unsafe { *(block as *const u32) },
+            crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN,
+            "the arena's entity door gave it a run of its own"
+        );
+
+        unsafe { store_prop(&mut arena, holder, 16, obj) };
+        unsafe { arena_reset_full(&mut arena) };
+
+        unsafe {
+            assert_eq!(
+                (*obj).rc.memory_category(),
+                MemoryCategory::GcHeap,
+                "recategorized in place, like any other survivor"
+            );
+            assert_eq!(
+                *(block as *const u32),
+                crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN,
+                "stamped retained, and the death below would push a run \
+                 onto the block pool"
+            );
+        }
+        assert!(
+            !crate::memory::retained::snapshot()
+                .iter()
+                .any(|(b, _)| *b == block),
+            "a block with one computed occupant needs no inventory, and an \
+             entry here is the same mistake by the other route"
+        );
+        assert!(
+            crate::memory::large_entity::snapshot().contains(&block),
+            "and the registry it was entered into at allocation is what \
+             the walk finds it by now that it is a heap entity"
+        );
+
+        // The survivor is an ordinary counted object: the holder's death
+        // releases it, and its own teardown is what returns the run —
+        // which is also the proof that the arena stopped owning it, since
+        // a record left in the log would have freed it at the reset.
+        unsafe {
+            assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+            ll_object_die(holder);
+        }
+        assert!(
+            !crate::memory::large_entity::snapshot().contains(&block),
+            "the run went back with the entity"
+        );
+    }
+
+    /// The other half of the door's contract: a large arena entity that
+    /// nothing carries out is freed by the reset, like every other run
+    /// the arena logged.
+    #[test]
+    fn an_unpromoted_large_arena_entity_is_freed_by_the_reset() {
+        let _g = crate::memory::block_pool::test_guard();
+        let wide = wide_class("WideTemp", 4_200);
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let obj = unsafe { new_constructed(&mut ctx, wide, MemoryCategory::RequestArena) };
+        let block = BlockHeader::of_ptr(obj as *const u8) as usize;
+        assert!(crate::memory::large_entity::snapshot().contains(&block));
+
+        unsafe { arena_reset_full(&mut arena) };
+
+        assert!(
+            !crate::memory::large_entity::snapshot().contains(&block),
+            "the corpse's run went with the reset"
+        );
     }
 
     #[test]

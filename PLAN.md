@@ -378,7 +378,7 @@ walk cannot be tested before there is something to walk.
         arms removed. Gate: rc-walk 415 ×3, rc-trace 400 ×3, hash-folding
         415, `debug-journal` 421 ×3 and 406 ×3, both release builds,
         `fmt --check` clean, no warnings.
-- [ ] S11.7 The request arena's door and the reset
+- [~] S11.7 The request arena's door and the reset
       done: an arena entity past one block payload is allocated through
         the arena's own entity door and logged as a run, while
         `Arena::alloc` keeps refusing for the C ABI; a survivor whose

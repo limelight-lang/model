@@ -252,6 +252,34 @@ versions live in `docs/history/`, marked at the top.
   `body_ensure` / `body_free` for the bytes an entity owns outside its
   own slot. A factory that has a category to refuse refuses it itself,
   before calling.
+- One entity per allocation: `src/memory/large_entity.rs` — where an
+  entity goes when it is past what its category's allocator packs into a
+  shared block (`rfc/model/memory/large-entities.md`). It keeps its
+  inline layout whole as the sole occupant of a block-aligned allocation
+  whose first line is a block header of its own kind pair, entity at
+  `+LINE_SIZE`: `BLOCK_KIND_ENTITY_LARGE` for a pooled block up to one
+  payload, `BLOCK_KIND_ENTITY_LARGE_RUN` for an OS-direct run above it.
+  The kinds are new rather than reused because `BLOCK_KIND_LARGE`/
+  `LARGE_RUN` also hold raw C buffers, and a walker reading one as an
+  `RcHeader` is what block-kind segregation exists to prevent.
+  **The commissioning rule is the zero pass**, not the publication order:
+  the entity's first 8 bytes are zeroed before the kind is stored, so a
+  commissioned block reads as an empty slot until a factory publishes —
+  which is why a run may be entered into the module's registry at
+  allocation. Discovery follows the split: the pooled half rides the
+  region scan both enumerators already perform, a run is found from that
+  registry and nowhere else, and both carry `slots = 1`, which is
+  soundness rather than economy. `deferred_free` parks both kinds; for a
+  run that is soundness too, its memory being unmapped at free while a
+  snapshot still addresses it. The doors above it are
+  `heap::entity_alloc` past `MAX_SMALL` and `Arena::alloc_entity` past
+  one block payload; the arena logs the run it takes, so an unpromoted
+  corpse dies with the reset, and a survivor is handed over instead —
+  not stamped `BLOCK_KIND_RETAINED`, not indexed in `retained.rs`, out
+  of the arena's log through `forget_large` (`promote.rs`). Stamping it
+  would send a multi-megabyte run to the 64 KiB block pool at the
+  entity's death, and the omission is silent, which is why that rule
+  carries a test of its own.
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted, and how many of them are still
   alive. Registered by `promote` at reset, read by both of `heap`'s

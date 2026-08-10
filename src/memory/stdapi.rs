@@ -162,14 +162,17 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
             return std::ptr::null_mut();
         }
         unsafe {
-            block.write(LargeHeader {
-                kind: 0,
-                _pad: 0,
-                size,
-                run_bytes: 0,
-            });
-            // Kind last (release under rc-walk): the collector snapshot
-            // reads every block's kind concurrently.
+            // Field by field, and `kind` last through `store_block_kind`
+            // (release under rc-walk): the collector's snapshot loads the
+            // kind of every block in every carved region, and a pooled
+            // block is in one. A struct store would cover that word with
+            // a plain write, which is a data race by the model even
+            // writing the value already there — the defect
+            // `large_entity::commission` and `Heap::refill` were both
+            // rewritten to avoid.
+            (&raw mut (*block)._pad).write(0);
+            (&raw mut (*block).size).write(size);
+            (&raw mut (*block).run_bytes).write(0);
             crate::memory::block_pool::store_block_kind(&raw mut (*block).kind, BLOCK_KIND_LARGE);
             (block as *mut u8).add(LINE_SIZE)
         }

@@ -110,7 +110,15 @@ pub(crate) fn replenish() -> bool {
                 if block.is_null() {
                     return false;
                 }
-                unsafe { (*block).kind = BLOCK_KIND_ARENA };
+                // Through `store_block_kind` for the reason every other
+                // commissioning uses it: the collector acquire-loads the
+                // kind of every block in every carved region.
+                unsafe {
+                    crate::memory::block_pool::store_block_kind(
+                        &raw mut (*block).kind,
+                        BLOCK_KIND_ARENA,
+                    )
+                };
                 r.blocks.push(block);
             }
             r.drawn = false;
