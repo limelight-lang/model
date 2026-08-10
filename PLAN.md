@@ -133,7 +133,7 @@ strategy the memory manager never had, and it goes at the ordinary pace.
         a block size for a slot; the two that name `BLOCK_PAYLOAD`
         (`Table::carry_out_of`, `promote`'s test) are about a body, where
         the split is legal.
-- [ ] S11.3 The design in `rfc`, before the code
+- [x] S11.3 The design in `rfc`, before the code
       done: the rule that an entity slot never exceeds one block payload
         is written down with the two shapes an oversize entity can take,
         the reason one of them is chosen, and the questions below either
@@ -189,6 +189,37 @@ strategy the memory manager never had, and it goes at the ordinary pace.
         and starts costing one of its own — because that is a footprint
         cliff the author should see, and a diagnostic says so without
         refusing the program.
+      Critic 2026-08-10 round 1: the commissioning rule copied the entity
+        block's publication order and dropped the zero pass that makes it
+        sound, so a pooled block recycled from a C buffer would publish a
+        nonzero refcount and the collector would trace the caller's bytes
+        as a class pointer; the arena arm named `forget_large` while
+        `promote` stamps every survivor's block `BLOCK_KIND_RETAINED`
+        unconditionally, which sends an OS run to the 64 KiB pool; the
+        immortal region was written as refusing when `immortal_alloc`
+        already serves a run, and `intern` bypasses the gate entirely;
+        the invariant's reason clause was inverted — a missed entity is a
+        leak, and the unsafe direction is over-counting; the `log2 N`
+        cost overstated by about fifty times. All accepted, rewritten.
+      Critic 2026-08-10 round 2: the arena was never given a door that
+        creates a large entity, so its reset rules were unreachable and
+        the obvious door, `Arena::alloc_large`, stamps the raw-buffer
+        kind; the separate registry's "earlier is cheaper" defence
+        described forgetting registration, not forgetting the retained
+        stamp, which is the rule that displaces live code and fails
+        silently; `ll_free`'s two test assertions fire on the entity kind
+        alone. All accepted, rewritten.
+      handoff: `rfc/model/memory/large-entities.md`, listed in
+        `rfc/model/memory/README.md`, with `dev/tools/linkcheck.php`
+        clean over it (its one broken target predates this commit). The
+        document answers both questions the ruling left open — the run
+        registry is a table of its own, an ordered set of block
+        addresses, and a run costs the snapshot one 40-byte entry plus 8
+        bytes in the registry clone — and it names five obligations the
+        ruling did not: the zero pass at commissioning, an arena entity
+        door separate from `Arena::alloc`, arms in `ll_usable_size` and
+        `ll_free`'s assertions, the park set's leak bound rising from one
+        block to a whole run, and the lifted immortal refusal.
 - [ ] S11.4 A string past the limit is built dynamic
       done: `ll_string_new` chooses its layout from S11.2's answer
         instead of always building the inline one; a request-arena
@@ -207,8 +238,12 @@ strategy the memory manager never had, and it goes at the ordinary pace.
       done: `docs/memory-manager.md`'s closing list of what is not
         implemented, `string.rs`'s module doc on the two layouts,
         `rfc/model/strings.md` and `rfc/model/memory/arenas.md` all state
-        the rule, and `dev/DECISIONS.md` carries the per-category limit
-        with the reason it differs by category
+        the rule, `dev/DECISIONS.md` carries the per-category limit with
+        the reason it differs by category, and `routing::slot_limit`'s
+        own comment stops claiming that both arenas cannot exceed a block
+        payload — the immortal region serves a larger request from a run
+        (`immortal_alloc_run`), so its bound is this gate's policy rather
+        than its allocator's limit
       tier: T1 · role: —
 
 ### The strategy, as proposed
