@@ -184,7 +184,11 @@ strategy the memory manager never had, and it goes at the ordinary pace.
         runs, and that is a compatibility cost this runtime does not
         take. Dynamic properties never pressure the slot in either
         engine: PHP puts them in a hash table beside the object, which is
-        our body.
+        our body. The compiler **warns** at class layout for a slot
+        past 8 KiB — `MAX_SMALL`, where the object stops sharing a block
+        and starts costing one of its own — because that is a footprint
+        cliff the author should see, and a diagnostic says so without
+        refusing the program.
 - [ ] S11.4 A string past the limit is built dynamic
       done: `ll_string_new` chooses its layout from S11.2's answer
         instead of always building the inline one; a request-arena
