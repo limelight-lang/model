@@ -238,6 +238,46 @@ pub(crate) unsafe fn init_at(
     s
 }
 
+/// Where a fresh string of `size` bytes goes in `category`.
+///
+/// **One answer for both factories.** The copying one and the
+/// assemble-in-place one made this decision separately, and they
+/// disagreed within a day: `entity_alloc_in` used to refuse a
+/// long-lived oversize entity, so one of them relied on that refusal
+/// while the other stated it, and the refusal then moved.
+enum Placement {
+    /// Bytes after the fixed fields, one allocation.
+    Inline,
+    /// A 32-byte slot and a payload through the buffer machinery.
+    OutOfLine,
+    /// No layout serves this: null, for the caller to raise on.
+    Refused,
+}
+
+/// The rule. Past what the category packs in one slot the inline layout
+/// has nowhere to go, so the choice is out-of-line or nothing:
+///
+/// - the GC heap and the request arena have the payload machinery and
+///   take the out-of-line form;
+/// - the long-lived heap does not, because `string_die` reclaims the GC
+///   heap alone, so nothing would ever free the payload
+///   (`rfc/model/strings.md`); refused here rather than left to the
+///   allocator, whose bound this stage lifted;
+/// - the immortal region keeps the inline layout whole, in the
+///   block-aligned run `immortal_alloc` serves for a request over one
+///   block payload — an immortal string is never freed, so the payload
+///   machinery would buy it nothing.
+fn placement(category: MemoryCategory, size: usize) -> Placement {
+    if size <= crate::memory::routing::slot_limit(category) {
+        return Placement::Inline;
+    }
+    match category {
+        MemoryCategory::GcHeap | MemoryCategory::RequestArena => Placement::OutOfLine,
+        MemoryCategory::LongLived => Placement::Refused,
+        MemoryCategory::Immortal => Placement::Inline,
+    }
+}
+
 /// Reserve a string of exactly `len` bytes and hand back **where to
 /// write it**, for a caller that assembles the content in place instead
 /// of copying a finished buffer in. Not an entity yet: the header is
@@ -269,33 +309,32 @@ pub(crate) unsafe fn new_uninit(
     // reason: past one slot the inline layout has nowhere to go. The
     // caller sees only where to write, which is what [`Reserved::bytes`]
     // answers for either layout.
-    if size > crate::memory::routing::slot_limit(category)
-        && matches!(
-            category,
-            MemoryCategory::GcHeap | MemoryCategory::RequestArena
-        )
-    {
-        let mem = unsafe {
-            crate::memory::routing::entity_alloc_in(ctx, category, size_of::<LLStringDynamic>())
-        };
-        if mem.is_null() {
-            return Reserved::refused();
+    match placement(category, size) {
+        Placement::Refused => return Reserved::refused(),
+        Placement::OutOfLine => {
+            let mem = unsafe {
+                crate::memory::routing::entity_alloc_in(ctx, category, size_of::<LLStringDynamic>())
+            };
+            if mem.is_null() {
+                return Reserved::refused();
+            }
+            let mut payload = Buffer::new();
+            if !unsafe { grow_payload(ctx, category, &mut payload, len, 0) } {
+                return Reserved::refused();
+            }
+            let s = mem as *mut LLStringDynamic;
+            unsafe {
+                (&raw mut (*s).len).write(len as u32);
+                (&raw mut (*s).capacity).write(stored_capacity(payload.capacity));
+                (&raw mut (*s).data).write(payload.data);
+            }
+            return Reserved {
+                entity: mem,
+                bytes: payload.data,
+                out_of_line: true,
+            };
         }
-        let mut payload = Buffer::new();
-        if !unsafe { grow_payload(ctx, category, &mut payload, len, 0) } {
-            return Reserved::refused();
-        }
-        let s = mem as *mut LLStringDynamic;
-        unsafe {
-            (&raw mut (*s).len).write(len as u32);
-            (&raw mut (*s).capacity).write(stored_capacity(payload.capacity));
-            (&raw mut (*s).data).write(payload.data);
-        }
-        return Reserved {
-            entity: mem,
-            bytes: payload.data,
-            out_of_line: true,
-        };
+        Placement::Inline => {}
     }
     let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     if mem.is_null() {
@@ -414,24 +453,12 @@ pub(crate) unsafe fn new_with_hash(
     // The dynamic layout is a fixed 32-byte slot and a right-sized
     // payload, so the same content fits — and it keeps `COW`, because
     // only the layout changed and the value semantics did not.
-    if size > crate::memory::routing::slot_limit(category) {
-        match category {
-            MemoryCategory::GcHeap | MemoryCategory::RequestArena => {
-                return unsafe { new_out_of_line(ctx, category, bytes, 0, hash, COW) }
-                    as *mut LLString;
-            }
-            // Refused here rather than left to the allocator's own bound,
-            // because that bound is lifted for the immortal region once a
-            // large entity has a shape (`rfc/model/memory/large-entities.md`)
-            // and this refusal must survive the lift: nothing reclaims a
-            // long-lived payload, so a long-lived string has no
-            // out-of-line form until the reclamation policy exists
-            // (`rfc/model/strings.md`).
-            MemoryCategory::LongLived => return std::ptr::null_mut(),
-            // The immortal region keeps the inline layout whole, in the
-            // block-aligned run its allocator already serves.
-            MemoryCategory::Immortal => {}
+    match placement(category, size) {
+        Placement::OutOfLine => {
+            return unsafe { new_out_of_line(ctx, category, bytes, 0, hash, COW) } as *mut LLString;
         }
+        Placement::Refused => return std::ptr::null_mut(),
+        Placement::Inline => {}
     }
     let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     if mem.is_null() {

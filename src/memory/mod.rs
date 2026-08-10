@@ -13,6 +13,7 @@ pub mod context;
 pub(crate) mod deferred_free;
 pub mod heap;
 pub mod immortal;
+pub(crate) mod large_entity;
 pub(crate) mod reserve;
 pub(crate) mod retained;
 pub(crate) mod routing;

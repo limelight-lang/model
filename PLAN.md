@@ -285,13 +285,83 @@ strategy the memory manager never had, and it goes at the ordinary pace.
         `string_bytes` now. Gate: rc-walk 406 ×3, rc-trace 393 ×3,
         hash-folding 406, `debug-journal` 412 ×3 and 399 ×3, both release
         builds, `fmt --check` clean. Miri is owed with S10 and S11.1.
-- [ ] S11.5 An entity whose oversize is counted cells
-      done: the shape S11.3 chose is built and the walker reaches the
-        cells — an object past the limit is traced, severed and torn
-        down in both configurations, and Miri is silent over the modules
-        it touched
+**S11.5 was one step and is three.** The shape S11.3 chose is an
+allocator, a walk and a reset rule, and each of the three has a result
+that can be named and checked on its own; one step would have been closed
+by a verdict nobody could give. The order is the order of dependence: an
+entity nothing can find is still allocated and freed correctly, and the
+walk cannot be tested before there is something to walk.
+
+- [x] S11.5 A large entity is allocated and freed
+      done: a new block-kind pair holds one entity in a block-aligned
+        allocation, pooled below one block payload and OS-direct above
+        it, commissioned with its slot header zeroed before the kind is
+        published; `entity_alloc_in` serves the two heap categories and
+        the immortal region past `slot_limit` instead of refusing;
+        `ll_free`, `ll_free_large` and `ll_usable_size` carry arms for
+        both kinds and the default arm of the first asserts; a run is
+        entered into a registry of its own after its header is published
+        and removed before its memory leaves; and an object of 10 000
+        properties is created, read, written and torn down in both
+        configurations with no leak
       tier: T2 · role: Critic
-- [ ] S11.6 The documents that move with it
+      Critic 2026-08-10 round 1: the step's own flagship test wrote 29 KB
+        past the end of its run — `prop(name, false)` declares a scalar of
+        8 bytes, so the class was half the size the test's arithmetic
+        assumed, and the assertion passed by reading back the same
+        out-of-bounds address. Four more: `heap::entity_alloc`'s oversize
+        arm was a second door still stamping a raw-buffer kind on an
+        entity; `commission`'s one struct store wrote `kind` plainly,
+        racing the collector's acquire load; `string::new_uninit` lost the
+        `LongLived` refusal when the allocator's bound moved under it, and
+        the two string factories had already disagreed once; the
+        `ll_usable_size` arm turned one fatal outcome into another, since
+        a `realloc` would then copy a live entity under a raw-buffer kind
+        and free the original. All accepted.
+      Critic 2026-08-10 round 2: the repairs close their findings. Four
+        smaller things accepted with them — a test asserting a
+        process-global registry is empty when nothing drains it, a helper
+        freeing half of what it allocated, `routing` and `entity_alloc`
+        become two copies of one number, and the run tests never pinning
+        the header-line offset that the block round-up's slack hides.
+        Its one demand: a second `ll_free` of a pooled large entity, which
+        is the one mistake here that corrupts the allocator rather than
+        leaking.
+      handoff: `memory::large_entity` owns the pair of kinds, the
+        allocation, the free and the registry of OS-direct runs;
+        `routing::entity_alloc_in` no longer tests a size at all for the
+        heap categories, because `heap::entity_alloc` makes the split
+        against the same constant. **The rule that makes the block safe to
+        enumerate is the zero pass**, not the publication order: the
+        entity's first 8 bytes are zeroed before the kind is stored, so a
+        commissioned block reads as an empty slot until the factory
+        publishes — which is why a run may be registered at allocation.
+        Still outside the walk until S11.6, and the arena still refuses
+        until S11.7. Gate: rc-walk 412 ×3, rc-trace 398 ×3, hash-folding
+        412, `debug-journal` 418 ×3 and 404 ×3, both release builds,
+        `fmt --check` clean, no warnings.
+- [ ] S11.6 The walk reaches a large entity
+      done: both enumerators admit the new kinds — the pooled half by the
+        region scan, runs from the registry — with one slot per block and
+        the entity's size where a size class would be; `deferred_free`
+        parks both kinds and its stated leak bound is restated; a cycle
+        closing through an object past the limit is collected in both
+        configurations, and a large entity freed during an epoch is not
+        recycled until the flush
+      tier: T2 · role: Critic
+- [ ] S11.7 The request arena's door and the reset
+      done: an arena entity past one block payload is allocated through
+        the arena's own entity door and logged as a run, while
+        `Arena::alloc` keeps refusing for the C ABI; a survivor whose
+        block carries a large-entity kind is not stamped retained, is not
+        entered into the retained index, leaves the arena's log through
+        `forget_large` and is registered as a run; an unpromoted one is
+        freed by the reset; and the first of those four rules has a test,
+        since its absence is silent. **The stage's Miri run belongs
+        here**, over the modules S11.5–S11.7 touched, one submodule at a
+        time under a `timeout` (`dev/WORKFLOW.md`)
+      tier: T2 · role: Critic
+- [ ] S11.8 The documents that move with it
       done: `docs/memory-manager.md`'s closing list of what is not
         implemented, `string.rs`'s module doc on the two layouts,
         `rfc/model/strings.md` and `rfc/model/memory/arenas.md` all state

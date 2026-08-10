@@ -1894,10 +1894,11 @@ pub fn thread_entity_heap() -> *mut Heap {
 }
 
 /// Allocate a GC entity of `size` bytes from this thread's entity heap.
-/// Self-initialising like `ll_alloc`. A size past the small range falls
-/// back to the standard large path: such entities live outside entity
-/// blocks and outside the walk — conservative, per
-/// `rfc/model/gc/rc-walk.md` ("Huge objects").
+/// Self-initialising like `ll_alloc`. A size past the largest size class
+/// takes a block-aligned allocation of its own instead
+/// (`memory::large_entity`), because a packed slot that large would take
+/// a whole block and leave the entity-block population the walk
+/// enumerates.
 ///
 /// # Safety
 /// Standard allocator contract; the caller publishes an `RcHeader` into
@@ -1912,7 +1913,12 @@ pub unsafe fn entity_alloc(size: usize) -> *mut u8 {
             unsafe { (*h).alloc(size) }
         }
     } else {
-        unsafe { crate::memory::stdapi::ll_alloc(size, 16) }
+        // Not `ll_alloc`: that stamps a raw-buffer kind, and an entity
+        // under one is invisible to both enumerators and freed without
+        // the entity assertions. Past the largest size class an entity
+        // takes a block-aligned allocation of its own
+        // (`rfc/model/memory/large-entities.md`).
+        crate::memory::large_entity::alloc(size)
     }
 }
 

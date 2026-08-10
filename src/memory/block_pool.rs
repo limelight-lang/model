@@ -84,6 +84,17 @@ pub const BLOCK_KIND_BUFFER: u32 = 6;
 /// its survivors live; reclaiming a fully-emptied retained block is a
 /// small future mechanism.
 pub const BLOCK_KIND_RETAINED: u32 = 7;
+/// One pooled block holding **one entity** that no size class serves
+/// (`rfc/model/memory/large-entities.md`). Separate from
+/// `BLOCK_KIND_LARGE`, which is the same physical shape holding a raw C
+/// buffer: a walker reading such a buffer's first 8 bytes as an
+/// `RcHeader` is the mistake this segregation exists to prevent.
+pub const BLOCK_KIND_ENTITY_LARGE: u32 = 9;
+/// An OS-direct, block-aligned run holding one entity, above what a
+/// pooled block can hold. Outside every carved region, so it is
+/// enumerated from `memory::large_entity`'s registry rather than by the
+/// region scan.
+pub const BLOCK_KIND_ENTITY_LARGE_RUN: u32 = 10;
 /// Entity block: same size-class layout as `BLOCK_KIND_HEAP`, but its
 /// slots hold GC entities (header at offset 0) and only these blocks are
 /// walked by the cycle collector (`rfc/model/gc/rc-walk.md`,

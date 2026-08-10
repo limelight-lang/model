@@ -234,7 +234,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // does have surfaced as a census flake in an unrelated test on
     // another thread half an hour later (`PLAN.md`).
     #[cfg(test)]
-    if kind == BLOCK_KIND_ENTITY {
+    if kind == BLOCK_KIND_ENTITY || crate::memory::large_entity::is_large_entity(kind) {
         let header = unsafe { *(ptr as *const u64) };
         assert_eq!(
             header & 0xffff_ffff,
@@ -274,6 +274,8 @@ pub unsafe fn ll_free(ptr: *mut u8) {
                 | BLOCK_KIND_LARGE
                 | BLOCK_KIND_LARGE_RUN
                 | crate::memory::block_pool::BLOCK_KIND_RETAINED
+                | crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE
+                | crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN
         )
     {
         return unsafe { crate::memory::deferred_free::park(ptr) };
@@ -309,6 +311,14 @@ pub unsafe fn ll_free(ptr: *mut u8) {
 unsafe fn ll_free_large(block: *mut u8, kind: u32) {
     match kind {
         BLOCK_KIND_LARGE => BlockPool::global().put(block as *mut BlockHeader),
+        // One entity in a block of its own, which is the same physical
+        // shape as the two kinds around it and a different population:
+        // its own module owns the registry a run is enumerated from, and
+        // the order in which that entry goes.
+        crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE
+        | crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN => unsafe {
+            crate::memory::large_entity::free(block, kind)
+        },
         BLOCK_KIND_LARGE_RUN => {
             let hdr = block as *mut LargeHeader;
             let run_bytes = unsafe { (*hdr).run_bytes };
@@ -338,7 +348,23 @@ unsafe fn ll_free_large(block: *mut u8, kind: u32) {
                 unsafe { crate::memory::retained::give_block_back(block as usize) };
             }
         }
-        _ => { /* not ours / double free — ignore in release, catch in tests */ }
+        // The two kinds that recycle nothing on a free: arena memory goes
+        // at the reset and immortal memory never goes. Object teardown
+        // funnels every category through here, so both arrive routinely.
+        crate::memory::block_pool::BLOCK_KIND_ARENA
+        | crate::memory::block_pool::BLOCK_KIND_IMMORTAL => {}
+        // A free of a block already back in the pool: a double free, or a
+        // pointer this allocator never handed out. Tolerated in every
+        // build, because a C caller's mistake must not end the process,
+        // and it is the only kind that reaches here from live code.
+        crate::memory::block_pool::BLOCK_KIND_FREE => {}
+        _ => {
+            // Every other kind whose memory can go back into circulation
+            // owes an arm above, and a missing one is a leak nothing
+            // reports. Release still ignores it: the populations here are
+            // reachable from the C ABI.
+            debug_assert!(false, "no free path for block kind {kind}");
+        }
     }
 }
 
@@ -369,6 +395,18 @@ unsafe fn ll_usable_size(ptr: *mut u8) -> usize {
 pub unsafe fn ll_realloc(ptr: *mut u8, new_size: usize, align: usize) -> *mut u8 {
     if ptr.is_null() {
         return unsafe { ll_alloc(new_size, align) };
+    }
+    // An entity is never reallocated: it is a counted object whose
+    // address other entities hold, and moving it would leave every one of
+    // them pointing at freed memory. Copying it would be worse than
+    // refusing — the copy lands under a raw-buffer kind, invisible to the
+    // walk, while the original is freed with its children still counted
+    // against it — so this refuses, and the two entity populations are
+    // the only kinds that reach it.
+    let kind = unsafe { *(block_of(ptr) as *const u32) };
+    if kind == BLOCK_KIND_ENTITY || crate::memory::large_entity::is_large_entity(kind) {
+        debug_assert!(false, "an entity reached realloc");
+        return std::ptr::null_mut();
     }
     let old_size = unsafe { ll_usable_size(ptr) };
     let new_ptr = unsafe { ll_alloc(new_size, align) };

@@ -174,6 +174,14 @@ pub unsafe fn ll_template_new(
             unsafe { crate::memory::barrier::store_box(arena, category, &mut slots[i], *v) };
         if !stored {
             unsafe { release_stored(category, slots, i) };
+            // And the memory itself, which no walker has seen: the header
+            // is unpublished, so the slot reads dead and the free is the
+            // ordinary one. Abandoning it was survivable while a refused
+            // entity was at most a size class; a template of five
+            // thousand values takes a block-aligned run of its own, and
+            // that one would keep a registry entry the collector walks
+            // every epoch for the life of the process.
+            unsafe { crate::memory::stdapi::ll_free(mem) };
             return std::ptr::null_mut();
         }
     }

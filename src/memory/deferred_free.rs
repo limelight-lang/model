@@ -570,4 +570,35 @@ mod tests {
             assert_eq!(flush(), 2, "both released for real at the flush");
         }
     }
+
+    /// The two large-entity kinds park for the same reason and one
+    /// stronger: a run is **unmapped** at its free, and an epoch's
+    /// snapshot holds its address, so an unparked free would leave the
+    /// collector reading memory the system allocator has taken back
+    /// rather than an intact corpse.
+    #[test]
+    fn a_large_entity_parks_whichever_half_it_is() {
+        let _g = crate::memory::block_pool::test_guard();
+        unsafe {
+            let pooled = crate::memory::large_entity::alloc(20_000);
+            let run = crate::memory::large_entity::alloc(200_000);
+            assert!(!pooled.is_null() && !run.is_null());
+            let run_block = (run as usize) & !crate::memory::block_pool::BLOCK_MASK;
+
+            begin_epoch();
+            ll_free(pooled);
+            ll_free(run);
+            assert_eq!(parked_count(), 2, "neither half recycles mid-epoch");
+            assert!(
+                crate::memory::large_entity::snapshot().contains(&run_block),
+                "a parked run is still addressable, so it is still registered"
+            );
+            end_epoch();
+            assert_eq!(flush(), 2);
+            assert!(
+                !crate::memory::large_entity::snapshot().contains(&run_block),
+                "and its registry entry went with the flush"
+            );
+        }
+    }
 }
