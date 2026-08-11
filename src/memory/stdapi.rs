@@ -194,7 +194,18 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
             None => return std::ptr::null_mut(),
         };
 
-        let layout = Layout::from_size_align(run_bytes, BLOCK_SIZE).unwrap();
+        // `Layout` refuses a size past `isize::MAX`, which the checked
+        // arithmetic above lets through — it only catches a wrap near
+        // `usize::MAX`. Between the two lies the whole top half of the
+        // range, and a caller that lost a sign lands in it. Unwrapping
+        // here would panic across `extern "C"` and abort, where this
+        // module's contract is to report null (`immortal_alloc_run` takes
+        // the same call the same way).
+        let layout = match Layout::from_size_align(run_bytes, BLOCK_SIZE) {
+            Ok(layout) => layout,
+            Err(_) => return std::ptr::null_mut(),
+        };
+
         let block = unsafe { std::alloc::alloc(layout) } as *mut LargeHeader;
         if block.is_null() {
             return std::ptr::null_mut();
@@ -632,6 +643,35 @@ mod tests {
             // the request must be refused, never wrapped to a small run.
             assert!(ll_alloc(usize::MAX, 16).is_null());
             assert!(ll_alloc(usize::MAX - 100, 16).is_null());
+        }
+    }
+
+    /// A size past `isize::MAX` is refused rather than aborting the
+    /// process. It sits in the band the checked arithmetic passes and
+    /// `Layout` refuses, so the old `unwrap` panicked — and a panic
+    /// crossing `extern "C"` aborts, which is a report no caller can
+    /// receive. `0x8000_0000_0000_0000` is a caller that lost a sign;
+    /// `isize::MAX` itself is refused too, the block round-up carrying it
+    /// over the limit.
+    #[test]
+    fn a_size_past_isize_max_returns_null_rather_than_aborting() {
+        let _g = crate::memory::block_pool::test_guard();
+        unsafe {
+            assert!(ll_alloc(0x8000_0000_0000_0000, 16).is_null());
+            assert!(ll_alloc(isize::MAX as usize, 16).is_null());
+            // The ABI door as well, which is where the abort would have
+            // happened: `ll_alloc` panics into its Rust caller, while
+            // `ll_malloc` is `extern "C"` and cannot unwind out.
+            assert!(ll_malloc(0x8000_0000_0000_0000).is_null());
+
+            // And the growth door, which reaches the same call through
+            // `ll_alloc`. A refused growth keeps the original.
+            let live = ll_alloc(64, 16);
+            assert!(!live.is_null());
+            assert!(ll_realloc(live, 0x8000_0000_0000_0000, 16).is_null());
+            std::ptr::write_bytes(live, 0xAB, 64);
+            assert_eq!(*live, 0xAB, "the original survived the refusal");
+            ll_free(live);
         }
     }
 
