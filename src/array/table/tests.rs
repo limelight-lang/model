@@ -488,6 +488,27 @@ mod what_moves_the_entries {
         assert_eq!(after_compaction % 2, 0, "the window was left open");
     }
 
+    /// Compacting a table that has no chunk allocates nothing.
+    ///
+    /// A chunk for `cap == 0` holds no entry, and the state it leaves —
+    /// `storage` non-null with `mask` set — is what the next insert reads
+    /// as room for one: it wrote a 32-byte entry into sixteen granted
+    /// bytes, and published the count for the walker to stride
+    /// (Critic, S13.1). The insert below is half the test.
+    #[test]
+    fn compacting_a_table_with_no_chunk_allocates_nothing() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut m = t();
+        assert_eq!(m.compact(), Some(0), "there was nothing to reclaim");
+        assert!(
+            m.storage().is_null(),
+            "a compaction of nothing produced a chunk"
+        );
+        assert!(m.insert(Key::Int(1), Value::int(1)).is_some());
+        assert_eq!(m.get(Key::Int(1)).unwrap().as_int(), 1);
+        assert_eq!(m.used(), 1);
+    }
+
     #[test]
     fn growth_preserves_every_key_and_the_order() {
         let _g = crate::memory::block_pool::test_guard();

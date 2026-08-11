@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-11 · Active: S13, then S7, then S14
+Updated: 2026-08-11 · Active: S13 (S13.1 closed), then S7, then S14
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -105,10 +105,11 @@ because the clock could not resolve it), `dev/INDEX.md`'s entry for
 `memory::large_entity`, and the code's own doc blocks. The design
 document in `rfc` stays.
 
-## S13 — Three ways a walker reads what was never written
+## S13 — Four ways a walker reads what was never written
 
 Found by S7.1's Critic, each verified against the code, each older than
-that step. At the head by `dev/WORKFLOW.md`'s bugs-first rule.
+that step; the fourth came from S13.1's own Critic and is older still. At
+the head by `dev/WORKFLOW.md`'s bugs-first rule.
 
 Goal: the collector never observes a combination of bytes that was not a
 state of the array.
@@ -146,6 +147,22 @@ where that is the only instrument.
         group because both instruments are that collector's — seen red
         under Miri ("Data race ... (1) atomic load ... (2) non-atomic
         write" at the memcpy) and silent after. 433 → 434, gate green.
+      Critic 2026-08-11 round 2, over the repair: **compaction of a
+        table with no chunk allocated one no entry fits in.** `cap` is
+        zero there, `pow2ge(0) * 2` is two slots and eight bytes, the
+        arena grants its sixteen-byte minimum, and the table is left with
+        `storage` non-null and `mask` set — the state the next insert
+        reads as room for an entry, writing thirty-two bytes into sixteen
+        and publishing the count for the walker. `grow`'s doubling arm
+        reported success for `0 * 2` as well. Both guarded, and the
+        regression is `compacting_a_table_with_no_chunk_allocates_nothing`,
+        seen failing on the missing guard. Two claims narrowed rather than
+        defended: the copy is single-threaded only for the *entries*, the
+        index region being written after publication and safe only because
+        no walker reads a slot; and `compact`'s number is the hole count
+        rather than how many entries changed index, which the doc now says
+        and which iterator repair will have to compute for itself. Its
+        severity-1 finding is not this step's and is S13.4 below.
       Found with it: the counter's strongest justification moved. The
         original argument was in-place compaction, which no double read
         of `storage` can see; that case is gone, and what forces a
@@ -178,6 +195,38 @@ where that is the only instrument.
         an ordinary `$a[0] = 1` whose meta store has not landed, so the
         phantom in-edge is posted and only the next phase's re-trace
         acquits it — an epoch spent per torn read.
+
+- [ ] S13.4 Phase 3 re-reads an edge cell whose chunk was replaced
+      done: a component whose array moved its entries between the walk and
+        the re-check is acquitted rather than confirmed, and a test builds
+        that interleaving and sees the component survive
+      tier: T2 · role: Critic
+      Found by S13.1's Critic, 2026-08-11, and older than S13.1: growth
+        has always had it. `collector::Edge` keeps `field`, the raw
+        address the child pointer was read from, and `recheck_and_post`
+        re-reads exactly that address. For an array that address is inside
+        the storage chunk, and every move of the entries replaces the
+        chunk — after which the old one is **parked**, so it is intact and
+        written by nobody for the rest of the epoch. The re-check then
+        compares a frozen copy of the walk value against the walk value
+        and concludes "unchanged".
+      The interleaving, with `A` an array holding `C` in a ring: the walk
+        records `rc(C) = 1` and the edge at `chunk0 + …`; the mutator
+        inserts into `A` until it grows, so the entries move to `chunk1`
+        and `chunk0` parks; the mutator then moves `C` out of `A` into a
+        live array — retain to 2, `remove` writes the hole into `chunk1`,
+        release to 1 — so every refcount reads what the walk recorded and
+        the recorded cell still reads `C`. The component is confirmed and
+        torn down while a live array holds `C`.
+      Parking is what turns a stale read into a false acquittal, so the
+        fix cannot be "read the cell more carefully". The shape the Critic
+        proposes: the head already counts every move, so hand the version
+        out with each cell, keep it in `Edge`, and acquit any component
+        whose array's version has changed — one word per edge and one
+        relaxed load per array. Whether that is the whole answer is the
+        step's first question; an alternative is re-reading through a
+        fresh coherent view and a logical index, which needs `Cell` to
+        carry the owning entity.
 
 ## S14 — A string test that fails at wide test widths
 

@@ -37,6 +37,20 @@
 //!   it validates.** The read set does not depend on the tag, so a
 //!   stale tag can never select a stride: it is discarded with
 //!   everything else read beside it.
+//!
+//! And one rule that belongs to whoever writes the chunk rather than to
+//! this struct: **`used` never falls while `storage` stays the same.**
+//! A walker holds the pair from one accepted reading and strides
+//! `0..used` in that chunk, so a count that fell would leave it striding
+//! indices the mutator has taken back — and an insert writes a fresh
+//! entry's key word plainly, since no reader can reach an index above the
+//! published count. Lowering `used` in place would put those plain writes
+//! under the walker, and a half-written key word above `KEY_HOLE` is a
+//! phantom in-edge: the one direction that frees a live entity. Every
+//! operation that lowers the count therefore publishes a different chunk
+//! with it (`Table::move_entries`, and `dispose` sets the pointer to null
+//! first). This was true by accident until S13.1 and is load-bearing now
+//! (Critic, S13.1).
 
 use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
 

@@ -740,10 +740,11 @@ impl Table {
     /// when the holes are worth reclaiming, otherwise double. Both paths
     /// rebuild every chain.
     ///
-    /// Compaction **moves entries**, so an owner holding live iterator
-    /// positions has to repair them; that obligation belongs to the
-    /// entity wrapper, and this returns whether a compaction happened so
-    /// the wrapper can act on it.
+    /// Both arms **move entries**, so an owner holding live iterator
+    /// positions has to repair them; that obligation belongs to the entity
+    /// wrapper and nothing here reaches it yet. This answers only whether
+    /// there is room now, and `insert` forwards even less: the channel is
+    /// owed with the iterator rather than before it.
     fn grow(&mut self, head: &StorageHead, category: MemoryCategory) -> bool {
         if head.storage().is_null() {
             return self.realloc_storage(head, category, 8);
@@ -758,16 +759,25 @@ impl Table {
         }
 
         match self.cap.checked_mul(2) {
-            Some(n) if n <= MAX_ENTRIES => self.realloc_storage(head, category, n),
+            // `n > 0` is not arithmetic hygiene: doubling zero reports a
+            // growth that made no room, and the caller then writes an
+            // entry into a chunk that has none.
+            Some(n) if n > 0 && n <= MAX_ENTRIES => self.realloc_storage(head, category, n),
             _ => false,
         }
     }
 
     /// Drop the holes and rebuild every chain, into a chunk of the size
     /// this one already has. `None` when that chunk could not be
-    /// allocated, with the table exactly as it was; otherwise the number
-    /// of entries that changed index, which is what an iterator repair
-    /// needs.
+    /// allocated, with the table exactly as it was; otherwise **how many
+    /// holes were dropped**.
+    ///
+    /// That is not how many entries changed index, which is what an
+    /// iterator repair will want: dropping the last entry's hole moves
+    /// nothing, and one hole at the front moves everything behind it. This
+    /// loop knows the hole count, so the hole count is what it reports;
+    /// whoever builds iterator repair owes the other number, and `insert`
+    /// owes it a channel, forwarding nothing about a move today.
     ///
     /// **Into a fresh chunk rather than in place, and that is the whole
     /// of `PLAN.md` S13.1.** Sliding live entries down inside the
@@ -787,6 +797,15 @@ impl Table {
     /// epoch, and an epoch parks every buffer-chunk free instead of
     /// recycling it (`memory::deferred_free`).
     pub fn compact(&mut self, head: &StorageHead, category: MemoryCategory) -> Option<usize> {
+        // A table with no chunk has no holes and no capacity, and asking
+        // for a chunk of `cap == 0` would hand back one no entry fits in
+        // — with `mask` set and `storage` non-null, which is the state the
+        // next insert reads as "room for an entry" (Critic, S13.1).
+        if head.storage().is_null() {
+            debug_assert_eq!(self.cap, 0, "a table with no chunk has no capacity");
+            return Some(0);
+        }
+
         self.move_entries(head, category, self.cap, EntryMove::DroppingHoles)
     }
 
@@ -835,15 +854,22 @@ impl Table {
 
     /// Move every entry into a freshly allocated chunk of `cap` entries
     /// and publish it, rebuilding the index there. `None` on refusal, with
-    /// the table untouched; otherwise how many entries changed index,
-    /// which is zero for [`EntryMove::Whole`].
+    /// the table untouched; otherwise how many entries were left behind —
+    /// zero for [`EntryMove::Whole`], the hole count for
+    /// [`EntryMove::DroppingHoles`].
     ///
-    /// **The copy runs before anything publishes the destination**, which
-    /// is what makes it a plain one: the fresh chunk is reachable from
-    /// this thread alone until `set_storage`, and the window is open from
-    /// there until the index is rebuilt, so no reading a walker accepts
-    /// can name it half-written. The chunk being replaced is only read
-    /// here, so a collector striding it races nothing.
+    /// **The entries are copied before anything publishes the
+    /// destination**, which is what makes that copy a plain one: until
+    /// `set_storage` the fresh chunk is reachable from this thread alone.
+    /// The index region is written *after* publication, inside the window,
+    /// and is safe for a narrower reason — no walker reads a slot, only
+    /// the `nslots` count that offsets past them ([`Table::entries_of`]).
+    /// The first reader of a slot has to move that write ahead of
+    /// publication or make it atomic; the window hides it from an accepted
+    /// reading, not from a stride already under way.
+    ///
+    /// The chunk being replaced is only read here, so a collector striding
+    /// it races nothing.
     ///
     /// The old chunk is freed once the window is closed. A walker still
     /// striding it reads intact bytes: the collector walks only inside an
@@ -856,7 +882,7 @@ impl Table {
         cap: usize,
         mode: EntryMove,
     ) -> Option<usize> {
-        if cap > MAX_ENTRIES {
+        if cap == 0 || cap > MAX_ENTRIES {
             return None;
         }
 
@@ -898,6 +924,10 @@ impl Table {
             }
         }
 
+        debug_assert!(
+            mode == EntryMove::Whole || written == self.live,
+            "dropping the holes wrote a count the live counter disagrees with"
+        );
         head.begin_move();
         head.set_storage(mem);
         head.set_nslots(nslots);
