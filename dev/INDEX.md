@@ -108,8 +108,19 @@ versions live in `docs/history/`, marked at the top.
   program's half of that check is owed by the compiler. Neither arm
   defends against hash flooding — that is the table's debt
   (`dev/DECISIONS.md`, 2026-08-04).
-- Arrays: `src/array/` — storage strategy 3 of `rfc/model/arrays.md`, the
-  ordered hash designed in `rfc/model/arrays-hashtable.md`. One storage
+- Arrays: `src/array/` — storage strategies 2 and 3 of
+  `rfc/model/arrays.md`: the mixed vector (`vector.rs`) and the ordered
+  hash designed in `rfc/model/arrays-hashtable.md`. **What a concurrent
+  walker may read is `head.rs`**, a `StorageHead` both representations
+  begin with, holding the version bracket, the chunk, the two counts and
+  the strategy tag — above the representations rather than inside one,
+  because the 2 → 3 migration replaces the representation under a walker
+  mid-stride (`dev/DECISIONS.md`, 2026-08-11). `entity::Storage` is the
+  union they live in and `entity::storage_head` reaches the head through
+  the union's own address; the tag is stamped in one place,
+  `entity::new_with_storage`, and the walker, the sever and the dispose
+  dispatch on it. A vector keys on the position, so it stores no key, has
+  no index, no holes and none of the hash's flood defences. One storage
   allocation holds `u32` index slots followed by a dense insertion-ordered
   array of 32-byte entries (`entry.rs`): `hash_or_key`, `key`, and the
   element Box, whose reserved bytes carry the collision link as a `u32` at

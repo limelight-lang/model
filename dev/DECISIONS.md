@@ -8,6 +8,52 @@ never edited or deleted.
 
 ---
 
+## 2026-08-11 — the version counter lives above the storage representations, not inside one
+
+The Sage's ruling, from stage S7. **An array's walker-visible words —
+the version counter, the storage pointer, the index-slot count, the
+element count and the strategy tag — live in a `StorageHead` that every
+storage representation begins with**, rather than each representation
+keeping its own. `src/array/head.rs`.
+
+**A counter can only bracket memory that outlives what it brackets.**
+The 2 → 3 migration replaces the representation under a walker that is
+mid-stride, so a counter inside the vector would be validating against
+bytes the migration has already reinterpreted as table fields. That rules
+per-representation counters out in principle rather than in taste.
+
+**A swap counter above two inner ones was refused for a second reason.**
+A walker that read a stale tag still *performs loads* at the other
+representation's offsets before its re-check can discard them, so every
+offset a walker can touch under either tag has to be written atomically
+at a matching width under both. That forces the walker-visible words to
+coincide in offset and width — a common prefix by accident. Naming it is
+cheaper than discovering it.
+
+**Deriving the tag from `nslots == 0` was refused:** an empty ordered
+hash reads that way, and so does every `Map` before its first insert.
+
+**The head is a prefix inside each representation, not a field beside a
+union of them.** That keeps `Table` self-contained, which matters because
+`Map` is the table's second customer and wants the hash without an
+array's storage protocol; the price is one constant byte in every table,
+its tag stuck at `Hash`. The union's own address is therefore the head's
+address, and `entity::storage_head` casts it without naming a
+representation — pinned by a const assertion in each member.
+
+**The walker loads all five words before it branches on the tag.** The
+read set does not depend on the tag, so a stale one is discarded with
+everything read beside it and can never select a stride. Both ends of the
+bracket keep their fences, for the reasons `version_bracket_model.rs`
+exhibits; the model's argument does not count the words in the window, so
+it stands unchanged.
+
+**What this cost elsewhere:** the strategy tag can no longer share
+`Table::flags`, which the flood ladder writes plainly while the walker
+would read the tag atomically. Bits 2–3 there are free again, and
+`rfc/model/arrays-hashtable.md` still says otherwise — the correction is
+S7.4's.
+
 ## 2026-08-10 — the entity-slot limit differs by category, and past it nothing is packed
 
 Edmond's ruling and the Sage's shape, from stage S11. **An entity whose
