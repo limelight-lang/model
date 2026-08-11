@@ -8,6 +8,46 @@ never edited or deleted.
 
 ---
 
+## 2026-08-11 — compaction moves the entries into a fresh chunk
+
+From stage S13.1. **The ordered hash reclaims its holes by copying the
+live entries into a newly allocated chunk of the same size and publishing
+that**, rather than sliding them down inside the chunk it already has.
+`Table::move_entries` is one body for both ways entries move, with
+`EntryMove` saying whether the holes travel; `Table::compact` therefore
+allocates, can be refused, and returns `Option<usize>`.
+
+**Sliding in place is undefined behaviour, not a torn read.** The
+collector reads entries with relaxed atomic loads while the mutator
+memcpys thirty-two bytes over them; a non-atomic write racing an atomic
+read is UB, which no later phase repairs, and Miri reports it as a data
+race at the copy.
+
+**Word-by-word atomic stores were refused, by arithmetic rather than by
+cost.** They answer the race and leave the walker reading one entry at two
+indices while the slide is in progress, so a child is counted twice. An
+in-edge count above the truth is the one direction that frees a live
+object; a missed edge only leaks. A destination nothing has published is
+written by one thread, so the copy stays plain and the version window
+covers only the publication.
+
+**What makes the old chunk safe to free is the epoch, not the bracket.** A
+collector walks only inside one, and an epoch parks every buffer-chunk
+free instead of recycling it (`memory::deferred_free`), so a walker still
+striding the replaced chunk reads intact bytes. Outside an epoch nothing
+walks.
+
+**The price is a refusal where there was none.** An insert that would have
+compacted now fails under memory pressure, exactly as one that would have
+doubled does. Compaction still avoids doubling — the fresh chunk is the
+same size — so what it buys against `realloc_storage` is unchanged.
+
+**It also moved the version counter's justification.** The counter was
+argued from in-place compaction, which no double read of `storage` can
+see. That case is gone; what forces a validated reading now is the 2 → 3
+migration, which changes what the bytes mean at an address that need not
+move, and the separate publication of `storage` and `used`.
+
 ## 2026-08-11 — the storage head is a field of the entity, and no `&mut` may span it
 
 The Sage's second ruling on the same stage, and it **overturns the

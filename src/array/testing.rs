@@ -78,9 +78,10 @@ pub(crate) unsafe fn remove(a: *mut LLArray, key: Key) -> Option<(Value, *mut LL
 /// # Safety
 /// As [`table`].
 #[inline]
-pub(crate) unsafe fn compact(a: *mut LLArray) -> usize {
+pub(crate) unsafe fn compact(a: *mut LLArray) -> Option<usize> {
+    let category = unsafe { category_of(a) };
     let (table, head) = unsafe { as_table_mut(a) };
-    table.compact(head)
+    table.compact(head, category)
 }
 
 /// # Safety

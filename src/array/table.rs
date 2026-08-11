@@ -105,6 +105,19 @@ pub(crate) const EQUAL_HASH_LIMIT: u32 = 8;
 /// since the honest maximum is 4-8 even at millions of keys.
 pub(crate) const CHAIN_LIMIT: u32 = 32;
 
+/// What a move of the entries does with the holes among them.
+///
+/// Two variants rather than a `bool`, because the two are read at their
+/// call sites: growth keeps every index it had, and compaction exists to
+/// take the holes out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EntryMove {
+    /// Every entry, hole or not, at the index it already has.
+    Whole,
+    /// Live entries only, closed up from zero.
+    DroppingHoles,
+}
+
 /// Round up to a power of two, saturating rather than wrapping.
 #[inline]
 fn pow2ge(n: usize) -> usize {
@@ -737,10 +750,11 @@ impl Table {
         }
 
         // Zend's rule: reclaim holes rather than doubling when they are
-        // more than a thirty-second of the live count.
+        // more than a thirty-second of the live count. Reclaiming
+        // allocates too — a chunk of the same size rather than twice it —
+        // so it refuses the same way doubling does.
         if self.holes > self.live / 32 + 1 {
-            self.compact(head);
-            return true;
+            return self.compact(head, category).is_some();
         }
 
         match self.cap.checked_mul(2) {
@@ -749,47 +763,31 @@ impl Table {
         }
     }
 
-    /// Slide live entries down over the holes and rebuild every chain.
-    /// Returns the number of entries that moved, which is what an
-    /// iterator repair needs.
+    /// Drop the holes and rebuild every chain, into a chunk of the size
+    /// this one already has. `None` when that chunk could not be
+    /// allocated, with the table exactly as it was; otherwise the number
+    /// of entries that changed index, which is what an iterator repair
+    /// needs.
     ///
-    /// The bracket is opened here rather than by the caller: compaction
-    /// and growth are the two operations that move entries, and both fire
-    /// from inside an insert, which the entity above cannot see
-    /// ([`StorageHead::begin_move`] for why its two ends are ordered
-    /// differently).
-    pub fn compact(&mut self, head: &StorageHead) -> usize {
-        head.begin_move();
-        let moved = self.compact_entries(head);
-        head.end_move();
-        moved
-    }
-
-    fn compact_entries(&mut self, head: &StorageHead) -> usize {
-        let mut w = 0usize;
-        for r in 0..head.used() {
-            if self.entry(head, r).is_hole() {
-                continue;
-            }
-
-            if w != r {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        Self::entries(head).add(r),
-                        Self::entries(head).add(w),
-                        1,
-                    )
-                };
-            }
-
-            w += 1;
-        }
-
-        let moved = head.used() - w;
-        head.set_used(w);
-        self.holes = 0;
-        self.rebuild_index(head);
-        moved
+    /// **Into a fresh chunk rather than in place, and that is the whole
+    /// of `PLAN.md` S13.1.** Sliding live entries down inside the
+    /// published chunk writes thirty-two bytes plainly under a collector
+    /// that is reading them with relaxed atomic loads — undefined
+    /// behaviour rather than the torn value the epoch repairs, and Miri
+    /// reports it as a data race at the copy. Word-by-word atomic stores
+    /// would answer the race and not the arithmetic: a walker mid-stride
+    /// would then read one entry at two indices and count its child
+    /// twice, and an in-edge count above the truth is the one direction
+    /// that frees a live object. A chunk nothing has published is written
+    /// by one thread, so the copy stays a plain one and no reading can
+    /// name the destination until the window closes.
+    ///
+    /// The old chunk is freed after the window, and a walker still
+    /// striding it reads intact bytes: the collector walks only inside an
+    /// epoch, and an epoch parks every buffer-chunk free instead of
+    /// recycling it (`memory::deferred_free`).
+    pub fn compact(&mut self, head: &StorageHead, category: MemoryCategory) -> Option<usize> {
+        self.move_entries(head, category, self.cap, EntryMove::DroppingHoles)
     }
 
     fn rebuild_index(&mut self, head: &StorageHead) {
@@ -821,52 +819,100 @@ impl Table {
     /// into it. False on refusal, with the table left exactly as it was —
     /// an allocation failure reports to a frame that can raise rather
     /// than aborting.
+    ///
+    /// The entries keep their indices, holes included, so a growth is
+    /// invisible to anything holding one. Dropping the holes is
+    /// [`Table::compact`], and it is the same move with a different copy.
     fn realloc_storage(
         &mut self,
         head: &StorageHead,
         category: MemoryCategory,
         cap: usize,
     ) -> bool {
+        self.move_entries(head, category, cap, EntryMove::Whole)
+            .is_some()
+    }
+
+    /// Move every entry into a freshly allocated chunk of `cap` entries
+    /// and publish it, rebuilding the index there. `None` on refusal, with
+    /// the table untouched; otherwise how many entries changed index,
+    /// which is zero for [`EntryMove::Whole`].
+    ///
+    /// **The copy runs before anything publishes the destination**, which
+    /// is what makes it a plain one: the fresh chunk is reachable from
+    /// this thread alone until `set_storage`, and the window is open from
+    /// there until the index is rebuilt, so no reading a walker accepts
+    /// can name it half-written. The chunk being replaced is only read
+    /// here, so a collector striding it races nothing.
+    ///
+    /// The old chunk is freed once the window is closed. A walker still
+    /// striding it reads intact bytes: the collector walks only inside an
+    /// epoch, and an epoch parks every buffer-chunk free rather than
+    /// recycling it (`memory::deferred_free`).
+    fn move_entries(
+        &mut self,
+        head: &StorageHead,
+        category: MemoryCategory,
+        cap: usize,
+        mode: EntryMove,
+    ) -> Option<usize> {
         if cap > MAX_ENTRIES {
-            return false;
+            return None;
         }
 
         let nslots = pow2ge(cap) * 2;
-        let bytes = match storage_bytes(nslots, cap) {
-            Some(b) => b,
-            None => return false,
-        };
-
+        let bytes = storage_bytes(nslots, cap)?;
         let (mem, granted) = self.alloc(category, bytes);
         if mem.is_null() {
-            return false;
+            return None;
         }
 
-        // Growth moves entries, so it runs inside the head's window for
-        // [`Table::compact`]'s reason.
-        head.begin_move();
         let old_storage = head.storage();
         let old_capacity = self.storage_capacity;
         let old_used = head.used();
-        let old_entries = if old_storage.is_null() {
-            std::ptr::null_mut()
-        } else {
-            Self::entries(head)
-        };
+        let fresh_entries = unsafe { mem.add(entries_offset(nslots)) as *mut Entry };
+        let mut written = 0usize;
+        if !old_storage.is_null() {
+            let old_entries = Self::entries(head);
+            match mode {
+                EntryMove::Whole => {
+                    unsafe { std::ptr::copy_nonoverlapping(old_entries, fresh_entries, old_used) };
+                    written = old_used;
+                }
+                EntryMove::DroppingHoles => {
+                    for r in 0..old_used {
+                        if self.entry(head, r).is_hole() {
+                            continue;
+                        }
 
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                old_entries.add(r),
+                                fresh_entries.add(written),
+                                1,
+                            )
+                        };
+                        written += 1;
+                    }
+                }
+            }
+        }
+
+        head.begin_move();
         head.set_storage(mem);
-        self.storage_capacity = granted;
         head.set_nslots(nslots);
+        head.set_used(written);
+        self.storage_capacity = granted;
         self.mask = nslots - 1;
         self.cap = cap;
-        if !old_entries.is_null() {
-            unsafe { std::ptr::copy_nonoverlapping(old_entries, Self::entries(head), old_used) };
+        if mode == EntryMove::DroppingHoles {
+            self.holes = 0;
         }
 
         self.rebuild_index(head);
         head.end_move();
         self.free_storage(category, old_storage, old_capacity);
-        true
+        Some(old_used - written)
     }
 
     /// The storage, routed by `category` (`memory::routing::body_alloc`),

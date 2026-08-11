@@ -134,9 +134,11 @@ versions live in `docs/history/`, marked at the top.
   the collector's load uses — while `Entry::value` clears the bytes on the
   way out so a link never travels in a copy (`dev/DECISIONS.md`,
   2026-08-07).
-  `table.rs` is the core — lookup, insert, remove, growth by compaction or
-  doubling, and the flood backstop that escalates a table once to a keyed
-  hash over the key bytes. It allocates no entity and calls no store
+  `table.rs` is the core — lookup, insert, remove, growth by doubling or by
+  dropping the holes (one body, `move_entries`, and both into a freshly
+  allocated chunk since S13.1: sliding entries inside the published one
+  raced the collector's relaxed loads), and the flood backstop that
+  escalates a table once to a keyed hash over the key bytes. It allocates no entity and calls no store
   barrier: both are `element.rs`'s, and `Table::insert` hands the
   displaced element back for that layer to release (S6.1).
   Storage is a **buffer-arena** chunk in the two long-lived categories,
@@ -178,10 +180,10 @@ versions live in `docs/history/`, marked at the top.
   class pointer, the same construction as a string, because the entity
   kind already says what it is. Its children — elements **and** string
   keys — come from the one tracing stride, `walk::trace_cells`' Array arm,
-  which reads the entries through `Table::coherent_entries`: a version
-  counter brackets growth and compaction, and a walker that cannot get a
-  coherent reading skips the array for that epoch rather than striding a
-  fresh count over a stale chunk. Both ends of that bracket are ordered by
+  which reads the entries through `StorageHead::coherent` and
+  `Table::entries_of`: a version counter brackets every move of an entry,
+  and a walker that cannot get a coherent reading skips the array for that
+  epoch rather than striding a fresh count over a stale chunk. Both ends of that bracket are ordered by
   a fence rather than by a release store and an acquire load, and
   `version_bracket_model.rs` is the loom model that exhibits what the
   other shape admits (`dev/WORKFLOW.md`, "Loom"). `entity::for_each_counted_child` is an

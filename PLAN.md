@@ -116,7 +116,7 @@ state of the array.
 Done when: each defect has a test seen failing against it, under Miri
 where that is the only instrument.
 
-- [ ] S13.1 `Table::compact_entries` writes the published chunk plainly
+- [x] S13.1 `Table::compact_entries` writes the published chunk plainly
       done: the entry move is atomic word by word, or the compaction
         happens somewhere no accepted view can name; Miri's data-race
         report on a walker against a compacting mutator goes silent
@@ -126,6 +126,32 @@ where that is the only instrument.
         atomic read is UB rather than the torn value phases 3 and 4
         repair, and `walk.rs`'s `CellReader` split exists to avoid
         exactly this.
+      The criterion's first option was refused, and by arithmetic rather
+        than by cost: word-by-word atomic stores answer the race and
+        leave a walker mid-stride reading one entry at two indices, so
+        its child is counted twice. An in-edge count above the truth is
+        the one direction that frees a live object, where a missed edge
+        only leaks. So the move goes to a chunk nothing has published —
+        the destination is this thread's alone until the window opens,
+        which makes the copy legally plain.
+      handoff: `Table::move_entries` is the one body both growth and
+        compaction go through, with `EntryMove` saying what happens to
+        the holes; `compact` returns `Option<usize>` because it allocates
+        now and can be refused, and `grow`'s hole branch propagates that.
+        The old chunk is freed after the window, which is safe for the
+        reason the module doc gives: a collector walks only inside an
+        epoch and an epoch parks every buffer-chunk free
+        (`memory::deferred_free`). Regression:
+        `what_a_walker_reads_during_a_move`, gated to rc-walk on the
+        group because both instruments are that collector's — seen red
+        under Miri ("Data race ... (1) atomic load ... (2) non-atomic
+        write" at the memcpy) and silent after. 433 → 434, gate green.
+      Found with it: the counter's strongest justification moved. The
+        original argument was in-place compaction, which no double read
+        of `storage` can see; that case is gone, and what forces a
+        counter now is the 2 → 3 migration plus the fact that `storage`
+        and `used` are published separately. The test that stated the old
+        reason says the new one.
 - [ ] S13.2 Both `dispose` bodies publish three words unbracketed
       done: `storage`, `nslots` and `used` go to their empty values
         inside one `begin_move`/`end_move`, and a test pins that no
