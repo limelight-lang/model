@@ -657,6 +657,14 @@ mod the_three_way_judgement {
     /// the storage version beside it (`PLAN.md` S13.4). Growth here is
     /// the mover; compaction and the migration between representations
     /// are the same event to the head.
+    ///
+    /// **What the check disabled costs is a verdict, not a member.** Run
+    /// this way it reports `acquitted 0, confirmed 1` and then Phase 4's
+    /// exact test drops the message on the current chunk, where entry
+    /// zero is a hole: no destructor runs and the live array keeps its
+    /// element. That measurement is why the assertion below is on the
+    /// counters rather than on a member outliving the drain — the
+    /// counters are what this defect reaches.
     #[test]
     fn a_component_whose_array_moved_its_entries_is_acquitted() {
         use crate::array::entity::ll_array_new;

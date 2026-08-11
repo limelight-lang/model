@@ -146,8 +146,10 @@ pub(crate) struct Epoch {
     flags: Vec<u32>,
     /// Per row, the version of the storage its cells were read out of,
     /// and `None` for a row whose cells cannot move
-    /// ([`crate::walk::trace_cells`]). Pass 2 fills it, and the Phase 3
-    /// re-check is its only reader.
+    /// ([`crate::walk::trace_cells`]). Pass 1 sizes it beside `rows` and
+    /// `flags` and pass 2 assigns by index, so a row that pass 2 ever
+    /// leaves early keeps a version of its own rather than the next
+    /// row's; the Phase 3 re-check is the only reader.
     storage_versions: Vec<Option<usize>>,
     edges: Vec<Edge>,
     /// Candidate components as indices into `entities`. Condemnation
@@ -304,6 +306,7 @@ impl Epoch {
                 self.entities.push(slot);
                 self.rows.push(refcount);
                 self.flags.push(flags);
+                self.storage_versions.push(None);
             }
         }
 
@@ -342,11 +345,12 @@ impl Epoch {
                 })
             };
 
-            self.storage_versions.push(storage_version);
+            self.storage_versions[i] = storage_version;
         }
     }
 
-    /// Whether the cells recorded for row `src` are still that row's.
+    /// Whether the cells recorded for `row` are still where the walk
+    /// read them.
     ///
     /// A cell of an array lives in a storage chunk the array replaces on
     /// growth, on compaction and on the migration between
@@ -356,27 +360,47 @@ impl Epoch {
     /// writes them for the rest of the epoch. Re-reading a recorded
     /// address there compares a frozen copy of the walk value against the
     /// walk value and answers "unchanged" for a cell the array no longer
-    /// has — which confirms a component while a live holder names one of
-    /// its members. The address cannot see this; the version the walk
-    /// validated its reading against can.
+    /// has. The address cannot see that; the version the walk validated
+    /// its reading against can, and any change acquits — the direction
+    /// [`crate::array::head::StorageHead::coherent`] takes when it gives
+    /// up, one epoch of leak and nothing freed early.
     ///
-    /// Any change acquits, which is the direction
-    /// [`crate::array::head::StorageHead::coherent`] already takes when
-    /// it gives up: one epoch of leak, nothing freed early. A source that
-    /// died in the meantime reads whatever its slot now holds and
-    /// acquits for the same reason.
+    /// **What it buys is this filter's own contract rather than a live
+    /// entity.** Phase 4 re-traces every member through its current
+    /// fields before it frees anything — for an array that is the
+    /// current head and the current chunk, no recorded address anywhere
+    /// (`walk::drain_confirmed`, `exact_test`) — so a component
+    /// confirmed on a stale cell is dropped there instead. Measured with
+    /// this check disabled, on the regression below: confirmed 1, the
+    /// message dropped, nothing torn down. The price of doing without it
+    /// is a verdict posted and dropped per moved array, and a filter
+    /// reporting as verified what it did not read.
+    ///
+    /// The window it is decisive over is the handshake's:
+    /// [`Epoch::recheck_and_post`] runs after the condemn ack, which
+    /// orders what the mutator wrote before its checkpoint, so a move
+    /// that lands after the ack need not be visible to this load at all.
+    /// What holds is that no verdict is posted for a component that
+    /// changed before the ack, and Phase 4's exact test is what stands
+    /// behind the rest.
+    ///
+    /// A source that died in between needs no case of its own: a member
+    /// is gone from the count comparison above, which breaks out on a
+    /// zero refcount, and any other source reads whatever its slot now
+    /// holds — a head still there reads two versions on, `dispose` being
+    /// a mover like the rest (`PLAN.md` S13.2).
     ///
     /// # Safety
-    /// Row `src` was walked this epoch, so its entity address is one the
+    /// `row` was walked this epoch, so its entity address is one the
     /// snapshot found and the epoch keeps readable.
-    unsafe fn cells_are_still_the_sources(&self, src: u32) -> bool {
-        let Some(walked) = self.storage_versions[src as usize] else {
+    unsafe fn row_still_has_its_cells(&self, row: u32) -> bool {
+        let Some(walked) = self.storage_versions[row as usize] else {
             return true;
         };
 
         let head = unsafe {
             crate::array::entity::storage_head(
-                self.entities[src as usize] as *mut crate::array::entity::LLArray,
+                self.entities[row as usize] as *mut crate::array::entity::LLArray,
             )
         };
         unsafe { (*head).version() == walked }
@@ -446,13 +470,33 @@ impl Epoch {
                 }
             }
 
+            // The storage each recorded cell was read out of, before
+            // any cell is re-read: an address inside a chunk the array
+            // has left is readable only because the epoch parks the
+            // free, and the check that knows the bytes stopped being
+            // the array's belongs ahead of the read that depends on it.
+            // Pass 2 records edges row by row, so the sources arrive in
+            // runs and one comparison covers a whole array's worth.
+            if clean {
+                let mut asked = u32::MAX;
+                for &k in &component_edges[id] {
+                    let src = self.edges[k as usize].src;
+                    if src == asked {
+                        continue;
+                    }
+
+                    asked = src;
+                    if !unsafe { self.row_still_has_its_cells(src) } {
+                        clean = false;
+                        break;
+                    }
+                }
+            }
+
             // Recorded in-edge cells re-read against their walk values.
             if clean {
                 for &k in &component_edges[id] {
-                    let edge = &self.edges[k as usize];
-                    if !unsafe { edge.still_designates_its_child() }
-                        || !unsafe { self.cells_are_still_the_sources(edge.src) }
-                    {
+                    if !unsafe { self.edges[k as usize].still_designates_its_child() } {
                         clean = false;
                         break;
                     }

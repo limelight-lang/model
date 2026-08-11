@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-11 · Active: S13 (S13.1–S13.3 closed), then S7, then S14
+Updated: 2026-08-11 · Active: S14, then S7 (S13 closed and awaiting its stage review)
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -230,7 +230,7 @@ where that is the only instrument.
         repointed chain link still confirms — nothing reads those bits,
         so only a future whole-word comparison could break it.
 
-- [ ] S13.4 Phase 3 re-reads an edge cell whose chunk was replaced
+- [x] S13.4 Phase 3 re-reads an edge cell whose chunk was replaced
       done: a component whose array moved its entries between the walk and
         the re-check is acquitted rather than confirmed, and a test builds
         that interleaving and sees the component survive
@@ -261,6 +261,40 @@ where that is the only instrument.
         step's first question; an alternative is re-reading through a
         fresh coherent view and a logical index, which needs `Cell` to
         carry the owning entity.
+      **The consequence above is overstated and the correction is the
+        step's, measured rather than argued.** With the check disabled
+        the regression reports `confirmed 1` — and then Phase 4's exact
+        test re-traces every member through its *current* fields
+        (`walk::drain_confirmed`), finds the hole in the current chunk,
+        and drops the message: no destructor runs, the live array keeps
+        its element. So the defect costs a verdict per moved array and a
+        filter that reports as verified what it did not read, and the
+        teardown of a live entity is Phase 4's to prevent. It also
+        bounds what the check can promise: `recheck_and_post` runs after
+        the condemn ack, so a move landing after that ack need not be
+        visible to it at all.
+      Critic 2026-08-11, over the repair: no interleaving defeats it —
+        the only unbracketed writer of the three words is
+        `entity::carry_storage_out_of`, which asserts `RequestArena` and
+        so never runs on a walked row. Four demands, all taken: the
+        consequence above corrected in the doc and here; the version
+        asked **before** any cell of the component is re-read, since the
+        recorded address is readable only by the parked-free invariant
+        and the check that knows it is stale ran second; `storage_versions`
+        sized by pass 1 and assigned by index, so a future `continue` in
+        pass 2 cannot slide a row's version onto its neighbour; and the
+        dead-source sentence argued from `dispose` being a mover rather
+        than from what a freed slot happens to hold.
+      handoff: `trace_cells` answers with the version its cells were read
+        at, `Epoch::storage_versions` keeps one per walked row, and
+        `Epoch::row_still_has_its_cells` is what Phase 3 asks first, once
+        per run of edges sharing a source. Per row rather than per edge:
+        every cell of one array is read at one version, so the word is
+        the array's. Regression:
+        `a_component_whose_array_moved_its_entries_is_acquitted`, seen
+        reporting `acquitted 0` with the check disabled. 439 → 440, gate
+        green, Miri silent over `collector::` (16 tests) on the tree
+        before the Critic's round.
 
 ## S14 — A string test that fails at wide test widths
 
