@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-11 · Active: S7
+Updated: 2026-08-11 · Active: S13, then S7
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -105,6 +105,46 @@ because the clock could not resolve it), `dev/INDEX.md`'s entry for
 `memory::large_entity`, and the code's own doc blocks. The design
 document in `rfc` stays.
 
+## S13 — Three ways a walker reads what was never written
+
+Found by S7.1's Critic, each verified against the code, each older than
+that step. At the head by `dev/WORKFLOW.md`'s bugs-first rule.
+
+Goal: the collector never observes a combination of bytes that was not a
+state of the array.
+
+Done when: each defect has a test seen failing against it, under Miri
+where that is the only instrument.
+
+- [ ] S13.1 `Table::compact_entries` writes the published chunk plainly
+      done: the entry move is atomic word by word, or the compaction
+        happens somewhere no accepted view can name; Miri's data-race
+        report on a walker against a compacting mutator goes silent
+      tier: T2 · role: Critic
+      It memcpys 32-byte entries inside the chunk the collector is
+        reading with relaxed atomic loads. A non-atomic write racing an
+        atomic read is UB rather than the torn value phases 3 and 4
+        repair, and `walk.rs`'s `CellReader` split exists to avoid
+        exactly this.
+- [ ] S13.2 Both `dispose` bodies publish three words unbracketed
+      done: `storage`, `nslots` and `used` go to their empty values
+        inside one `begin_move`/`end_move`, and a test pins that no
+        reading mixes the old chunk with the new counts
+      tier: T1 · role: —
+      An entity dies mid-epoch and the collector's snapshot still holds
+        the slot, so the mixture is reachable. For the table it strides
+        the index region as entries; the vector escapes only because its
+        `nslots` is already zero.
+- [ ] S13.3 Phase 3 re-checks eight bytes of a sixteen-byte cell
+      done: `recheck_and_post` compares the meta word beside the payload,
+        so a Value torn between its two stores is caught rather than
+        confirmed
+      tier: T2 · role: —
+      `Cell` already carries the address; the payload word matches after
+        an ordinary `$a[0] = 1` whose meta store has not landed, so the
+        phantom in-edge is posted and only the next phase's re-trace
+        acquits it — an epoch spent per torn read.
+
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
 
 Goal: the mixed vector exists, the strategy tag has the second occupant
@@ -151,6 +191,30 @@ key it cannot hold, both configurations green, Miri silent.
         weighed and set aside for Table's self-containment. Correctness
         outranks structure, so the price goes back to the Sage rather
         than into the step. Not yet acted on.
+      Sage 2026-08-11 round 2: **the placement half of the first ruling
+        is overturned; everything else stands.** The head becomes a field
+        of the entity — `LLArray { rc, head, storage }` — and each
+        representation keeps only its private tail. The type rule that
+        follows: no `&mut` may ever span the head, and the only one near
+        it is field-precise, `&mut (*a).storage`. The bracket calls stay
+        textually inside `grow`, `compact` and `realloc_storage`, because
+        the entity cannot see when a move happens — growth fires inside
+        `insert`, and bracketing every insert would leave every insert in
+        an odd window and starve the walker. So every table and vector
+        method that touches the head gains a `head: &StorageHead`
+        parameter: a **shared** reference to a struct of atomics is the
+        exempted case, and it is disjoint from the `&mut` over the tail,
+        both derived field-precisely from the one `*mut LLArray`. This is
+        `category`'s precedent — threaded per call rather than stored
+        beside the table, so nothing drifts. `Map` owns a head of its own
+        the same way, stamped `Hash` and never rewritten. `storage_head`
+        stops casting and names the field, and both `offset_of` const
+        assertions are **deleted with nothing in their place**: the
+        identity they guarded ceases to be a fact. Cost on the hot path
+        is one register argument per call and no extra load. The loom
+        model stands verbatim. The decisive check is a Miri run of a
+        walker-against-mutator test that exhibits today's retag, red
+        before and green after. Final.
       Also found, each verified and each older than this step:
         `Table::compact_entries` memcpys 32-byte entries inside the
         **published** chunk while the collector reads it with relaxed
