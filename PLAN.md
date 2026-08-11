@@ -239,7 +239,7 @@ arrangement.
       note: `--no-default-features` reports three unresolved doc links, all
         to `crate::epoch`, all older than this stage — the module is gated
         whole. Left as they are: a plain span would work in neither build.
-- [~] S9.4 Tests leave the module bodies and arrive grouped
+- [x] S9.4 Tests leave the module bodies and arrive grouped
       done: every `#[cfg(test)] mod tests` in `src/` is its own file,
         each grouped into named submodules that say what is being pinned
         rather than which function is called; the suite's count is
@@ -274,6 +274,17 @@ arrangement.
         groups: helpers belong at file scope. Both were caught by the
         compiler this time; the step's acceptance test is the suite's
         count precisely because neither has to be.
+      handoff: thirty-nine files, in `50abb8d`, `0bbddfc`, `5a48b24` and
+        `199df94`; the counts never moved — rc-walk 419, rc-trace 403,
+        hash-folding 419, `debug-journal` 425 and 409 — which is the
+        step's own acceptance test. The four-times fixture is
+        `test_support::wide_class` with `POOLED_FILLERS` and
+        `RUN_FILLERS` beside it, and it asserts both bounds where
+        `promote`'s copy asserted one and the other three asserted none.
+        **A third hazard the two above did not name:** a group whose
+        every test carried the same `cfg` leaves `use super::*` unused
+        in the other configuration, and the gate belongs on the group —
+        four groups took one that way, and the compiler is what says so.
 
 
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
