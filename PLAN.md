@@ -149,6 +149,16 @@ configurations, and `dev/INDEX.md` states the new arrangement.
       done: the same, over `object`, `string`, `array/`, `template`,
         `reference`, `weak`, `intern`, `value`, `class` and `hash/`
       tier: T2 · role: Code Reviewer
+      progress: the mechanical half is done and committed (`812ba96`) —
+        unresolved doc links, `# Safety` sections holding what is not a
+        safety obligation, and names in comments that no longer exist in
+        the code. That last check is the one worth keeping: it found
+        `prop_layout` and `traced_runs`, which nothing reports because
+        they are not links. Read in full and clean: `value`, `reference`,
+        `intern`, `template`, and `string` down to line 640. Left to
+        read: the rest of `string`, `object`, `class`, `weak`, `hash/`
+        and all of `array/` — about 11 000 lines. The scope's count
+        before the pass is 4 482 comment lines of 15 872.
 - [ ] S9.3 The comment pass over the runtime spine
       done: the same, over `refcount`, `gc`, `walk`, `collector`,
         `epoch`, `promote`, `static_block` and `journal/` — the last of
