@@ -180,6 +180,14 @@ arrangement.
       done: the same, over `object`, `string`, `array/`, `template`,
         `reference`, `weak`, `intern`, `value`, `class` and `hash/`
       tier: T2 · role: Code Reviewer
+      progress: **the rule for cutting a strip, found by cutting the first
+        two** (`6da3989`) — a strip shortens exactly as far as its argument
+        is already written down in `dev/`, and where it is not, the strip
+        is the only record and the work is to move it into a journal
+        first. `hash/seed.rs` went 59 → 28 and `string::separate` 55 → 40
+        on that rule; every other long strip in `string.rs` and `hash/` is
+        contract and mechanism with nothing behind it, and stays. 52 runs
+        of 16+ lines are left in this step's scope, 1 328 lines.
       progress: the mechanical half is done and committed (`812ba96`) —
         unresolved doc links, `# Safety` sections holding what is not a
         safety obligation, and names in comments that no longer exist in
