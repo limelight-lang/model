@@ -115,7 +115,7 @@ authoritative.
 Done when: a fresh array is strategy 2 and migrates to strategy 3 under a
 key it cannot hold, both configurations green, Miri silent.
 
-- [ ] S7.1 The mixed vector as storage strategy 2
+- [x] S7.1 The mixed vector as storage strategy 2
       done: an integer-keyed array whose storage is a `Vector` is traced,
         severed and torn down through S4.1's drain, in both
         configurations, and every call that reaches the storage goes
@@ -136,6 +136,17 @@ key it cannot hold, both configurations green, Miri silent.
         a stride. Both fences stay. The migration builds the new chunk
         off-line and swaps it inside one window; the tag is written once
         and 3 is final. Final.
+      handoff: `head.rs` is the walker's contract, `vector.rs` is
+        strategy 2, and `entity::Storage` is the union both live in — the
+        head is a prefix inside each member, so the union's address is
+        the head's and `storage_head` reaches it without naming a
+        representation. One place stamps the tag, `new_with_storage`; the
+        walker, the sever and the dispose all dispatch on it, and the
+        element layer does not yet, which is what S7.2 is. The vector's
+        own operations are reached by its seven tests alone for this one
+        step, and `array/mod.rs` carries the `allow` that says so with
+        the step that removes it named. 424 → 431, gate green on
+        5103a02, loom's four cases still pass.
 - [ ] S7.2 Factories stamp the tag and the element write dispatches on it
       done: `ll_array_new` stamps `Vector`, and a strategy-2 write of a
         string key migrates through the tag rather than through a direct
