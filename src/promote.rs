@@ -26,11 +26,6 @@
 //!    count is a value the mutator reads and destructors are mutator code,
 //!    so it cannot be zeroed while they still run.
 //!
-//! Children come from `walk::trace_entity`, the crate's one
-//! kind-dispatched tracer, and not from a private "object or leaf" test.
-//! A reference box has one counted child, and promotion that treats it as
-//! a leaf leaves the referent in the dying arena
-//! (`dev/DECISIONS.md`, 2026-08-04).
 //! 3. **Retain blocks** carrying survivors: rewrite each survivor's
 //!    category to GcHeap in place (the pointer-tag alternative was
 //!    rejected exactly because this rewrite must be possible), stamp
@@ -43,6 +38,11 @@
 //!    it since it was allocated (`rfc/model/memory/large-entities.md`).
 //! 4. Release-at-reset log: one release per record, with real teardown
 //!    dispatch for entities that die of it.
+//!
+//! All three traversals — the mark, the re-trace and the count — go
+//! through `walk::trace_entity`, the crate's one kind-dispatched tracer,
+//! and never through a private kind test of promotion's own
+//! (`dev/DECISIONS.md`, 2026-08-04).
 
 use std::collections::{HashMap, HashSet};
 
@@ -226,9 +226,9 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             // at allocation is what the walk finds it by from now on
             // (`rfc/model/memory/large-entities.md`).
             //
-            // This arm displaces a stamp that ran unconditionally, and an
-            // omitted test would be silent, which is why it is the one of
-            // the four rules that owes a test.
+            // Omitting this arm is silent: nothing between the reset and
+            // the entity's death looks wrong, which is why this rule is
+            // the one of them that carries a test of its own.
             let block = BlockHeader::of_ptr(surv as *const u8) as usize;
             if unsafe { is_in_a_block_of_its_own(surv) } {
                 let forgotten = unsafe { (*arena).forget_large(surv as *mut u8) };
@@ -278,17 +278,18 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         );
     }
 
+    // COW counts settle here, for the reason they were left alone until
+    // now: the fixpoint is where mutator code runs, and on a COW entity
+    // the count is what that code reads to decide whether a write may go
+    // in place.
+    unsafe { reconcile_cow_counts(&survivors, &cow_at_promotion) };
+
     // The weak walk — after every destructor has settled and the
     // survivors' categories are rewritten, before the pages go back:
     // dying entries get their cells nulled, promoted survivors are
     // recognized by their new category and keep resolving
     // (`rfc/model/weak-references.md`, "Death notification"). Runs no
     // user code, so it cannot grow the logs behind the settled fixpoint.
-    // COW counts last, for the reason they were left alone until now: the
-    // fixpoint is where mutator code runs, and on a COW entity the count
-    // is what that code reads to decide whether a write may go in place.
-    unsafe { reconcile_cow_counts(&survivors, &cow_at_promotion) };
-
     unsafe { crate::weak::drain_arena_weak_log(arena) };
 
     // The survivor list becomes the retained blocks' object index. A
@@ -450,10 +451,9 @@ unsafe fn is_in_a_block_of_its_own(surv: *mut RcHeader) -> bool {
 }
 
 /// Entity teardown dispatch from a bare header — the uniform kind
-/// switch. Went through `ll_object_die` directly until weak cells and
-/// reference boxes could land in the release log; the kind switch frees
-/// them correctly (a bare `ll_object_die` on a kind-3/5 entity would
-/// read a class pointer that is not there).
+/// switch. The release log can hold weak cells and reference boxes, and
+/// a bare `ll_object_die` on one of those would read a class pointer
+/// that is not there.
 unsafe fn die(entity: *mut RcHeader) {
     unsafe { crate::object::ll_entity_die(entity) };
 }
@@ -551,11 +551,8 @@ unsafe fn mark_one(
 /// untouched, because promotion happens inside the settling loop and the
 /// release-log drain runs `__destruct` bodies after it: a destructor may
 /// hand an already-promoted string to a heap object that outlives the
-/// request, and that reference belongs to nobody the edge walk can see.
-///
-/// The earlier version assigned the edge count outright, which erased
-/// exactly those holders and left the string with one count and two
-/// holders (`dev/DECISIONS.md`, 2026-08-04).
+/// request, and that reference belongs to nobody the edge walk can see
+/// (`dev/DECISIONS.md`, 2026-08-04).
 ///
 /// `at_promotion` is each COW survivor's count at the instant its
 /// category was rewritten — the last instant the reset can attribute it
@@ -1410,8 +1407,7 @@ mod tests {
 
     /// Overwriting a slot that held the last reference to a heap object
     /// tears that object down (destructor + children + free), rather than
-    /// leaking it — the store barrier's displaced-value path (audit
-    /// barrier.rs:76, previously an empty TODO).
+    /// leaking it — the store barrier's displaced-value path.
     #[test]
     fn overwriting_the_last_reference_tears_down_the_displaced_object() {
         let _g = crate::memory::block_pool::test_guard();

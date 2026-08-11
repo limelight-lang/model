@@ -2,8 +2,8 @@
 //! state machine — Phase 1 WALK, Phase 2 DIFF/MARK, Phase 3
 //! CONDEMN/FILTER of `rfc/model/gc/rc-walk.md`. Phase 4 lives on the
 //! mutator (`crate::epoch` + `walk::drain_confirmed`); this side's only
-//! writes to shared memory are the epoch stamps and the condemnation
-//! bytes.
+//! write to shared memory is the epoch stamp. Condemnation is
+//! collector-private since the eager-death amendment (2026-07-27).
 //!
 //! The steps are public within the crate and callable one at a time:
 //! that is what lets a test interleave mutator actions between walk,
@@ -290,11 +290,11 @@ impl Epoch {
         self.stats.candidates = self.candidates.len();
     }
 
-    /// Phase 3, first half — condemn every candidate component (a mark
-    /// in this epoch's private tables and nothing else: the shared
-    /// condemned byte is retired, eager-death amendment 2026-07-27),
-    /// then request the handshake whose ack makes the mutator's prior
-    /// writes visible to the re-check.
+    /// Phase 3, first half — request the handshake whose ack makes the
+    /// mutator's prior writes visible to the re-check. Condemning itself
+    /// writes nothing: Phase 2's candidate list is the condemnation,
+    /// private to this epoch since the eager-death amendment
+    /// (2026-07-27, which retired the shared condemned byte).
     pub fn condemn(&mut self) {
         self.acks_needed = protocol::handshake_acks() + 1;
         protocol::request_handshake();
@@ -1155,9 +1155,10 @@ mod tests {
         unsafe { tie(c, 16, target) }; // slot owns the ref the frame held
         e.walk();
         e.judge();
-        // The newcomer is either past the snapshot cursor (never
-        // visited) or in a reused slot (stamped and skipped) — both are
-        // allocate-black; either way it contributes no row and no edge.
+        // The newcomer is either in a block the snapshot never saw
+        // (never visited) or in a snapshotted slot (stamped and
+        // skipped) — both are allocate-black; either way it contributes
+        // no row and no edge.
         assert_eq!(
             e.stats.candidates, 0,
             "target: RC 1 from an unwalked source, IN 0 — a computed root"
@@ -1189,7 +1190,8 @@ mod tests {
         let mut ctx = LLContext { arena: &mut arena };
         let holder = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         // A victim freed BEFORE the epoch: its slot goes to the free
-        // list and can be handed out mid-epoch, far below the cursor.
+        // list, which can hand it out again mid-epoch — inside the
+        // range the snapshot covers.
         let victim = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         let victim_addr = victim as usize;
         stepped_epoch(); // holder matures
@@ -1468,7 +1470,7 @@ mod tests {
         stepped_epoch();
         assert_eq!(
             DESTRUCTS.load(Ordering::Relaxed) as usize,
-            2 * rings + rings, // both ring members + each holder... holders have no destructor? they do: same class
+            2 * rings + rings, // two ring members and one holder per round
             "every garbage entity destructed exactly once"
         );
         let seen = walked_addresses();

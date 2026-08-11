@@ -298,17 +298,13 @@ pub const CANDIDATE_INDEX_MASK: u32 = 0x0001_FFFF << CANDIDATE_INDEX_SHIFT;
 /// the fixed fields. Set once by the factory and never flipped — nothing
 /// promotes between the two layouts at run time.
 ///
-/// It shares bit 15 with the candidate index above, and the two never
-/// meet: the index is written only for [`CANDIDATE_KINDS`], which
-/// excludes `String`, and in an `rc-walk` build the index is dead while
-/// the epoch byte starts at 16. A kind-scoped bit follows the same
-/// precedent as [`ARENA_RESET_MARK`], which borrows the GC-state field
-/// for arena entities.
-///
-/// **[`COW`] used to carry this too, and no longer does** — it means
-/// copy-on-write and nothing else. One bit could not express the
-/// combination an oversize string needs, which is out of line by size
-/// and copy-on-write by semantics (`rfc/model/memory/large-entities.md`).
+/// It shares bit 15 with the candidate index above and the two never
+/// meet, which is what lets a kind-scoped bit sit here the way
+/// [`ARENA_RESET_MARK`] sits in the GC-state field. [`COW`] carries
+/// copy-on-write and nothing else: one bit could not say both for an
+/// oversize string, which is out of line by size and copy-on-write by
+/// semantics (`dev/DECISIONS.md`, 2026-08-10;
+/// `rfc/model/memory/large-entities.md`).
 pub const STRING_OUT_OF_LINE: u32 = 1 << 15;
 /// Largest buffer position the field can hold. Beyond it the index is
 /// stored as zero: 131 070 candidates is many full thresholds without a
@@ -642,11 +638,13 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
         //
         // The "already buffered" test is here rather than only inside
         // `buffer_candidate`, because `flags` is in a register on this line
-        // and an entity is buffered at most once per collection: without it
-        // every later decrement of the same entity paid a call and a reload
-        // to be told nothing had changed. The callee keeps its own copy of
-        // the test — it has other callers, and this one is an optimization,
-        // not the invariant.
+        // and an entity is buffered at most once per collection: hoisting
+        // it keeps the thread-local access and the `Vec` push out of this
+        // function, and `buffer_candidate` is `#[inline(never)]` so they
+        // stay out. It saves no call — the callee was inlined before the
+        // split (`dev/BENCHMARKS.md`, 2026-07-21). The callee keeps its own
+        // copy of the test: it has other callers, and this one is an
+        // optimization, not the invariant.
         //
         // The buffered bit and the kind are two tests rather than one
         // masked compare, because the admitted kinds are not a mask

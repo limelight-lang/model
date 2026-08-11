@@ -3,46 +3,30 @@
 //! A static block holds a class's `static` properties for one thread.
 //! It is **headerless** — no `RcHeader`, no class pointer at `+8` — so
 //! it is not an entity, no collector walks it, and its reference slots
-//! are roots for as long as the thread lives.
-//!
-//! Those roots need one release point, and thread exit is it. The
-//! escape hold-count a static places on a request-arena object has no
-//! other decrement: an overwrite mid-request is the store barrier's
-//! `drop`, and thread exit is the other end
-//! (`rfc/model/classes.md`, "Teardown at thread exit"). Without this
-//! pass a worker pool accumulates every request graph its statics ever
-//! touched, for the life of the process.
+//! are roots for as long as the thread lives. Those roots need one
+//! release point, and thread exit is it: the escape hold-count a static
+//! places on a request-arena object has no other decrement, an overwrite
+//! mid-request aside.
 //!
 //! # The pass
 //!
 //! Each thread appends a block to a thread-local list the first time it
 //! initializes that block, beside the initializer that already runs
 //! there. At exit the list is walked in **reverse** initialization
-//! order, as C++ tears down function-local statics: a block initialized
-//! later may have been initialized against an earlier one, so the
-//! earlier one has to outlive it.
-//!
-//! Per block, every counted slot is nulled and its former occupant
-//! dropped through the barrier's `drop_ref` with `owner_cat =
+//! order, and per block every counted slot is nulled and its former
+//! occupant dropped through the barrier's `drop_ref` with `owner_cat =
 //! LongLived`. Nothing here branches on what the slot held, because
-//! `drop_ref` already decides: a request-arena escapee loses its
-//! hold-count, a heap reference releases and cascades into teardown, an
-//! immortal one is a no-op.
+//! `drop_ref` already decides.
 //!
-//! # What this module does not know
+//! This module holds a base address and the descriptor that says where
+//! the reference slots are; how a block is allocated and what its slots
+//! mean are not its business — the release policy is the barrier's and
+//! the teardown is `object`'s.
 //!
-//! How a static block is allocated, and what its slots mean. It holds a
-//! base address and the descriptor that says where the reference slots
-//! are; the release policy is the barrier's and the teardown is
-//! `object`'s.
-//!
-//! # Why the last thread is not special
-//!
-//! Every thread exit runs the pass in full, the process's last one
-//! included: PHP runs destructors at end of life and their side effects
-//! must fire. Only the raw memory-free of that final teardown is
-//! redundant, since the OS reclaims the address space regardless, and
-//! that is not what this pass skips.
+//! Why the order is LIFO, why the drops go through `drop_ref`, and why
+//! the process's last thread runs the pass in full like every other:
+//! `rfc/model/classes.md`, "Teardown at thread exit", and
+//! `dev/DECISIONS.md`, 2026-08-03.
 
 use crate::class::Class;
 use crate::refcount::{MemoryCategory, RcHeader};
@@ -52,16 +36,12 @@ type Registered = Vec<(*mut u8, *const Class)>;
 thread_local! {
     /// Registered blocks in initialization order; torn down in reverse.
     ///
-    /// A raw pointer in a `Cell`, not a `RefCell<Vec<..>>`, and the
-    /// reason is the one thing that made this pass wrong at first: a
-    /// `Vec` has drop glue, so its `thread_local` is registered for TLS
-    /// destruction, and [`run_thread_exit_teardown`] is itself reached
-    /// **from** a TLS destructor — the heap guard's. The order of TLS
-    /// destructors is unspecified, so the list could already be gone,
-    /// and `with` then panics with `AccessError` inside a destructor,
-    /// which aborts the process. A `Cell<*mut _>` has no drop glue, is
-    /// never registered, and stays readable for the whole life of the
-    /// thread.
+    /// A raw pointer in a `Cell`, not a `RefCell<Vec<..>>`: a `Vec` has
+    /// drop glue, so its `thread_local` is registered for TLS
+    /// destruction and can be gone before
+    /// [`run_thread_exit_teardown`], which is itself reached **from** a
+    /// TLS destructor — the heap guard's. No `thread_local!` this path
+    /// can reach may have drop glue (`dev/DECISIONS.md`, 2026-08-03).
     ///
     /// The `Vec` behind it is owned here: allocated on first
     /// registration, freed when the pass drains it. A destructor

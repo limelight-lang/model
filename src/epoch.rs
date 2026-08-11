@@ -79,7 +79,7 @@ static OUTSTANDING_VERDICTS: AtomicUsize = AtomicUsize::new(0);
 static QUEUE: Mutex<VecDeque<ConfirmationMessage>> = Mutex::new(VecDeque::new());
 
 thread_local! {
-    /// The one bit of allocator state that closes the drain recursion.
+    /// The one bit of per-thread state that closes the drain recursion.
     static MID_DRAIN: Cell<bool> = const { Cell::new(false) };
     /// Teardowns in flight on this thread. While non-zero, some entity
     /// on this thread is between its committing zero store and the end
@@ -191,8 +191,8 @@ fn checkpoint_attend() {
     }
 }
 
-// --- Collector-side surface (the collector thread of commit 4; tests
-// drive it directly until then) ---------------------------------------------
+// --- Collector-side surface, driven by `crate::collector`; no
+// production collector thread spawns it yet --------------------------------
 
 /// Raise the handshake flag. The collector then waits for
 /// [`handshake_acks`] to move past its snapshot.

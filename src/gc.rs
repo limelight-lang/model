@@ -94,6 +94,10 @@ fn candidate_threshold() -> usize {
     TEST_THRESHOLD.with(|c| c.get())
 }
 
+/// Tests only: arm a collection at `n` buffered candidates instead of
+/// [`CANDIDATE_THRESHOLD`]. Thread-local and sticky — restore the
+/// constant before returning, or every later test on this thread arms at
+/// `n`.
 #[cfg(all(test, not(feature = "rc-walk")))]
 pub(crate) fn set_test_threshold(n: usize) {
     TEST_THRESHOLD.with(|c| c.set(n));
@@ -229,12 +233,11 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
 ///
 /// ## Why this is out of line
 ///
-/// It was not, and the whole of it — the thread-local access, the
-/// `RefCell` borrow, a `Vec` push with its growth and panic paths —
-/// inlined into `ll_release`, the most frequent operation in the
-/// runtime, on a path taken at most once per object per collection.
-/// `ll_release` now tests the buffered bit itself, from flags it already
-/// holds, and calls this only when something has to be recorded.
+/// Inlined, the whole of it lands in `ll_release`, the most frequent
+/// operation in the runtime, for work needed at most once per object per
+/// collection. `ll_release` tests the buffered bit itself, from flags it
+/// already holds, and calls this only when there is something to record
+/// (`dev/BENCHMARKS.md`, 2026-07-21, which carries the IR counts).
 ///
 /// # Safety
 /// `entity` must be live.
@@ -303,19 +306,17 @@ unsafe fn decode_index(entity: *mut RcHeader) -> Option<usize> {
 /// root.
 ///
 /// The position comes from the entity's own header
-/// ([`CANDIDATE_INDEX_SHIFT`]), so this is a swap-remove, not a search.
-/// It used to scan the buffer — up to 10 000 pointers on an event that
-/// happens on every ordinary death of a buffered object. The scan
-/// survives only as the fallback for a position that did not fit the
-/// field.
+/// ([`CANDIDATE_INDEX_SHIFT`]), so this is a swap-remove rather than a
+/// scan of up to 10 000 pointers on an event that happens at every
+/// ordinary death of a buffered object. The scan survives only as the
+/// fallback for a position that did not fit the field.
 ///
-/// **Every door into teardown calls this**, and none of them delegates
-/// the duty to `dispose`, which is class code: `ll_entity_die` for a
-/// bare pointer of any kind, `ll_object_die` for a statically-known
-/// object, `ll_object_die` a second time after `dispose` returns because
-/// a `__destruct` can buffer the object afresh, and
+/// **Every door into teardown calls this**, and none delegates the duty
+/// to `dispose`, which is class code: `ll_entity_die` before its kind
+/// switch, `ll_object_die` after `dispose` returns and never before, and
 /// `array::entity::array_die`'s drain for a nested array, which reaches
-/// teardown without passing `ll_entity_die` at all.
+/// teardown without passing `ll_entity_die` at all (`dev/DECISIONS.md`,
+/// 2026-08-07 and 2026-08-08).
 ///
 /// # Safety
 /// `entity` must still point at the (dying) entity.
@@ -373,22 +374,19 @@ fn candidate_buffer() -> *mut Vec<*mut RcHeader> {
 /// Called from `ll_thread_exit`, not from a TLS destructor, which is the
 /// point (see the `CANDIDATES` doc).
 ///
-/// **The buffered entities are not touched**, and that is deliberate: a
-/// candidate can already be gone. An arena entity dies with its arena
-/// without individual teardown, so nothing calls [`forget_candidate`]
-/// for it and its buffer entry outlives its memory — Miri caught a
-/// write through exactly such an entry when this function tried to
-/// clear buffered bits on the way out (2026-08-03). A pointer in this
-/// buffer is not evidence that anything is still there.
+/// **The buffered entities are not touched**: a candidate can already be
+/// gone. An arena entity dies with its arena without individual
+/// teardown, so nothing calls [`forget_candidate`] for it and its buffer
+/// entry outlives its memory. A pointer in this buffer is not evidence
+/// that anything is still there.
 ///
-/// **Known limit, and it is the reason the clearing looked worth
-/// doing**: an entity that is genuinely alive and still buffered when
+/// **Known limit**: an entity genuinely alive and still buffered when
 /// its thread dies keeps `CYCLE_COLLECTOR_BUFFERED` set while its block
-/// goes to the abandoned list. If an adopting thread ever releases it,
-/// the stale bit suppresses re-buffering forever and its cycle leaks.
-/// Cross-thread entity survival is reserved today, so nothing reaches
-/// that case; closing it needs a liveness test this buffer cannot
-/// provide, which is a design question and not a cleanup.
+/// goes to the abandoned list, so an adopting thread's release can never
+/// re-buffer it and its cycle leaks. Cross-thread entity survival is
+/// reserved today, so nothing reaches that case. Both, with the Miri
+/// finding that refused the obvious repair, in `dev/DECISIONS.md`,
+/// 2026-08-03.
 ///
 /// Null-tolerant and idempotent.
 #[cfg_attr(feature = "rc-walk", allow(dead_code))]
@@ -402,15 +400,12 @@ pub(crate) fn dispose() {
 /// Bacon–Rajan synchronous cycle collection over the candidate buffer.
 /// Returns the number of entities reclaimed.
 ///
-/// Refuses in two states, returning zero and leaving the arming alone.
-/// A call made while a collection is already running would recurse into
-/// the marker. A call made while a teardown is in flight — a
-/// `__destruct` that fires one, or the compiler's poll standing inside
-/// a destructor body — would read a graph mid-teardown, where the dying
-/// entity is still a buffered root at refcount zero: the collection
-/// would judge it garbage and free it, and the teardown it interrupted
-/// would free it again. Neither state clears `COLLECT_PENDING`, so the
-/// next poll at a clean point collects.
+/// Refuses in two states, returning zero and leaving the arming alone: a
+/// collection already running, which would recurse into the marker, and
+/// a teardown in flight, where the dying entity is still a buffered root
+/// at refcount zero and a collection would free it under the teardown
+/// that then frees it again (`dev/DECISIONS.md`, 2026-08-07). Neither
+/// clears `COLLECT_PENDING`, so the next poll at a clean point collects.
 ///
 /// # Safety
 /// Must run at a **clean point** — where refcounts and physical edges agree
@@ -528,11 +523,11 @@ unsafe fn collect_cycles_inner() -> usize {
                 // The raw free below reclaims the entity's own slot and
                 // nothing else, so every kind that owns memory *outside*
                 // that slot needs an arm here or its body is lost with no
-                // pointer left to it. Two do, and both were missing: a
-                // dynamic string's payload and an array's table storage
-                // are separate allocations, each a buffer chunk holding
-                // its block's live count above zero for the life of the
-                // process, or an OS-direct run.
+                // pointer left to it. Two do: a dynamic string's payload
+                // and an array's table storage are separate allocations,
+                // each a buffer chunk holding its block's live count
+                // above zero for the life of the process, or an
+                // OS-direct run.
                 //
                 // A string goes through its own teardown, which touches no
                 // counts. An array cannot: `array_die` releases the

@@ -1,10 +1,11 @@
-//! Entity walking: the kind-dispatched tracer and the heap census —
-//! build step 1 of the `rc-walk` cycle collector
-//! (`rfc/model/gc/rc-walk.md`, "Build order"). No collector exists yet;
-//! what this module delivers is the walking substrate: enumerate every
-//! live entity through the region registry, and trace an entity's
-//! counted children by its kind without touching `+8` unless the kind
-//! carries a class pointer there.
+//! Entity walking: the kind-dispatched tracer and the heap census
+//! (`rc-walk` build step 1), the synchronous whole-heap collection
+//! ([`collect_cycles`], step 2) and the Phase 4 drain the collector posts
+//! to ([`drain_confirmed`], step 3) — `rfc/model/gc/rc-walk.md`, "Build
+//! order". One walking substrate serves all three: enumerate every live
+//! entity through the region registry, and trace an entity's counted
+//! children by its kind without touching `+8` unless the kind carries a
+//! class pointer there.
 //!
 //! Knowledge split: `memory::heap` knows blocks, slots and occupancy
 //! ([`for_each_entity_slot`]); this module knows entity kinds and what
@@ -32,9 +33,9 @@ unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
 /// at Phase 3 to see whether the mutator has moved it. A walker that
 /// yielded only the child could not serve the collector, which is how
 /// the collector came to carry its own copy of every stride.
-/// Only the epoch reads the address and the raw word, and the epoch is
-/// the `rc-walk` build's; under `rc-trace` the same cells are walked for
-/// their children alone.
+/// The raw word is the epoch's alone, hence its `rc-trace` dead-code
+/// exemption below; the address is the sever's too, which empties the
+/// cell it names ([`empty_cell`]).
 #[derive(Clone, Copy)]
 pub(crate) struct Cell {
     pub addr: usize,
@@ -178,12 +179,8 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
 /// it from its own snapshot and must not re-read a header the mutator is
 /// writing.
 ///
-/// Kinds with no counted cells are named in the arms rather than left to
-/// a default: a string is a leaf whichever layout it has, since its
-/// payload is bytes; a weak cell's target is deliberately uncounted; an
-/// FFI Box holds an opaque C payload. An array is here now: its entries
-/// are read coherently or not at all, which is what the earlier exclusion
-/// was waiting for.
+/// Which kinds have counted cells, and why the rest have none, is the
+/// dispatch documented at [`trace_entity`].
 ///
 /// # Safety
 /// `entity` is a live entity of `kind` whose cells are readable, and
@@ -334,10 +331,9 @@ pub(crate) unsafe fn sever_cells(
                 displaced.push(cell.child);
             })
         },
-        // An array's cells are not `trace_cells`' (the decision at
-        // [`trace_entity`]), and emptying one is not a null either: a
-        // cleared entry is a hole, and an integer-keyed entry has no key
-        // cell at all. The table owns both facts.
+        // Severing an array is the table's, not `empty_cell`'s: a
+        // cleared entry is a hole rather than a null, and an
+        // integer-keyed entry has no key cell to empty at all.
         ARRAY => unsafe {
             crate::array::entity::sever_counted_children(
                 entity as *mut crate::array::entity::LLArray,
@@ -428,14 +424,10 @@ pub struct CollectStats {
 }
 
 /// The whole-heap synchronous cycle collection — rc-walk build step 2
-/// (`rfc/model/gc/rc-walk.md`, "Build order"): Phase 1 walk over the
-/// entity blocks, Phase 2 diff and mark in private memory, then the full
-/// Phase 4 drain inline — exact test included. No collector thread, no
-/// Phase 3 filter: with a quiescent mutator every read is already exact,
-/// so condemnation and the handshake have nothing to repair. What this
-/// buys today: a whole-heap leak detector that needs no candidate buffer,
-/// and the correctness harness for the exact test the concurrent
-/// collector (build step 3) will rely on.
+/// (`rfc/model/gc/rc-walk.md`, "Build order"). No collector thread and
+/// no Phase 3 filter: with a quiescent mutator every read is already
+/// exact, so condemnation and the handshake have nothing to repair, and
+/// no candidate buffer is involved at all.
 ///
 /// The drain is the discipline `gc::run_cyclic_destructors` proves, minus
 /// its restore step — these counts are already real: exact test, guard,
@@ -555,8 +547,8 @@ unsafe fn collect_cycles_inner() -> CollectStats {
     //
     // The `is_object` gates here and below must widen to cover the Lazy
     // kind when A2 starts producing it: a lazy object carries a class
-    // pointer and destructs/severs like an object, and the raw-free
-    // fallback in `unguard` would leak its children's counts.
+    // pointer and its `__destruct` would otherwise never run. Sever and
+    // death already name it (`sever_cells`, `object::ll_entity_die`).
     let mut any_destructor_ran = false;
     for members in &confirmed {
         for &m in members {
@@ -1589,8 +1581,8 @@ mod tests {
         }
     }
 
-    /// The census aggregates what the walk yields; with only objects
-    /// produced today, every walked entity reports the Object kind.
+    /// The census aggregates what the walk yields. The assertions are
+    /// deltas, never totals: the walk is process-global.
     #[test]
     fn census_counts_objects_and_their_edges() {
         let _g = crate::memory::block_pool::test_guard();
@@ -1891,10 +1883,11 @@ mod tests {
             "the two readers disagree: {disagreed:?}"
         );
 
-        // Everything this test made has to go: `census_counts_objects_and_
-        // _their_edges` counts the whole process's entity blocks, so a
-        // survivor here is a failure over there. The box's Value goes
-        // first, then the holder's dispose releases the child last.
+        // Everything this test made has to go:
+        // `census_counts_objects_and_their_edges` counts the whole
+        // process's entity blocks, so a survivor here is a failure over
+        // there. The box's Value goes first, then the holder's dispose
+        // releases the child last.
         unsafe {
             use crate::refcount::ll_release;
             assert!(ll_release(boxed as *mut RcHeader));
