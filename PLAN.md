@@ -118,20 +118,46 @@ key it cannot hold, both configurations green, Miri silent.
 - [ ] S7.1 The mixed vector as storage strategy 2
       done: a fresh integer-keyed array is strategy 2, traced, severed
         and torn down through S4.1's drain, in both configurations
-      tier: T2 · role: Critic
+      tier: T2 · role: Sage → Critic
+      Sage 2026-08-11: one version counter, in a `StorageHead` both
+        representations begin with — `version`, `storage`, `nslots`,
+        `used`, `tag`, every field atomic, 40 bytes, at `LLArray + 8`
+        under either tag. A counter inside a representation dies with it
+        at the 2 → 3 migration, and a swap counter above two inner ones
+        still lets a walker load at the other tag's offsets before its
+        re-check, so the atomic-width rule forces the walker-visible
+        words to coincide anyway. The head is a **prefix inside** both
+        `Vector` and `Table` rather than a field beside a union, which
+        leaves `Table` self-contained for `Map`. The walker loads all
+        four words plus the tag unconditionally and branches on the tag
+        only after the bracket validates, so a stale tag can never pick
+        a stride. Both fences stay. The migration builds the new chunk
+        off-line and swaps it inside one window; the tag is written once
+        and 3 is final. Final.
 - [ ] S7.2 Factories stamp the tag and the element write dispatches on it
       done: a strategy-2 write of a string key migrates through the tag,
         not through a direct table call
       tier: T2 · role: —
 - [ ] S7.3 The 2 → 3 migration
       done: a test pins insertion order across the migration, and the
-        flood state carries over with it
+        append cursor carries over with it — `next_free` is the vector's
+        length, and `NEXT_FREE_NONE` for an empty one
       tier: T2 · role: —
+      Sage 2026-08-11: the old criterion's "flood state carries over" is
+        vacuous — a vector never hashes, so it holds none, and 3 never
+        returns to 2. Flood-state inheritance stays what it already is, a
+        COW-copy concern through `adopt_flood_state`. Final.
 - [ ] S7.4 The RFC corrections this stage owes
-      done: `arrays.md`'s "strategy 1 never transitions" and
-        `memory/buffers.md`'s grouping of immortal with long-lived are
-        both amended in `rfc`
+      done: `arrays.md`'s "strategy 1 never transitions",
+        `memory/buffers.md`'s grouping of immortal with long-lived, and
+        `arrays-hashtable.md`'s "two bits for the strategy … live there
+        together" are all amended in `rfc`
       tier: T1 · role: —
+      Sage 2026-08-11: the tag cannot share the flags byte the flood
+        ladder writes plainly, the walker reading it atomically, so it
+        moves into the head and bits 2–3 of `flags` return to the pool.
+        `table.rs`'s own comment on `TABLE_APPEND_EXHAUSTED` says the
+        same thing and is stale with it. Final.
 
 The 1 → 2 transition stays out of the stage: strategy 1 has no producer
 in the crate, and an arm with no producer is what this crate has refused
