@@ -124,7 +124,7 @@ renamed to what it measures.
 Done when: each repaired test has been seen failing against the defect
 it claims to guard, and the suite's count is recorded before and after.
 
-- [ ] S12.1 The table's chain that is one entry long, and the keys that
+- [x] S12.1 The table's chain that is one entry long, and the keys that
       share no slot
       done: `removing_shortens_the_chain_rather_than_leaving_a_marker`
         builds a chain of at least three colliding keys and reads
@@ -136,6 +136,18 @@ it claims to guard, and the suite's count is recorded before and after.
       Today the first inserts 64 dense keys, each alone in its slot, and
         asserts `get`, `contains` and `len`; the second collides on
         about one run in sixteen and asserts nothing about the slot.
+      handoff: both repaired in place and both seen failing. The chain is
+        three keys one table width apart, which share slot 0 because a
+        fresh table indexes an integer key by its value; with the
+        `else` arm of `remove`'s unlink neutered the new `chain` helper
+        reports the removed entry still linked. The dense sweep is kept
+        beside it, on a table of its own, and is what proves nothing:
+        under the same probe every one of its removals takes the
+        head-of-chain arm and passes. The aliasing test now **writes**
+        the string's hash as 7 rather than searching for a collision, so
+        the two keys share a slot and an identity and only
+        `entry_matches`' key-kind arm separates them — dropping that arm
+        makes `get(Int(7))` answer 77.
 - [ ] S12.2 The string hash test that hashes no string
       done: `a_hashed_string_never_reads_back_as_unhashed` pins the
         string's own reading of the cached field, which is what its doc

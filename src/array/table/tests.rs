@@ -77,6 +77,40 @@ fn mk(bytes: &[u8]) -> *mut LLString {
     unsafe { crate::string::ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, bytes) }
 }
 
+/// The entries on one slot's chain, in the order the lookup walks them.
+///
+/// A hole reached from a chain fails here rather than being skipped:
+/// a removal that left its entry linked is what this exists to catch,
+/// and `get` would answer correctly through such a chain anyway.
+fn chain(m: &Owned, slot: usize) -> Vec<usize> {
+    let mut walked = Vec::new();
+    let mut i = unsafe { *m.slots().add(slot) };
+    while i != NONE {
+        let e = m.entry(i as usize);
+        assert!(
+            !e.is_hole(),
+            "entry {i} is a hole and is still on the chain"
+        );
+        walked.push(i as usize);
+        i = e.link();
+    }
+
+    walked
+}
+
+/// The same chain read as integer keys, which is what a test that built
+/// it from a stride can compare against.
+fn chain_keys(m: &Owned, slot: usize) -> Vec<i64> {
+    chain(m, slot)
+        .into_iter()
+        .map(|i| {
+            let e = m.entry(i);
+            assert!(e.is_int_key(), "entry {i} is not an integer key");
+            e.hash_or_key as i64
+        })
+        .collect()
+}
+
 // ---- the flood backstop -----------------------------------------
 
 /// Forge the state the backstop exists for: many entries whose *full*
@@ -195,20 +229,53 @@ mod the_ordered_hash_itself {
     fn removing_shortens_the_chain_rather_than_leaving_a_marker() {
         let _g = crate::memory::block_pool::test_guard();
         let mut m = t();
+
+        // Three keys one table width apart share slot 0, a fresh table
+        // indexing an integer key by its value. The stride is what
+        // builds a chain at all: a dense set puts every key in a slot
+        // of its own, and a removal there repairs nothing.
+        let stride = 1024i64;
+        for i in 0..3i64 {
+            m.insert(Key::Int(i * stride), Value::int(i));
+        }
+
+        assert_eq!(
+            chain_keys(&m, 0),
+            vec![2 * stride, stride, 0],
+            "insertion is at the head, so the newest key comes first"
+        );
+
+        assert_eq!(m.remove(Key::Int(stride)).unwrap().0.as_int(), 1);
+        assert_eq!(
+            chain_keys(&m, 0),
+            vec![2 * stride, 0],
+            "the removed entry left the chain instead of staying on it"
+        );
+        assert!(m.entry(1).is_hole(), "and its entry is a hole");
+        assert!(m.get(Key::Int(stride)).is_none());
+        for i in [0i64, 2] {
+            assert_eq!(m.get(Key::Int(i * stride)).unwrap().as_int(), i);
+        }
+
+        // The same over a dense set, where every removal empties its own
+        // slot: a lookup on an emptied table is one slot read, with no
+        // marker to step over.
+        let mut dense = t();
         for i in 0..64i64 {
-            m.insert(Key::Int(i), Value::int(i));
+            dense.insert(Key::Int(i), Value::int(i));
         }
 
         for i in 0..64i64 {
-            assert_eq!(m.remove(Key::Int(i)).unwrap().0.as_int(), i);
-            assert!(m.get(Key::Int(i)).is_none(), "a removed key stays removed");
+            assert_eq!(dense.remove(Key::Int(i)).unwrap().0.as_int(), i);
+            assert!(
+                dense.get(Key::Int(i)).is_none(),
+                "a removed key stays removed"
+            );
         }
 
-        assert_eq!(m.len(), 0);
-        // Everything still resolves: the chains are empty, not full of
-        // markers, so a lookup on an emptied table is one slot read.
+        assert_eq!(dense.len(), 0);
         for i in 0..64i64 {
-            assert!(!m.contains(Key::Int(i)));
+            assert!(!dense.contains(Key::Int(i)));
         }
     }
 
@@ -521,10 +588,25 @@ mod keys_that_are_strings {
         let _g = crate::memory::block_pool::test_guard();
         let mut m = t();
         m.insert(Key::Int(7), Value::int(700));
+
+        // The string's hash is written rather than hashed, so that the
+        // one thing separating the two keys is the entry's key kind:
+        // below `strong` a string's slot is its cached hash, so 7 puts
+        // it on the integer's chain, and 7 is also what the entry stores
+        // as its identity. Left to the real hash, the two share a slot
+        // on about one run in sixteen — the seed is drawn per process —
+        // and never share an identity at all, so the arm this is named
+        // for went untested either way.
         let s = mk(b"7");
+        unsafe { (*s).hash = 7 };
         m.insert(Key::Str(s), Value::int(77));
 
-        assert_eq!(m.len(), 2, "int 7 and string \"7\" are different keys here");
+        assert_eq!(
+            chain(&m, 7).len(),
+            2,
+            "the two keys are on one chain, which is where aliasing would show"
+        );
+        assert_eq!(m.len(), 2, "an integer key and a string key are two keys");
         assert_eq!(m.get(Key::Int(7)).unwrap().as_int(), 700);
         assert_eq!(m.get(Key::Str(s)).unwrap().as_int(), 77);
     }
