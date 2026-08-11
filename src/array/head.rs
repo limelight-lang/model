@@ -48,9 +48,15 @@
 //! under the walker, and a half-written key word above `KEY_HOLE` is a
 //! phantom in-edge: the one direction that frees a live entity. Every
 //! operation that lowers the count therefore publishes a different chunk
-//! with it (`Table::move_entries`, and `dispose` sets the pointer to null
-//! first). This was true by accident until S13.1 and is load-bearing now
-//! (Critic, S13.1).
+//! with it — `Table::move_entries` a fresh one, both `dispose` bodies a
+//! null one. This was true by accident until S13.1 and is load-bearing
+//! now (Critic, S13.1).
+//!
+//! **The window covers a release as well as a move.** `dispose` writes
+//! the same words growth does, so a reader that took them one at a time
+//! could pair a live chunk with the empty counts; the bracket is what
+//! keeps the order of the stores inside either body from carrying the
+//! argument (`PLAN.md` S13.2).
 
 use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
 

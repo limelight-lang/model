@@ -257,11 +257,22 @@ impl Vector {
 
     /// Give the storage back. The elements are the caller's to release
     /// first: this frees bytes and knows nothing about what was in them.
+    ///
+    /// **The words a walker reads go out inside the head's window**, for
+    /// the reason [`Table::dispose`](crate::array::table::Table::dispose)
+    /// gives: a dying array is read by a collector whose snapshot still
+    /// names its slot, and a chunk published with the counts of the empty
+    /// state is a state no array was in. This representation would
+    /// survive the pair being published separately, its `nslots` being
+    /// zero throughout, and it is bracketed anyway — the exemption is an
+    /// accident of the layout rather than a property either body states.
     pub fn dispose(&mut self, head: &StorageHead, category: MemoryCategory) {
         let p = head.storage();
         let capacity = self.storage_capacity;
+        head.begin_move();
         head.set_storage(std::ptr::null_mut());
         head.set_used(0);
+        head.end_move();
         self.cap = 0;
         self.storage_capacity = 0;
         if !p.is_null() {

@@ -1190,15 +1190,26 @@ impl Table {
     /// The values are **not** released here: their order matters to the
     /// collector, so the entity wrapper walks and releases them first and
     /// then calls this. Nothing here reads a value.
+    ///
+    /// **The three words a walker reads go out inside the head's
+    /// window**, because a dying array is still reachable: it dies
+    /// mid-epoch and the collector's snapshot holds its slot. Published
+    /// one by one they offer readings no array was ever in — the chunk
+    /// with the counts of the empty state, which for this representation
+    /// strides the index region as entries. The window is also what
+    /// makes the order of the three stores below free to change: without
+    /// it the null chunk has to be published first and nothing says so.
     pub fn dispose(&mut self, head: &StorageHead, category: MemoryCategory) {
         let p = head.storage();
         let capacity = self.storage_capacity;
+        head.begin_move();
         head.set_storage(std::ptr::null_mut());
-        self.storage_capacity = 0;
         head.set_nslots(0);
+        head.set_used(0);
+        head.end_move();
+        self.storage_capacity = 0;
         self.mask = 0;
         self.cap = 0;
-        head.set_used(0);
         self.live = 0;
         self.holes = 0;
         self.free_storage(category, p, capacity);

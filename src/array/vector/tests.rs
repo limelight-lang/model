@@ -124,6 +124,33 @@ mod the_dense_range {
         discard(a);
     }
 
+    /// Releasing the storage publishes the same words growth does, so it
+    /// takes the same window: a collector whose snapshot holds the slot
+    /// of a dying array must not be handed the chunk with the counts of
+    /// the empty state (`PLAN.md` S13.2). The mixture this
+    /// representation could offer is narrower than the ordered hash's —
+    /// it has no index region to stride — and the bracket is what says
+    /// so rather than the order of two stores.
+    #[test]
+    fn the_release_of_the_storage_is_one_window() {
+        let _g = crate::memory::block_pool::test_guard();
+        let a = vector_array(MemoryCategory::GcHeap);
+        let (v, head) = unsafe { as_vector_mut(a) };
+        for i in 0..4i64 {
+            assert!(v.push(head, MemoryCategory::GcHeap, Value::int(i)));
+        }
+
+        let before = head.version();
+        v.dispose(head, MemoryCategory::GcHeap);
+        assert_eq!(
+            head.version(),
+            before + 2,
+            "one window opened and closed around the release"
+        );
+        assert!(head.storage().is_null() && head.used() == 0);
+        discard(a);
+    }
+
     /// `set` overwrites a published element and hands the displaced value
     /// back for the caller to release; past the end it refuses, because
     /// what a key outside the range means is a migration and that is not

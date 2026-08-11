@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-11 · Active: S13 (S13.1 closed), then S7, then S14
+Updated: 2026-08-11 · Active: S13 (S13.1 and S13.2 closed), then S7, then S14
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -169,7 +169,7 @@ where that is the only instrument.
         counter now is the 2 → 3 migration plus the fact that `storage`
         and `used` are published separately. The test that stated the old
         reason says the new one.
-- [ ] S13.2 Both `dispose` bodies publish three words unbracketed
+- [x] S13.2 Both `dispose` bodies publish three words unbracketed
       done: `storage`, `nslots` and `used` go to their empty values
         inside one `begin_move`/`end_move`, and a test pins that no
         reading mixes the old chunk with the new counts
@@ -186,6 +186,24 @@ where that is the only instrument.
         pointer — publishes `(old chunk, nslots 0, used 8)`, a state no
         live array ever had. The bracket makes the order moot, so this
         step is the place to stop relying on it.
+      handoff: both bodies drive their words to the empty state between
+        `begin_move` and `end_move` and free the chunk after the window
+        closes, which is `move_entries`' order. Regression:
+        `disposing_hands_out_no_state_the_array_never_had` — a second
+        thread accepting coherent views while the owner fills and
+        releases in a loop, seen reporting 275 mixed readings in 4096
+        rounds before the bracket and none after; both representations
+        also pin the version delta. **All 275 were the harmless class**,
+        the null chunk against live counts, because the body did publish
+        the pointer first; the class that frees a live entity is one
+        tidy-up away and the test asks for both. 435 → 438, gate green,
+        Miri silent over the new module and `array::vector`.
+      Found beside it and not acted on: `Vector::sever_elements` lowers
+        `used` to zero in the chunk it keeps, which is the one thing this
+        module's doc says no operation does. Harmless today — a vector's
+        elements are written by atomic stores and a severed vector takes
+        no insert — so it is a question rather than a repair, and it is
+        Edmond's.
 - [ ] S13.3 Phase 3 re-checks eight bytes of a sixteen-byte cell
       done: `recheck_and_post` compares the meta word beside the payload,
         so a Value torn between its two stores is caught rather than
