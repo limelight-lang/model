@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-11 · Active: S9
+Updated: 2026-08-11 · Active: S12
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -63,9 +63,9 @@ the one class of defect no other tool in this crate can see.
 
 The stages below are in **work order, which is the file's order rather
 than the numbers' one**: a number is never reissued once given, so a stage
-added later sits where it is to be done. S9 is such a stage, and so is
-S11, which sits at the head because `dev/WORKFLOW.md` puts a known bug
-before new work.
+added later sits where it is to be done. S12 is such a stage, and it
+sits at the head because `dev/WORKFLOW.md` puts a known bug before new
+work — a test that cannot fail being one.
 
 The five that were there first were ordered by the Sage on 2026-08-08 and
 approved by Edmond the same day; the three at the head of that order are
@@ -73,13 +73,21 @@ done and gone, and the argument for the rest is unchanged. S7 gives the
 strategy tag the second occupant it was deferred for, which is also what
 makes two of `Map`'s design questions answerable; S8 writes that design,
 since building it first would decide by accident what Edmond has
-reserved. S9 was added on 2026-08-08 at
-Edmond's request and placed after S6, now gone, and before S7, for the
-reason its own section gives. S10 was added and closed on 2026-08-09,
-ahead of S9 because S9.2's comment pass runs over `src/array/` and moving
-seven signatures afterwards would have meant passing over those files
-twice. The prose sections after the stages are the reasoning behind them
-and the backlog they were drawn from.
+reserved. The prose sections after the stages are the reasoning behind
+them and the backlog they were drawn from.
+
+**S9 is closed and deleted by rule 23.1.3.** Five steps, in the order
+they ran: the mechanical style rules over the whole crate, then the
+comment pass over `src/memory/`, the entity modules and the runtime
+spine, then the tests out of the module bodies and into a file each. Its
+answer to Edmond's length ruling is that `dev/` holds a strip's argument
+far less often than the count of strips suggests — eight of forty-four
+shortened — so most long comments are the only record and stay. What
+survives it is in `dev/INDEX.md` (the test layout, which the last step
+overturned), `dev/POSTMORTEM.md` (2026-08-11, twice: the guard checked
+against the wrong limit, and a doc written from a test's name inherits
+its false promise), the corrections in `rfc` `d14105f`, and S12, which is
+the list of tests its own review found unable to fail.
 
 **S11 is closed and deleted by rule 23.1.3.** Nine steps: the refusal
 that replaced an abort, the per-category slot limit with one home, the
@@ -97,195 +105,87 @@ because the clock could not resolve it), `dev/INDEX.md`'s entry for
 `memory::large_entity`, and the code's own doc blocks. The design
 document in `rfc` stays.
 
-## S9 — The crate reads without its own noise
+## S12 — Tests whose instrument does not measure what they promise
 
-Edmond's, 2026-08-08, both halves of it: there are too many comments to
-read past, and they break rule 19 of the working rules — a comment adds a
-level the code does not have, above it or below it, and one at the same
-level is a retelling that should not have been written. And the tests
-have outgrown the bodies they live in.
+Found by S9's Code Reviewer, which was asked one question — does a
+group's doc state what its tests pin — and answered nine times that the
+doc was right and the test did not reach it. Edmond's, 2026-08-11: they
+go in the plan rather than into a question.
 
-**Placed here rather than earlier or later, and the reason is the two
-neighbours.** S6 moves bodies between modules and merges two of them, so
-a comment pass before it would be redone; S7 writes new code, and new code
-copies the density of what sits beside it, so a pass after it is a pass
-over more. Between the two, each file is touched once and the next module
-written inherits the leaner shape.
+**At the head, by `dev/WORKFLOW.md`'s bugs-first rule.** A test that
+cannot fail on its own claim is worse than a missing one: it occupies
+the place where the absence would be noticed, and every later reader
+counts it as coverage. Two of these were read that way inside this
+stage — the group docs above them repeated the promise the test made.
 
-**Edmond's ruling of 2026-08-11 widens the stage, and it answers the
-question S9.1 left open.** Rule 19 finds almost nothing here — sixteen
-lines in `src/memory/`'s 4 024 — because the crate was written to it.
-What makes the code hard to read past is the **length** of legal
-comments, and that is now in scope: the enormous strips are cut to what a
-reader of the code needs, and the argument behind them — rejected
-alternatives, measurements, rulings — moves to the journals that exist
-for it (`dev/DECISIONS.md`, `dev/BENCHMARKS.md`, `dev/POSTMORTEM.md`)
-with a one-line pointer left in the code. **Two doc comments never state
-one thing twice**: the second links to the first. And `style.md`'s
-mechanical rules apply to the whole crate rather than to code written
-from now on, rule 20.1 first.
+Goal: every test below either measures what its name promises, or is
+renamed to what it measures.
 
-Goal: every comment that remains carries something the code does not and
-is no longer than that, no argument is written twice, the code's shape
-follows `style.md`, and a test can be found by what it is about.
+Done when: each repaired test has been seen failing against the defect
+it claims to guard, and the suite's count is recorded before and after.
 
-Done when: the comment count per file is recorded before and after, no
-public declaration lost its contract, no doc comment repeats another
-instead of linking to it, `cargo doc` reports no unresolved link, every
-test still runs in both configurations, and `dev/INDEX.md` states the new
-arrangement.
-
-- [x] S9.5 The mechanical style rules, over the whole crate
-      done: rule 20.1's blank line after a block's closing brace applied
-        everywhere code follows, `cargo +1.94 fmt --check` clean
-        afterwards so the formatter is not fighting it, and the gate
-        green; repeated documentation replaced by a link
+- [ ] S12.1 The table's chain that is one entry long, and the keys that
+      share no slot
+      done: `removing_shortens_the_chain_rather_than_leaving_a_marker`
+        builds a chain of at least three colliding keys and reads
+        `entry(i).link()` after the removal, so a tombstoning table
+        fails it; `integer_and_string_keys_coexist_without_aliasing`
+        forces `7` and `"7"` into one slot instead of leaving it to the
+        process seed, or says in its name that it pins the key kind
       tier: T1 · role: —
-      Placed first because it touches every file: a comment edit made
-        after it lands in surroundings that are already right, and one
-        mechanical diff stays separate from the ones that need judgement.
-      handoff: 931 blank lines inserted across 36 files by a script kept
-        in the session scratchpad — it skips match arms, `} else {`, list
-        elements and multi-line `use` groups, none of which are blocks
-        whose construction has ended. `Class`'s three run accessors link
-        to their fields with the `field@` disambiguator now instead of
-        restating them. Commit `7b91ac4`.
-- [x] S9.1 The comment pass over `src/memory/`
-      done: comment lines counted before and after and the drop recorded
-        in this step; every comment left is one of rule 19's six kinds;
-        no `///` on a public declaration removed, since 19.2 makes those
-        obligatory; behaviour untouched, so the gate is green with no
-        test edited
-      tier: T2 · role: Code Reviewer
-      Code Reviewer 2026-08-10: the pass's verdict — that the module was
-        already clean — is wrong in six places. `refill`'s doc promises no
-        per-slot initialization while its entity arm runs one, and the
-        pass had deleted the sentence that scoped it; `immortal.rs` sends
-        `ll_free` to a no-op default that is an assert now;
-        `block_pool.rs`'s free-list doc argues the lock twice; thirteen
-        intra-doc links in the module resolve to nothing; four `# Safety`
-        sections have swallowed prose that is no safety obligation, one of
-        them `store_category_barrier`'s whole refusal protocol; and
-        `ll_usable_size` reads a size class at `kind + 1` with nothing
-        saying why that offset is the class. All accepted and fixed.
-      handoff: 4 024 → 4 019 comment lines, being sixteen lines of
-        retelling and stale text cut against eleven of missing contract
-        added. Two assertion *messages* saying "32K-aligned" were
-        corrected where `BLOCK_SIZE` is 64 KiB, which is the one place a
-        test body was touched and no assertion changed. Nothing was cut
-        for length: what makes the module hard to read past is the size of
-        legal comments, and rule 19 caps no comment's length — Edmond's to
-        answer before S9.2. Lesson in `dev/POSTMORTEM.md`.
-- [x] S9.2 The comment pass over the entity modules
-      done: the same, over `object`, `string`, `array/`, `template`,
-        `reference`, `weak`, `intern`, `value`, `class` and `hash/`
-      tier: T2 · role: Code Reviewer
-      Code Reviewer 2026-08-11: `element::make_ref` still called the box's
-        holder count exact, which the same commit had corrected on
-        `element_for_copy`; `weak.rs` named three exit steps as able to
-        deliver a notification where only the static blocks can;
-        `set_string_key`'s new contract voiced a caller's precondition as
-        the function's behaviour; `dev/ARCHITECTURE.md` named the wrong
-        thing returned by `buffer_arena::dispose`. All four accepted and
-        fixed in `6512d7f`.
-      handoff: 4 374 comment lines before the reading half and 4 374 after
-        (`6da3989` → `0b7c013` → `6512d7f`), what came out of the strips
-        going back as contract on public declarations that had none. Eight
-        strips of forty-four shortened, and **that ratio is the stage's
-        answer**: `dev/` holds a strip's argument far less often than the
-        count of strips suggests, so most of them are the only record. The
-        pass's worth is the four false statements it found — `weak.rs`'s
-        exit position, `for_each_counted_child`'s denial of the template
-        arm, `element_for_copy`'s exact count, `ll_cow_separate`'s "arrays
-        are not COW yet" — and one doc comment that sat on the wrong test.
-        Method that produced them: one reader per file with the six kinds
-        and the strip rule, then an adversary told to refute every cut,
-        which killed 8 of 38 proposals.
-      paid: `rfc/model/arrays-hashtable.md` documented the **old 40-byte
-        entry** (`next` at +16, `meta` at +20) and said this crate cannot
-        thread its chain through the element's padding, which is what it
-        has done since 2026-08-07; a reader following the design would
-        have built the previous entry. Corrected in `rfc` `d14105f`
-        together with `weak-references.md`'s "disposed last", along the
-        layout block, the ValueBox paragraph, the footprint arithmetic and
-        the element-states heading.
-- [x] S9.3 The comment pass over the runtime spine
-      done: the same, over `refcount`, `gc`, `walk`, `collector`,
-        `epoch`, `promote`, `static_block` and `journal/` — the last of
-        which is where this session's own density came from
-      tier: T2 · role: Code Reviewer
-      Code Reviewer 2026-08-11: the pass wrote three false statements
-        while removing twenty — `walk.rs`'s cleanup comment explained
-        itself by a census test that compares deltas, `collector.rs`'s
-        head called the epoch stamp this side's only shared-memory write
-        beside the handshake, the epoch window and the verdict queue, and
-        `promote.rs` counted three `trace_entity` traversals where there
-        are four. Four smaller: a dangling pronoun, a doc retelling its
-        own `thread_local!`, an assert message crediting the wrong actor,
-        and a doc link that resolves only under `rc-walk`. All accepted
-        and fixed in `7ee0cec`, together with the one sentence the
-        `static_block` cut should have kept — the price of not having the
-        module.
-      handoff: 3 690 comment lines to 3 654 (`a819fa1` → `723cbe3` →
-        `7ee0cec`). **Twenty of the thirty-two edits are comments the code
-        contradicts**, against four in S9.2's scope: the spine has been
-        rewritten under its own documentation far more often than the
-        entity modules. Eight strips of twenty-nine shortened, and a loss
-        detector over all eight found nothing destroyed. The mechanical
-        half (`a819fa1`) closed the crate's last two unresolved doc links
-        — one of them, `Ring::closed_after`, naming a mechanism that does
-        not exist: nothing dates a ring's close, and what makes a window
-        stable is the counter pair a `Mark` already carries.
-      note: `--no-default-features` reports three unresolved doc links, all
-        to `crate::epoch`, all older than this stage — the module is gated
-        whole. Left as they are: a plain span would work in neither build.
-- [x] S9.4 Tests leave the module bodies and arrive grouped
-      done: every `#[cfg(test)] mod tests` in `src/` is its own file,
-        each grouped into named submodules that say what is being pinned
-        rather than which function is called; the suite's count is
-        unchanged in both configurations; `dev/INDEX.md`'s line "inline
-        `#[cfg(test)]` per module, no `tests/` directory" is rewritten,
-        that being a convention this step overturns
+      Today the first inserts 64 dense keys, each alone in its slot, and
+        asserts `get`, `contains` and `len`; the second collides on
+        about one run in sixteen and asserts nothing about the slot.
+- [ ] S12.2 The string hash test that hashes no string
+      done: `a_hashed_string_never_reads_back_as_unhashed` pins the
+        string's own reading of the cached field, which is what its doc
+        claims, and no assertion in `string/tests.rs` duplicates
+        `hash::tests::a_genuine_zero_hash_is_mapped_away`
+      tier: T1 · role: —
+      Its body is two lines copied verbatim from that hash test and
+        touches no string entity. Its neighbour
+        `the_hash_is_computed_once_on_demand_and_never_zero` already
+        pins the doc's claim, so removal is the other legal outcome —
+        rule 4 makes that Edmond's, not the step's.
+- [ ] S12.3 The weak notification at thread exit that cannot fire
+      done: the cell in
+        `a_weak_referenced_object_held_by_a_static_notifies_at_thread_exit`
+        is alive when the static pass releases the target, so
+        `HAS_WEAK_REFERENCES` is still set, `notify_death` runs and
+        `ll_weakref_get` reads null afterwards; seen failing with the
+        weak table disposed before the static-block pass
       tier: T2 · role: —
-      One pass per file, not two: the tests move and are grouped in the
-        same edit, because touching every file in `src/` twice costs
-        twice and diffs worse.
-      note: S11's Code Reviewer found one fixture written four times —
-        `collector.rs`, `walk.rs`, `gc.rs` and `promote.rs` each build a
-        class of N filler properties with one counted slot at +16, three
-        of them with the same 600 / 4 200 pair chosen to straddle
-        `BLOCK_PAYLOAD`. There is no `#[cfg(test)]` support module to put
-        it in, which is this step's business. The fixture is extracted as
-        those four files move, not before: extracting first would touch
-        them twice, which the rule above forbids.
-      progress: **the layout, verified**: `src/foo.rs` keeps
-        `#[cfg(test)] mod tests;` and the body moves to
-        `src/foo/tests.rs`; `src/hash/mod.rs`'s goes to
-        `src/hash/tests.rs`. Edition 2024, so no file becomes `mod.rs`
-        and no `#[path]` is needed. Seventeen files moved and grouped in
-        `50abb8d` and `0bbddfc`; twenty-two remain, and the scripts are
-        in the session scratchpad — `movetests.py` extracts one module's
-        body, `group.py` rebuilds a moved file from a JSON grouping.
-      progress: **two hazards, neither visible in a diff that reads as a
-        move.** A relative path inside a test body counts modules, so a
-        `super::super::X` reached one item before the grouping and
-        another after it — make such paths absolute. And a helper
-        assigned to a group goes inside it, out of reach of the other
-        groups: helpers belong at file scope. Both were caught by the
-        compiler this time; the step's acceptance test is the suite's
-        count precisely because neither has to be.
-      handoff: thirty-nine files, in `50abb8d`, `0bbddfc`, `5a48b24` and
-        `199df94`; the counts never moved — rc-walk 419, rc-trace 403,
-        hash-folding 419, `debug-journal` 425 and 409 — which is the
-        step's own acceptance test. The four-times fixture is
-        `test_support::wide_class` with `POOLED_FILLERS` and
-        `RUN_FILLERS` beside it, and it asserts both bounds where
-        `promote`'s copy asserted one and the other three asserted none.
-        **A third hazard the two above did not name:** a group whose
-        every test carried the same `cfg` leaves `use super::*` unused
-        in the other configuration, and the gate belongs on the group —
-        four groups took one that way, and the compiler is what says so.
-
+      The test kills the cell inside the thread, which clears the bit,
+        so the object's death at exit notifies nothing and the ordering
+        the test exists for could be inverted with it still green.
+- [ ] S12.4 The heap's alignment nobody asserts, and the block that
+      never goes home
+      done: `alloc_is_aligned_and_sized` asserts the alignment its name
+        promises; `empty_block_returns_to_pool` empties a second block
+        of the class, so the pool receives one past the empty spare
+        `Heap::retire_empty` keeps, and reads `blocks_out` rather than
+        `regions_carved` alone
+      tier: T1 · role: —
+- [ ] S12.5 The array layer's two claims with instruments a few lines
+      away
+      done: `a_store_through_an_arena_holder_separates_into_the_arena`
+        reads `IS_ESCAPEE` and drains the release log, both of which the
+        same file uses elsewhere; `a_deep_arena_array_is_copied_out_
+        through_the_work_list` runs at a depth and a stack size a
+        recursive `separate` could not survive, the way the teardown
+        test does
+      tier: T2 · role: —
+- [ ] S12.6 The four arms the suite never enters
+      done: a test each for the escape log crossing a segment boundary,
+        `string::placement` refusing a long-lived string past the slot
+        limit and keeping an immortal one inline, `object_constructed`
+        refused so the object owes no destructor, and a template
+        flattening `false` and null
+      tier: T2 · role: Critic
+      Each is an arm the code has and the suite has never run. The
+        Critic is here because the step writes six tests against
+        behaviour nobody has watched, and a test written to pass is
+        exactly what this stage exists to remove.
 
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
 

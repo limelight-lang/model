@@ -7,6 +7,37 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-11 — a doc written from a test's name inherits the test's false promise
+
+**What happened.** S9.4 grouped every test in the crate into named
+submodules, each carrying a doc saying what the group pins. The docs were
+written from the tests' names and their own doc comments, which is the
+cheapest source and reads as the authoritative one. The Code Reviewer
+then found sixteen statements the tests do not support, and nine of them
+were not my invention: the test's own name or doc had made the promise
+and the group doc had repeated it one level up. `removing_shortens_the_
+chain_rather_than_leaving_a_marker` inserts sixty-four dense keys, each
+alone in its slot, and builds no chain at all; `a_weak_referenced_object_
+held_by_a_static_notifies_at_thread_exit` destroys its weak cell before
+the thread ends, which clears `HAS_WEAK_REFERENCES`, so no notification
+can fire.
+
+**Why it was not caught.** A name is a claim nobody re-derives. The
+grouping pass read three hundred and fifty tests in a day, and reading a
+body against its name costs an order of magnitude more than reading the
+name — so the pass took the names, and the suite stayed green because a
+test that measures nothing measures nothing quietly. The counts, which
+were this step's acceptance test, are blind to it by construction: they
+count tests, not what the tests reach.
+
+**The rule.** A doc that summarises other code is written from the code,
+not from that code's own description of itself. Where the summary is over
+tests, the source is the assertions: a claim with no assertion under it
+goes into the doc as absent, or the test is repaired first. And the
+finding runs the other way too — a group doc that cannot be written from
+the assertions has found a test whose instrument does not measure its
+claim, which is worth more than the doc. Nine such tests are S12.
+
 ## 2026-08-11 — the guard checked a different limit from the call below it
 
 **What happened.** `stdapi::ll_alloc_large` guarded its OS-direct branch
