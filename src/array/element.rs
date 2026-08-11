@@ -305,7 +305,9 @@ pub unsafe fn unset(
 /// the heap and an arena non-COW one counts an escape, and the entry
 /// holding the heap box logs a release against the reset. Both crossings
 /// are paid where the box is composed (`box_element`), and both are what
-/// buys an exact holder count on the box.
+/// gives the box a counted count at all — exact in the heap, an upper
+/// bound in the arena, where a container gives its hold back at the reset
+/// rather than at its own death (`dev/DECISIONS.md`, 2026-08-08).
 ///
 /// # Safety
 /// Per [`set`], less the value.

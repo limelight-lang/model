@@ -156,10 +156,9 @@ impl Entry {
         self.key = KEY_INT as *mut LLString;
     }
 
-    /// Set a string key, storing the string's **own cached hash** as
-    /// `hash_or_key`. A slot hash will not do: an escalated table mixes the
-    /// salt into that one, and the key would then be unfindable by its own
-    /// identity.
+    /// Set a string key. `hash` is the string's **own cached hash**, never
+    /// a slot hash: an escalated table mixes the salt into that one, and
+    /// the key would then be unfindable by its own identity.
     ///
     /// Both words are written plainly, so the entry must be one no walker
     /// can reach — outside `used`, or inside a version bracket. Nothing is

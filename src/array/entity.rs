@@ -772,7 +772,9 @@ enum Pending {
     /// subtree runs its destructors first. It is still counted by a
     /// storage that may already be freed, and the category is its
     /// owner's — [`crate::memory::barrier::drop_ref_deferred`] reads that
-    /// to settle the escape ledger and the release-at-reset log.
+    /// to settle the escape ledger and the release-at-reset log. One list
+    /// mixes the children of several owners, so the category rides on the
+    /// line rather than being read once per drain.
     HeldChild(*mut RcHeader, MemoryCategory),
 }
 

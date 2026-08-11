@@ -46,11 +46,11 @@ thread_local! {
     ///
     /// Discarded at thread exit without notification — the thread's
     /// entities die with its heap, and nothing outlives them to read a
-    /// cell (cross-thread movement is reserved). The disposal runs after
-    /// every step of `ll_thread_exit` that can still deliver a
-    /// notification — static blocks, candidate buffer, parked backlog —
-    /// and before the buffer arena and the heaps; that whole order is
-    /// fixed in `heap::ll_thread_exit` (`dev/DECISIONS.md`, 2026-08-04).
+    /// cell (cross-thread movement is reserved). The disposal comes after
+    /// the static-block teardown — the one step of `ll_thread_exit` that
+    /// runs user code, so the only one that can still deliver a
+    /// notification — and before the buffer arena and the heaps
+    /// (`heap::ll_thread_exit` fixes the order).
     ///
     /// A raw pointer in a `Cell`, not a `RefCell<HashMap<_, _>>`, and
     /// for soundness. A `HashMap` has drop glue, so its key is
