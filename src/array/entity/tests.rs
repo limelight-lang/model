@@ -911,15 +911,26 @@ mod what_a_death_gives_back {
 }
 
 /// Depth is the caller's input, so neither the copy nor the teardown
-/// recurses: both drain a list held in a buffer-arena chunk. The
-/// frame cost is measured on the teardown alone, at 2 000 levels
-/// against a 64 KiB stack, where a frame set per level ends on the
-/// guard page with no unwinding and no record; the copy's test walks
-/// 200 levels and pins that every level left the arena. A list that
-/// cannot grow drops each child it could not take onto the recursive
-/// path, keeping the outcome and losing only the bound.
+/// recurses: both drain a list held in a buffer-arena chunk, and each
+/// runs against a 64 KiB stack, where a frame set per level ends on
+/// the guard page with no unwinding and no record — the teardown at
+/// 2 000 levels, the copy at 800, where it also pins that every level
+/// left the arena. What separates them is what can be shown. The
+/// teardown's list is forced to refuse, and a list that cannot grow
+/// drops each child it could not take onto the recursive path, keeping
+/// the outcome and losing only the bound; a copy whose list refuses
+/// refuses the copy, so there is no recursive arm to force and its
+/// bound stays arithmetic.
 mod nesting_worked_through_a_list {
     use super::*;
+
+    /// The deep copy's two halves, together because the pair is the
+    /// measurement: the depth runs on a thread the spawn sizes, and the
+    /// body that builds it is a function of its own, so a copy of either
+    /// number in the other place drifts silently — which is how the
+    /// depth came to be written twice.
+    const DEEP_COPY_DEPTH: usize = 800;
+    const DEEP_COPY_STACK: usize = 64 * 1024;
 
     /// Nesting is worked through the list, so the copy of a deep arena
     /// array touches one stack frame per *call*, not one per level. The
@@ -929,8 +940,8 @@ mod nesting_worked_through_a_list {
     /// **On a stack that cannot hold the alternative**, which is what
     /// makes the depth mean anything: 64 KiB against 800 levels leaves
     /// 82 bytes a level, and the smallest frame set here is far above
-    /// that. Until S12.5 this ran 800 levels shallower on the ordinary
-    /// 8 MiB stack, where a recursive copy would have passed too.
+    /// that. Until S12.5 this ran 200 levels on the ordinary 8 MiB
+    /// stack, where a recursive copy would have passed too.
     ///
     /// Unlike the teardown below it, the bound is arithmetic rather than
     /// exhibited: a teardown has no channel to refuse through, so
@@ -940,11 +951,8 @@ mod nesting_worked_through_a_list {
     /// to force.
     #[test]
     fn a_deep_arena_array_is_copied_out_through_the_work_list() {
-        const DEPTH: usize = 800;
-        const STACK: usize = 64 * 1024;
-
         std::thread::Builder::new()
-            .stack_size(STACK)
+            .stack_size(DEEP_COPY_STACK)
             .spawn(deep_copy_body)
             .expect("the probe thread")
             .join()
@@ -953,7 +961,7 @@ mod nesting_worked_through_a_list {
 
     /// The body of the test above, on its own small stack.
     fn deep_copy_body() {
-        const DEPTH: usize = 800;
+        const DEPTH: usize = DEEP_COPY_DEPTH;
         let _g = crate::memory::block_pool::test_guard();
         let mut arena = crate::memory::arena::Arena::new();
         let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;

@@ -706,7 +706,7 @@ mod the_writes_and_the_separation_they_share {
         // so — a spurious record would be freed by the reset below and
         // read as a clean run.
         let mut logged = 0usize;
-        unsafe { arena.drain_release_log(|_| logged += 1) };
+        arena.drain_release_log(|_| logged += 1);
         assert_eq!(logged, 0, "an arena-to-arena store logged a release");
 
         arena.reset(|_| {});
