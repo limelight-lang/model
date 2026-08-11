@@ -52,6 +52,15 @@
 //! null one. This was true by accident until S13.1 and is load-bearing
 //! now (Critic, S13.1).
 //!
+//! One operation lowers the count in the chunk it keeps, and it is
+//! exempt for a reason that does not generalise:
+//! `Vector::sever_entries` empties a component the drain has already
+//! confirmed garbage, so the only writer that could follow it is the
+//! teardown, and the elements it does write go out as atomic stores
+//! (`vector::store_element`) rather than the plain key word the rule is
+//! about. A representation whose elements are written plainly, or one
+//! that can be inserted into after a sever, may not copy this.
+//!
 //! **The window covers a release as well as a move.** `dispose` writes
 //! the same words growth does, so a reader that took them one at a time
 //! could pair a live chunk with the empty counts; the bracket is what

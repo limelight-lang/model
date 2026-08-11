@@ -198,12 +198,14 @@ where that is the only instrument.
         the pointer first; the class that frees a live entity is one
         tidy-up away and the test asks for both. 435 → 438, gate green,
         Miri silent over the new module and `array::vector`.
-      Found beside it and not acted on: `Vector::sever_elements` lowers
-        `used` to zero in the chunk it keeps, which is the one thing this
-        module's doc says no operation does. Harmless today — a vector's
-        elements are written by atomic stores and a severed vector takes
-        no insert — so it is a question rather than a repair, and it is
-        Edmond's.
+      Found beside it: `Vector::sever_entries` lowers `used` to zero in
+        the chunk it keeps, which is the one thing `array::head`'s rule
+        says no operation does. It is a counterexample to the sentence
+        rather than a defect — the sever runs on a component the drain
+        has confirmed garbage, so teardown is the only writer that
+        follows, and a vector's elements go out as atomic stores rather
+        than the plain key word the rule is about. The exemption and its
+        two conditions are stated where the rule is.
 - [ ] S13.3 Phase 3 re-checks eight bytes of a sixteen-byte cell
       done: `recheck_and_post` compares the meta word beside the payload,
         so a Value torn between its two stores is caught rather than
