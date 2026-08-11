@@ -148,7 +148,7 @@ it claims to guard, and the suite's count is recorded before and after.
         the two keys share a slot and an identity and only
         `entry_matches`' key-kind arm separates them — dropping that arm
         makes `get(Int(7))` answer 77.
-- [ ] S12.2 The string hash test that hashes no string
+- [x] S12.2 The string hash test that hashes no string
       done: `a_hashed_string_never_reads_back_as_unhashed` pins the
         string's own reading of the cached field, which is what its doc
         claims, and no assertion in `string/tests.rs` duplicates
@@ -159,6 +159,14 @@ it claims to guard, and the suite's count is recorded before and after.
         `the_hash_is_computed_once_on_demand_and_never_zero` already
         pins the doc's claim, so removal is the other legal outcome —
         rule 4 makes that Edmond's, not the step's.
+      Edmond 2026-08-11: a test that is not current is deleted. Done.
+      handoff: removed, so the step closed by the second half of its
+        criterion — the duplicated pair was the only one, the file's
+        other `hash_bytes` calls each compare a string's own field
+        against the function over the same bytes. What its doc promised
+        stays pinned by the neighbour above it, which is why nothing was
+        written to replace it. 419 → 418 in rc-walk and -1 in every
+        other configuration.
 - [x] S12.3 The weak notification at thread exit that cannot fire
       done: the cell in
         `a_weak_referenced_object_held_by_a_static_notifies_at_thread_exit`

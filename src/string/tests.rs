@@ -172,18 +172,6 @@ mod the_cached_hash {
         arena.reset(|_| {});
     }
 
-    /// The lazy field's sentinel survives whatever the hash returns: the
-    /// string side needs a hash that is never zero, and checking that it
-    /// never is belongs to the hash module (`hash::tests`). What is
-    /// checked here is the string's own reading of the field — a freshly
-    /// hashed string reports a non-zero value, so the next read hits the
-    /// cache instead of recomputing.
-    #[test]
-    fn a_hashed_string_never_reads_back_as_unhashed() {
-        assert_ne!(hash_bytes(b"anything"), 0);
-        assert_ne!(hash_bytes(&[]), 0);
-    }
-
     /// A string in a category a second thread can reach arrives already
     /// hashed, so no reader ever takes the lazy branch's plain store.
     /// The field is read directly rather than through `LLString::hash`,
