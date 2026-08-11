@@ -344,7 +344,12 @@ versions live in `docs/history/`, marked at the top.
   like (`ll_retain` inlines away after `opt -O2`). Commands and what was
   verified: `README.md`, "LLVM IR export". The decision behind it:
   `rfc/runtime/implementation-language.md`.
-- Tests: inline `#[cfg(test)]` per module, no `tests/` directory.
+- Tests: one file per module beside it — `src/foo.rs` declares
+  `#[cfg(test)] mod tests;` and the body is `src/foo/tests.rs`, whose
+  items are grouped into named submodules saying what each group pins
+  rather than which function it calls. Still no `tests/` directory:
+  every test is a unit test and reads crate-internal state. A fixture
+  a second module needs is in `src/test_support.rs`.
 - Benches: `benches/alloc.rs`, `benches/standard.rs`,
   `benches/lifecycle.rs` (object create/release GC-protocol tax, both
   configs), `benches/strings.rs` (hash across the function's branch

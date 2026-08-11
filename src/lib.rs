@@ -22,6 +22,8 @@ pub mod reference;
 pub mod static_block;
 pub mod string;
 pub mod template;
+#[cfg(test)]
+mod test_support;
 pub mod value;
 pub mod walk;
 pub mod weak;
