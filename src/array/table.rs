@@ -25,7 +25,6 @@
 
 use crate::array::entry::{Entry, MAX_ENTRIES, NONE};
 use crate::array::head::{StorageHead, StorageTag};
-use crate::memory::block_pool::BLOCK_PAYLOAD;
 use crate::refcount::{MemoryCategory, RcHeader};
 use crate::string::{LLString, string_bytes};
 use crate::value::Value;
@@ -376,96 +375,25 @@ impl Table {
     /// The storage and the bytes granted for it, or a null pointer when
     /// the table has never grown.
     ///
-    /// Read by promotion, which needs the address to find the block
-    /// holding the storage when a carry was refused. Every *operation*
-    /// over the storage is a method here — this hands out the address, not
-    /// the right to walk it.
+    /// A test window, like [`Table::salt`]: the address a promotion needs
+    /// is the head's (`entity::storage_address`) and the granted size is
+    /// read by the one operation that rewrites it
+    /// ([`Table::granted_capacity_mut`]), so outside the tests that pin
+    /// what was granted this pair has no reader.
+    #[cfg(test)]
     #[inline]
     pub(crate) fn storage_and_capacity(&self, head: &StorageHead) -> (*mut u8, usize) {
         (head.storage(), self.storage_capacity)
     }
 
-    /// Carry this table's storage out of `arena`, which is about to
-    /// reset, so that it outlives the reset under its promoted owner.
-    ///
-    /// The entity's header stays where it is — promotion retains the block
-    /// holding it — while the storage is arena memory that would go back
-    /// to the pool and be handed to somebody else. **Nothing inside the
-    /// storage points into it**: every chain link is a `u32` index, which
-    /// is what makes a flat copy legal and is pinned by a test.
-    ///
-    /// Two routes, chosen by where the storage came from, and the same
-    /// pair a string's payload takes for the same reasons
-    /// (`dev/DECISIONS.md`, 2026-08-04): an **OS-direct** storage, over a
-    /// block payload, is forgotten by the arena and keeps its address,
-    /// allocating nothing and so refusing nothing; an **in-block** one is
-    /// copied into a fresh buffer-arena chunk, bounded by a block payload.
-    ///
-    /// Nothing here records where the storage now lives. The category is
-    /// the header's to say and promotion rewrites the header a moment
-    /// later, so every later free of this storage reads the new answer
-    /// with no second field to keep in step (`dev/DECISIONS.md`
-    /// 2026-08-07). A refused carry is safe under the new category too:
-    /// promotion stamps the storage's block
-    /// `BLOCK_KIND_RETAINED` right after, and that is the one kind
-    /// `buffer_free_longlived_payload` leaves alone — the same mechanism
-    /// that protects a string's uncarried payload, rather than a second
-    /// one of our own.
-    ///
-    /// **False when the copy was refused**, with the storage untouched.
-    ///
-    /// # Safety
-    /// The table must be a live request-arena table of `arena`,
-    /// mid-reset, and `category` the one its owner still carries, which
-    /// is `RequestArena` until promotion rewrites the header.
-    pub(crate) unsafe fn carry_out_of(
-        &mut self,
-        head: &StorageHead,
-        category: MemoryCategory,
-        arena: *mut crate::memory::arena::Arena,
-    ) -> bool {
-        debug_assert_eq!(
-            category,
-            MemoryCategory::RequestArena,
-            "only an arena table is carried out of a reset"
-        );
-        if head.storage().is_null() {
-            return true;
-        }
-
-        if self.storage_capacity > BLOCK_PAYLOAD {
-            // True whatever the log says, for the reason
-            // `string::carry_payload_out_of` gives: a miss means nothing
-            // will free the run, so the storage keeps its address and
-            // leaks — the safe direction — while reporting a refusal would
-            // send the caller into stamping `BLOCK_KIND_RETAINED` over the
-            // run's own header.
-            let forgotten = unsafe { (*arena).forget_large(head.storage()) };
-            debug_assert!(forgotten, "an OS-direct storage the arena never logged");
-            return true;
-        }
-
-        // The destination is named rather than read from the header,
-        // which still says `RequestArena` here: promotion rewrites it
-        // after the carry, so that everything the survivor owns moves
-        // while the category still describes where it lives
-        // (`promote.rs`).
-        let (fresh, granted) = unsafe {
-            crate::memory::routing::body_alloc(
-                std::ptr::null_mut(),
-                MemoryCategory::GcHeap,
-                self.storage_capacity,
-            )
-        };
-
-        if fresh.is_null() {
-            return false;
-        }
-
-        unsafe { std::ptr::copy_nonoverlapping(head.storage(), fresh, self.storage_capacity) };
-        head.set_storage(fresh);
-        self.storage_capacity = granted;
-        true
+    /// The bytes the storage was granted, for the one operation that has
+    /// to rewrite them: the carry out of a dying arena, which lives in
+    /// `array::entity` because a chunk is bytes and both representations
+    /// keep their granted size the same way
+    /// (`entity::carry_storage_out_of`).
+    #[inline]
+    pub(crate) fn granted_capacity_mut(&mut self) -> &mut usize {
+        &mut self.storage_capacity
     }
 
     /// The index region, which begins where the storage does.

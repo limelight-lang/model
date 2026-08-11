@@ -51,6 +51,33 @@ nothing in their place**: the identity they guarded — the union's address
 *is* the head's — stops being a fact. `entity::storage_head` names the
 field instead of casting.
 
+**The carry out of a dying arena became one body, dispatched on the tag,
+and it lives in `array::entity`.** A storage chunk is bytes: the two
+representations differ only in where they keep the size they were granted,
+so each hands that field out (`granted_capacity_mut`) rather than carrying
+a copy of the operation. Before the tag existed the carry could name the
+ordered hash outright; with two representations that reading is a
+vector's `cap` used as a byte size, which is the class of defect the tag
+was introduced to prevent. `entity::storage_address` names no
+representation at all now — the chunk's address is one of the words a
+walker reads, so it is the head's.
+
+**Two traps closed with it, both one line from being live.** A reference
+spanning a whole array entity invalidates any outstanding `&mut` over its
+representation, so `needs_separation` takes `*const LLArray` and reads the
+header field-precisely, `category_of`'s shape (2026-08-07). And the head
+field is private to `array::entity`, so `&mut (*a).head` — the same defect
+one level down — cannot be spelled anywhere else in the crate. Neither
+visibility nor a signature can stop a caller outside the crate from making
+`&mut *ll_array_new(…)`, so that rule is stated on `LLArray` itself, at
+the public surface where a consumer reads.
+
+**A walker with no stride for a tag gives the array up.** The dispatch
+matches all three values rather than testing for one: `Typed` is a value
+`decode_tag` accepts, and falling through to the hash stride let a *valid*
+tag select the wrong layout — the defect the read protocol exists to
+prevent, one step over from the stale-tag case it was written for.
+
 **The decisive check is Miri, and it was run both ways.** A
 walker-against-mutator test
 (`array::entity::tests::the_head_a_walker_reads`) reported

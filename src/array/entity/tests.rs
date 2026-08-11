@@ -375,9 +375,9 @@ mod the_two_cow_doors {
         let _g = crate::memory::block_pool::test_guard();
         let a = arr();
         unsafe {
-            assert!(!(*a).needs_separation(), "count 1 writes in place");
+            assert!(!needs_separation(a), "count 1 writes in place");
             crate::refcount::ll_retain(a as *mut RcHeader);
-            assert!((*a).needs_separation(), "a second holder forces a copy");
+            assert!(needs_separation(a), "a second holder forces a copy");
             crate::refcount::ll_release(a as *mut RcHeader);
             crate::array::entity::dispose_storage(a, category_of(a));
         }

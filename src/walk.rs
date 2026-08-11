@@ -238,24 +238,41 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
             // The stride is chosen here and nowhere earlier: the tag came
             // out of the same validated reading as the chunk, so a stale
             // one was discarded with it rather than selecting a layout.
-            if view.tag == crate::array::head::StorageTag::Vector {
-                let (elements, used) = unsafe { crate::array::vector::Vector::elements_of(&view) };
-                for i in 0..used {
-                    // No key beside the element: a vector's key is the
-                    // position, so every cell here is a Box.
-                    let value_at = unsafe { elements.add(i * 16) as *const u8 };
-                    let child = unsafe { R::word(value_at) } as *mut RcHeader;
-                    if Value::refcounted_in_meta_word(unsafe { R::word(value_at.add(8)) }) {
-                        visit(Cell {
-                            addr: value_at as usize,
-                            raw: child as u64,
-                            child,
-                            shape: CellShape::Box,
-                        });
-                    }
+            //
+            // Matched rather than tested against one value: a tag this
+            // walker has no stride for must give the array up, exactly as
+            // an incoherent reading does. Falling through to the hash
+            // stride instead would let a *valid* tag select the wrong
+            // layout, which is the defect the read protocol exists to
+            // prevent, one step over. `Typed` is that tag today
+            // (`StorageTag`, and `PLAN.md` S7 on the arm with no
+            // producer).
+            match view.tag {
+                crate::array::head::StorageTag::Hash => {}
+                crate::array::head::StorageTag::Typed => {
+                    debug_assert!(false, "the walker has no stride for the typed vector");
+                    return;
                 }
+                crate::array::head::StorageTag::Vector => {
+                    let (elements, used) =
+                        unsafe { crate::array::vector::Vector::elements_of(&view) };
+                    for i in 0..used {
+                        // No key beside the element: a vector's key is the
+                        // position, so every cell here is a Box.
+                        let value_at = unsafe { elements.add(i * 16) as *const u8 };
+                        let child = unsafe { R::word(value_at) } as *mut RcHeader;
+                        if Value::refcounted_in_meta_word(unsafe { R::word(value_at.add(8)) }) {
+                            visit(Cell {
+                                addr: value_at as usize,
+                                raw: child as u64,
+                                child,
+                                shape: CellShape::Box,
+                            });
+                        }
+                    }
 
-                return;
+                    return;
+                }
             }
 
             let (entries, used) = unsafe { crate::array::table::Table::entries_of(&view) };

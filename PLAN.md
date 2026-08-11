@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-11 · Active: S13, then S7
+Updated: 2026-08-11 · Active: S13, then S7, then S14
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -135,6 +135,14 @@ where that is the only instrument.
         the slot, so the mixture is reachable. For the table it strides
         the index region as entries; the vector escapes only because its
         `nslots` is already zero.
+      Critic 2026-08-11, on the same bodies: what keeps a walker safe
+        today is that `set_storage(null)` comes **first**, every
+        acceptable intermediate reading therefore carrying a null chunk,
+        which `entries_of` and `elements_of` short-circuit on. Nothing
+        says so, and the tidier-looking order — counters before the
+        pointer — publishes `(old chunk, nslots 0, used 8)`, a state no
+        live array ever had. The bracket makes the order moot, so this
+        step is the place to stop relying on it.
 - [ ] S13.3 Phase 3 re-checks eight bytes of a sixteen-byte cell
       done: `recheck_and_post` compares the meta word beside the payload,
         so a Value torn between its two stores is caught rather than
@@ -144,6 +152,38 @@ where that is the only instrument.
         an ordinary `$a[0] = 1` whose meta store has not landed, so the
         phantom in-edge is posted and only the next phase's re-trace
         acquits it — an epoch spent per torn read.
+
+## S14 — A string test that fails at wide test widths
+
+Found on 2026-08-11 while closing S7.1, and older than it: measured 1 in
+15 at `--test-threads=16` on HEAD `ab68006`, 3 in 15 on the tree that
+closed S7.1, and 0 in 25 at the gate's width of 4. It sits behind S13
+because the gate cannot see it and because the three above are UB rather
+than a false report.
+
+Goal: the suite tells the truth at a width the gate does not use, so the
+next real failure at 16 threads is not read as this one.
+
+Done when: 30 runs at `--test-threads=16` in both configurations with no
+failure, and the reason the old count was wrong is named.
+
+- [ ] S14.1 `an_append_loop_moves_its_payload_once` counts a move it does
+      not own
+      done: the test states what it measures in a form another thread
+        cannot disturb, or it holds whatever it needs to make "the last
+        chunk the buffer arena bumped" true for its own payload; seen
+        failing at 16 threads before the repair and 30 runs clean after
+      tier: T1 · role: —
+      The test asserts exactly one payload move over 256 appends, which
+        holds only while nothing else bumps the same buffer arena between
+        two of them. `test_guard()` serialises the block pool, not the
+        arena, so a test on another thread allocating a long-lived chunk
+        makes the payload no longer the last chunk bumped and the next
+        append copies instead of extending. Whether the repair is the
+        test's isolation or the arena's accounting is the first thing to
+        settle: an in-place extension that a foreign allocation can
+        silently turn into a copy is a performance contract nothing else
+        pins.
 
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
 
@@ -155,7 +195,7 @@ authoritative.
 Done when: a fresh array is strategy 2 and migrates to strategy 3 under a
 key it cannot hold, both configurations green, Miri silent.
 
-- [~] S7.1 The mixed vector as storage strategy 2
+- [x] S7.1 The mixed vector as storage strategy 2
       done: an integer-keyed array whose storage is a `Vector` is traced,
         severed and torn down through S4.1's drain, in both
         configurations, and every call that reaches the storage goes
@@ -226,17 +266,41 @@ key it cannot hold, both configurations green, Miri silent.
         re-check compares the payload word alone, so a Value torn between
         its two words is confirmed rather than caught and costs an epoch.
         None of the three is this step's to fix — steps of their own.
-      handoff: `head.rs` is the walker's contract, `vector.rs` is
-        strategy 2, and `entity::Storage` is the union both live in — the
-        head is a prefix inside each member, so the union's address is
-        the head's and `storage_head` reaches it without naming a
-        representation. One place stamps the tag, `new_with_storage`; the
-        walker, the sever and the dispose all dispatch on it, and the
-        element layer does not yet, which is what S7.2 is. The vector's
-        own operations are reached by its seven tests alone for this one
-        step, and `array/mod.rs` carries the `allow` that says so with
-        the step that removes it named. 424 → 431, gate green on
-        5103a02, loom's four cases still pass.
+      Critic 2026-08-11 round 2, over the executed ruling: **the type
+        rule holds for every path in the crate — nothing forms a
+        reference spanning bytes 8..48 of an array, and every threaded
+        head is its own array's — but two doors read the union with no
+        tag test and one reader guesses.** `entity::carry_storage_out_of`
+        and `entity::storage_address` named the ordered hash outright, so
+        a surviving vector array had its `cap` read as a granted byte
+        size and its uninitialised tail read as a table, which is S7.1's
+        own criterion broken rather than an S7.2 debt. And `walk.rs`
+        tested the tag against `Vector` alone, so `Typed` — a value
+        `decode_tag` accepts — selected the hash stride: a valid tag
+        choosing the wrong layout, which is the defect the read protocol
+        exists to prevent. Both fixed. Two traps closed with them:
+        `LLArray::needs_separation` took `&self`, the crate's only
+        reference over a whole array entity, which invalidates any
+        outstanding `&mut Table` — now a raw pointer, `category_of`'s
+        shape; and `head` is private to `entity.rs`, so `&mut (*a).head`
+        cannot be spelled elsewhere. The `(tag, storage)` pair is no
+        longer assemblable by a caller: `new_with_storage` is private
+        behind `ll_array_new` and `new_vector_array`. Its fourth finding
+        — `dispose` publishing three words in an order that is
+        load-bearing and unstated — is S13.2's and is recorded there.
+      handoff: `LLArray { rc, head, storage }`: the head is the entity's
+        field at +8, private to `entity.rs`, and every table and vector
+        operation over a walker-visible word takes `head: &StorageHead`.
+        `entity::as_table_mut` is the one place the disjoint pair is
+        derived and the only place the tag is asserted; the carry out of
+        a dying arena is one body there too, dispatched on the tag, both
+        representations handing it `granted_capacity_mut`. Tests reach
+        the pair through `array::testing`, which is test-only and exists
+        because an assertion cannot destructure. 431 → 433, gate green on
+        the commit that closed this step; Miri red before the move and
+        silent after, over `array::entity` 24, `array::table` 34,
+        `array::element` 29, `array::vector` 8, `walk::` 22 and
+        `promote::` 20; loom's four cases unchanged.
 - [ ] S7.2 Factories stamp the tag and the element write dispatches on it
       done: `ll_array_new` stamps `Vector`, and a strategy-2 write of a
         string key migrates through the tag rather than through a direct

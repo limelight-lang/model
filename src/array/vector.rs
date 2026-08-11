@@ -179,6 +179,13 @@ impl Vector {
         true
     }
 
+    /// The bytes the storage was granted, for the carry out of a dying
+    /// arena (`entity::carry_storage_out_of`).
+    #[inline]
+    pub(crate) fn granted_capacity_mut(&mut self) -> &mut usize {
+        &mut self.storage_capacity
+    }
+
     /// Where element `i` sits. Callers have already bounded `i`.
     #[inline]
     fn element_ptr(&self, head: &StorageHead, i: usize) -> *mut u8 {

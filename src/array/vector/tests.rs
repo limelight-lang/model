@@ -1,6 +1,6 @@
 use super::*;
 use crate::array::entity::{
-    LLArray, Storage, as_vector, as_vector_mut, new_with_storage, sever_counted_children,
+    LLArray, as_vector, as_vector_mut, new_vector_array, sever_counted_children, storage_head,
 };
 use crate::refcount::ll_release;
 use crate::value::Tag;
@@ -13,7 +13,7 @@ use crate::value::Tag;
 /// one step, and it is why they build the entity rather than the bare
 /// representation: what the criterion asks about is an array.
 fn vector_array(category: MemoryCategory) -> *mut LLArray {
-    let a = unsafe { new_with_storage(category, StorageTag::Vector, Storage::vector()) };
+    let a = unsafe { new_vector_array(category) };
     assert!(!a.is_null(), "allocation refused in a test");
     a
 }
@@ -207,7 +207,7 @@ mod the_entity_over_a_vector {
         unsafe { sever_counted_children(a, &mut displaced) };
         assert_eq!(displaced, vec![held as *mut RcHeader]);
         assert!(
-            unsafe { (*a).head.used() } == 0,
+            unsafe { (*storage_head(a)).used() } == 0,
             "severed, so nothing is left to release twice"
         );
         assert_eq!(
@@ -253,5 +253,60 @@ mod the_entity_over_a_vector {
             after.by_kind[k], before.by_kind[k],
             "the array and the child it was the last holder of are both gone"
         );
+    }
+
+    /// The carry out of a dying arena reaches the vector's own chunk.
+    ///
+    /// This is the door the tag has to be read at, and the one that had no
+    /// reader for it: the carry used to name the ordered hash outright, so
+    /// a surviving vector array had its `cap` read as a granted byte size
+    /// and its uninitialised tail read as a table (Critic, S7.1 round 2).
+    /// What the elements are is beside the point — a chunk is bytes — so
+    /// this asserts what the operation owes: the storage leaves the arena
+    /// for a buffer chunk, keeps its contents, and the head names the new
+    /// address.
+    #[test]
+    fn a_surviving_vector_carries_its_chunk_out_of_the_arena() {
+        use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK};
+        use crate::memory::context::{LLContext, set_current_context};
+        let _g = crate::memory::block_pool::test_guard();
+
+        let mut arena = crate::memory::arena::Arena::new();
+        let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+        let mut context = LLContext { arena: arena_ptr };
+        let context_ptr: *mut LLContext = &mut context;
+        set_current_context(context_ptr);
+
+        let a = vector_array(MemoryCategory::RequestArena);
+        for i in 0..5i64 {
+            assert!(unsafe { crate::array::testing::push(a, Value::int(i)) });
+        }
+
+        let inside = unsafe { (*storage_head(a)).storage() };
+        assert!(unsafe { crate::array::entity::carry_storage_out_of(arena_ptr, a) });
+        let outside = unsafe { (*storage_head(a)).storage() };
+        assert_ne!(inside, outside, "the chunk stayed in the dying arena");
+        assert_eq!(
+            unsafe { *(((outside as usize) & !BLOCK_MASK) as *const u32) },
+            BLOCK_KIND_BUFFER,
+            "the carried chunk came from somewhere other than the buffer arena"
+        );
+
+        let (v, head) = unsafe { as_vector(a) };
+        for i in 0..5usize {
+            assert_eq!(
+                v.get(head, i).unwrap().as_int(),
+                i as i64,
+                "the copy lost an element"
+            );
+        }
+
+        // The array itself is arena memory and dies with the reset; its
+        // storage is not, and nothing has promoted the header, so the free
+        // goes by hand at the category the carry moved the chunk to.
+        let (v, head) = unsafe { as_vector_mut(a) };
+        v.dispose(head, MemoryCategory::GcHeap);
+        set_current_context(std::ptr::null_mut());
+        arena.reset(|_| {});
     }
 }

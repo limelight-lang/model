@@ -89,15 +89,27 @@ impl Storage {
 }
 
 /// The array entity.
+///
+/// **Never form a reference to the whole of one.** A collector thread
+/// reads the head at `+8` while the owning thread writes the
+/// representation at `+48`, so a `&mut LLArray` claims bytes the walker is
+/// reading and a `&LLArray` forbids writes the mutator is making. Both are
+/// undefined behaviour that only Miri reports. Every operation here takes
+/// `*mut LLArray` and derives what it needs field by field —
+/// [`as_table_mut`], [`storage_head`], [`category_of`] — and that is the
+/// rule a caller outside this crate has to obey too, holding the pointer
+/// `ll_array_new` returned rather than a reference made from it.
 #[repr(C)]
 pub struct LLArray {
     pub rc: RcHeader,
     /// Every word a concurrent walker may read, held here rather than
     /// inside the representation so that no mutating borrow spans it
     /// (`crate::array::head`). Reached shared by mutator and walker
-    /// alike; nothing in the crate takes a `&mut` to it.
-    pub(crate) head: StorageHead,
-    pub storage: Storage,
+    /// alike, and **private to this module**, which is what keeps
+    /// `&mut (*a).head` — the same defect one level down — from being
+    /// spelled anywhere else in the crate.
+    head: StorageHead,
+    pub(crate) storage: Storage,
 }
 
 /// The ordered hash and the head beside it, for a reader.
@@ -217,19 +229,31 @@ pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
     unsafe { new_with_storage(category, StorageTag::Hash, Storage::hash()) }
 }
 
-/// [`ll_array_new`] with the storage representation named.
+/// An empty array whose storage is the mixed vector — strategy 2, which
+/// `ll_array_new` does not stamp yet (`PLAN.md` S7.2).
 ///
-/// **The tag and the union are stamped by the one line below**, and that
-/// pairing is this function's whole reason to exist: the union carries no
-/// discriminant of its own, so `tag` is the only thing that says which
-/// member the bytes are, and a caller that passed one of each would leave
-/// every later access reading the wrong representation. Nothing checks it
-/// — there is nothing to check it against — so the two arguments are read
-/// together or not at all.
+/// # Safety
+/// As [`ll_array_new`].
+#[allow(
+    dead_code,
+    reason = "the production producer lands with the factory's stamp in S7.2"
+)]
+pub(crate) unsafe fn new_vector_array(category: MemoryCategory) -> *mut LLArray {
+    unsafe { new_with_storage(category, StorageTag::Vector, Storage::vector()) }
+}
+
+/// [`ll_array_new`]'s body, with the representation named.
+///
+/// **Private, because `tag` and `storage` are one fact spelled twice.**
+/// The union carries no discriminant of its own, so the tag is the only
+/// thing that says which member the bytes are, and nothing can check the
+/// pair — there is nothing to check it against. Keeping the two arguments
+/// inside this module means the pairing is made by the two named
+/// factories above and cannot be assembled by a caller.
 ///
 /// # Safety
 /// As [`ll_array_new`], and `tag` names the member `storage` holds.
-pub(crate) unsafe fn new_with_storage(
+unsafe fn new_with_storage(
     category: MemoryCategory,
     tag: StorageTag,
     storage: Storage,
@@ -284,14 +308,25 @@ pub(crate) unsafe fn category_of(a: *const LLArray) -> MemoryCategory {
     unsafe { crate::object::header_category(a as *const RcHeader) }
 }
 
-impl LLArray {
-    /// Whether a write to this array has to separate first — the rule in
-    /// `refcount::cow_separation_needed`, which reads the category before
-    /// the count.
-    #[inline]
-    pub fn needs_separation(&self) -> bool {
-        crate::refcount::cow_separation_needed(self.rc.flags, self.rc.refcount)
-    }
+/// Whether a write to this array has to separate first — the rule in
+/// `refcount::cow_separation_needed`, which reads the category before the
+/// count.
+///
+/// **A raw pointer rather than `&self`, for [`category_of`]'s reason and
+/// one more.** An autoref would span the whole entity, so it would retag
+/// the representation's bytes as read-only alongside the header's — and a
+/// `&mut Table` derived a line earlier is invalidated by that, with the
+/// next insert becoming undefined behaviour. Only Miri sees it, and no
+/// call site does both today, which is exactly why the trap is closed by
+/// the signature instead of by a rule someone has to remember.
+///
+/// # Safety
+/// `a` is a live array entity.
+#[inline]
+pub unsafe fn needs_separation(a: *const LLArray) -> bool {
+    let flags = unsafe { (*a).rc.flags };
+    let refcount = unsafe { (*a).rc.refcount };
+    crate::refcount::cow_separation_needed(flags, refcount)
 }
 
 /// Copy `src` into a fresh array of `category` — **one body for both
@@ -849,20 +884,53 @@ pub(crate) unsafe fn sever_counted_children(a: *mut LLArray, displaced: &mut Vec
     }
 }
 
-/// The address of the array's storage and the bytes granted for it — the
-/// block promotion retains when a carry was refused. Null when the array
-/// never grew a table.
+/// The address of the array's storage — the block promotion retains when
+/// a carry was refused. Null when the array never allocated one.
+///
+/// **The head answers this and no representation is named**, which is
+/// what makes it correct under either tag: the chunk's address is one of
+/// the words a walker reads, so it is the entity's rather than the
+/// table's.
 ///
 /// # Safety
 /// `a` must be a live array entity.
 pub(crate) unsafe fn storage_address(a: *mut LLArray) -> *mut u8 {
-    let (table, head) = unsafe { as_table(a) };
-    table.storage_and_capacity(head).0
+    unsafe { (*a).head.storage() }
 }
 
 /// Bring a surviving array's storage out of the arena that is about to
-/// reset. One line, because the storage is the table's and so is every
-/// reason: see [`crate::array::table::Table::carry_out_of`].
+/// reset, so that it outlives the reset under its promoted owner.
+///
+/// **One body for both representations, dispatched on the tag.** A
+/// storage chunk is bytes: the two differ only in where they keep the
+/// size they were granted, which is why each hands that field out
+/// (`granted_capacity_mut`) instead of carrying a copy of this operation.
+///
+/// The entity's header stays where it is — promotion retains the block
+/// holding it — while the storage is arena memory that would go back to
+/// the pool and be handed to somebody else. **Nothing inside the storage
+/// points into it**: a table's chain links are `u32` indices and a
+/// vector has no links at all, which is what makes a flat copy legal and
+/// is pinned by a test.
+///
+/// Two routes, chosen by where the storage came from, and the same pair a
+/// string's payload takes for the same reasons (`dev/DECISIONS.md`,
+/// 2026-08-04): an **OS-direct** storage, over a block payload, is
+/// forgotten by the arena and keeps its address, allocating nothing and
+/// so refusing nothing; an **in-block** one is copied into a fresh
+/// buffer-arena chunk, bounded by a block payload.
+///
+/// Nothing here records where the storage now lives. The category is the
+/// header's to say and promotion rewrites the header a moment later, so
+/// every later free of this storage reads the new answer with no second
+/// field to keep in step (`dev/DECISIONS.md` 2026-08-07). A refused carry
+/// is safe under the new category too: promotion stamps the storage's
+/// block `BLOCK_KIND_RETAINED` right after, and that is the one kind
+/// `buffer_free_longlived_payload` leaves alone — the same mechanism that
+/// protects a string's uncarried payload, rather than a second one of our
+/// own.
+///
+/// **False when the copy was refused**, with the storage untouched.
 ///
 /// # Safety
 /// `a` must be a live request-arena array of `arena`, mid-reset.
@@ -870,9 +938,49 @@ pub(crate) unsafe fn carry_storage_out_of(
     arena: *mut crate::memory::arena::Arena,
     a: *mut LLArray,
 ) -> bool {
-    let category = unsafe { category_of(a) };
-    let (table, head) = unsafe { as_table_mut(a) };
-    unsafe { table.carry_out_of(head, category, arena) }
+    debug_assert_eq!(
+        unsafe { category_of(a) },
+        MemoryCategory::RequestArena,
+        "only an arena array is carried out of a reset"
+    );
+    let granted = match unsafe { (*a).head.tag() } {
+        StorageTag::Hash => unsafe { as_table_mut(a) }.0.granted_capacity_mut(),
+        StorageTag::Vector => unsafe { as_vector_mut(a) }.0.granted_capacity_mut(),
+        StorageTag::Typed => unreachable!("no producer stamps the typed vector"),
+    };
+
+    let head = unsafe { &(*a).head };
+    if head.storage().is_null() {
+        return true;
+    }
+
+    if *granted > crate::memory::block_pool::BLOCK_PAYLOAD {
+        // True whatever the log says, for the reason
+        // `string::carry_payload_out_of` gives: a miss means nothing will
+        // free the run, so the storage keeps its address and leaks — the
+        // safe direction — while reporting a refusal would send the caller
+        // into stamping `BLOCK_KIND_RETAINED` over the run's own header.
+        let forgotten = unsafe { (*arena).forget_large(head.storage()) };
+        debug_assert!(forgotten, "an OS-direct storage the arena never logged");
+        return true;
+    }
+
+    // The destination is named rather than read from the header, which
+    // still says `RequestArena` here: promotion rewrites it after the
+    // carry, so that everything the survivor owns moves while the category
+    // still describes where it lives (`promote.rs`).
+    let (fresh, fresh_granted) = unsafe {
+        crate::memory::routing::body_alloc(std::ptr::null_mut(), MemoryCategory::GcHeap, *granted)
+    };
+
+    if fresh.is_null() {
+        return false;
+    }
+
+    unsafe { std::ptr::copy_nonoverlapping(head.storage(), fresh, *granted) };
+    head.set_storage(fresh);
+    *granted = fresh_granted;
+    true
 }
 
 /// Teardown for an array whose count reached zero, or that a collector

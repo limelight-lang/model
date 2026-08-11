@@ -32,7 +32,7 @@ impl Owned {
     }
 
     fn head(&self) -> &StorageHead {
-        unsafe { &(*self.0).head }
+        unsafe { &*crate::array::entity::storage_head(self.0) }
     }
 
     fn insert(&mut self, key: Key, value: Value) -> Option<(bool, Option<Value>)> {
@@ -1248,8 +1248,7 @@ mod where_the_storage_comes_from {
         );
 
         FORCE_OOM.store(true, Ordering::Relaxed);
-        let carried =
-            unsafe { m.carry_out_of(head, crate::array::entity::category_of(a), arena_ptr) };
+        let carried = unsafe { crate::array::entity::carry_storage_out_of(arena_ptr, a) };
         FORCE_OOM.store(false, Ordering::Relaxed);
         assert!(!carried, "the copy was meant to be refused and was not");
         assert_eq!(

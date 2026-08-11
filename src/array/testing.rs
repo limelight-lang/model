@@ -19,7 +19,9 @@
 //! crate outside `#[cfg(test)]` may use it: an operation worth having in
 //! production is worth its own name at the element layer.
 
-use crate::array::entity::{LLArray, as_table, as_table_mut, as_vector_mut, category_of};
+use crate::array::entity::{
+    LLArray, as_table, as_table_mut, as_vector_mut, category_of, storage_head,
+};
 use crate::array::entry::Entry;
 use crate::array::table::Key;
 use crate::string::LLString;
@@ -96,7 +98,7 @@ pub(crate) unsafe fn entry<'a>(a: *mut LLArray, i: usize) -> &'a Entry {
 /// `a` is a live array.
 #[inline]
 pub(crate) unsafe fn used(a: *mut LLArray) -> usize {
-    unsafe { (*a).head.used() }
+    unsafe { (*storage_head(a)).used() }
 }
 
 /// # Safety
