@@ -149,7 +149,7 @@ arrangement.
         elements and multi-line `use` groups, none of which are blocks
         whose construction has ended. `Class`'s three run accessors link
         to their fields with the `field@` disambiguator now instead of
-        restating them. Commit `<pending>`.
+        restating them. Commit `7b91ac4`.
 - [x] S9.1 The comment pass over `src/memory/`
       done: comment lines counted before and after and the drop recorded
         in this step; every comment left is one of rule 19's six kinds;
