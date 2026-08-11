@@ -15,8 +15,8 @@
 //! layout already refused.
 //!
 //! The table itself holds no header: this is what supplies the refcount,
-//! the memory category and the COW state, so the table can be tested and
-//! reasoned about without an entity around it.
+//! the memory category and the COW state, and the table is handed the
+//! category by every allocating call (`dev/DECISIONS.md`, 2026-08-09).
 //!
 //! **COW separation is shallow**, which is what `rfc/model/arrays.md`
 //! says and what PHP's semantics require: the copy gets its own storage
@@ -259,8 +259,11 @@ pub enum CopyReason {
 /// in the program can observe the two arrays sharing the element. Two or
 /// more means a live `&` binding, and then the copy shares the box —
 /// which is how `$r = &$a['x']; $b = $a; $r = 3;` reaches `$b['x']`.
-/// The count is exact because a box is a heap entity in every case
-/// (`dev/DECISIONS.md`, 2026-08-08); that is what the ruling bought.
+/// A box is a heap entity in every case, so nothing special-cases the
+/// count; in the request arena it is an upper bound all the same, a
+/// container there giving its hold back at the reset rather than at its
+/// own death, so the copy errs toward sharing (`dev/DECISIONS.md`,
+/// 2026-08-08).
 ///
 /// **Only a duplication collapses anything.** An escape copy is a store
 /// crossing a lifetime boundary, and PHP duplicates nothing there, so a
@@ -698,16 +701,11 @@ pub(crate) unsafe fn carry_storage_out_of(
 /// the collector and the arena reset order their own destructors, as
 /// Zend's GC and its shutdown do.
 ///
-/// Holding it costs the list one more kind of line and no cursor into the
-/// table. Until a dying nested array turns up, children are released
-/// where they are found, so a flat array pushes nothing. The first one
-/// turns the rest of that level into **held** lines: their release is
-/// postponed, the reference the freed storage held passes to the list,
-/// and the segment is reversed so that the LIFO drain hands it back in
-/// entry order — the nephews before the next sibling. A held line carries
-/// its owner's category, because that is what settles the escape ledger
-/// and the release-at-reset log, and one list mixes the children of
-/// several owners.
+/// Holding it costs no cursor into the table and one more kind of line
+/// on the list ([`Pending`]): a flat array pushes nothing, and from the
+/// first dying nested array the rest of that level is held, released in
+/// entry order after the subtree deferred before it
+/// (`dev/DECISIONS.md`, 2026-08-08).
 ///
 /// # Safety
 /// `a` must be a live array entity.

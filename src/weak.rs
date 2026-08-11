@@ -46,10 +46,11 @@ thread_local! {
     ///
     /// Discarded at thread exit without notification — the thread's
     /// entities die with its heap, and nothing outlives them to read a
-    /// cell (cross-thread movement is reserved). The disposal is **last**
-    /// in `ll_thread_exit`'s order, which is what the design doc pinned
-    /// against the arrival of static-block teardown; that arrived
-    /// 2026-08-03 (A6) and this is the ordering it asked for.
+    /// cell (cross-thread movement is reserved). The disposal runs after
+    /// every step of `ll_thread_exit` that can still deliver a
+    /// notification — static blocks, candidate buffer, parked backlog —
+    /// and before the buffer arena and the heaps; that whole order is
+    /// fixed in `heap::ll_thread_exit` (`dev/DECISIONS.md`, 2026-08-04).
     ///
     /// A raw pointer in a `Cell`, not a `RefCell<HashMap<_, _>>`, and
     /// for soundness. A `HashMap` has drop glue, so its key is
@@ -86,7 +87,7 @@ fn weak_table() -> *mut HashMap<usize, *mut LLWeakRef> {
 }
 
 /// Give this thread's weak table back at thread exit, after every death
-/// that could still need a row — so, last (see the `WEAK_TABLE` doc).
+/// that could still need a row (see the `WEAK_TABLE` doc).
 ///
 /// No notification: the rows that remain name targets that are dying
 /// with this thread's heap, and nothing outlives them to read a cell.

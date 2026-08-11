@@ -32,6 +32,10 @@ pub struct Object {
 pub type DestructorFn = unsafe extern "C" fn(*mut Object);
 
 impl Object {
+    /// The object's class descriptor: the class word, stamped by the
+    /// factory before the header is published and never written again.
+    /// Covers the descriptor's fixed fields only — the trailing vtable is
+    /// reached through the raw pointer ([`Class::vtbl`]).
     #[inline]
     pub fn class(&self) -> &Class {
         unsafe { &*self.class }
@@ -247,10 +251,8 @@ pub unsafe extern "C" fn ll_release_vector(entities: *const *mut RcHeader, count
 /// what makes reset run the pre-destructor.
 ///
 /// **False when the record could not be written.** The caller raises
-/// memory-exhausted at the creation site, and that is deliberately the
-/// same outcome as a constructor that threw: our teardown runs, the user
-/// destructor does not — which is exactly right, since the object never
-/// finished being constructed as far as anyone can observe.
+/// memory-exhausted at the creation site, and the outcome is identical to
+/// a constructor that threw (`rfc/runtime/object-lifecycle.md`).
 ///
 /// A class without a destructor needs no call; generated code emits it
 /// only where the class has one.
@@ -338,14 +340,13 @@ pub unsafe extern "C" fn ll_object_new_abi(
     unsafe { ll_object_new(ctx, class, MemoryCategory::from_flags(category)) }
 }
 
-/// Visit every live counted child of an object — the shared walk over the
-/// class's trace map, `Class::ptr_runs` and `Class::box_runs`, for GC
-/// tracing, teardown, promotion and escape-release
-/// (`rfc/model/gc/strategies.md` §4). Pointer runs (stride 8) skip a `NULL`
-/// slot; Box runs (stride 16) skip a clear refcounted flag. Each child is
-/// yielded once as a non-null `*mut RcHeader`; the slot lvalue is not
-/// exposed, since a store goes through the barrier (which knows the slot
-/// kind statically), not through here.
+/// Visit every live counted child of an object — [`for_each_counted_cell`]
+/// over the object's own body, for GC tracing, teardown, promotion and
+/// escape-release (`rfc/model/gc/strategies.md` §4), so a template
+/// instance's values are walked from its shape like any other child. Each
+/// child is yielded once as a non-null `*mut RcHeader`; the slot lvalue is
+/// not exposed, since a store goes through the barrier (which knows the
+/// slot kind statically), not through here.
 ///
 /// Generic over the visitor and `#[inline]` so each caller monomorphizes to
 /// a bare stride with no per-child indirect call (`rfc/model/classes.md`,
@@ -794,17 +795,11 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
 /// [`crate::refcount::cow_separation_needed`] fires, in which case the
 /// entity is copied and the copy comes back.
 ///
-/// **A separated copy comes back at +1, owned by the caller**, and the
-/// full composition is written out in [`crate::string::separate`]:
-/// store, release the creation reference, drop the displaced original.
-/// The last two are in that order because dropping the original runs
-/// `__destruct` bodies, and one of them can displace the copy from the
-/// slot just written. With the creation reference still outstanding,
-/// that displacement takes the copy to one rather than to zero, and the
-/// release that follows returns a death verdict the store site
-/// discards, so the copy and every child it holds are leaked.
-/// Getting the release wrong instead does not merely leak: a copy left
-/// at two reads as shared on every later write and separates forever.
+/// **A separated copy comes back at +1, owned by the caller**; the store
+/// site owes the rest — store, release the creation reference, drop the
+/// displaced original, every line of it load-bearing.
+/// [`crate::string::separate`] writes the composition out with the counts;
+/// the order is argued in `dev/DECISIONS.md`, 2026-08-08.
 ///
 /// `owner_cat` is the **holder's** category, supplied by the compiler as
 /// it is to every other store-side barrier (`memory/barrier.rs`), and
@@ -817,8 +812,7 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
 ///
 /// Kind-dispatched, like [`ll_entity_die`]: whether to separate is a
 /// property of the header, how to copy is a property of the layout.
-/// Strings are the only COW entity the crate produces so far; arrays
-/// join with Phase C.
+/// Strings and arrays are the COW kinds the crate produces.
 ///
 /// **Null on allocation failure** — see [`crate::string::separate`].
 ///

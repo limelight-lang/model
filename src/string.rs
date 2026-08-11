@@ -780,16 +780,10 @@ pub unsafe fn ll_string_append(ctx: *mut LLContext, s: *mut LLStringDynamic, ext
 ///
 /// The entity's header stays where it is — the block holding it is
 /// retained — but the payload is arena memory and would go back to the
-/// pool at the reset, so the survivor would read recycled bytes. Two
-/// routes, and which one applies is decided by where the payload came
-/// from:
-///
-/// - **OS-direct** (over a block payload): ownership transfers. The
-///   arena forgets the run, the string keeps the same pointer, nothing is
-///   allocated and nothing can be refused — which matters, because a
-///   reset has no caller left to report a refusal to.
-/// - **In-block**: a fresh heap payload, copied. Bounded by a block
-///   payload, so the copy is bounded too.
+/// pool at the reset, so the survivor would read recycled bytes. A
+/// payload above a block payload is OS-direct: ownership transfers, the
+/// pointer does not move and nothing can be refused. A smaller one is
+/// copied into a fresh heap payload (`dev/DECISIONS.md`, 2026-08-04).
 ///
 /// **False when the copy was refused.** The caller keeps the payload's
 /// arena block out of circulation instead; the string then reads its old
@@ -1207,14 +1201,6 @@ mod tests {
         arena.reset(|_| {});
     }
 
-    /// A long-lived string separates although its count is maintained
-    /// and may read as one. `values.md` justifies the category test with
-    /// "the count is pinned", which is true of immortal and false here —
-    /// `ll_retain` takes neither early return for a COW entity. The
-    /// reasons that do hold: the count is non-atomic while the entity is
-    /// reachable from more than one request, and `string_die` frees only
-    /// `GcHeap`, so an in-place write would land somewhere nothing
-    /// reclaims.
     /// A string in a category a second thread can reach arrives already
     /// hashed, so no reader ever takes the lazy branch's plain store.
     /// The field is read directly rather than through `LLString::hash`,
@@ -1245,6 +1231,14 @@ mod tests {
         }
     }
 
+    /// A long-lived string separates although its count is maintained
+    /// and may read as one. `values.md` justifies the category test with
+    /// "the count is pinned", which is true of immortal and false here —
+    /// `ll_retain` takes neither early return for a COW entity. The
+    /// reasons that do hold: the count is non-atomic while the entity is
+    /// reachable from more than one request, and `string_die` frees only
+    /// `GcHeap`, so an in-place write would land somewhere nothing
+    /// reclaims.
     #[test]
     fn a_long_lived_string_separates_although_its_count_is_real() {
         let _g = crate::memory::block_pool::test_guard();
@@ -1284,12 +1278,10 @@ mod tests {
     /// semantics under holders that already have it and, under
     /// `rc-walk`, race the collector's byte stores.
     ///
-    /// **`IS_ESCAPEE`**: no longer an arm of the rule (2026-08-04). The
-    /// store barrier copies a COW value out of the arena rather than
-    /// counting an escape into it, so bit 11 and the exact COW count can
-    /// no longer claim the same four bytes and the combination cannot
-    /// occur. What used to be asserted here is now asserted where it is
-    /// produced:
+    /// **`IS_ESCAPEE`**: not an arm of the rule. The store barrier copies
+    /// a COW value out of the arena rather than counting an escape into
+    /// it, so the combination cannot occur (`dev/DECISIONS.md`,
+    /// 2026-08-04); it is asserted where it is produced,
     /// `barrier::tests::a_cow_value_leaving_the_arena_is_copied_rather_than_counted`.
     ///
     /// **`COW = 0`**: the form the compiler allocates for a proved single
@@ -1437,8 +1429,7 @@ mod tests {
     /// Past what the heap's size classes pack, a string is built out of
     /// line and **stays copy-on-write**: the layout is a bit of its own,
     /// so a string dynamic by size keeps the semantics an inline one has
-    /// (`rfc/model/memory/large-entities.md`). Before that split the
-    /// factory had no third option and refused.
+    /// (`rfc/model/memory/large-entities.md`).
     #[test]
     fn a_heap_string_past_the_size_class_is_out_of_line_and_still_cow() {
         let _g = crate::memory::block_pool::test_guard();

@@ -18,12 +18,11 @@
 //! lists (`ptr_runs` / `box_runs`) the GC and teardown stride, and the
 //! tail byte block carrying the init bitmap (A5).
 //!
-//! **Dispatch tables are pure code-pointer arrays** — the invariant:
-//! no headers inside any table (C++-style offset-to-top/RTTI prefixes
-//! are unnecessary because objects point at the descriptor, not at a
-//! table; the descriptor *is* the vtbl's header). That makes the tail
-//! a homogeneous train: `[Class][vtbl][itable A][itable B]…` in one
-//! allocation, every table found by link-time pointer/offset.
+//! **Dispatch tables are pure code-pointer arrays** — no headers inside
+//! any table, so the tail is a homogeneous train:
+//! `[Class][vtbl][itable A][itable B]…` in one allocation, every table
+//! found by link-time pointer/offset (`rfc/model/classes.md`, "Pure
+//! pointer tables, one trailing train").
 //!
 //! Deliberately absent (generated-code territory or later layers):
 //! inline caches, property hooks, Ghost/Proxy shims, `__call`,
@@ -56,7 +55,7 @@ pub const NO_INIT_BIT: u32 = u32::MAX;
 /// The machine representation of a declared property's type — what the
 /// slot physically *is*, chosen at link time (`rfc/model/classes.md`,
 /// "Slot kinds"). Traced-ness and stride both follow from the kind, so
-/// there is no separate per-slot "is a reference" flag any more.
+/// there is no separate per-slot "is a reference" flag.
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SlotKind {
@@ -120,9 +119,9 @@ pub struct Run {
 
 /// A declared property: its fixed offset from the object base, its
 /// machine slot kind, and its declaration-order index — all computed at
-/// link time. Physical order groups the runs, so it no longer matches
-/// declaration order, which `serialize()`/`foreach`/reflection still
-/// observe; `declaration_index` preserves it.
+/// link time. Physical order groups the runs and so differs from
+/// declaration order, which `serialize()`/`foreach`/reflection observe;
+/// `declaration_index` preserves it.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PropSlot {
@@ -162,6 +161,12 @@ pub struct InterfaceEntry {
     pub slot_map: *const u32,
 }
 
+/// One class descriptor: these fixed fields, then an **inline trailing
+/// vtable** of `vtbl_len` code pointers with the itables behind it, in
+/// one immortal allocation ([`ClassBuilder::build`]) whose address is
+/// stable for the process lifetime. Every count and table below covers
+/// the inherited chain as well, so no lookup here walks
+/// [`field@Class::parent`].
 #[repr(C)]
 pub struct Class {
     pub flags: u32,
@@ -342,8 +347,6 @@ impl ClassBuilder {
             props: Vec::new(),
             methods: Vec::new(),
             interfaces: Vec::new(),
-            // The generic teardown stand-in until a compiler generates a
-            // specialized `dispose` for this class.
             dispose: crate::object::ll_default_dispose as *const (),
         }
     }
@@ -549,6 +552,8 @@ impl ClassBuilder {
         // starting at the parent's `layout_end`, so an own field may land
         // in the parent's tail padding (JDK-15 rule). Hole-filling and
         // bool bit-packing are deferred optimizations (A7 / rfc backlog).
+        // A rootless class starts at 16, past the object header
+        // (`crate::object::Object`: `RcHeader` + class pointer).
         let parent_layout_end = parent.map_or(16, |p| p.layout_end);
         let parent_prop_count = parent.map_or(0, |p| p.prop_count);
 
@@ -892,8 +897,8 @@ mod tests {
         let (animal, dog) = unsafe { (&*animal_ptr, &*dog_ptr) };
 
         // name is a Boxed slot (the `refcounted` shim), age a Scalar: the
-        // Box run is placed first, the scalar after it. object_size is the
-        // exact byte count (40), not the old uniform 16-per-slot.
+        // Box run is placed first, the scalar after it, and object_size is
+        // the exact byte count, not a uniform per-slot size.
         assert_eq!(animal.find_prop(intern_str("name")).unwrap().offset, 16);
         assert_eq!(animal.find_prop(intern_str("age")).unwrap().offset, 32);
         assert_eq!(animal.layout_end, 40);

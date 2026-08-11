@@ -257,9 +257,10 @@ barrier's `drop`, which is the only step here that runs user code →
 `gc::dispose` (rc-trace) returns the candidate buffer, clearing the
 buffered bit of anything still in it → `deferred_free::dispose`
 (rc-walk) flushes the parked backlog when no epoch is in flight →
-`weak::dispose` returns the weak table, last, after every death that
-could still need a row → the thread's heaps are dropped and their
-blocks are abandoned or returned.
+`weak::dispose` returns the weak table, after every death that could
+still need a row → `buffer_arena::dispose` gives the out-of-line bodies
+back, after every step above that can free one → the thread's heaps are
+dropped and their blocks are abandoned or returned.
 
 **5. rc-walk collection epoch.** Explicit trigger (`collector`;
 thresholds are unmeasured) → the activity flag is published through a

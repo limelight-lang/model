@@ -358,11 +358,13 @@ impl Table {
         self.flags = (self.flags & !TABLE_FLOOD_STATE) | (source.flags & TABLE_FLOOD_STATE);
     }
 
+    /// Live entries: holes are excluded, unlike in [`used`](Self::used).
     #[inline]
     pub fn len(&self) -> usize {
         self.live
     }
 
+    /// No live entry left — a table of nothing but holes is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.live == 0
@@ -525,7 +527,7 @@ impl Table {
     }
 
     /// Carry this table's storage out of `arena`, which is about to
-    /// reset, and record that the table now belongs to the GC heap.
+    /// reset, so that it outlives the reset under its promoted owner.
     ///
     /// The entity's header stays where it is — promotion retains the block
     /// holding it — while the storage is arena memory that would go back
@@ -533,15 +535,12 @@ impl Table {
     /// storage points into it**: every chain link is a `u32` index, which
     /// is what makes a flat copy legal and is pinned by a test.
     ///
-    /// Two routes, chosen by where the storage came from, the same pair a
-    /// string's payload takes:
-    ///
-    /// - **OS-direct** (over a block payload): the arena forgets the run
-    ///   and the storage keeps its address. Nothing is allocated, so
-    ///   nothing can be refused — which matters, because a reset has no
-    ///   caller left to report a refusal to.
-    /// - **In-block**: a fresh buffer-arena chunk, copied. Bounded by a
-    ///   block payload, so the copy is bounded too.
+    /// Two routes, chosen by where the storage came from, and the same
+    /// pair a string's payload takes for the same reasons
+    /// (`dev/DECISIONS.md`, 2026-08-04): an **OS-direct** storage, over a
+    /// block payload, is forgotten by the arena and keeps its address,
+    /// allocating nothing and so refusing nothing; an **in-block** one is
+    /// copied into a fresh buffer-arena chunk, bounded by a block payload.
     ///
     /// Nothing here records where the storage now lives. The category is
     /// the header's to say and promotion rewrites the header a moment
@@ -728,6 +727,8 @@ impl Table {
         None
     }
 
+    /// Whether `key` is present. A full lookup: the answer costs what
+    /// [`get`](Self::get) costs, the element copy included.
     #[inline]
     pub fn contains(&self, key: Key) -> bool {
         self.get(key).is_some()
@@ -2070,11 +2071,9 @@ mod tests {
         }
 
         let _ = m.remove(Key::Int(3));
-        // The old shape of this wrote a whole `Value` into the slot by
-        // hand to stand in for a barrier. The element field is private
-        // now and that write does not compile, so what is left to check is
-        // the store the table really performs — and the link it has to
-        // carry through, which the earlier shape could not see at all.
+        // The store the table really performs, and the link it has to
+        // carry through: the element field is private, so a whole `Value`
+        // written into the slot by hand does not compile.
         let link_before = m.entry(3).link();
         unsafe { Entry::store_element(m.entries().add(3), Value::int(0xDEAD)) };
         assert!(

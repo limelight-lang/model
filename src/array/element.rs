@@ -371,6 +371,10 @@ pub unsafe fn make_ref(
 /// write to this array: a later `unset` or overwrite gives the table's
 /// reference back and can be the entity's last.
 ///
+/// `key` is canonical (`canonical_key`), as at every other operation
+/// here: a numeric string that skipped it misses the integer key its
+/// spelling denotes.
+///
 /// # Safety
 /// `slot` a live slot holding a live array.
 pub unsafe fn get(slot: *const Value, key: Key) -> Option<Value> {
@@ -532,12 +536,9 @@ unsafe fn store_through_box(
 /// published into it.
 ///
 /// **A reference into an element is a `ReferenceBox`, never a pointer to
-/// the slot.** The other form `values.md` offers — an owner plus a slot
-/// pointer — is for slots that never move, and an element moves whenever
-/// growth or compaction reallocates the storage: `$r = &$a['x']` followed
-/// by enough inserts to grow would leave `$r` pointing into freed
-/// storage. Boxing means growth moves sixteen bytes containing a pointer,
-/// and the box stays put.
+/// the slot** (`dev/DECISIONS.md`, 2026-08-06): an element moves whenever
+/// growth or compaction reallocates the storage, and boxing means growth
+/// moves sixteen bytes containing a pointer while the box stays put.
 ///
 /// **The box is a heap entity even when the array is an arena one**
 /// ([`crate::reference::ll_reference_new`]), so boxing an element of an
