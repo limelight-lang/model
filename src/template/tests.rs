@@ -25,9 +25,9 @@ fn shape_of(parts: &[&str]) -> Box<TemplateShape> {
 
 /// Parts and values alternate, part first and part last, which is
 /// what lets an empty part be ordinary and needs no offset map. An
-/// integer and `true` convert as PHP converts them; `false` and null
-/// measure at zero, which is what keeps them out of the refusal a
-/// float and an object take.
+/// integer and `true` convert as PHP converts them, and `false` and
+/// null render as empty text rather than being refused the way a float
+/// and an object are.
 mod what_flattening_produces {
     use super::*;
 

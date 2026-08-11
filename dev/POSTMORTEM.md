@@ -38,6 +38,46 @@ finding runs the other way too — a group doc that cannot be written from
 the assertions has found a test whose instrument does not measure its
 claim, which is worth more than the doc. Nine such tests are S12.
 
+## 2026-08-11 — a probe shows the assertion fires, not what it covers
+
+**What happened.** S12.6 wrote six tests over production arms the suite
+had never entered, and each was seen failing under a probe of the code it
+guards before it was committed. The Critic then found two of the six
+measuring less than their names claim, and both defects survive the probe
+that was run. `a_refused_destructor_record_fails_the_construction` spends
+the arena's block, drains the thread reserve and forces the pool, then
+asserts only that `object_constructed` answers false; a
+`track_destructor` returning false on `Arena::remaining()` passes it and
+the other 424 tests, while refusing every destructor-carrying
+construction in the last four kilobytes of every block.
+`escape_log_survives_segment_growth` counts the records the drain
+delivers, and growing the chain one record late — `count ==
+LOG_SEG_RECORDS` written as `>` — writes at index 500 of a `[usize; 500]`
+and reads that same value straight back, so all 1137 records arrive
+exactly once over a clobbered entity header.
+
+**Why it was not caught.** A probe answers one question: does this
+assertion fire when the arm I aimed at breaks. It says nothing about the
+arms nobody aimed at, and the probe is chosen by the same reading of the
+code that wrote the assertion, so the two share a blind spot. The first
+test's probe removed `object_constructed`'s `return false`, which is the
+propagation rather than the cause; the second's dropped the chain link,
+which a count does see.
+
+**The rule.** A refusal establishes several conditions at once, so the
+test repeats the call with only the forced condition lifted and asserts
+that it succeeds: that assertion, and no other, names which condition
+caused the refusal. And a boundary inside a container is read from the
+container's own shape, never from a count of what came out of it — the
+count is built from what the test supplied, so it measures the round trip
+and not the container.
+
+**What changed so it cannot repeat.** Both tests carry the second
+instrument, and both were probed again with the defects above: each is
+then the only failing test in the suite. `force-oom-names-one-allocator`
+in memory carries the positive-control half, since `FORCE_OOM` is where
+this crate forces refusals.
+
 ## 2026-08-11 — the guard checked a different limit from the call below it
 
 **What happened.** `stdapi::ll_alloc_large` guarded its OS-direct branch

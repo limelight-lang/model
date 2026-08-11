@@ -742,8 +742,9 @@ mod the_out_of_line_layout {
 /// semantics an inline one has, so a second holder forces a copy and
 /// that copy reaches the size-choosing factory rather than the inline
 /// one. The arena's limit is a whole block payload rather than a size
-/// class. The other two categories answer otherwise past that same
-/// limit, each for its own reason: a long-lived string is refused
+/// class, while the long-lived heap shares the GC heap's. The other two
+/// categories answer otherwise past their own limit, each for its own
+/// reason: a long-lived string is refused
 /// outright, nothing there being able to free a payload, and an
 /// immortal one keeps the inline layout in a run of its own
 /// (`string::placement`).

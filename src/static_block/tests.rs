@@ -136,9 +136,8 @@ mod what_the_exit_pass_gives_back {
     /// **The cell outlives the thread, and that is the instrument.**
     /// Killed inside the thread it clears `HAS_WEAK_REFERENCES` on its
     /// way out, so the target's death notifies nothing and the
-    /// ordering this test exists for cannot fail — which is how it
-    /// stood until S12.3. Read after the join, the cell answers null
-    /// or the notification never ran.
+    /// ordering this test exists for cannot fail. Read after the join,
+    /// the cell answers null or the notification never ran.
     #[test]
     fn a_weak_referenced_object_held_by_a_static_notifies_at_thread_exit() {
         let _g = crate::memory::block_pool::test_guard();

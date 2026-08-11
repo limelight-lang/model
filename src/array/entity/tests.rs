@@ -926,9 +926,8 @@ mod nesting_worked_through_a_list {
 
     /// The deep copy's two halves, together because the pair is the
     /// measurement: the depth runs on a thread the spawn sizes, and the
-    /// body that builds it is a function of its own, so a copy of either
-    /// number in the other place drifts silently — which is how the
-    /// depth came to be written twice.
+    /// body that builds it is a function of its own, so a second copy of
+    /// either number would drift from this one silently.
     const DEEP_COPY_DEPTH: usize = 800;
     const DEEP_COPY_STACK: usize = 64 * 1024;
 
@@ -940,8 +939,9 @@ mod nesting_worked_through_a_list {
     /// **On a stack that cannot hold the alternative**, which is what
     /// makes the depth mean anything: 64 KiB against 800 levels leaves
     /// 82 bytes a level, and the smallest frame set here is far above
-    /// that. Until S12.5 this ran 200 levels on the ordinary 8 MiB
-    /// stack, where a recursive copy would have passed too.
+    /// that. The ordinary 8 MiB stack holds a recursive copy at this
+    /// depth, so the small stack is what makes the depth mean anything
+    /// rather than the depth itself.
     ///
     /// Unlike the teardown below it, the bound is arithmetic rather than
     /// exhibited: a teardown has no channel to refuse through, so

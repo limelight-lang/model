@@ -230,10 +230,11 @@ mod the_ordered_hash_itself {
         let _g = crate::memory::block_pool::test_guard();
         let mut m = t();
 
-        // Three keys one table width apart share slot 0, a fresh table
-        // indexing an integer key by its value. The stride is what
-        // builds a chain at all: a dense set puts every key in a slot
-        // of its own, and a removal there repairs nothing.
+        // Three keys a multiple of the table's sixteen slots apart share
+        // slot 0, a fresh table indexing an integer key by its value.
+        // The stride is what builds a chain at all: a dense set puts
+        // every key in a slot of its own, and a removal there repairs
+        // nothing.
         let stride = 1024i64;
         for i in 0..3i64 {
             m.insert(Key::Int(i * stride), Value::int(i));
@@ -257,9 +258,10 @@ mod the_ordered_hash_itself {
             assert_eq!(m.get(Key::Int(i * stride)).unwrap().as_int(), i);
         }
 
-        // The same over a dense set, where every removal empties its own
-        // slot: a lookup on an emptied table is one slot read, with no
-        // marker to step over.
+        // The same over a dense set, kept as a sweep and not as the
+        // instrument: every key there is alone in its slot, so every
+        // removal takes the head-of-chain arm and a tombstoning table
+        // satisfies these assertions too.
         let mut dense = t();
         for i in 0..64i64 {
             dense.insert(Key::Int(i), Value::int(i));
