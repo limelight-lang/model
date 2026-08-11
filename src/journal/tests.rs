@@ -363,9 +363,9 @@ mod the_answer_a_window_may_not_invent {
 /// bounded at `RETIRED_KEPT`, dropping the oldest. A record arriving
 /// after the exit finds the cell closed rather than opening a second
 /// ring under the same identity, while `ll_thread_init` reopens it
-/// for a pool thread's next life. An evicted ring is freed by a
-/// thread that is not on its way out, a dying one's parked backlog
-/// being gone by then.
+/// for a pool thread's next life. The eviction itself frees no ring:
+/// it waits for a live thread to take one, and an investigator
+/// taking a mark is such a thread.
 mod a_ring_across_a_threads_life {
     use super::*;
 

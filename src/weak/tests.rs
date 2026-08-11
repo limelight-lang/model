@@ -162,7 +162,8 @@ mod the_cell_and_the_table_behind_it {
 /// later reader sees null, which places the notification at the
 /// first act of phase 2. A cyclic death nulls the cell before any
 /// destructor runs, and each collector reaches that site by a route
-/// of its own; a resurrection puts the state back.
+/// of its own; a resurrection never reaches the site at all, since
+/// `dispose` reports the resurrection above it.
 mod when_the_notification_arrives {
     use super::*;
 
@@ -451,7 +452,9 @@ mod a_cell_that_dies_before_its_target {
 
 /// The reset is a death for everything it does not promote, so a
 /// cell naming an unpromoted target reads null afterwards, while a
-/// survivor keeps its weak state at its new address.
+/// survivor keeps its weak state and its address: promotion rewrites
+/// the category in place, which is why the cell goes on resolving
+/// through the same pointer.
 mod across_the_arena_reset {
     use super::*;
 

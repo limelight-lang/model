@@ -32,8 +32,8 @@ unsafe fn free_static_block(p: *mut u8, layout: *const Class) {
 /// A static block holds ordinary references, so the pass releases
 /// what each slot holds: a heap object takes its last release here,
 /// an arena escapee loses the hold-count the escape barrier put on
-/// it, and a death a weak cell names reaches the weak table, which
-/// is why that table is disposed of last.
+/// it, and a target whose weak cell has already died dies at exit
+/// like any other.
 mod what_the_exit_pass_gives_back {
     use super::*;
 

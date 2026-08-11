@@ -2,11 +2,11 @@ use super::*;
 use crate::memory::block_pool::BLOCK_PAYLOAD;
 use std::sync::atomic::Ordering;
 
-/// A request picks a size class, comes back aligned and at least as
-/// large as asked, and returns to the free list of the block it came
-/// from. A size past the largest class is refused with null, and
-/// bulk-reserved cells are accounted live until they are handed
-/// back.
+/// A request picks a size class and comes back at that class's
+/// stride, so it is at least as large as asked, and it returns to the
+/// free list of the block it came from. A size past the largest class
+/// is refused with null, and bulk-reserved cells are accounted live
+/// until they are handed back.
 mod the_allocation_itself {
     use super::*;
 
@@ -101,10 +101,11 @@ mod the_allocation_itself {
 }
 
 /// The header's halves are split by access rule, `kind` at offset 0
-/// because the pool's own header shares that word. A block with one
-/// live slot is kept rather than returned and re-carved, which the
-/// larson run measured at ~140 ns/op against ~8, while a block
-/// emptied of everything goes home and a full one is replaced.
+/// because the pool's own header shares that word. A block is kept
+/// rather than returned and re-carved — with one live slot left in
+/// it, which the larson run measured at ~140 ns/op against ~8, and
+/// emptied of everything too, where it becomes the class's one
+/// bounded empty spare. A full block is replaced by a refill.
 mod the_block_under_the_slots {
     use super::*;
 

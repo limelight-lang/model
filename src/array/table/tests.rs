@@ -108,9 +108,9 @@ fn extend_one_chain(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LLString>
 
 /// Insertion order is the enumeration order, so an overwrite keeps a
 /// key's position while a delete and a reinsert put it at the end. A
-/// removal shortens the collision chain rather than leaving a
-/// marker, and a key that is not there is reported without
-/// disturbing the table.
+/// removed key stays removed and the table goes on answering for
+/// every other, and a removal of a key that was never there changes
+/// nothing.
 mod the_ordered_hash_itself {
     use super::*;
 
@@ -431,8 +431,8 @@ mod what_moves_the_entries {
 /// through the layout-agnostic accessor, so a key past what the heap
 /// packs in one slot is found too: the inline accessor would build a
 /// slice over the entity and compare the payload pointer instead of
-/// the bytes. An integer key and a string key landing in one slot do
-/// not alias.
+/// the bytes. `7` and `"7"` are two keys, told apart by the entry's
+/// key kind rather than by where they land.
 mod keys_that_are_strings {
     use super::*;
 
@@ -785,7 +785,8 @@ mod the_flood_ladder {
 /// marker lives in the key word rather than in the element: a store
 /// barrier writes all sixteen bytes of a `Value`, so a marker inside
 /// one would be erased and the tracer would then walk a dead
-/// element. A string key is a counted child like an element.
+/// element. A string key is enumerated beside the elements; whether
+/// it is counted is `array::entity`'s to measure.
 mod what_a_walker_is_shown {
     use super::*;
 

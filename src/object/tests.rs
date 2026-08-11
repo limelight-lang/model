@@ -280,9 +280,10 @@ mod what_the_factory_stamps {
 }
 
 /// The completed user constructor registers the record, not the
-/// factory: an object whose `__construct` threw, or whose record the
-/// arena refused, is in no destructor log and runs no `__destruct`
-/// at the reset.
+/// factory: an object that never got past the factory is in no
+/// destructor log and runs no `__destruct` at the reset. A refused
+/// record fails the construction for the same reason and is the
+/// code's second way into that state, unexercised here.
 mod who_owes_the_destructor {
     use super::*;
 

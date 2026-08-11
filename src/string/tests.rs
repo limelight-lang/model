@@ -5,8 +5,10 @@ use crate::refcount::{ENTITY_KIND_MASK, ll_release};
 /// One allocation holds the header, `len` at +8, `hash` at +16 and
 /// the bytes past the fixed fields, so the allocation is sized for
 /// the content and the copy has to land there. A heap string dies by
-/// its refcount while an arena one is left to the reset, and either
-/// is a leaf to the walker: a payload of bytes closes no ring.
+/// its refcount and is walked as a leaf, a payload of bytes closing
+/// no ring; an arena one is left to the reset and reaches no walk at
+/// all, the enumerators skipping every block kind but the entity
+/// heap's.
 mod the_inline_layout {
     use super::*;
 
@@ -141,8 +143,8 @@ mod the_inline_layout {
 /// hashed before publication instead — two threads would race to
 /// fill it. The hash is a function of the content alone, so both
 /// layouts holding the same bytes answer alike, the empty string
-/// included, and a copy starts unhashed: the write separation exists
-/// for is about to invalidate it.
+/// included, and a copy starts unhashed: the write that separation
+/// exists to serve is about to invalidate it.
 mod the_cached_hash {
     use super::*;
 
@@ -746,12 +748,16 @@ mod the_out_of_line_layout {
     }
 }
 
-/// Content past what the category packs in one slot goes out of line
-/// and keeps `COW`, the layout being a bit of its own: a string
-/// dynamic by size has the semantics an inline one has, so a second
-/// holder forces a copy and that copy reaches the size-choosing
-/// factory rather than the inline one. The arena's limit is a whole
-/// block payload rather than a size class.
+/// In the GC heap and the request arena, content past what the
+/// category packs in one slot goes out of line and keeps `COW`, the
+/// layout being a bit of its own: a string dynamic by size has the
+/// semantics an inline one has, so a second holder forces a copy and
+/// that copy reaches the size-choosing factory rather than the inline
+/// one. The arena's limit is a whole block payload rather than a size
+/// class. The other two categories answer otherwise and no test here
+/// asks them: past the same limit a long-lived string is refused
+/// outright and an immortal one keeps the inline layout in a run of
+/// its own (`string::placement`).
 mod the_layout_size_chooses {
     use super::*;
 

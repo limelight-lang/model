@@ -408,12 +408,14 @@ mod the_candidate_buffer {
 }
 
 /// Crossing the threshold arms a collection and never runs one
-/// inline, because the crossing happens inside a release or inside a
-/// teardown's child releases, where the dying object sits at
-/// refcount zero and is still a buffered root: a collection there
-/// computes it garbage and frees it under its own teardown. A fire
-/// point reached from inside a destructor therefore collects nothing
-/// and leaves the work for the next clean one.
+/// inline, and each of the two crossing sites has a hazard of its
+/// own. Inside `ll_release` the mutation is half-done, so a
+/// collection there judges a graph nobody has finished writing.
+/// Inside a teardown's child releases the dying object sits at
+/// refcount zero and is still a buffered root, so a collection there
+/// computes it garbage and frees it under its own teardown — which
+/// is why a fire point reached from inside a destructor collects
+/// nothing and leaves the work for the next clean one.
 mod where_a_collection_may_fire {
     use super::*;
 

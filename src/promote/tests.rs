@@ -213,8 +213,9 @@ mod who_survives_a_reset {
         unsafe {
             assert_eq!((*b).rc.memory_category(), MemoryCategory::GcHeap);
             assert_eq!((*b).rc.refcount, 1, "deduplicated: one slot, one count");
-            // `a` was conservatively marked but is unreferenced: floating
-            // garbage of this reset, never a dangling pointer.
+            // `a` is not a survivor at all: the second store spent its
+            // escape count, and the fixpoint skips a log entry whose
+            // `IS_ESCAPEE` is already clear. It dies with the arena.
         }
     }
 
@@ -694,9 +695,9 @@ mod the_memory_a_survivor_takes_with_it {
 /// Destructors run inside the settling loop, so the graph moves
 /// under it: a store into an already-traced survivor is arena to
 /// arena and escapes nothing, which is why the reset watches the
-/// bump cursor and re-reads the survivors' children; an escape
-/// created there survives although its holder is already
-/// destructed; and a release log grown during its own drain is
+/// bump cursor and re-reads the survivors' children; an escapee
+/// created there survives although it has already run its own
+/// `__destruct`; and a release log grown during its own drain is
 /// drained again. A COW survivor's count stays readable throughout
 /// and is settled once at the end, from the edges that remain plus
 /// the holders acquired after promotion.

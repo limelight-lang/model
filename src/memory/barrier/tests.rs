@@ -38,9 +38,13 @@ impl Holder {
     }
 }
 
-/// A store publishes the new value and then gives back what it
-/// displaced, in a `Value` slot and in a bare pointer slot alike; a
-/// null store clears the slot and releases the old value once.
+/// A store publishes the new value and reports whether it did.
+/// Giving back what it displaced is the caller's second call,
+/// `drop_ref`, and only on a report of `true`; a `Value` slot and a
+/// bare pointer slot compose the same way. A null store clears the
+/// slot, and with an arena owner the displaced heap value's release
+/// belongs to the reset log rather than to the store — exactly one
+/// release either way.
 mod the_ordinary_store {
     use super::*;
 

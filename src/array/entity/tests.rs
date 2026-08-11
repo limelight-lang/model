@@ -911,9 +911,11 @@ mod what_a_death_gives_back {
 }
 
 /// Depth is the caller's input, so neither the copy nor the teardown
-/// recurses: both drain a list held in a buffer-arena chunk, one
-/// frame per call rather than a frame set per level, which the guard
-/// page would end with no unwinding and no record. A list that
+/// recurses: both drain a list held in a buffer-arena chunk. The
+/// frame cost is measured on the teardown alone, at 2 000 levels
+/// against a 64 KiB stack, where a frame set per level ends on the
+/// guard page with no unwinding and no record; the copy's test walks
+/// 200 levels and pins that every level left the arena. A list that
 /// cannot grow drops each child it could not take onto the recursive
 /// path, keeping the outcome and losing only the bound.
 mod nesting_worked_through_a_list {

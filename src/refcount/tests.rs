@@ -12,8 +12,9 @@ fn release(header: &mut RcHeader) -> bool {
 /// heap entity counts and reports its death, an arena one is freed
 /// by the reset instead, an immortal one is never touched, and a COW
 /// entity counts in the arena too, the count being what separates
-/// its copies. At the ceiling the counter stops, which trades a leak
-/// for the free of an entity somebody still holds.
+/// its copies. At the ceiling the counter stops moving, which
+/// accepts a leak rather than the free of an entity somebody still
+/// holds.
 mod what_the_category_decides {
     use super::*;
 

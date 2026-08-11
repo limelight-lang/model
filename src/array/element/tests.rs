@@ -218,7 +218,7 @@ unsafe fn get_element(slot: *const Value) -> Option<Value> {
 
 /// `canonical_key` turns the numeric strings PHP means as integers
 /// into integer keys and leaves every other spelling a string key —
-/// a leading zero, a plus sign, surrounding space, a value past what
+/// a leading zero, a plus sign, a leading space, a value past what
 /// `i64` holds.
 mod the_key_a_spelling_means {
     use super::*;
@@ -302,10 +302,11 @@ mod the_key_a_spelling_means {
 
 /// Every write separates a shared array before it touches anything,
 /// so a second holder sees none of it, and then publishes the copy,
-/// spends its creation reference and drops the displaced original in
-/// that order. An exclusively owned array is written in place and
-/// hands the displaced element back, and an arena holder's copy
-/// stays in the arena, counting no escape and logging no release.
+/// spends its creation reference and drops the displaced original.
+/// The order of those last two is `write_through`'s and is argued
+/// there; what these tests read is the end state. An exclusively
+/// owned array is written in place and hands the displaced element
+/// back, and an arena holder's copy is an arena array too.
 mod the_writes_and_the_separation_they_share {
     use super::*;
 
@@ -801,10 +802,12 @@ mod the_writes_and_the_separation_they_share {
     }
 }
 
-/// Four allocations on a write can be refused — the separation's
+/// Four allocations on a write can be refused: the separation's
 /// copy, the table's growth, the escape copy of a value crossing
-/// into a longer-lived array, and the box — and each reports `false`
-/// with every array reading as it did before the call. A copy
+/// into a longer-lived array, and the box. Each reports its refusal
+/// with every array reading as it did before the call — `false` from
+/// the three writes, and a null box from `make_ref`, whose result is
+/// a pointer. A copy
 /// destroyed mid-write gives its children back at once rather than
 /// waiting for `ll_release`'s verdict, which on an arena copy never
 /// reports a death.

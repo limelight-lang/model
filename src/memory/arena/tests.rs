@@ -80,9 +80,10 @@ mod the_bump_over_pooled_blocks {
     }
 }
 
-/// A refusal is null on every door and leaves the arena serving.
-/// The rounding saturates instead of wrapping, so a size no block
-/// can hold fails the bound rather than becoming a small one.
+/// An allocation refuses with null and an in-place extension with
+/// `false`, and either leaves the arena serving. The rounding
+/// saturates instead of wrapping, so a size no block can hold fails
+/// the bound rather than becoming a small one.
 mod what_the_arena_refuses {
     use super::*;
 
@@ -145,11 +146,14 @@ mod what_the_arena_refuses {
     }
 }
 
-/// The escape log and the destructor log are segmented, so a record
-/// may not be lost at a segment boundary. The barrier's log grows
-/// from the thread reserve when the pool refuses, because the
-/// barrier has no way to report a failure.
-mod the_two_logs_the_reset_reads {
+/// The destructor log is segmented, so a record may not be lost at a
+/// segment boundary — which is what the growth test walks past; the
+/// escape log is chained the same way and no test here reaches its
+/// boundary. The barrier's log grows from the thread reserve when the
+/// pool refuses, because the barrier has no way to report a failure.
+/// The reset drains three more logs beside these two: the
+/// release-at-reset log, the weak log, and the large runs.
+mod the_logs_the_reset_reads {
     use super::*;
 
     /// The barrier has no way to report a failure, so its log growth must

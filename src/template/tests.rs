@@ -24,13 +24,14 @@ fn shape_of(parts: &[&str]) -> Box<TemplateShape> {
 }
 
 /// Parts and values alternate, part first and part last, which is
-/// what lets an empty part be ordinary and needs no offset map. Each
-/// PHP constant converts as PHP converts it.
+/// what lets an empty part be ordinary and needs no offset map. An
+/// integer and `true` convert as PHP converts them; `false` and null
+/// are empty text and no test here flattens either.
 mod what_flattening_produces {
     use super::*;
 
-    /// Parts and values alternate, part first and part last, and the
-    /// three PHP constants convert as PHP converts them.
+    /// Parts and values alternate, part first and part last, and an
+    /// integer and `true` convert as PHP converts them.
     #[test]
     fn flattening_alternates_parts_and_values() {
         let _g = crate::memory::block_pool::test_guard();
