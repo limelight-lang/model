@@ -316,16 +316,8 @@ mod the_memory_a_survivor_takes_with_it {
         let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
 
         let storage_before = unsafe {
-            (*array).storage.as_table_mut().insert(
-                crate::array::entity::category_of(array),
-                Key::Int(1),
-                Value::int(11),
-            );
-            (*array).storage.as_table_mut().insert(
-                crate::array::entity::category_of(array),
-                Key::Int(2),
-                Value::int(22),
-            );
+            crate::array::testing::insert(array, Key::Int(1), Value::int(11));
+            crate::array::testing::insert(array, Key::Int(2), Value::int(22));
             crate::array::entity::storage_address(array)
         };
 
@@ -365,20 +357,14 @@ mod the_memory_a_survivor_takes_with_it {
                 "the storage is still arena memory the reset gave back"
             );
             assert_eq!(
-                (*array)
-                    .storage
-                    .as_table()
-                    .get(Key::Int(1))
+                crate::array::testing::get(array, Key::Int(1))
                     .unwrap()
                     .as_int(),
                 11,
                 "the carried storage lost its entries"
             );
             assert_eq!(
-                (*array)
-                    .storage
-                    .as_table()
-                    .get(Key::Int(2))
+                crate::array::testing::get(array, Key::Int(2))
                     .unwrap()
                     .as_int(),
                 22
@@ -415,18 +401,14 @@ mod the_memory_a_survivor_takes_with_it {
 
         let storage_before = unsafe {
             for i in 0..1100i64 {
-                (*array).storage.as_table_mut().insert(
-                    crate::array::entity::category_of(array),
-                    Key::Int(i),
-                    Value::int(i),
-                );
+                crate::array::testing::insert(array, Key::Int(i), Value::int(i));
             }
 
             crate::array::entity::storage_address(array)
         };
 
         assert!(
-            unsafe { (*array).storage.as_table().storage_and_capacity().1 } > BLOCK_PAYLOAD,
+            unsafe { crate::array::testing::storage_and_capacity(array).1 } > BLOCK_PAYLOAD,
             "the table never grew past one block, so this proves nothing"
         );
 
@@ -453,10 +435,7 @@ mod the_memory_a_survivor_takes_with_it {
             );
             for i in 0..1100i64 {
                 assert_eq!(
-                    (*array)
-                        .storage
-                        .as_table()
-                        .get(Key::Int(i))
+                    crate::array::testing::get(array, Key::Int(i))
                         .unwrap()
                         .as_int(),
                     i
@@ -505,11 +484,7 @@ mod the_memory_a_survivor_takes_with_it {
         let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
 
         let storage_before = unsafe {
-            (*array).storage.as_table_mut().insert(
-                crate::array::entity::category_of(array),
-                Key::Int(1),
-                Value::int(11),
-            );
+            crate::array::testing::insert(array, Key::Int(1), Value::int(11));
             crate::array::entity::storage_address(array)
         };
 

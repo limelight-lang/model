@@ -111,15 +111,19 @@ versions live in `docs/history/`, marked at the top.
 - Arrays: `src/array/` — storage strategies 2 and 3 of
   `rfc/model/arrays.md`: the mixed vector (`vector.rs`) and the ordered
   hash designed in `rfc/model/arrays-hashtable.md`. **What a concurrent
-  walker may read is `head.rs`**, a `StorageHead` both representations
-  begin with, holding the version bracket, the chunk, the two counts and
-  the strategy tag — above the representations rather than inside one,
-  because the 2 → 3 migration replaces the representation under a walker
-  mid-stride (`dev/DECISIONS.md`, 2026-08-11). `entity::Storage` is the
-  union they live in and `entity::storage_head` reaches the head through
-  the union's own address; the tag is stamped in one place,
-  `entity::new_with_storage`, and the walker, the sever and the dispose
-  dispatch on it. A vector keys on the position, so it stores no key, has
+  walker may read is `head.rs`**, a `StorageHead` holding the version
+  bracket, the chunk, the two counts and the strategy tag. It is a
+  **field of the entity**, `LLArray { rc, head, storage }`, for two
+  reasons: the 2 → 3 migration replaces the representation under a walker
+  mid-stride, and a mutating operation is reached through `&mut
+  (*a).storage`, which would otherwise assert uniqueness over the very
+  words the walker reads (`dev/DECISIONS.md`, 2026-08-11, twice — the
+  second entry overturns the first's placement). So every table and
+  vector operation over those words takes `head: &StorageHead` as a
+  parameter, and `entity::as_table_mut` is the one place the disjoint
+  pair is derived. `entity::Storage` is the union of the two private
+  tails; the tag is stamped in one place, `entity::new_with_storage`,
+  and the walker, the sever and the dispose dispatch on it. A vector keys on the position, so it stores no key, has
   no index, no holes and none of the hash's flood defences. One storage
   allocation holds `u32` index slots followed by a dense insertion-ordered
   array of 32-byte entries (`entry.rs`): `hash_or_key`, `key`, and the

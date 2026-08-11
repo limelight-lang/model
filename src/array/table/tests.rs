@@ -15,52 +15,117 @@ fn ctx() -> *mut LLContext {
 /// reads as if it held one.
 struct Owned(*mut crate::array::entity::LLArray);
 
-/// The operations that need the category, wrapped so that a test
-/// writes them as if the table answered for itself. It cannot: the
+/// The operations that need the category or the head, wrapped so that a
+/// test writes them as if the table answered for itself. It cannot,
+/// and for two reasons that both come from outside the table: the
 /// category is read from the array through
 /// `array::entity::category_of`, and a reference to the body carries
 /// provenance over the body alone, so the entity pointer has to
-/// arrive from outside.
+/// arrive from outside; and the words a walker reads live in the
+/// entity's head, which every operation over them takes as a
+/// parameter (`array::head`). Supplying both here is what keeps a
+/// test about the ordered hash from being a test about how to reach
+/// one.
 impl Owned {
     fn category(&self) -> MemoryCategory {
         unsafe { crate::array::entity::category_of(self.0) }
     }
 
+    fn head(&self) -> &StorageHead {
+        unsafe { &(*self.0).head }
+    }
+
     fn insert(&mut self, key: Key, value: Value) -> Option<(bool, Option<Value>)> {
         let category = self.category();
-        unsafe {
-            (*self.0)
-                .storage
-                .as_table_mut()
-                .insert(category, key, value)
-        }
+        let (table, head) = unsafe { crate::array::entity::as_table_mut(self.0) };
+        table.insert(head, category, key, value)
+    }
+
+    fn get(&self, key: Key) -> Option<Value> {
+        let (table, head) = unsafe { crate::array::entity::as_table(self.0) };
+        table.get(head, key)
+    }
+
+    fn contains(&self, key: Key) -> bool {
+        let (table, head) = unsafe { crate::array::entity::as_table(self.0) };
+        table.contains(head, key)
+    }
+
+    #[must_use = "the pair carries the table's key reference; dropping it leaks the key"]
+    fn remove(&mut self, key: Key) -> Option<(Value, *mut LLString)> {
+        let (table, head) = unsafe { crate::array::entity::as_table_mut(self.0) };
+        table.remove(head, key)
+    }
+
+    fn compact(&mut self) -> usize {
+        let (table, head) = unsafe { crate::array::entity::as_table_mut(self.0) };
+        table.compact(head)
+    }
+
+    fn entry(&self, i: usize) -> &Entry {
+        let (table, head) = unsafe { crate::array::entity::as_table(self.0) };
+        table.entry(head, i)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Entry> {
+        let (table, head) = unsafe { crate::array::entity::as_table(self.0) };
+        table.iter(head)
+    }
+
+    fn for_each_value(&self, f: impl FnMut(Value)) {
+        let (table, head) = unsafe { crate::array::entity::as_table(self.0) };
+        table.for_each_value(head, f);
+    }
+
+    fn for_each_string_key(&self, f: impl FnMut(*mut LLString)) {
+        let (table, head) = unsafe { crate::array::entity::as_table(self.0) };
+        table.for_each_string_key(head, f);
+    }
+
+    fn used(&self) -> usize {
+        self.head().used()
+    }
+
+    fn nslots(&self) -> usize {
+        self.head().nslots()
+    }
+
+    fn storage(&self) -> *mut u8 {
+        self.head().storage()
+    }
+
+    fn version(&self) -> usize {
+        self.head().version()
+    }
+
+    fn slots(&self) -> *mut u32 {
+        Table::slots(self.head())
+    }
+
+    fn entries(&self) -> *mut Entry {
+        Table::entries(self.head())
     }
 
     fn dispose(&mut self) {
         let category = self.category();
-        unsafe { (*self.0).storage.dispose(category) };
+        unsafe { crate::array::entity::dispose_storage(self.0, category) };
     }
 }
 
 impl std::ops::Deref for Owned {
     type Target = Table;
     fn deref(&self) -> &Table {
-        unsafe { (*self.0).storage.as_table() }
-    }
-}
-
-impl std::ops::DerefMut for Owned {
-    fn deref_mut(&mut self) -> &mut Table {
-        unsafe { (*self.0).storage.as_table_mut() }
+        unsafe { crate::array::entity::as_table(self.0).0 }
     }
 }
 
 impl Drop for Owned {
     fn drop(&mut self) {
         unsafe {
-            (*self.0)
-                .storage
-                .dispose(crate::array::entity::category_of(self.0));
+            crate::array::entity::dispose_storage(
+                self.0,
+                crate::array::entity::category_of(self.0),
+            );
             // The entity's own slot, by hand rather than through
             // `ll_entity_die`: these tests own the children and give
             // them back themselves, and teardown would release them a
@@ -1064,9 +1129,10 @@ mod where_the_storage_comes_from {
         // An arena array, because an arena table's storage is routed by
         // the header in front of it like every other table's.
         let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena) };
-        let m = unsafe { (*a).storage.as_table_mut() };
+        let (m, head) = unsafe { crate::array::entity::as_table_mut(a) };
         for i in 0..1100i64 {
             m.insert(
+                head,
                 unsafe { crate::array::entity::category_of(a) },
                 Key::Int(i),
                 Value::int(i),
@@ -1078,10 +1144,10 @@ mod where_the_storage_comes_from {
             "the table never grew past one block, so this proves nothing"
         );
         for i in 0..1100i64 {
-            assert_eq!(m.get(Key::Int(i)).unwrap().as_int(), i);
+            assert_eq!(m.get(head, Key::Int(i)).unwrap().as_int(), i);
         }
 
-        m.dispose(unsafe { crate::array::entity::category_of(a) });
+        m.dispose(head, unsafe { crate::array::entity::category_of(a) });
         set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -1119,9 +1185,10 @@ mod where_the_storage_comes_from {
         std::thread::spawn(move || {
             let carried = carried;
             unsafe {
-                (*carried.0)
-                    .storage
-                    .dispose(crate::array::entity::category_of(carried.0));
+                crate::array::entity::dispose_storage(
+                    carried.0,
+                    crate::array::entity::category_of(carried.0),
+                );
                 (*carried.0).rc.refcount = 0;
                 crate::memory::stdapi::ll_free(carried.0 as *mut u8);
             }
@@ -1165,9 +1232,10 @@ mod where_the_storage_comes_from {
         set_current_context(context_ptr);
 
         let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena) };
-        let m = unsafe { (*a).storage.as_table_mut() };
+        let (m, head) = unsafe { crate::array::entity::as_table_mut(a) };
         for i in 0..8i64 {
             m.insert(
+                head,
                 unsafe { crate::array::entity::category_of(a) },
                 Key::Int(i),
                 Value::int(i),
@@ -1180,7 +1248,8 @@ mod where_the_storage_comes_from {
         );
 
         FORCE_OOM.store(true, Ordering::Relaxed);
-        let carried = unsafe { m.carry_out_of(crate::array::entity::category_of(a), arena_ptr) };
+        let carried =
+            unsafe { m.carry_out_of(head, crate::array::entity::category_of(a), arena_ptr) };
         FORCE_OOM.store(false, Ordering::Relaxed);
         assert!(!carried, "the copy was meant to be refused and was not");
         assert_eq!(
@@ -1189,7 +1258,7 @@ mod where_the_storage_comes_from {
             "the carry decided a category of its own instead of leaving it to the header"
         );
         assert!(
-            !m.storage().is_null(),
+            !head.storage().is_null(),
             "a refused carry left the array without the storage it had"
         );
 

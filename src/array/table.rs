@@ -143,14 +143,18 @@ fn storage_bytes(nslots: usize, cap: usize) -> Option<usize> {
 /// comes from (`array::entity::category_of`, S10). Nothing here names an
 /// entity kind, which is what leaves the structure usable by a second
 /// one.
+///
+/// **This is the private tail, and the words a walker reads are not in
+/// it.** The chunk, the two counts, the tag and the version live in the
+/// entity's [`StorageHead`], which every method below that needs one
+/// takes as a parameter rather than storing — `category`'s precedent, and
+/// for a harder reason than drift: a `&mut Table` claims uniqueness over
+/// every byte inside it, so a head kept here would be read by the
+/// collector from inside the mutator's borrow (`crate::array::head`).
+/// Threading it also leaves this structure usable by a second owner,
+/// which is what `Map` needs.
 #[repr(C)]
 pub struct Table {
-    /// Every word a concurrent walker may read, and the bracket that
-    /// makes reading them coherent (`crate::array::head`). **First
-    /// field, and that placement is load-bearing**: the head sits at the
-    /// array's storage field whichever representation is present, which
-    /// is what lets one counter bracket the migration between them.
-    pub(crate) head: StorageHead,
     /// Bytes really granted for the storage, which is not always what was
     /// asked for: a reused buffer-arena chunk may be larger, and the free
     /// that returns it carries the size, since a chunk holds no metadata
@@ -185,10 +189,6 @@ pub struct Table {
     /// the head instead (`PLAN.md` S7.1, Sage 2026-08-11).
     flags: u8,
 }
-
-// The head is the array's storage field, so it has to start where the
-// representation starts.
-const _: () = assert!(std::mem::offset_of!(Table, head) == 0);
 
 /// A string key's slot comes from a keyed hash over its bytes rather
 /// than from the cached hash at +16. Set once and one way, by the flood
@@ -231,7 +231,6 @@ impl Table {
     /// 2026-08-07).
     pub const fn empty() -> Self {
         Table {
-            head: StorageHead::empty(StorageTag::Hash),
             storage_capacity: 0,
             mask: 0,
             cap: 0,
@@ -327,8 +326,8 @@ impl Table {
     /// hashed, so a table that adopts it afterwards has already indexed
     /// its entries the other way.
     #[inline]
-    pub(crate) fn adopt_flood_state(&mut self, source: &Table) {
-        debug_assert_eq!(self.used(), 0, "the mode decides how a key is indexed");
+    pub(crate) fn adopt_flood_state(&mut self, head: &StorageHead, source: &Table) {
+        debug_assert_eq!(head.used(), 0, "the mode decides how a key is indexed");
         debug_assert!(
             source.flags & TABLE_STRONG == 0 || source.flags & TABLE_RESEEDED != 0,
             "an escalated table always holds a drawn salt: escalate draws on the way"
@@ -347,49 +346,6 @@ impl Table {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.live == 0
-    }
-
-    /// Entries written so far, holes included — the bound the tracer and
-    /// iteration scan to.
-    #[inline]
-    pub fn used(&self) -> usize {
-        self.head.used()
-    }
-
-    /// Publish the entry count. **Called after the entry it counts is
-    /// written**, never before: a walker that saw the count first would
-    /// read an entry nobody had written.
-    #[inline]
-    fn set_used(&self, n: usize) {
-        self.head.set_used(n);
-    }
-
-    /// The storage chunk, or null before the first insert.
-    #[inline]
-    fn storage(&self) -> *mut u8 {
-        self.head.storage()
-    }
-
-    /// Publish the storage chunk. Release, so a walker that acquires this
-    /// pointer sees the entries already copied into it.
-    #[inline]
-    fn set_storage(&self, p: *mut u8) {
-        self.head.set_storage(p);
-    }
-
-    /// Open a window in which entries move — growth and compaction, the
-    /// two operations here that move them. The bracket itself, and why
-    /// its two ends are ordered differently, is
-    /// [`StorageHead::begin_move`].
-    #[inline]
-    fn begin_entry_move(&self) {
-        self.head.begin_move();
-    }
-
-    /// Close it.
-    #[inline]
-    fn end_entry_move(&self) {
-        self.head.end_move();
     }
 
     /// The dense entry array and how many entries it holds, taken from a
@@ -417,29 +373,6 @@ impl Table {
         )
     }
 
-    /// The version a walker validates its reading against.
-    ///
-    /// Tests only: [`StorageHead::coherent`] reads the counter itself,
-    /// from a raw pointer it must not turn into a reference, so this
-    /// accessor exists for the tests that assert the counter moves — and
-    /// outside them it is a dead read that warns.
-    #[cfg(test)]
-    #[inline]
-    pub(crate) fn version(&self) -> usize {
-        self.head.version()
-    }
-
-    /// Index slots before the dense entry array.
-    #[inline]
-    fn nslots(&self) -> usize {
-        self.head.nslots()
-    }
-
-    #[inline]
-    fn set_nslots(&self, n: usize) {
-        self.head.set_nslots(n);
-    }
-
     /// The storage and the bytes granted for it, or a null pointer when
     /// the table has never grown.
     ///
@@ -448,8 +381,8 @@ impl Table {
     /// over the storage is a method here — this hands out the address, not
     /// the right to walk it.
     #[inline]
-    pub(crate) fn storage_and_capacity(&self) -> (*mut u8, usize) {
-        (self.storage(), self.storage_capacity)
+    pub(crate) fn storage_and_capacity(&self, head: &StorageHead) -> (*mut u8, usize) {
+        (head.storage(), self.storage_capacity)
     }
 
     /// Carry this table's storage out of `arena`, which is about to
@@ -487,6 +420,7 @@ impl Table {
     /// is `RequestArena` until promotion rewrites the header.
     pub(crate) unsafe fn carry_out_of(
         &mut self,
+        head: &StorageHead,
         category: MemoryCategory,
         arena: *mut crate::memory::arena::Arena,
     ) -> bool {
@@ -495,7 +429,7 @@ impl Table {
             MemoryCategory::RequestArena,
             "only an arena table is carried out of a reset"
         );
-        if self.storage().is_null() {
+        if head.storage().is_null() {
             return true;
         }
 
@@ -506,7 +440,7 @@ impl Table {
             // leaks — the safe direction — while reporting a refusal would
             // send the caller into stamping `BLOCK_KIND_RETAINED` over the
             // run's own header.
-            let forgotten = unsafe { (*arena).forget_large(self.storage()) };
+            let forgotten = unsafe { (*arena).forget_large(head.storage()) };
             debug_assert!(forgotten, "an OS-direct storage the arena never logged");
             return true;
         }
@@ -528,27 +462,33 @@ impl Table {
             return false;
         }
 
-        unsafe { std::ptr::copy_nonoverlapping(self.storage(), fresh, self.storage_capacity) };
-        self.set_storage(fresh);
+        unsafe { std::ptr::copy_nonoverlapping(head.storage(), fresh, self.storage_capacity) };
+        head.set_storage(fresh);
         self.storage_capacity = granted;
         true
     }
 
+    /// The index region, which begins where the storage does.
+    ///
+    /// A free function rather than a method: everything it needs is in the
+    /// head, and a `&self` here would say the answer depends on the tail
+    /// when it does not.
     #[inline]
-    fn slots(&self) -> *mut u32 {
-        self.storage() as *mut u32
+    fn slots(head: &StorageHead) -> *mut u32 {
+        head.storage() as *mut u32
     }
 
+    /// The dense entry array, `nslots * 4` bytes into the storage.
     #[inline]
-    fn entries(&self) -> *mut Entry {
-        unsafe { self.storage().add(entries_offset(self.nslots())) as *mut Entry }
+    fn entries(head: &StorageHead) -> *mut Entry {
+        unsafe { head.storage().add(entries_offset(head.nslots())) as *mut Entry }
     }
 
     /// The entry at `i`. Callers hold `i < used`.
     #[inline]
-    pub fn entry(&self, i: usize) -> &Entry {
-        debug_assert!(i < self.used());
-        unsafe { &*self.entries().add(i) }
+    pub fn entry(&self, head: &StorageHead, i: usize) -> &Entry {
+        debug_assert!(i < head.used());
+        unsafe { &*Self::entries(head).add(i) }
     }
 
     /// A raw pointer to the entry at `i`, which is what every write to a
@@ -556,9 +496,9 @@ impl Table {
     /// stored atomically ([`Entry::store_element`]), and an atomic store
     /// needs a pointer rather than a reference to reach the bytes.
     #[inline]
-    fn entry_ptr(&self, i: usize) -> *mut Entry {
-        debug_assert!(i < self.used());
-        unsafe { self.entries().add(i) }
+    fn entry_ptr(head: &StorageHead, i: usize) -> *mut Entry {
+        debug_assert!(i < head.used());
+        unsafe { Self::entries(head).add(i) }
     }
 
     /// The value an index slot is derived from. **This is not what the
@@ -634,15 +574,15 @@ impl Table {
     /// (`array/entry.rs`). The copy also means a caller holds no borrow of
     /// the table, so a value read before a `remove` names an entity the
     /// caller must have its own reference to.
-    pub fn get(&self, key: Key) -> Option<Value> {
-        if self.storage().is_null() {
+    pub fn get(&self, head: &StorageHead, key: Key) -> Option<Value> {
+        if head.storage().is_null() {
             return None;
         }
 
         let sh = self.slot_hash(key);
-        let mut i = unsafe { *self.slots().add(sh as usize & self.mask) };
+        let mut i = unsafe { *Self::slots(head).add(sh as usize & self.mask) };
         while i != NONE {
-            let e = self.entry(i as usize);
+            let e = self.entry(head, i as usize);
             if Self::entry_matches(e, key) {
                 return Some(e.value());
             }
@@ -656,8 +596,8 @@ impl Table {
     /// Whether `key` is present. A full lookup: the answer costs what
     /// [`get`](Self::get) costs, the element copy included.
     #[inline]
-    pub fn contains(&self, key: Key) -> bool {
-        self.get(key).is_some()
+    pub fn contains(&self, head: &StorageHead, key: Key) -> bool {
+        self.get(head, key).is_some()
     }
 
     /// **The caller publishes its references before it inserts.** The
@@ -701,6 +641,7 @@ impl Table {
     /// not count it as stored.
     pub fn insert(
         &mut self,
+        head: &StorageHead,
         category: MemoryCategory,
         key: Key,
         value: Value,
@@ -716,22 +657,22 @@ impl Table {
             Key::Str(s) => unsafe { LLString::hash(s) },
         };
 
-        if !self.storage().is_null() {
-            let mut i = unsafe { *self.slots().add(sh as usize & self.mask) };
+        if !head.storage().is_null() {
+            let mut i = unsafe { *Self::slots(head).add(sh as usize & self.mask) };
             while i != NONE {
-                let matched = Self::entry_matches(self.entry(i as usize), key);
+                let matched = Self::entry_matches(self.entry(head, i as usize), key);
                 if matched {
                     // The element is published atomically and the chain
                     // link it carries is kept, which is what
                     // `Entry::store_element` exists for: the collector may
                     // be reading this very word.
-                    let old = self.entry(i as usize).value();
-                    unsafe { Entry::store_element(self.entry_ptr(i as usize), value) };
+                    let old = self.entry(head, i as usize).value();
+                    unsafe { Entry::store_element(Self::entry_ptr(head, i as usize), value) };
                     return Some((false, Some(old)));
                 }
 
                 chain_len += 1;
-                let e = self.entry(i as usize);
+                let e = self.entry(head, i as usize);
                 if !e.is_int_key() && e.hash_or_key == stored_hash {
                     equal_hashes += 1;
                 }
@@ -744,27 +685,27 @@ impl Table {
         // ownership, may allocate and may raise, while a lookup may do
         // none of those under a live iterator on a shared table.
         if equal_hashes >= EQUAL_HASH_LIMIT {
-            self.escalate();
+            self.escalate(head);
         } else if chain_len >= CHAIN_LIMIT {
-            self.reseed();
+            self.reseed(head);
         }
 
         let sh = self.slot_hash(key);
 
-        if self.used() == self.cap && !self.grow(category) {
+        if head.used() == self.cap && !self.grow(head, category) {
             return None;
         }
 
         let slot = sh as usize & self.mask;
-        let k = self.used();
-        let head = unsafe { *self.slots().add(slot) };
+        let k = head.used();
+        let chain = unsafe { *Self::slots(head).add(slot) };
         // **The entry is written before the count that admits it.** A
         // concurrent walker reads `used` to bound its stride, so a count
         // published first offers it an entry nobody has written yet. That
         // is also why this goes through the raw entry pointer rather than
         // `entry_ptr`, which asserts the index is already inside the count.
         unsafe {
-            let e = &mut *self.entries().add(k);
+            let e = &mut *Self::entries(head).add(k);
             match key {
                 Key::Int(v) => e.set_int_key(v),
                 // `stored_hash`, not `sh`: the entry holds the key's own
@@ -774,11 +715,11 @@ impl Table {
                 Key::Str(s) => e.set_string_key(s, stored_hash),
             }
 
-            Entry::store_element_and_link(&raw mut *e, value, head);
+            Entry::store_element_and_link(&raw mut *e, value, chain);
         }
 
-        self.set_used(k + 1);
-        unsafe { *self.slots().add(slot) = k as u32 };
+        head.set_used(k + 1);
+        unsafe { *Self::slots(head).add(slot) = k as u32 };
         self.live += 1;
         if let Key::Int(v) = key {
             self.note_int_key(v);
@@ -810,23 +751,23 @@ impl Table {
     /// hole before this returns, so neither release is observable
     /// through the table.
     #[must_use = "the pair carries the table's key reference; dropping it leaks the key"]
-    pub fn remove(&mut self, key: Key) -> Option<(Value, *mut LLString)> {
-        if self.storage().is_null() {
+    pub fn remove(&mut self, head: &StorageHead, key: Key) -> Option<(Value, *mut LLString)> {
+        if head.storage().is_null() {
             return None;
         }
 
         let sh = self.slot_hash(key);
         let slot = sh as usize & self.mask;
-        let mut i = unsafe { *self.slots().add(slot) };
+        let mut i = unsafe { *Self::slots(head).add(slot) };
         let mut prev = NONE;
         while i != NONE {
-            let matched = Self::entry_matches(self.entry(i as usize), key);
-            let next = self.entry(i as usize).link();
+            let matched = Self::entry_matches(self.entry(head, i as usize), key);
+            let next = self.entry(head, i as usize).link();
             if matched {
                 if prev == NONE {
-                    unsafe { *self.slots().add(slot) = next };
+                    unsafe { *Self::slots(head).add(slot) = next };
                 } else {
-                    unsafe { Entry::store_link(self.entry_ptr(prev as usize), next) };
+                    unsafe { Entry::store_link(Self::entry_ptr(head, prev as usize), next) };
                 }
 
                 // The element goes first and the marker second: an
@@ -834,9 +775,9 @@ impl Table {
                 // reads between the two sees a live key over a value it
                 // will not follow, which is a missed edge and not one that
                 // never existed.
-                let at = self.entry_ptr(i as usize);
-                let old = self.entry(i as usize).value();
-                let removed_key = self.entry(i as usize).string_key();
+                let at = Self::entry_ptr(head, i as usize);
+                let old = self.entry(head, i as usize).value();
+                let removed_key = self.entry(head, i as usize).string_key();
                 unsafe {
                     Entry::store_element_and_link(at, Value::undef(), NONE);
                     Entry::make_hole(at);
@@ -862,20 +803,20 @@ impl Table {
     /// positions has to repair them; that obligation belongs to the
     /// entity wrapper, and this returns whether a compaction happened so
     /// the wrapper can act on it.
-    fn grow(&mut self, category: MemoryCategory) -> bool {
-        if self.storage().is_null() {
-            return self.realloc_storage(category, 8);
+    fn grow(&mut self, head: &StorageHead, category: MemoryCategory) -> bool {
+        if head.storage().is_null() {
+            return self.realloc_storage(head, category, 8);
         }
 
         // Zend's rule: reclaim holes rather than doubling when they are
         // more than a thirty-second of the live count.
         if self.holes > self.live / 32 + 1 {
-            self.compact();
+            self.compact(head);
             return true;
         }
 
         match self.cap.checked_mul(2) {
-            Some(n) if n <= MAX_ENTRIES => self.realloc_storage(category, n),
+            Some(n) if n <= MAX_ENTRIES => self.realloc_storage(head, category, n),
             _ => false,
         }
     }
@@ -883,58 +824,68 @@ impl Table {
     /// Slide live entries down over the holes and rebuild every chain.
     /// Returns the number of entries that moved, which is what an
     /// iterator repair needs.
-    pub fn compact(&mut self) -> usize {
-        self.begin_entry_move();
-        let moved = self.compact_entries();
-        self.end_entry_move();
+    ///
+    /// The bracket is opened here rather than by the caller: compaction
+    /// and growth are the two operations that move entries, and both fire
+    /// from inside an insert, which the entity above cannot see
+    /// ([`StorageHead::begin_move`] for why its two ends are ordered
+    /// differently).
+    pub fn compact(&mut self, head: &StorageHead) -> usize {
+        head.begin_move();
+        let moved = self.compact_entries(head);
+        head.end_move();
         moved
     }
 
-    fn compact_entries(&mut self) -> usize {
+    fn compact_entries(&mut self, head: &StorageHead) -> usize {
         let mut w = 0usize;
-        for r in 0..self.used() {
-            if self.entry(r).is_hole() {
+        for r in 0..head.used() {
+            if self.entry(head, r).is_hole() {
                 continue;
             }
 
             if w != r {
                 unsafe {
-                    std::ptr::copy_nonoverlapping(self.entries().add(r), self.entries().add(w), 1)
+                    std::ptr::copy_nonoverlapping(
+                        Self::entries(head).add(r),
+                        Self::entries(head).add(w),
+                        1,
+                    )
                 };
             }
 
             w += 1;
         }
 
-        let moved = self.used() - w;
-        self.set_used(w);
+        let moved = head.used() - w;
+        head.set_used(w);
         self.holes = 0;
-        self.rebuild_index();
+        self.rebuild_index(head);
         moved
     }
 
-    fn rebuild_index(&mut self) {
-        unsafe { std::ptr::write_bytes(self.slots(), 0xFF, self.nslots()) };
-        for k in 0..self.used() {
+    fn rebuild_index(&mut self, head: &StorageHead) {
+        unsafe { std::ptr::write_bytes(Self::slots(head), 0xFF, head.nslots()) };
+        for k in 0..head.used() {
             // Holes are skipped rather than linked: a hole's `key` field
             // is a sentinel, not a string, so reading bytes through it in
             // strong mode would dereference 1.
-            if self.entry(k).is_hole() {
-                unsafe { Entry::store_link(self.entry_ptr(k), NONE) };
+            if self.entry(head, k).is_hole() {
+                unsafe { Entry::store_link(Self::entry_ptr(head, k), NONE) };
                 continue;
             }
 
             // The slot comes from the *mixed* integer or the string hash,
             // never from the stored word as-is.
-            let sh = self.entry_slot_hash(self.entry(k));
+            let sh = self.entry_slot_hash(self.entry(head, k));
             let slot = sh as usize & self.mask;
-            let head = unsafe { *self.slots().add(slot) };
+            let chain = unsafe { *Self::slots(head).add(slot) };
             // A relaxed atomic store, not a plain one: the link shares its
             // word with the element's tag and flags, which the collector
             // reads while this runs. The composition keeps those bytes, so
             // no version bracket is needed here either.
-            unsafe { Entry::store_link(self.entry_ptr(k), head) };
-            unsafe { *self.slots().add(slot) = k as u32 };
+            unsafe { Entry::store_link(Self::entry_ptr(head, k), chain) };
+            unsafe { *Self::slots(head).add(slot) = k as u32 };
         }
     }
 
@@ -942,7 +893,12 @@ impl Table {
     /// into it. False on refusal, with the table left exactly as it was —
     /// an allocation failure reports to a frame that can raise rather
     /// than aborting.
-    fn realloc_storage(&mut self, category: MemoryCategory, cap: usize) -> bool {
+    fn realloc_storage(
+        &mut self,
+        head: &StorageHead,
+        category: MemoryCategory,
+        cap: usize,
+    ) -> bool {
         if cap > MAX_ENTRIES {
             return false;
         }
@@ -958,27 +914,29 @@ impl Table {
             return false;
         }
 
-        self.begin_entry_move();
-        let old_storage = self.storage();
+        // Growth moves entries, so it runs inside the head's window for
+        // [`Table::compact`]'s reason.
+        head.begin_move();
+        let old_storage = head.storage();
         let old_capacity = self.storage_capacity;
-        let old_used = self.used();
+        let old_used = head.used();
         let old_entries = if old_storage.is_null() {
             std::ptr::null_mut()
         } else {
-            self.entries()
+            Self::entries(head)
         };
 
-        self.set_storage(mem);
+        head.set_storage(mem);
         self.storage_capacity = granted;
-        self.set_nslots(nslots);
+        head.set_nslots(nslots);
         self.mask = nslots - 1;
         self.cap = cap;
         if !old_entries.is_null() {
-            unsafe { std::ptr::copy_nonoverlapping(old_entries, self.entries(), old_used) };
+            unsafe { std::ptr::copy_nonoverlapping(old_entries, Self::entries(head), old_used) };
         }
 
-        self.rebuild_index();
-        self.end_entry_move();
+        self.rebuild_index(head);
+        head.end_move();
         self.free_storage(category, old_storage, old_capacity);
         true
     }
@@ -1016,9 +974,9 @@ impl Table {
     /// outlives this call by the width of the drain, and a `live` above
     /// zero over an entry array of holes is a contradiction anything
     /// reading it would act on.
-    pub(crate) fn sever_entries(&mut self, displaced: &mut Vec<*mut RcHeader>) {
-        for i in 0..self.used() {
-            let e = self.entry(i);
+    pub(crate) fn sever_entries(&mut self, head: &StorageHead, displaced: &mut Vec<*mut RcHeader>) {
+        for i in 0..head.used() {
+            let e = self.entry(head, i);
             if e.is_hole() {
                 continue;
             }
@@ -1029,7 +987,7 @@ impl Table {
             // write publishes a whole Box, zeroed reserved bytes and all,
             // which would set this entry's chain link to 0 — a legal entry
             // index rather than an end of chain (`array/entry.rs`).
-            let at = self.entry_ptr(i);
+            let at = Self::entry_ptr(head, i);
             unsafe {
                 Entry::store_element(at, Value::null());
                 Entry::make_hole(at);
@@ -1045,7 +1003,7 @@ impl Table {
         }
 
         self.live = 0;
-        self.holes = self.used();
+        self.holes = head.used();
     }
 
     /// Release storage the table has replaced, through
@@ -1084,17 +1042,17 @@ impl Table {
     /// The triggers fire during an insert's chain walk, which needs
     /// entries, so the storage is never null here — asserted, because a
     /// null address would draw the same salt for every such table.
-    fn draw_salt(&mut self) {
+    fn draw_salt(&mut self, head: &StorageHead) {
         if self.flags & TABLE_RESEEDED != 0 {
             return;
         }
 
         debug_assert!(
-            !self.storage().is_null(),
+            !head.storage().is_null(),
             "a draw before the first entry would salt every table alike"
         );
         self.flags |= TABLE_RESEEDED;
-        self.salt = crate::hash::hash_bytes(&(self.storage() as u64).to_le_bytes());
+        self.salt = crate::hash::hash_bytes(&(head.storage() as u64).to_le_bytes());
     }
 
     /// Escalate to the keyed byte hash, once and one way. The response
@@ -1108,15 +1066,15 @@ impl Table {
     /// a new colliding set costs a break of a keyed PRF — needs the key
     /// unpredictable. That is a draw, not the redraw the Perl defect is
     /// about: a salt already drawn is left exactly as it was.
-    fn escalate(&mut self) {
+    fn escalate(&mut self, head: &StorageHead) {
         if self.flags & TABLE_STRONG != 0 {
             return;
         }
 
-        self.draw_salt();
+        self.draw_salt(head);
         self.flags |= TABLE_STRONG;
-        if !self.storage().is_null() {
-            self.rebuild_index();
+        if !head.storage().is_null() {
+            self.rebuild_index(head);
         }
     }
 
@@ -1146,19 +1104,19 @@ impl Table {
     /// so there is no orbit to learn and no redraw to aim. A COW copy
     /// inherits the drawn salt rather than drawing again
     /// ([`Table::adopt_flood_state`]): its second long chain escalates.
-    fn reseed(&mut self) {
+    fn reseed(&mut self, head: &StorageHead) {
         if self.flags & TABLE_STRONG != 0 {
             return;
         }
 
         if self.flags & TABLE_RESEEDED != 0 {
-            self.escalate();
+            self.escalate(head);
             return;
         }
 
-        self.draw_salt();
-        if !self.storage().is_null() {
-            self.rebuild_index();
+        self.draw_salt(head);
+        if !head.storage().is_null() {
+            self.rebuild_index(head);
         }
     }
 
@@ -1174,9 +1132,9 @@ impl Table {
     /// that by construction — and the hole marker lives in `key`, outside
     /// the sixteen bytes the store barrier writes, precisely so that an
     /// ordinary value store cannot destroy it.
-    pub fn for_each_value(&self, mut f: impl FnMut(Value)) {
-        for k in 0..self.used() {
-            let e = self.entry(k);
+    pub fn for_each_value(&self, head: &StorageHead, mut f: impl FnMut(Value)) {
+        for k in 0..head.used() {
+            let e = self.entry(head, k);
             if !e.is_hole() {
                 f(e.value());
             }
@@ -1192,22 +1150,22 @@ impl Table {
     /// an end of chain, so the corruption would be a self-referencing
     /// entry (`array/entry.rs`). Returning the new Box instead routes
     /// every write through the one store that keeps the link.
-    pub fn for_each_value_mut(&mut self, mut f: impl FnMut(Value) -> Value) {
-        for k in 0..self.used() {
-            if self.entry(k).is_hole() {
+    pub fn for_each_value_mut(&mut self, head: &StorageHead, mut f: impl FnMut(Value) -> Value) {
+        for k in 0..head.used() {
+            if self.entry(head, k).is_hole() {
                 continue;
             }
 
-            let replaced = f(self.entry(k).value());
-            unsafe { Entry::store_element(self.entry_ptr(k), replaced) };
+            let replaced = f(self.entry(head, k).value());
+            unsafe { Entry::store_element(Self::entry_ptr(head, k), replaced) };
         }
     }
 
     /// Every string key that is a live entity, in insertion order. Keys
     /// are counted children too: a table holds a reference to each.
-    pub fn for_each_string_key(&self, mut f: impl FnMut(*mut LLString)) {
-        for k in 0..self.used() {
-            let e = self.entry(k);
+    pub fn for_each_string_key(&self, head: &StorageHead, mut f: impl FnMut(*mut LLString)) {
+        for k in 0..head.used() {
+            let e = self.entry(head, k);
             if e.is_hole() {
                 continue;
             }
@@ -1228,15 +1186,15 @@ impl Table {
     /// The values are **not** released here: their order matters to the
     /// collector, so the entity wrapper walks and releases them first and
     /// then calls this. Nothing here reads a value.
-    pub fn dispose(&mut self, category: MemoryCategory) {
-        let p = self.storage();
+    pub fn dispose(&mut self, head: &StorageHead, category: MemoryCategory) {
+        let p = head.storage();
         let capacity = self.storage_capacity;
-        self.set_storage(std::ptr::null_mut());
+        head.set_storage(std::ptr::null_mut());
         self.storage_capacity = 0;
-        self.set_nslots(0);
+        head.set_nslots(0);
         self.mask = 0;
         self.cap = 0;
-        self.set_used(0);
+        head.set_used(0);
         self.live = 0;
         self.holes = 0;
         self.free_storage(category, p, capacity);
@@ -1245,9 +1203,9 @@ impl Table {
     /// Iterate live entries in insertion order. This reads no index at
     /// all, which is why the choice of index layer does not affect
     /// `foreach`.
-    pub fn iter(&self) -> impl Iterator<Item = &Entry> {
-        (0..self.used())
-            .map(|i| self.entry(i))
+    pub fn iter<'a>(&'a self, head: &'a StorageHead) -> impl Iterator<Item = &'a Entry> {
+        (0..head.used())
+            .map(move |i| self.entry(head, i))
             .filter(|e| !e.is_hole())
     }
 }

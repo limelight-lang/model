@@ -543,7 +543,10 @@ unsafe fn collect_cycles_inner() -> usize {
                     }
                     k if k == EntityKind::Array.to_flags() => {
                         let a = w as *mut crate::array::entity::LLArray;
-                        (*a).storage.dispose(crate::array::entity::category_of(a));
+                        crate::array::entity::dispose_storage(
+                            a,
+                            crate::array::entity::category_of(a),
+                        );
                         crate::memory::stdapi::ll_free(w as *mut u8);
                     }
                     _ => crate::memory::stdapi::ll_free(w as *mut u8),

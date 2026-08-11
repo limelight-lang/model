@@ -549,8 +549,8 @@ mod the_three_way_judgement {
             // `Table::insert`'s contract: an entry a walker can reach must
             // already be backed by a count.
             crate::refcount::ll_retain(holder as *mut RcHeader);
-            (*table).storage.as_table_mut().insert(
-                crate::array::entity::category_of(table),
+            crate::array::testing::insert(
+                table,
                 Key::Int(0),
                 Value::entity(Tag::Object, holder as *mut RcHeader),
             );

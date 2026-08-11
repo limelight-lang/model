@@ -389,8 +389,8 @@ mod the_candidate_buffer {
                 (*candidate_buffer()).contains(&(inner as *mut RcHeader)),
                 "the non-zero decrement buffered the inner array"
             );
-            (*outer).storage.as_table_mut().insert(
-                crate::array::entity::category_of(outer),
+            crate::array::testing::insert(
+                outer,
                 Key::Int(0),
                 Value::entity(Tag::Array, inner as *mut RcHeader),
             );
@@ -899,12 +899,12 @@ mod what_the_free_of_the_white_set_owes {
         let (storage, capacity) = unsafe {
             // Retained before the entry is published, per `Table::insert`.
             ll_retain(obj as *mut RcHeader);
-            (*a).storage.as_table_mut().insert(
-                crate::array::entity::category_of(a),
+            crate::array::testing::insert(
+                a,
                 Key::Int(0),
                 Value::entity(Tag::Object, obj as *mut RcHeader),
             );
-            (*a).storage.as_table().storage_and_capacity()
+            crate::array::testing::storage_and_capacity(a)
         };
 
         assert!(!storage.is_null(), "the insert allocated storage to lose");
@@ -1088,14 +1088,14 @@ mod a_ring_with_no_object_in_it {
             // is `Table::insert`'s contract: an entry a walker can reach
             // must already be backed by a count.
             ll_retain(b as *mut RcHeader);
-            (*a).storage.as_table_mut().insert(
-                crate::array::entity::category_of(a),
+            crate::array::testing::insert(
+                a,
                 Key::Int(0),
                 Value::entity(Tag::Array, b as *mut RcHeader),
             );
             ll_retain(a as *mut RcHeader);
-            (*b).storage.as_table_mut().insert(
-                crate::array::entity::category_of(b),
+            crate::array::testing::insert(
+                b,
                 Key::Int(0),
                 Value::entity(Tag::Array, a as *mut RcHeader),
             );
@@ -1148,8 +1148,8 @@ mod a_ring_with_no_object_in_it {
             (*boxed).value = Value::entity(Tag::Array, array as *mut RcHeader);
             // Retained before the entry is published, per `Table::insert`.
             ll_retain(boxed as *mut RcHeader);
-            (*array).storage.as_table_mut().insert(
-                crate::array::entity::category_of(array),
+            crate::array::testing::insert(
+                array,
                 Key::Int(0),
                 Value::entity(Tag::Reference, boxed as *mut RcHeader),
             );

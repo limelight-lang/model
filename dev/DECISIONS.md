@@ -8,6 +8,59 @@ never edited or deleted.
 
 ---
 
+## 2026-08-11 — the storage head is a field of the entity, and no `&mut` may span it
+
+The Sage's second ruling on the same stage, and it **overturns the
+placement half of the entry below**: the head stays one struct above the
+representations, and it moves out of them into the entity —
+`LLArray { rc, head, storage }`, each representation keeping only its
+private tail. `src/array/head.rs`, `src/array/entity.rs`.
+
+**A `&mut` covers its whole range whatever the fields inside it are.**
+Every mutating table or vector operation is reached through
+`&mut (*a).storage`, so a head inside the representation sits inside that
+borrow, and the collector's read of it is undefined behaviour rather than
+a race the atomics settle — the interior-mutability exemption belongs to
+shared references. This is the defect `dev/POSTMORTEM.md` records for
+2026-08-10 at a different word, and the crate has now paid for it twice.
+Correctness outranks structure, which is why `Table`'s self-containment —
+the reason the first ruling gave for the prefix — is the thing that
+yields.
+
+**The type rule that follows:** no `&mut` may ever span the head, and the
+only one near it is field-precise. `entity::as_table_mut` derives the
+pair — `&mut (*a).storage.table` and `&(*a).head` — from the one
+`*mut LLArray`, the union's members are private to that module, and
+callers destructure what it returns. A shared reference to a struct of
+atomics is the exempted case, and it is disjoint from the `&mut` over the
+tail.
+
+**Every operation over a walker-visible word takes `head: &StorageHead`
+as a parameter**, `category`'s precedent (2026-08-07): threaded per call
+rather than stored, so nothing drifts, and `Map` owns a head of its own
+the same way, stamped `Hash` and never rewritten. The bracket calls stay
+textually inside `grow`, `compact` and `realloc_storage`, because the
+entity cannot see when a move happens — growth fires inside `insert`, and
+bracketing every insert would leave every insert in an odd window and
+starve the walker. Cost on the hot path is one register argument per call
+and no extra load; an array is the same 112 bytes, the words having been
+the table's before.
+
+**Both `offset_of!(…, head) == 0` const assertions are deleted with
+nothing in their place**: the identity they guarded — the union's address
+*is* the head's — stops being a fact. `entity::storage_head` names the
+field instead of casting.
+
+**The decisive check is Miri, and it was run both ways.** A
+walker-against-mutator test
+(`array::entity::tests::the_head_a_walker_reads`) reported
+"not granting access to tag … because that would remove [Unique for …]
+which is strongly protected" at `head.rs`'s first load, naming
+`Table::insert`'s `&mut self` as the protector; after the move the same
+test is silent. `cargo test` passes either way and can judge nothing
+here. The loom model stands verbatim: its argument is about the fences,
+not about where the words live.
+
 ## 2026-08-11 — the version counter lives above the storage representations, not inside one
 
 The Sage's ruling, from stage S7. **An array's walker-visible words —

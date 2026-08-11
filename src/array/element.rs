@@ -17,7 +17,9 @@
 //! barrier, which is what lets `Map` reuse it under a different set of
 //! those rules.
 
-use crate::array::entity::{LLArray, category_of, give_value_back, publish_key};
+use crate::array::entity::{
+    LLArray, as_table, as_table_mut, category_of, give_value_back, publish_key,
+};
 use crate::array::table::Key;
 use crate::memory::context::LLContext;
 use crate::refcount::{MemoryCategory, RcHeader};
@@ -226,7 +228,8 @@ pub unsafe fn append(
         "the slot names an array"
     );
     let current = unsafe { (*slot).entity_ptr() } as *mut LLArray;
-    let Some(key) = (unsafe { (*current).storage.as_table().append_key() }) else {
+    let (table, _) = unsafe { as_table(current) };
+    let Some(key) = table.append_key() else {
         return false;
     };
 
@@ -328,7 +331,8 @@ pub unsafe fn make_ref(
     let mut boxed = std::ptr::null_mut();
     let separated = unsafe {
         write_through(ctx, owner_cat, slot, |a, arena| {
-            let vivified = !(*a).storage.as_table().contains(key);
+            let (table, head) = as_table(a);
+            let vivified = !table.contains(head, key);
             if vivified && !store_into(a, arena, key, Value::null()) {
                 return false;
             }
@@ -384,8 +388,9 @@ pub unsafe fn get(slot: *const Value, key: Key) -> Option<Value> {
         matches!(unsafe { (*slot).tag() }, Tag::Array),
         "the slot names an array"
     );
-    let a = unsafe { (*slot).entity_ptr() } as *const LLArray;
-    let element = unsafe { (*a).storage.as_table().get(key) }?;
+    let a = unsafe { (*slot).entity_ptr() } as *mut LLArray;
+    let (table, head) = unsafe { as_table(a) };
+    let element = table.get(head, key)?;
     if element.tag() == Tag::Reference {
         let boxed = element.entity_ptr() as *const crate::reference::LLReference;
         return Some(unsafe { (*boxed).value });
@@ -450,7 +455,8 @@ unsafe fn store_into(
     key: Key,
     value: Value,
 ) -> bool {
-    if let Some(element) = unsafe { (*a).storage.as_table().get(key) } {
+    let (table, head) = unsafe { as_table(a) };
+    if let Some(element) = table.get(head, key) {
         if element.tag() == Tag::Reference {
             let boxed = element.entity_ptr() as *mut crate::reference::LLReference;
             return unsafe { store_through_box(arena, boxed, value) };
@@ -471,11 +477,8 @@ unsafe fn store_into(
         }
     };
 
-    match unsafe {
-        (*a).storage
-            .as_table_mut()
-            .insert(category, published_key, v)
-    } {
+    let (table, head) = unsafe { as_table_mut(a) };
+    match table.insert(head, category, published_key, v) {
         None => {
             unsafe { give_value_back(category, &v) };
             if let Key::Str(k) = published_key {
@@ -572,7 +575,8 @@ unsafe fn box_element(
     arena: *mut crate::memory::arena::Arena,
     key: Key,
 ) -> *mut crate::reference::LLReference {
-    let current = match unsafe { (*a).storage.as_table().get(key) } {
+    let (table, head) = unsafe { as_table(a) };
+    let current = match table.get(head, key) {
         Some(element) => element,
         None => return std::ptr::null_mut(),
     };
@@ -620,7 +624,8 @@ unsafe fn box_element(
     // The key is present, so the entry is overwritten rather than added:
     // no growth, nothing to refuse, and the key this call passes is never
     // the one the entry keeps.
-    let displaced = match unsafe { (*a).storage.as_table_mut().insert(category, key, element) } {
+    let (table, head) = unsafe { as_table_mut(a) };
+    let displaced = match table.insert(head, category, key, element) {
         Some((_, displaced)) => displaced,
         None => {
             debug_assert!(false, "an overwrite of a present key cannot be refused");
@@ -656,7 +661,8 @@ unsafe fn box_element(
 /// `a` a live, exclusively owned array.
 unsafe fn remove_from(a: *mut LLArray, key: Key) {
     let category = unsafe { category_of(a) };
-    if let Some((old, removed_key)) = unsafe { (*a).storage.as_table_mut().remove(key) } {
+    let (table, head) = unsafe { as_table_mut(a) };
+    if let Some((old, removed_key)) = table.remove(head, key) {
         unsafe { give_value_back(category, &old) };
         unsafe { crate::memory::barrier::drop_ref(category, removed_key as *mut RcHeader) };
     }

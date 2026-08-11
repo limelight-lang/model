@@ -9,7 +9,11 @@
 pub mod element;
 pub mod entity;
 pub mod entry;
-pub(crate) mod head;
+// As public as the representations are: since the head left them, it
+// appears in the signature of every table and vector operation that
+// touches a walker-visible word, and a module less visible than its
+// customers cannot be named by their callers.
+pub mod head;
 pub mod table;
 // Strategy 2 is built one step ahead of its producer: `ll_array_new`
 // stamps the ordered hash until the element layer reads the tag
@@ -20,6 +24,11 @@ pub mod table;
     reason = "the producer lands with the factory's stamp in S7.2"
 )]
 pub mod vector;
+
+// One call per operation for the tests, which cannot destructure the
+// pair a production call site does. Test builds only.
+#[cfg(test)]
+pub(crate) mod testing;
 
 // A model of the table's version bracket, checked by `loom` rather than by
 // the suite: it exists only under `--cfg loom`, where the dev-dependency

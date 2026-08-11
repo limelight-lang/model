@@ -7,16 +7,32 @@
 //! version counter kept inside a representation could not bracket that:
 //! it dies with the bytes it protects. So the counter, the chunk, the
 //! two counts and the tag saying which representation is present live
-//! **here**, in a head that every representation begins with, and the
-//! migration is one more mover inside the same window
+//! **here**, and the migration is one more mover inside the same window
 //! (`PLAN.md` S7.1, Sage 2026-08-11).
 //!
-//! Two rules hold this together, and neither is negotiable:
+//! **This struct is a field of the entity — `LLArray { rc, head,
+//! storage }` — and not a prefix inside either representation.** The
+//! placement is the type rule the crate has paid for twice: a mutating
+//! table or vector operation is reached through `&mut (*a).storage`, and
+//! a `&mut` asserts uniqueness over its whole range whatever the fields
+//! inside it are, the interior-mutability exemption belonging to shared
+//! references alone (`dev/POSTMORTEM.md`, 2026-08-10). A head inside the
+//! representation would therefore sit inside that borrow, and the
+//! walker's read of it is undefined behaviour rather than a race the
+//! atomics settle. Outside it, the two references are disjoint: every
+//! caller derives `&StorageHead` and `&mut Table` field by field from the
+//! one `*mut LLArray`, and no `&mut` in the crate ever spans this struct
+//! ([`crate::array::entity::as_table_mut`]).
+//!
+//! Three rules hold this together, and none is negotiable:
 //!
 //! - **Every field is atomic**, because a walker reads all of them and
 //!   each byte it reads must be written by one store of the same width.
 //!   A field only the mutator touches belongs in the representation's
 //!   own tail, never in this struct.
+//! - **The head is reached shared, always.** A `&mut StorageHead` would
+//!   be the same defect one level down, so nothing takes one — the
+//!   mutating methods here take `&self` and write through the atomics.
 //! - **The tag is loaded inside the bracket and branched on only after
 //!   it validates.** The read set does not depend on the tag, so a
 //!   stale tag can never select a stride: it is discarded with
@@ -31,7 +47,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
 /// epoch's worth rather than freeing anything early.
 const COHERENT_READ_ATTEMPTS: usize = 4;
 
-/// Which storage representation a head is the prefix of, numbered as
+/// Which storage representation the head describes, numbered as
 /// `rfc/model/arrays.md` numbers the strategies.
 ///
 /// `Typed` has no producer in this crate: the compiler that proves
@@ -59,11 +75,11 @@ pub(crate) struct CoherentView {
     pub(crate) used: usize,
 }
 
-/// The head itself. Laid out `repr(C)` and placed first in every
-/// representation, so its address is the array's storage field's
-/// address whatever the tag says.
+/// The head itself. Laid out `repr(C)` and held by the entity rather
+/// than by a representation, so its address is the same under every tag
+/// and no borrow of a representation covers it.
 #[repr(C)]
-pub(crate) struct StorageHead {
+pub struct StorageHead {
     /// Bumped twice by every operation that moves elements — growth,
     /// compaction, and the migration between representations — odd while
     /// the move is in progress. A walker reads it, then the four words
@@ -206,17 +222,14 @@ impl StorageHead {
     /// this reads is atomic; nothing outside this struct may be read
     /// here.
     pub(crate) unsafe fn coherent(h: *const StorageHead) -> Option<CoherentView> {
-        // Raw pointers per field, never a `&StorageHead` reached through
-        // the representation: a shared reference to the representation
-        // would retag the whole struct, and the mutator is writing the
-        // words in its tail with ordinary stores.
-        let version = unsafe { &(*h).version };
-        let storage_word = unsafe { &(*h).storage };
-        let nslots_word = unsafe { &(*h).nslots };
-        let used_word = unsafe { &(*h).used };
-        let tag_word = unsafe { &(*h).tag };
+        // A shared reference over the whole head, which is the exempted
+        // case: the head is a struct of atomics and no `&mut` in the
+        // crate spans it, the mutator reaching it shared as well. A raw
+        // pointer arrives rather than a reference because the caller has
+        // an entity address and nothing else.
+        let head = unsafe { &*h };
         for _ in 0..COHERENT_READ_ATTEMPTS {
-            let before = version.load(Ordering::Acquire);
+            let before = head.version.load(Ordering::Acquire);
             if before % 2 != 0 {
                 continue;
             }
@@ -225,10 +238,10 @@ impl StorageHead {
             // tag. A walker that read the tag first and then chose what
             // to read would have loaded at one representation's offsets
             // on the strength of the other's tag.
-            let storage = storage_word.load(Ordering::Relaxed);
-            let nslots = nslots_word.load(Ordering::Relaxed);
-            let used = used_word.load(Ordering::Relaxed);
-            let tag = tag_word.load(Ordering::Relaxed);
+            let storage = head.storage.load(Ordering::Relaxed);
+            let nslots = head.nslots.load(Ordering::Relaxed);
+            let used = head.used.load(Ordering::Relaxed);
+            let tag = head.tag.load(Ordering::Relaxed);
             // The fence, not the load, is what keeps the readings above
             // from being taken after the closing check: an acquire *load*
             // orders what follows it, so the words it is meant to
@@ -236,7 +249,7 @@ impl StorageHead {
             // nothing. `ck_sequence_read_retry` fences and then loads
             // plainly, for this reason (`dev/RESEARCH.md`).
             fence(Ordering::Acquire);
-            if version.load(Ordering::Relaxed) != before {
+            if head.version.load(Ordering::Relaxed) != before {
                 continue;
             }
 

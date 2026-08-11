@@ -1,9 +1,21 @@
 //! The `array` entity: a refcounted header over the ordered hash.
 //!
 //! ```text
-//! +0   RcHeader   (kind = Array, COW set)
-//! +8   Storage    the storage handle, in one of its representations
+//! +0   RcHeader     (kind = Array, COW set)
+//! +8   StorageHead  every word a concurrent walker reads
+//! +48  Storage      the storage handle, in one of its representations
 //! ```
+//!
+//! **The head is the entity's and not the representation's**, which is
+//! the type rule every access path here exists to hold: a mutating
+//! operation is reached through `&mut (*a).storage`, and a `&mut` covers
+//! its whole range whatever is inside it, so a head inside the
+//! representation would sit inside that borrow and the walker's read of
+//! it would be undefined behaviour (`crate::array::head`,
+//! `dev/POSTMORTEM.md` 2026-08-10). The two references are derived field
+//! by field from the one `*mut LLArray` and are disjoint;
+//! [`as_table_mut`] and [`as_vector_mut`] are the only places that derive
+//! them, which is what makes the rule checkable rather than remembered.
 //!
 //! **No per-instance class pointer**, the same construction as a string
 //! (`rfc/model/arrays.md`: "a single final class … no per-instance class
@@ -34,18 +46,24 @@ use crate::journal::kinds::journal_event;
 use crate::refcount::{COW, EntityKind, MemoryCategory, RcHeader, publish_header};
 use crate::value::{Tag, Value};
 
-/// The array's storage, in whichever representation it currently has.
+/// The array's storage, in whichever representation it currently has —
+/// the private tail of one, the head beside it being the entity's.
 ///
 /// A union rather than an enum, because the discriminant already exists
-/// and is not Rust's: it is the tag in the [`StorageHead`] both members
-/// begin with, where a walker can read it atomically
+/// and is not Rust's: it is the tag in the [`StorageHead`] at
+/// `LLArray + 8`, where a walker can read it atomically
 /// (`crate::array::head`). A Rust enum would put a second discriminant
 /// beside the first, and the walker cannot read that one at all.
 ///
-/// **Nothing here drops.** Storage is given back by `dispose`, at a
-/// moment the teardown order fixes, so the members are `ManuallyDrop`
-/// and reading the wrong one is the caller's error rather than a state
-/// this type recovers from.
+/// **Nothing here drops.** Storage is given back by [`dispose_storage`],
+/// at a moment the teardown order fixes, so the members are
+/// `ManuallyDrop` and reading the wrong one is the caller's error rather
+/// than a state this type recovers from.
+///
+/// The members are private to this module and the projections below are
+/// unsafe, which is how the head's placement stays a rule rather than a
+/// habit: nothing outside can take a `&mut` over a representation
+/// without going through [`as_table_mut`] or [`as_vector_mut`].
 #[repr(C)]
 pub union Storage {
     vector: std::mem::ManuallyDrop<Vector>,
@@ -53,7 +71,9 @@ pub union Storage {
 }
 
 impl Storage {
-    /// An empty ordered hash.
+    /// An empty ordered hash. The tag saying so is written into the head
+    /// by [`new_with_storage`], which is the one place the pair is
+    /// matched.
     pub const fn hash() -> Self {
         Storage {
             table: std::mem::ManuallyDrop::new(Table::empty()),
@@ -66,94 +86,116 @@ impl Storage {
             vector: std::mem::ManuallyDrop::new(Vector::empty()),
         }
     }
-
-    /// The head both representations begin with, and therefore the one
-    /// part of this union that is readable without knowing the tag.
-    #[inline]
-    pub(crate) fn head(&self) -> &StorageHead {
-        // Same address under either member, pinned by a const assertion
-        // in each of them.
-        unsafe { &self.table.head }
-    }
-
-    /// Which representation is present.
-    #[inline]
-    pub(crate) fn tag(&self) -> StorageTag {
-        self.head().tag()
-    }
-
-    /// The ordered hash. Asking a vector for it is a bug in the caller,
-    /// not a case to handle: the tag decides the call, and a caller that
-    /// did not read it has already chosen wrongly.
-    #[inline]
-    pub(crate) fn as_table(&self) -> &Table {
-        debug_assert_eq!(self.tag(), StorageTag::Hash);
-        unsafe { &self.table }
-    }
-
-    #[inline]
-    pub(crate) fn as_table_mut(&mut self) -> &mut Table {
-        debug_assert_eq!(self.tag(), StorageTag::Hash);
-        unsafe { &mut self.table }
-    }
-
-    /// The mixed vector, under the same rule.
-    #[inline]
-    #[allow(
-        dead_code,
-        reason = "the producer lands with the factory's stamp in S7.2"
-    )]
-    pub(crate) fn as_vector(&self) -> &Vector {
-        debug_assert_eq!(self.tag(), StorageTag::Vector);
-        unsafe { &self.vector }
-    }
-
-    #[inline]
-    #[allow(
-        dead_code,
-        reason = "the producer lands with the factory's stamp in S7.2"
-    )]
-    pub(crate) fn as_vector_mut(&mut self) -> &mut Vector {
-        debug_assert_eq!(self.tag(), StorageTag::Vector);
-        unsafe { &mut self.vector }
-    }
-
-    /// Give the storage back, whichever representation holds it. The
-    /// elements are the caller's to release first.
-    #[inline]
-    pub(crate) fn dispose(&mut self, category: MemoryCategory) {
-        match self.tag() {
-            StorageTag::Hash => self.as_table_mut().dispose(category),
-            StorageTag::Vector => self.as_vector_mut().dispose(category),
-            StorageTag::Typed => unreachable!("no producer stamps the typed vector"),
-        }
-    }
 }
 
 /// The array entity.
 #[repr(C)]
 pub struct LLArray {
     pub rc: RcHeader,
+    /// Every word a concurrent walker may read, held here rather than
+    /// inside the representation so that no mutating borrow spans it
+    /// (`crate::array::head`). Reached shared by mutator and walker
+    /// alike; nothing in the crate takes a `&mut` to it.
+    pub(crate) head: StorageHead,
     pub storage: Storage,
 }
 
-/// The words a concurrent walker may read, addressed without going
-/// through the representation.
+/// The ordered hash and the head beside it, for a reader.
 ///
-/// A `&Table` would retag the whole struct, and the mutator writes the
-/// table's tail — `mask`, `cap`, `live` — with ordinary stores, so the
-/// walker takes the head's address and nothing else
-/// (`crate::array::head`).
+/// **The two references are derived field by field from `a`**, never one
+/// from the other: a `&Table` covers the table's bytes alone, and the
+/// head's are outside it, so a walker reading the head cannot be
+/// invalidated by anything a caller does with the returned table. The
+/// same derivation with `&mut` is [`as_table_mut`], and there it is the
+/// whole point.
+///
+/// Asking a vector for its table is a bug in the caller rather than a
+/// case to handle: the tag decides the call, and a caller that did not
+/// read it has already chosen wrongly. That is what the assertion here
+/// says, and it is the check the union's projections used to carry.
+///
+/// # Safety
+/// `a` addresses a live array whose storage is the ordered hash.
+#[inline]
+pub(crate) unsafe fn as_table<'a>(a: *mut LLArray) -> (&'a Table, &'a StorageHead) {
+    debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Hash);
+    unsafe { (&(*a).storage.table, &(*a).head) }
+}
+
+/// The ordered hash for a writer, and the head it may not borrow
+/// mutably.
+///
+/// # Safety
+/// As [`as_table`], and the caller holds exclusive use of the
+/// representation for the borrow's life.
+#[inline]
+pub(crate) unsafe fn as_table_mut<'a>(a: *mut LLArray) -> (&'a mut Table, &'a StorageHead) {
+    debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Hash);
+    // The `&mut` first and the head second, both from `a` and both
+    // field-precise: `&mut (*a).storage` claims the union's bytes and
+    // nothing beyond them.
+    let table = unsafe { &mut (*a).storage.table };
+    (table, unsafe { &(*a).head })
+}
+
+/// The mixed vector and its head, under [`as_table`]'s rule.
+///
+/// # Safety
+/// `a` addresses a live array whose storage is the mixed vector.
+#[inline]
+#[allow(
+    dead_code,
+    reason = "the producer lands with the factory's stamp in S7.2"
+)]
+pub(crate) unsafe fn as_vector<'a>(a: *mut LLArray) -> (&'a Vector, &'a StorageHead) {
+    debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
+    unsafe { (&(*a).storage.vector, &(*a).head) }
+}
+
+/// # Safety
+/// As [`as_vector`], and the caller holds exclusive use of the
+/// representation for the borrow's life.
+#[inline]
+#[allow(
+    dead_code,
+    reason = "the producer lands with the factory's stamp in S7.2"
+)]
+pub(crate) unsafe fn as_vector_mut<'a>(a: *mut LLArray) -> (&'a mut Vector, &'a StorageHead) {
+    debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
+    let vector = unsafe { &mut (*a).storage.vector };
+    (vector, unsafe { &(*a).head })
+}
+
+/// Give the storage back, whichever representation holds it. The
+/// elements are the caller's to release first.
+///
+/// # Safety
+/// `a` addresses a live array, and `category` is the one its header
+/// carries at this call ([`category_of`]).
+#[inline]
+pub(crate) unsafe fn dispose_storage(a: *mut LLArray, category: MemoryCategory) {
+    match unsafe { (*a).head.tag() } {
+        StorageTag::Hash => {
+            let (table, head) = unsafe { as_table_mut(a) };
+            table.dispose(head, category);
+        }
+        StorageTag::Vector => {
+            let (vector, head) = unsafe { as_vector_mut(a) };
+            vector.dispose(head, category);
+        }
+        StorageTag::Typed => unreachable!("no producer stamps the typed vector"),
+    }
+}
+
+/// The words a concurrent walker may read, as a raw pointer: the walker
+/// arrives with an entity address and takes the head's, reading neither
+/// representation and needing no reference to either.
 ///
 /// # Safety
 /// `a` addresses a live array.
 #[inline]
 pub(crate) unsafe fn storage_head(a: *mut LLArray) -> *const StorageHead {
-    // The union's address *is* the head's: both members are `repr(C)`
-    // and begin with it, which a const assertion in each of them pins.
-    // Reaching through a member instead would name a representation this
-    // call deliberately does not know.
-    unsafe { (&raw const (*a).storage) as *const StorageHead }
+    unsafe { &raw const (*a).head }
 }
 
 /// Allocate an empty array in `category`.
@@ -172,18 +214,26 @@ pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
     // The ordered hash, until the element layer reads the tag: a fresh
     // array cannot be a vector before every call that reaches its
     // storage asks which representation it is (`PLAN.md` S7.2).
-    unsafe { new_with_storage(category, Storage::hash()) }
+    unsafe { new_with_storage(category, StorageTag::Hash, Storage::hash()) }
 }
 
 /// [`ll_array_new`] with the storage representation named.
 ///
-/// The one place the tag is stamped, so that changing what a fresh array
-/// is means changing a caller rather than a factory body — and so that a
-/// test can build the representation the factory does not stamp yet.
+/// **The tag and the union are stamped by the one line below**, and that
+/// pairing is this function's whole reason to exist: the union carries no
+/// discriminant of its own, so `tag` is the only thing that says which
+/// member the bytes are, and a caller that passed one of each would leave
+/// every later access reading the wrong representation. Nothing checks it
+/// — there is nothing to check it against — so the two arguments are read
+/// together or not at all.
 ///
 /// # Safety
-/// As [`ll_array_new`].
-pub(crate) unsafe fn new_with_storage(category: MemoryCategory, storage: Storage) -> *mut LLArray {
+/// As [`ll_array_new`], and `tag` names the member `storage` holds.
+pub(crate) unsafe fn new_with_storage(
+    category: MemoryCategory,
+    tag: StorageTag,
+    storage: Storage,
+) -> *mut LLArray {
     let size = size_of::<LLArray>();
     // No context to pass: an array factory takes none, so the arena is
     // the mounted one either way.
@@ -195,6 +245,7 @@ pub(crate) unsafe fn new_with_storage(category: MemoryCategory, storage: Storage
 
     let a = mem as *mut LLArray;
     unsafe {
+        (&raw mut (*a).head).write(StorageHead::empty(tag));
         (&raw mut (*a).storage).write(storage);
         publish_header(
             a as *mut RcHeader,
@@ -328,7 +379,7 @@ pub unsafe fn separate(
             // into every copy this call published, nested ones included:
             // each is held once, by the entry naming it.
             unsafe { release_children(dst) };
-            unsafe { (*dst).storage.dispose(category_of(dst)) };
+            unsafe { dispose_storage(dst, category_of(dst)) };
             pending.dispose();
             return std::ptr::null_mut();
         }
@@ -356,18 +407,10 @@ unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LL
         return std::ptr::null_mut();
     }
 
-    unsafe {
-        (*dst)
-            .storage
-            .as_table_mut()
-            .adopt_flood_state((*src).storage.as_table())
-    };
-    unsafe {
-        (*dst)
-            .storage
-            .as_table_mut()
-            .adopt_append_state((*src).storage.as_table())
-    };
+    let (source, _) = unsafe { as_table(src) };
+    let (copy, copy_head) = unsafe { as_table_mut(dst) };
+    copy.adopt_flood_state(copy_head, source);
+    copy.adopt_append_state(source);
     dst
 }
 
@@ -456,9 +499,10 @@ unsafe fn fill_from(
     reason: CopyReason,
 ) -> bool {
     let category = unsafe { category_of(dst) };
-    let n = unsafe { (*src).storage.as_table().used() };
+    let (source, source_head) = unsafe { as_table(src) };
+    let n = source_head.used();
     for i in 0..n {
-        let e = unsafe { (*src).storage.as_table().entry(i) };
+        let e = source.entry(source_head, i);
         if e.is_hole() {
             continue;
         }
@@ -489,7 +533,7 @@ unsafe fn fill_from(
                     // The copy is held by nothing yet, so it goes back
                     // here rather than through the root's cascade.
                     unsafe { crate::refcount::ll_release(copy as *mut RcHeader) };
-                    unsafe { (*copy).storage.dispose(category_of(copy)) };
+                    unsafe { dispose_storage(copy, category_of(copy)) };
                     return false;
                 }
 
@@ -510,14 +554,8 @@ unsafe fn fill_from(
             }
         };
 
-        if unsafe {
-            (*dst)
-                .storage
-                .as_table_mut()
-                .insert(category, published_key, v)
-        }
-        .is_none()
-        {
+        let (copy, copy_head) = unsafe { as_table_mut(dst) };
+        if copy.insert(copy_head, category, published_key, v).is_none() {
             // Out of memory part-way. Give back what this element took —
             // through the barrier, key and value alike; the source is
             // untouched.
@@ -798,9 +836,15 @@ pub unsafe fn release_children(a: *mut LLArray) {
 /// `a` must be a live array entity whose storage is readable and
 /// writable.
 pub(crate) unsafe fn sever_counted_children(a: *mut LLArray, displaced: &mut Vec<*mut RcHeader>) {
-    match unsafe { (*a).storage.tag() } {
-        StorageTag::Hash => unsafe { (*a).storage.as_table_mut().sever_entries(displaced) },
-        StorageTag::Vector => unsafe { (*a).storage.as_vector_mut().sever_entries(displaced) },
+    match unsafe { (*a).head.tag() } {
+        StorageTag::Hash => {
+            let (table, head) = unsafe { as_table_mut(a) };
+            table.sever_entries(head, displaced);
+        }
+        StorageTag::Vector => {
+            let (vector, head) = unsafe { as_vector_mut(a) };
+            vector.sever_entries(head, displaced);
+        }
         StorageTag::Typed => unreachable!("no producer stamps the typed vector"),
     }
 }
@@ -812,7 +856,8 @@ pub(crate) unsafe fn sever_counted_children(a: *mut LLArray, displaced: &mut Vec
 /// # Safety
 /// `a` must be a live array entity.
 pub(crate) unsafe fn storage_address(a: *mut LLArray) -> *mut u8 {
-    unsafe { (*a).storage.as_table().storage_and_capacity().0 }
+    let (table, head) = unsafe { as_table(a) };
+    table.storage_and_capacity(head).0
 }
 
 /// Bring a surviving array's storage out of the arena that is about to
@@ -825,11 +870,9 @@ pub(crate) unsafe fn carry_storage_out_of(
     arena: *mut crate::memory::arena::Arena,
     a: *mut LLArray,
 ) -> bool {
-    unsafe {
-        (*a).storage
-            .as_table_mut()
-            .carry_out_of(category_of(a), arena)
-    }
+    let category = unsafe { category_of(a) };
+    let (table, head) = unsafe { as_table_mut(a) };
+    unsafe { table.carry_out_of(head, category, arena) }
 }
 
 /// Teardown for an array whose count reached zero, or that a collector
@@ -880,7 +923,7 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
             0
         );
         unsafe { release_children_in_order(dying, &mut pending) };
-        unsafe { (*dying).storage.dispose(category_of(dying)) };
+        unsafe { dispose_storage(dying, category_of(dying)) };
         if unsafe { category_of(dying) } == MemoryCategory::GcHeap {
             unsafe { crate::memory::stdapi::ll_free(dying as *mut u8) };
         }

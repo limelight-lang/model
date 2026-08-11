@@ -35,15 +35,14 @@ const FIRST_CAP: usize = 8;
 /// bound exists so the byte arithmetic below cannot wrap.
 const MAX_ELEMENTS: usize = u32::MAX as usize;
 
-/// The mixed vector.
-///
-/// The head is first, and that placement is the contract: a walker
-/// addresses it through the array's storage field without knowing which
-/// representation is present ([`crate::array::head`]).
+/// The mixed vector — the private tail of one, the words a walker reads
+/// living in the entity's [`StorageHead`] and reaching every method here
+/// as a parameter ([`crate::array::head`], and `Table`'s own doc for the
+/// rule both representations obey).
 #[repr(C)]
 pub struct Vector {
-    pub(crate) head: StorageHead,
-    /// Elements the chunk holds. `head.used()` is how many are written.
+    /// Elements the chunk holds. The head's `used` is how many are
+    /// written.
     cap: usize,
     /// Bytes really granted, which is not always what was asked for: a
     /// reused buffer-arena chunk may be larger, and the free that returns
@@ -51,10 +50,6 @@ pub struct Vector {
     /// the difference from the block's free list.
     storage_capacity: usize,
 }
-
-// The head is the array's storage field, so it has to start where the
-// representation starts.
-const _: () = assert!(std::mem::offset_of!(Vector, head) == 0);
 
 /// Bytes for `cap` elements, or `None` when that many cannot be
 /// addressed. Checked rather than assumed: `cap` grows by doubling from a
@@ -68,38 +63,27 @@ fn storage_bytes(cap: usize) -> Option<usize> {
 }
 
 impl Vector {
-    /// A vector over nothing. The first push allocates.
+    /// A vector over nothing. The first push allocates. The tag saying
+    /// which representation this is belongs to the head, stamped by
+    /// `array::entity::new_with_storage`.
     pub const fn empty() -> Self {
         Vector {
-            head: StorageHead::empty(StorageTag::Vector),
             cap: 0,
             storage_capacity: 0,
         }
     }
 
-    /// Elements written so far. Every one of them is live: a vector has
-    /// no holes, which is what makes this both the length and the highest
-    /// key plus one.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.head.used()
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// The key the next append takes, which for a dense range is the
-    /// length. Reading it moves nothing.
+    /// length — and the length is the head's `used`, every element of a
+    /// vector being live. Reading it moves nothing.
     #[inline]
-    pub(crate) fn append_key(&self) -> Option<i64> {
+    pub(crate) fn append_key(head: &StorageHead) -> Option<i64> {
         // A vector that reached `i64::MAX` elements cannot exist: the
         // element bound is four billion, and the allocation is 16 bytes
         // apiece. The `Option` matches the hash's `append_key`, whose
         // refusal is real, so the element layer above asks both the same
         // question.
-        Some(self.len() as i64)
+        Some(head.used() as i64)
     }
 
     /// The element at `i`, or `None` past the end.
@@ -108,12 +92,12 @@ impl Vector {
     /// element layer decides what a key outside `0..len` means, because
     /// the answer is a migration rather than an absence.
     #[inline]
-    pub(crate) fn get(&self, i: usize) -> Option<Value> {
-        if i >= self.len() {
+    pub(crate) fn get(&self, head: &StorageHead, i: usize) -> Option<Value> {
+        if i >= head.used() {
             return None;
         }
 
-        Some(unsafe { load_element(self.element_ptr(i)) })
+        Some(unsafe { load_element(self.element_ptr(head, i)) })
     }
 
     /// Overwrite a published element and hand the displaced value back,
@@ -123,12 +107,12 @@ impl Vector {
     /// the ordered hash's insert hands one back: this layer allocates no
     /// entity and calls no barrier, so it cannot release one either.
     #[inline]
-    pub(crate) fn set(&mut self, i: usize, v: Value) -> Option<Value> {
-        if i >= self.len() {
+    pub(crate) fn set(&mut self, head: &StorageHead, i: usize, v: Value) -> Option<Value> {
+        if i >= head.used() {
             return None;
         }
 
-        let at = self.element_ptr(i);
+        let at = self.element_ptr(head, i);
         let old = unsafe { load_element(at) };
         unsafe { store_element(at, v) };
         Some(old)
@@ -137,17 +121,17 @@ impl Vector {
     /// Append `v` at the next position. **False** when the storage could
     /// not grow, with the vector unchanged — the same refusal shape every
     /// allocating call in this crate has.
-    pub(crate) fn push(&mut self, category: MemoryCategory, v: Value) -> bool {
-        let n = self.len();
-        if n == self.cap && !self.grow(category) {
+    pub(crate) fn push(&mut self, head: &StorageHead, category: MemoryCategory, v: Value) -> bool {
+        let n = head.used();
+        if n == self.cap && !self.grow(head, category) {
             return false;
         }
 
         // The element before the count that publishes it: a walker that
         // saw the count first would stride over sixteen bytes nobody had
         // written. `set_used` is the release store that orders the pair.
-        unsafe { store_element(self.element_ptr(n), v) };
-        self.head.set_used(n + 1);
+        unsafe { store_element(self.element_ptr(head, n), v) };
+        head.set_used(n + 1);
         true
     }
 
@@ -157,7 +141,7 @@ impl Vector {
     /// Growth **moves elements**, so it runs inside the head's window: a
     /// walker mid-stride over the old chunk would otherwise read a fresh
     /// count against it.
-    fn grow(&mut self, category: MemoryCategory) -> bool {
+    fn grow(&mut self, head: &StorageHead, category: MemoryCategory) -> bool {
         let cap = if self.cap == 0 {
             FIRST_CAP
         } else {
@@ -173,20 +157,20 @@ impl Vector {
             return false;
         }
 
-        self.head.begin_move();
-        let old_storage = self.head.storage();
+        head.begin_move();
+        let old_storage = head.storage();
         let old_capacity = self.storage_capacity;
-        let n = self.len();
+        let n = head.used();
         if !old_storage.is_null() {
             unsafe {
                 std::ptr::copy_nonoverlapping(old_storage, mem, n * size_of::<Value>());
             }
         }
 
-        self.head.set_storage(mem);
+        head.set_storage(mem);
         self.storage_capacity = granted;
         self.cap = cap;
-        self.head.end_move();
+        head.end_move();
 
         if !old_storage.is_null() {
             unsafe { crate::memory::routing::body_free(category, old_storage, old_capacity) };
@@ -197,9 +181,9 @@ impl Vector {
 
     /// Where element `i` sits. Callers have already bounded `i`.
     #[inline]
-    fn element_ptr(&self, i: usize) -> *mut u8 {
+    fn element_ptr(&self, head: &StorageHead, i: usize) -> *mut u8 {
         debug_assert!(i < self.cap);
-        unsafe { self.head.storage().add(i * size_of::<Value>()) }
+        unsafe { head.storage().add(i * size_of::<Value>()) }
     }
 
     /// The elements and how many there are, taken from a reading
@@ -226,16 +210,20 @@ impl Vector {
     }
 
     /// Every element in order, for a caller that owns the vector.
-    pub(crate) fn for_each_value(&self, mut f: impl FnMut(Value)) {
-        for i in 0..self.len() {
-            f(unsafe { load_element(self.element_ptr(i)) });
+    pub(crate) fn for_each_value(&self, head: &StorageHead, mut f: impl FnMut(Value)) {
+        for i in 0..head.used() {
+            f(unsafe { load_element(self.element_ptr(head, i)) });
         }
     }
 
     /// Replace every element with what `f` answers, in order.
-    pub(crate) fn for_each_value_mut(&mut self, mut f: impl FnMut(Value) -> Value) {
-        for i in 0..self.len() {
-            let at = self.element_ptr(i);
+    pub(crate) fn for_each_value_mut(
+        &mut self,
+        head: &StorageHead,
+        mut f: impl FnMut(Value) -> Value,
+    ) {
+        for i in 0..head.used() {
+            let at = self.element_ptr(head, i);
             let next = f(unsafe { load_element(at) });
             unsafe { store_element(at, next) };
         }
@@ -247,9 +235,9 @@ impl Vector {
     /// The counterpart of the hash's `sever_entries`, and shorter for the
     /// reason the whole type is shorter — there are no string keys to
     /// hand out beside the values, and no holes to skip.
-    pub(crate) fn sever_entries(&mut self, displaced: &mut Vec<*mut RcHeader>) {
-        for i in 0..self.len() {
-            let at = self.element_ptr(i);
+    pub(crate) fn sever_entries(&mut self, head: &StorageHead, displaced: &mut Vec<*mut RcHeader>) {
+        for i in 0..head.used() {
+            let at = self.element_ptr(head, i);
             let value = unsafe { load_element(at) };
             unsafe { store_element(at, Value::null()) };
             if value.is_refcounted() {
@@ -257,16 +245,16 @@ impl Vector {
             }
         }
 
-        self.head.set_used(0);
+        head.set_used(0);
     }
 
     /// Give the storage back. The elements are the caller's to release
     /// first: this frees bytes and knows nothing about what was in them.
-    pub fn dispose(&mut self, category: MemoryCategory) {
-        let p = self.head.storage();
+    pub fn dispose(&mut self, head: &StorageHead, category: MemoryCategory) {
+        let p = head.storage();
         let capacity = self.storage_capacity;
-        self.head.set_storage(std::ptr::null_mut());
-        self.head.set_used(0);
+        head.set_storage(std::ptr::null_mut());
+        head.set_used(0);
         self.cap = 0;
         self.storage_capacity = 0;
         if !p.is_null() {
