@@ -145,7 +145,7 @@ configurations, and `dev/INDEX.md` states the new arrangement.
         for length: what makes the module hard to read past is the size of
         legal comments, and rule 19 caps no comment's length — Edmond's to
         answer before S9.2. Lesson in `dev/POSTMORTEM.md`.
-- [ ] S9.2 The comment pass over the entity modules
+- [~] S9.2 The comment pass over the entity modules
       done: the same, over `object`, `string`, `array/`, `template`,
         `reference`, `weak`, `intern`, `value`, `class` and `hash/`
       tier: T2 · role: Code Reviewer

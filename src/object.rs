@@ -18,7 +18,7 @@ use crate::refcount::{DESTRUCTOR_PENDING, DESTRUCTOR_RAN, MemoryCategory, RcHead
 use crate::value::Value;
 
 /// Object layout (`rfc/model/classes.md`): header, class pointer, then
-/// machine-typed property slots at the offsets in `prop_layout` — a raw
+/// machine-typed property slots at the offsets `Class::props` assigns — a raw
 /// `i64`/`f64` scalar, a bare pointer, or a 16-byte Box, each the
 /// representation of its declared type.
 #[repr(C)]
@@ -37,7 +37,7 @@ impl Object {
         unsafe { &*self.class }
     }
 
-    /// The property slot at a `prop_layout` offset.
+    /// The property slot at a `PropSlot::offset`.
     ///
     /// Takes the object as a raw pointer rather than `&mut self` on
     /// purpose: slots live *past* `size_of::<Object>()`, and a reference
@@ -331,8 +331,9 @@ pub unsafe extern "C" fn ll_object_new_abi(
     unsafe { ll_object_new(ctx, class, MemoryCategory::from_flags(category)) }
 }
 
-/// Visit every live counted child of an object — the shared walk over
-/// `traced_runs` for GC tracing, teardown, promotion and escape-release
+/// Visit every live counted child of an object — the shared walk over the
+/// class's trace map, `Class::ptr_runs` and `Class::box_runs`, for GC
+/// tracing, teardown, promotion and escape-release
 /// (`rfc/model/gc/strategies.md` §4). Pointer runs (stride 8) skip a `NULL`
 /// slot; Box runs (stride 16) skip a clear refcounted flag. Each child is
 /// yielded once as a non-null `*mut RcHeader`; the slot lvalue is not
@@ -533,7 +534,7 @@ pub type DisposeFn = unsafe extern "C" fn(*mut Object) -> bool;
 
 /// The default `dispose`: the generic stand-in a class carries until the
 /// compiler emits one specialized to its layout (`dev/DECISIONS.md`,
-/// 2026-07-25). It reads `traced_runs` (via [`for_each_counted_child`]) to
+/// 2026-07-25). It reads the trace map (via [`for_each_counted_child`]) to
 /// release children; a generated `dispose` would unroll the releases with no
 /// map read, to identical effect — so a test may install its own.
 ///

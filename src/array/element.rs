@@ -57,11 +57,12 @@ use crate::value::{Tag, Value};
 /// more, never corrupt — and inherent to log ownership rather than a
 /// defect here.
 ///
+/// `write` is handed an array no other holder can see once a copy was
+/// made, and reports whether it wrote.
+///
 /// # Safety
 /// `ctx` per `ll_arena_alloc`; `slot` a live slot of a live holder of
-/// category `owner_cat`, holding a live array. `write` gets an array no
-/// other holder can see once a copy was made, and reports whether it
-/// wrote.
+/// category `owner_cat`, holding a live array.
 unsafe fn write_through(
     ctx: *mut LLContext,
     owner_cat: MemoryCategory,

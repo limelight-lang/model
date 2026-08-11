@@ -149,7 +149,7 @@ impl CellReader for RelaxedCells {
 
 /// Visit every counted child of `entity`, dispatching on the kind bits
 /// **before** touching `+8`: only Object (0) and Lazy (6) carry a class
-/// pointer there, and reaching for `traced_runs` through a class that
+/// pointer there, and reaching for the trace map through a class that
 /// does not exist is a wild read (`rfc/model/gc/rc-walk.md`, "What the
 /// walker traces").
 ///

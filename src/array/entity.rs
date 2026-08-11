@@ -607,7 +607,7 @@ pub unsafe fn release_children(a: *mut LLArray) {
 /// Sever this array's counted children — elements and string keys alike
 /// — collecting them into `displaced` without releasing them. The array's
 /// arm of the drain's Phase 4, and the counterpart of
-/// [`crate::object::sever_counted_children`]: same contract, same reason
+/// [`crate::object::sever_counted_slots`]: same contract, same reason
 /// for not dropping inline, and the caller owes one drop per entry.
 ///
 /// One line, because every entry the walk yields is the table's and so is

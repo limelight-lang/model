@@ -172,7 +172,7 @@ unsafe fn set_color(e: *mut RcHeader, c: u32) {
 
 /// Counted heap children of a heap entity: the tracer's edge set,
 /// dispatched on the entity kind through the shared tracer
-/// (`walk::trace_entity`) — an object through `traced_runs`, a
+/// (`walk::trace_entity`) — an object through its trace map, a
 /// reference box through its one Value. Gating on `is_object` here used
 /// to be vacuously fine; once reference boxes became producible it made
 /// trial deletion stop at the box, so a `$a->next = &$a` ring read

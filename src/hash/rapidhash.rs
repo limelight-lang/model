@@ -5,7 +5,7 @@
 //! and why the copy exists. **That header defines this function** — every
 //! constant and every branch below is a transcription of it, and a
 //! divergence is a defect here rather than a variant. What proves the
-//! transcription is [`super::vectors`], a table generated from the header
+//! transcription is `hash::vectors`, a table generated from the header
 //! itself, because the author publishes no test vectors of his own.
 //!
 //! Ported: `rapidhash_internal`, the general-purpose variant, with the
