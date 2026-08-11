@@ -998,6 +998,12 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static DTORS: AtomicUsize = AtomicUsize::new(0);
 
+        // An `assert!` inside a destructor aborts rather than failing the
+        // test: this is `extern "C"` and a panic may not unwind out of it.
+        // Legitimate here because `ref_store` can only refuse a COW entity
+        // leaving the arena, and both stores below write null or a heap
+        // object — but the idiom does not travel to a path where a refusal
+        // is reachable.
         unsafe extern "C" fn unset_next(obj: *mut Object) {
             DTORS.fetch_add(1, Ordering::Relaxed);
             unsafe {
@@ -1073,7 +1079,7 @@ mod tests {
                         std::ptr::null_mut(),
                         Value::entity(Tag::Object, obj as *mut RcHeader),
                     ),
-                    "the barrier refused the resurrection this test performs"
+                    "the barrier refused the resurrection this destructor stages"
                 );
             }
         }

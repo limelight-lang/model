@@ -6,7 +6,8 @@
 //! are roots for as long as the thread lives. Those roots need one
 //! release point, and thread exit is it: the escape hold-count a static
 //! places on a request-arena object has no other decrement, an overwrite
-//! mid-request aside.
+//! mid-request aside. Without this pass a worker pool accumulates every
+//! request graph its statics ever touched, for the life of the process.
 //!
 //! # The pass
 //!

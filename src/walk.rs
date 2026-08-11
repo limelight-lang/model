@@ -1,7 +1,7 @@
 //! Entity walking: the kind-dispatched tracer and the heap census
 //! (`rc-walk` build step 1), the synchronous whole-heap collection
 //! ([`collect_cycles`], step 2) and the Phase 4 drain the collector posts
-//! to ([`drain_confirmed`], step 3) — `rfc/model/gc/rc-walk.md`, "Build
+//! to (`drain_confirmed`, step 3) — `rfc/model/gc/rc-walk.md`, "Build
 //! order". One walking substrate serves all three: enumerate every live
 //! entity through the region registry, and trace an entity's counted
 //! children by its kind without touching `+8` unless the kind carries a
@@ -1883,11 +1883,11 @@ mod tests {
             "the two readers disagree: {disagreed:?}"
         );
 
-        // Everything this test made has to go:
-        // `census_counts_objects_and_their_edges` counts the whole
-        // process's entity blocks, so a survivor here is a failure over
-        // there. The box's Value goes first, then the holder's dispose
-        // releases the child last.
+        // Everything this test made has to go: an entity left alive holds
+        // its block out of the pool for the rest of the run, and a later
+        // test asking for a fresh block gets a different heap shape than
+        // it would alone. The box's Value goes first, then the holder's
+        // dispose releases the child last.
         unsafe {
             use crate::refcount::ll_release;
             assert!(ll_release(boxed as *mut RcHeader));

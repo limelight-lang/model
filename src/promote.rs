@@ -39,10 +39,10 @@
 //! 4. Release-at-reset log: one release per record, with real teardown
 //!    dispatch for entities that die of it.
 //!
-//! All three traversals — the mark, the re-trace and the count — go
-//! through `walk::trace_entity`, the crate's one kind-dispatched tracer,
-//! and never through a private kind test of promotion's own
-//! (`dev/DECISIONS.md`, 2026-08-04).
+//! Every traversal of the reset — the mark, the re-trace, the count and
+//! the COW reconciliation — goes through `walk::trace_entity`, the
+//! crate's one kind-dispatched tracer, and never through a private kind
+//! test of promotion's own (`dev/DECISIONS.md`, 2026-08-04).
 
 use std::collections::{HashMap, HashSet};
 
@@ -227,8 +227,9 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             // (`rfc/model/memory/large-entities.md`).
             //
             // Omitting this arm is silent: nothing between the reset and
-            // the entity's death looks wrong, which is why this rule is
-            // the one of them that carries a test of its own.
+            // the entity's death looks wrong, which is why it is the one
+            // of `large-entities.md`'s four rules for a surviving run
+            // that carries a test of its own.
             let block = BlockHeader::of_ptr(surv as *const u8) as usize;
             if unsafe { is_in_a_block_of_its_own(surv) } {
                 let forgotten = unsafe { (*arena).forget_large(surv as *mut u8) };

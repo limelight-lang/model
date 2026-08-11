@@ -79,7 +79,9 @@ static OUTSTANDING_VERDICTS: AtomicUsize = AtomicUsize::new(0);
 static QUEUE: Mutex<VecDeque<ConfirmationMessage>> = Mutex::new(VecDeque::new());
 
 thread_local! {
-    /// The one bit of per-thread state that closes the drain recursion.
+    /// Set for the length of the pickup loop, which is what closes the
+    /// drain recursion: a checkpoint reached from inside a drained
+    /// destructor finds it set and returns.
     static MID_DRAIN: Cell<bool> = const { Cell::new(false) };
     /// Teardowns in flight on this thread. While non-zero, some entity
     /// on this thread is between its committing zero store and the end

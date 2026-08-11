@@ -1,9 +1,12 @@
 //! The rc-walk collector side: one collection epoch as an explicit
 //! state machine — Phase 1 WALK, Phase 2 DIFF/MARK, Phase 3
 //! CONDEMN/FILTER of `rfc/model/gc/rc-walk.md`. Phase 4 lives on the
-//! mutator (`crate::epoch` + `walk::drain_confirmed`); this side's only
-//! write to shared memory is the epoch stamp. Condemnation is
-//! collector-private since the eager-death amendment (2026-07-27).
+//! mutator (`crate::epoch` + `walk::drain_confirmed`); the only write
+//! this side makes into an **entity** is the epoch stamp, everything
+//! else it publishes going through the protocol's own statics (the
+//! handshake flag, the verdict queue, the deferred-free activity bit).
+//! Condemnation is collector-private since the eager-death amendment
+//! (2026-07-27).
 //!
 //! The steps are public within the crate and callable one at a time:
 //! that is what lets a test interleave mutator actions between walk,
