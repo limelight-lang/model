@@ -143,6 +143,7 @@ fn storage_bytes(nslots: usize, cap: usize) -> Option<usize> {
 /// comes from (`array::entity::category_of`, S10). Nothing here names an
 /// entity kind, which is what leaves the structure usable by a second
 /// one.
+#[repr(C)]
 pub struct Table {
     /// Every word a concurrent walker may read, and the bracket that
     /// makes reading them coherent (`crate::array::head`). **First

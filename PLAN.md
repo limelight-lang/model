@@ -115,7 +115,7 @@ authoritative.
 Done when: a fresh array is strategy 2 and migrates to strategy 3 under a
 key it cannot hold, both configurations green, Miri silent.
 
-- [x] S7.1 The mixed vector as storage strategy 2
+- [~] S7.1 The mixed vector as storage strategy 2
       done: an integer-keyed array whose storage is a `Vector` is traced,
         severed and torn down through S4.1's drain, in both
         configurations, and every call that reaches the storage goes
@@ -136,6 +136,32 @@ key it cannot hold, both configurations green, Miri silent.
         a stride. Both fences stay. The migration builds the new chunk
         off-line and swaps it inside one window; the tag is written once
         and 3 is final. Final.
+      Critic 2026-08-11 round 1: **the head is in the wrong place, and
+        the crate has paid for this twice.** Every mutating operation
+        goes through `as_table_mut` / `as_vector_mut`, and a `&mut`
+        asserts uniqueness over its whole range whatever is inside it —
+        the interior-mutability exemption belongs to shared references
+        (`dev/POSTMORTEM.md`, 2026-08-10: the atomic type landed and Miri
+        reported the same race at the same line). So the walker's raw
+        pointer into the head does not survive the mutator's borrow of
+        the representation the head sits inside. `block_pool.rs` carried
+        the opposite claim and is corrected. The shape the crate's own
+        type rule forces is `LLArray { rc, head, storage }`, with each
+        representation holding only its private tail — which the Sage
+        weighed and set aside for Table's self-containment. Correctness
+        outranks structure, so the price goes back to the Sage rather
+        than into the step. Not yet acted on.
+      Also found, each verified and each older than this step:
+        `Table::compact_entries` memcpys 32-byte entries inside the
+        **published** chunk while the collector reads it with relaxed
+        atomic loads — a non-atomic write racing an atomic read, which is
+        UB rather than the torn value the epoch repairs; both `dispose`
+        bodies publish `storage`, `nslots` and `used` unbracketed, so a
+        walker can accept a mixture that never existed, and for the table
+        that mixture strides the index region as entries; and Phase 3's
+        re-check compares the payload word alone, so a Value torn between
+        its two words is confirmed rather than caught and costs an epoch.
+        None of the three is this step's to fix — steps of their own.
       handoff: `head.rs` is the walker's contract, `vector.rs` is
         strategy 2, and `entity::Storage` is the union both live in — the
         head is a prefix inside each member, so the union's address is
