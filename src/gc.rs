@@ -781,12 +781,15 @@ mod tests {
     unsafe fn link(arena: *mut Arena, from: *mut Object, offset: u32, to: *mut Object) {
         unsafe {
             let slot = Object::prop_at(from, offset);
-            ref_store(
-                arena,
-                from as *mut RcHeader,
-                slot,
-                std::ptr::null_mut(),
-                Value::entity(Tag::Object, to as *mut RcHeader),
+            assert!(
+                ref_store(
+                    arena,
+                    from as *mut RcHeader,
+                    slot,
+                    std::ptr::null_mut(),
+                    Value::entity(Tag::Object, to as *mut RcHeader),
+                ),
+                "the barrier refused the link this test is built on"
             );
         }
     }
@@ -1007,7 +1010,10 @@ mod tests {
                     std::ptr::null_mut()
                 };
 
-                ref_store(arena, obj as *mut RcHeader, slot, old, Value::null());
+                assert!(
+                    ref_store(arena, obj as *mut RcHeader, slot, old, Value::null()),
+                    "the barrier refused the unset this destructor performs"
+                );
             }
         }
 
@@ -1059,12 +1065,15 @@ mod tests {
                 let arena = resolve_arena(std::ptr::null_mut());
                 let l = LIVE.load(Ordering::Relaxed) as *mut Object;
                 let slot = Object::prop_at(l, 16);
-                ref_store(
-                    arena,
-                    l as *mut RcHeader,
-                    slot,
-                    std::ptr::null_mut(),
-                    Value::entity(Tag::Object, obj as *mut RcHeader),
+                assert!(
+                    ref_store(
+                        arena,
+                        l as *mut RcHeader,
+                        slot,
+                        std::ptr::null_mut(),
+                        Value::entity(Tag::Object, obj as *mut RcHeader),
+                    ),
+                    "the barrier refused the resurrection this test performs"
                 );
             }
         }
@@ -1110,12 +1119,15 @@ mod tests {
 
             // Drop the holder; the cycle is garbage again but __destruct
             // already ran, so it must not fire twice.
-            ref_store(
-                arena_ptr,
-                l as *mut RcHeader,
-                Object::prop_at(l, 16),
-                a as *mut RcHeader,
-                Value::null(),
+            assert!(
+                ref_store(
+                    arena_ptr,
+                    l as *mut RcHeader,
+                    Object::prop_at(l, 16),
+                    a as *mut RcHeader,
+                    Value::null(),
+                ),
+                "the barrier refused the drop of the holder's slot"
             );
             assert!(ll_release(l as *mut RcHeader));
             crate::object::ll_object_die(l);
@@ -1187,12 +1199,10 @@ mod tests {
             assert!(!ll_release(a as *mut RcHeader)); // deduplicated
         }
 
-        let buffered = CANDIDATES.with(|c| {
-            unsafe { &*candidate_buffer() }
-                .iter()
-                .filter(|&&p| p == a as *mut RcHeader)
-                .count()
-        });
+        let buffered = unsafe { &*candidate_buffer() }
+            .iter()
+            .filter(|&&p| p == a as *mut RcHeader)
+            .count();
 
         assert_eq!(buffered, 1, "one buffer entry per object");
 
@@ -1814,7 +1824,7 @@ mod tests {
     fn a_collected_dynamic_string_gives_its_payload_back() {
         use crate::memory::buffer::{PressureMode, set_pressure_mode};
         use crate::memory::buffer_arena::with_buffer_arena;
-        use crate::string::{LLStringDynamic, ll_string_new_dynamic};
+        use crate::string::ll_string_new_dynamic;
         let _g = crate::memory::block_pool::test_guard();
 
         let cls = ClassBuilder::new("StringHolder")

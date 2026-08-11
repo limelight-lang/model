@@ -936,12 +936,15 @@ mod tests {
 
             // Displaces `old`: last reference gone, teardown runs, the
             // destructor collects from inside it.
-            ref_store(
-                &mut arena,
-                owner as *mut RcHeader,
-                next,
-                old as *mut RcHeader,
-                Value::null(),
+            assert!(
+                ref_store(
+                    &mut arena,
+                    owner as *mut RcHeader,
+                    next,
+                    old as *mut RcHeader,
+                    Value::null(),
+                ),
+                "the barrier refused the displacement this test is built on"
             );
 
             // The store barrier publishes before it drops, so by the time

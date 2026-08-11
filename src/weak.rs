@@ -569,12 +569,15 @@ mod tests {
         /// Real store through the barrier: retain + whole-value write.
         unsafe fn link(arena: *mut Arena, from: *mut Object, to: *mut Object) {
             unsafe {
-                crate::memory::barrier::ref_store(
-                    arena,
-                    from as *mut RcHeader,
-                    Object::prop_at(from, 16),
-                    std::ptr::null_mut(),
-                    Value::entity(Tag::Object, to as *mut RcHeader),
+                assert!(
+                    crate::memory::barrier::ref_store(
+                        arena,
+                        from as *mut RcHeader,
+                        Object::prop_at(from, 16),
+                        std::ptr::null_mut(),
+                        Value::entity(Tag::Object, to as *mut RcHeader),
+                    ),
+                    "the barrier refused the link this test is built on"
                 );
             }
         }
