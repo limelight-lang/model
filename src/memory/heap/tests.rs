@@ -19,11 +19,10 @@ mod the_allocation_itself {
         assert_eq!(size_class_index(8193), None);
     }
 
-    /// Sixteen is the alignment every caller is entitled to: a `Value`
-    /// is sixteen bytes and an entity header sits at offset 0 of a slot,
-    /// so anything less would misalign the atomics the collector reads.
-    /// Anything stricter leaves the heap for the pooled path, which is
-    /// `stdapi`'s test.
+    /// Sixteen is the alignment every caller is entitled to, because
+    /// `ll_alloc` routes on it: a request of `align <= 16` goes to the
+    /// thread heap on the strength of this promise. Anything stricter
+    /// leaves the heap for the pooled path, which is `stdapi`'s test.
     #[test]
     fn alloc_is_aligned_and_sized() {
         let _g = crate::memory::block_pool::test_guard();
@@ -35,8 +34,11 @@ mod the_allocation_itself {
 
         // Every class, and two slots of each: the first slot's alignment
         // comes from the block header's size and every later one from
-        // the class's stride, so a class that is not a multiple of
-        // sixteen misaligns the second slot and nothing else.
+        // the class's stride, which is the only other way a slot can
+        // come back misaligned. It is a cheap assertion rather than a
+        // probed one — `CLASS_LUT` is built in 16-byte steps, so a class
+        // that is not a multiple of sixteen is never selected and cannot
+        // be anyone's stride.
         for &size in SIZE_CLASSES.iter() {
             let first = heap.alloc(size);
             let second = heap.alloc(size);
@@ -567,6 +569,14 @@ mod blocks_going_home_with_nobody_asking {
     /// final assert.
     #[test]
     fn a_dropped_heap_returns_its_blocks_to_the_pool() {
+        // Same reason as the test above, and it is a flake without this:
+        // this one also counts the blocks the pool has out, and a ring
+        // taken on this thread's first record is a block the registry
+        // keeps for good. Which test journals first is a scheduling
+        // accident, so the count came back one high about once in thirty
+        // `debug-journal` runs. Before the pool's guard, as
+        // `set_sites_for_test` requires.
+        let _quiet = crate::journal::kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         let pool = BlockPool::global();
         let before = pool.blocks_out();
