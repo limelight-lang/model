@@ -7,6 +7,33 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-11 — the guard checked a different limit from the call below it
+
+**What happened.** `stdapi::ll_alloc_large` guarded its OS-direct branch
+with `checked_add(LINE_SIZE)` and a checked block round-up, both carrying
+a comment about caller-controlled ABI input, and then unwrapped
+`Layout::from_size_align`. The checked pair fails near `usize::MAX`;
+`Layout` fails at `isize::MAX`. Everything between the two — the whole top
+half of the range — walked past the guard into a panic, and a panic
+crossing `extern "C"` aborts, where the module's contract is null.
+
+**Why it was not caught.** The guard reads as complete. Two checked
+operations and a comment naming the hazard are what a reviewer looks for,
+and the site had both; nothing on the line says which limit was being
+guarded against. The test beside it,
+`huge_size_overflow_returns_null_not_underallocation`, uses `usize::MAX`
+and `usize::MAX - 100` — chosen to exercise the wrap, and passing for the
+same reason the defect survived. The correct shape was twenty lines away
+the whole time, in `immortal_alloc_run`.
+
+**The rule.** A guard is verified against **the limit of the call it
+protects**, never against the widest type in the expression. Write the
+limit down: `usize` arithmetic and `Layout` disagree by a factor of two,
+and so do `isize`-based length caps, `u32` index caps and every ABI that
+takes a size as a signed word. The band between two limits is where a
+caller that lost a sign lands, and a test that picks its input from the
+type's maximum never reaches it.
+
 ## 2026-08-10 — cutting the duplicate left the copy that overreached
 
 **What happened.** The comment pass over `src/memory/` found `Heap::refill`
