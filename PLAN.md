@@ -159,7 +159,7 @@ it claims to guard, and the suite's count is recorded before and after.
         `the_hash_is_computed_once_on_demand_and_never_zero` already
         pins the doc's claim, so removal is the other legal outcome —
         rule 4 makes that Edmond's, not the step's.
-- [ ] S12.3 The weak notification at thread exit that cannot fire
+- [x] S12.3 The weak notification at thread exit that cannot fire
       done: the cell in
         `a_weak_referenced_object_held_by_a_static_notifies_at_thread_exit`
         is alive when the static pass releases the target, so
@@ -170,6 +170,15 @@ it claims to guard, and the suite's count is recorded before and after.
       The test kills the cell inside the thread, which clears the bit,
         so the object's death at exit notifies nothing and the ordering
         the test exists for could be inverted with it still green.
+      handoff: the cell is handed to the parent through a static and
+        killed after the join, so it is alive when the static pass
+        releases the target. Both halves of the A/B were run with
+        `weak::dispose()` moved above the static pass in
+        `ll_thread_exit`: the repaired test aborts there — the
+        `debug_assert` in `notify_death` fires inside a destructor,
+        which cannot unwind — and the old shape passes under the same
+        probe. The group doc, which had been rewritten to match the
+        weaker test, states the notification again.
 - [ ] S12.4 The heap's alignment nobody asserts, and the block that
       never goes home
       done: `alloc_is_aligned_and_sized` asserts the alignment its name

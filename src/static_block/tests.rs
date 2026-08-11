@@ -32,8 +32,8 @@ unsafe fn free_static_block(p: *mut u8, layout: *const Class) {
 /// A static block holds ordinary references, so the pass releases
 /// what each slot holds: a heap object takes its last release here,
 /// an arena escapee loses the hold-count the escape barrier put on
-/// it, and a target whose weak cell has already died dies at exit
-/// like any other.
+/// it, and a death a weak cell names reaches the weak table, which is
+/// why that table is disposed of after this pass rather than before.
 mod what_the_exit_pass_gives_back {
     use super::*;
 
@@ -132,15 +132,24 @@ mod what_the_exit_pass_gives_back {
     /// the table is disposed of last, and why swallowing the
     /// notification would be worse than aborting: the cell's target
     /// would dangle while `get()` still hands it out retained.
+    ///
+    /// **The cell outlives the thread, and that is the instrument.**
+    /// Killed inside the thread it clears `HAS_WEAK_REFERENCES` on its
+    /// way out, so the target's death notifies nothing and the
+    /// ordering this test exists for cannot fail — which is how it
+    /// stood until S12.3. Read after the join, the cell answers null
+    /// or the notification never ran.
     #[test]
     fn a_weak_referenced_object_held_by_a_static_notifies_at_thread_exit() {
         let _g = crate::memory::block_pool::test_guard();
         static SEEN: AtomicUsize = AtomicUsize::new(0);
+        static CELL: AtomicUsize = AtomicUsize::new(0);
         unsafe extern "C" fn record(_o: *mut Object) {
             SEEN.fetch_add(1, Ordering::Relaxed);
         }
 
         SEEN.store(0, Ordering::Relaxed);
+        CELL.store(0, Ordering::Relaxed);
 
         let cls = ClassBuilder::new("StaticWeakTarget")
             .destructor(record as *const ())
@@ -160,6 +169,9 @@ mod what_the_exit_pass_gives_back {
             let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
             let weak = unsafe { crate::weak::ll_weakref_create(&mut ctx, obj as *mut RcHeader) };
             assert!(!weak.is_null());
+            // Handed to the parent rather than killed here: the cell has
+            // to be alive when the static pass releases the target.
+            CELL.store(weak as usize, Ordering::Relaxed);
 
             let block = static_block(layout);
             unsafe {
@@ -171,10 +183,6 @@ mod what_the_exit_pass_gives_back {
                 ));
                 ll_static_block_register(block, layout);
                 assert!(!crate::refcount::ll_release(obj as *mut RcHeader));
-                // Let the cell go too; the static is the last holder of
-                // the target, so its death at exit is what nulls it.
-                assert!(crate::refcount::ll_release(weak as *mut RcHeader));
-                crate::object::ll_entity_die(weak as *mut RcHeader);
             }
 
             arena.reset(|_| {});
@@ -187,6 +195,19 @@ mod what_the_exit_pass_gives_back {
             1,
             "the target died at thread exit"
         );
+
+        let weak = CELL.load(Ordering::Relaxed) as *mut crate::weak::LLWeakRef;
+        assert!(
+            unsafe { crate::weak::ll_weakref_get(weak) }.is_null(),
+            "the death at thread exit never reached the weak table"
+        );
+
+        // The cell is this thread's to give back now; its target is
+        // already gone, so the teardown touches no weak table.
+        unsafe {
+            assert!(crate::refcount::ll_release(weak as *mut RcHeader));
+            crate::object::ll_entity_die(weak as *mut RcHeader);
+        }
     }
 }
 
