@@ -19,6 +19,11 @@ mod the_allocation_itself {
         assert_eq!(size_class_index(8193), None);
     }
 
+    /// Sixteen is the alignment every caller is entitled to: a `Value`
+    /// is sixteen bytes and an entity header sits at offset 0 of a slot,
+    /// so anything less would misalign the atomics the collector reads.
+    /// Anything stricter leaves the heap for the pooled path, which is
+    /// `stdapi`'s test.
     #[test]
     fn alloc_is_aligned_and_sized() {
         let _g = crate::memory::block_pool::test_guard();
@@ -27,6 +32,29 @@ mod the_allocation_itself {
         let b = heap.alloc(40);
         assert!(!a.is_null());
         assert_eq!((b as usize).wrapping_sub(a as usize), 48);
+
+        // Every class, and two slots of each: the first slot's alignment
+        // comes from the block header's size and every later one from
+        // the class's stride, so a class that is not a multiple of
+        // sixteen misaligns the second slot and nothing else.
+        for &size in SIZE_CLASSES.iter() {
+            let first = heap.alloc(size);
+            let second = heap.alloc(size);
+            assert!(!first.is_null() && !second.is_null());
+            for p in [first, second] {
+                assert_eq!(
+                    p as usize % 16,
+                    0,
+                    "a slot of class {size} came back misaligned"
+                );
+            }
+
+            unsafe {
+                heap.free(first);
+                heap.free(second);
+            }
+        }
+
         unsafe {
             heap.free(a);
             heap.free(b);
@@ -192,24 +220,53 @@ mod the_block_under_the_slots {
         assert_eq!(pool.regions_carved(), regions_before);
     }
 
+    /// **Two blocks, because one proves nothing.** `Heap::retire_empty`
+    /// keeps the first emptied block of a class as that class's one
+    /// bounded empty spare and returns only the next one, so a test that
+    /// fills and empties a single block watches a block that never
+    /// leaves the thread. The second block is followed by address, the
+    /// way the buffer arena's own test follows one: the process-global
+    /// `blocks_out` moves under this test for reasons it is not about.
     #[test]
     fn empty_block_returns_to_pool() {
         let _g = crate::memory::block_pool::test_guard();
         let pool = BlockPool::global();
         let mut heap = Heap::new();
 
-        let warm = heap.alloc(64);
-        unsafe { heap.free(warm) };
-        let regions_before = pool.regions_carved();
-
         let class = 64usize;
         let slots = BLOCK_PAYLOAD / class;
-        let ptrs: Vec<_> = (0..slots).map(|_| heap.alloc(class)).collect();
+        let ptrs: Vec<_> = (0..2 * slots).map(|_| heap.alloc(class)).collect();
+        let spare = ptrs[0] as usize & !BLOCK_MASK;
+        let returned = ptrs[2 * slots - 1] as usize & !BLOCK_MASK;
+        assert_ne!(spare, returned, "the fill has to span two blocks");
+
+        let regions_before = pool.regions_carved();
         for p in &ptrs {
             unsafe { heap.free(*p) };
         }
 
-        let p = heap.alloc(64);
+        let mut drawn = Vec::new();
+        let mut found = false;
+        for _ in 0..16 {
+            let b = pool.get();
+            assert!(!b.is_null());
+            drawn.push(b);
+            if b as usize == returned {
+                found = true;
+                break;
+            }
+        }
+
+        for b in drawn {
+            pool.put(b);
+        }
+
+        assert!(found, "the second emptied block never reached the pool");
+
+        // And the first is still here, so the next allocation is served
+        // without carving.
+        let p = heap.alloc(class);
+        assert_eq!(p as usize & !BLOCK_MASK, spare, "the spare serves it");
         assert_eq!(pool.regions_carved(), regions_before);
         unsafe { heap.free(p) };
     }

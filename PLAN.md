@@ -179,14 +179,22 @@ it claims to guard, and the suite's count is recorded before and after.
         which cannot unwind — and the old shape passes under the same
         probe. The group doc, which had been rewritten to match the
         weaker test, states the notification again.
-- [ ] S12.4 The heap's alignment nobody asserts, and the block that
+- [x] S12.4 The heap's alignment nobody asserts, and the block that
       never goes home
       done: `alloc_is_aligned_and_sized` asserts the alignment its name
         promises; `empty_block_returns_to_pool` empties a second block
         of the class, so the pool receives one past the empty spare
-        `Heap::retire_empty` keeps, and reads `blocks_out` rather than
-        `regions_carved` alone
+        `Heap::retire_empty` keeps, and follows that block by address
       tier: T1 · role: —
+      handoff: `blocks_out` is not the instrument after all — the file's
+        own tests avoid it because a block returning late from another
+        test moves it — so the second block is followed by address, the
+        way the buffer arena's test follows one. Both seen failing:
+        `retire_empty` made to keep every block, and `LINE_SIZE` set to
+        264. **The alignment claim has one reachable defect, not two:**
+        `alloc` indexes its class table in 16-byte steps, so a class that
+        is not a multiple of sixteen is never selected and cannot
+        misalign a later slot — a probe on `SIZE_CLASSES` passes.
 - [ ] S12.5 The array layer's two claims with instruments a few lines
       away
       done: `a_store_through_an_arena_holder_separates_into_the_arena`
