@@ -85,9 +85,11 @@ unsafe fn write_through(
     if separated.is_null() {
         return false;
     }
+
     if separated == current {
         return write(current, arena);
     }
+
     // The copy is private until published, so a refusal from here on
     // destroys it whole and leaves the slot and the original untouched.
     // `store_box` is not one of the operations' named refusals: it
@@ -110,6 +112,7 @@ unsafe fn write_through(
         unsafe { destroy_unpublished(separated as *mut RcHeader) };
         return false;
     }
+
     unsafe {
         // The creation reference goes first, while no user code can run:
         // the slot's reference keeps the copy at one, so the release
@@ -122,6 +125,7 @@ unsafe fn write_through(
         debug_assert!(!died, "the slot's reference must outlive the creation one");
         crate::memory::barrier::drop_ref(owner_cat, current as *mut RcHeader);
     }
+
     true
 }
 
@@ -179,6 +183,7 @@ pub unsafe fn set(
             "the layer canonicalises before it stores"
         );
     }
+
     // A reference-tagged value would mean two different things for one
     // call: the element's own box on a fresh key, and a box written into
     // the existing box on a live one. `$a[k] = &$v` is the rebinding
@@ -224,6 +229,7 @@ pub unsafe fn append(
     let Some(key) = (unsafe { (*current).table.append_key() }) else {
         return false;
     };
+
     unsafe {
         write_through(ctx, owner_cat, slot, |a, arena| {
             store_into(a, arena, Key::Int(key), value)
@@ -316,6 +322,7 @@ pub unsafe fn make_ref(
             "the layer canonicalises before it references"
         );
     }
+
     let mut boxed = std::ptr::null_mut();
     let separated = unsafe {
         write_through(ctx, owner_cat, slot, |a, arena| {
@@ -323,6 +330,7 @@ pub unsafe fn make_ref(
             if vivified && !store_into(a, arena, key, Value::null()) {
                 return false;
             }
+
             boxed = box_element(a, arena, key);
             if boxed.is_null() {
                 // The vivified element goes back out. Without this a
@@ -334,11 +342,14 @@ pub unsafe fn make_ref(
                 if vivified {
                     remove_from(a, key);
                 }
+
                 return false;
             }
+
             true
         })
     };
+
     if separated {
         boxed
     } else {
@@ -373,6 +384,7 @@ pub unsafe fn get(slot: *const Value, key: Key) -> Option<Value> {
         let boxed = element.entity_ptr() as *const crate::reference::LLReference;
         return Some(unsafe { (*boxed).value });
     }
+
     Some(element)
 }
 
@@ -438,11 +450,13 @@ unsafe fn store_into(
             return unsafe { store_through_box(arena, boxed, value) };
         }
     }
+
     let category = unsafe { category_of(a) };
     let v = match unsafe { crate::memory::barrier::publish_child(arena, category, value) } {
         Some(published) => published,
         None => return false,
     };
+
     let published_key = match unsafe { publish_key(arena, category, key) } {
         Some(published) => published,
         None => {
@@ -450,18 +464,21 @@ unsafe fn store_into(
             return false;
         }
     };
+
     match unsafe { (*a).table.insert(category, published_key, v) } {
         None => {
             unsafe { give_value_back(category, &v) };
             if let Key::Str(k) = published_key {
                 unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
             }
+
             false
         }
         Some((added, displaced)) => {
             if let Some(old) = displaced {
                 unsafe { give_value_back(category, &old) };
             }
+
             if !added {
                 // S2.2: the overwrite arm kept the entry's original key,
                 // so the reference published above goes back.
@@ -469,6 +486,7 @@ unsafe fn store_into(
                     unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
                 }
             }
+
             true
         }
     }
@@ -504,6 +522,7 @@ unsafe fn store_through_box(
     } else {
         std::ptr::null_mut()
     };
+
     unsafe { crate::memory::barrier::ref_store(arena, boxed as *mut RcHeader, slot, old, value) }
 }
 
@@ -550,14 +569,17 @@ unsafe fn box_element(
         Some(element) => element,
         None => return std::ptr::null_mut(),
     };
+
     if current.tag() == Tag::Reference {
         return current.entity_ptr() as *mut crate::reference::LLReference;
     }
+
     let category = unsafe { category_of(a) };
     let boxed = crate::reference::ll_reference_new();
     if boxed.is_null() {
         return std::ptr::null_mut();
     }
+
     // Into `GcHeap` rather than into `category`: the box is the holder
     // here, and a box is a heap entity whatever the array is.
     let held = match unsafe {
@@ -569,6 +591,7 @@ unsafe fn box_element(
             return std::ptr::null_mut();
         }
     };
+
     // Through `write_value_slot`, not a plain assignment: the factory
     // publishes the header before it returns, so the box is a counted
     // entity in the census from that instant and the collector's relaxed
@@ -581,6 +604,7 @@ unsafe fn box_element(
     let published = unsafe {
         crate::memory::barrier::store_category_barrier(arena, category, boxed as *mut RcHeader)
     };
+
     debug_assert_eq!(
         published, boxed as *mut RcHeader,
         "a heap non-COW entity is never copied by the barrier"
@@ -602,12 +626,14 @@ unsafe fn box_element(
             return std::ptr::null_mut();
         }
     };
+
     // The entry's own reference on the element, given back only now: the
     // box already holds one of its own, and `drop_ref` runs `__destruct`
     // bodies.
     if let Some(old) = displaced {
         unsafe { give_value_back(category, &old) };
     }
+
     boxed
 }
 
@@ -660,13 +686,16 @@ fn canonical_int(bytes: &[u8]) -> Option<i64> {
         [b'-', rest @ ..] => (rest, true),
         _ => (bytes, false),
     };
+
     if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
         return None;
     }
+
     // No leading zero — "0" is the one zero — and no "-0".
     if digits[0] == b'0' && (negative || digits.len() > 1) {
         return None;
     }
+
     // `str::parse` refuses overflow, where a hand-rolled accumulator
     // wraps through it: `i64::MAX + 1` must stay a string key. The
     // bytes are ASCII by the digit test above, so the UTF-8 view cannot
@@ -715,8 +744,10 @@ mod tests {
             if p.is_null() {
                 break;
             }
+
             fillers.push((p, granted));
         }
+
         fillers
     }
 
@@ -739,8 +770,10 @@ mod tests {
             if s.is_null() {
                 break;
             }
+
             fillers.push(s);
         }
+
         fillers
     }
 
@@ -783,6 +816,7 @@ mod tests {
             // The creation reference goes: the two slots are the holders.
             ll_release(src as *mut RcHeader);
         }
+
         (h, slot_a, slot_b)
     }
 
@@ -806,6 +840,7 @@ mod tests {
                     .insert(category, Key::Int(k), Value::int(i as i64));
             }
         }
+
         for (i, spelling) in [
             &b"1"[..],
             b"-1",
@@ -830,8 +865,10 @@ mod tests {
                     std::str::from_utf8(spelling).unwrap()
                 );
             }
+
             free(s);
         }
+
         unsafe {
             (*a).table.dispose(category);
             (*a).rc.refcount = 0;
@@ -858,6 +895,7 @@ mod tests {
                 .table
                 .insert(category_of(src), Key::Int(0), Value::int(10));
         }
+
         let (h, slot_a, slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
         let val = mk(b"forty-one");
 
@@ -944,6 +982,7 @@ mod tests {
                 .table
                 .insert(category_of(src), Key::Int(0), Value::int(10));
         }
+
         let (h, slot_a, _slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
         let val = mk(b"unstored");
 
@@ -958,6 +997,7 @@ mod tests {
                 Value::entity(Tag::String, val as *mut RcHeader),
             )
         };
+
         FORCE_OOM.store(false, Ordering::Relaxed);
         free_fillers(fillers);
         assert!(!stored, "the copy's storage was meant to be refused");
@@ -1026,6 +1066,7 @@ mod tests {
                 Value::int(1),
             )
         };
+
         FORCE_OOM.store(false, Ordering::Relaxed);
         free_fillers(fillers);
         assert!(!stored, "growth was meant to be refused");
@@ -1036,6 +1077,7 @@ mod tests {
             for i in 0..8i64 {
                 assert_eq!((*src).table.get(Key::Int(i)).unwrap().as_int(), i);
             }
+
             assert!(ll_release(h as *mut RcHeader));
             ll_object_die(h);
         }
@@ -1072,6 +1114,7 @@ mod tests {
             assert!(ll_release(probe as *mut RcHeader));
             crate::object::ll_entity_die(probe as *mut RcHeader);
         }
+
         let stored = unsafe {
             set(
                 context_ptr,
@@ -1081,6 +1124,7 @@ mod tests {
                 Value::entity(Tag::String, val as *mut RcHeader),
             )
         };
+
         FORCE_OOM.store(false, Ordering::Relaxed);
         free_fillers(fillers);
         assert!(!stored, "the copy's storage was meant to be refused");
@@ -1127,6 +1171,7 @@ mod tests {
             );
             crate::refcount::ll_retain(src as *mut RcHeader);
         }
+
         let before = unsafe { (*child).rc.refcount };
 
         let copy = unsafe {
@@ -1137,6 +1182,7 @@ mod tests {
                 crate::array::entity::CopyReason::Duplication,
             )
         };
+
         assert!(!copy.is_null());
         unsafe {
             assert_eq!(
@@ -1151,6 +1197,7 @@ mod tests {
                 "the corpse kept the replay's reference"
             );
         }
+
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -1224,6 +1271,7 @@ mod tests {
                     .table
                     .insert(category_of(src), Key::Int(i), Value::int(i));
             }
+
             let k3 = mk(b"other");
             let k3_start = (*k3).rc.refcount;
             FORCE_OOM.store(true, Ordering::Relaxed);
@@ -1385,6 +1433,7 @@ mod tests {
                 Value::entity(Tag::String, value as *mut RcHeader),
             )
         };
+
         FORCE_OOM.store(false, Ordering::Relaxed);
         free_string_fillers(fillers);
         assert!(!stored, "the value's escape copy was meant to be refused");
@@ -1401,6 +1450,7 @@ mod tests {
             assert!(ll_release(h as *mut RcHeader));
             ll_object_die(h);
         }
+
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -1424,6 +1474,7 @@ mod tests {
                 .table
                 .insert(category_of(src), Key::Int(0), Value::int(10));
         }
+
         let class = ClassBuilder::new("ArenaHolder")
             .prop("a", true)
             .prop("b", true)
@@ -1441,6 +1492,7 @@ mod tests {
                     Value::entity(Tag::Array, src as *mut RcHeader),
                 ));
             }
+
             ll_release(src as *mut RcHeader);
         }
 
@@ -1499,6 +1551,7 @@ mod tests {
                     .insert(category_of(src), Key::Int(i), Value::int(10 + i));
             }
         }
+
         let (h, slot_a, slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
 
         assert!(unsafe { append(context_ptr, MemoryCategory::GcHeap, slot_a, Value::int(99)) });
@@ -1566,6 +1619,7 @@ mod tests {
                 Value::entity(Tag::String, value as *mut RcHeader),
             );
         }
+
         let key_shared = unsafe { (*key).rc.refcount };
         let value_shared = unsafe { (*value).rc.refcount };
         let (h, slot_a, _slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
@@ -1643,6 +1697,7 @@ mod tests {
                 "the entry does not hold a box, so the read proves nothing"
             );
         }
+
         let (h, slot_a, slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
 
         unsafe {
@@ -1687,6 +1742,7 @@ mod tests {
             for i in 2..5000i64 {
                 (*a).table.insert(category, Key::Int(i), Value::int(i));
             }
+
             (*r).value = Value::int(99);
             assert_eq!((*r).value.as_int(), 99);
 
@@ -1717,11 +1773,13 @@ mod tests {
             for i in 0..200i64 {
                 (*a).table.insert(category, Key::Int(i), Value::int(i));
             }
+
             let r = box_element(a, arena_ptr, Key::Int(150));
             assert!(!r.is_null());
             for i in 0..150i64 {
                 let _ = (*a).table.remove(Key::Int(i));
             }
+
             (*a).table.compact();
 
             assert_eq!(
@@ -1801,6 +1859,7 @@ mod tests {
             assert!(!boxed.is_null(), "the element was meant to be boxed");
             boxed
         };
+
         let first_held = unsafe { (*first).rc.refcount };
 
         let second = mk(b"second");
@@ -1886,6 +1945,7 @@ mod tests {
             assert!(!boxed.is_null());
             boxed
         };
+
         let held_start = unsafe { (*held).rc.refcount };
 
         // An arena COW value crossing into the heap box is copied out,
@@ -1905,6 +1965,7 @@ mod tests {
                 Value::entity(Tag::String, crossing as *mut RcHeader),
             )
         };
+
         FORCE_OOM.store(false, Ordering::Relaxed);
         free_string_fillers(fillers);
         assert!(!stored, "the crossing value's copy was meant to be refused");
@@ -1927,6 +1988,7 @@ mod tests {
             assert!(ll_release(held as *mut RcHeader));
             crate::object::ll_entity_die(held as *mut RcHeader);
         }
+
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -1952,6 +2014,7 @@ mod tests {
             assert!(!boxed.is_null());
             boxed
         };
+
         assert_eq!(
             unsafe { crate::object::header_category(boxed as *const RcHeader) },
             MemoryCategory::GcHeap,
@@ -2016,6 +2079,7 @@ mod tests {
                 }
             }
         }
+
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -2091,10 +2155,12 @@ mod tests {
                     Some(v) => v.entity_ptr(),
                     None => std::ptr::null_mut(),
                 };
+
                 if !boxed.is_null() {
                     crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, boxed);
                 }
             }
+
             // The holder goes, and both arrays with it. Left standing,
             // their storage keeps buffer-arena chunks that the arena's
             // own tests then find in a shape they did not put it in.
@@ -2102,6 +2168,7 @@ mod tests {
                 assert!(ll_release(holder as *mut RcHeader));
                 ll_object_die(holder);
             }
+
             (read_a, read_b)
         }
     }
@@ -2256,8 +2323,10 @@ mod tests {
                     assert!(ll_release(holder as *mut RcHeader));
                     ll_object_die(holder);
                 }
+
                 (read_a, read_c)
             };
+
             assert_eq!(answer, expected, "{category:?}");
         }
 
@@ -2278,6 +2347,7 @@ mod tests {
         unsafe extern "C" fn counting(_o: *mut Object) {
             DESTRUCTS.fetch_add(1, Ordering::Relaxed);
         }
+
         DESTRUCTS.store(0, Ordering::Relaxed);
         let cls = ClassBuilder::new("Boxed")
             .destructor(counting as *const ())
@@ -2346,6 +2416,7 @@ mod tests {
             assert!(ll_release(keeper as *mut RcHeader));
             ll_object_die(keeper);
         }
+
         crate::memory::context::set_current_context(std::ptr::null_mut());
     }
 
@@ -2380,6 +2451,7 @@ mod tests {
             ));
             make_ref(context_ptr, MemoryCategory::RequestArena, slot, Key::Int(0))
         };
+
         assert!(!boxed.is_null());
         assert_eq!(
             unsafe { crate::object::header_category(boxed as *const RcHeader) },
@@ -2425,6 +2497,7 @@ mod tests {
                 .table
                 .insert(category_of(src), Key::Str(x), Value::int(1));
         }
+
         let x_shared = unsafe { (*x).rc.refcount };
         // `slot_a` is `$a`, `slot_b` is `$b`.
         let (h, slot_a, slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
@@ -2691,6 +2764,7 @@ mod tests {
             assert!(ll_release(h as *mut RcHeader));
             ll_object_die(h);
         }
+
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -2775,6 +2849,7 @@ mod tests {
             );
             free(s);
         }
+
         for spelling in [&b""[..], b"+1", b"-"] {
             let s = mk(spelling);
             assert!(

@@ -88,10 +88,12 @@ thread_local! {
     static TEST_THRESHOLD: std::cell::Cell<usize> =
         const { std::cell::Cell::new(CANDIDATE_THRESHOLD) };
 }
+
 #[cfg(test)]
 fn candidate_threshold() -> usize {
     TEST_THRESHOLD.with(|c| c.get())
 }
+
 #[cfg(all(test, not(feature = "rc-walk")))]
 pub(crate) fn set_test_threshold(n: usize) {
     TEST_THRESHOLD.with(|c| c.set(n));
@@ -189,6 +191,7 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
             }
         });
     }
+
     children
 }
 
@@ -242,6 +245,7 @@ pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
     if unsafe { (*entity).flags } & CYCLE_COLLECTOR_BUFFERED != 0 {
         return;
     }
+
     // An immediately-invoked closure, so the two refusal paths below
     // keep saying "no record" rather than returning from the function.
     let recorded = (|| {
@@ -253,9 +257,11 @@ pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
         if FORCE_BUFFER_REFUSAL.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
+
         if c.len() == c.capacity() && c.try_reserve(1).is_err() {
             return None;
         }
+
         c.push(entity);
         Some((c.len() - 1, c.len() >= candidate_threshold()))
     })();
@@ -266,6 +272,7 @@ pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
             return;
         }
     };
+
     // The buffered bit and the position go into the same store.
     unsafe { (*entity).flags |= CYCLE_COLLECTOR_BUFFERED | encode_index(index) };
     if full {
@@ -280,6 +287,7 @@ fn encode_index(index: usize) -> u32 {
     if index > CANDIDATE_INDEX_MAX {
         return 0;
     }
+
     (index as u32 + 1) << CANDIDATE_INDEX_SHIFT
 }
 
@@ -318,6 +326,7 @@ pub(crate) unsafe fn forget_candidate(entity: *mut RcHeader) {
     if unsafe { (*entity).flags } & CYCLE_COLLECTOR_BUFFERED == 0 {
         return;
     }
+
     let at = unsafe { decode_index(entity) };
     unsafe { (*entity).flags &= !(CYCLE_COLLECTOR_BUFFERED | CANDIDATE_INDEX_MASK) };
     {
@@ -329,6 +338,7 @@ pub(crate) unsafe fn forget_candidate(entity: *mut RcHeader) {
             Some(i) if c.get(i) == Some(&entity) => Some(i),
             _ => c.iter().position(|&p| p == entity),
         };
+
         if let Some(i) = i {
             c.swap_remove(i);
             // The tail element moved into `i` and must learn its new
@@ -353,6 +363,7 @@ fn candidate_buffer() -> *mut Vec<*mut RcHeader> {
             buf = Box::into_raw(Box::new(Vec::new()));
             cell.set(buf);
         }
+
         buf
     })
 }
@@ -411,6 +422,7 @@ pub unsafe fn collect_cycles() -> usize {
     if GC_ACTIVE.with(|a| a.get()) || TEARDOWN_DEPTH.with(|d| d.get()) != 0 {
         return 0;
     }
+
     // Reset the guard on every exit path, including a panicking assert in
     // debug builds, so a poisoned collection can't wedge the collector off.
     struct Active;
@@ -419,6 +431,7 @@ pub unsafe fn collect_cycles() -> usize {
             GC_ACTIVE.with(|a| a.set(false));
         }
     }
+
     GC_ACTIVE.with(|a| a.set(true));
     COLLECT_PENDING.with(|p| p.set(false));
     let _active = Active;
@@ -432,6 +445,7 @@ unsafe fn collect_cycles_inner() -> usize {
         if roots.is_empty() {
             return reclaimed;
         }
+
         for &r in &roots {
             unsafe { (*r).flags &= !(CYCLE_COLLECTOR_BUFFERED | CANDIDATE_INDEX_MASK) };
         }
@@ -440,11 +454,13 @@ unsafe fn collect_cycles_inner() -> usize {
         for &r in &roots {
             unsafe { mark_gray(r) };
         }
+
         // scan: subgraphs with external references left get restored to
         // black (re-incrementing), the rest turn white.
         for &r in &roots {
             unsafe { scan(r) };
         }
+
         // Gather whites (marking black to visit once).
         let mut whites = Vec::new();
         for &r in &roots {
@@ -469,6 +485,7 @@ unsafe fn collect_cycles_inner() -> usize {
                 && (*w).flags & DESTRUCTOR_PENDING != 0
                 && (*w).flags & DESTRUCTOR_RAN == 0
         });
+
         if owes_destructor {
             unsafe { run_cyclic_destructors(&whites) };
             continue; // the survivors re-buffered themselves; re-collect
@@ -500,6 +517,7 @@ unsafe fn collect_cycles_inner() -> usize {
                         crate::memory::barrier::escape_lose(child);
                     }
                 });
+
                 // A white weak cell has state OUTSIDE the traced graph: a
                 // still-live target's weak-table row maps to it, and its
                 // target's bit 7 is set. The raw free below would leave
@@ -537,6 +555,7 @@ unsafe fn collect_cycles_inner() -> usize {
                 }
             }
         }
+
         reclaimed += whites.len();
         return reclaimed;
     }
@@ -574,14 +593,17 @@ unsafe fn run_cyclic_destructors(whites: &[*mut RcHeader]) {
             unsafe { (*child).refcount += 1 };
         }
     }
+
     for &w in whites {
         unsafe { (*w).refcount += 1 };
     }
+
     for &w in whites {
         if is_object(unsafe { (*w).flags }) {
             unsafe { crate::object::run_pre_destructor(w as *mut Object) };
         }
     }
+
     for &w in whites {
         if unsafe { ll_release(w) } {
             // Ordinary death through the kind switch: a white can be any
@@ -598,17 +620,20 @@ unsafe fn mark_gray(root: *mut RcHeader) {
     if unsafe { color(root) } == COLOR_GRAY {
         return;
     }
+
     let mut stack = vec![root];
     while let Some(e) = stack.pop() {
         if unsafe { color(e) } == COLOR_GRAY {
             continue;
         }
+
         unsafe { set_color(e, COLOR_GRAY) };
         for child in unsafe { heap_children(e) } {
             unsafe {
                 debug_assert!((*child).refcount > 0, "trial delete underflow");
                 (*child).refcount -= 1;
             }
+
             stack.push(child);
         }
     }
@@ -620,6 +645,7 @@ unsafe fn scan(root: *mut RcHeader) {
         if unsafe { color(e) } != COLOR_GRAY {
             continue;
         }
+
         if unsafe { (*e).refcount } > 0 {
             unsafe { scan_black(e) };
         } else {
@@ -649,6 +675,7 @@ unsafe fn collect_white(root: *mut RcHeader, whites: &mut Vec<*mut RcHeader>) {
         if unsafe { color(e) } != COLOR_WHITE {
             continue;
         }
+
         unsafe { set_color(e, COLOR_BLACK) }; // visit once
         whites.push(e);
         stack.extend(unsafe { heap_children(e) });
@@ -687,6 +714,7 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     if crate::memory::reserve::is_drawn() {
         let _ = crate::memory::reserve::replenish();
     }
+
     // The compiler's poll is also an rc-walk checkpoint: handshake ack
     // and verdict drain (`crate::epoch`). In that build nothing arms
     // COLLECT_PENDING, so the rc-trace branch below stays cold dead.
@@ -787,8 +815,10 @@ mod tests {
             for filler in &names {
                 builder = builder.prop(filler, true);
             }
+
             builder.build()
         };
+
         let pooled_cls = wide("PooledTraceNode", 600);
         let run_cls = wide("RunTraceNode", 4_200);
 
@@ -800,6 +830,7 @@ mod tests {
             let kind_of = |o: *mut Object| {
                 *(((o as usize) & !crate::memory::block_pool::BLOCK_MASK) as *const u32)
             };
+
             assert_eq!(
                 kind_of(a),
                 crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE
@@ -821,6 +852,7 @@ mod tests {
                 "and the run's registry entry went with it"
             );
         }
+
         arena.reset(|_| {});
     }
 
@@ -867,6 +899,7 @@ mod tests {
                 "the dead holder let go of its escapee"
             );
         }
+
         arena.reset(|_| {});
     }
 
@@ -954,6 +987,7 @@ mod tests {
                 "both cyclic objects ran __destruct before being freed"
             );
         }
+
         arena.reset(|_| {});
     }
 
@@ -977,6 +1011,7 @@ mod tests {
                 } else {
                     std::ptr::null_mut()
                 };
+
                 ref_store(arena, obj as *mut RcHeader, slot, old, Value::null());
             }
         }
@@ -1007,6 +1042,7 @@ mod tests {
                 "both ran once, no double free"
             );
         }
+
         set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -1091,6 +1127,7 @@ mod tests {
             assert_eq!(collect_cycles(), 2, "the un-held cycle is reclaimed");
             assert_eq!(DTORS.load(Ordering::Relaxed), 1, "no second __destruct");
         }
+
         set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -1107,6 +1144,7 @@ mod tests {
             link(&mut arena, a, 16, a); // a→a: rc=2
             assert!(!ll_release(a as *mut RcHeader));
         }
+
         assert_eq!(unsafe { collect_cycles() }, 1);
         arena.reset(|_| {});
     }
@@ -1153,12 +1191,14 @@ mod tests {
             assert!(!ll_release(a as *mut RcHeader)); // buffered
             assert!(!ll_release(a as *mut RcHeader)); // deduplicated
         }
+
         let buffered = CANDIDATES.with(|c| {
             unsafe { &*candidate_buffer() }
                 .iter()
                 .filter(|&&p| p == a as *mut RcHeader)
                 .count()
         });
+
         assert_eq!(buffered, 1, "one buffer entry per object");
 
         // The last reference dies through plain RC: the candidate must
@@ -1168,6 +1208,7 @@ mod tests {
             assert!(ll_release(a as *mut RcHeader));
             crate::object::ll_object_die(a);
         }
+
         assert_eq!(unsafe { collect_cycles() }, 0);
         arena.reset(|_| {});
     }
@@ -1185,6 +1226,7 @@ mod tests {
             assert!(ll_release(a as *mut RcHeader));
             crate::object::ll_object_die(a);
         }
+
         assert_eq!(
             unsafe { (*candidate_buffer()).len() },
             0,
@@ -1243,6 +1285,7 @@ mod tests {
             assert!(ll_release(c as *mut RcHeader));
             crate::object::ll_object_die(c);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1283,6 +1326,7 @@ mod tests {
                 "pending cleared after fire"
             );
         }
+
         arena.reset(|_| {});
     }
 
@@ -1340,6 +1384,7 @@ mod tests {
             for &e in &p {
                 buffer_candidate(e);
             }
+
             assert_eq!(buffer(), p, "buffered in order");
 
             // Removes index 1 and moves p[3] into it.
@@ -1401,6 +1446,7 @@ mod tests {
             );
             (*a).table.storage_and_capacity()
         };
+
         assert!(!storage.is_null(), "the insert allocated storage to lose");
 
         unsafe {
@@ -1792,6 +1838,7 @@ mod tests {
                 0,
             )
         };
+
         assert!(!s.is_null());
         let (payload, capacity) = unsafe { ((*s).data, (*s).capacity as usize) };
         assert!(!payload.is_null(), "the string has an out-of-line payload");

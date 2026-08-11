@@ -139,11 +139,14 @@ const fn build_class_lut() -> [u8; CLASS_LUT_LEN] {
             if SIZE_CLASSES[ci] >= size {
                 break;
             }
+
             ci += 1;
         }
+
         table[g] = ci as u8;
         g += 1;
     }
+
     table
 }
 
@@ -155,6 +158,7 @@ pub fn size_class_index(size: usize) -> Option<usize> {
     if size > MAX_SMALL {
         return None;
     }
+
     let ci = CLASS_LUT[(size + 15) >> 4] as usize;
     Some(ci)
 }
@@ -520,6 +524,7 @@ impl Heap {
         if size > MAX_SMALL {
             return std::ptr::null_mut();
         }
+
         // SAFETY: `CLASS_LUT` is const-built with one entry per 16-byte
         // step up to `MAX_SMALL`, and every entry it stores is an index
         // `< NUM_CLASSES` for any `size <= MAX_SMALL` (the one larger entry
@@ -559,6 +564,7 @@ impl Heap {
         if b.used == 0 && self.empty_reserve[ci] == block {
             self.empty_reserve[ci] = std::ptr::null_mut();
         }
+
         b.used += 1;
 
         // If that was the block's last slot, retire it from `available`
@@ -602,6 +608,7 @@ impl Heap {
         if size > MAX_SMALL || count == 0 || out.len() < count {
             return (0, 0);
         }
+
         let ci = unsafe { *CLASS_LUT.get_unchecked((size + 15) >> 4) as usize };
         let class_size = unsafe { *SIZE_CLASSES.get_unchecked(ci) };
         let mut n = 0;
@@ -616,19 +623,23 @@ impl Heap {
                 if drew_fresh_block {
                     break;
                 }
+
                 drew_fresh_block = true;
                 let p = self.alloc(size);
                 if p.is_null() {
                     break;
                 }
+
                 out[n] = p;
                 n += 1;
                 continue;
             }
+
             let b = unsafe { &mut (*block).private };
             if b.used == 0 && self.empty_reserve[ci] == block {
                 self.empty_reserve[ci] = std::ptr::null_mut();
             }
+
             // Virgin tail first — the adjacent run.
             while n < count && b.bump < b.slots {
                 let idx = b.bump as usize;
@@ -638,29 +649,34 @@ impl Heap {
                 b.used += 1;
                 n += 1;
             }
+
             // Then the block's free list.
             while n < count {
                 let slot = b.free;
                 if slot.is_null() {
                     break;
                 }
+
                 b.free = unsafe { (*slot).next };
                 out[n] = slot as *mut u8;
                 b.used += 1;
                 n += 1;
             }
+
             if b.free.is_null() && b.bump >= b.slots {
                 self.unlink(ci, block);
             } else {
                 break; // room remains: the request is satisfied
             }
         }
+
         let mut contiguous_len = usize::from(n > 0);
         while contiguous_len < n
             && out[contiguous_len] == out[contiguous_len - 1].wrapping_add(class_size)
         {
             contiguous_len += 1;
         }
+
         (n, contiguous_len)
     }
 
@@ -680,6 +696,7 @@ impl Heap {
         if self.collect_owned(ci) {
             return self.alloc_class(ci);
         }
+
         // Then adopt: an abandoned block of this class is memory we already
         // hold, already carved for this exact size. Skipping this and carving
         // fresh is how a thread-churning workload grows without bound
@@ -687,9 +704,11 @@ impl Heap {
         if self.adopt(ci) {
             return self.alloc_class(ci);
         }
+
         if self.refill(ci).is_null() {
             return std::ptr::null_mut();
         }
+
         self.alloc_class(ci)
     }
 
@@ -710,6 +729,7 @@ impl Heap {
                     .load(Ordering::Relaxed)
                     .is_null()
             };
+
             if pending && self.collect_remote(block) {
                 let b = unsafe { &mut (*block).private };
                 if b.used == 0 {
@@ -720,8 +740,10 @@ impl Heap {
                     found = true;
                 }
             }
+
             block = next;
         }
+
         found
     }
 
@@ -739,6 +761,7 @@ impl Heap {
         if self.collect_remote(block) {
             return self.alloc_class(ci);
         }
+
         self.unlink(ci, block);
         self.alloc_class(ci)
     }
@@ -753,6 +776,7 @@ impl Heap {
             if head.is_null() {
                 return false;
             }
+
             list.heads[population][ci] = unsafe { (*head).links.owned_next };
             head
         };
@@ -774,6 +798,7 @@ impl Heap {
             // will collect.
             (*block).shared.owner.store(self.id(), Ordering::Release);
         }
+
         self.own(ci, block);
 
         // Slots freed while it was ownerless are parked; take them now. The
@@ -788,6 +813,7 @@ impl Heap {
                 (*block).private.slots,
             )
         };
+
         // Counted after the collect above, so slots freed while the block
         // was ownerless are not mistaken for live ones. What remains
         // belongs to a thread that has already exited, so nothing will
@@ -796,6 +822,7 @@ impl Heap {
         {
             self.adopted_live += used;
         }
+
         if used == 0 {
             self.retire_empty(ci, block);
         } else if free.is_null() && bump >= slots {
@@ -804,6 +831,7 @@ impl Heap {
         } else {
             self.link(ci, block);
         }
+
         !self.available[ci].is_null()
     }
 
@@ -816,6 +844,7 @@ impl Heap {
                 (*self.owned[ci]).links.owned_prev = block;
             }
         }
+
         self.owned[ci] = block;
     }
 
@@ -829,9 +858,11 @@ impl Heap {
             } else {
                 self.owned[ci] = next;
             }
+
             if !next.is_null() {
                 (*next).links.owned_prev = prev;
             }
+
             (*block).links.owned_prev = std::ptr::null_mut();
             (*block).links.owned_next = std::ptr::null_mut();
         }
@@ -869,6 +900,7 @@ impl Heap {
                     unsafe {
                         crate::memory::block_pool::store_block_kind(&raw const (*block).kind, 0)
                     };
+
                     BlockPool::global().put(block as *mut BlockHeader);
                 } else {
                     b.linked = false;
@@ -879,10 +911,13 @@ impl Heap {
                     l.owned_next = list.heads[population][ci];
                     list.heads[population][ci] = block;
                 }
+
                 block = next;
             }
+
             self.owned[ci] = std::ptr::null_mut();
         }
+
         self.available = [std::ptr::null_mut(); NUM_CLASSES];
         self.empty_reserve = [std::ptr::null_mut(); NUM_CLASSES];
     }
@@ -899,9 +934,11 @@ impl Heap {
                 .remote_free
                 .swap(std::ptr::null_mut(), Ordering::Acquire)
         };
+
         if head.is_null() {
             return;
         }
+
         let b = unsafe { &mut (*block).private };
         let mut n = 0u32;
         let mut last = head;
@@ -912,10 +949,13 @@ impl Heap {
                 if nxt.is_null() {
                     break;
                 }
+
                 last = nxt;
             }
+
             (*last).next = b.free;
         }
+
         b.free = head;
         b.used -= n;
     }
@@ -969,6 +1009,7 @@ impl Heap {
         if b.used == 0 {
             return self.retire_empty(ci, block);
         }
+
         if !b.linked {
             self.relink_unfull(ci, block);
         }
@@ -1019,9 +1060,11 @@ impl Heap {
                 .remote_free
                 .swap(std::ptr::null_mut(), Ordering::Acquire)
         };
+
         if head.is_null() {
             return false;
         }
+
         let b = unsafe { &mut (*block).private };
         let mut n = 0u32;
         let mut last = head;
@@ -1032,10 +1075,13 @@ impl Heap {
                 if nxt.is_null() {
                     break;
                 }
+
                 last = nxt;
             }
+
             (*last).next = b.free;
         }
+
         b.free = head;
         b.used -= n;
         true
@@ -1053,11 +1099,14 @@ impl Heap {
             if unsafe { !(*block).private.linked } {
                 self.link(ci, block);
             }
+
             return;
         }
+
         if unsafe { (*block).private.linked } {
             self.unlink(ci, block);
         }
+
         self.disown(ci, block);
         unsafe {
             (*block)
@@ -1066,6 +1115,7 @@ impl Heap {
                 .store(std::ptr::null_mut(), Ordering::Release);
             crate::memory::block_pool::store_block_kind(&raw const (*block).kind, 0);
         }
+
         BlockPool::global().put(block as *mut BlockHeader);
     }
 
@@ -1092,6 +1142,7 @@ impl Heap {
         for ci in 0..NUM_CLASSES {
             self.collect_owned(ci);
         }
+
         let mut total = 0;
         for ci in 0..NUM_CLASSES {
             let mut block = self.owned[ci];
@@ -1100,6 +1151,7 @@ impl Heap {
                 block = unsafe { (*block).links.owned_next };
             }
         }
+
         total.saturating_sub(self.adopted_live)
     }
 
@@ -1120,6 +1172,7 @@ impl Heap {
         if block.is_null() {
             return block;
         }
+
         let slots = (BLOCK_PAYLOAD / class_size) as u32;
 
         // Commissioning rule for entity blocks (`rfc/model/gc/rc-walk.md`,
@@ -1169,15 +1222,19 @@ impl Heap {
             (&raw mut (*block).shared).write(BlockShared {
                 owner: AtomicPtr::new(self.id()),
             });
+
             (&raw mut (*block).remote).write(BlockRemote {
                 remote_free: AtomicPtr::new(std::ptr::null_mut()),
             });
+
             (&raw mut (*block).links).write(BlockLinks {
                 owned_next: std::ptr::null_mut(),
                 owned_prev: std::ptr::null_mut(),
             });
+
             crate::memory::block_pool::store_block_kind(&raw const (*block).kind, self.block_kind);
         }
+
         self.own(ci, block);
         self.link(ci, block);
         block
@@ -1217,6 +1274,7 @@ impl Heap {
             self.link(ci, block);
             return;
         }
+
         unsafe {
             let second = (*head).private.next;
             (*block).private.prev = head;
@@ -1240,6 +1298,7 @@ impl Heap {
                 (*head).private.prev = block;
             }
         }
+
         self.available[ci] = block;
     }
 
@@ -1253,9 +1312,11 @@ impl Heap {
             } else {
                 self.available[ci] = next;
             }
+
             if !next.is_null() {
                 (*next).private.prev = prev;
             }
+
             (*block).private.prev = std::ptr::null_mut();
             (*block).private.next = std::ptr::null_mut();
             (*block).private.linked = false;
@@ -1331,6 +1392,7 @@ mod tls {
         if FORCE_TLS_FAILURE.load(Ordering::Relaxed) != 0 {
             return UNINIT;
         }
+
         let s = STATE.load(Ordering::Relaxed);
         if s != UNINIT { s } else { init() }
     }
@@ -1361,11 +1423,13 @@ mod tls {
         if slot == u32::MAX {
             return UNINIT;
         }
+
         let computed = if slot < FAST_SLOT_COUNT {
             TEB_TLS_SLOTS_OFFSET + slot * 8
         } else {
             FALLBACK_BIT | slot
         };
+
         match STATE.compare_exchange(UNINIT, computed, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => computed,
             Err(existing) => existing,
@@ -1389,6 +1453,7 @@ mod tls {
                 options(nostack, preserves_flags),
             );
         }
+
         val
     }
 
@@ -1437,6 +1502,7 @@ mod tls {
         if s == UNINIT {
             return std::ptr::null_mut();
         }
+
         if s & FALLBACK_BIT == 0 {
             unsafe { read_gs_qword(s) as *mut Heap }
         } else {
@@ -1465,11 +1531,13 @@ mod tls {
         if s == UNINIT {
             return false;
         }
+
         if s & FALLBACK_BIT == 0 {
             unsafe { write_gs_qword(s, p as u64) };
         } else {
             unsafe { TlsSetValue(s & !FALLBACK_BIT, p as *mut core::ffi::c_void) };
         }
+
         true
     }
 }
@@ -1599,6 +1667,7 @@ pub extern "C" fn ll_thread_exit() {
         retire_the_journal();
         return;
     }
+
     // Clear the slot first: `abandon_all` must not be re-entered, and any
     // allocation after this point must build a fresh heap rather than reuse
     // one whose blocks we have just given away.
@@ -1737,12 +1806,14 @@ pub extern "C" fn ll_thread_init() {
         if heap.is_null() {
             return;
         }
+
         unsafe {
             heap.write(ThreadHeaps {
                 raw: Heap::new(),
                 entity: Heap::new_entity(),
             })
         };
+
         // The slot stores the pair's address as `*mut Heap`: with
         // `repr(C)` and `raw` first, that IS the raw heap's address.
         if !tls::set(heap as *mut Heap) {
@@ -1753,6 +1824,7 @@ pub extern "C" fn ll_thread_init() {
             unsafe { std::alloc::dealloc(heap as *mut u8, layout) };
             return;
         }
+
         // Fill the barrier's reserve while a refusal is still reportable:
         // from here the thread's first allocation reports null, and the
         // store barrier has no channel at all
@@ -1794,6 +1866,7 @@ pub extern "C" fn ll_thread_init() {
             EXIT_PHASE.with(|phase| phase.set(ExitPhase::Live));
             crate::journal::reopen_thread();
         }
+
         // After the reopen, so a pool thread's second life records its
         // start in the ring of that life rather than in the one it
         // retired.
@@ -1878,6 +1951,7 @@ pub(crate) fn exit_guard_armed() -> bool {
     if FORCE_GUARD_UNARMED.load(Ordering::Relaxed) {
         return false;
     }
+
     EXIT_GUARD.try_with(|_| {}).is_ok()
 }
 
@@ -1905,6 +1979,7 @@ pub fn thread_entity_heap() -> *mut Heap {
     if p.is_null() {
         return std::ptr::null_mut();
     }
+
     unsafe { &raw mut (*p).entity }
 }
 
@@ -1963,10 +2038,12 @@ pub unsafe extern "C" fn ll_entity_reserve(
             unsafe { *contiguous_len = 0 };
             return 0;
         }
+
         h
     } else {
         h
     };
+
     let out = unsafe { std::slice::from_raw_parts_mut(out_cells, count) };
     let (n, contiguous) = unsafe { (*h).reserve_cells(size, count, out) };
     unsafe { *contiguous_len = contiguous };
@@ -1999,6 +2076,7 @@ unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
     if h.is_null() {
         return std::ptr::null_mut();
     }
+
     unsafe { (*h).alloc(size) }
 }
 
@@ -2050,17 +2128,21 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
                 if unsafe { (*slot).refcount } != 0 {
                     visit(slot);
                 }
+
                 continue;
             }
+
             if kind != BLOCK_KIND_ENTITY {
                 continue;
             }
+
             let (size_class, bump) = unsafe {
                 (
                     (*block).size_class.load(Ordering::Relaxed),
                     (*block).private.bump,
                 )
             };
+
             let class_size = SIZE_CLASSES[size_class as usize];
             let base = unsafe { (block as *mut u8).add(LINE_SIZE) };
             for s in 0..bump as usize {
@@ -2119,6 +2201,7 @@ pub(crate) fn describe_slot(addr: usize) -> String {
         let base = r as usize;
         addr >= base && addr < base + crate::memory::block_pool::REGION_SIZE
     });
+
     // A large-entity block first, because the header below it is a
     // different struct: reading a size class and a bump cursor out of it
     // yields numbers that look like an unreachable slot at exactly the
@@ -2136,6 +2219,7 @@ pub(crate) fn describe_slot(addr: usize) -> String {
             block as usize, entity as usize
         );
     }
+
     let (kind, size_class, used, slots, bump) = unsafe {
         (
             crate::memory::block_pool::load_block_kind(&raw const (*block).kind),
@@ -2145,6 +2229,7 @@ pub(crate) fn describe_slot(addr: usize) -> String {
             (*block).private.bump,
         )
     };
+
     let header = unsafe { *(addr as *const u64) };
     let stride = SIZE_CLASSES
         .get(size_class as usize)
@@ -2235,6 +2320,7 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
             let kind = unsafe {
                 (*(&raw const (*block).kind as *const AtomicU32)).load(Ordering::Acquire)
             };
+
             // One large entity in a pooled block; `slots` is 1 for the
             // reason `EntityBlockSnapshot::slots` states. The acquire
             // above published the size.
@@ -2247,11 +2333,14 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
                     slots: 1,
                     index: None,
                 });
+
                 continue;
             }
+
             if kind != BLOCK_KIND_ENTITY {
                 continue;
             }
+
             let size_class = unsafe { (*block).size_class.load(Ordering::Relaxed) };
             let class_size = SIZE_CLASSES[size_class as usize];
             blocks.push(EntityBlockSnapshot {
@@ -2376,6 +2465,7 @@ mod tests {
                 );
             }
         }
+
         // Ordinary allocation must not hand out a reserved cell.
         let p = unsafe { entity_alloc(48) };
         assert!(
@@ -2607,6 +2697,7 @@ mod tests {
                 "byte {i} of a freed slot was clobbered by the free-list link"
             );
         }
+
         let again = heap.alloc(64);
         assert_eq!(again, p, "the slot still threads the free list");
         unsafe { heap.free(again) };
@@ -2627,6 +2718,7 @@ mod tests {
         let scribble = |block: *mut BlockHeader| unsafe {
             std::ptr::write_bytes(BlockHeader::payload_start(block), 0xEE, BLOCK_PAYLOAD);
         };
+
         let slot_header = |p: *mut u8, s: usize| unsafe {
             ((p as usize & !BLOCK_MASK) as *mut u8)
                 .add(LINE_SIZE + s * class)
@@ -2664,6 +2756,7 @@ mod tests {
                 "slot {s} header must be zeroed at entity commissioning"
             );
         }
+
         unsafe { entity.free(p) };
     }
 
@@ -2695,6 +2788,7 @@ mod tests {
                 BLOCK_KIND_HEAP
             );
         }
+
         unsafe { raw.free(p) };
 
         // An entity heap is the legitimate adopter; freeing both slots
@@ -2730,6 +2824,7 @@ mod tests {
                 BLOCK_KIND_HEAP
             );
         }
+
         assert_ne!(
             e as usize & !BLOCK_MASK,
             r as usize & !BLOCK_MASK,
@@ -2772,6 +2867,7 @@ mod tests {
                 "block was returned to the pool and re-carved on iteration {i}"
             );
         }
+
         assert_eq!(pool.regions_carved(), regions_before);
     }
 
@@ -2862,6 +2958,7 @@ mod tests {
             unsafe { with_thread_heap(|h| h.free(p)) };
             count += 1;
         }
+
         assert_eq!(count, N);
         producer.join().unwrap();
     }
@@ -2914,6 +3011,7 @@ mod tests {
                     unsafe { with_thread_heap(|h| h.free(p)) };
                     n += 1;
                 }
+
                 ll_thread_exit();
                 n
             }));
@@ -2934,6 +3032,7 @@ mod tests {
                 }
             });
         }
+
         drop(txs);
 
         let freed: usize = freers.into_iter().map(|h| h.join().unwrap()).sum();
@@ -3016,6 +3115,7 @@ mod tests {
                                     h.free(victim);
                                 }
                             }
+
                             for p in live {
                                 h.free(p);
                             }

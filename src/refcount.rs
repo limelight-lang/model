@@ -147,6 +147,7 @@ pub fn cow_separation_needed(flags: u32, refcount: u32) -> bool {
     if flags & COW == 0 {
         return false;
     }
+
     debug_assert!(
         flags & IS_ESCAPEE == 0,
         "a COW entity is copied out of the arena, so it never holds an escape count"
@@ -403,11 +404,13 @@ pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
     unsafe {
         (slot as *mut u64).write(word)
     };
+
     #[cfg(feature = "rc-walk")]
     unsafe {
         (*(slot as *const core::sync::atomic::AtomicU64))
             .store(word, core::sync::atomic::Ordering::Relaxed)
     };
+
     // After the publication, never before it: a reader resolving the
     // record's subject must find a live entity there, and until the store
     // above the slot reads refcount 0.
@@ -660,6 +663,7 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
             // it came from (audit `class.rs:115`, same family).
             unsafe { crate::gc::buffer_candidate(entity) };
         }
+
         false
     }
 
@@ -679,6 +683,7 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
             // carry no test.
             crate::epoch::checkpoint_ack();
         }
+
         tear
     }
 }
@@ -767,6 +772,7 @@ pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u
     unsafe {
         (*header).flags = f((*header).flags)
     };
+
     #[cfg(feature = "rc-walk")]
     unsafe {
         mutator_update_flags(header, f)
@@ -825,6 +831,7 @@ mod tests {
     fn retain(header: &mut RcHeader) {
         unsafe { ll_retain(header) }
     }
+
     fn release(header: &mut RcHeader) -> bool {
         unsafe { ll_release(header) }
     }
@@ -1006,6 +1013,7 @@ mod tests {
         unsafe {
             p.add(6).write(3);
         }
+
         assert_eq!(h.flags & EPOCH_BYTE_MASK, 3 << EPOCH_BYTE_SHIFT);
         assert_eq!(h.refcount, 1, "the refcount bytes are untouched");
     }

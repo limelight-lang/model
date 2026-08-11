@@ -112,6 +112,7 @@ impl LLString {
         if cached != 0 {
             return cached;
         }
+
         let computed = hash_bytes(unsafe { string_bytes(s) });
         unsafe { (*s).hash = computed };
         computed
@@ -155,6 +156,7 @@ impl LLStringDynamic {
         if len == 0 {
             return &[];
         }
+
         unsafe { std::slice::from_raw_parts((*s).data, len) }
     }
 }
@@ -225,6 +227,7 @@ pub(crate) unsafe fn init_at(
     } else {
         hash
     };
+
     let s = mem as *mut LLString;
     unsafe {
         (&raw mut (*s).len).write(bytes.len() as u32);
@@ -235,6 +238,7 @@ pub(crate) unsafe fn init_at(
             RcHeader::new(category, COW | EntityKind::String.to_flags()),
         );
     }
+
     s
 }
 
@@ -271,6 +275,7 @@ fn placement(category: MemoryCategory, size: usize) -> Placement {
     if size <= crate::memory::routing::slot_limit(category) {
         return Placement::Inline;
     }
+
     match category {
         MemoryCategory::GcHeap | MemoryCategory::RequestArena => Placement::OutOfLine,
         MemoryCategory::LongLived => Placement::Refused,
@@ -305,6 +310,7 @@ pub(crate) unsafe fn new_uninit(
     if !fits(len) {
         return Reserved::refused();
     }
+
     let size = size_of::<LLString>() + len;
     // The same size choice the copying factory makes, for the same
     // reason: past one slot the inline layout has nowhere to go. The
@@ -316,19 +322,23 @@ pub(crate) unsafe fn new_uninit(
             let mem = unsafe {
                 crate::memory::routing::entity_alloc_in(ctx, category, size_of::<LLStringDynamic>())
             };
+
             if mem.is_null() {
                 return Reserved::refused();
             }
+
             let mut payload = Buffer::new();
             if !unsafe { grow_payload(ctx, category, &mut payload, len, 0) } {
                 return Reserved::refused();
             }
+
             let s = mem as *mut LLStringDynamic;
             unsafe {
                 (&raw mut (*s).len).write(len as u32);
                 (&raw mut (*s).capacity).write(stored_capacity(payload.capacity));
                 (&raw mut (*s).data).write(payload.data);
             }
+
             return Reserved {
                 entity: mem,
                 bytes: payload.data,
@@ -337,10 +347,12 @@ pub(crate) unsafe fn new_uninit(
         }
         Placement::Inline => {}
     }
+
     let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     if mem.is_null() {
         return Reserved::refused();
     }
+
     unsafe { (&raw mut (*(mem as *mut LLString)).len).write(len as u32) };
     Reserved {
         entity: mem,
@@ -407,12 +419,14 @@ pub(crate) unsafe fn publish_uninit(r: Reserved, category: MemoryCategory) -> *m
         } else {
             0
         };
+
         (&raw mut (*s).hash).write(hash);
         publish_header(
             s as *mut RcHeader,
             RcHeader::new(category, COW | EntityKind::String.to_flags() | layout),
         );
     }
+
     s
 }
 
@@ -447,6 +461,7 @@ pub(crate) unsafe fn new_with_hash(
     if !fits(bytes.len()) {
         return std::ptr::null_mut();
     }
+
     let size = size_of::<LLString>() + bytes.len();
     // Past what the category's allocator packs in one slot the inline
     // layout has nowhere to go: it would be refused, and before the
@@ -461,10 +476,12 @@ pub(crate) unsafe fn new_with_hash(
         Placement::Refused => return std::ptr::null_mut(),
         Placement::Inline => {}
     }
+
     let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     if mem.is_null() {
         return std::ptr::null_mut();
     }
+
     unsafe { init_at(mem, category, bytes, hash) }
 }
 
@@ -576,6 +593,7 @@ pub unsafe fn ll_string_new_dynamic(
     if !fits(bytes.len()) {
         return std::ptr::null_mut();
     }
+
     // Refused, not redirected, and refused *here* rather than left to
     // the routing below, which serves every category: an
     // immortal-flagged dynamic string would land in a GC entity block —
@@ -589,6 +607,7 @@ pub unsafe fn ll_string_new_dynamic(
     ) {
         return std::ptr::null_mut();
     }
+
     unsafe { new_out_of_line(ctx, category, bytes, hint, 0, 0) }
 }
 
@@ -626,9 +645,11 @@ unsafe fn new_out_of_line(
     let mem = unsafe {
         crate::memory::routing::entity_alloc_in(ctx, category, size_of::<LLStringDynamic>())
     };
+
     if mem.is_null() {
         return std::ptr::null_mut();
     }
+
     let s = mem as *mut LLStringDynamic;
 
     // A payload is allocated when there is content or a hint to honour.
@@ -643,6 +664,7 @@ unsafe fn new_out_of_line(
         // corruption, and the same shape every other factory has on OOM.
         return std::ptr::null_mut();
     }
+
     if !bytes.is_empty() {
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), payload.data, bytes.len()) };
     }
@@ -660,6 +682,7 @@ unsafe fn new_out_of_line(
             ),
         );
     }
+
     s
 }
 
@@ -738,6 +761,7 @@ pub unsafe fn ll_string_append(ctx: *mut LLContext, s: *mut LLStringDynamic, ext
     if extra.is_empty() {
         return true;
     }
+
     let old_len = unsafe { (*s).len } as usize;
     let Some(needed) = old_len.checked_add(extra.len()).filter(|n| fits(*n)) else {
         return false;
@@ -749,9 +773,11 @@ pub unsafe fn ll_string_append(ctx: *mut LLContext, s: *mut LLStringDynamic, ext
         len: old_len,
         capacity: unsafe { (*s).capacity } as usize,
     };
+
     if !unsafe { grow_payload(ctx, category, &mut payload, needed, 0) } {
         return false;
     }
+
     unsafe {
         std::ptr::copy_nonoverlapping(extra.as_ptr(), payload.data.add(old_len), extra.len());
         (*s).data = payload.data;
@@ -759,6 +785,7 @@ pub unsafe fn ll_string_append(ctx: *mut LLContext, s: *mut LLStringDynamic, ext
         (*s).len = needed as u32;
         (*s).hash = 0;
     }
+
     true
 }
 
@@ -794,6 +821,7 @@ pub(crate) unsafe fn carry_payload_out_of(
     if data.is_null() {
         return true; // an empty string has no payload to carry
     }
+
     if capacity > crate::memory::block_pool::BLOCK_PAYLOAD {
         // True whatever the log says, because the two outcomes of
         // `forget_large` are both carries. It found the record: the run
@@ -813,11 +841,13 @@ pub(crate) unsafe fn carry_payload_out_of(
     if crate::memory::buffer_arena::buffer_ensure_longlived(&mut carried, capacity, 0).is_null() {
         return false;
     }
+
     unsafe {
         std::ptr::copy_nonoverlapping(data, carried.data, (*s).len as usize);
         (*s).data = carried.data;
         (*s).capacity = stored_capacity(carried.capacity);
     }
+
     true
 }
 
@@ -850,6 +880,7 @@ pub(crate) unsafe fn string_die(s: *mut LLString) {
             unsafe { crate::memory::buffer_arena::buffer_free_longlived_payload(data, capacity) };
         }
     }
+
     if owner_cat == MemoryCategory::GcHeap {
         unsafe { crate::memory::stdapi::ll_free(s as *mut u8) };
     }
@@ -876,6 +907,7 @@ mod tests {
             len: 0,
             hash: 0,
         };
+
         assert_eq!(
             std::mem::size_of_val(&probe.len),
             4,
@@ -913,6 +945,7 @@ mod tests {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -936,6 +969,7 @@ mod tests {
             assert!(ll_release(b as *mut RcHeader));
             crate::object::ll_entity_die(b as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -959,6 +993,7 @@ mod tests {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1012,6 +1047,7 @@ mod tests {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
+
         let freed = unsafe { crate::walk::heap_census() };
         assert_eq!(freed.by_kind[k], before.by_kind[k], "and it goes away");
         arena.reset(|_| {});
@@ -1031,11 +1067,13 @@ mod tests {
         let after = unsafe {
             crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, s as *mut RcHeader)
         };
+
         assert_eq!(after as usize, s as usize, "no copy for a lone holder");
         unsafe {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1062,6 +1100,7 @@ mod tests {
                 original as *mut RcHeader,
             ));
         };
+
         assert_eq!(unsafe { (*original).rc.refcount }, 2);
 
         let copy =
@@ -1091,6 +1130,7 @@ mod tests {
             assert!(ll_release(original as *mut RcHeader));
             crate::object::ll_entity_die(original as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1126,6 +1166,7 @@ mod tests {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1177,6 +1218,7 @@ mod tests {
             assert!(ll_release(copy as *mut RcHeader));
             crate::object::ll_entity_die(copy as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1207,6 +1249,7 @@ mod tests {
                 "left to whichever thread reads first"
             );
         }
+
         for category in [MemoryCategory::GcHeap, MemoryCategory::RequestArena] {
             let s = unsafe { ll_string_new(&mut ctx, category, b"owned") };
             assert_eq!(
@@ -1246,6 +1289,7 @@ mod tests {
             assert!(ll_release(copy as *mut RcHeader));
             crate::object::ll_entity_die(copy as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1354,6 +1398,7 @@ mod tests {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1400,6 +1445,7 @@ mod tests {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1430,6 +1476,7 @@ mod tests {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1463,6 +1510,7 @@ mod tests {
                 &vec![b'a'; last_inline + 1],
             )
         };
+
         assert!(!big.is_null());
         assert_ne!(
             unsafe { crate::refcount::header_flags(big as *const RcHeader) }
@@ -1477,6 +1525,7 @@ mod tests {
             assert!(ll_release(big as *mut RcHeader));
             crate::object::ll_entity_die(big as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1496,6 +1545,7 @@ mod tests {
         let copy = unsafe {
             crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, s as *mut RcHeader)
         };
+
         assert!(!copy.is_null());
         assert_ne!(copy as usize, s as usize, "a shared COW string separates");
         let copy_flags = unsafe { crate::refcount::header_flags(copy) };
@@ -1518,6 +1568,7 @@ mod tests {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1553,6 +1604,7 @@ mod tests {
             assert_eq!(crate::refcount::header_refcount(s as *mut RcHeader), 0);
             string_die(s as *mut LLString);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1578,6 +1630,7 @@ mod tests {
                 s as *mut RcHeader,
             ));
         }
+
         assert_ne!(
             heap_slot as usize, s as usize,
             "a COW entity is copied out, never held"
@@ -1706,6 +1759,7 @@ mod tests {
         assert_eq!(from_inline, unsafe {
             LLString::hash(dynamic as *mut LLString)
         });
+
         assert_ne!(from_inline, 0, "zero would mean the field is not computed");
 
         // Computed once and kept: the field now reads back as itself rather
@@ -1761,6 +1815,7 @@ mod tests {
                 crate::object::ll_entity_die(p);
             }
         }
+
         arena.reset(|_| {});
     }
 
@@ -1799,6 +1854,7 @@ mod tests {
                 crate::object::ll_entity_die(p);
             }
         }
+
         arena.reset(|_| {});
     }
 
@@ -1818,6 +1874,7 @@ mod tests {
                 "the mutable layout is heap or arena only"
             );
         }
+
         arena.reset(|_| {});
     }
 
@@ -1833,6 +1890,7 @@ mod tests {
         let s = unsafe {
             ll_string_new_dynamic(&mut ctx, MemoryCategory::RequestArena, b"accumulated", 0)
         };
+
         let arena_payload = unsafe { (*s).data };
 
         let mut heap_slot: *mut RcHeader = std::ptr::null_mut();
@@ -1960,6 +2018,7 @@ mod tests {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 

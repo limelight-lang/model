@@ -60,6 +60,7 @@ pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
     if mem.is_null() {
         return std::ptr::null_mut();
     }
+
     let a = mem as *mut LLArray;
     unsafe {
         (&raw mut (*a).table).write(Table::empty());
@@ -68,6 +69,7 @@ pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
             RcHeader::new(category, COW | EntityKind::Array.to_flags()),
         );
     }
+
     a
 }
 
@@ -174,6 +176,7 @@ pub unsafe fn separate(
     if dst.is_null() {
         return std::ptr::null_mut();
     }
+
     let mut pending = WorkList::new();
     #[cfg(debug_assertions)]
     let mut entered: Vec<*mut LLArray> = Vec::new();
@@ -187,6 +190,7 @@ pub unsafe fn separate(
             );
             entered.push(s);
         }
+
         if !unsafe { fill_from(s, d, arena, &mut pending, reason) } {
             // Refused part-way. Releasing the root's children cascades
             // into every copy this call published, nested ones included:
@@ -196,8 +200,10 @@ pub unsafe fn separate(
             pending.dispose();
             return std::ptr::null_mut();
         }
+
         next = pending.pop();
     }
+
     pending.dispose();
     dst
 }
@@ -217,6 +223,7 @@ unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LL
     if dst.is_null() {
         return std::ptr::null_mut();
     }
+
     unsafe { (*dst).table.adopt_flood_state(&(*src).table) };
     unsafe { (*dst).table.adopt_append_state(&(*src).table) };
     dst
@@ -267,10 +274,12 @@ unsafe fn element_for_copy(element: Value, reason: CopyReason) -> Value {
     if reason != CopyReason::Duplication || element.tag() != crate::value::Tag::Reference {
         return element;
     }
+
     let boxed = element.entity_ptr();
     if unsafe { crate::refcount::header_refcount(boxed) } != 1 {
         return element;
     }
+
     unsafe { (*(boxed as *const crate::reference::LLReference)).value }
 }
 
@@ -308,11 +317,13 @@ unsafe fn fill_from(
         if e.is_hole() {
             continue;
         }
+
         let key = if e.is_int_key() {
             Key::Int(e.hash_or_key as i64)
         } else {
             Key::Str(e.string_key())
         };
+
         // Publish the element for the copy *before* the entry is written,
         // so the entry never names something the copy does not hold, and
         // so the barrier can hand back a different entity: an arena COW
@@ -328,6 +339,7 @@ unsafe fn fill_from(
                         crate::refcount::separation_category(category),
                     )
                 };
+
                 if copy.is_null() || !pending.push((child as *mut LLArray, copy)) {
                     // The copy is held by nothing yet, so it goes back
                     // here rather than through the root's cascade.
@@ -335,6 +347,7 @@ unsafe fn fill_from(
                     unsafe { (*copy).table.dispose(category_of(copy)) };
                     return false;
                 }
+
                 v = Value::entity(v.tag(), copy as *mut RcHeader);
             } else {
                 match unsafe { crate::memory::barrier::publish_child(arena, category, v) } {
@@ -343,6 +356,7 @@ unsafe fn fill_from(
                 }
             }
         }
+
         let published_key = match unsafe { publish_key(arena, category, key) } {
             Some(published) => published,
             None => {
@@ -350,6 +364,7 @@ unsafe fn fill_from(
                 return false;
             }
         };
+
         if unsafe { (*dst).table.insert(category, published_key, v) }.is_none() {
             // Out of memory part-way. Give back what this element took —
             // through the barrier, key and value alike; the source is
@@ -358,9 +373,11 @@ unsafe fn fill_from(
             if let Key::Str(k) = published_key {
                 unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
             }
+
             return false;
         }
     }
+
     true
 }
 
@@ -377,6 +394,7 @@ unsafe fn is_nested_arena_array(child: *mut RcHeader, category: MemoryCategory) 
     if category == MemoryCategory::RequestArena {
         return false;
     }
+
     let flags = unsafe { crate::refcount::header_flags(child) };
     MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena
         && flags & COW != 0
@@ -432,6 +450,7 @@ impl<T: Copy> WorkList<T> {
         if self.len == self.capacity && !self.grow() {
             return false;
         }
+
         unsafe { self.items.add(self.len).write(item) };
         self.len += 1;
         true
@@ -441,6 +460,7 @@ impl<T: Copy> WorkList<T> {
         if self.len == 0 {
             return None;
         }
+
         self.len -= 1;
         Some(unsafe { self.items.add(self.len).read() })
     }
@@ -465,23 +485,28 @@ impl<T: Copy> WorkList<T> {
         } else {
             self.capacity * 2
         };
+
         let bytes = capacity * size_of::<T>();
         let (fresh, granted) = unsafe {
             crate::memory::routing::body_alloc(std::ptr::null_mut(), MemoryCategory::GcHeap, bytes)
         };
+
         if fresh.is_null() {
             return false;
         }
+
         const {
             assert!(
                 align_of::<T>() <= 8,
                 "the buffer arena hands out 8-aligned chunks"
             )
         };
+
         let fresh = fresh as *mut T;
         if self.len > 0 {
             unsafe { std::ptr::copy_nonoverlapping(self.items, fresh, self.len) };
         }
+
         // The old chunk directly rather than through `dispose`, which
         // empties the list: what is being replaced is the storage, not
         // the contents.
@@ -492,6 +517,7 @@ impl<T: Copy> WorkList<T> {
                 self.granted,
             )
         };
+
         self.items = fresh;
         self.capacity = capacity;
         self.granted = granted;
@@ -506,6 +532,7 @@ impl<T: Copy> WorkList<T> {
                 self.granted,
             )
         };
+
         self.items = std::ptr::null_mut();
         self.capacity = 0;
         self.granted = 0;
@@ -548,6 +575,7 @@ pub(crate) unsafe fn publish_key(
     let Key::Str(s) = key else {
         return Some(key);
     };
+
     let published = unsafe {
         crate::memory::barrier::publish_child(
             arena,
@@ -715,20 +743,24 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
                     if dead.is_null() {
                         continue;
                     }
+
                     if unsafe { is_array(dead) } {
                         unsafe { leave_the_candidate_buffer(dead) };
                         next = Some(dead as *mut LLArray);
                         break;
                     }
+
                     unsafe { crate::object::ll_entity_die(dead) };
                 }
             }
         }
+
         match next {
             Some(array) => dying = array,
             None => break,
         }
     }
+
     pending.dispose();
 }
 
@@ -771,18 +803,22 @@ unsafe fn release_children_in_order(a: *mut LLArray, pending: &mut WorkList<Pend
             if deferring && pending.push(Pending::HeldChild(child, owner_cat)) {
                 return;
             }
+
             let dead = crate::memory::barrier::drop_ref_deferred(owner_cat, child);
             if dead.is_null() {
                 return;
             }
+
             if is_array(dead) && pending.push(Pending::DeadArray(dead as *mut LLArray)) {
                 leave_the_candidate_buffer(dead);
                 deferring = true;
                 return;
             }
+
             crate::object::ll_entity_die(dead);
         })
     };
+
     pending.reverse_from(base);
 }
 
@@ -850,6 +886,7 @@ mod tests {
                 Value::entity(crate::value::Tag::String, value as *mut RcHeader),
             );
         }
+
         // A second holder is what makes the write a separation.
         unsafe { crate::refcount::ll_retain(src as *mut RcHeader) };
 
@@ -885,6 +922,7 @@ mod tests {
             assert!(ll_release(value as *mut RcHeader));
             crate::object::ll_entity_die(value as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -956,6 +994,7 @@ mod tests {
             assert!(ll_release(holder as *mut RcHeader));
             crate::object::ll_object_die(holder);
         }
+
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -998,8 +1037,10 @@ mod tests {
                     Value::entity(crate::value::Tag::Array, inner as *mut RcHeader),
                 );
             }
+
             levels.push(outer);
         }
+
         let src = *levels.last().unwrap();
 
         let copy = unsafe {
@@ -1010,6 +1051,7 @@ mod tests {
                 CopyReason::Duplication,
             )
         };
+
         assert!(!copy.is_null(), "the deep copy was refused");
 
         // Every level is a heap array of its own, and none of them is the
@@ -1031,6 +1073,7 @@ mod tests {
                 assert!(entry.is_none(), "the innermost copy holds something");
                 break;
             }
+
             level = entry
                 .expect("the copy is shallower than its source")
                 .entity_ptr() as *mut LLArray;
@@ -1040,6 +1083,7 @@ mod tests {
             assert!(ll_release(copy as *mut RcHeader));
             crate::object::ll_entity_die(copy as *mut RcHeader);
         }
+
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -1091,6 +1135,7 @@ mod tests {
                             Value::entity(crate::value::Tag::Array, level as *mut RcHeader),
                         );
                     }
+
                     level = outer;
                 }
 
@@ -1103,6 +1148,7 @@ mod tests {
                     walk = v.entity_ptr() as *mut LLArray;
                     built += 1;
                 }
+
                 assert_eq!(built, DEPTH, "the chain is shallower than it was built");
 
                 unsafe {
@@ -1180,6 +1226,7 @@ mod tests {
             unsafe extern "C" fn record(_o: *mut crate::object::Object) {
                 DESTRUCTOR_ORDER.lock().unwrap().push($mark);
             }
+
             crate::class::ClassBuilder::new($name)
                 .destructor(record as *const ())
                 .build()
@@ -1204,6 +1251,7 @@ mod tests {
         let mut ctx = crate::memory::context::LLContext {
             arena: &mut arena as *mut _,
         };
+
         let ctx_ptr: *mut crate::memory::context::LLContext = &mut ctx;
         // Mounted although every entity here is built with `ctx_ptr` in
         // hand: a `__destruct` is user code and resolves its own context
@@ -1216,6 +1264,7 @@ mod tests {
                 .table
                 .insert(category_of(owner), Key::Int(key), Value::entity(tag, child));
         };
+
         let object = |cls| unsafe {
             crate::object::new_constructed(ctx_ptr, cls, MemoryCategory::GcHeap) as *mut RcHeader
         };
@@ -1303,10 +1352,12 @@ mod tests {
             crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
+
         unsafe {
             assert!(ll_release(root as *mut RcHeader), "the root had a holder");
             crate::object::ll_entity_die(root as *mut RcHeader);
         }
+
         crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED
             .store(false, std::sync::atomic::Ordering::Relaxed);
         crate::memory::context::set_current_context(std::ptr::null_mut());
@@ -1328,10 +1379,12 @@ mod tests {
         for i in 0..n {
             assert!(list.push(pair(i)), "the list refused at {i}");
         }
+
         assert!(list.capacity >= n);
         for i in (0..n).rev() {
             assert_eq!(list.pop(), Some(pair(i)));
         }
+
         assert_eq!(list.pop(), None);
         list.dispose();
     }
@@ -1410,6 +1463,7 @@ mod tests {
                 CopyReason::Duplication,
             )
         };
+
         assert!(!dst.is_null());
 
         unsafe {
@@ -1455,9 +1509,11 @@ mod tests {
                     .table
                     .insert(category_of(src), Key::Int(i), Value::int(i));
             }
+
             for i in [2i64, 5, 8] {
                 let _ = (*src).table.remove(Key::Int(i));
             }
+
             let dst = separate(
                 src,
                 MemoryCategory::GcHeap,
@@ -1667,6 +1723,7 @@ mod tests {
                         .table
                         .insert(category_of(src), Key::Str(s), Value::int(i as i64));
                 }
+
                 s
             })
             .collect();
@@ -1699,6 +1756,7 @@ mod tests {
                 CopyReason::Duplication,
             )
         };
+
         assert!(!copy.is_null());
         assert!(
             unsafe { (*copy).table.is_strong() },
@@ -1743,6 +1801,7 @@ mod tests {
                     .insert(category_of(src), Key::Int(i * 1024), Value::int(i));
             }
         }
+
         assert!(
             unsafe { (*src).table.is_reseeded() },
             "the stride flood did not fire the rung, so this proves nothing"
@@ -1757,6 +1816,7 @@ mod tests {
                 CopyReason::Duplication,
             )
         };
+
         assert!(!copy.is_null());
         assert!(unsafe { (*copy).table.is_reseeded() });
         assert_eq!(
@@ -1800,6 +1860,7 @@ mod tests {
                     .insert(category_of(src), Key::Int(i * 1024), Value::int(i));
             }
         }
+
         assert!(unsafe { !(*src).table.is_reseeded() });
 
         let copy = unsafe {
@@ -1810,6 +1871,7 @@ mod tests {
                 CopyReason::Duplication,
             )
         };
+
         assert!(!copy.is_null());
         assert!(
             unsafe { !(*copy).table.is_reseeded() },
@@ -1823,6 +1885,7 @@ mod tests {
                     .insert(category_of(copy), Key::Int(i * 1024), Value::int(i));
             }
         }
+
         assert!(
             unsafe { (*copy).table.is_reseeded() },
             "the copy's own flood must fire the copy's own rung"
@@ -1929,6 +1992,7 @@ mod tests {
         let d = unsafe {
             crate::string::ll_string_new_dynamic(context_ptr, MemoryCategory::RequestArena, b"p", 0)
         };
+
         assert!(!d.is_null());
         unsafe {
             crate::refcount::ll_retain(d as *mut RcHeader);
@@ -1949,6 +2013,7 @@ mod tests {
                 CopyReason::Duplication,
             )
         };
+
         FORCE_OOM.store(false, Ordering::Relaxed);
         assert!(
             copy.is_null(),
@@ -1965,6 +2030,7 @@ mod tests {
             assert!(ll_release(warm as *mut RcHeader));
             crate::object::ll_entity_die(warm as *mut RcHeader);
         }
+
         crate::memory::context::set_current_context(std::ptr::null_mut());
         arena.reset(|_| {});
     }
@@ -2063,6 +2129,7 @@ mod tests {
                 CopyReason::Duplication,
             )
         };
+
         assert!(!copy.is_null());
         unsafe {
             assert_eq!((*copy).table.len(), 0, "a hole is not worth copying");

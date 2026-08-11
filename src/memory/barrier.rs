@@ -92,6 +92,7 @@ pub(crate) unsafe fn escape_gain(arena: *mut Arena, entity: *mut RcHeader) {
         if e.refcount == u32::MAX {
             return;
         }
+
         e.refcount += 1;
     }
 }
@@ -109,6 +110,7 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
     if e.flags & IS_ESCAPEE == 0 {
         return; // not tracked (never gained, or already back to zero)
     }
+
     debug_assert!(e.refcount > 0, "escape hold-count underflow");
     e.refcount -= 1;
     if e.refcount == 0 {
@@ -169,11 +171,13 @@ pub(crate) unsafe fn store_category_barrier(
             if stored.is_null() {
                 return std::ptr::null_mut();
             }
+
             // The copy is a fresh heap entity, so the reverse direction
             // below cannot apply to it: its owner is longer-lived by
             // construction.
             return stored;
         }
+
         // Count the escape (`gain`); its fate is decided at arena death
         // from the count, never by reading the slot back.
         unsafe { escape_gain(arena, new) };
@@ -185,6 +189,7 @@ pub(crate) unsafe fn store_category_barrier(
     if new_cat == MemoryCategory::GcHeap && owner_cat == MemoryCategory::RequestArena {
         unsafe { (*arena).log_release_at_reset(new) };
     }
+
     stored
 }
 
@@ -266,12 +271,14 @@ pub(crate) unsafe fn store_ptr(
             unsafe { ll_release(new) };
             return false;
         }
+
         if stored != new {
             // The slot took the copy, so the reference retained above is
             // the caller's to give back.
             unsafe { ll_release(new) };
         }
     }
+
     unsafe { write_ptr_slot(slot, stored) };
     true
 }
@@ -289,6 +296,7 @@ pub(crate) unsafe fn write_ptr_slot(slot: *mut *mut RcHeader, new: *mut RcHeader
     unsafe {
         slot.write(new)
     };
+
     #[cfg(feature = "rc-walk")]
     unsafe {
         (*(slot as *const std::sync::atomic::AtomicPtr<RcHeader>))
@@ -303,6 +311,7 @@ pub(crate) unsafe fn write_value_slot(slot: *mut Value, new: Value) {
     unsafe {
         slot.write(new)
     };
+
     #[cfg(feature = "rc-walk")]
     unsafe {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -335,6 +344,7 @@ pub(crate) unsafe fn store_box(
     } else {
         std::ptr::null_mut()
     };
+
     let mut written = new;
     if !new_ptr.is_null() {
         unsafe { ll_retain(new_ptr) };
@@ -343,6 +353,7 @@ pub(crate) unsafe fn store_box(
             unsafe { ll_release(new_ptr) };
             return false;
         }
+
         if stored != new_ptr {
             // Copied out of the arena: the tag is the value's, the
             // payload is the copy's.
@@ -350,6 +361,7 @@ pub(crate) unsafe fn store_box(
             unsafe { ll_release(new_ptr) };
         }
     }
+
     unsafe { write_value_slot(slot, written) };
     true
 }
@@ -403,6 +415,7 @@ pub(crate) unsafe fn drop_ref_deferred(
     if old.is_null() {
         return std::ptr::null_mut();
     }
+
     let old_cat = unsafe { crate::object::header_category(old) };
 
     // A longer-lived slot letting go of an arena escapee: drop its
@@ -473,6 +486,7 @@ pub unsafe fn ref_store(
     if !unsafe { store_box(arena, owner_cat, slot, new) } {
         return false;
     }
+
     unsafe { drop_ref(owner_cat, old) };
     true
 }
@@ -589,6 +603,7 @@ mod tests {
             } else {
                 Value::entity(crate::value::Tag::Object, new)
             };
+
             assert!(unsafe { ref_store(arena, &mut self.header, &mut self.slot, old, value) });
         }
     }
@@ -860,6 +875,7 @@ mod tests {
             } else {
                 0
             };
+
             SEEN.store(entity, std::sync::atomic::Ordering::Relaxed);
             // The fire point a destructor may carry, which since
             // 2026-08-07 collects nothing from inside a teardown
@@ -940,6 +956,7 @@ mod tests {
             );
             set_test_threshold(crate::gc::CANDIDATE_THRESHOLD);
         }
+
         arena.reset(|_| {});
     }
 

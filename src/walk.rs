@@ -223,6 +223,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 });
             }
         }
+
         // An array's cells live in storage the mutator moves, so this
         // starts by reading the entries coherently and gives up rather
         // than striding a fresh count over a stale chunk
@@ -237,6 +238,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
             else {
                 return;
             };
+
             for i in 0..used {
                 let at = unsafe { entries.add(i) as *const u8 };
                 // A string key is a counted child; the two sentinels below
@@ -250,6 +252,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                         shape: CellShape::Pointer,
                     });
                 }
+
                 // The element is a Box like any other: an integer read for
                 // the payload, the flags in the second word.
                 let value_at = unsafe { at.add(VALUE_OFFSET) };
@@ -380,6 +383,7 @@ pub unsafe fn heap_census() -> Census {
             trace_entity(entity, |_child| census.edges += 1);
         });
     }
+
     census
 }
 
@@ -454,12 +458,14 @@ pub unsafe fn collect_cycles() -> CollectStats {
     if WALK_ACTIVE.with(|a| a.get()) {
         return CollectStats::default();
     }
+
     struct Active;
     impl Drop for Active {
         fn drop(&mut self) {
             WALK_ACTIVE.with(|a| a.set(false));
         }
     }
+
     WALK_ACTIVE.with(|a| a.set(true));
     let _active = Active;
     unsafe { collect_cycles_inner() }
@@ -481,6 +487,7 @@ unsafe fn collect_cycles_inner() -> CollectStats {
             }
         });
     }
+
     let n = entities.len();
     stats.walked = n;
     let ids: HashMap<usize, u32> = entities
@@ -534,6 +541,7 @@ unsafe fn collect_cycles_inner() -> CollectStats {
             unsafe { (*m).refcount += 1 };
         }
     }
+
     // Null every confirmed member's weak cell BEFORE any destructor runs
     // — the binding obligation of `rfc/model/gc/rc-walk.md`: a weak load
     // is the one channel that could hand a destructor a member the exact
@@ -541,6 +549,7 @@ unsafe fn collect_cycles_inner() -> CollectStats {
     for members in &confirmed {
         unsafe { crate::weak::notify_members(members) };
     }
+
     // Run each pending `__destruct` exactly once. PHP code: it may store,
     // release, allocate, resurrect — a store retains normally.
     //
@@ -578,6 +587,7 @@ unsafe fn collect_cycles_inner() -> CollectStats {
             stats.collected += unsafe { unguard(&members) };
             continue;
         }
+
         // Sever, un-guard, then drop the deferred external children —
         // the shared tail (`sever_component`, `unguard`): between sever
         // and free no user code runs at all.
@@ -591,6 +601,7 @@ unsafe fn collect_cycles_inner() -> CollectStats {
             unsafe { crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, child) };
         }
     }
+
     stats
 }
 
@@ -613,6 +624,7 @@ unsafe fn sever_component(members: &[*mut RcHeader]) -> Vec<*mut RcHeader> {
     for &m in members {
         unsafe { sever_cells(m, entity_kind(m), &mut displaced) };
     }
+
     let mut external: Vec<*mut RcHeader> = Vec::new();
     for child in displaced {
         if member_set.contains(&(child as usize)) {
@@ -622,6 +634,7 @@ unsafe fn sever_component(members: &[*mut RcHeader]) -> Vec<*mut RcHeader> {
             external.push(child);
         }
     }
+
     external
 }
 
@@ -638,6 +651,7 @@ pub(crate) fn garbage_components(n: usize, rc: &[u32], edges: &[(u32, u32)]) -> 
     for &(_, dst) in edges {
         in_degree[dst as usize] += 1;
     }
+
     let mut marked = vec![false; n];
     let mut stack: Vec<u32> = (0..n as u32)
         .filter(|&i| rc[i as usize] > in_degree[i as usize])
@@ -645,14 +659,17 @@ pub(crate) fn garbage_components(n: usize, rc: &[u32], edges: &[(u32, u32)]) -> 
     for &i in &stack {
         marked[i as usize] = true;
     }
+
     // Forward adjacency (CSR) for the mark walk.
     let mut offsets = vec![0u32; n + 1];
     for &(src, _) in edges {
         offsets[src as usize + 1] += 1;
     }
+
     for i in 0..n {
         offsets[i + 1] += offsets[i];
     }
+
     let mut forward = vec![0u32; edges.len()];
     let mut cursor = offsets.clone();
     for &(src, dst) in edges {
@@ -676,12 +693,14 @@ pub(crate) fn garbage_components(n: usize, rc: &[u32], edges: &[(u32, u32)]) -> 
             undirected[dst as usize].push(src);
         }
     }
+
     let mut component_of = vec![u32::MAX; n];
     let mut components: Vec<Vec<u32>> = Vec::new();
     for i in 0..n as u32 {
         if marked[i as usize] || component_of[i as usize] != u32::MAX {
             continue;
         }
+
         let id = components.len() as u32;
         let mut members = Vec::new();
         let mut queue = vec![i];
@@ -695,8 +714,10 @@ pub(crate) fn garbage_components(n: usize, rc: &[u32], edges: &[(u32, u32)]) -> 
                 }
             }
         }
+
         components.push(members);
     }
+
     components
 }
 
@@ -720,6 +741,7 @@ unsafe fn exact_test(members: &[*mut RcHeader], discount: u32) -> bool {
     {
         return false;
     }
+
     let local: HashMap<usize, u32> = members
         .iter()
         .enumerate()
@@ -735,6 +757,7 @@ unsafe fn exact_test(members: &[*mut RcHeader], discount: u32) -> bool {
             });
         }
     }
+
     members
         .iter()
         .enumerate()
@@ -755,6 +778,7 @@ unsafe fn unguard(members: &[*mut RcHeader]) -> usize {
             collected += 1;
         }
     }
+
     collected
 }
 
@@ -811,6 +835,7 @@ pub(crate) unsafe fn drain_confirmed(members: &[*mut RcHeader]) -> DrainOutcome 
         // The guard.
         unsafe { crate::refcount::mutator_guard_retain(m) };
     }
+
     // Weak cells nulled before any destructor — same obligation and
     // ordering as `collect_cycles` (`rfc/model/weak-references.md`).
     unsafe { crate::weak::notify_members(members) };
@@ -820,6 +845,7 @@ pub(crate) unsafe fn drain_confirmed(members: &[*mut RcHeader]) -> DrainOutcome 
             any_destructor_ran |= unsafe { crate::object::run_pre_destructor(m as *mut Object) };
         }
     }
+
     // Guard-discounted re-verify (finding F1), skipped when no
     // destructor ran — same reasoning as in `collect_cycles`.
     if any_destructor_ran && !unsafe { exact_test(members, 1) } {
@@ -830,11 +856,13 @@ pub(crate) unsafe fn drain_confirmed(members: &[*mut RcHeader]) -> DrainOutcome 
             acquitted: true,
         };
     }
+
     let external = unsafe { sever_component(members) };
     let collected = unsafe { unguard(members) };
     for child in external {
         unsafe { crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, child) };
     }
+
     DrainOutcome {
         collected,
         acquitted: false,
@@ -916,6 +944,7 @@ mod tests {
             assert!(ll_release(peer as *mut RcHeader));
             crate::object::ll_object_die(peer);
         }
+
         arena.reset(|_| {});
     }
 
@@ -936,6 +965,7 @@ mod tests {
         let n = unsafe {
             crate::memory::heap::ll_entity_reserve(size, 4, cells.as_mut_ptr(), &mut contiguous)
         };
+
         assert!(n >= 2, "the probe needs at least two cells; got {n}");
 
         let seen = walked_addresses();
@@ -992,6 +1022,7 @@ mod tests {
             crate::object::ll_object_die(parent);
             crate::memory::stdapi::ll_free(buffer);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1013,6 +1044,7 @@ mod tests {
             assert!(ll_release(obj as *mut RcHeader));
             crate::object::ll_object_die(obj);
         }
+
         assert!(
             !walked_addresses().contains(&addr),
             "refcount 0 is the occupancy test; the freed slot must read free"
@@ -1058,6 +1090,7 @@ mod tests {
         for filler in &names {
             builder = builder.prop(filler, true);
         }
+
         builder.build()
     }
 
@@ -1082,6 +1115,7 @@ mod tests {
             let kind_of = |o: *mut Object| {
                 *(((o as usize) & !crate::memory::block_pool::BLOCK_MASK) as *const u32)
             };
+
             assert_eq!(
                 kind_of(a),
                 crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE,
@@ -1234,6 +1268,7 @@ mod tests {
         for &o in &[a, b, c, d, leaf] {
             assert!(!seen.contains(&(o as usize)));
         }
+
         arena.reset(|_| {});
     }
 
@@ -1344,6 +1379,7 @@ mod tests {
             assert!(ll_release(v as *mut RcHeader));
             crate::object::ll_object_die(v);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1369,6 +1405,7 @@ mod tests {
             Object::prop_at(a, 16).write(Value::entity(Tag::Reference, r as *mut RcHeader));
             (*r).value = Value::entity(Tag::Object, a as *mut RcHeader);
         }
+
         let census = unsafe { heap_census() };
         assert!(
             census.by_kind[EntityKind::Reference as usize] >= 1,
@@ -1457,6 +1494,7 @@ mod tests {
             (*holder).rc.refcount = 0;
             crate::memory::stdapi::ll_free(holder as *mut u8);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1501,6 +1539,7 @@ mod tests {
             assert!(ll_release(root as *mut RcHeader));
             crate::object::ll_object_die(root);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1521,6 +1560,7 @@ mod tests {
                 trace_entity(entity, |_child| census.edges += 1);
             });
         }
+
         (census, addresses)
     }
 
@@ -1543,6 +1583,7 @@ mod tests {
         for addr in before_set.difference(&after_set) {
             eprintln!("  LEFT  {}", crate::memory::heap::describe_slot(*addr));
         }
+
         for addr in after_set.difference(&before_set) {
             eprintln!("  ADDED {}", crate::memory::heap::describe_slot(*addr));
         }
@@ -1583,6 +1624,7 @@ mod tests {
                 );
             }
         }
+
         assert_eq!(after.entities, before.entities + 2);
         assert_eq!(
             after.by_kind[EntityKind::Object as usize],
@@ -1594,6 +1636,7 @@ mod tests {
             assert!(ll_release(parent as *mut RcHeader));
             crate::object::ll_object_die(parent);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1762,6 +1805,7 @@ mod tests {
                 seen.push(c.child as usize)
             })
         };
+
         assert!(
             seen.contains(&(key as usize)),
             "the string key is not an out-edge for the collector"
@@ -1840,6 +1884,7 @@ mod tests {
                 }
             });
         }
+
         assert!(walked >= 3, "the heap under test was empty");
         assert!(
             disagreed.is_empty(),
@@ -1857,6 +1902,7 @@ mod tests {
             assert!(ll_release(holder as *mut RcHeader));
             crate::object::ll_entity_die(holder as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 

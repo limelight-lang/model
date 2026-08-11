@@ -86,6 +86,7 @@ fn execution(writer_fenced: bool, reader_fenced: bool) {
             if writer_fenced {
                 fence(Ordering::Release);
             }
+
             ring.a.store(1, Ordering::Relaxed);
             ring.b.store(1, Ordering::Relaxed);
             ring.cursor.store(1, Ordering::Release);
@@ -97,6 +98,7 @@ fn execution(writer_fenced: bool, reader_fenced: bool) {
             if writer_fenced {
                 fence(Ordering::Release);
             }
+
             ring.a.store(2, Ordering::Relaxed);
             ring.b.store(2, Ordering::Relaxed);
             ring.cursor.store(3, Ordering::Release);

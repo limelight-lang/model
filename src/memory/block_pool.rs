@@ -69,6 +69,7 @@ pub(crate) unsafe fn store_block_kind(kind_field: *const AtomicU32, kind: u32) {
     unsafe {
         (*kind_field).store(kind, Ordering::Relaxed)
     };
+
     #[cfg(feature = "rc-walk")]
     unsafe {
         (*kind_field).store(kind, Ordering::Release)
@@ -381,11 +382,13 @@ impl BlockPool {
                 }
             }
         }
+
         let Some(block) = batch.pop() else {
             // Nothing anywhere: undo the optimistic count and report.
             self.blocks_out.fetch_sub(1, Ordering::Relaxed);
             return std::ptr::null_mut();
         };
+
         if THREAD_CACHE
             .try_with(|c| c.borrow_mut().blocks.append(&mut batch))
             .is_err()
@@ -395,6 +398,7 @@ impl BlockPool {
                 self.push_global(b);
             }
         }
+
         block
     }
 
@@ -447,6 +451,7 @@ impl BlockPool {
             if cache.blocks.len() <= THREAD_CACHE_CAPACITY {
                 return 0;
             }
+
             let keep = THREAD_CACHE_CAPACITY / 2;
             // The `min` bounds a future refill path that overfills the
             // cache: `taken` slices `flushed` below, and a `taken` past
@@ -465,8 +470,10 @@ impl BlockPool {
             {
                 *slot = b;
             }
+
             taken
         });
+
         // Between the two: the borrow has ended, so the record may take
         // the allocator's own path if it is this thread's first, and the
         // block has not been handed on, so no other thread can have
@@ -487,6 +494,7 @@ impl BlockPool {
                     self.push_global(b);
                 }
             }
+
             // No cache to put it in (see `get`'s note) — hand it back.
             Err(_) => self.push_global(block),
         }
@@ -504,6 +512,7 @@ impl BlockPool {
         if head.is_null() {
             return None;
         }
+
         // Reading `next` under the lock is the whole point: no other
         // thread can be holding this block, so nobody is writing these
         // bytes through another view of the header.
@@ -533,6 +542,7 @@ impl BlockPool {
         if region.is_null() {
             return false;
         }
+
         // Register before any block is handed out: the walker may
         // enumerate the registry at any time, and a block it cannot map
         // back to a region would be invisible to the census.
@@ -545,6 +555,7 @@ impl BlockPool {
                 (*block).reserved = 0;
                 (*block).next = std::ptr::null_mut();
             }
+
             self.push_global(block);
         }
 
@@ -639,6 +650,7 @@ mod tests {
             let base = r as usize;
             (block as usize) >= base && (block as usize) < base + REGION_SIZE
         });
+
         assert!(
             covered,
             "a pooled block must fall inside a registered region"
@@ -678,6 +690,7 @@ mod tests {
         for _ in 0..=THREAD_CACHE_CAPACITY {
             blocks.push(pool.get());
         }
+
         // The refill batch leaves blocks in the cache, so empty it again:
         // what this counts is what the puts below put there.
         drain_thread_cache();
@@ -700,6 +713,7 @@ mod tests {
         for _ in 0..blocks.len() {
             back.push(pool.get());
         }
+
         assert_eq!(
             pool.regions_carved(),
             regions,
@@ -740,6 +754,7 @@ mod tests {
                 taken.push(b);
                 break;
             }
+
             taken.push(b);
         }
 

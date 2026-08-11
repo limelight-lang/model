@@ -122,6 +122,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 if unsafe { (*a).flags } & IS_ESCAPEE == 0 {
                     continue;
                 }
+
                 unsafe { mark_subgraph(a, &mut survivors) };
             }
 
@@ -138,8 +139,10 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 if unsafe { (*obj).flags } & ARENA_RESET_MARK != 0 {
                     continue; // escaped objects survive; they do not destruct
                 }
+
                 unsafe { crate::object::run_pre_destructor(obj as *mut Object) };
             }
+
             if unsafe { (*arena).bump_cursor() } != before {
                 unsafe { retrace_survivors(&mut survivors) };
             }
@@ -147,6 +150,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             if !progress {
                 break;
             }
+
             rounds += 1;
             assert!(
                 rounds <= ARENA_RESET_MAX_ROUNDS,
@@ -162,6 +166,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         for &surv in &survivors[counted..] {
             unsafe { count_children(surv) };
         }
+
         for &surv in &survivors[counted..] {
             // Out-of-line memory comes with the survivor, before the
             // category stops describing where it lives. Asked through one
@@ -184,6 +189,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                             )
                         };
                     }
+
                     // Pinned, and not merely retained: this block is held
                     // for bytes rather than for occupants, and an
                     // occupant's death says nothing about them. Without
@@ -196,16 +202,19 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     crate::memory::retained::pin(payload_block);
                 }
             }
+
             unsafe {
                 if (*surv).flags & COW != 0 {
                     cow_at_promotion.push((surv, (*surv).refcount));
                 }
+
                 // 00 = GcHeap; drop the transient arena-reset mark and
                 // IS_ESCAPEE. The mark lives in the GC-state field, so
                 // clearing it also leaves the promoted object's GC state at
                 // 00 (LIVE), the correct fresh heap state.
                 (*surv).flags &= !(MEMORY_CATEGORY_MASK | ARENA_RESET_MARK | IS_ESCAPEE);
             }
+
             // A survivor that had a block to itself keeps it, and none of
             // the retention machinery applies to it: the block is not
             // shared, so it has nothing to index, and its kind is what
@@ -236,6 +245,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 };
             }
         }
+
         counted = survivors.len();
 
         // --- Deferred releases. Teardown here (destructor first, then free)
@@ -252,6 +262,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         if round_releases.is_empty() {
             break;
         }
+
         for entity in round_releases {
             unsafe {
                 if ll_release(entity) {
@@ -259,6 +270,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 }
             }
         }
+
         rounds += 1;
         assert!(
             rounds <= ARENA_RESET_MAX_ROUNDS,
@@ -375,9 +387,11 @@ unsafe fn external_memory_block(surv: *mut RcHeader) -> usize {
         External::ArrayStorage(a) => unsafe { crate::array::entity::storage_address(a) },
         External::None => return 0,
     };
+
     if memory.is_null() {
         return 0;
     }
+
     BlockHeader::of_ptr(memory as *const u8) as usize
 }
 
@@ -402,9 +416,11 @@ fn index_retained_blocks(survivors: &[*mut RcHeader]) -> Vec<usize> {
         if unsafe { is_in_a_block_of_its_own(surv) } {
             continue;
         }
+
         let block = BlockHeader::of_ptr(surv as *const u8) as usize;
         by_block.entry(block).or_default().push(surv as usize);
     }
+
     for (block, occupants) in by_block {
         // The addresses are this reset's own survivors, so they are
         // readable, which is what `register` asks of its caller.
@@ -412,6 +428,7 @@ fn index_retained_blocks(survivors: &[*mut RcHeader]) -> Vec<usize> {
             emptied.push(block);
         }
     }
+
     emptied
 }
 
@@ -455,6 +472,7 @@ unsafe fn mark_subgraph(root: *mut RcHeader, survivors: &mut Vec<*mut RcHeader>)
     if !unsafe { is_arena_entity(root) } {
         return; // stale entry: overwritten or never an arena value
     }
+
     let mut stack = Vec::new();
     unsafe { mark_one(root, survivors, &mut stack) };
 
@@ -500,6 +518,7 @@ unsafe fn mark_one(
     if unsafe { (*e).flags } & ARENA_RESET_MARK != 0 {
         return;
     }
+
     unsafe {
         (*e).flags |= ARENA_RESET_MARK;
         // Roots (still IS_ESCAPEE) keep their external hold-count; a
@@ -516,6 +535,7 @@ unsafe fn mark_one(
             (*e).refcount = 0;
         }
     }
+
     survivors.push(e);
     stack.push(e);
 }
@@ -548,6 +568,7 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
     if at_promotion.is_empty() {
         return;
     }
+
     // Address → (edges seen so far, delta since promotion).
     let mut settled: HashMap<usize, (u32, i64)> = HashMap::with_capacity(at_promotion.len());
     for &(s, at) in at_promotion {
@@ -647,6 +668,7 @@ mod tests {
             } else {
                 Value::entity(Tag::Object, value as *mut RcHeader)
             };
+
             assert!(ref_store(arena, holder as *mut RcHeader, slot, old, new));
         }
     }
@@ -778,6 +800,7 @@ mod tests {
             );
             crate::array::entity::storage_address(array)
         };
+
         assert!(!storage_before.is_null());
 
         unsafe {
@@ -869,6 +892,7 @@ mod tests {
             );
             crate::array::entity::storage_address(array)
         };
+
         assert!(!storage_before.is_null());
         let payload_block = (storage_before as usize) & !BLOCK_MASK;
 
@@ -948,8 +972,10 @@ mod tests {
                     Value::int(i),
                 );
             }
+
             crate::array::entity::storage_address(array)
         };
+
         assert!(
             unsafe { (*array).table.storage_and_capacity().1 } > BLOCK_PAYLOAD,
             "the table never grew past one block, so this proves nothing"
@@ -1033,6 +1059,7 @@ mod tests {
         for i in 0..props {
             builder = builder.prop(&format!("p{i}"), true);
         }
+
         let class = builder.build();
         assert!(
             unsafe { (*class).object_size } as usize > crate::memory::block_pool::BLOCK_PAYLOAD,
@@ -1080,6 +1107,7 @@ mod tests {
                  onto the block pool"
             );
         }
+
         assert!(
             !crate::memory::retained::snapshot()
                 .iter()
@@ -1101,6 +1129,7 @@ mod tests {
             assert!(crate::refcount::ll_release(holder as *mut RcHeader));
             ll_object_die(holder);
         }
+
         assert!(
             !crate::memory::large_entity::snapshot().contains(&block),
             "the run went back with the entity"
@@ -1197,6 +1226,7 @@ mod tests {
                 Value::null(),
             ));
         }
+
         assert_eq!(
             unsafe { (*cfg).rc.refcount },
             1,
@@ -1501,6 +1531,7 @@ mod tests {
 
             arena_reset_full(arena_ptr);
         }
+
         set_current_context(std::ptr::null_mut());
 
         unsafe {
@@ -1575,6 +1606,7 @@ mod tests {
                     Value::entity(Tag::String, s),
                 ));
             }
+
             // The creation reference goes, as it would at the end of the
             // statement that built the string.
             assert!(!crate::refcount::ll_release(s));
@@ -1585,6 +1617,7 @@ mod tests {
             store_prop(arena_ptr, holder, 16, keeper);
             arena_reset_full(arena_ptr);
         }
+
         set_current_context(std::ptr::null_mut());
 
         unsafe {
@@ -1646,6 +1679,7 @@ mod tests {
             store_prop(arena_ptr, holder, 16, keeper);
             arena_reset_full(arena_ptr);
         }
+
         set_current_context(std::ptr::null_mut());
 
         unsafe {
@@ -1687,6 +1721,7 @@ mod tests {
             let node = unsafe {
                 new_constructed(std::ptr::null_mut(), node_cls, MemoryCategory::RequestArena)
             };
+
             NEW_CHILD.store(node as usize, Ordering::Relaxed);
             unsafe {
                 let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
@@ -1726,6 +1761,7 @@ mod tests {
             // destructor stores a fresh Node into survivor S.
             arena_reset_full(arena_ptr);
         }
+
         set_current_context(std::ptr::null_mut());
 
         let node = NEW_CHILD.load(Ordering::Relaxed) as *mut Object;
@@ -1814,6 +1850,7 @@ mod tests {
             assert!(ll_release(b as *mut RcHeader));
             ll_object_die(b);
         }
+
         set_current_context(std::ptr::null_mut());
     }
 }

@@ -318,6 +318,7 @@ impl BufferArena {
             (*chunk).next = b.free;
             (*chunk).size = size;
         }
+
         b.free = chunk;
     }
 
@@ -346,8 +347,10 @@ impl BufferArena {
             {
                 return Some(hit);
             }
+
             block = next;
         }
+
         None
     }
 
@@ -375,13 +378,16 @@ impl BufferArena {
                     *link = (*block).private.owned_next;
                     break;
                 }
+
                 link = &raw mut (**link).private.owned_next;
             }
+
             (*block)
                 .shared
                 .owner
                 .store(std::ptr::null_mut(), Ordering::Release);
         }
+
         // The kind is not cleared here: `put` stamps `BLOCK_KIND_FREE`
         // itself, through the release store the collector's acquire load
         // of every block's kind requires, and it reads the old value on
@@ -404,9 +410,11 @@ impl BufferArena {
                 .remote_free
                 .swap(std::ptr::null_mut(), Ordering::Acquire)
         };
+
         if head.is_null() {
             return unsafe { (*block).private.live } == 0;
         }
+
         let b = unsafe { &mut (*block).private };
         let mut n = 0u32;
         let mut last = head;
@@ -417,10 +425,13 @@ impl BufferArena {
                 if next.is_null() {
                     break;
                 }
+
                 last = next;
             }
+
             (*last).next = b.free;
         }
+
         b.free = head;
         b.live -= n;
         b.live == 0
@@ -438,6 +449,7 @@ impl BufferArena {
             if self.collect_remote(block) && block != self.current {
                 self.retire(block);
             }
+
             block = next;
         }
     }
@@ -466,9 +478,11 @@ impl BufferArena {
             if head.is_null() {
                 return false;
             }
+
             list.head = unsafe { (*head).private.owned_next };
             head
         };
+
         unsafe {
             (*block).private.owned_next = std::ptr::null_mut();
             // Claim it. A free racing this read either saw null or sees
@@ -476,6 +490,7 @@ impl BufferArena {
             // collect.
             (*block).shared.owner.store(self.id(), Ordering::Release);
         }
+
         self.own(block);
         if self.collect_remote(block) {
             // Everything it held was freed while it was ownerless.
@@ -486,6 +501,7 @@ impl BufferArena {
         if tail_of(block) < size {
             return false;
         }
+
         self.make_current(block);
         true
     }
@@ -545,8 +561,10 @@ impl BufferArena {
                 self.make_current(block);
                 return true;
             }
+
             block = unsafe { (*block).private.owned_next };
         }
+
         false
     }
 
@@ -579,6 +597,7 @@ impl BufferArena {
                     .owner
                     .store(std::ptr::null_mut(), Ordering::Release)
             };
+
             if empty {
                 // The kind stays for `put` to overwrite, as in `retire`.
                 unsafe { (*block).private.owned_next = std::ptr::null_mut() };
@@ -587,8 +606,10 @@ impl BufferArena {
                 unsafe { (*block).private.owned_next = list.head };
                 list.head = block;
             }
+
             block = next;
         }
+
         self.owned = std::ptr::null_mut();
     }
 
@@ -644,6 +665,7 @@ impl BufferArena {
             self.limit = std::ptr::null_mut();
             return false;
         }
+
         let id = self.id();
         // Field by field, and the kind last through `store_block_kind`.
         // A whole-header store is the one access the atomic type does not
@@ -659,14 +681,17 @@ impl BufferArena {
             (&raw mut (*block).shared).write(BufferBlockShared {
                 owner: AtomicPtr::new(id),
             });
+
             (&raw mut (*block).remote).write(BufferBlockRemote {
                 remote_free: AtomicPtr::new(std::ptr::null_mut()),
             });
+
             crate::memory::block_pool::store_block_kind(
                 &raw const (*block).kind,
                 BLOCK_KIND_BUFFER,
             );
         }
+
         self.own(block);
         self.current = block;
         self.bump = (block as *mut u8).wrapping_add(LINE_SIZE);
@@ -708,6 +733,7 @@ fn pop_fit_in(
     if block.is_null() {
         return None;
     }
+
     let b = unsafe { &mut (*block).private };
 
     let mut prev: *mut *mut FreeChunk = &mut b.free;
@@ -719,10 +745,12 @@ fn pop_fit_in(
                 b.live += 1;
                 return Some((chunk as *mut u8, (*chunk).size));
             }
+
             prev = &mut (*chunk).next;
             *budget -= 1;
         }
     }
+
     None
 }
 
@@ -787,8 +815,10 @@ pub fn with_buffer_arena<R>(f: impl FnOnce(&mut BufferArena) -> R) -> R {
             p = Box::into_raw(Box::new(BufferArena::new()));
             cell.set(p);
         }
+
         p
     });
+
     f(unsafe { &mut *arena })
 }
 
@@ -837,6 +867,7 @@ pub fn buffer_alloc_longlived_payload(size: usize) -> (*mut u8, usize) {
     if FORCE_REFUSE_LONGLIVED.load(std::sync::atomic::Ordering::Relaxed) {
         return (std::ptr::null_mut(), 0);
     }
+
     if size <= BLOCK_PAYLOAD {
         return with_buffer_arena(|a| a.alloc(size));
     }
@@ -861,6 +892,7 @@ pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usiz
     if FORCE_REFUSE_LONGLIVED.load(std::sync::atomic::Ordering::Relaxed) {
         return std::ptr::null_mut();
     }
+
     if buf.capacity >= min_capacity {
         return buf.data;
     }
@@ -899,9 +931,11 @@ pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usiz
     if buf.len > 0 {
         unsafe { std::ptr::copy_nonoverlapping(buf.data, new_data, buf.len) };
     }
+
     if !buf.data.is_null() {
         unsafe { buffer_free_longlived_payload(buf.data, buf.capacity) };
     }
+
     buf.data = new_data;
     buf.capacity = granted;
     buf.data
@@ -931,6 +965,7 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         if crate::memory::deferred_free::active() {
             return unsafe { crate::memory::deferred_free::park_retained_payload(ptr) };
         }
+
         if crate::memory::retained::payload_freed(block) {
             unsafe { crate::memory::retained::give_block_back(block) };
         }
@@ -945,6 +980,7 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         if crate::memory::deferred_free::active() {
             return unsafe { crate::memory::deferred_free::park_buffer_chunk(ptr, capacity) };
         }
+
         unsafe { free_chunk(ptr, capacity) };
     } else {
         // OS-direct run: the standard path frees it by mask.
@@ -980,6 +1016,7 @@ unsafe fn free_chunk(ptr: *mut u8, capacity: usize) {
         let size = round_up_8(capacity).max(MIN_CHUNK);
         return unsafe { post_remote(block, ptr, size) };
     }
+
     unsafe { (*existing).free(ptr, capacity) };
 }
 
@@ -1006,6 +1043,7 @@ pub unsafe fn buffer_release_longlived(buf: &mut Buffer) {
     if !buf.data.is_null() {
         unsafe { buffer_free_longlived_payload(buf.data, buf.capacity) };
     }
+
     *buf = Buffer::new();
 }
 
@@ -1141,6 +1179,7 @@ mod tests {
             let mut dying = BufferArena::new();
             dying.alloc(48)
         };
+
         let block = BufferBlockHeader::of_ptr(chunk);
         unsafe {
             assert_eq!(
@@ -1164,13 +1203,16 @@ mod tests {
             if unsafe { (*block).kind.load(Ordering::Relaxed) } == 0 {
                 break;
             }
+
             if ABANDONED.lock().unwrap().head.is_null() {
                 break;
             }
+
             // Zero, because what is being tested is the collect-and-retire
             // half of adoption, not whether the tail fits a request.
             next.adopt(0);
         }
+
         unsafe {
             assert_eq!(
                 (*block).kind.load(Ordering::Relaxed),
@@ -1250,6 +1292,7 @@ mod tests {
             let mut dying = BufferArena::new();
             dying.alloc(48)
         };
+
         let abandoned = BufferBlockHeader::of_ptr(chunk);
 
         let mut heir = BufferArena::new();
@@ -1284,6 +1327,7 @@ mod tests {
             let mut dying = BufferArena::new();
             dying.alloc(48)
         };
+
         let abandoned = BufferBlockHeader::of_ptr(chunk);
 
         let mut heir = BufferArena::new();
@@ -1458,6 +1502,7 @@ mod tests {
         for &(p, g) in &chunks[..4] {
             unsafe { a.free(p, g) };
         }
+
         // The emptied first block is back in the pool: take it again.
         let reused = pool.get();
         let mut seen = vec![reused];
@@ -1466,15 +1511,18 @@ mod tests {
             if found {
                 break;
             }
+
             let b = pool.get();
             found = std::ptr::eq(b as *mut BufferBlockHeader, first_block);
             seen.push(b);
         }
+
         assert!(found, "emptied buffer block was not returned to the pool");
         assert_eq!(pool.regions_carved(), regions_before);
         for b in seen {
             pool.put(b);
         }
+
         unsafe { a.free(chunks[4].0, chunks[4].1) };
     }
 
@@ -1540,6 +1588,7 @@ mod tests {
             assert_eq!(b.data, first, "step {step}: nothing was allocated after it");
             assert!(b.capacity > before, "step {step}: no room was gained");
         }
+
         assert_eq!(
             unsafe { std::slice::from_raw_parts(b.data, 7) },
             b"payload",

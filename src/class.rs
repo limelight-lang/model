@@ -240,22 +240,22 @@ impl Class {
         unsafe { std::slice::from_raw_parts(self.props, self.prop_count as usize) }
     }
 
-    /// Counted-pointer trace runs (stride 8, skip `NULL`) — the GC and
-    /// teardown consumer contract for bare-pointer slots.
+    /// [`field@Self::ptr_runs`] as a slice — the GC and teardown consumer
+    /// contract for bare-pointer slots.
     #[inline]
     pub fn ptr_runs(&self) -> &[Run] {
         unsafe { std::slice::from_raw_parts(self.ptr_runs, self.ptr_run_count as usize) }
     }
 
-    /// Box trace runs (stride 16, skip when the refcounted flag is clear)
-    /// — the same contract for `mixed`/untyped Box slots.
+    /// [`field@Self::box_runs`] as a slice — the same contract for
+    /// `mixed`/untyped Box slots.
     #[inline]
     pub fn box_runs(&self) -> &[Run] {
         unsafe { std::slice::from_raw_parts(self.box_runs, self.box_run_count as usize) }
     }
 
-    /// Box slots declared without a default (stride 16) — the factory's
-    /// undef-stamp list, a sub-range of [`Self::box_runs`].
+    /// [`field@Self::undef_runs`] as a slice — the factory's undef-stamp
+    /// list, a sub-range of [`Self::box_runs`].
     #[inline]
     pub fn undef_runs(&self) -> &[Run] {
         unsafe { std::slice::from_raw_parts(self.undef_runs, self.undef_run_count as usize) }
@@ -280,6 +280,7 @@ impl Class {
         if depth == 0 || depth > self.display_len {
             return false;
         }
+
         let entry = unsafe { *self.display.add(depth as usize - 1) };
         std::ptr::eq(entry, target)
     }
@@ -391,6 +392,7 @@ impl ClassBuilder {
         } else {
             SlotKind::Scalar
         };
+
         self.prop_of(name, kind)
     }
 
@@ -507,12 +509,14 @@ impl ClassBuilder {
         } else {
             unsafe { Class::vtbl(self.parent) }.to_vec()
         };
+
         let mut method_entries: Vec<(*const LLString, u32)> = parent.map_or(Vec::new(), |p| {
             unsafe { std::slice::from_raw_parts(p.methods, p.method_count as usize) }
                 .iter()
                 .map(|m| (m.name, m.slot))
                 .collect()
         });
+
         let mut destruct_slot = parent.map_or(NO_DESTRUCT_SLOT, |p| p.destruct_slot);
         if parent.is_some_and(|p| p.has_destructor()) {
             self.flags |= CLASS_HAS_DESTRUCTOR;
@@ -532,6 +536,7 @@ impl ClassBuilder {
                     slot
                 }
             };
+
             if name == destruct_name {
                 destruct_slot = slot;
             }
@@ -586,10 +591,12 @@ impl ClassBuilder {
                 offset: cursor,
                 count: own_pointers.len() as u32,
             });
+
             for &(name, declaration_index, tracked) in &own_pointers {
                 if tracked {
                     bitmap_slots.push((props.len(), declaration_index));
                 }
+
                 props.push(PropSlot {
                     name,
                     offset: cursor,
@@ -597,9 +604,11 @@ impl ClassBuilder {
                     declaration_index,
                     init_bit: NO_INIT_BIT,
                 });
+
                 cursor += 8;
             }
         }
+
         // Boxes: one contiguous run, stride 16; the defaultless tail is
         // additionally the factory's undef run.
         if !own_boxes.is_empty() || !own_undef_boxes.is_empty() {
@@ -608,12 +617,14 @@ impl ClassBuilder {
                 offset: cursor,
                 count: (own_boxes.len() + own_undef_boxes.len()) as u32,
             });
+
             if !own_undef_boxes.is_empty() {
                 undef_runs.push(Run {
                     offset: cursor + own_boxes.len() as u32 * 16,
                     count: own_undef_boxes.len() as u32,
                 });
             }
+
             for &(name, declaration_index) in own_boxes.iter().chain(&own_undef_boxes) {
                 props.push(PropSlot {
                     name,
@@ -622,15 +633,18 @@ impl ClassBuilder {
                     declaration_index,
                     init_bit: NO_INIT_BIT,
                 });
+
                 cursor += 16;
             }
         }
+
         // The rest, in declaration order: scalars and bools, never traced.
         for &(name, kind, declaration_index, tracked) in &own_rest {
             cursor = align_up(cursor, kind.align());
             if tracked {
                 bitmap_slots.push((props.len(), declaration_index));
             }
+
             props.push(PropSlot {
                 name,
                 offset: cursor,
@@ -638,8 +652,10 @@ impl ClassBuilder {
                 declaration_index,
                 init_bit: NO_INIT_BIT,
             });
+
             cursor += kind.size();
         }
+
         // The byte block (`rfc/model/classes.md`): this class's init
         // bitmap, one bit per bitmap-tracked own slot in declaration
         // order, appended at the layout tail. `init_bit` is an absolute
@@ -651,6 +667,7 @@ impl ClassBuilder {
             for (bit, &(prop_index, _)) in bitmap_slots.iter().enumerate() {
                 props[prop_index].init_bit = cursor * 8 + bit as u32;
             }
+
             cursor += bitmap_slots.len().div_ceil(8) as u32;
         }
 
@@ -669,6 +686,7 @@ impl ClassBuilder {
                 })
                 .collect()
         });
+
         interface_declarations.append(&mut self.interfaces);
 
         // Display: parent's chain + self.
@@ -726,6 +744,7 @@ impl ClassBuilder {
                             cursor = cursor.add(1);
                         }
                     }
+
                     InterfaceEntry {
                         interface_id: *id,
                         method_count: map.len() as u32,
@@ -735,10 +754,12 @@ impl ClassBuilder {
                 })
                 .collect()
         };
+
         let interfaces_mem = alloc_array(&interface_entries);
         if interfaces_mem.is_null() || interface_entries.iter().any(|e| e.slot_map.is_null()) {
             return std::ptr::null();
         }
+
         unsafe {
             cls.write(Class {
                 flags: self.flags,
@@ -769,6 +790,7 @@ impl ClassBuilder {
                 box_runs: box_runs_mem,
                 undef_runs: undef_runs_mem,
             });
+
             display.push(cls);
             (*cls).display = alloc_array(&display);
             if (*cls).display.is_null() {
@@ -778,6 +800,7 @@ impl ClassBuilder {
             let vtbl_dst = cls.add(1) as *mut *const ();
             std::ptr::copy_nonoverlapping(vtbl.as_ptr(), vtbl_dst, vtbl.len());
         }
+
         cls
     }
 }
@@ -789,10 +812,12 @@ fn alloc_array<T: Copy>(items: &[T]) -> *const T {
     if items.is_empty() {
         return std::ptr::NonNull::dangling().as_ptr();
     }
+
     let mem = immortal_alloc(std::mem::size_of_val(items)) as *mut T;
     if mem.is_null() {
         return std::ptr::null();
     }
+
     unsafe { std::ptr::copy_nonoverlapping(items.as_ptr(), mem, items.len()) };
     mem
 }
@@ -1072,6 +1097,7 @@ mod tests {
         for i in 0..9 {
             builder = builder.prop_scalar_without_default(&format!("s{i}"));
         }
+
         let cls = unsafe { &*builder.build() };
 
         // Scalars at 16..88, block bytes 88-89.

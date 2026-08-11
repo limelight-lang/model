@@ -238,6 +238,7 @@ impl Ring {
             b: slot.b.load(Ordering::Relaxed),
             thread: self.thread,
         };
+
         // The fence, not the load, is what keeps the five readings above
         // from being taken after the check below: an acquire *load*
         // orders what follows it, so the record it is meant to validate
@@ -253,6 +254,7 @@ impl Ring {
         if now.wrapping_sub(at) as usize >= CAPACITY {
             return None;
         }
+
         Some(event)
     }
 }
@@ -324,6 +326,7 @@ fn registry() -> &'static Mutex<Registry> {
         marks: 0,
         pending_free: Vec::new(),
     });
+
     &REGISTRY
 }
 
@@ -426,6 +429,7 @@ pub(crate) fn this_thread_identity() -> u64 {
     if ring.is_null() || ring == CLOSED || ring == REFUSED {
         return 0;
     }
+
     unsafe { (*ring).thread }
 }
 
@@ -442,6 +446,7 @@ pub fn record(kind: Kind, site: u32, subject: u64, a: u64, b: u64) {
     if ring.is_null() {
         return;
     }
+
     unsafe { (*ring).write(kind, site, subject, a, b) };
 }
 
@@ -454,15 +459,19 @@ fn ring_for_writing() -> *mut Ring {
         LOST.fetch_add(1, Ordering::Relaxed);
         return std::ptr::null_mut();
     }
+
     if existing == REFUSED {
         return std::ptr::null_mut();
     }
+
     if !existing.is_null() {
         return existing;
     }
+
     if ALLOCATING.with(|cell| cell.get()) {
         return std::ptr::null_mut();
     }
+
     // The guard covers registration and the pending frees below it, not
     // only the allocation: both can raise an event of their own once the
     // record sites exist, and a record that found this thread ringless
@@ -495,6 +504,7 @@ fn ring_for_writing() -> *mut Ring {
             return std::ptr::null_mut();
         }
     }
+
     let fresh = allocate_ring();
     if fresh.is_null() {
         // One refusal closes the thread. Retrying instead would ask the
@@ -505,6 +515,7 @@ fn ring_for_writing() -> *mut Ring {
         ALLOCATING.with(|cell| cell.set(false));
         return std::ptr::null_mut();
     }
+
     let pending = register_ring(fresh);
     RING.with(|cell| cell.set(fresh));
     free_rings(pending);
@@ -538,6 +549,7 @@ fn register_ring(ring: *mut Ring) -> Vec<*mut Ring> {
     unsafe {
         (&raw mut (*ring).thread).write(registry.next_thread);
     }
+
     registry.live.push(ring);
     take_pending(&mut registry)
 }
@@ -555,6 +567,7 @@ fn take_pending(registry: &mut Registry) -> Vec<*mut Ring> {
     if !crate::memory::heap::thread_may_free() {
         return Vec::new();
     }
+
     std::mem::take(&mut registry.pending_free)
 }
 
@@ -577,6 +590,7 @@ fn allocate_ring() -> *mut Ring {
     if memory.is_null() {
         return std::ptr::null_mut();
     }
+
     unsafe { std::ptr::write_bytes(memory, 0, bytes) };
     memory as *mut Ring
 }
@@ -606,12 +620,15 @@ pub fn retire_thread_ring() {
         if ring.is_null() || ring == CLOSED || ring == REFUSED {
             return std::ptr::null_mut();
         }
+
         cell.set(CLOSED);
         ring
     });
+
     if ring.is_null() {
         return;
     }
+
     retire_ring(ring);
 }
 
@@ -755,6 +772,7 @@ pub fn mark() -> Mark {
             take_pending(&mut registry),
         )
     };
+
     // An investigator's thread is a live one, so it is one of the two
     // that can carry out an eviction's free ([`Registry::pending_free`]).
     free_rings(pending);
@@ -790,6 +808,7 @@ pub fn between(start: &Mark, end: &Mark) -> Vec<Window> {
     if start.taken > end.taken {
         return vec![Window::Reversed];
     }
+
     let registry = locked();
     let mut windows: Vec<Window> = end
         .positions
@@ -813,15 +832,18 @@ pub fn between(start: &Mark, end: &Mark) -> Vec<Window> {
     if vanished > 0 {
         windows.push(Window::Evicted { rings: vanished });
     }
+
     let dropped = end.lost.saturating_sub(start.lost);
     if dropped > 0 {
         windows.push(Window::Lost { records: dropped });
     }
+
     if end.refusals > 0 {
         windows.push(Window::Refused {
             threads: end.refusals,
         });
     }
+
     windows
 }
 
@@ -846,6 +868,7 @@ fn window_of(ring: *mut Ring, thread: u64, start_at: u64, end_at: u64) -> Window
             }
         }
     }
+
     Window::Records(events)
 }
 
@@ -886,6 +909,7 @@ mod tests {
                 .filter(|&&ring| unsafe { (*ring).thread } == thread)
                 .count()
         };
+
         (carrying(&registry.live), carrying(&registry.retired))
     }
 
@@ -909,6 +933,7 @@ mod tests {
                 None => return false,
             }
         };
+
         unsafe { crate::memory::stdapi::ll_free(ring as *mut u8) };
         true
     }
@@ -953,6 +978,7 @@ mod tests {
         for i in 0..(CAPACITY as u64 + 3) {
             ring.write(ANY_KIND, 0, i, 0, 0);
         }
+
         assert_eq!(ring.cursor.load(Ordering::Relaxed), CAPACITY as u64 + 3);
         // The three newest are readable and name the last three subjects.
         for (offset, subject) in [
@@ -966,6 +992,7 @@ mod tests {
                 subject
             );
         }
+
         // The record that was lapped is gone rather than stale.
         assert!(ring.read_at(0).is_none(), "a lapped position read as live");
 
@@ -1013,6 +1040,7 @@ mod tests {
         for i in 0..(CAPACITY as u64 * 2) {
             record(ANY_KIND, 0, i, 0, 0);
         }
+
         let end = mark();
 
         let mine = this_thread_identity();
@@ -1025,6 +1053,7 @@ mod tests {
                 seen = true;
             }
         }
+
         assert!(
             seen,
             "an overflowed ring reported records instead of unknown"
@@ -1231,6 +1260,7 @@ mod tests {
             wait.recv().expect("the test hung up");
             crate::memory::heap::ll_thread_exit();
         });
+
         let identity = receiver.recv().expect("the journaling thread hung up");
         let end = mark();
 
@@ -1308,6 +1338,7 @@ mod tests {
             let mut registry = locked();
             evict_retired(&mut registry, 1);
         }
+
         assert_eq!(
             pending_count(),
             pending_before + 1,
@@ -1354,6 +1385,7 @@ mod tests {
             lost: 0,
             taken: 1,
         };
+
         let end = Mark {
             positions: Vec::new(),
             evictions: 0,
@@ -1361,6 +1393,7 @@ mod tests {
             lost: 0,
             taken: 2,
         };
+
         assert_eq!(between(&end, &start), vec![Window::Reversed]);
     }
 
@@ -1408,6 +1441,7 @@ mod tests {
             let block = unsafe {
                 std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align(size, 16).unwrap())
             };
+
             assert!(!block.is_null());
 
             let mut arena = Arena::new();
@@ -1466,6 +1500,7 @@ mod tests {
             let mut registry = locked();
             evict_retired(&mut registry, 1);
         }
+
         assert_eq!(
             pending_count(),
             pending_before + 1,
@@ -1520,6 +1555,7 @@ mod tests {
                 record(ANY_KIND, 0, LATE, 0, 0);
             }
         }
+
         thread_local! {
             static LATE_CELL: RecordOnDrop = const { RecordOnDrop };
         }
@@ -1619,6 +1655,7 @@ mod tests {
             assert!(!s.is_null());
             s
         };
+
         let kill = |s: *mut crate::string::LLString| unsafe {
             assert!(crate::refcount::ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
@@ -1640,12 +1677,14 @@ mod tests {
             let s = unsafe {
                 crate::string::ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"elsewhere")
             };
+
             assert!(!s.is_null());
             let identity = this_thread_identity();
             unsafe {
                 assert!(crate::refcount::ll_release(s as *mut RcHeader));
                 crate::object::ll_entity_die(s as *mut RcHeader);
             }
+
             (identity, s as u64)
         })
         .join()
@@ -1792,6 +1831,7 @@ mod tests {
                 Window::Refused { threads } => Some(threads),
                 _ => None,
             });
+
         assert_eq!(
             reported,
             Some(start.refusals + 1),
@@ -1871,6 +1911,7 @@ mod tests {
                 Window::Refused { threads } => Some(threads),
                 _ => None,
             });
+
         assert_eq!(
             reported,
             Some(start.refusals + 1),

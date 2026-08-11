@@ -104,14 +104,17 @@ pub unsafe extern "C" fn ll_static_block_register(block: *mut u8, layout: *const
             if fresh.is_null() {
                 return;
             }
+
             unsafe { fresh.write(Registered::new()) };
             list = fresh;
             cell.set(list);
         }
+
         let list = unsafe { &mut *list };
         if list.len() == list.capacity() && list.try_reserve(1).is_err() {
             return;
         }
+
         list.push((block, layout));
     });
 }
@@ -135,6 +138,7 @@ pub(crate) fn run_thread_exit_teardown() {
             if list.is_null() {
                 return None;
             }
+
             match unsafe { (*list).pop() } {
                 Some(entry) => Some(entry),
                 None => {
@@ -147,6 +151,7 @@ pub(crate) fn run_thread_exit_teardown() {
                 }
             }
         });
+
         let Some((block, layout)) = next else { return };
         unsafe { tear_down(block, layout) };
     }
@@ -199,6 +204,7 @@ mod tests {
         let p = unsafe {
             std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align(size, 16).unwrap())
         };
+
         assert!(!p.is_null());
         p
     }
@@ -236,6 +242,7 @@ mod tests {
             ));
             ll_static_block_register(block, holder_layout);
         }
+
         // The static's store took the second reference; the local one goes.
         unsafe { assert!(!crate::refcount::ll_release(obj as *mut RcHeader)) };
 
@@ -282,6 +289,7 @@ mod tests {
             ));
             ll_static_block_register(block, holder_layout);
         }
+
         let held = unsafe { (*(obj as *mut RcHeader)).refcount };
         assert!(held >= 1, "the static's store is an escape hold");
 
@@ -308,6 +316,7 @@ mod tests {
         unsafe extern "C" fn record(_o: *mut Object) {
             RAN.fetch_add(1, Ordering::Relaxed);
         }
+
         RAN.store(0, Ordering::Relaxed);
 
         let cls = ClassBuilder::new("StaticOnAWorker")
@@ -352,6 +361,7 @@ mod tests {
                 ll_static_block_register(block, layout);
                 assert!(!crate::refcount::ll_release(obj as *mut RcHeader));
             }
+
             arena.reset(|_| {});
             // Deliberately no `ll_thread_exit()`: the guard must do it,
             // and the teardown pass must ride that same path.
@@ -401,6 +411,7 @@ mod tests {
                     0,
                 )
             };
+
             unsafe {
                 assert!(crate::refcount::ll_release(scratch as *mut RcHeader));
                 crate::object::ll_entity_die(scratch as *mut RcHeader);
@@ -414,6 +425,7 @@ mod tests {
                     0,
                 )
             };
+
             let block = static_block(layout);
             unsafe {
                 assert!(crate::memory::barrier::store_box(
@@ -425,6 +437,7 @@ mod tests {
                 ll_static_block_register(block, layout);
                 assert!(!crate::refcount::ll_release(s as *mut RcHeader));
             }
+
             arena.reset(|_| {});
             // Deliberately no `ll_thread_exit()`: the guard must do it.
         })
@@ -442,9 +455,11 @@ mod tests {
         unsafe extern "C" fn record_first(_o: *mut Object) {
             ORDER.lock().unwrap().push(1);
         }
+
         unsafe extern "C" fn record_second(_o: *mut Object) {
             ORDER.lock().unwrap().push(2);
         }
+
         ORDER.lock().unwrap().clear();
 
         let first_cls = ClassBuilder::new("FirstStatic")
@@ -473,8 +488,10 @@ mod tests {
                 ll_static_block_register(block, layout);
                 assert!(!crate::refcount::ll_release(obj as *mut RcHeader));
             }
+
             block
         };
+
         let b1 = register(first_cls);
         let b2 = register(second_cls);
 
@@ -489,6 +506,7 @@ mod tests {
             free_static_block(b1, layout);
             free_static_block(b2, layout);
         }
+
         arena.reset(|_| {});
     }
 
@@ -504,6 +522,7 @@ mod tests {
         unsafe extern "C" fn record(_o: *mut Object) {
             SEEN.fetch_add(1, Ordering::Relaxed);
         }
+
         SEEN.store(0, Ordering::Relaxed);
 
         let cls = ClassBuilder::new("StaticWeakTarget")
@@ -540,6 +559,7 @@ mod tests {
                 assert!(crate::refcount::ll_release(weak as *mut RcHeader));
                 crate::object::ll_entity_die(weak as *mut RcHeader);
             }
+
             arena.reset(|_| {});
         })
         .join()
@@ -569,6 +589,7 @@ mod tests {
         unsafe extern "C" fn late_target(_o: *mut Object) {
             ORDER.lock().unwrap().push("late");
         }
+
         /// Runs while the pass is draining, and registers one more block.
         unsafe extern "C" fn registers_another(_o: *mut Object) {
             ORDER.lock().unwrap().push("first");
@@ -588,6 +609,7 @@ mod tests {
                 ll_static_block_register(block, layout);
                 assert!(!crate::refcount::ll_release(obj as *mut RcHeader));
             }
+
             LATE.lock().unwrap().push(block as usize);
             arena.reset(|_| {});
         }
@@ -632,6 +654,7 @@ mod tests {
         for &b in LATE.lock().unwrap().iter() {
             unsafe { free_static_block(b as *mut u8, layout) };
         }
+
         arena.reset(|_| {});
     }
 }

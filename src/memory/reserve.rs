@@ -110,6 +110,7 @@ pub(crate) fn replenish() -> bool {
                 if block.is_null() {
                     return false;
                 }
+
                 // Through `store_block_kind` for the reason every other
                 // commissioning uses it: the collector acquire-loads the
                 // kind of every block in every carved region.
@@ -119,8 +120,10 @@ pub(crate) fn replenish() -> bool {
                         BLOCK_KIND_ARENA,
                     )
                 };
+
                 r.blocks.push(block);
             }
+
             r.drawn = false;
             true
         })
@@ -139,6 +142,7 @@ pub(crate) fn draw() -> *mut BlockHeader {
                 Ok(r) => r,
                 Err(_) => return std::ptr::null_mut(),
             };
+
             match r.blocks.pop() {
                 Some(block) => {
                     r.drawn = true;

@@ -52,6 +52,7 @@ fn resolve(ctx: *mut LLContext) -> *mut Arena {
     } else {
         ctx
     };
+
     if ctx.is_null() {
         no_context();
     }
@@ -60,6 +61,7 @@ fn resolve(ctx: *mut LLContext) -> *mut Arena {
     if arena.is_null() {
         no_arena();
     }
+
     arena
 }
 

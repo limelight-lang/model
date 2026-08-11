@@ -112,13 +112,44 @@ copies the density of what sits beside it, so a pass after it is a pass
 over more. Between the two, each file is touched once and the next module
 written inherits the leaner shape.
 
-Goal: every comment that remains carries something the code does not, and
-a test can be found by what it is about.
+**Edmond's ruling of 2026-08-11 widens the stage, and it answers the
+question S9.1 left open.** Rule 19 finds almost nothing here — sixteen
+lines in `src/memory/`'s 4 024 — because the crate was written to it.
+What makes the code hard to read past is the **length** of legal
+comments, and that is now in scope: the enormous strips are cut to what a
+reader of the code needs, and the argument behind them — rejected
+alternatives, measurements, rulings — moves to the journals that exist
+for it (`dev/DECISIONS.md`, `dev/BENCHMARKS.md`, `dev/POSTMORTEM.md`)
+with a one-line pointer left in the code. **Two doc comments never state
+one thing twice**: the second links to the first. And `style.md`'s
+mechanical rules apply to the whole crate rather than to code written
+from now on, rule 20.1 first.
+
+Goal: every comment that remains carries something the code does not and
+is no longer than that, no argument is written twice, the code's shape
+follows `style.md`, and a test can be found by what it is about.
 
 Done when: the comment count per file is recorded before and after, no
-public declaration lost its contract, every test still runs in both
-configurations, and `dev/INDEX.md` states the new arrangement.
+public declaration lost its contract, no doc comment repeats another
+instead of linking to it, `cargo doc` reports no unresolved link, every
+test still runs in both configurations, and `dev/INDEX.md` states the new
+arrangement.
 
+- [x] S9.5 The mechanical style rules, over the whole crate
+      done: rule 20.1's blank line after a block's closing brace applied
+        everywhere code follows, `cargo +1.94 fmt --check` clean
+        afterwards so the formatter is not fighting it, and the gate
+        green; repeated documentation replaced by a link
+      tier: T1 · role: —
+      Placed first because it touches every file: a comment edit made
+        after it lands in surroundings that are already right, and one
+        mechanical diff stays separate from the ones that need judgement.
+      handoff: 931 blank lines inserted across 36 files by a script kept
+        in the session scratchpad — it skips match arms, `} else {`, list
+        elements and multi-line `use` groups, none of which are blocks
+        whose construction has ended. `Class`'s three run accessors link
+        to their fields with the `field@` disambiguator now instead of
+        restating them. Commit `<pending>`.
 - [x] S9.1 The comment pass over `src/memory/`
       done: comment lines counted before and after and the drop recorded
         in this step; every comment left is one of rule 19's six kinds;

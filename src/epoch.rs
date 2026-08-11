@@ -61,6 +61,7 @@ use crate::walk;
 struct ConfirmationMessage {
     members: Vec<*mut RcHeader>,
 }
+
 // Safety: the pointers are only ever dereferenced by the owning mutator
 // thread, in the drain; the collector treats them as opaque ids.
 unsafe impl Send for ConfirmationMessage {}
@@ -125,6 +126,7 @@ pub(crate) fn teardown_exit() {
         d.set(depth);
         depth
     });
+
     if depth == 0 {
         checkpoint();
     }
@@ -164,6 +166,7 @@ fn checkpoint_attend() {
     if MID_DRAIN.with(|d| d.get()) || TEARDOWN_DEPTH.with(|d| d.get()) != 0 || walk::walk_active() {
         return;
     }
+
     MID_DRAIN.with(|d| d.set(true));
     loop {
         let message = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
@@ -173,10 +176,12 @@ fn checkpoint_attend() {
         unsafe {
             walk::drain_confirmed(&message.members);
         }
+
         // The ack: released so a collector seeing zero (Acquire) also
         // sees every effect of the drain.
         OUTSTANDING_VERDICTS.fetch_sub(1, Ordering::Release);
     }
+
     MID_DRAIN.with(|d| d.set(false));
     // A closed epoch's parked memory returns at the owning thread's
     // next checkpoint — this one. Never mid-epoch (the queue's identity
@@ -302,6 +307,7 @@ mod tests {
             tie(a, 16, b);
             tie(b, 16, a);
         }
+
         let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
         unsafe { ll_retain(obj as *mut RcHeader) }; // rc 2: the run's release is non-final
 
@@ -332,6 +338,7 @@ mod tests {
             assert!(ll_release(obj as *mut RcHeader));
             crate::object::ll_object_die(obj);
         }
+
         arena.reset(|_| {});
     }
 
@@ -349,6 +356,7 @@ mod tests {
             if ORDER.lock().unwrap().is_empty() {
                 ACKS_AT_FIRST_DEATH.store(handshake_acks() as usize, Ordering::Relaxed);
             }
+
             ORDER.lock().unwrap().push(obj as usize);
         }
 
@@ -625,6 +633,7 @@ mod tests {
             );
             crate::object::ll_object_die(x);
         }
+
         assert_eq!(
             DESTRUCTS.load(Ordering::Relaxed),
             1,
@@ -663,6 +672,7 @@ mod tests {
                 crate::object::ll_object_die(e);
             }
         }
+
         arena.reset(|_| {});
     }
 
@@ -721,6 +731,7 @@ mod tests {
             tie(r1, 16, r2);
             tie(r2, 16, r1);
         }
+
         let cell = unsafe { crate::weak::ll_weakref_create(&mut ctx, x as *mut RcHeader) };
         CELL.store(cell as usize, Ordering::Relaxed);
 
@@ -735,6 +746,7 @@ mod tests {
             crate::object::ll_object_die(x);
             // The dispose's exit picked up and drained the ring.
         }
+
         assert_eq!(
             outstanding_verdicts(),
             0,
@@ -761,9 +773,11 @@ mod tests {
                 assert!(ll_release(e as *mut RcHeader));
                 crate::object::ll_object_die(e);
             }
+
             assert!(ll_release(cell as *mut RcHeader));
             crate::object::ll_entity_die(cell as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -839,6 +853,7 @@ mod tests {
         for &e in &[a1, a2, b1, b2] {
             assert!(!seen.contains(&(e as usize)));
         }
+
         arena.reset(|_| {});
     }
 }

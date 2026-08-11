@@ -120,6 +120,7 @@ impl Drop for Epoch {
             while protocol::outstanding_verdicts() != 0 {
                 std::thread::yield_now();
             }
+
             deferred_free::end_epoch();
         }
     }
@@ -216,12 +217,14 @@ impl Epoch {
                     Some(index) => index[s] as *mut RcHeader,
                     None => (b.payload + s * b.class_size) as *mut RcHeader,
                 };
+
                 let word = unsafe { collector_load_header(slot) };
                 let refcount = word as u32;
                 let flags = (word >> 32) as u32;
                 if refcount == 0 {
                     continue; // free (or mid-teardown: occupancy is exact)
                 }
+
                 let stamp = ((flags & EPOCH_BYTE_MASK) >> EPOCH_BYTE_SHIFT) as u8;
                 if stamp == 0 || stamp == self.number {
                     // New since the last epoch: stamp and skip
@@ -231,9 +234,11 @@ impl Epoch {
                     self.stats.stamped_new += 1;
                     continue;
                 }
+
                 if flags & MEMORY_CATEGORY_MASK != MemoryCategory::GcHeap as u32 {
                     continue; // mature but unwalked: a root source
                 }
+
                 self.slot_rows[self.first_slot[block_index] as usize + s] =
                     self.entities.len() as u32;
                 self.entities.push(slot);
@@ -241,6 +246,7 @@ impl Epoch {
                 self.flags.push(flags);
             }
         }
+
         self.stats.walked = self.entities.len();
     }
 
@@ -313,6 +319,7 @@ impl Epoch {
                 component_of[i as usize] = id as u32;
             }
         }
+
         let mut component_edges: Vec<Vec<u32>> = vec![Vec::new(); self.candidates.len()];
         for (k, edge) in self.edges.iter().enumerate() {
             for member in [edge.src, edge.dst] {
@@ -323,6 +330,7 @@ impl Epoch {
                 }
             }
         }
+
         // Components are taken one at a time, not wholesale: posting is
         // the point of no return per component, and whatever a panic
         // leaves unposted simply dies with the epoch — an unposted
@@ -338,6 +346,7 @@ impl Epoch {
                     break;
                 }
             }
+
             // Recorded in-edge cells re-read against their walk values.
             if clean {
                 for &k in &component_edges[id] {
@@ -346,12 +355,14 @@ impl Epoch {
                         (*(edge.field as *const std::sync::atomic::AtomicU64))
                             .load(Ordering::Relaxed)
                     };
+
                     if now != edge.raw {
                         clean = false;
                         break;
                     }
                 }
             }
+
             if clean {
                 self.stats.confirmed += 1;
                 let members: Vec<*mut RcHeader> = component
@@ -407,6 +418,7 @@ fn census_row(
     if child < payload {
         return None; // inside the block's header line
     }
+
     let block_index = blocks.binary_search_by_key(&payload, |b| b.payload).ok()?;
     let b = &blocks[block_index];
     let slot = match &b.index {
@@ -423,9 +435,11 @@ fn census_row(
             if slot as usize >= b.slots || slot * class_size != offset {
                 return None; // the tail fragment, or off a slot start
             }
+
             slot
         }
     };
+
     let row = slot_rows[first_slot[block_index] as usize + slot as usize];
     (row != u32::MAX).then_some(row)
 }
@@ -443,20 +457,24 @@ pub(crate) fn run_epoch() -> EpochStats {
     while !epoch.acked() {
         std::thread::yield_now();
     }
+
     epoch.snapshot();
     epoch.walk();
     epoch.judge();
     if epoch.candidates.is_empty() {
         return epoch.close();
     }
+
     epoch.condemn();
     while !epoch.acked() {
         std::thread::yield_now();
     }
+
     epoch.recheck_and_post();
     while !epoch.can_close() {
         std::thread::yield_now();
     }
+
     epoch.close()
 }
 
@@ -505,6 +523,7 @@ mod tests {
         let held = unsafe {
             crate::string::ll_string_new(&mut ctx, crate::refcount::MemoryCategory::GcHeap, b"v")
         };
+
         let values = [Value::entity(Tag::String, held as *mut RcHeader)];
         let t = unsafe {
             crate::template::ll_template_new(
@@ -524,6 +543,7 @@ mod tests {
                 |cell| seen.push(cell.child),
             )
         };
+
         assert_eq!(
             seen,
             vec![held as *mut RcHeader],
@@ -534,10 +554,12 @@ mod tests {
             if ll_release(t as *mut RcHeader) {
                 crate::object::ll_entity_die(t as *mut RcHeader);
             }
+
             if ll_release(held as *mut RcHeader) {
                 crate::object::ll_entity_die(held as *mut RcHeader);
             }
         }
+
         arena.reset(|_| {});
     }
 
@@ -573,6 +595,7 @@ mod tests {
             e.recheck_and_post();
             checkpoint(); // the Phase 4 drain
         }
+
         let stats = e.close();
         checkpoint(); // the post-epoch flush of parked memory
         stats
@@ -613,6 +636,7 @@ mod tests {
                             unsafe { tie(objects[i - 1], 16, obj) };
                         }
                     }
+
                     objects.push(obj);
                 }
 
@@ -656,10 +680,12 @@ mod tests {
                         }
                     }
                 }
+
                 for &obj in objects.iter().rev() {
                     if chained {
                         unsafe { ll_release(obj as *mut RcHeader) };
                     }
+
                     if unsafe { ll_release(obj as *mut RcHeader) } {
                         unsafe { crate::object::ll_object_die(obj) };
                     }
@@ -679,6 +705,7 @@ mod tests {
         for filler in &names {
             builder = builder.prop(filler, true);
         }
+
         builder.build()
     }
 
@@ -704,6 +731,7 @@ mod tests {
                 MemoryCategory::GcHeap,
             )
         };
+
         let b = unsafe {
             new_constructed(
                 &mut ctx,
@@ -711,6 +739,7 @@ mod tests {
                 MemoryCategory::GcHeap,
             )
         };
+
         unsafe {
             tie(a, 16, b);
             tie(b, 16, a);
@@ -766,6 +795,7 @@ mod tests {
                 MemoryCategory::GcHeap,
             )
         };
+
         let block = (obj as usize) & !crate::memory::block_pool::BLOCK_MASK;
         assert!(crate::memory::large_entity::snapshot().contains(&block));
 
@@ -775,6 +805,7 @@ mod tests {
             assert!(ll_release(obj as *mut RcHeader));
             crate::object::ll_entity_die(obj as *mut RcHeader);
         }
+
         assert!(
             crate::memory::large_entity::snapshot().contains(&block),
             "the free parked, so the run is still registered and still mapped"
@@ -955,6 +986,7 @@ mod tests {
             tie(a, 16, b);
             tie(b, 16, a);
         }
+
         stepped_epoch(); // mature
 
         let mut e = Epoch::open();
@@ -1022,6 +1054,7 @@ mod tests {
             tie(a, 16, b);
             tie(b, 16, a);
         }
+
         stepped_epoch(); // mature
 
         let mut e = Epoch::open();
@@ -1035,6 +1068,7 @@ mod tests {
             ll_retain(a as *mut RcHeader);
             assert!(!ll_release(a as *mut RcHeader)); // restored: ABA
         }
+
         checkpoint(); // ack
         e.recheck_and_post();
         assert_eq!(e.stats.confirmed, 1, "the restored count confirms");
@@ -1068,6 +1102,7 @@ mod tests {
             tie(a, 16, b);
             tie(b, 16, a);
         }
+
         stepped_epoch(); // mature
 
         let mut e = Epoch::open();
@@ -1136,6 +1171,7 @@ mod tests {
             assert!(ll_release(c as *mut RcHeader));
             crate::object::ll_object_die(c);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1186,6 +1222,7 @@ mod tests {
             assert!(ll_release(holder as *mut RcHeader));
             crate::object::ll_object_die(holder);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1231,6 +1268,7 @@ mod tests {
             assert!(ll_release(target as *mut RcHeader));
             crate::object::ll_object_die(target);
         }
+
         arena.reset(|_| {});
     }
 
@@ -1264,6 +1302,7 @@ mod tests {
             tie(s1, 32, s3); // s1.f2 = s3
             ll_retain(s1 as *mut RcHeader); // fr1
         }
+
         stepped_epoch(); // everything matures
 
         unsafe {
@@ -1277,6 +1316,7 @@ mod tests {
             tie(s2, 16, s2);
             crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, s1 as *mut RcHeader);
         }
+
         assert_eq!(
             DESTRUCTS.load(Ordering::Relaxed),
             2,
@@ -1293,6 +1333,7 @@ mod tests {
             ll_retain(s2 as *mut RcHeader);
             tie(s2, 32, s2);
         }
+
         e.walk_edges(); // records BOTH self-edges: in[s2] = 2
         e.judge();
         assert_eq!(
@@ -1375,6 +1416,7 @@ mod tests {
             for _ in 0..4 {
                 stats.push(run_epoch());
             }
+
             stats
         });
 
@@ -1394,6 +1436,7 @@ mod tests {
                     ll_retain(k1 as *mut RcHeader);
                     // Both frame references gone: the ring floats, cyclic.
                 }
+
                 rings += 1;
                 let holder = mk(&mut ctx);
                 unsafe {
@@ -1403,9 +1446,11 @@ mod tests {
                     crate::object::ll_object_die(holder);
                 }
             }
+
             checkpoint();
             std::hint::spin_loop();
         }
+
         let epoch_stats = collector.join().unwrap();
         assert_eq!(epoch_stats.len(), 4);
 
@@ -1480,6 +1525,7 @@ mod tests {
                 Value::entity(Tag::Object, holder as *mut RcHeader),
             );
         }
+
         assert!(!unsafe { ll_release(holder as *mut RcHeader) });
 
         stepped_epoch(); // mature quietly first
@@ -1518,6 +1564,7 @@ mod tests {
             tie(a, 16, b);
             tie(b, 16, a);
         }
+
         stepped_epoch(); // mature quietly first
 
         let collector = std::thread::spawn(run_epoch);
@@ -1528,8 +1575,10 @@ mod tests {
             if collector.is_finished() {
                 break collector.join().unwrap();
             }
+
             std::thread::yield_now();
         };
+
         checkpoint(); // flush parked memory
 
         assert_eq!(stats.confirmed, 1);

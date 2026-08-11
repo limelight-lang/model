@@ -122,6 +122,7 @@ pub fn buffer_ensure(
     if buf.len > 0 {
         unsafe { std::ptr::copy_nonoverlapping(buf.data, new_data, buf.len) };
     }
+
     // The old payload is not freed: in-block it is arena garbage
     // (reclaimed at reset), OS-direct it is tracked by the arena.
     buf.data = new_data;
@@ -135,10 +136,12 @@ pub fn buffer_append(arena: &mut Arena, buf: &mut Buffer, bytes: &[u8]) -> bool 
     if bytes.is_empty() {
         return true; // nothing to grow for, and an empty buffer has no payload
     }
+
     let needed = buf.len + bytes.len();
     if buffer_ensure(arena, buf, needed, 0).is_null() {
         return false;
     }
+
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.data.add(buf.len), bytes.len()) };
     buf.len = needed;
     true
@@ -292,6 +295,7 @@ mod tests {
         unsafe {
             std::ptr::write_bytes(b.data.add(b.len), 0xEE, b.capacity - b.len);
         }
+
         assert_eq!(unsafe { std::slice::from_raw_parts(b.data, 5) }, b"start");
 
         a.reset(|_| {}); // frees the tracked OS-direct payload; no crash

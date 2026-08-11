@@ -76,6 +76,7 @@ pub(crate) fn alloc(size: usize) -> *mut u8 {
         if block.is_null() {
             return std::ptr::null_mut();
         }
+
         unsafe { commission(block as *mut u8, size, 0, BLOCK_KIND_ENTITY_LARGE) }
     } else {
         // `size` reaches here from a class layout, which the compiler
@@ -88,13 +89,16 @@ pub(crate) fn alloc(size: usize) -> *mut u8 {
         else {
             return std::ptr::null_mut();
         };
+
         let Ok(layout) = Layout::from_size_align(run_bytes, BLOCK_SIZE) else {
             return std::ptr::null_mut();
         };
+
         let block = unsafe { std::alloc::alloc(layout) };
         if block.is_null() {
             return std::ptr::null_mut();
         }
+
         let entity = unsafe { commission(block, size, run_bytes, BLOCK_KIND_ENTITY_LARGE_RUN) };
         // After the commissioning, never before: registration is what
         // makes the run reachable to an enumerator, and what it must
@@ -266,6 +270,7 @@ mod tests {
             // writes.
             builder = builder.prop(name, true);
         }
+
         let class = builder.build();
         assert_eq!(
             unsafe { (*class).object_size } as usize,
@@ -309,6 +314,7 @@ mod tests {
                 "and its run left the registry with it"
             );
         }
+
         arena.reset(|_| {});
     }
 

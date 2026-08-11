@@ -81,9 +81,11 @@ fn strong_hash(bytes: &[u8], key: u64) -> u64 {
         for (i, b) in chunk.iter().enumerate() {
             w |= (*b as u64) << (i * 8);
         }
+
         h = (h ^ w).wrapping_mul(0x1000_0000_01B3);
         h ^= h >> 29;
     }
+
     h = h.wrapping_add(bytes.len() as u64);
     h = (h ^ (h >> 32)).wrapping_mul(0xD6E8_FEB8_6659_FD93);
     h ^ (h >> 32)
@@ -115,6 +117,7 @@ fn pow2ge(n: usize) -> usize {
             None => return p,
         }
     }
+
     p
 }
 
@@ -269,6 +272,7 @@ impl Table {
         if self.flags & TABLE_APPEND_EXHAUSTED != 0 {
             return None;
         }
+
         Some(if self.next_free == NEXT_FREE_NONE {
             0
         } else {
@@ -457,6 +461,7 @@ impl Table {
             if before % 2 != 0 {
                 continue;
             }
+
             let storage = storage_word.load(Ordering::Relaxed);
             let nslots = nslots_word.load(Ordering::Relaxed);
             let used = used_word.load(Ordering::Relaxed);
@@ -470,14 +475,17 @@ impl Table {
             if version.load(Ordering::Relaxed) != before {
                 continue;
             }
+
             if storage.is_null() {
                 return Some((std::ptr::null_mut(), 0));
             }
+
             return Some((
                 unsafe { storage.add(entries_offset(nslots)) } as *mut Entry,
                 used,
             ));
         }
+
         None
     }
 
@@ -590,9 +598,11 @@ impl Table {
                 self.storage_capacity,
             )
         };
+
         if fresh.is_null() {
             return false;
         }
+
         unsafe { std::ptr::copy_nonoverlapping(self.storage(), fresh, self.storage_capacity) };
         self.set_storage(fresh);
         self.storage_capacity = granted;
@@ -676,6 +686,7 @@ impl Table {
         if e.is_hole() {
             return false;
         }
+
         match key {
             Key::Int(k) => e.is_int_key() && e.hash_or_key == k as u64,
             Key::Str(s) => {
@@ -683,6 +694,7 @@ impl Table {
                 if k.is_null() {
                     return false;
                 }
+
                 let want = unsafe { LLString::hash(s) };
                 e.hash_or_key == want && (k == s || unsafe { string_bytes(k) == string_bytes(s) })
             }
@@ -701,6 +713,7 @@ impl Table {
         if self.storage().is_null() {
             return None;
         }
+
         let sh = self.slot_hash(key);
         let mut i = unsafe { *self.slots().add(sh as usize & self.mask) };
         while i != NONE {
@@ -708,8 +721,10 @@ impl Table {
             if Self::entry_matches(e, key) {
                 return Some(e.value());
             }
+
             i = e.link();
         }
+
         None
     }
 
@@ -773,6 +788,7 @@ impl Table {
             Key::Int(k) => k as u64,
             Key::Str(s) => unsafe { LLString::hash(s) },
         };
+
         if !self.storage().is_null() {
             let mut i = unsafe { *self.slots().add(sh as usize & self.mask) };
             while i != NONE {
@@ -786,14 +802,17 @@ impl Table {
                     unsafe { Entry::store_element(self.entry_ptr(i as usize), value) };
                     return Some((false, Some(old)));
                 }
+
                 chain_len += 1;
                 let e = self.entry(i as usize);
                 if !e.is_int_key() && e.hash_or_key == stored_hash {
                     equal_hashes += 1;
                 }
+
                 i = e.link();
             }
         }
+
         // Fires on insertion only: this path already holds exclusive
         // ownership, may allocate and may raise, while a lookup may do
         // none of those under a live iterator on a shared table.
@@ -802,6 +821,7 @@ impl Table {
         } else if chain_len >= CHAIN_LIMIT {
             self.reseed();
         }
+
         let sh = self.slot_hash(key);
 
         if self.used() == self.cap && !self.grow(category) {
@@ -826,14 +846,17 @@ impl Table {
                 // here would make the key unfindable by its own hash.
                 Key::Str(s) => e.set_string_key(s, stored_hash),
             }
+
             Entry::store_element_and_link(&raw mut *e, value, head);
         }
+
         self.set_used(k + 1);
         unsafe { *self.slots().add(slot) = k as u32 };
         self.live += 1;
         if let Key::Int(v) = key {
             self.note_int_key(v);
         }
+
         Some((true, None))
     }
 
@@ -864,6 +887,7 @@ impl Table {
         if self.storage().is_null() {
             return None;
         }
+
         let sh = self.slot_hash(key);
         let slot = sh as usize & self.mask;
         let mut i = unsafe { *self.slots().add(slot) };
@@ -877,6 +901,7 @@ impl Table {
                 } else {
                     unsafe { Entry::store_link(self.entry_ptr(prev as usize), next) };
                 }
+
                 // The element goes first and the marker second: an
                 // `undef` element carries no edge, so a collector that
                 // reads between the two sees a live key over a value it
@@ -889,13 +914,16 @@ impl Table {
                     Entry::store_element_and_link(at, Value::undef(), NONE);
                     Entry::make_hole(at);
                 }
+
                 self.live -= 1;
                 self.holes += 1;
                 return Some((old, removed_key));
             }
+
             prev = i;
             i = next;
         }
+
         None
     }
 
@@ -911,12 +939,14 @@ impl Table {
         if self.storage().is_null() {
             return self.realloc_storage(category, 8);
         }
+
         // Zend's rule: reclaim holes rather than doubling when they are
         // more than a thirty-second of the live count.
         if self.holes > self.live / 32 + 1 {
             self.compact();
             return true;
         }
+
         match self.cap.checked_mul(2) {
             Some(n) if n <= MAX_ENTRIES => self.realloc_storage(category, n),
             _ => false,
@@ -939,13 +969,16 @@ impl Table {
             if self.entry(r).is_hole() {
                 continue;
             }
+
             if w != r {
                 unsafe {
                     std::ptr::copy_nonoverlapping(self.entries().add(r), self.entries().add(w), 1)
                 };
             }
+
             w += 1;
         }
+
         let moved = self.used() - w;
         self.set_used(w);
         self.holes = 0;
@@ -963,6 +996,7 @@ impl Table {
                 unsafe { Entry::store_link(self.entry_ptr(k), NONE) };
                 continue;
             }
+
             // The slot comes from the *mixed* integer or the string hash,
             // never from the stored word as-is.
             let sh = self.entry_slot_hash(self.entry(k));
@@ -985,15 +1019,18 @@ impl Table {
         if cap > MAX_ENTRIES {
             return false;
         }
+
         let nslots = pow2ge(cap) * 2;
         let bytes = match storage_bytes(nslots, cap) {
             Some(b) => b,
             None => return false,
         };
+
         let (mem, granted) = self.alloc(category, bytes);
         if mem.is_null() {
             return false;
         }
+
         self.begin_entry_move();
         let old_storage = self.storage();
         let old_capacity = self.storage_capacity;
@@ -1012,6 +1049,7 @@ impl Table {
         if !old_entries.is_null() {
             unsafe { std::ptr::copy_nonoverlapping(old_entries, self.entries(), old_used) };
         }
+
         self.rebuild_index();
         self.end_entry_move();
         self.free_storage(category, old_storage, old_capacity);
@@ -1057,6 +1095,7 @@ impl Table {
             if e.is_hole() {
                 continue;
             }
+
             let value = e.value();
             let key = e.string_key();
             // The table's own store rather than the barrier's: a barrier
@@ -1068,13 +1107,16 @@ impl Table {
                 Entry::store_element(at, Value::null());
                 Entry::make_hole(at);
             }
+
             if value.is_refcounted() {
                 displaced.push(value.entity_ptr());
             }
+
             if !key.is_null() {
                 displaced.push(key as *mut RcHeader);
             }
         }
+
         self.live = 0;
         self.holes = self.used();
     }
@@ -1119,6 +1161,7 @@ impl Table {
         if self.flags & TABLE_RESEEDED != 0 {
             return;
         }
+
         debug_assert!(
             !self.storage().is_null(),
             "a draw before the first entry would salt every table alike"
@@ -1142,6 +1185,7 @@ impl Table {
         if self.flags & TABLE_STRONG != 0 {
             return;
         }
+
         self.draw_salt();
         self.flags |= TABLE_STRONG;
         if !self.storage().is_null() {
@@ -1179,10 +1223,12 @@ impl Table {
         if self.flags & TABLE_STRONG != 0 {
             return;
         }
+
         if self.flags & TABLE_RESEEDED != 0 {
             self.escalate();
             return;
         }
+
         self.draw_salt();
         if !self.storage().is_null() {
             self.rebuild_index();
@@ -1224,6 +1270,7 @@ impl Table {
             if self.entry(k).is_hole() {
                 continue;
             }
+
             let replaced = f(self.entry(k).value());
             unsafe { Entry::store_element(self.entry_ptr(k), replaced) };
         }
@@ -1237,6 +1284,7 @@ impl Table {
             if e.is_hole() {
                 continue;
             }
+
             let s = e.string_key();
             if !s.is_null() {
                 f(s);
@@ -1324,11 +1372,13 @@ mod tests {
             unsafe { &(*self.0).table }
         }
     }
+
     impl std::ops::DerefMut for Owned {
         fn deref_mut(&mut self) -> &mut Table {
             unsafe { &mut (*self.0).table }
         }
     }
+
     impl Drop for Owned {
         fn drop(&mut self) {
             unsafe {
@@ -1376,6 +1426,7 @@ mod tests {
         for i in 0..200i64 {
             assert!(m.insert(Key::Int(i), Value::int(i)).is_some());
         }
+
         let after_growth = m.version();
         assert!(after_growth > at_rest, "growth moved entries silently");
         assert_eq!(after_growth % 2, 0, "the window was left open");
@@ -1397,10 +1448,12 @@ mod tests {
             let (added, old) = m.insert(Key::Int(i), Value::int(i * 3)).unwrap();
             assert!(added && old.is_none(), "a fresh key is an addition");
         }
+
         assert_eq!(m.len(), 500);
         for i in 0..500i64 {
             assert_eq!(m.get(Key::Int(i)).unwrap().as_int(), i * 3);
         }
+
         assert!(m.get(Key::Int(500)).is_none());
         assert!(m.get(Key::Int(-1)).is_none());
     }
@@ -1428,9 +1481,11 @@ mod tests {
         for i in 0..10i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
+
         for i in [1i64, 4, 7] {
             assert!(m.remove(Key::Int(i)).is_some());
         }
+
         let order: Vec<i64> = m.iter().map(|e| e.hash_or_key as i64).collect();
         assert_eq!(order, vec![0, 2, 3, 5, 6, 8, 9]);
         assert_eq!(m.len(), 7);
@@ -1449,6 +1504,7 @@ mod tests {
         for i in 0..3i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
+
         let _ = m.remove(Key::Int(1));
         assert_eq!(m.append_key(), Some(3), "removal rewinds nothing");
 
@@ -1488,6 +1544,7 @@ mod tests {
         for i in 0..3i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
+
         let _ = m.remove(Key::Int(1));
         m.insert(Key::Int(1), Value::int(99));
 
@@ -1503,10 +1560,12 @@ mod tests {
         for i in 0..64i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
+
         for i in 0..64i64 {
             assert_eq!(m.remove(Key::Int(i)).unwrap().0.as_int(), i);
             assert!(m.get(Key::Int(i)).is_none(), "a removed key stays removed");
         }
+
         assert_eq!(m.len(), 0);
         // Everything still resolves: the chains are empty, not full of
         // markers, so a lookup on an emptied table is one slot read.
@@ -1522,9 +1581,11 @@ mod tests {
         for i in 0..100i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
+
         for i in (0..100i64).filter(|i| i % 2 == 0) {
             let _ = m.remove(Key::Int(i));
         }
+
         let before: Vec<i64> = m.iter().map(|e| e.hash_or_key as i64).collect();
         assert_eq!(m.used(), 100, "holes still occupy their slots");
 
@@ -1547,6 +1608,7 @@ mod tests {
         for i in 0..5000i64 {
             assert!(m.insert(Key::Int(i), Value::int(i)).is_some());
         }
+
         assert_eq!(m.len(), 5000);
         let order: Vec<i64> = m.iter().map(|e| e.hash_or_key as i64).collect();
         assert_eq!(order, (0..5000).collect::<Vec<i64>>());
@@ -1567,6 +1629,7 @@ mod tests {
         for i in 0..3i64 {
             m.insert(Key::Int(i * 1024), Value::int(i));
         }
+
         assert!(
             !m.is_reseeded(),
             "three keys are far below the chain trigger"
@@ -1578,6 +1641,7 @@ mod tests {
             chain += 1;
             i = m.entry(i as usize).link();
         }
+
         assert_eq!(
             chain, 3,
             "stride keys share slot 0 only when indexed by value"
@@ -1599,6 +1663,7 @@ mod tests {
         for i in 0..512i64 {
             m.insert(Key::Int(i * 1024), Value::int(i));
         }
+
         assert!(m.is_reseeded(), "the flood's own chain is the trigger");
         assert!(
             !m.is_strong(),
@@ -1615,8 +1680,10 @@ mod tests {
                 n += 1;
                 i = m.entry(i as usize).link();
             }
+
             longest = longest.max(n);
         }
+
         assert!(
             longest < 16,
             "longest chain {longest} — the drawn salt is not being applied"
@@ -1638,9 +1705,11 @@ mod tests {
         for (n, k) in keys.iter().enumerate() {
             m.insert(Key::Int(*k), Value::int(n as i64));
         }
+
         for (n, k) in keys.iter().enumerate() {
             assert_eq!(m.get(Key::Int(*k)).unwrap().as_int(), n as i64);
         }
+
         assert_eq!(m.len(), keys.len());
     }
 
@@ -1672,6 +1741,7 @@ mod tests {
             let (added, _) = m.insert(Key::Str(*s), Value::int(i as i64)).unwrap();
             assert!(added);
         }
+
         assert_eq!(m.len(), 200);
 
         // A *different* entity with the same bytes must find the entry:
@@ -1685,6 +1755,7 @@ mod tests {
                 "a string key is matched by content"
             );
         }
+
         assert!(m.get(Key::Str(mk(b"absent"))).is_none());
     }
 
@@ -1759,6 +1830,7 @@ mod tests {
         for (i, s) in keys.iter().enumerate() {
             m.insert(Key::Str(*s), Value::int(i as i64));
         }
+
         for (i, s) in keys.iter().enumerate() {
             if i % 3 == 0 {
                 // Table tests leave key ownership unmodelled; the pair is
@@ -1766,6 +1838,7 @@ mod tests {
                 let _ = m.remove(Key::Str(*s));
             }
         }
+
         m.compact();
         for (i, s) in keys.iter().enumerate() {
             if i % 3 == 0 {
@@ -1876,6 +1949,7 @@ mod tests {
         for (i, s) in honest.iter().enumerate() {
             m.insert(Key::Str(*s), Value::int(1000 + i as i64));
         }
+
         let mut colliders = Vec::new();
         for i in 0..(EQUAL_HASH_LIMIT as usize + 4) {
             let s = mk(format!("collider-{i}").as_bytes());
@@ -1883,6 +1957,7 @@ mod tests {
             m.insert(Key::Str(s), Value::int(i as i64));
             colliders.push(s);
         }
+
         assert!(m.is_strong());
 
         for (i, s) in honest.iter().enumerate() {
@@ -1892,9 +1967,11 @@ mod tests {
                 "escalation must not lose an honest key"
             );
         }
+
         for (i, s) in colliders.iter().enumerate() {
             assert_eq!(m.get(Key::Str(*s)).unwrap().as_int(), i as i64);
         }
+
         assert_eq!(m.len(), 50 + EQUAL_HASH_LIMIT as usize + 4);
     }
 
@@ -1913,8 +1990,10 @@ mod tests {
                 n += 1;
                 i = m.entry(i as usize).link();
             }
+
             longest = longest.max(n);
         }
+
         assert!(
             longest < 16,
             "longest chain {longest} after escalation — the keyed hash is not separating them"
@@ -1967,6 +2046,7 @@ mod tests {
         for i in 0..100i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
+
         for i in (0..100i64).filter(|i| i % 3 == 0) {
             let _ = m.remove(Key::Int(i));
         }
@@ -1988,6 +2068,7 @@ mod tests {
         for i in 0..8i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
+
         let _ = m.remove(Key::Int(3));
         // The old shape of this wrote a whole `Value` into the slot by
         // hand to stand in for a barrier. The element field is private
@@ -2044,6 +2125,7 @@ mod tests {
         for i in 0..500i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
+
         let base = m.storage() as usize;
         let bytes = super::storage_bytes(m.nslots(), m.cap).unwrap();
         for k in 0..m.used() {
@@ -2115,6 +2197,7 @@ mod tests {
         for i in 0..1100i64 {
             m.insert(Key::Int(i), Value::int(i));
         }
+
         assert!(
             m.storage_capacity > BLOCK_PAYLOAD,
             "the table never grew past one block, so this proves nothing"
@@ -2211,6 +2294,7 @@ mod tests {
                 Value::int(i),
             );
         }
+
         assert!(
             m.storage_capacity > BLOCK_PAYLOAD,
             "the table never grew past one block, so this proves nothing"
@@ -2261,6 +2345,7 @@ mod tests {
                 Value::int(i),
             );
         }
+
         assert!(
             m.storage_capacity <= BLOCK_PAYLOAD,
             "an in-block storage is the only one that can be refused"

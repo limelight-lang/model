@@ -80,6 +80,7 @@ fn weak_table() -> *mut HashMap<usize, *mut LLWeakRef> {
             table = Box::into_raw(Box::new(HashMap::new()));
             cell.set(table);
         }
+
         table
     })
 }
@@ -151,6 +152,7 @@ pub unsafe extern "C" fn ll_weakref_create(
     if mem.is_null() {
         return std::ptr::null_mut();
     }
+
     let cell = mem as *mut LLWeakRef;
     unsafe {
         (*cell).target = target;
@@ -159,11 +161,13 @@ pub unsafe extern "C" fn ll_weakref_create(
             RcHeader::new(MemoryCategory::GcHeap, EntityKind::WeakRef.to_flags()),
         );
     }
+
     unsafe { (*weak_table()).insert(target as usize, cell) };
     unsafe { update_header_flags(target, |f| f | HAS_WEAK_REFERENCES) };
     if MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena {
         unsafe { (*resolve_arena(ctx)).log_weak(target) };
     }
+
     cell
 }
 
@@ -179,6 +183,7 @@ pub unsafe extern "C" fn ll_weakref_get(cell: *mut LLWeakRef) -> *mut RcHeader {
         // target could die while the result is in the caller's hands.
         unsafe { ll_retain(target) };
     }
+
     target
 }
 
@@ -197,6 +202,7 @@ pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
     if let Some(cell) = cell {
         unsafe { (*cell).target = std::ptr::null_mut() };
     }
+
     unsafe { update_header_flags(target, |f| f & !HAS_WEAK_REFERENCES) };
 }
 
@@ -238,6 +244,7 @@ pub(crate) unsafe fn weakref_die(cell: *mut LLWeakRef) {
         debug_assert_eq!(removed, Some(cell), "the weak table row must be this cell");
         unsafe { update_header_flags(target, |f| f & !HAS_WEAK_REFERENCES) };
     }
+
     // Always GcHeap by construction; the category read keeps the
     // teardown shape uniform with `reference_die`.
     if unsafe { crate::object::header_category(cell as *const RcHeader) } == MemoryCategory::GcHeap
@@ -369,6 +376,7 @@ mod tests {
                 assert!(ll_release(w1 as *mut RcHeader));
                 crate::object::ll_entity_die(w1 as *mut RcHeader);
             }
+
             assert_eq!(unsafe { (*obj).rc.flags } & HAS_WEAK_REFERENCES, 0);
             let w3 = unsafe { ll_weakref_create(ctx, obj as *mut RcHeader) };
             assert!(!w3.is_null());
@@ -428,6 +436,7 @@ mod tests {
                 Object::prop_at(parent, 16)
                     .write(Value::entity(Tag::Object, child as *mut RcHeader));
             }
+
             let w = unsafe { ll_weakref_create(ctx, parent as *mut RcHeader) };
             PROBE_CELL.store(w as usize, Ordering::Relaxed);
             SEEN_BY_OWN_DESTRUCTOR.store(0, Ordering::Relaxed);
@@ -524,6 +533,7 @@ mod tests {
                 Object::prop_at(a, 16).write(Value::entity(Tag::Object, b as *mut RcHeader));
                 Object::prop_at(b, 16).write(Value::entity(Tag::Object, a as *mut RcHeader));
             }
+
             let w = unsafe { ll_weakref_create(ctx, a as *mut RcHeader) };
             PROBE_CELL.store(w as usize, Ordering::Relaxed);
             CYCLE_DESTRUCTOR_SAW.store(usize::MAX, Ordering::Relaxed);
@@ -588,6 +598,7 @@ mod tests {
             assert!(ll_release(w as *mut RcHeader));
             crate::object::ll_entity_die(w as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -615,6 +626,7 @@ mod tests {
                 ((a as *mut u8).add(16) as *mut *mut RcHeader).write(b as *mut RcHeader);
                 ((b as *mut u8).add(16) as *mut *mut RcHeader).write(a as *mut RcHeader);
             }
+
             // ...and the cell, held ONLY by the ring: a's second slot
             // takes over the cell's initial reference.
             let w = unsafe { ll_weakref_create(ctx, c as *mut RcHeader) };
@@ -689,6 +701,7 @@ mod tests {
             assert!(ll_release(c as *mut RcHeader));
             crate::object::ll_object_die(c);
         }
+
         arena.reset(|_| {});
     }
 

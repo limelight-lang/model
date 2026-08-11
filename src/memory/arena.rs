@@ -131,6 +131,7 @@ impl Arena {
         if size > BLOCK_PAYLOAD {
             return std::ptr::null_mut();
         }
+
         let p = self.bump;
 
         // checked_add: `size` is caller-controlled ABI input; an
@@ -230,6 +231,7 @@ impl Arena {
         if p.is_null() {
             return p;
         }
+
         assert!(
             self.log_push(Log::Larges, p as usize),
             "out of memory recording an arena large run — the record cannot be \n             dropped without leaking the run at reset"
@@ -256,10 +258,12 @@ impl Arena {
         if size <= BLOCK_PAYLOAD {
             return self.alloc(size);
         }
+
         let entity = crate::memory::large_entity::alloc(size);
         if entity.is_null() {
             return entity;
         }
+
         if !self.log_push(Log::Larges, entity as usize) {
             // Where `alloc_large` asserts, this door reports: nothing is
             // published into the slot yet, so handing the run straight
@@ -268,6 +272,7 @@ impl Arena {
             unsafe { crate::memory::stdapi::ll_free(entity) };
             return std::ptr::null_mut();
         }
+
         entity
     }
 
@@ -314,9 +319,11 @@ impl Arena {
                         return true;
                     }
                 }
+
                 seg = (*seg).next;
             }
         }
+
         false
     }
 
@@ -405,20 +412,24 @@ impl Arena {
                 progress = true;
                 run_destructor(o);
             });
+
             self.drain_escapees(|e| {
                 progress = true;
                 handle_escapee(e);
             });
+
             if !progress {
                 break;
             }
         }
+
         self.drain_release_log(|entity| unsafe {
             if crate::refcount::ll_release(entity) {
                 // Bare-mechanics reset has no teardown layer; the
                 // promote path dispatches real entity teardown.
             }
         });
+
         // The weak walk — after the destructor fixpoint, before the pages
         // go back. Unlike teardown, this is not optional mechanics: a
         // skipped walk leaves cells resolving into recycled memory. The
@@ -488,6 +499,7 @@ impl Arena {
             if crate::memory::large_entity::is_large_entity(kind) {
                 (ptr as *mut u64).write(0);
             }
+
             crate::memory::stdapi::ll_free(ptr)
         });
 
@@ -500,6 +512,7 @@ impl Arena {
             if !keep_block(block) {
                 pool.put(block);
             }
+
             block = next;
         }
 
@@ -540,6 +553,7 @@ impl Arena {
             if grown.is_null() {
                 return false;
             }
+
             grown
         } else {
             head
@@ -558,6 +572,7 @@ impl Arena {
             Log::ReleaseAtReset => self.release_at_reset = head,
             Log::Weak => self.weak = head,
         }
+
         true
     }
 
@@ -574,6 +589,7 @@ impl Arena {
             // reserve is held back for (`crate::memory::reserve`).
             seg = self.carve_log_from_reserve() as *mut LogSegment;
         }
+
         // Past the reserve there is nothing left to try. The refusal is
         // reported rather than resolved here, because what a lost record
         // means differs per log: for escapees, release-at-reset and large
@@ -583,10 +599,12 @@ impl Arena {
         if seg.is_null() {
             return std::ptr::null_mut();
         }
+
         unsafe {
             (*seg).next = head;
             (*seg).count = 0;
         }
+
         seg
     }
 
@@ -609,6 +627,7 @@ impl Arena {
             if block.is_null() {
                 return std::ptr::null_mut();
             }
+
             unsafe {
                 (*block).next = self.blocks;
                 crate::memory::block_pool::store_block_kind(
@@ -616,6 +635,7 @@ impl Arena {
                     BLOCK_KIND_ARENA,
                 );
             }
+
             self.blocks = block;
             self.log_bump = BlockHeader::payload_start(block);
             self.log_limit = BlockHeader::end(block);
@@ -640,6 +660,7 @@ impl Arena {
                         f(record);
                     }
                 }
+
                 seg = (*seg).next;
             }
         }
@@ -654,6 +675,7 @@ impl Arena {
         if block.is_null() {
             return false;
         }
+
         // The kind last and through `store_block_kind`, because the
         // collector acquire-loads that word for every block in every
         // carved region and this one is freshly out of the pool.
@@ -661,6 +683,7 @@ impl Arena {
             (*block).next = self.blocks;
             crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_ARENA);
         }
+
         self.blocks = block;
         self.bump = BlockHeader::payload_start(block);
         self.limit = BlockHeader::end(block);
@@ -741,6 +764,7 @@ mod tests {
         for _ in 0..slots - 1 {
             arena.alloc(8);
         }
+
         assert_eq!(arena.remaining(), 0, "block must be exactly full");
 
         let next = arena.alloc(8);

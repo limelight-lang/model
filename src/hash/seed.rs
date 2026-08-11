@@ -83,6 +83,7 @@ const FUNCTION_IDENTITY: u64 = {
         accumulated = rapidhash::mix(accumulated, rapidhash::DEFAULT_SECRET[index]);
         index += 1;
     }
+
     rapidhash::mix(
         accumulated,
         super::ZERO_REPLACEMENT ^ rapidhash::BULK_STRIDE as u64,
@@ -174,6 +175,7 @@ pub fn expanded() -> u64 {
         const EXPANDED: u64 = rapidhash::expand_seed(BUILD_SEED, &rapidhash::DEFAULT_SECRET);
         EXPANDED
     }
+
     #[cfg(not(feature = "hash-folding"))]
     {
         *PROCESS_SEED
@@ -190,6 +192,7 @@ pub fn raw() -> u64 {
     {
         BUILD_SEED
     }
+
     #[cfg(not(feature = "hash-folding"))]
     {
         *PROCESS_RAW_SEED
@@ -231,6 +234,7 @@ const fn parse_seed(text: Option<&str>) -> u64 {
         Some(text) => text,
         None => return 0,
     };
+
     let bytes = text.as_bytes();
     if bytes.is_empty() {
         panic!("LL_HASH_SEED is empty");
@@ -256,14 +260,17 @@ const fn parse_seed(text: Option<&str>) -> u64 {
             }
             _ => panic!("LL_HASH_SEED is not a decimal or 0x-prefixed hexadecimal number"),
         };
+
         value = match value.checked_mul(radix) {
             Some(shifted) => shifted,
             None => panic!("LL_HASH_SEED does not fit in 64 bits"),
         };
+
         value = match value.checked_add(digit) {
             Some(summed) => summed,
             None => panic!("LL_HASH_SEED does not fit in 64 bits"),
         };
+
         digits += 1;
         index += 1;
     }
@@ -271,6 +278,7 @@ const fn parse_seed(text: Option<&str>) -> u64 {
     if digits == 0 {
         panic!("LL_HASH_SEED has separators but no digits");
     }
+
     value
 }
 
@@ -422,6 +430,7 @@ mod tests {
             for word in secret {
                 accumulated = rapidhash::mix(accumulated, word);
             }
+
             rapidhash::mix(
                 accumulated,
                 super::super::ZERO_REPLACEMENT ^ rapidhash::BULK_STRIDE as u64,

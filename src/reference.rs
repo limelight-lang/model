@@ -48,9 +48,11 @@ pub fn ll_reference_new() -> *mut LLReference {
     let mem = unsafe {
         crate::memory::routing::entity_alloc_in(std::ptr::null_mut(), MemoryCategory::GcHeap, size)
     };
+
     if mem.is_null() {
         return std::ptr::null_mut();
     }
+
     let boxed = mem as *mut LLReference;
     unsafe {
         (*boxed).value = Value::null();
@@ -59,6 +61,7 @@ pub fn ll_reference_new() -> *mut LLReference {
             RcHeader::new(MemoryCategory::GcHeap, EntityKind::Reference.to_flags()),
         );
     }
+
     boxed
 }
 
@@ -100,6 +103,7 @@ pub(crate) unsafe fn reference_die(boxed: *mut LLReference) {
             crate::memory::barrier::drop_ref(owner_cat, v.entity_ptr());
         }
     }
+
     unsafe { crate::memory::stdapi::ll_free(boxed as *mut u8) };
 }
 
@@ -135,6 +139,7 @@ mod tests {
             assert!(ll_release(r as *mut RcHeader));
             crate::object::ll_entity_die(r as *mut RcHeader);
         }
+
         arena.reset(|_| {});
     }
 
@@ -148,6 +153,7 @@ mod tests {
         unsafe extern "C" fn counting(_o: *mut crate::object::Object) {
             DESTRUCTS.fetch_add(1, Ordering::Relaxed);
         }
+
         DESTRUCTS.store(0, Ordering::Relaxed);
         let cls = ClassBuilder::new("Referent")
             .destructor(counting as *const ())
@@ -165,6 +171,7 @@ mod tests {
             assert!(ll_release(r as *mut RcHeader));
             crate::object::ll_entity_die(r as *mut RcHeader);
         }
+
         assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "referent cascaded");
         arena.reset(|_| {});
     }

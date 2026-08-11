@@ -168,6 +168,7 @@ pub unsafe fn ll_template_new(
     } else {
         std::ptr::null_mut()
     };
+
     let slots = unsafe { std::slice::from_raw_parts_mut(mem.add(VALUES_OFFSET) as *mut Value, n) };
     for (i, v) in values.iter().enumerate() {
         let stored =
@@ -192,6 +193,7 @@ pub unsafe fn ll_template_new(
             RcHeader::new(category, EntityKind::Object.to_flags()),
         );
     }
+
     t
 }
 
@@ -245,6 +247,7 @@ pub unsafe fn flatten(
     for part in parts {
         total += unsafe { LLString::bytes(*part) }.len();
     }
+
     for v in values {
         match text_len(v) {
             Some(len) => total += len,
@@ -266,10 +269,12 @@ pub unsafe fn flatten(
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
             dst = dst.add(bytes.len());
         }
+
         if let Some(v) = values.get(i) {
             dst = unsafe { write_text(v, dst) };
         }
     }
+
     debug_assert_eq!(
         dst as usize - start as usize,
         total,
@@ -361,12 +366,14 @@ unsafe fn write_decimal(n: i64, dst: *mut u8) -> *mut u8 {
             break;
         }
     }
+
     unsafe {
         let mut at = dst;
         if n < 0 {
             at.write(b'-');
             at = at.add(1);
         }
+
         let tail = &digits[i..];
         std::ptr::copy_nonoverlapping(tail.as_ptr(), at, tail.len());
         at.add(tail.len())
@@ -430,6 +437,7 @@ mod tests {
                     seen.push(c)
                 })
             };
+
             assert_eq!(seen, vec![s as *mut RcHeader], "the value is the one child");
 
             // Teardown gives that reference back.
@@ -610,6 +618,7 @@ mod tests {
         let holder = unsafe {
             crate::object::new_constructed(&mut ctx, holder_class, MemoryCategory::GcHeap)
         };
+
         let held = [Value::entity(Tag::Object, holder as *mut RcHeader)];
         let t = unsafe { ll_template_new(&mut ctx, cls, &*shape, &held, MemoryCategory::GcHeap) };
         // Close the ring: the holder takes the template, the template

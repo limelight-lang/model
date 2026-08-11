@@ -62,6 +62,7 @@ pub fn intern(bytes: &[u8]) -> *const LLString {
         // with the same content still interns it correctly.
         return std::ptr::null();
     }
+
     let s = unsafe { init_at(mem, MemoryCategory::Immortal, bytes, hash_bytes(bytes)) };
 
     table.0.insert(bytes.to_vec(), s as usize);

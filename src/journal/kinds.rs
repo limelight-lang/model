@@ -250,6 +250,7 @@ mod tests {
                 "kind {kind} has no bit in the default set"
             );
         }
+
         assert_eq!(
             DEFAULT_KINDS.count_ones(),
             HIGHEST_KIND,
@@ -312,6 +313,7 @@ mod site_tests {
             ));
             crate::object::ll_entity_die(s as *mut crate::refcount::RcHeader);
         }
+
         let end = mark();
 
         // By ring as well as by address: a slot is reused, and another
@@ -395,10 +397,12 @@ mod site_tests {
             for _ in 0..12 {
                 blocks.push(pool.get());
             }
+
             let start = mark();
             for block in blocks {
                 pool.put(block);
             }
+
             let end = mark();
             let ring = this_thread_identity();
             events(between(&start, &end))

@@ -166,6 +166,7 @@ pub(crate) fn occupant_freed(block: usize) -> bool {
     let Some(index) = map.get_mut(&block) else {
         return false;
     };
+
     index.live = index.live.saturating_sub(1);
     empty_now(&mut map, block)
 }
@@ -185,9 +186,11 @@ pub(crate) fn payload_freed(block: usize) -> bool {
     let Some(index) = map.get_mut(&block) else {
         return false;
     };
+
     if index.payloads == 0 {
         return false;
     }
+
     index.payloads -= 1;
     empty_now(&mut map, block)
 }
@@ -200,9 +203,11 @@ fn empty_now(map: &mut Registry, block: usize) -> bool {
     let Some(index) = map.get(&block) else {
         return false;
     };
+
     if index.live > 0 || index.payloads > 0 {
         return false;
     }
+
     map.remove(&block);
     true
 }
@@ -221,6 +226,7 @@ pub(crate) unsafe fn give_block_back(block: usize) {
             crate::memory::block_pool::BLOCK_KIND_FREE,
         )
     };
+
     crate::memory::block_pool::BlockPool::global()
         .put(block as *mut crate::memory::block_pool::BlockHeader);
 }
@@ -325,6 +331,7 @@ mod tests {
             live[0].write(1);
             live[1].write(1);
         }
+
         let _empty = unsafe { register(block, cells.clone()) };
         assert!(snapshot().iter().any(|&(b, _)| b == block));
         assert!(!occupant_freed(block), "one of two occupants emptied it");
@@ -347,6 +354,7 @@ mod tests {
             live[0].write(1);
             register(block, cells.clone())
         };
+
         assert!(occupant_freed(block), "the dead occupant was counted live");
         assert!(!snapshot().iter().any(|&(b, _)| b == block));
         unsafe { live[0].write(0) };
@@ -364,6 +372,7 @@ mod tests {
             live[0].write(1);
             register(block, cells.clone())
         };
+
         assert!(!occupant_freed(block), "a pinned block was handed back");
         assert!(
             snapshot().iter().any(|&(b, _)| b == block),
@@ -437,6 +446,7 @@ mod tests {
                 }
             })
         };
+
         drop_index(block);
         assert_eq!(seen, 0, "zeroed cells read refcount 0 and are skipped");
     }

@@ -267,6 +267,7 @@ mod tests {
             key: KEY_INT as *mut LLString,
             element: Value::int(1),
         };
+
         let at = &raw mut e;
 
         unsafe { Entry::store_element_and_link(at, Value::int(7), 42) };
@@ -293,6 +294,7 @@ mod tests {
             key: KEY_INT as *mut LLString,
             element: Value::int(0),
         };
+
         unsafe { Entry::store_element_and_link(&raw mut e, Value::int(5), 7) };
 
         let handed_out = e.value();
@@ -308,6 +310,7 @@ mod tests {
             key: 0x1000 as *mut LLString,
             element: Value::int(0),
         };
+
         let at = &raw mut e;
         unsafe { Entry::store_element_and_link(at, Value::int(3), 11) };
 

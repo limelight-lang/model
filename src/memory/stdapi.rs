@@ -117,8 +117,10 @@ pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
         if h.is_null() {
             return unsafe { ll_alloc_init(size) };
         }
+
         return unsafe { (*h).alloc(size) };
     }
+
     unsafe { ll_alloc_large(size, align) }
 }
 
@@ -136,6 +138,7 @@ unsafe fn ll_alloc_init(size: usize) -> *mut u8 {
     if h.is_null() {
         return std::ptr::null_mut();
     }
+
     unsafe { (*h).alloc(size) }
 }
 
@@ -147,6 +150,7 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
     if align > MAX_ALIGN {
         return std::ptr::null_mut();
     }
+
     // A small size reaches here only via `align > 16`, which the heap
     // cannot honor (its slots are 16-aligned). Route every `align > 16`
     // request — small or large — through the pooled block path below, whose
@@ -164,6 +168,7 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
             // old abort came back as UB.
             return std::ptr::null_mut();
         }
+
         unsafe {
             // Field by field, and `kind` last through `store_block_kind`
             // (release under rc-walk): the collector's snapshot loads the
@@ -188,11 +193,13 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
             Some(n) => n,
             None => return std::ptr::null_mut(),
         };
+
         let layout = Layout::from_size_align(run_bytes, BLOCK_SIZE).unwrap();
         let block = unsafe { std::alloc::alloc(layout) } as *mut LargeHeader;
         if block.is_null() {
             return std::ptr::null_mut();
         }
+
         unsafe {
             // A run lies outside every region, so nothing reads its
             // kind across threads; the struct store is kept off the word
@@ -223,6 +230,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
+
     let block = block_of(ptr);
     let kind = unsafe { load_block_kind(block as *const AtomicU32) };
 
@@ -296,8 +304,10 @@ pub unsafe fn ll_free(ptr: *mut u8) {
             // reason to build a heap for a thread that has never allocated.
             return unsafe { crate::memory::heap::free_foreign(ptr) };
         }
+
         return unsafe { (*h).free(ptr) };
     }
+
     // The entity population: same slot mechanics, its own heap instance.
     // This is object teardown's path (`ll_object_die` → here), not the C
     // `free` hot path, so the second compare costs nothing that matters.
@@ -306,8 +316,10 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         if h.is_null() {
             return unsafe { crate::memory::heap::free_foreign(ptr) };
         }
+
         return unsafe { (*h).free(ptr) };
     }
+
     unsafe { ll_free_large(block, kind) };
 }
 
@@ -355,6 +367,7 @@ unsafe fn ll_free_large(block: *mut u8, kind: u32) {
                 unsafe { crate::memory::retained::give_block_back(block as usize) };
             }
         }
+
         // The two kinds that recycle nothing on a free: arena memory goes
         // at the reset and immortal memory never goes. Object teardown
         // funnels every category through here, so both arrive routinely.
@@ -417,6 +430,7 @@ pub unsafe fn ll_realloc(ptr: *mut u8, new_size: usize, align: usize) -> *mut u8
     if ptr.is_null() {
         return unsafe { ll_alloc(new_size, align) };
     }
+
     // An entity is never reallocated: it is a counted object whose
     // address other entities hold, and moving it would leave every one of
     // them pointing at freed memory. Copying it would be worse than
@@ -429,15 +443,18 @@ pub unsafe fn ll_realloc(ptr: *mut u8, new_size: usize, align: usize) -> *mut u8
         debug_assert!(false, "an entity reached realloc");
         return std::ptr::null_mut();
     }
+
     let old_size = unsafe { ll_usable_size(ptr) };
     let new_ptr = unsafe { ll_alloc(new_size, align) };
     if new_ptr.is_null() {
         return std::ptr::null_mut();
     }
+
     unsafe {
         std::ptr::copy_nonoverlapping(ptr, new_ptr, old_size.min(new_size));
         ll_free(ptr);
     }
+
     new_ptr
 }
 
@@ -465,10 +482,12 @@ pub unsafe extern "C" fn ll_calloc(count: usize, size: usize) -> *mut u8 {
         Some(t) => t,
         None => return std::ptr::null_mut(),
     };
+
     let p = unsafe { ll_alloc(total, 16) };
     if !p.is_null() {
         unsafe { std::ptr::write_bytes(p, 0, total) };
     }
+
     p
 }
 
@@ -499,10 +518,12 @@ unsafe impl GlobalAlloc for LimelightAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe { ll_alloc(layout.size(), layout.align()) }
     }
+
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         unsafe { ll_free(ptr) }
     }
+
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         unsafe { ll_realloc(ptr, new_size, layout.align()) }
@@ -577,10 +598,12 @@ mod tests {
                     assert!(!p.is_null());
                     assert_eq!((p as usize) % align, 0, "align {align} honored");
                 }
+
                 for p in ptrs {
                     ll_free(p);
                 }
             }
+
             // Above MAX_ALIGN is unsupported → null.
             assert!(ll_alloc(40, 512).is_null());
         }
@@ -657,6 +680,7 @@ mod tests {
             for i in 0..80 {
                 assert_eq!(*p.add(i), 0);
             }
+
             ll_c_free(p);
         }
     }
@@ -673,6 +697,7 @@ mod tests {
             for i in 0..1000 {
                 p.add(i).write(i as u64);
             }
+
             assert_eq!(*p.add(999), 999);
             a.dealloc(p as *mut u8, layout);
         }

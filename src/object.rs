@@ -187,6 +187,7 @@ unsafe fn stamp_into(
                 slot.write(Value::undef());
             }
         }
+
         (*obj).class = class;
         // The header is published LAST (`publish_header`: one 8-byte
         // store, relaxed atomic under rc-walk). Until it lands the slot
@@ -194,6 +195,7 @@ unsafe fn stamp_into(
         // than reading a half-built entity.
         crate::refcount::publish_header(obj as *mut RcHeader, RcHeader::new(category, extra));
     }
+
     obj
 }
 
@@ -235,6 +237,7 @@ pub unsafe extern "C" fn ll_release_vector(entities: *const *mut RcHeader, count
             unsafe { ll_entity_die(entity) };
         }
     }
+
     unsafe { crate::gc::ll_gc_checkpoint() };
 }
 
@@ -260,21 +263,25 @@ pub unsafe fn object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool 
     if !cls.has_destructor() {
         return true;
     }
+
     if unsafe { (*obj).rc.memory_category() } == MemoryCategory::RequestArena
         && !unsafe { (*resolve_arena(ctx)).track_destructor(obj as *mut RcHeader) }
     {
         return false;
     }
+
     #[cfg(not(feature = "rc-walk"))]
     unsafe {
         (*obj).rc.flags |= DESTRUCTOR_PENDING
     };
+
     // Post-publish header write: races the collector's byte stores
     // under a live epoch, so it goes through the relaxed word helper.
     #[cfg(feature = "rc-walk")]
     unsafe {
         crate::refcount::mutator_update_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_PENDING)
     };
+
     true
 }
 
@@ -418,6 +425,7 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
                 });
             }
         }
+
         return;
     }
 
@@ -436,6 +444,7 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
             }
         }
     }
+
     // Box runs: 16-byte Values, empty is the refcounted flag clear.
     for run in unsafe { (*cls).box_runs() } {
         for i in 0..run.count {
@@ -502,18 +511,22 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
         {
             return false;
         }
+
         unsafe { (*obj).rc.flags |= DESTRUCTOR_RAN };
     }
+
     #[cfg(feature = "rc-walk")]
     {
         let (_, flags) = unsafe { crate::refcount::mutator_load_header(obj as *const RcHeader) };
         if flags & DESTRUCTOR_PENDING == 0 || flags & DESTRUCTOR_RAN != 0 {
             return false;
         }
+
         unsafe {
             crate::refcount::mutator_update_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_RAN)
         };
     }
+
     debug_assert_ne!(cls.destruct_slot, NO_DESTRUCT_SLOT);
     // Through the raw class pointer, not `cls`: the vtable trails the
     // descriptor's fixed fields, which a `&Class` does not cover.
@@ -563,14 +576,17 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
         if counted {
             unsafe { (*obj).rc.refcount += 1 };
         }
+
         let ran = unsafe { run_pre_destructor(obj) };
         if counted {
             unsafe { (*obj).rc.refcount -= 1 };
         }
+
         if ran && unsafe { (*obj).rc.refcount } > 0 {
             return false; // resurrected: __destruct stored $this somewhere lasting
         }
     }
+
     #[cfg(feature = "rc-walk")]
     {
         // Header traffic through the relaxed word helpers: the walker
@@ -582,6 +598,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
         if counted {
             unsafe { crate::refcount::mutator_guard_retain(obj as *mut RcHeader) };
         }
+
         let ran = unsafe { run_pre_destructor(obj) };
         if counted {
             // Eager death (2026-07-27): a condemnation landing while
@@ -623,6 +640,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
             crate::memory::barrier::drop_ref(owner_cat, child);
         });
     }
+
     true
 }
 
@@ -740,6 +758,7 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     if flags & crate::refcount::CYCLE_COLLECTOR_BUFFERED != 0 {
         unsafe { crate::gc::forget_candidate(entity) };
     }
+
     // Teardown bracket (rc-walk) — see `ll_object_die`; nesting is
     // fine, the depth is a counter and only the outermost exit picks
     // up messages.
@@ -762,6 +781,7 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
             "teardown for an entity kind the crate cannot produce yet"
         ),
     }
+
     #[cfg(feature = "rc-walk")]
     crate::epoch::teardown_exit();
     #[cfg(not(feature = "rc-walk"))]
@@ -816,6 +836,7 @@ pub unsafe fn ll_cow_separate(
     if !crate::refcount::cow_separation_needed(flags, count) {
         return entity;
     }
+
     const STRING: u32 = EntityKind::String as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
     match (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT {
@@ -1062,6 +1083,7 @@ mod tests {
                 ll_entity_die(entity);
             }
         }
+
         arena.reset(|_| {});
     }
 
@@ -1149,6 +1171,7 @@ mod tests {
                 ll_entity_die(entity);
             }
         }
+
         arena.reset(|_| {});
     }
 
@@ -1258,6 +1281,7 @@ mod tests {
                 Object::prop_at(parent, 16)
                     .write(Value::entity(Tag::Object, child as *mut RcHeader));
             }
+
             // The slot owns the child's initial reference: count stays 1.
 
             // Parent's last reference dies.

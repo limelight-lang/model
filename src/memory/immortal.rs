@@ -71,12 +71,14 @@ pub fn immortal_alloc(size: usize) -> *mut u8 {
         // leaves nothing half-rotated, and a later call can succeed.
         return std::ptr::null_mut();
     }
+
     // A pooled block sits inside a carved region, where the collector
     // acquire-loads every block's kind, so the store is the release one
     // even though nothing here is ever walked.
     unsafe {
         crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_IMMORTAL)
     };
+
     let p = BlockHeader::payload_start(block);
     r.bump = p.wrapping_add(size);
     r.limit = BlockHeader::end(block);
@@ -106,15 +108,18 @@ fn immortal_alloc_run(size: usize) -> *mut u8 {
         Some(n) => n,
         None => return std::ptr::null_mut(),
     };
+
     let layout = match std::alloc::Layout::from_size_align(run_bytes, BLOCK_SIZE) {
         Ok(l) => l,
         Err(_) => return std::ptr::null_mut(),
     };
+
     let block = unsafe { std::alloc::alloc(layout) } as *mut BlockHeader;
     if block.is_null() {
         // Same discipline as the pooled path: report, do not abort.
         return std::ptr::null_mut();
     }
+
     // Through the one write path like every other kind, though nothing
     // reads this one across threads: the run comes from the system
     // allocator and lies inside no carved region, so the collector's
@@ -144,6 +149,7 @@ mod tests {
         if BlockHeader::of_ptr(a) == BlockHeader::of_ptr(b) {
             assert_eq!(b as usize - a as usize, 24);
         }
+
         assert_eq!(
             unsafe { (*BlockHeader::of_ptr(a)).kind.load(Ordering::Relaxed) },
             BLOCK_KIND_IMMORTAL
@@ -278,6 +284,7 @@ mod tests {
                         unsafe { p.write(t as u64 * 1_000_000 + i) };
                         mine.push((p, t as u64 * 1_000_000 + i));
                     }
+
                     // Nothing is ever freed, so every write must survive.
                     for (p, v) in mine {
                         assert_eq!(unsafe { *p }, v, "immortal memory corrupted");

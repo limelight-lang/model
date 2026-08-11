@@ -154,6 +154,7 @@ fn parked_list() -> *mut Vec<Parked> {
             list = Box::into_raw(Box::new(Vec::new()));
             cell.set(list);
         }
+
         list
     })
 }
@@ -277,14 +278,17 @@ pub(crate) unsafe fn flush() -> usize {
     if active() {
         return 0;
     }
+
     let list = PARKED.with(|cell| cell.get());
     if list.is_null() {
         return 0;
     }
+
     let backlog = unsafe { std::mem::take(&mut *list) };
     for &parked in backlog.iter().rev() {
         unsafe { release(parked) };
     }
+
     backlog.len()
 }
 
@@ -295,6 +299,7 @@ pub(crate) fn flush_due() -> bool {
     if active() {
         return false;
     }
+
     let list = PARKED.with(|cell| cell.get());
     !list.is_null() && unsafe { !(*list).is_empty() }
 }
@@ -314,6 +319,7 @@ pub(crate) fn dispose() {
     if list.is_null() {
         return;
     }
+
     let backlog = unsafe { Box::from_raw(list) };
     if !active() {
         for &parked in backlog.iter().rev() {
@@ -361,6 +367,7 @@ mod tests {
         end_epoch();
         assert_eq!(unsafe { flush() }, 1, "released at the next checkpoint");
     }
+
     use crate::class::ClassBuilder;
     use crate::memory::arena::Arena;
     use crate::memory::context::LLContext;
@@ -417,6 +424,7 @@ mod tests {
             assert!(ll_release(obj as *mut RcHeader));
             crate::object::ll_object_die(obj);
         }
+
         assert_eq!(parked_count(), 1);
         unsafe {
             assert_eq!(
@@ -425,6 +433,7 @@ mod tests {
                 "occupancy: reads free"
             );
         }
+
         let mut seen = Vec::new();
         unsafe { crate::memory::heap::for_each_entity_slot(|e| seen.push(e as usize)) };
         assert!(!seen.contains(&addr), "a parked slot is dead to the walk");
@@ -445,6 +454,7 @@ mod tests {
             assert!(ll_release(reused as *mut RcHeader));
             crate::object::ll_object_die(reused);
         }
+
         arena.reset(|_| {});
     }
 
@@ -474,6 +484,7 @@ mod tests {
             assert!(ll_release(obj as *mut RcHeader));
             crate::object::ll_object_die(obj);
         }
+
         assert_eq!(parked_count(), 1);
         unsafe {
             assert_eq!(
@@ -487,6 +498,7 @@ mod tests {
                 "the class word survives parking — nothing wrote the corpse"
             );
         }
+
         end_epoch();
         assert_eq!(unsafe { flush() }, 1);
         arena.reset(|_| {});
@@ -500,6 +512,7 @@ mod tests {
         unsafe extern "C" fn counting(_o: *mut crate::object::Object) {
             DESTRUCTS.fetch_add(1, Ordering::Relaxed);
         }
+
         DESTRUCTS.store(0, Ordering::Relaxed);
         let cls = ClassBuilder::new("ParkedDestructor")
             .destructor(counting as *const ())
@@ -514,6 +527,7 @@ mod tests {
             assert!(ll_release(obj as *mut RcHeader));
             crate::object::ll_object_die(obj);
         }
+
         assert_eq!(
             DESTRUCTS.load(Ordering::Relaxed),
             1,

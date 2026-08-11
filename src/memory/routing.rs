@@ -171,6 +171,7 @@ pub(crate) unsafe fn body_ensure(
         MemoryCategory::GcHeap => {
             crate::memory::buffer_arena::buffer_ensure_longlived(payload, min_capacity, hint)
         }
+
         // Exhaustive rather than a catch-all, and these two refuse. No
         // body in either category grows today — `ll_string_new_dynamic`
         // refuses to build a dynamic string there, and an immortal
@@ -189,6 +190,7 @@ pub(crate) unsafe fn body_ensure(
             std::ptr::null_mut()
         }
     };
+
     !grown.is_null()
 }
 
@@ -218,6 +220,7 @@ pub(crate) unsafe fn body_free(category: MemoryCategory, ptr: *mut u8, capacity:
     if ptr.is_null() {
         return;
     }
+
     match category {
         MemoryCategory::RequestArena | MemoryCategory::Immortal => {}
         // Within this population the block kind *is* the dispatch, and
@@ -303,6 +306,7 @@ mod tests {
                 crate::memory::stdapi::ll_free(past);
             }
         }
+
         arena.reset(|_| {});
     }
 
