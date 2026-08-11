@@ -213,7 +213,7 @@ unsafe fn reference_then_copy(
 /// deliberately looks through.
 unsafe fn get_element(slot: *const Value) -> Option<Value> {
     let a = unsafe { (*slot).entity_ptr() } as *const LLArray;
-    unsafe { (*a).table.get(Key::Int(0)) }
+    unsafe { (*a).storage.as_table().get(Key::Int(0)) }
 }
 
 /// `canonical_key` turns the numeric strings PHP means as integers
@@ -232,7 +232,8 @@ mod the_key_a_spelling_means {
         let category = unsafe { category_of(a) };
         for (i, k) in [1i64, -1, i64::MAX, i64::MIN].into_iter().enumerate() {
             unsafe {
-                (*a).table
+                (*a).storage
+                    .as_table_mut()
                     .insert(category, Key::Int(k), Value::int(i as i64));
             }
         }
@@ -255,7 +256,7 @@ mod the_key_a_spelling_means {
             );
             unsafe {
                 assert_eq!(
-                    (*a).table.get(key).unwrap().as_int(),
+                    (*a).storage.as_table().get(key).unwrap().as_int(),
                     i as i64,
                     "{:?} missed the integer key's entry",
                     std::str::from_utf8(spelling).unwrap()
@@ -266,7 +267,7 @@ mod the_key_a_spelling_means {
         }
 
         unsafe {
-            (*a).table.dispose(category);
+            (*a).storage.dispose(category);
             (*a).rc.refcount = 0;
             ll_free(a as *mut u8);
         }
@@ -326,7 +327,8 @@ mod the_writes_and_the_separation_they_share {
         let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         unsafe {
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(0), Value::int(10));
         }
 
@@ -347,16 +349,26 @@ mod the_writes_and_the_separation_they_share {
             let copy = (*slot_a).entity_ptr() as *mut LLArray;
             assert_ne!(copy, src, "the shared table separated");
             assert_eq!(
-                (*copy).table.get(Key::Int(1)).unwrap().entity_ptr(),
+                (*copy)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(1))
+                    .unwrap()
+                    .entity_ptr(),
                 val as *mut RcHeader
             );
             assert_eq!(
-                (*copy).table.get(Key::Int(0)).unwrap().as_int(),
+                (*copy)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(0))
+                    .unwrap()
+                    .as_int(),
                 10,
                 "the copy replayed the source"
             );
             assert!(
-                (*src).table.get(Key::Int(1)).is_none(),
+                (*src).storage.as_table().get(Key::Int(1)).is_none(),
                 "the other holder's entries changed"
             );
             assert_eq!(
@@ -385,7 +397,10 @@ mod the_writes_and_the_separation_they_share {
                 src,
                 "a store to the displaced original separated again"
             );
-            assert_eq!((*src).table.get(Key::Int(1)).unwrap().as_int(), 7);
+            assert_eq!(
+                (*src).storage.as_table().get(Key::Int(1)).unwrap().as_int(),
+                7
+            );
 
             assert!(ll_release(h as *mut RcHeader));
             ll_object_die(h);
@@ -465,7 +480,12 @@ mod the_writes_and_the_separation_they_share {
             );
             assert_eq!((*second).rc.refcount, second_start + 1);
             assert_eq!(
-                (*src).table.get(Key::Int(0)).unwrap().entity_ptr(),
+                (*src)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(0))
+                    .unwrap()
+                    .entity_ptr(),
                 second as *mut RcHeader
             );
 
@@ -494,9 +514,11 @@ mod the_writes_and_the_separation_they_share {
         let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         unsafe {
             for i in 0..2i64 {
-                (*src)
-                    .table
-                    .insert(category_of(src), Key::Int(i), Value::int(10 + i));
+                (*src).storage.as_table_mut().insert(
+                    category_of(src),
+                    Key::Int(i),
+                    Value::int(10 + i),
+                );
             }
         }
 
@@ -508,29 +530,40 @@ mod the_writes_and_the_separation_they_share {
             let copy = (*slot_a).entity_ptr() as *mut LLArray;
             assert_ne!(copy, src, "the shared table separated");
             assert_eq!(
-                (*copy).table.get(Key::Int(2)).unwrap().as_int(),
+                (*copy)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(2))
+                    .unwrap()
+                    .as_int(),
                 99,
                 "the append took the cursor's key"
             );
-            assert_eq!((*copy).table.len(), 3);
+            assert_eq!((*copy).storage.as_table().len(), 3);
             assert_eq!(
-                (*src).table.len(),
+                (*src).storage.as_table().len(),
                 2,
                 "the other holder's length followed the append"
             );
-            assert!((*src).table.get(Key::Int(2)).is_none());
+            assert!((*src).storage.as_table().get(Key::Int(2)).is_none());
 
             // The original is exclusively `slot_b`'s now, so the highest
             // integer key goes straight in: the cursor has no successor
             // and the next append must refuse.
-            (*src)
-                .table
-                .insert(category_of(src), Key::Int(i64::MAX), Value::int(1));
+            (*src).storage.as_table_mut().insert(
+                category_of(src),
+                Key::Int(i64::MAX),
+                Value::int(1),
+            );
             assert!(
                 !append(context_ptr, MemoryCategory::GcHeap, slot_b, Value::int(0)),
                 "an exhausted cursor appended anyway"
             );
-            assert_eq!((*src).table.len(), 3, "a refused append wrote an entry");
+            assert_eq!(
+                (*src).storage.as_table().len(),
+                3,
+                "a refused append wrote an entry"
+            );
             assert_eq!(
                 (*slot_b).entity_ptr() as *mut LLArray,
                 src,
@@ -561,7 +594,7 @@ mod the_writes_and_the_separation_they_share {
         unsafe {
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(value as *mut RcHeader);
-            (*src).table.insert(
+            (*src).storage.as_table_mut().insert(
                 category_of(src),
                 Key::Str(key),
                 Value::entity(Tag::String, value as *mut RcHeader),
@@ -578,11 +611,11 @@ mod the_writes_and_the_separation_they_share {
             let copy = (*slot_a).entity_ptr() as *mut LLArray;
             assert_ne!(copy, src, "the shared table separated");
             assert!(
-                (*copy).table.get(Key::Str(key)).is_none(),
+                (*copy).storage.as_table().get(Key::Str(key)).is_none(),
                 "the copy kept the unset entry"
             );
             assert!(
-                (*src).table.get(Key::Str(key)).is_some(),
+                (*src).storage.as_table().get(Key::Str(key)).is_some(),
                 "the other holder lost its entry"
             );
             assert_eq!(
@@ -637,7 +670,8 @@ mod the_writes_and_the_separation_they_share {
         let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
         unsafe {
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(0), Value::int(10));
         }
 
@@ -680,10 +714,26 @@ mod the_writes_and_the_separation_they_share {
                 MemoryCategory::RequestArena,
                 "an arena holder's copy left the arena"
             );
-            assert_eq!((*copy).table.get(Key::Int(0)).unwrap().as_int(), 10);
-            assert_eq!((*copy).table.get(Key::Int(1)).unwrap().as_int(), 7);
+            assert_eq!(
+                (*copy)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(0))
+                    .unwrap()
+                    .as_int(),
+                10
+            );
+            assert_eq!(
+                (*copy)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(1))
+                    .unwrap()
+                    .as_int(),
+                7
+            );
             assert!(
-                (*src).table.get(Key::Int(1)).is_none(),
+                (*src).storage.as_table().get(Key::Int(1)).is_none(),
                 "the other holder's entries changed"
             );
             assert_eq!(
@@ -772,13 +822,22 @@ mod the_writes_and_the_separation_they_share {
                 k2_start,
                 "the overwrite arm kept its published reference"
             );
-            assert_eq!((*src).table.get(Key::Str(k1)).unwrap().as_int(), 2);
+            assert_eq!(
+                (*src)
+                    .storage
+                    .as_table()
+                    .get(Key::Str(k1))
+                    .unwrap()
+                    .as_int(),
+                2
+            );
 
             // Fill to capacity, so the next new key must grow — and the
             // growth is refused, so the published key must come back.
             for i in 0..7i64 {
                 (*src)
-                    .table
+                    .storage
+                    .as_table_mut()
                     .insert(category_of(src), Key::Int(i), Value::int(i));
             }
 
@@ -843,7 +902,8 @@ mod what_a_refusal_leaves_behind {
         let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         unsafe {
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(0), Value::int(10));
         }
 
@@ -873,8 +933,8 @@ mod what_a_refusal_leaves_behind {
                 "a refused store moved the slot"
             );
             assert_eq!((*src).rc.refcount, 2, "a refused store moved a count");
-            assert_eq!((*src).table.len(), 1);
-            assert!((*src).table.get(Key::Int(1)).is_none());
+            assert_eq!((*src).storage.as_table().len(), 1);
+            assert!((*src).storage.as_table().get(Key::Int(1)).is_none());
             assert_eq!(
                 (*val).rc.refcount,
                 1,
@@ -914,7 +974,8 @@ mod what_a_refusal_leaves_behind {
             // Fill to capacity, so the next insert must grow.
             for i in 0..8i64 {
                 (*src)
-                    .table
+                    .storage
+                    .as_table_mut()
                     .insert(category_of(src), Key::Int(i), Value::int(i));
             }
         }
@@ -936,10 +997,17 @@ mod what_a_refusal_leaves_behind {
         assert!(!stored, "growth was meant to be refused");
 
         unsafe {
-            assert_eq!((*src).table.len(), 8, "a refused growth moved an entry");
-            assert!((*src).table.get(Key::Int(100)).is_none());
+            assert_eq!(
+                (*src).storage.as_table().len(),
+                8,
+                "a refused growth moved an entry"
+            );
+            assert!((*src).storage.as_table().get(Key::Int(100)).is_none());
             for i in 0..8i64 {
-                assert_eq!((*src).table.get(Key::Int(i)).unwrap().as_int(), i);
+                assert_eq!(
+                    (*src).storage.as_table().get(Key::Int(i)).unwrap().as_int(),
+                    i
+                );
             }
 
             assert!(ll_release(h as *mut RcHeader));
@@ -996,7 +1064,7 @@ mod what_a_refusal_leaves_behind {
         unsafe {
             assert_eq!((*slot_a).entity_ptr() as *mut LLArray, src);
             assert_eq!((*src).rc.refcount, 2);
-            assert!((*src).table.is_empty());
+            assert!((*src).storage.as_table().is_empty());
             assert_eq!(
                 (*val).rc.refcount,
                 1,
@@ -1028,7 +1096,7 @@ mod what_a_refusal_leaves_behind {
         let child = unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"cow") };
         unsafe {
             crate::refcount::ll_retain(child as *mut RcHeader);
-            (*src).table.insert(
+            (*src).storage.as_table_mut().insert(
                 category_of(src),
                 Key::Int(0),
                 Value::entity(Tag::String, child as *mut RcHeader),
@@ -1095,7 +1163,8 @@ mod what_a_refusal_leaves_behind {
             ));
             ll_release(src as *mut RcHeader);
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(0), Value::int(0));
         }
 
@@ -1120,8 +1189,8 @@ mod what_a_refusal_leaves_behind {
 
         unsafe {
             assert_eq!((*slot).entity_ptr() as *mut LLArray, src);
-            assert_eq!((*src).table.len(), 1);
-            assert!((*src).table.get(Key::Int(1)).is_none());
+            assert_eq!((*src).storage.as_table().len(), 1);
+            assert!((*src).storage.as_table().get(Key::Int(1)).is_none());
             assert_eq!(
                 (*value).rc.refcount,
                 before,
@@ -1165,7 +1234,8 @@ mod what_a_refusal_leaves_behind {
             // One entry buys the storage, so the vivified insert below
             // needs no growth and the refusal lands on the box alone.
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(0), Value::int(1));
         }
 
@@ -1180,10 +1250,10 @@ mod what_a_refusal_leaves_behind {
 
         unsafe {
             assert!(
-                !(*src).table.contains(Key::Int(9)),
+                !(*src).storage.as_table().contains(Key::Int(9)),
                 "the refusal left the vivified element behind"
             );
-            assert_eq!((*src).table.len(), 1);
+            assert_eq!((*src).storage.as_table().len(), 1);
             assert_eq!(
                 (*slot).entity_ptr() as *mut LLArray,
                 src,
@@ -1218,12 +1288,13 @@ mod an_element_in_a_reference_state {
         let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         unsafe {
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(0), Value::int(5));
             let boxed = box_element(src, arena_ptr, Key::Int(0));
             assert!(!boxed.is_null(), "the element was meant to be boxed");
             assert_eq!(
-                (*src).table.get(Key::Int(0)).unwrap().tag(),
+                (*src).storage.as_table().get(Key::Int(0)).unwrap().tag(),
                 Tag::Reference,
                 "the entry does not hold a box, so the read proves nothing"
             );
@@ -1274,7 +1345,7 @@ mod an_element_in_a_reference_state {
             ));
             ll_release(src as *mut RcHeader);
             crate::refcount::ll_retain(first as *mut RcHeader);
-            (*src).table.insert(
+            (*src).storage.as_table_mut().insert(
                 category_of(src),
                 Key::Int(0),
                 Value::entity(Tag::String, first as *mut RcHeader),
@@ -1300,7 +1371,12 @@ mod an_element_in_a_reference_state {
 
         unsafe {
             assert_eq!(
-                (*src).table.get(Key::Int(0)).unwrap().entity_ptr(),
+                (*src)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(0))
+                    .unwrap()
+                    .entity_ptr(),
                 boxed as *mut RcHeader,
                 "the store replaced the box instead of writing through it"
             );
@@ -1360,7 +1436,7 @@ mod an_element_in_a_reference_state {
             ));
             ll_release(src as *mut RcHeader);
             crate::refcount::ll_retain(held as *mut RcHeader);
-            (*src).table.insert(
+            (*src).storage.as_table_mut().insert(
                 category_of(src),
                 Key::Int(0),
                 Value::entity(Tag::String, held as *mut RcHeader),
@@ -1428,7 +1504,8 @@ mod an_element_in_a_reference_state {
 
         let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         unsafe {
-            (*a).table
+            (*a).storage
+                .as_table_mut()
                 .insert(category_of(a), Key::Int(1), Value::int(1));
             assert!(box_element(a, arena_ptr, Key::Int(2)).is_null());
 
@@ -1524,7 +1601,8 @@ mod an_element_in_a_reference_state {
         unsafe {
             crate::refcount::ll_retain(x as *mut RcHeader);
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Str(x), Value::int(1));
         }
 
@@ -1547,7 +1625,7 @@ mod an_element_in_a_reference_state {
                 "the other holder followed the separation"
             );
             assert!(
-                (*src).table.get(Key::Str(x)).unwrap().tag() != Tag::Reference,
+                (*src).storage.as_table().get(Key::Str(x)).unwrap().tag() != Tag::Reference,
                 "the original's element was boxed too"
             );
 
@@ -1599,7 +1677,9 @@ mod a_box_outliving_what_moves_the_entry {
         let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
         let category = unsafe { category_of(a) };
         unsafe {
-            (*a).table.insert(category, Key::Int(1), Value::int(41));
+            (*a).storage
+                .as_table_mut()
+                .insert(category, Key::Int(1), Value::int(41));
 
             let r = box_element(a, arena_ptr, Key::Int(1));
             assert!(!r.is_null());
@@ -1607,7 +1687,9 @@ mod a_box_outliving_what_moves_the_entry {
 
             // Enough inserts to reallocate the storage several times.
             for i in 2..5000i64 {
-                (*a).table.insert(category, Key::Int(i), Value::int(i));
+                (*a).storage
+                    .as_table_mut()
+                    .insert(category, Key::Int(i), Value::int(i));
             }
 
             (*r).value = Value::int(99);
@@ -1638,16 +1720,18 @@ mod a_box_outliving_what_moves_the_entry {
         let category = unsafe { category_of(a) };
         unsafe {
             for i in 0..200i64 {
-                (*a).table.insert(category, Key::Int(i), Value::int(i));
+                (*a).storage
+                    .as_table_mut()
+                    .insert(category, Key::Int(i), Value::int(i));
             }
 
             let r = box_element(a, arena_ptr, Key::Int(150));
             assert!(!r.is_null());
             for i in 0..150i64 {
-                let _ = (*a).table.remove(Key::Int(i));
+                let _ = (*a).storage.as_table_mut().remove(Key::Int(i));
             }
 
-            (*a).table.compact();
+            (*a).storage.as_table_mut().compact();
 
             assert_eq!(
                 box_element(a, arena_ptr, Key::Int(150)),
@@ -1656,7 +1740,7 @@ mod a_box_outliving_what_moves_the_entry {
             );
             (*r).value = Value::int(-1);
             assert_eq!(
-                (*a).table.get(Key::Int(150)).unwrap().tag(),
+                (*a).storage.as_table().get(Key::Int(150)).unwrap().tag(),
                 Tag::Reference,
                 "the element holds the box, not the value"
             );
@@ -1726,7 +1810,8 @@ mod what_a_copy_does_with_a_box {
         let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
         let boxed = unsafe {
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(0), Value::int(7));
             let boxed = box_element(src, arena_ptr, Key::Int(0));
             assert!(!boxed.is_null());
@@ -1756,7 +1841,12 @@ mod what_a_copy_does_with_a_box {
 
         unsafe {
             assert_eq!(
-                (*copy).table.get(Key::Int(0)).unwrap().entity_ptr(),
+                (*copy)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(0))
+                    .unwrap()
+                    .entity_ptr(),
                 boxed as *mut RcHeader,
                 "the copy boxed a second reference instead of sharing this one"
             );
@@ -1944,7 +2034,8 @@ mod what_a_copy_does_with_a_box {
         let slot_b = unsafe { Object::prop_at(h, 32) };
         unsafe {
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(0), Value::int(1));
             assert!(crate::memory::barrier::ref_store(
                 arena_ptr,
@@ -1991,7 +2082,12 @@ mod what_a_copy_does_with_a_box {
             let copy = (*slot_b).entity_ptr() as *mut LLArray;
             assert_ne!(copy, src, "the shared table separated");
             assert_eq!(
-                (*copy).table.get(Key::Int(0)).unwrap().entity_ptr(),
+                (*copy)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(0))
+                    .unwrap()
+                    .entity_ptr(),
                 r as *mut RcHeader,
                 "the copy boxed a second reference instead of sharing this one"
             );

@@ -28,25 +28,30 @@ impl Owned {
 
     fn insert(&mut self, key: Key, value: Value) -> Option<(bool, Option<Value>)> {
         let category = self.category();
-        unsafe { (*self.0).table.insert(category, key, value) }
+        unsafe {
+            (*self.0)
+                .storage
+                .as_table_mut()
+                .insert(category, key, value)
+        }
     }
 
     fn dispose(&mut self) {
         let category = self.category();
-        unsafe { (*self.0).table.dispose(category) };
+        unsafe { (*self.0).storage.dispose(category) };
     }
 }
 
 impl std::ops::Deref for Owned {
     type Target = Table;
     fn deref(&self) -> &Table {
-        unsafe { &(*self.0).table }
+        unsafe { (*self.0).storage.as_table() }
     }
 }
 
 impl std::ops::DerefMut for Owned {
     fn deref_mut(&mut self) -> &mut Table {
-        unsafe { &mut (*self.0).table }
+        unsafe { (*self.0).storage.as_table_mut() }
     }
 }
 
@@ -54,7 +59,7 @@ impl Drop for Owned {
     fn drop(&mut self) {
         unsafe {
             (*self.0)
-                .table
+                .storage
                 .dispose(crate::array::entity::category_of(self.0));
             // The entity's own slot, by hand rather than through
             // `ll_entity_die`: these tests own the children and give
@@ -1059,7 +1064,7 @@ mod where_the_storage_comes_from {
         // An arena array, because an arena table's storage is routed by
         // the header in front of it like every other table's.
         let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena) };
-        let m = unsafe { &mut (*a).table };
+        let m = unsafe { (*a).storage.as_table_mut() };
         for i in 0..1100i64 {
             m.insert(
                 unsafe { crate::array::entity::category_of(a) },
@@ -1115,7 +1120,7 @@ mod where_the_storage_comes_from {
             let carried = carried;
             unsafe {
                 (*carried.0)
-                    .table
+                    .storage
                     .dispose(crate::array::entity::category_of(carried.0));
                 (*carried.0).rc.refcount = 0;
                 crate::memory::stdapi::ll_free(carried.0 as *mut u8);
@@ -1160,7 +1165,7 @@ mod where_the_storage_comes_from {
         set_current_context(context_ptr);
 
         let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena) };
-        let m = unsafe { &mut (*a).table };
+        let m = unsafe { (*a).storage.as_table_mut() };
         for i in 0..8i64 {
             m.insert(
                 unsafe { crate::array::entity::category_of(a) },

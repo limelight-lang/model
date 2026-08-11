@@ -53,9 +53,11 @@ fn destructor_order_with(shape: Shape, refuse_the_list: bool) -> String {
 
     let array = || unsafe { ll_array_new(MemoryCategory::GcHeap) };
     let put = |owner: *mut LLArray, key: i64, tag: crate::value::Tag, child: *mut RcHeader| unsafe {
-        (*owner)
-            .table
-            .insert(category_of(owner), Key::Int(key), Value::entity(tag, child));
+        (*owner).storage.as_table_mut().insert(
+            category_of(owner),
+            Key::Int(key),
+            Value::entity(tag, child),
+        );
     };
 
     let object = |cls| unsafe {
@@ -186,8 +188,8 @@ mod the_entity_around_the_table {
                 EntityKind::Array.to_flags()
             );
             assert_eq!(category_of(a), MemoryCategory::GcHeap);
-            assert!((*a).table.is_empty());
-            (*a).table.dispose(category_of(a));
+            assert!((*a).storage.as_table().is_empty());
+            (*a).storage.dispose(category_of(a));
         }
     }
 
@@ -198,7 +200,7 @@ mod the_entity_around_the_table {
     fn an_array_carries_no_class_pointer() {
         assert_eq!(std::mem::offset_of!(LLArray, rc), 0);
         assert_eq!(
-            std::mem::offset_of!(LLArray, table),
+            std::mem::offset_of!(LLArray, storage),
             8,
             "the table starts straight after the header — nothing between"
         );
@@ -234,7 +236,7 @@ mod the_two_cow_doors {
             // must already be backed by a count.
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(value as *mut RcHeader);
-            (*src).table.insert(
+            (*src).storage.as_table_mut().insert(
                 category_of(src),
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, value as *mut RcHeader),
@@ -249,7 +251,7 @@ mod the_two_cow_doors {
         } as *mut LLArray;
         assert_ne!(copy, src, "the shared array was written in place");
         assert_eq!(
-            unsafe { (*copy).table.used() },
+            unsafe { (*copy).storage.as_table().used() },
             1,
             "the entry did not survive"
         );
@@ -291,7 +293,7 @@ mod the_two_cow_doors {
             crate::refcount::ll_retain(a as *mut RcHeader);
             assert!((*a).needs_separation(), "a second holder forces a copy");
             crate::refcount::ll_release(a as *mut RcHeader);
-            (*a).table.dispose(category_of(a));
+            (*a).storage.dispose(category_of(a));
         }
     }
 
@@ -305,15 +307,17 @@ mod the_two_cow_doors {
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(child as *mut RcHeader);
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(1), Value::int(10));
-            (*src).table.insert(
+            (*src).storage.as_table_mut().insert(
                 category_of(src),
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, child as *mut RcHeader),
             );
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(2), Value::int(20));
         }
 
@@ -334,7 +338,8 @@ mod the_two_cow_doors {
         unsafe {
             // Order survives.
             let order: Vec<i64> = (*dst)
-                .table
+                .storage
+                .as_table()
                 .iter()
                 .map(|e| {
                     if e.is_int_key() {
@@ -352,15 +357,22 @@ mod the_two_cow_doors {
 
             // Writing the copy does not touch the source.
             (*dst)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(dst), Key::Int(1), Value::int(999));
-            assert_eq!((*src).table.get(Key::Int(1)).unwrap().as_int(), 10);
-            assert_eq!((*dst).table.get(Key::Int(1)).unwrap().as_int(), 999);
+            assert_eq!(
+                (*src).storage.as_table().get(Key::Int(1)).unwrap().as_int(),
+                10
+            );
+            assert_eq!(
+                (*dst).storage.as_table().get(Key::Int(1)).unwrap().as_int(),
+                999
+            );
 
             release_children(dst);
-            (*dst).table.dispose(category_of(dst));
+            (*dst).storage.dispose(category_of(dst));
             release_children(src);
-            (*src).table.dispose(category_of(src));
+            (*src).storage.dispose(category_of(src));
         }
     }
 
@@ -371,12 +383,13 @@ mod the_two_cow_doors {
         unsafe {
             for i in 0..10i64 {
                 (*src)
-                    .table
+                    .storage
+                    .as_table_mut()
                     .insert(category_of(src), Key::Int(i), Value::int(i));
             }
 
             for i in [2i64, 5, 8] {
-                let _ = (*src).table.remove(Key::Int(i));
+                let _ = (*src).storage.as_table_mut().remove(Key::Int(i));
             }
 
             let dst = separate(
@@ -386,17 +399,22 @@ mod the_two_cow_doors {
                 CopyReason::Duplication,
             );
             assert!(!dst.is_null());
-            assert_eq!((*dst).table.len(), 7);
+            assert_eq!((*dst).storage.as_table().len(), 7);
             assert_eq!(
-                (*dst).table.used(),
+                (*dst).storage.as_table().used(),
                 7,
                 "the copy starts dense: a hole is not worth copying"
             );
-            let order: Vec<i64> = (*dst).table.iter().map(|e| e.hash_or_key as i64).collect();
+            let order: Vec<i64> = (*dst)
+                .storage
+                .as_table()
+                .iter()
+                .map(|e| e.hash_or_key as i64)
+                .collect();
             assert_eq!(order, vec![0, 1, 3, 4, 6, 7, 9]);
 
-            (*dst).table.dispose(category_of(dst));
-            (*src).table.dispose(category_of(src));
+            (*dst).storage.dispose(category_of(dst));
+            (*src).storage.dispose(category_of(src));
         }
     }
 
@@ -428,7 +446,7 @@ mod the_two_cow_doors {
             unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"in the arena") };
         unsafe {
             crate::refcount::ll_retain(element as *mut RcHeader);
-            (*src).table.insert(
+            (*src).storage.as_table_mut().insert(
                 category_of(src),
                 Key::Int(1),
                 Value::entity(crate::value::Tag::String, element as *mut RcHeader),
@@ -453,7 +471,7 @@ mod the_two_cow_doors {
             MemoryCategory::GcHeap,
             "the copy did not land in the heap"
         );
-        let copied_element = unsafe { (*stored).table.entry(0).value().entity_ptr() };
+        let copied_element = unsafe { (*stored).storage.as_table().entry(0).value().entity_ptr() };
         assert_ne!(
             copied_element, element as *mut RcHeader,
             "the copy still holds the arena string"
@@ -487,10 +505,11 @@ mod the_two_cow_doors {
         let src = arr();
         unsafe {
             (*src)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(src), Key::Int(9), Value::int(1));
-            let _ = (*src).table.remove(Key::Int(9));
-            assert_eq!((*src).table.append_key(), Some(10));
+            let _ = (*src).storage.as_table_mut().remove(Key::Int(9));
+            assert_eq!((*src).storage.as_table().append_key(), Some(10));
         }
 
         let copy = unsafe {
@@ -504,9 +523,13 @@ mod the_two_cow_doors {
 
         assert!(!copy.is_null());
         unsafe {
-            assert_eq!((*copy).table.len(), 0, "a hole is not worth copying");
             assert_eq!(
-                (*copy).table.append_key(),
+                (*copy).storage.as_table().len(),
+                0,
+                "a hole is not worth copying"
+            );
+            assert_eq!(
+                (*copy).storage.as_table().append_key(),
                 Some(10),
                 "the copy rewound the append cursor past a removed key"
             );
@@ -559,16 +582,18 @@ mod the_flood_state_a_copy_inherits {
                 unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
                 unsafe {
                     crate::refcount::ll_retain(s as *mut RcHeader);
-                    (*src)
-                        .table
-                        .insert(category_of(src), Key::Str(s), Value::int(i as i64));
+                    (*src).storage.as_table_mut().insert(
+                        category_of(src),
+                        Key::Str(s),
+                        Value::int(i as i64),
+                    );
                 }
 
                 s
             })
             .collect();
         assert!(
-            unsafe { (*src).table.is_strong() },
+            unsafe { (*src).storage.as_table().is_strong() },
             "the forged set did not escalate the source, so this proves nothing"
         );
 
@@ -579,7 +604,7 @@ mod the_flood_state_a_copy_inherits {
             // table's one reference per stored key — so the table's
             // reference is released through what came back and the
             // creation reference through the test's own pointer.
-            let (_, key) = unsafe { (*src).table.remove(Key::Str(*s)) }.unwrap();
+            let (_, key) = unsafe { (*src).storage.as_table_mut().remove(Key::Str(*s)) }.unwrap();
             assert_eq!(key, *s, "the entry held the inserted key entity");
             unsafe {
                 assert!(!ll_release(key as *mut RcHeader), "the table's");
@@ -599,11 +624,11 @@ mod the_flood_state_a_copy_inherits {
 
         assert!(!copy.is_null());
         assert!(
-            unsafe { (*copy).table.is_strong() },
+            unsafe { (*copy).storage.as_table().is_strong() },
             "the copy came back to the hash the attacker already knows"
         );
         assert_eq!(
-            unsafe { (*copy).table.get(Key::Str(colliders[0])) }
+            unsafe { (*copy).storage.as_table().get(Key::Str(colliders[0])) }
                 .unwrap()
                 .as_int(),
             0,
@@ -636,17 +661,19 @@ mod the_flood_state_a_copy_inherits {
         let src = arr();
         for i in 0..(CHAIN_LIMIT as i64 + 1) {
             unsafe {
-                (*src)
-                    .table
-                    .insert(category_of(src), Key::Int(i * 1024), Value::int(i));
+                (*src).storage.as_table_mut().insert(
+                    category_of(src),
+                    Key::Int(i * 1024),
+                    Value::int(i),
+                );
             }
         }
 
         assert!(
-            unsafe { (*src).table.is_reseeded() },
+            unsafe { (*src).storage.as_table().is_reseeded() },
             "the stride flood did not fire the rung, so this proves nothing"
         );
-        let drawn = unsafe { (*src).table.salt() };
+        let drawn = unsafe { (*src).storage.as_table().salt() };
 
         let copy = unsafe {
             separate(
@@ -658,15 +685,15 @@ mod the_flood_state_a_copy_inherits {
         };
 
         assert!(!copy.is_null());
-        assert!(unsafe { (*copy).table.is_reseeded() });
+        assert!(unsafe { (*copy).storage.as_table().is_reseeded() });
         assert_eq!(
-            unsafe { (*copy).table.salt() },
+            unsafe { (*copy).storage.as_table().salt() },
             drawn,
             "the copy indexes under a salt of its own"
         );
         for i in 0..(CHAIN_LIMIT as i64 + 1) {
             assert_eq!(
-                unsafe { (*copy).table.get(Key::Int(i * 1024)) }
+                unsafe { (*copy).storage.as_table().get(Key::Int(i * 1024)) }
                     .unwrap()
                     .as_int(),
                 i
@@ -695,13 +722,15 @@ mod the_flood_state_a_copy_inherits {
         let src = arr();
         for i in 0..3i64 {
             unsafe {
-                (*src)
-                    .table
-                    .insert(category_of(src), Key::Int(i * 1024), Value::int(i));
+                (*src).storage.as_table_mut().insert(
+                    category_of(src),
+                    Key::Int(i * 1024),
+                    Value::int(i),
+                );
             }
         }
 
-        assert!(unsafe { !(*src).table.is_reseeded() });
+        assert!(unsafe { !(*src).storage.as_table().is_reseeded() });
 
         let copy = unsafe {
             separate(
@@ -714,25 +743,27 @@ mod the_flood_state_a_copy_inherits {
 
         assert!(!copy.is_null());
         assert!(
-            unsafe { !(*copy).table.is_reseeded() },
+            unsafe { !(*copy).storage.as_table().is_reseeded() },
             "a copy of an unsalted table drew a salt from nowhere"
         );
 
         for i in 3..(CHAIN_LIMIT as i64 + 1) {
             unsafe {
-                (*copy)
-                    .table
-                    .insert(category_of(copy), Key::Int(i * 1024), Value::int(i));
+                (*copy).storage.as_table_mut().insert(
+                    category_of(copy),
+                    Key::Int(i * 1024),
+                    Value::int(i),
+                );
             }
         }
 
         assert!(
-            unsafe { (*copy).table.is_reseeded() },
+            unsafe { (*copy).storage.as_table().is_reseeded() },
             "the copy's own flood must fire the copy's own rung"
         );
         for i in 0..(CHAIN_LIMIT as i64 + 1) {
             assert_eq!(
-                unsafe { (*copy).table.get(Key::Int(i * 1024)) }
+                unsafe { (*copy).storage.as_table().get(Key::Int(i * 1024)) }
                     .unwrap()
                     .as_int(),
                 i
@@ -766,7 +797,7 @@ mod what_a_death_gives_back {
         unsafe {
             crate::refcount::ll_retain(key as *mut RcHeader);
             crate::refcount::ll_retain(child as *mut RcHeader);
-            (*a).table.insert(
+            (*a).storage.as_table_mut().insert(
                 category_of(a),
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, child as *mut RcHeader),
@@ -778,7 +809,7 @@ mod what_a_death_gives_back {
             assert_eq!((*(key as *mut RcHeader)).refcount, k0 - 1);
             assert_eq!((*(child as *mut RcHeader)).refcount, c0 - 1);
 
-            (*a).table.dispose(category_of(a));
+            (*a).storage.dispose(category_of(a));
         }
     }
 
@@ -803,12 +834,12 @@ mod what_a_death_gives_back {
             // children outlive the array and can be read afterwards.
             ll_retain(key as *mut RcHeader);
             ll_retain(value as *mut RcHeader);
-            (*a).table.insert(
+            (*a).storage.as_table_mut().insert(
                 category_of(a),
                 Key::Str(key),
                 Value::entity(crate::value::Tag::String, value as *mut RcHeader),
             );
-            let (storage, capacity) = (*a).table.storage_and_capacity();
+            let (storage, capacity) = (*a).storage.as_table().storage_and_capacity();
             assert!(
                 !storage.is_null(),
                 "the insert allocated storage to release"
@@ -872,14 +903,15 @@ mod what_a_death_gives_back {
         let inner = arr();
         unsafe {
             (*inner)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category_of(inner), Key::Int(1), Value::int(1));
-            let (storage, capacity) = (*inner).table.storage_and_capacity();
+            let (storage, capacity) = (*inner).storage.as_table().storage_and_capacity();
             assert!(!storage.is_null(), "the inner array has storage to reclaim");
 
             // The inner array's only reference is the outer array's
             // element, so the outer's death is the inner's death.
-            (*outer).table.insert(
+            (*outer).storage.as_table_mut().insert(
                 category_of(outer),
                 Key::Int(0),
                 Value::entity(crate::value::Tag::Array, inner as *mut RcHeader),
@@ -980,7 +1012,7 @@ mod nesting_worked_through_a_list {
             let inner = *levels.last().unwrap();
             unsafe {
                 crate::refcount::ll_retain(inner as *mut RcHeader);
-                (*outer).table.insert(
+                (*outer).storage.as_table_mut().insert(
                     category_of(outer),
                     Key::Int(0),
                     Value::entity(crate::value::Tag::Array, inner as *mut RcHeader),
@@ -1017,7 +1049,7 @@ mod nesting_worked_through_a_list {
                 levels[DEPTH - 1 - depth],
                 "level {depth} is the source array itself"
             );
-            let entry = unsafe { &(*level).table }.get(Key::Int(0));
+            let entry = unsafe { (*level).storage.as_table() }.get(Key::Int(0));
             if depth == DEPTH - 1 {
                 assert!(entry.is_none(), "the innermost copy holds something");
                 break;
@@ -1078,7 +1110,7 @@ mod nesting_worked_through_a_list {
                 for _ in 1..DEPTH {
                     let outer = unsafe { ll_array_new(MemoryCategory::GcHeap) };
                     unsafe {
-                        (*outer).table.insert(
+                        (*outer).storage.as_table_mut().insert(
                             category_of(outer),
                             Key::Int(0),
                             Value::entity(crate::value::Tag::Array, level as *mut RcHeader),
@@ -1093,7 +1125,7 @@ mod nesting_worked_through_a_list {
                 // leave a shallow array that tears down on any stack.
                 let mut built = 1;
                 let mut walk = level;
-                while let Some(v) = unsafe { &(*walk).table }.get(Key::Int(0)) {
+                while let Some(v) = unsafe { (*walk).storage.as_table() }.get(Key::Int(0)) {
                     walk = v.entity_ptr() as *mut LLArray;
                     built += 1;
                 }
@@ -1225,7 +1257,8 @@ mod who_owns_a_key_reference {
         unsafe {
             crate::refcount::ll_retain(a as *mut RcHeader);
             let (added, old) = (*e)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category, Key::Str(a), Value::int(1))
                 .unwrap();
             assert!(added, "the first insert stores a new key");
@@ -1233,7 +1266,8 @@ mod who_owns_a_key_reference {
 
             crate::refcount::ll_retain(b as *mut RcHeader);
             let (added, old) = (*e)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category, Key::Str(b), Value::int(2))
                 .unwrap();
             assert!(!added, "equal bytes overwrite rather than add");
@@ -1242,7 +1276,7 @@ mod who_owns_a_key_reference {
             // retain above is still the caller's to give back.
             assert!(!ll_release(b as *mut RcHeader));
 
-            let (v, key) = (*e).table.remove(Key::Str(b)).unwrap();
+            let (v, key) = (*e).storage.as_table_mut().remove(Key::Str(b)).unwrap();
             assert_eq!(v.as_int(), 2);
             assert_eq!(key, a, "the entry kept its original key entity");
             assert!(!ll_release(key as *mut RcHeader), "the table's reference");
@@ -1296,13 +1330,14 @@ mod who_owns_a_key_reference {
                 "a heap entity entering an arena slot is logged, not copied"
             );
             let (added, old) = (*e)
-                .table
+                .storage
+                .as_table_mut()
                 .insert(category, Key::Str(key), Value::int(1))
                 .unwrap();
             assert!(added);
             assert!(old.is_none());
 
-            let (v, k) = (*e).table.remove(Key::Str(key)).unwrap();
+            let (v, k) = (*e).storage.as_table_mut().remove(Key::Str(key)).unwrap();
             assert_eq!(v.as_int(), 1);
             assert_eq!(k, key);
             // The table's reference is the log's to release at reset;
@@ -1359,7 +1394,7 @@ mod who_owns_a_key_reference {
         assert!(!d.is_null());
         unsafe {
             crate::refcount::ll_retain(d as *mut RcHeader);
-            (*src).table.insert(
+            (*src).storage.as_table_mut().insert(
                 category_of(src),
                 Key::Int(0),
                 Value::entity(crate::value::Tag::String, d as *mut RcHeader),

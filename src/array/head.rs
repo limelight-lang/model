@@ -131,6 +131,15 @@ impl StorageHead {
         self.used.store(n, Ordering::Release);
     }
 
+    /// The tag as the mutator sees it. A walker never calls this: it
+    /// takes the tag from a [`CoherentView`], which is the only reading
+    /// the bracket has validated. The mutator may read it plainly,
+    /// because it is the only writer.
+    #[inline]
+    pub(crate) fn tag(&self) -> StorageTag {
+        decode_tag(self.tag.load(Ordering::Relaxed)).expect("the tag is written by this crate only")
+    }
+
     /// Open a window in which elements move. The version goes odd, and a
     /// walker that sees an odd reading — or two different readings around
     /// its own — starts over.

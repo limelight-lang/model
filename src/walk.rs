@@ -222,9 +222,9 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
         }
 
         // An array's cells live in storage the mutator moves, so this
-        // starts by reading the entries coherently and gives up rather
-        // than striding a fresh count over a stale chunk
-        // (`Table::coherent_entries`). Giving up leaks one epoch and frees
+        // starts by reading the head coherently and gives up rather than
+        // striding a fresh count over a stale chunk
+        // (`StorageHead::coherent`). Giving up leaks one epoch and frees
         // nothing early: an entity the walk does not enumerate becomes a
         // root source.
         ARRAY => {
@@ -234,6 +234,29 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
             let Some(view) = (unsafe { crate::array::head::StorageHead::coherent(head) }) else {
                 return;
             };
+
+            // The stride is chosen here and nowhere earlier: the tag came
+            // out of the same validated reading as the chunk, so a stale
+            // one was discarded with it rather than selecting a layout.
+            if view.tag == crate::array::head::StorageTag::Vector {
+                let (elements, used) = unsafe { crate::array::vector::Vector::elements_of(&view) };
+                for i in 0..used {
+                    // No key beside the element: a vector's key is the
+                    // position, so every cell here is a Box.
+                    let value_at = unsafe { elements.add(i * 16) as *const u8 };
+                    let child = unsafe { R::word(value_at) } as *mut RcHeader;
+                    if Value::refcounted_in_meta_word(unsafe { R::word(value_at.add(8)) }) {
+                        visit(Cell {
+                            addr: value_at as usize,
+                            raw: child as u64,
+                            child,
+                            shape: CellShape::Box,
+                        });
+                    }
+                }
+
+                return;
+            }
 
             let (entries, used) = unsafe { crate::array::table::Table::entries_of(&view) };
 

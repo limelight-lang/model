@@ -316,12 +316,12 @@ mod the_memory_a_survivor_takes_with_it {
         let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
 
         let storage_before = unsafe {
-            (*array).table.insert(
+            (*array).storage.as_table_mut().insert(
                 crate::array::entity::category_of(array),
                 Key::Int(1),
                 Value::int(11),
             );
-            (*array).table.insert(
+            (*array).storage.as_table_mut().insert(
                 crate::array::entity::category_of(array),
                 Key::Int(2),
                 Value::int(22),
@@ -365,11 +365,24 @@ mod the_memory_a_survivor_takes_with_it {
                 "the storage is still arena memory the reset gave back"
             );
             assert_eq!(
-                (*array).table.get(Key::Int(1)).unwrap().as_int(),
+                (*array)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(1))
+                    .unwrap()
+                    .as_int(),
                 11,
                 "the carried storage lost its entries"
             );
-            assert_eq!((*array).table.get(Key::Int(2)).unwrap().as_int(), 22);
+            assert_eq!(
+                (*array)
+                    .storage
+                    .as_table()
+                    .get(Key::Int(2))
+                    .unwrap()
+                    .as_int(),
+                22
+            );
         }
     }
 
@@ -402,7 +415,7 @@ mod the_memory_a_survivor_takes_with_it {
 
         let storage_before = unsafe {
             for i in 0..1100i64 {
-                (*array).table.insert(
+                (*array).storage.as_table_mut().insert(
                     crate::array::entity::category_of(array),
                     Key::Int(i),
                     Value::int(i),
@@ -413,7 +426,7 @@ mod the_memory_a_survivor_takes_with_it {
         };
 
         assert!(
-            unsafe { (*array).table.storage_and_capacity().1 } > BLOCK_PAYLOAD,
+            unsafe { (*array).storage.as_table().storage_and_capacity().1 } > BLOCK_PAYLOAD,
             "the table never grew past one block, so this proves nothing"
         );
 
@@ -439,7 +452,15 @@ mod the_memory_a_survivor_takes_with_it {
                 "an OS-direct storage was copied instead of transferred"
             );
             for i in 0..1100i64 {
-                assert_eq!((*array).table.get(Key::Int(i)).unwrap().as_int(), i);
+                assert_eq!(
+                    (*array)
+                        .storage
+                        .as_table()
+                        .get(Key::Int(i))
+                        .unwrap()
+                        .as_int(),
+                    i
+                );
             }
         }
     }
@@ -484,7 +505,7 @@ mod the_memory_a_survivor_takes_with_it {
         let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
 
         let storage_before = unsafe {
-            (*array).table.insert(
+            (*array).storage.as_table_mut().insert(
                 crate::array::entity::category_of(array),
                 Key::Int(1),
                 Value::int(11),
