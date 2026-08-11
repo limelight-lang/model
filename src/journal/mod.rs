@@ -291,8 +291,6 @@ struct Registry {
     /// [`between`] in the wrong order are caught instead of answering a
     /// confident "nothing happened anywhere" — every ring's range comes
     /// out empty, which is the one answer this module may not invent.
-    /// It also dates a ring's close ([`Ring::closed_after`]): marks are
-    /// the only clock a window has.
     marks: u64,
     /// Rings the quota dropped, waiting to be freed by a thread that is
     /// not on its way out.
@@ -1238,10 +1236,11 @@ mod tests {
     }
 
     /// A window that ended before a ring closed keeps its answer when the
-    /// thread later exits. `Closed` says "records were lost inside this
-    /// window"; a close dated after the window lost it nothing, and an
-    /// answer that changes under a reader's feet is one that stops
-    /// meaning anything.
+    /// thread later exits. [`Window::Lost`] says "records were raised and
+    /// dropped inside this window", and its count is the difference
+    /// between the two marks' readings of `LOST`, so a close after the
+    /// second mark adds nothing to it — an answer that changes under a
+    /// reader's feet is one that stops meaning anything.
     #[test]
     fn a_window_that_ended_before_the_close_is_not_reclassified_by_it() {
         let _quiet = kinds::disable_sites_for_test();
@@ -1734,8 +1733,9 @@ mod tests {
     /// kind, so a ring retired one step earlier would answer this window
     /// with the exit record and nothing after it.
     ///
-    /// The order inside the ring is the claim, not the count: `THREAD_EXIT`
-    /// is written at the head of the sequence and every handover below it
+    /// The order inside the ring is the claim, not the count:
+    /// [`KIND_THREAD_EXIT`](crate::journal::kinds::KIND_THREAD_EXIT) is
+    /// written at the head of the sequence and every handover below it
     /// has to be in the same ring. Seen failing with the retirement moved
     /// to its old position above the heap teardown, where the window
     /// answers commissions, a start and an exit and nothing after.

@@ -18,7 +18,8 @@
 //! hunted — a ring of K records says nothing about a window in which one
 //! kind wrote K records by itself.
 //!
-//! Both gates are in [`journal_event!`], which is how a site is written.
+//! Both gates are in [`journal_event!`](crate::journal::kinds::journal_event),
+//! which is how a site is written.
 //! The macro evaluates its payload arguments **after** the mask test, so
 //! a disabled kind costs the load and the branch and nothing else: some
 //! sites read a header or a block field to fill their words, and a

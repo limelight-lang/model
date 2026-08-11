@@ -443,17 +443,17 @@ pub struct CollectStats {
 /// (`rc − 1 = indeg`, finding F1), then sever and un-guard through the
 /// ordinary teardown path.
 ///
-/// # Safety
-/// As [`for_each_entity_slot`], and it must fire at a clean point — where
-/// refcounts and physical edges agree, never mid-store or mid-teardown
-/// (the arm/fire rule of `rfc/model/gc/strategies.md`).
-///
 /// The reverse of the epoch pickup gate — refusing to *start* mid-drain
 /// or mid-teardown — is deliberately not built: today's callers are
 /// tests and the explicit ABI, and a mid-drain call is conservative
 /// anyway (the drain's guards inflate rc, so guarded members classify
 /// live). The entry gate belongs to the pressure ladder
 /// (`rfc/model/gc/rc-walk.md`, "When the collector runs", unbuilt).
+///
+/// # Safety
+/// As [`for_each_entity_slot`], and it must fire at a clean point — where
+/// refcounts and physical edges agree, never mid-store or mid-teardown
+/// (the arm/fire rule of `rfc/model/gc/strategies.md`).
 pub unsafe fn collect_cycles() -> CollectStats {
     if WALK_ACTIVE.with(|a| a.get()) {
         return CollectStats::default();
