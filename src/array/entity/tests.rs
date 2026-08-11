@@ -926,15 +926,34 @@ mod nesting_worked_through_a_list {
     /// depth is well past `WorkList::FIRST`, so the chunk grows more than
     /// once on the way through.
     ///
-    /// The depth is modest because what is measured here is the copy.
-    /// Teardown of the copy is drained rather than recursed since
-    /// 2026-08-08, and the depth that bound is measured at lives in
-    /// `a_deep_array_tears_down_without_the_machine_stack` below, on a
-    /// thread whose stack is small enough for the answer to mean
-    /// something.
+    /// **On a stack that cannot hold the alternative**, which is what
+    /// makes the depth mean anything: 64 KiB against 800 levels leaves
+    /// 82 bytes a level, and the smallest frame set here is far above
+    /// that. Until S12.5 this ran 800 levels shallower on the ordinary
+    /// 8 MiB stack, where a recursive copy would have passed too.
+    ///
+    /// Unlike the teardown below it, the bound is arithmetic rather than
+    /// exhibited: a teardown has no channel to refuse through, so
+    /// forcing its list to refuse returns it to the recursive path and
+    /// kills the thread, while a copy whose list refuses **refuses the
+    /// copy** — there is no recursive arm here to fall back to and none
+    /// to force.
     #[test]
     fn a_deep_arena_array_is_copied_out_through_the_work_list() {
-        const DEPTH: usize = 200;
+        const DEPTH: usize = 800;
+        const STACK: usize = 64 * 1024;
+
+        std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn(deep_copy_body)
+            .expect("the probe thread")
+            .join()
+            .expect("the deep copy ran out of machine stack");
+    }
+
+    /// The body of the test above, on its own small stack.
+    fn deep_copy_body() {
+        const DEPTH: usize = 800;
         let _g = crate::memory::block_pool::test_guard();
         let mut arena = crate::memory::arena::Arena::new();
         let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;

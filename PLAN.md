@@ -195,7 +195,7 @@ it claims to guard, and the suite's count is recorded before and after.
         `alloc` indexes its class table in 16-byte steps, so a class that
         is not a multiple of sixteen is never selected and cannot
         misalign a later slot — a probe on `SIZE_CLASSES` passes.
-- [ ] S12.5 The array layer's two claims with instruments a few lines
+- [x] S12.5 The array layer's two claims with instruments a few lines
       away
       done: `a_store_through_an_arena_holder_separates_into_the_arena`
         reads `IS_ESCAPEE` and drains the release log, both of which the
@@ -204,6 +204,15 @@ it claims to guard, and the suite's count is recorded before and after.
         recursive `separate` could not survive, the way the teardown
         test does
       tier: T2 · role: —
+      handoff: the store's release-log half was seen failing — with
+        `separation_category` made to answer `GcHeap` for an arena
+        holder, the drain finds a record — while the `IS_ESCAPEE` half
+        guards the other direction and no path in this test sets it, so
+        it is a cheap assertion rather than a probed one. The copy runs
+        800 levels on a 64 KiB stack now, 82 bytes a level. **Its bound
+        is arithmetic and cannot be exhibited:** a copy whose work list
+        refuses refuses the copy, so unlike the teardown there is no
+        recursive arm to force.
 - [ ] S12.6 The four arms the suite never enters
       done: a test each for the escape log crossing a segment boundary,
         `string::placement` refusing a long-lived string past the slot

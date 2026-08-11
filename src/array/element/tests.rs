@@ -691,9 +691,24 @@ mod the_writes_and_the_separation_they_share {
                 1,
                 "the displaced original keeps exactly its other holder"
             );
+            assert_eq!(
+                (*copy).rc.flags & crate::refcount::IS_ESCAPEE,
+                0,
+                "an arena copy in an arena slot crossed no boundary"
+            );
         }
 
         crate::memory::context::set_current_context(std::ptr::null_mut());
+
+        // Nothing was logged for the reset to release: the log exists for
+        // a longer-lived entity entering an arena slot, and every entity
+        // this store touched is the arena's own. Draining is what says
+        // so — a spurious record would be freed by the reset below and
+        // read as a clean run.
+        let mut logged = 0usize;
+        unsafe { arena.drain_release_log(|_| logged += 1) };
+        assert_eq!(logged, 0, "an arena-to-arena store logged a release");
+
         arena.reset(|_| {});
     }
 
