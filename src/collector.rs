@@ -20,7 +20,7 @@
 //! the last epoch) are measurements nobody has taken
 //! (`rfc/model/gc/rc-walk.md`, "Open questions").
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::epoch as protocol;
 use crate::journal::kinds::journal_event;
@@ -32,7 +32,8 @@ use crate::refcount::{
     ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EPOCH_BYTE_MASK, EPOCH_BYTE_SHIFT, MEMORY_CATEGORY_MASK,
     MemoryCategory, RcHeader, collector_load_header, collector_stamp_epoch,
 };
-use crate::walk::garbage_components;
+use crate::value::Value;
+use crate::walk::{CellShape, garbage_components};
 
 /// Epoch numbers cycle 1–255, skipping 0 (0 in the byte means
 /// "never stamped"). After a wrap an entity can read as current and be
@@ -54,6 +55,56 @@ struct Edge {
     field: usize,
     /// The raw word read at walk time.
     raw: u64,
+    /// How wide the cell is, which decides whether there is a second
+    /// word to re-check beside `field` and whether `field + 8` is even
+    /// inside the entity.
+    shape: CellShape,
+}
+
+impl Edge {
+    /// Whether the cell this edge was read from still names the same
+    /// child: the payload word unchanged, and for a sixteen-byte cell
+    /// the flags beside it still saying that word is an entity address.
+    ///
+    /// **Eight bytes are not the cell.** A `Value` is published as two
+    /// relaxed stores, the payload first (`array::entry::store_element`),
+    /// and a reader may observe them in either order — so a walk can
+    /// read the payload of the value being written against the flags of
+    /// the value being replaced. The written payload is whatever integer
+    /// the program chose, it is compared against every walked row like
+    /// any other word, and one that names a row becomes an in-edge no
+    /// cell holds. Re-reading eight bytes confirms that edge instead of
+    /// acquitting it: the payload store is the one that had already
+    /// landed, so the word is genuinely unchanged, and the entity it
+    /// names loses a holder it never had (`PLAN.md` S13.3).
+    ///
+    /// The flags are tested rather than compared, and the reserved bytes
+    /// above them are read as belonging to the container: an entry's
+    /// chain link lives there (`array/entry.rs`) and an insert repoints
+    /// it without touching a value, so comparing the whole word would
+    /// acquit the component once per re-index. What the walk recorded
+    /// about that word is one bit — the cell held a counted child — and
+    /// that bit is what has to still hold.
+    ///
+    /// # Safety
+    /// Every recorded cell stays readable for the epoch: a collector
+    /// walks only inside one, and an epoch parks the frees that could
+    /// take the memory back (`memory::deferred_free`).
+    unsafe fn still_designates_its_child(&self) -> bool {
+        let now = unsafe { (*(self.field as *const AtomicU64)).load(Ordering::Relaxed) };
+        if now != self.raw {
+            return false;
+        }
+
+        match self.shape {
+            CellShape::Pointer => true,
+            CellShape::Box => {
+                let meta =
+                    unsafe { (*((self.field + 8) as *const AtomicU64)).load(Ordering::Relaxed) };
+                Value::refcounted_in_meta_word(meta)
+            }
+        }
+    }
 }
 
 /// Counters a test can assert against; also the epoch's report.
@@ -278,6 +329,7 @@ impl Epoch {
                             dst,
                             field: cell.addr,
                             raw: cell.raw,
+                            shape: cell.shape,
                         }),
                         None => *dropped += 1,
                     }
@@ -354,12 +406,7 @@ impl Epoch {
             if clean {
                 for &k in &component_edges[id] {
                     let edge = &self.edges[k as usize];
-                    let now = unsafe {
-                        (*(edge.field as *const std::sync::atomic::AtomicU64))
-                            .load(Ordering::Relaxed)
-                    };
-
-                    if now != edge.raw {
+                    if !unsafe { edge.still_designates_its_child() } {
                         clean = false;
                         break;
                     }

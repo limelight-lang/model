@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-11 · Active: S13 (S13.1 and S13.2 closed), then S7, then S14
+Updated: 2026-08-11 · Active: S13 (S13.1–S13.3 closed), then S7, then S14
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -206,7 +206,7 @@ where that is the only instrument.
         follows, and a vector's elements go out as atomic stores rather
         than the plain key word the rule is about. The exemption and its
         two conditions are stated where the rule is.
-- [ ] S13.3 Phase 3 re-checks eight bytes of a sixteen-byte cell
+- [x] S13.3 Phase 3 re-checks eight bytes of a sixteen-byte cell
       done: `recheck_and_post` compares the meta word beside the payload,
         so a Value torn between its two stores is caught rather than
         confirmed
@@ -215,6 +215,20 @@ where that is the only instrument.
         an ordinary `$a[0] = 1` whose meta store has not landed, so the
         phantom in-edge is posted and only the next phase's re-trace
         acquits it — an epoch spent per torn read.
+      handoff: the re-check is `Edge::still_designates_its_child`, and
+        `Edge` carries the cell's shape to reach it — a pointer cell is
+        eight bytes and `field + 8` is not its business, or the entity's.
+        **The flags are tested, not compared**, and the reserved bytes
+        above them are left to the container: an entry's chain link lives
+        there and an insert repoints it without touching a value, so a
+        whole-word comparison would acquit a component once per re-index.
+        What the walk recorded about that word is one bit. Regression:
+        `a_cell_that_stopped_holding_an_entity_acquits`, which applies
+        the second store of `$a->child = 1` without its first, seen
+        reporting `acquitted 0` against the payload-only re-check.
+        438 → 439, gate green. Argued rather than tested: that a
+        repointed chain link still confirms — nothing reads those bits,
+        so only a future whole-word comparison could break it.
 
 - [ ] S13.4 Phase 3 re-reads an edge cell whose chunk was replaced
       done: a component whose array moved its entries between the walk and

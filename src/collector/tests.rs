@@ -519,6 +519,81 @@ mod the_three_way_judgement {
         arena.reset(|_| {});
     }
 
+    /// The Phase 3 filter reads the whole cell rather than its first
+    /// half: a sixteen-byte `Value` is published as two relaxed stores,
+    /// so the flags beside the payload have to still say "entity" at
+    /// re-check time, and a cell that stopped holding one acquits the
+    /// component it was recorded for.
+    ///
+    /// The half-landed write is applied here by hand — the second word
+    /// of `$a->child = 1` without its first — because the two stores are
+    /// relaxed and no scheduling reaches their reordering on demand.
+    /// What the test pins is therefore Phase 3's contract rather than
+    /// the interleaving that arrives at it: the recorded cell no longer
+    /// designates a counted child, and any difference acquits.
+    ///
+    /// That interleaving is what makes the contract worth having. A walk
+    /// that reads the new payload against the old flags records an edge
+    /// to whatever row the program's integer names, and the payload word
+    /// re-reads unchanged afterwards — the payload store being the one
+    /// that had landed — so eight bytes confirm a component holding an
+    /// entity nobody points at (`PLAN.md` S13.3).
+    #[test]
+    fn a_cell_that_stopped_holding_an_entity_acquits() {
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("CollectorHalfWritten")
+            .prop("child", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        unsafe {
+            tie(a, 16, b);
+            tie(b, 16, a);
+        }
+
+        stepped_epoch(); // mature
+
+        let mut e = Epoch::open();
+        checkpoint();
+        e.snapshot();
+        e.walk();
+        e.judge();
+        assert_eq!(e.stats.candidates, 1);
+        e.condemn();
+        checkpoint(); // ack
+
+        // The flags of `a`'s recorded cell stop saying "entity" while
+        // its payload word still reads `b`.
+        let meta_at = unsafe { (Object::prop_at(a, 16) as *const u8).add(8) } as *const AtomicU64;
+        let flags = unsafe { (*meta_at).load(Ordering::Relaxed) };
+        unsafe { (*meta_at).store(Value::int(1).into_words()[1], Ordering::Relaxed) };
+
+        e.recheck_and_post();
+        unsafe { (*meta_at).store(flags, Ordering::Relaxed) };
+        assert_eq!(
+            e.stats.acquitted, 1,
+            "the cell no longer holds the child the walk recorded"
+        );
+        assert_eq!(e.stats.confirmed, 0);
+        let _ = e.close();
+        checkpoint(); // flush
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            0,
+            "acquitted: nothing died"
+        );
+
+        let stats = stepped_epoch();
+        assert_eq!(stats.confirmed, 1, "restored and untouched: collected");
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2);
+        arena.reset(|_| {});
+    }
+
     /// A ring that runs through an array is garbage like any other, and
     /// the epoch could not see it until the array's entries could be read
     /// coherently: the edge *into* the array was counted and the edge
