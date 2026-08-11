@@ -116,8 +116,10 @@ Done when: a fresh array is strategy 2 and migrates to strategy 3 under a
 key it cannot hold, both configurations green, Miri silent.
 
 - [ ] S7.1 The mixed vector as storage strategy 2
-      done: a fresh integer-keyed array is strategy 2, traced, severed
-        and torn down through S4.1's drain, in both configurations
+      done: an integer-keyed array whose storage is a `Vector` is traced,
+        severed and torn down through S4.1's drain, in both
+        configurations, and every call that reaches the storage goes
+        through the tag
       tier: T2 · role: Sage → Critic
       Sage 2026-08-11: one version counter, in a `StorageHead` both
         representations begin with — `version`, `storage`, `nslots`,
@@ -135,9 +137,17 @@ key it cannot hold, both configurations green, Miri silent.
         off-line and swaps it inside one window; the tag is written once
         and 3 is final. Final.
 - [ ] S7.2 Factories stamp the tag and the element write dispatches on it
-      done: a strategy-2 write of a string key migrates through the tag,
-        not through a direct table call
+      done: `ll_array_new` stamps `Vector`, and a strategy-2 write of a
+        string key migrates through the tag rather than through a direct
+        table call
       tier: T2 · role: —
+      2026-08-11, from S7.1: the factory's stamp moved here from S7.1.
+        A fresh array cannot be strategy 2 before the element layer reads
+        the tag, because every element test then meets a representation
+        its call does not fit; so S7.1 builds the vector and the dispatch
+        and leaves the stamp on `Hash`, and this step flips it. The cost
+        is one step in which `Vector` has no producer, and it is paid
+        inside the stage rather than shipped.
 - [ ] S7.3 The 2 → 3 migration
       done: a test pins insertion order across the migration, and the
         append cursor carries over with it — `next_free` is the vector's
