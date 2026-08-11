@@ -754,10 +754,11 @@ mod the_out_of_line_layout {
 /// semantics an inline one has, so a second holder forces a copy and
 /// that copy reaches the size-choosing factory rather than the inline
 /// one. The arena's limit is a whole block payload rather than a size
-/// class. The other two categories answer otherwise and no test here
-/// asks them: past the same limit a long-lived string is refused
-/// outright and an immortal one keeps the inline layout in a run of
-/// its own (`string::placement`).
+/// class. The other two categories answer otherwise past that same
+/// limit, each for its own reason: a long-lived string is refused
+/// outright, nothing there being able to free a payload, and an
+/// immortal one keeps the inline layout in a run of its own
+/// (`string::placement`).
 mod the_layout_size_chooses {
     use super::*;
 
@@ -962,6 +963,124 @@ mod the_layout_size_chooses {
             crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, heap_slot);
             crate::promote::arena_reset_full(&raw mut arena);
         }
+    }
+
+    /// The long-lived heap has no payload machinery — `string_die`
+    /// reclaims the GC heap alone — so past one slot no layout is left
+    /// and the factory refuses. It refuses rather than leaving the size
+    /// to the allocator, which serves a slot that large instead of
+    /// refusing one, and the payload would then have no owner at all.
+    /// Both factories are asked, because a single answer for the two is
+    /// what `placement` exists for: they decided this separately once and
+    /// disagreed within a day.
+    ///
+    /// One slot's worth is served first through each factory, so a
+    /// `placement` that refused the category outright fails here rather
+    /// than passes. And the rule itself is read, not only its effect: a
+    /// null from a factory says a refusal happened, never where — with
+    /// debug assertions off, an out-of-line answer for this category
+    /// reaches `body_ensure`, gets null, and reports the same null, an
+    /// entity slot leaked behind it.
+    #[test]
+    fn a_long_lived_string_past_the_slot_limit_is_refused_by_both_factories() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let last_inline =
+            crate::memory::routing::slot_limit(MemoryCategory::LongLived) - size_of::<LLString>();
+
+        let served = unsafe {
+            ll_string_new(
+                &mut ctx,
+                MemoryCategory::LongLived,
+                &vec![b'l'; last_inline],
+            )
+        };
+        assert!(!served.is_null(), "one slot's worth is served");
+        assert_eq!(
+            unsafe { crate::refcount::header_flags(served as *const RcHeader) }
+                & crate::refcount::STRING_OUT_OF_LINE,
+            0,
+            "and it is inline, the only layout this category has"
+        );
+
+        assert!(
+            unsafe {
+                ll_string_new(
+                    &mut ctx,
+                    MemoryCategory::LongLived,
+                    &vec![b'l'; last_inline + 1],
+                )
+            }
+            .is_null(),
+            "one byte more has nowhere to go and is refused"
+        );
+        assert!(
+            unsafe {
+                crate::string::new_uninit(&mut ctx, MemoryCategory::LongLived, last_inline + 1)
+            }
+            .is_null(),
+            "and the assemble-in-place factory answers the same"
+        );
+
+        // The same slot's worth through that factory, because its only
+        // production caller is `flatten` and no test drives that with this
+        // category: a `new_uninit` carrying the blanket refusal
+        // `ll_string_new_dynamic` has, one function away, would otherwise
+        // pass everything.
+        let reserved =
+            unsafe { crate::string::new_uninit(&mut ctx, MemoryCategory::LongLived, last_inline) };
+        assert!(!reserved.is_null(), "and serves one slot's worth");
+        unsafe {
+            std::ptr::write_bytes(reserved.bytes(), b'u', last_inline);
+            let filled = crate::string::publish_uninit(reserved, MemoryCategory::LongLived);
+            assert_eq!(string_bytes(filled).len(), last_inline);
+        }
+
+        // The rule itself, which no null can report: refused here rather
+        // than answered out of line and refused one layer down.
+        assert!(matches!(
+            placement(
+                MemoryCategory::LongLived,
+                size_of::<LLString>() + last_inline + 1
+            ),
+            Placement::Refused
+        ));
+
+        arena.reset(|_| {});
+    }
+
+    /// The immortal region keeps the inline layout whole past the same
+    /// limit, in the block-aligned run `immortal_alloc` serves above one
+    /// block payload: an immortal string is never freed, so the payload
+    /// machinery would buy it nothing.
+    ///
+    /// **The byte comparison is not a bound on the allocation.** It reads
+    /// back the addresses `init_at` wrote, so an overrunning write and an
+    /// overrunning read agree; a run sized short of its content is Miri's
+    /// to catch, and that the run is taken at all rather than the bump
+    /// region is `immortal::tests`'. What is pinned here is the choice
+    /// `placement` makes and the content surviving it.
+    ///
+    /// What this test allocates it cannot give back: the region has no
+    /// free, by construction. One run per run of the suite.
+    #[test]
+    fn an_immortal_string_past_a_block_payload_keeps_the_inline_layout() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let big = vec![b'i'; crate::memory::block_pool::BLOCK_PAYLOAD];
+        let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::Immortal, &big) };
+        assert!(!s.is_null(), "an oversize immortal string is served");
+        assert_eq!(
+            unsafe { crate::refcount::header_flags(s as *const RcHeader) }
+                & crate::refcount::STRING_OUT_OF_LINE,
+            0,
+            "the run holds the inline layout rather than a payload pointer"
+        );
+        assert_eq!(unsafe { string_bytes(s) }, &big[..]);
+
+        arena.reset(|_| {});
     }
 }
 

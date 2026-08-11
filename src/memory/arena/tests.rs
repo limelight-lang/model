@@ -147,9 +147,9 @@ mod what_the_arena_refuses {
 }
 
 /// The destructor log is segmented, so a record may not be lost at a
-/// segment boundary — which is what the growth test walks past; the
-/// escape log is chained the same way and no test here reaches its
-/// boundary. The barrier's log grows from the thread reserve when the
+/// segment boundary — which is what the two growth tests walk past, one
+/// per log, because a chain is drained by a loop each log enters on its
+/// own. The barrier's log grows from the thread reserve when the
 /// pool refuses, because the barrier has no way to report a failure.
 /// The reset drains three more logs beside these two: the
 /// release-at-reset log, the weak log, and the large runs.
@@ -229,6 +229,60 @@ mod the_logs_the_reset_reads {
         let expected: std::collections::HashSet<_> = objs.iter().map(|p| *p as usize).collect();
         let got: std::collections::HashSet<_> = ran.iter().map(|p| *p as usize).collect();
         assert_eq!(got, expected, "same set of objects, order unspecified");
+    }
+
+    /// The same boundary on the escape log, which the destructor test
+    /// cannot stand in for: each log heads its own chain and is drained
+    /// by its own call, so a link dropped in one is invisible in the
+    /// other. A lost escapee is the worst of the five to lose — reset
+    /// decides promote-or-drop from the record, and a record that never
+    /// arrives leaves the entity's external holder pointing into reused
+    /// bump memory.
+    #[test]
+    fn escape_log_survives_segment_growth() {
+        let _g = crate::memory::block_pool::test_guard();
+        let mut arena = Arena::new();
+
+        // Three segments' worth, the count taken from the segment size
+        // rather than spelled out, and short of a round multiple so the
+        // last segment is partly filled.
+        let n = LOG_SEG_RECORDS * 2 + 137;
+        let escapees: Vec<*mut RcHeader> = (0..n)
+            .map(|_| {
+                let entity = arena.alloc(16) as *mut RcHeader;
+                unsafe { entity.write(RcHeader::new(MemoryCategory::RequestArena, 0)) };
+                arena.log_escapee(entity);
+                entity
+            })
+            .collect();
+
+        // Where the segments end, which no count of delivered records can
+        // say: a push that grew one record too late writes past its
+        // segment's array and reads the same value straight back, so all
+        // of them still arrive, exactly once each, over a clobbered
+        // neighbour.
+        let mut counts = Vec::new();
+        let mut seg = arena.escapees;
+        while !seg.is_null() {
+            unsafe {
+                counts.push((*seg).count);
+                seg = (*seg).next;
+            }
+        }
+
+        assert_eq!(
+            counts,
+            vec![n % LOG_SEG_RECORDS, LOG_SEG_RECORDS, LOG_SEG_RECORDS],
+            "newest segment first, and none holds more than it has room for"
+        );
+
+        let mut seen = Vec::new();
+        arena.reset_with(|_| {}, |e| seen.push(e));
+
+        assert_eq!(seen.len(), n, "every escapee record must reach the reset");
+        let expected: std::collections::HashSet<_> = escapees.iter().map(|p| *p as usize).collect();
+        let got: std::collections::HashSet<_> = seen.iter().map(|p| *p as usize).collect();
+        assert_eq!(got, expected, "same set of entities, order unspecified");
     }
 
     #[test]

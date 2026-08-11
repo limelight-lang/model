@@ -26,7 +26,8 @@ fn shape_of(parts: &[&str]) -> Box<TemplateShape> {
 /// Parts and values alternate, part first and part last, which is
 /// what lets an empty part be ordinary and needs no offset map. An
 /// integer and `true` convert as PHP converts them; `false` and null
-/// are empty text and no test here flattens either.
+/// measure at zero, which is what keeps them out of the refusal a
+/// float and an object take.
 mod what_flattening_produces {
     use super::*;
 
@@ -71,6 +72,47 @@ mod what_flattening_produces {
                 unsafe { ll_template_new(ctx, cls, &*shape, &held, MemoryCategory::RequestArena) };
             let out = unsafe { flatten(ctx, t, MemoryCategory::RequestArena) };
             assert_eq!(unsafe { crate::string::string_bytes(out) }, b"78");
+        });
+    }
+
+    /// `false` is empty text in PHP, and empty is a length the measuring
+    /// pass answers rather than a value it declines: a `false` dropped
+    /// from that arm falls to the refusal a float and an object take, and
+    /// the whole flattening reports null. The parts around the hole are
+    /// there to give the emptiness somewhere to show — they do not
+    /// separate a hole measured at zero from one skipped in both passes,
+    /// which no output can.
+    #[test]
+    fn false_is_empty_text_between_its_parts() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("InterpolatedString").template().build();
+        let shape = shape_of(&["<", ">"]);
+
+        with_ctx(|ctx| {
+            let held = [Value::bool(false)];
+            let t =
+                unsafe { ll_template_new(ctx, cls, &*shape, &held, MemoryCategory::RequestArena) };
+            let out = unsafe { flatten(ctx, t, MemoryCategory::RequestArena) };
+            assert!(!out.is_null(), "`false` is rendered, not refused");
+            assert_eq!(unsafe { crate::string::string_bytes(out) }, b"<>");
+        });
+    }
+
+    /// Null the same, and separately: the two share one arm today, and a
+    /// single test over both would go on passing if one of them left it.
+    #[test]
+    fn null_is_empty_text_between_its_parts() {
+        let _g = crate::memory::block_pool::test_guard();
+        let cls = ClassBuilder::new("InterpolatedString").template().build();
+        let shape = shape_of(&["<", ">"]);
+
+        with_ctx(|ctx| {
+            let held = [Value::null()];
+            let t =
+                unsafe { ll_template_new(ctx, cls, &*shape, &held, MemoryCategory::RequestArena) };
+            let out = unsafe { flatten(ctx, t, MemoryCategory::RequestArena) };
+            assert!(!out.is_null(), "null is rendered, not refused");
+            assert_eq!(unsafe { crate::string::string_bytes(out) }, b"<>");
         });
     }
 
