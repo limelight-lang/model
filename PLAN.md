@@ -239,7 +239,7 @@ arrangement.
       note: `--no-default-features` reports three unresolved doc links, all
         to `crate::epoch`, all older than this stage — the module is gated
         whole. Left as they are: a plain span would work in neither build.
-- [ ] S9.4 Tests leave the module bodies and arrive grouped
+- [~] S9.4 Tests leave the module bodies and arrive grouped
       done: every `#[cfg(test)] mod tests` in `src/` is its own file,
         each grouped into named submodules that say what is being pinned
         rather than which function is called; the suite's count is
@@ -255,7 +255,25 @@ arrangement.
         class of N filler properties with one counted slot at +16, three
         of them with the same 600 / 4 200 pair chosen to straddle
         `BLOCK_PAYLOAD`. There is no `#[cfg(test)]` support module to put
-        it in, which is this step's business.
+        it in, which is this step's business. The fixture is extracted as
+        those four files move, not before: extracting first would touch
+        them twice, which the rule above forbids.
+      progress: **the layout, verified**: `src/foo.rs` keeps
+        `#[cfg(test)] mod tests;` and the body moves to
+        `src/foo/tests.rs`; `src/hash/mod.rs`'s goes to
+        `src/hash/tests.rs`. Edition 2024, so no file becomes `mod.rs`
+        and no `#[path]` is needed. Seventeen files moved and grouped in
+        `50abb8d` and `0bbddfc`; twenty-two remain, and the scripts are
+        in the session scratchpad — `movetests.py` extracts one module's
+        body, `group.py` rebuilds a moved file from a JSON grouping.
+      progress: **two hazards, neither visible in a diff that reads as a
+        move.** A relative path inside a test body counts modules, so a
+        `super::super::X` reached one item before the grouping and
+        another after it — make such paths absolute. And a helper
+        assigned to a group goes inside it, out of reach of the other
+        groups: helpers belong at file scope. Both were caught by the
+        compiler this time; the step's acceptance test is the suite's
+        count precisely because neither has to be.
 
 
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
