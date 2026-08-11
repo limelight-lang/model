@@ -213,7 +213,7 @@ it claims to guard, and the suite's count is recorded before and after.
         is arithmetic and cannot be exhibited:** a copy whose work list
         refuses refuses the copy, so unlike the teardown there is no
         recursive arm to force.
-- [ ] S12.6 The four arms the suite never enters
+- [x] S12.6 The four arms the suite never enters
       done: a test each for the escape log crossing a segment boundary,
         `string::placement` refusing a long-lived string past the slot
         limit and keeping an immortal one inline, `object_constructed`
@@ -224,6 +224,30 @@ it claims to guard, and the suite's count is recorded before and after.
         Critic is here because the step writes six tests against
         behaviour nobody has watched, and a test written to pass is
         exactly what this stage exists to remove.
+      Critic 2026-08-11: five findings, each verified against the code
+        before it was acted on, and all accepted. The refusal test held
+        three conditions at once — spent block, drained reserve, refusing
+        pool — and any of the three would have produced the same `false`,
+        so it now lifts only the pool and asserts the same call succeeds.
+        The escape log's record count cannot see a boundary crossed one
+        record late, because the stray write is read straight back, so
+        the chain's segment counts are read before the drain. And three
+        docs claimed what no assertion reached: a byte read-back bounding
+        the allocation holding those bytes, a hole "measured at zero and
+        not skipped", and a refusal located at `placement` rather than
+        merely happening — the first two cut, the third given the direct
+        assertion it needed.
+      handoff: six tests, each seen failing on its own assertion under a
+        targeted probe, every probe removed and the removal checked. The
+        two repairs the Critic asked for were probed in turn: with
+        `track_destructor` refusing on `remaining()`, and with `log_push`
+        growing one record late, each repaired test is the only one of
+        the 425 that fails. `placement`, `Placement` and the arena's
+        `LogSegment` chain are all private and read directly — a
+        `tests.rs` beside a module is its child, which is what makes the
+        rule readable rather than only its effect. Commit fedf930, with the
+        two array-test defects it uncovered in 5dbae30; 419 → 425, and
+        +6 in every configuration.
 
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
 
