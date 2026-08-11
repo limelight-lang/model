@@ -7,56 +7,25 @@
 //! then. So `hash-folding` selects a pair.
 //!
 //! - **Off, the default.** The seed is drawn from the operating system once
-//!   per process. The compiler emits no hash constants and the runtime
-//!   computes every hash itself. An attacker holding the artifact learns
-//!   nothing about which keys share a bucket.
+//!   per process, and the compiler emits no hash constants.
 //! - **On.** The seed is fixed at build time from `LL_HASH_SEED`, the same
 //!   value is given to the compiler, and it folds the hash of every literal
-//!   key. The seed is then inside the artifact, and anyone holding the
-//!   artifact can compute a set of colliding keys in advance.
+//!   key. The seed then travels inside the artifact.
 //!
-//! What the option buys is small and unmeasured. A literal's hash is
-//! already computed once per process at intern time (`crate::intern`), so
-//! folding does not remove a hash from the access — it replaces reading one
-//! field of a permanently hot immortal entity with an immediate, and
-//! generated code needs that entity's pointer regardless, for the identity
-//! compare. On the runtime's own side the difference is a compile-time
-//! constant against a static read behind [`std::sync::LazyLock`]'s
-//! initialization check. Neither has been measured or read in the emitted
-//! IR.
-//!
-//! **Neither arm defends against hash flooding.** A per-process seed raises
-//! the cost of the attack from reading a constant out of a binary to
-//! mounting a timing attack, and no further: rapidhash claims no resistance
-//! to key recovery from observed collisions. Bounding the worst case is the
-//! hash table's job — a probe-length counter with an escape hatch
-//! (`rfc/model/strings.md`, "Seeding") — and that table is not designed yet.
-//!
-//! **"Per process" is per address space, and a pre-forking server has one.**
-//! A seed established before `fork` is inherited by every worker, so in the
-//! deployment shape this language is aimed at — a master process that forks
-//! workers, as php-fpm does — the guarantee degrades from per-process to
-//! per-deployment: one recovered seed serves every worker for the life of
-//! the master. Drawing on first use rather than at startup does not fix it,
-//! since the master hashes at least the interned names before it forks.
-//! Fixing it means redrawing after `fork` and rehashing everything already
-//! cached, which no caller can do today; the honest position is that this
-//! is a limit of the arm, not a defect in it.
-//!
-//! ## The stamp
-//!
-//! Folded hashes live inside the compiled program while the function that
-//! has to agree with them lives in the runtime. Nothing in the linker
-//! checks that the two were built from the same hash: a program folded
+//! **The stamp is what makes a mismatch loud.** Folded hashes live inside
+//! the compiled program while the function that has to agree with them
+//! lives here, and nothing in the linker compares the two: a program folded
 //! under one seed, run against a runtime holding another, produces lookups
-//! that miss — no crash, no failing test, no log line. [`STAMP`] is what
-//! makes that loud. It identifies the hash a build computes, generated code
-//! carries the value it folded under, and [`ll_hash_stamp_matches`]
-//! compares them at startup.
+//! that miss — no crash, no failing test, no log line. [`STAMP`] identifies
+//! the hash a build computes, generated code carries the value it folded
+//! under, and [`ll_hash_stamp_matches`] compares them at startup. The
+//! runtime half is here; emitting the program's half is owed by the
+//! compiler, which does not exist yet, so the check is available and
+//! nothing calls it.
 //!
-//! The runtime half is here; emitting the program's half is owed by the
-//! compiler, which does not exist yet. Until it does, the check is
-//! available and nothing calls it.
+//! What the option buys, what it costs, why neither arm defends against
+//! hash flooding, and what a pre-forking server does to "per process":
+//! `dev/DECISIONS.md`, 2026-08-04.
 
 use super::rapidhash;
 

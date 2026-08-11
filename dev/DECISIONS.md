@@ -1456,6 +1456,18 @@ compiler and does not exist yet.
 cargo, so without it a rebuild after changing the seed silently reuses the
 artifact built under the old one.
 
+**"Per process" is per address space, and a pre-forking server has one**
+(added 2026-08-11, from the module doc this entry now carries). A seed
+established before `fork` is inherited by every worker, so in the
+deployment shape this language is aimed at — a master that forks workers,
+as php-fpm does — the guarantee degrades from per-process to
+per-deployment: one recovered seed serves every worker for the life of the
+master. Drawing on first use rather than at startup does not fix it, since
+the master hashes at least the interned names before it forks. Fixing it
+means redrawing after `fork` and rehashing everything already cached,
+which no caller can do today. This is a limit of the arm rather than a
+defect in it.
+
 **Rejected: making a default seed fail the whole suite.** The literal
 reading of the plan's "a test that fails when a seed is left at its
 default" would turn the documented gate — plain `cargo test --lib`, no

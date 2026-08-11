@@ -500,36 +500,21 @@ pub(crate) unsafe fn new_with_hash(
 /// drop_ref(owner_cat, old);                         // old loses this holder
 /// ```
 ///
-/// Skipping the release leaves the copy at two for one holder: it never
-/// reaches zero, and the sharing test then reads `2 > 1` on every later
-/// write, so the value separates forever and COW is off for the rest of
-/// its life. Skipping the `store_ptr` instead, and writing the slot raw
-/// to "transfer" the reference, loses the escape registration that store
-/// performs.
+/// Every line of it is load-bearing. Skipping the release leaves the
+/// copy at two for one holder, so the sharing test reads `2 > 1` on every
+/// later write and COW is off for the rest of that value's life; writing
+/// the slot raw instead of through `store_ptr` loses the escape
+/// registration; and the release precedes the drop because `drop_ref`
+/// runs `__destruct` bodies that can displace the copy from the slot just
+/// written (`dev/DECISIONS.md`, 2026-08-08 — the order is stated here
+/// because `array::element::set` needs it, not because a string does).
+/// **The original is not released here**: that is the holder's `drop_ref`
+/// above, a different obligation from the copy's creation reference.
 ///
-/// **The release precedes the drop, and the order is load-bearing for
-/// kinds a string is not.** `drop_ref` runs `__destruct` bodies, and one
-/// of them can displace the copy from the slot just written; with the
-/// creation reference still outstanding, that displacement takes the
-/// copy to one rather than to zero, and the release that follows returns
-/// a death verdict the store site discards. A displaced string runs no
-/// user code, so either order measures the same here — which is why the
-/// order is stated rather than left to the example
-/// (`array::element::set` is the site that needs it).
-///
-/// **The original is not released here.** That is the holder's
-/// `drop_ref` above: the copy's creation reference and the original's
-/// displaced reference are two different obligations, and only the first
-/// belongs to this function.
-///
-/// The copy's hash is left unset. Carrying the original's would be
-/// correct for the instant the copy exists unwritten, and wrong from the
-/// first byte of the write that separation exists to serve; and since a
-/// separation copies whatever the original holds, one missed
-/// invalidation would propagate into every later copy of that value and
-/// never be recomputed ([`LLString::hash`] short-circuits on any non-zero
-/// field). Recomputing costs one pass over bytes the caller is about to
-/// walk anyway.
+/// The copy's hash is left unset, because carrying the original's would
+/// be wrong from the first byte of the write separation exists to serve,
+/// and one missed invalidation propagates into every later copy of that
+/// value ([`LLString::hash`] short-circuits on any non-zero field).
 ///
 /// **Null on allocation failure**, propagated from [`new_with_hash`]: the
 /// caller must raise rather than store it, since NULL in a non-nullable
