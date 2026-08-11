@@ -1,19 +1,25 @@
-//! A `loom` model of [`Table`](super::table::Table)'s version bracket, and
-//! of nothing else: a counter, two data words, one mover and one reader.
+//! A `loom` model of [`StorageHead`](super::head::StorageHead)'s version
+//! bracket, and of nothing else: a counter, two data words, one mover and
+//! one reader.
 //!
-//! It models a **copy of the protocol** rather than the table's code. The
-//! table cannot run under `--cfg loom` — loom replaces every atomic, cell
-//! and thread with its own types, while the table allocates, holds raw
-//! pointers and reaches thread-locals — so what is checked here is the
-//! ordering argument, on the assumption that the code implements it. Keep
-//! the two in step by hand: the mover below is `begin_entry_move` and
-//! `end_entry_move`, the reader is `Table::coherent_entries`.
+//! It models a **copy of the protocol** rather than the crate's code. The
+//! head cannot run under `--cfg loom` — loom replaces every atomic, cell
+//! and thread with its own types, while the code around the head
+//! allocates, holds raw pointers and reaches thread-locals — so what is
+//! checked here is the ordering argument, on the assumption that the code
+//! implements it. Keep the two in step by hand: the mover below is
+//! `StorageHead::begin_move` and `end_move`, the reader is
+//! `StorageHead::coherent`.
 //!
-//! The two data words stand for the three a walker reads together (the
-//! storage chunk, the slot count and the entry count). They are written by
-//! the mover in one window, so a reading that yields different values for
-//! them is a reading of two different table states — the incoherent edge
-//! that no later phase repairs.
+//! The two data words stand for the four a walker reads together — the
+//! storage chunk, the slot count, the element count and the strategy tag.
+//! Their number does not enter the argument: they are written by the
+//! mover in one window, so a reading that yields values from two windows
+//! is a reading of two different states, the incoherent edge that no
+//! later phase repairs. The movers the window covers are growth,
+//! compaction and the migration between representations, and the last of
+//! those is why the counter sits above the representations rather than
+//! inside one.
 //!
 //! # What it demonstrated
 //!

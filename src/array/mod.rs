@@ -9,6 +9,7 @@
 pub mod element;
 pub mod entity;
 pub mod entry;
+pub(crate) mod head;
 pub mod table;
 
 // A model of the table's version bracket, checked by `loom` rather than by

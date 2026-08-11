@@ -39,6 +39,21 @@ pub struct LLArray {
     pub table: Table,
 }
 
+/// The words a concurrent walker may read, addressed without going
+/// through the representation.
+///
+/// A `&Table` would retag the whole struct, and the mutator writes the
+/// table's tail — `mask`, `cap`, `live` — with ordinary stores, so the
+/// walker takes the head's address and nothing else
+/// (`crate::array::head`).
+///
+/// # Safety
+/// `a` addresses a live array.
+#[inline]
+pub(crate) unsafe fn storage_head(a: *mut LLArray) -> *const crate::array::head::StorageHead {
+    unsafe { &raw const (*a).table.head }
+}
+
 /// Allocate an empty array in `category`.
 ///
 /// **Null when the allocation fails.** An array can be built mid-request

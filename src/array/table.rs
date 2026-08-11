@@ -23,9 +23,8 @@
 //! obligation for arrays). An implementer reaching for a pointer here
 //! would break promotion silently.
 
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering, fence};
-
 use crate::array::entry::{Entry, MAX_ENTRIES, NONE};
+use crate::array::head::{StorageHead, StorageTag};
 use crate::memory::block_pool::BLOCK_PAYLOAD;
 use crate::refcount::{MemoryCategory, RcHeader};
 use crate::string::{LLString, string_bytes};
@@ -121,13 +120,6 @@ fn pow2ge(n: usize) -> usize {
     p
 }
 
-/// How many times a walker re-reads a table whose entries keep moving
-/// before it gives up on this epoch. Small on purpose: growth and
-/// compaction are rare, so a second disagreement means the walker is
-/// unlucky rather than starved, and giving up leaks one epoch's worth
-/// rather than freeing anything early.
-const COHERENT_READ_ATTEMPTS: usize = 4;
-
 /// Byte offset of the entry array inside a storage block of `nslots`
 /// index slots. The entries are 8-aligned, and `nslots` is a power of two
 /// of at least 2, so the slot array is already a multiple of 8.
@@ -152,12 +144,13 @@ fn storage_bytes(nslots: usize, cap: usize) -> Option<usize> {
 /// entity kind, which is what leaves the structure usable by a second
 /// one.
 pub struct Table {
-    /// Published atomically because the concurrent collector reads it
-    /// while this thread writes it: a plain write against a relaxed load
-    /// is a data race, which is undefined behaviour rather than the torn
-    /// value the epoch is built to absorb.
-    storage: AtomicPtr<u8>,
-    /// Bytes really granted for `storage`, which is not always what was
+    /// Every word a concurrent walker may read, and the bracket that
+    /// makes reading them coherent (`crate::array::head`). **First
+    /// field, and that placement is load-bearing**: the head sits at the
+    /// array's storage field whichever representation is present, which
+    /// is what lets one counter bracket the migration between them.
+    pub(crate) head: StorageHead,
+    /// Bytes really granted for the storage, which is not always what was
     /// asked for: a reused buffer-arena chunk may be larger, and the free
     /// that returns it carries the size, since a chunk holds no metadata
     /// of its own. Freeing with the requested size would lose the
@@ -165,16 +158,8 @@ pub struct Table {
     /// never free — the request arena and the immortal region — this holds
     /// the requested size and nothing reads it.
     storage_capacity: usize,
-    /// Atomic for the same reason as `storage`; the entries begin
-    /// `nslots * 4` bytes into the chunk, so a walker needs both.
-    nslots: AtomicUsize,
     mask: usize,
     cap: usize,
-    /// Entries written so far, holes included. Iteration and the arena
-    /// reset's tracer both scan `0..used`. Atomic, and **published after
-    /// the entry it counts is written**: a reader that saw the count
-    /// first would read an entry nobody had written yet.
-    used: AtomicUsize,
     /// Live entries.
     live: usize,
     holes: usize,
@@ -192,23 +177,17 @@ pub struct Table {
     /// `PLAN.md` S2.4, Edmond's to overturn — the pre-8.3 answer is one
     /// comparison away).
     next_free: i64,
-    /// Bumped twice by every operation that moves entries — growth and
-    /// compaction — odd while the move is in progress. A concurrent
-    /// walker reads it, then `storage`, `nslots` and `used`, then reads it
-    /// again, and starts over unless both readings are the same even
-    /// number. That is the whole bound on walking a table that a mutator
-    /// is rearranging: a stale-but-coherent view of the entries is a
-    /// missed edge, which the epoch's later phases repair, while an
-    /// incoherent one is an edge that never existed, which nothing does.
-    version: AtomicUsize,
-    /// The table's one-bit state, [`TABLE_STRONG`] and
-    /// [`TABLE_RESEEDED`]. One byte rather than a `bool` apiece because
-    /// the strategy tag joins them: `rfc/model/arrays.md` gives an array
-    /// three storage strategies and two bits to name the current one, and
-    /// the entity's flags word has no free bit to put them in
-    /// (`PLAN.md`, "The strategy tag and the `arrays.md` hole").
+    /// The table's one-bit state, [`TABLE_STRONG`], [`TABLE_RESEEDED`]
+    /// and [`TABLE_APPEND_EXHAUSTED`]. One byte rather than a `bool`
+    /// apiece, and written plainly: the concurrent walker never reads it,
+    /// which is why the storage-strategy tag cannot live here and sits in
+    /// the head instead (`PLAN.md` S7.1, Sage 2026-08-11).
     flags: u8,
 }
+
+// The head is the array's storage field, so it has to start where the
+// representation starts.
+const _: () = assert!(std::mem::offset_of!(Table, head) == 0);
 
 /// A string key's slot comes from a keyed hash over its bytes rather
 /// than from the cached hash at +16. Set once and one way, by the flood
@@ -226,8 +205,10 @@ const TABLE_RESEEDED: u8 = 1 << 1;
 const TABLE_FLOOD_STATE: u8 = TABLE_STRONG | TABLE_RESEEDED;
 
 /// `i64::MAX` has been an integer key, so there is no next append key:
-/// [`Table::append_key`] refuses rather than wrapping. Bit 4, leaving
-/// bits 2–3 for the storage-strategy tag the plan reserves.
+/// [`Table::append_key`] refuses rather than wrapping. Bit 4, and bits
+/// 2–3 beside it are free again: they were held for the storage-strategy
+/// tag, which the walker reads atomically and so cannot share a byte the
+/// flood ladder writes plainly.
 const TABLE_APPEND_EXHAUSTED: u8 = 1 << 4;
 
 /// [`Table::next_free`]'s "no integer key yet": the first append is 0.
@@ -249,13 +230,10 @@ impl Table {
     /// 2026-08-07).
     pub const fn empty() -> Self {
         Table {
-            storage: AtomicPtr::new(std::ptr::null_mut()),
+            head: StorageHead::empty(StorageTag::Hash),
             storage_capacity: 0,
-            nslots: AtomicUsize::new(0),
             mask: 0,
             cap: 0,
-            used: AtomicUsize::new(0),
-            version: AtomicUsize::new(0),
             live: 0,
             holes: 0,
             salt: 0,
@@ -374,7 +352,7 @@ impl Table {
     /// iteration scan to.
     #[inline]
     pub fn used(&self) -> usize {
-        self.used.load(Ordering::Relaxed)
+        self.head.used()
     }
 
     /// Publish the entry count. **Called after the entry it counts is
@@ -382,136 +360,83 @@ impl Table {
     /// read an entry nobody had written.
     #[inline]
     fn set_used(&self, n: usize) {
-        self.used.store(n, Ordering::Release);
+        self.head.set_used(n);
     }
 
     /// The storage chunk, or null before the first insert.
     #[inline]
     fn storage(&self) -> *mut u8 {
-        self.storage.load(Ordering::Relaxed)
+        self.head.storage()
     }
 
     /// Publish the storage chunk. Release, so a walker that acquires this
     /// pointer sees the entries already copied into it.
     #[inline]
     fn set_storage(&self, p: *mut u8) {
-        self.storage.store(p, Ordering::Release);
+        self.head.set_storage(p);
     }
 
-    /// Open a window in which entries move. The version goes odd, and a
-    /// walker that sees an odd reading — or two different readings around
-    /// its own — starts over (`PLAN.md`, item 12).
-    ///
-    /// The odd value is stored plainly and the fence comes **after** it,
-    /// because what must stay on this side of the fence is everything the
-    /// move writes next. A release store orders the opposite side (what
-    /// precedes it) and leaves the moves free to become visible before the
-    /// odd version, which is the reading a walker would then accept as
-    /// coherent. This is `ck_sequence_write_begin`'s shape and the reason
-    /// for it (`dev/RESEARCH.md`, Concurrency Kit).
+    /// Open a window in which entries move — growth and compaction, the
+    /// two operations here that move them. The bracket itself, and why
+    /// its two ends are ordered differently, is
+    /// [`StorageHead::begin_move`].
     #[inline]
     fn begin_entry_move(&self) {
-        let v = self.version.load(Ordering::Relaxed);
-        self.version.store(v + 1, Ordering::Relaxed);
-        fence(Ordering::Release);
+        self.head.begin_move();
     }
 
-    /// Close it. Even again, and everything the move wrote is published
-    /// before the walker can accept the reading.
-    ///
-    /// A release store is the right instrument here and the asymmetry with
-    /// [`begin_entry_move`](Self::begin_entry_move) is deliberate: the
-    /// writes to order are the ones that precede this call.
+    /// Close it.
     #[inline]
     fn end_entry_move(&self) {
-        let v = self.version.load(Ordering::Relaxed);
-        self.version.store(v + 1, Ordering::Release);
+        self.head.end_move();
     }
 
-    /// The dense entry array and how many entries it holds, read
-    /// coherently, or `None` when the mutator kept moving them.
+    /// The dense entry array and how many entries it holds, taken from a
+    /// reading [`StorageHead::coherent`] has already validated.
     ///
-    /// The three words a walker needs — the chunk, the offset the entries
-    /// start at, and how many there are — are written independently, so a
-    /// walker that read them one by one could stride a fresh count over a
-    /// stale chunk. Growth would be caught by comparing the chunk address
-    /// before and after; compaction would not, because it slides live
-    /// entries down *inside the same chunk*. Hence the version: odd while
-    /// entries move, and changed across any move that completed.
-    ///
-    /// **`None` is safe and leaks rather than frees early.** An entity the
-    /// walk does not enumerate becomes a root source — its out-edges land
-    /// in `RC` and never in `IN` — so its children are computed roots and
-    /// survive one more epoch (`rfc/model/gc/retained-block-walk.md`, the
-    /// derived-roots corollary). That is what makes a bounded retry the
-    /// right answer rather than an unbounded one.
+    /// Where the head answers what every representation has in common,
+    /// this turns that answer into the hash's own stride: the entries
+    /// begin `nslots * 4` bytes into the chunk. A view whose tag is not
+    /// [`StorageTag::Hash`] is not this table's, and saying so is the
+    /// caller's error rather than a state to handle.
     ///
     /// # Safety
-    /// The table is live. Under a concurrent mutator every word this reads
-    /// is atomic; nothing else in the table may be read here.
-    pub(crate) unsafe fn coherent_entries(t: *const Table) -> Option<(*mut Entry, usize)> {
-        // Raw pointers per field, never a `&Table`: a shared reference
-        // would retag the whole struct, and the mutator is writing the
-        // words beside these — `mask`, `cap`, `live` — with ordinary
-        // stores. Only the four atomics below may be read here.
-        let version = unsafe { &(*t).version };
-        let storage_word = unsafe { &(*t).storage };
-        let nslots_word = unsafe { &(*t).nslots };
-        let used_word = unsafe { &(*t).used };
-        for _ in 0..COHERENT_READ_ATTEMPTS {
-            let before = version.load(Ordering::Acquire);
-            if before % 2 != 0 {
-                continue;
-            }
-
-            let storage = storage_word.load(Ordering::Relaxed);
-            let nslots = nslots_word.load(Ordering::Relaxed);
-            let used = used_word.load(Ordering::Relaxed);
-            // The fence, not the load, is what keeps the three readings
-            // above from being taken after the closing check: an acquire
-            // *load* orders what follows it, so the words it is meant to
-            // validate could be read past it and the check would validate
-            // nothing. `ck_sequence_read_retry` fences and then loads
-            // plainly, for this reason (`dev/RESEARCH.md`).
-            fence(Ordering::Acquire);
-            if version.load(Ordering::Relaxed) != before {
-                continue;
-            }
-
-            if storage.is_null() {
-                return Some((std::ptr::null_mut(), 0));
-            }
-
-            return Some((
-                unsafe { storage.add(entries_offset(nslots)) } as *mut Entry,
-                used,
-            ));
+    /// `view` was read from this table's head.
+    pub(crate) unsafe fn entries_of(
+        view: &crate::array::head::CoherentView,
+    ) -> (*mut Entry, usize) {
+        debug_assert_eq!(view.tag, StorageTag::Hash);
+        if view.storage.is_null() {
+            return (std::ptr::null_mut(), 0);
         }
 
-        None
+        (
+            unsafe { view.storage.add(entries_offset(view.nslots)) } as *mut Entry,
+            view.used,
+        )
     }
 
     /// The version a walker validates its reading against.
     ///
-    /// Tests only: [`coherent_entries`](Self::coherent_entries) reads the
-    /// counter itself, from a raw pointer it must not turn into a
-    /// reference, so this accessor exists for the tests that assert the
-    /// counter moves — and outside them it is a dead read that warns.
+    /// Tests only: [`StorageHead::coherent`] reads the counter itself,
+    /// from a raw pointer it must not turn into a reference, so this
+    /// accessor exists for the tests that assert the counter moves — and
+    /// outside them it is a dead read that warns.
     #[cfg(test)]
     #[inline]
     pub(crate) fn version(&self) -> usize {
-        self.version.load(Ordering::Acquire)
+        self.head.version()
     }
 
     /// Index slots before the dense entry array.
     #[inline]
     fn nslots(&self) -> usize {
-        self.nslots.load(Ordering::Relaxed)
+        self.head.nslots()
     }
 
     #[inline]
     fn set_nslots(&self, n: usize) {
-        self.nslots.store(n, Ordering::Release);
+        self.head.set_nslots(n);
     }
 
     /// The storage and the bytes granted for it, or a null pointer when

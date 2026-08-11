@@ -228,13 +228,14 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
         // nothing early: an entity the walk does not enumerate becomes a
         // root source.
         ARRAY => {
-            let table =
-                unsafe { &raw const (*(entity as *mut crate::array::entity::LLArray)).table };
-            let Some((entries, used)) =
-                (unsafe { crate::array::table::Table::coherent_entries(table) })
-            else {
+            let head = unsafe {
+                crate::array::entity::storage_head(entity as *mut crate::array::entity::LLArray)
+            };
+            let Some(view) = (unsafe { crate::array::head::StorageHead::coherent(head) }) else {
                 return;
             };
+
+            let (entries, used) = unsafe { crate::array::table::Table::entries_of(&view) };
 
             for i in 0..used {
                 let at = unsafe { entries.add(i) as *const u8 };

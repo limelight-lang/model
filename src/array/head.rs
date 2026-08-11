@@ -1,0 +1,266 @@
+//! The words a concurrent walker is allowed to read, and the bracket
+//! that makes reading them coherent.
+//!
+//! An array has more than one storage representation
+//! (`rfc/model/arrays.md`), and the migration from one to the next
+//! replaces the representation under a walker that is mid-stride. A
+//! version counter kept inside a representation could not bracket that:
+//! it dies with the bytes it protects. So the counter, the chunk, the
+//! two counts and the tag saying which representation is present live
+//! **here**, in a head that every representation begins with, and the
+//! migration is one more mover inside the same window
+//! (`PLAN.md` S7.1, Sage 2026-08-11).
+//!
+//! Two rules hold this together, and neither is negotiable:
+//!
+//! - **Every field is atomic**, because a walker reads all of them and
+//!   each byte it reads must be written by one store of the same width.
+//!   A field only the mutator touches belongs in the representation's
+//!   own tail, never in this struct.
+//! - **The tag is loaded inside the bracket and branched on only after
+//!   it validates.** The read set does not depend on the tag, so a
+//!   stale tag can never select a stride: it is discarded with
+//!   everything else read beside it.
+
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
+
+/// How many times a walker re-reads a head whose elements keep moving
+/// before it gives up on this epoch. Small on purpose: growth,
+/// compaction and migration are all rare, so a second disagreement means
+/// the walker is unlucky rather than starved, and giving up leaks one
+/// epoch's worth rather than freeing anything early.
+const COHERENT_READ_ATTEMPTS: usize = 4;
+
+/// Which storage representation a head is the prefix of, numbered as
+/// `rfc/model/arrays.md` numbers the strategies.
+///
+/// `Typed` has no producer in this crate: the compiler that proves
+/// monomorphism does not exist yet. The number is reserved rather than
+/// reused, so the tag and the design agree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub(crate) enum StorageTag {
+    Typed = 1,
+    Vector = 2,
+    Hash = 3,
+}
+
+/// A reading of the head that a walker may act on: taken between two
+/// equal even versions, so the four words describe one moment.
+pub(crate) struct CoherentView {
+    pub(crate) tag: StorageTag,
+    /// Null when the representation has never allocated.
+    pub(crate) storage: *mut u8,
+    /// Index slots ahead of the elements. Zero in every representation
+    /// that has no index.
+    pub(crate) nslots: usize,
+    /// Elements the walker may stride, holes included where the
+    /// representation has them.
+    pub(crate) used: usize,
+}
+
+/// The head itself. Laid out `repr(C)` and placed first in every
+/// representation, so its address is the array's storage field's
+/// address whatever the tag says.
+#[repr(C)]
+pub(crate) struct StorageHead {
+    /// Bumped twice by every operation that moves elements — growth,
+    /// compaction, and the migration between representations — odd while
+    /// the move is in progress. A walker reads it, then the four words
+    /// below, then reads it again, and starts over unless both readings
+    /// are the same even number. A stale-but-coherent view is a missed
+    /// edge, which the epoch's later phases repair; an incoherent one is
+    /// an edge that never existed, which nothing repairs.
+    version: AtomicUsize,
+    /// The one allocation the representation keeps its elements in.
+    storage: AtomicPtr<u8>,
+    /// Where the elements begin, expressed as the number of `u32` index
+    /// slots ahead of them.
+    nslots: AtomicUsize,
+    /// Elements written so far. Published **after** the element it
+    /// counts, so a reader that saw the count first would read an
+    /// element nobody had written yet.
+    used: AtomicUsize,
+    /// Written once at construction, and once more by a migration, both
+    /// times inside the window. A representation that cannot be migrated
+    /// away from never writes it again.
+    tag: AtomicU8,
+}
+
+impl StorageHead {
+    /// A head over nothing: the first insert allocates.
+    pub(crate) const fn empty(tag: StorageTag) -> Self {
+        StorageHead {
+            version: AtomicUsize::new(0),
+            storage: AtomicPtr::new(std::ptr::null_mut()),
+            nslots: AtomicUsize::new(0),
+            used: AtomicUsize::new(0),
+            tag: AtomicU8::new(tag as u8),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn storage(&self) -> *mut u8 {
+        self.storage.load(Ordering::Relaxed)
+    }
+
+    /// Release, so a walker that sees the fresh pointer sees the
+    /// elements already written into it.
+    #[inline]
+    pub(crate) fn set_storage(&self, p: *mut u8) {
+        self.storage.store(p, Ordering::Release);
+    }
+
+    #[inline]
+    pub(crate) fn nslots(&self) -> usize {
+        self.nslots.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn set_nslots(&self, n: usize) {
+        self.nslots.store(n, Ordering::Release);
+    }
+
+    #[inline]
+    pub(crate) fn used(&self) -> usize {
+        self.used.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn set_used(&self, n: usize) {
+        self.used.store(n, Ordering::Release);
+    }
+
+    /// Open a window in which elements move. The version goes odd, and a
+    /// walker that sees an odd reading — or two different readings around
+    /// its own — starts over.
+    ///
+    /// The odd value is stored plainly and the fence comes **after** it,
+    /// because what must stay on this side of the fence is everything the
+    /// move writes next. A release store orders the opposite side, what
+    /// precedes it, and leaves the moves free to become visible before
+    /// the odd version — the reading a walker would then accept as
+    /// coherent. This is `ck_sequence_write_begin`'s shape and the reason
+    /// for it (`dev/RESEARCH.md`, Concurrency Kit).
+    #[inline]
+    pub(crate) fn begin_move(&self) {
+        let v = self.version.load(Ordering::Relaxed);
+        self.version.store(v + 1, Ordering::Relaxed);
+        fence(Ordering::Release);
+    }
+
+    /// Close it. Even again, and everything the move wrote is published
+    /// before a walker can accept the reading.
+    ///
+    /// A release store is the right instrument here, and the asymmetry
+    /// with [`begin_move`](Self::begin_move) is deliberate: the writes to
+    /// order are the ones that precede this call.
+    #[inline]
+    pub(crate) fn end_move(&self) {
+        let v = self.version.load(Ordering::Relaxed);
+        self.version.store(v + 1, Ordering::Release);
+    }
+
+    /// The version a walker validates its reading against.
+    ///
+    /// Tests only: [`coherent`](Self::coherent) reads the counter itself,
+    /// from a raw pointer it must not turn into a reference, so this
+    /// accessor exists for the tests that assert the counter moves — and
+    /// outside them it is a dead read that warns.
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn version(&self) -> usize {
+        self.version.load(Ordering::Acquire)
+    }
+
+    /// One reading of every word a walker may act on, or `None` when the
+    /// mutator kept moving elements.
+    ///
+    /// The words are written independently, so a walker that read them
+    /// one by one could stride a fresh count over a stale chunk. Growth
+    /// would be caught by comparing the chunk address before and after;
+    /// compaction would not, because it slides live elements down inside
+    /// the same chunk, and a migration would not either, because it
+    /// changes what the bytes mean rather than where they are. Hence the
+    /// version.
+    ///
+    /// **`None` is safe and leaks rather than frees early.** An entity
+    /// the walk does not enumerate becomes a root source — its out-edges
+    /// land in `RC` and never in `IN` — so its children are computed
+    /// roots and survive one more epoch
+    /// (`rfc/model/gc/retained-block-walk.md`, the derived-roots
+    /// corollary). That is what makes a bounded retry the right answer
+    /// rather than an unbounded one.
+    ///
+    /// # Safety
+    /// `h` addresses a live head. Under a concurrent mutator every word
+    /// this reads is atomic; nothing outside this struct may be read
+    /// here.
+    pub(crate) unsafe fn coherent(h: *const StorageHead) -> Option<CoherentView> {
+        // Raw pointers per field, never a `&StorageHead` reached through
+        // the representation: a shared reference to the representation
+        // would retag the whole struct, and the mutator is writing the
+        // words in its tail with ordinary stores.
+        let version = unsafe { &(*h).version };
+        let storage_word = unsafe { &(*h).storage };
+        let nslots_word = unsafe { &(*h).nslots };
+        let used_word = unsafe { &(*h).used };
+        let tag_word = unsafe { &(*h).tag };
+        for _ in 0..COHERENT_READ_ATTEMPTS {
+            let before = version.load(Ordering::Acquire);
+            if before % 2 != 0 {
+                continue;
+            }
+
+            // All five, unconditionally and before any branch on the
+            // tag. A walker that read the tag first and then chose what
+            // to read would have loaded at one representation's offsets
+            // on the strength of the other's tag.
+            let storage = storage_word.load(Ordering::Relaxed);
+            let nslots = nslots_word.load(Ordering::Relaxed);
+            let used = used_word.load(Ordering::Relaxed);
+            let tag = tag_word.load(Ordering::Relaxed);
+            // The fence, not the load, is what keeps the readings above
+            // from being taken after the closing check: an acquire *load*
+            // orders what follows it, so the words it is meant to
+            // validate could be read past it and the check would validate
+            // nothing. `ck_sequence_read_retry` fences and then loads
+            // plainly, for this reason (`dev/RESEARCH.md`).
+            fence(Ordering::Acquire);
+            if version.load(Ordering::Relaxed) != before {
+                continue;
+            }
+
+            // An unknown tag is this crate writing one it does not
+            // define. Giving the array up is the same safe direction the
+            // retry bound takes, and it costs one epoch rather than a
+            // stride over bytes with no agreed meaning.
+            let Some(tag) = decode_tag(tag) else {
+                debug_assert!(false, "a storage head carries a tag nothing writes");
+                return None;
+            };
+
+            return Some(CoherentView {
+                tag,
+                storage,
+                nslots,
+                used,
+            });
+        }
+
+        None
+    }
+}
+
+/// The byte back as a tag, or `None` for a value nothing in this crate
+/// stores. A free function rather than `TryFrom`, because both callers
+/// are inside this module and one of them is on the walk.
+#[inline]
+fn decode_tag(byte: u8) -> Option<StorageTag> {
+    match byte {
+        1 => Some(StorageTag::Typed),
+        2 => Some(StorageTag::Vector),
+        3 => Some(StorageTag::Hash),
+        _ => None,
+    }
+}
