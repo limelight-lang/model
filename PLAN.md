@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-10 · Active: S9
+Updated: 2026-08-11 · Active: S9
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -176,28 +176,39 @@ arrangement.
         for length: what makes the module hard to read past is the size of
         legal comments, and rule 19 caps no comment's length — Edmond's to
         answer before S9.2. Lesson in `dev/POSTMORTEM.md`.
-- [~] S9.2 The comment pass over the entity modules
+- [x] S9.2 The comment pass over the entity modules
       done: the same, over `object`, `string`, `array/`, `template`,
         `reference`, `weak`, `intern`, `value`, `class` and `hash/`
       tier: T2 · role: Code Reviewer
-      progress: **the rule for cutting a strip, found by cutting the first
-        two** (`6da3989`) — a strip shortens exactly as far as its argument
-        is already written down in `dev/`, and where it is not, the strip
-        is the only record and the work is to move it into a journal
-        first. `hash/seed.rs` went 59 → 28 and `string::separate` 55 → 40
-        on that rule; every other long strip in `string.rs` and `hash/` is
-        contract and mechanism with nothing behind it, and stays. 52 runs
-        of 16+ lines are left in this step's scope, 1 328 lines.
-      progress: the mechanical half is done and committed (`812ba96`) —
-        unresolved doc links, `# Safety` sections holding what is not a
-        safety obligation, and names in comments that no longer exist in
-        the code. That last check is the one worth keeping: it found
-        `prop_layout` and `traced_runs`, which nothing reports because
-        they are not links. Read in full and clean: `value`, `reference`,
-        `intern`, `template`, and `string` down to line 640. Left to
-        read: the rest of `string`, `object`, `class`, `weak`, `hash/`
-        and all of `array/` — about 11 000 lines. The scope's count
-        before the pass is 4 482 comment lines of 15 872.
+      Code Reviewer 2026-08-11: `element::make_ref` still called the box's
+        holder count exact, which the same commit had corrected on
+        `element_for_copy`; `weak.rs` named three exit steps as able to
+        deliver a notification where only the static blocks can;
+        `set_string_key`'s new contract voiced a caller's precondition as
+        the function's behaviour; `dev/ARCHITECTURE.md` named the wrong
+        thing returned by `buffer_arena::dispose`. All four accepted and
+        fixed in `6512d7f`.
+      handoff: 4 374 comment lines before the reading half and 4 374 after
+        (`6da3989` → `0b7c013` → `6512d7f`), what came out of the strips
+        going back as contract on public declarations that had none. Eight
+        strips of forty-four shortened, and **that ratio is the stage's
+        answer**: `dev/` holds a strip's argument far less often than the
+        count of strips suggests, so most of them are the only record. The
+        pass's worth is the four false statements it found — `weak.rs`'s
+        exit position, `for_each_counted_child`'s denial of the template
+        arm, `element_for_copy`'s exact count, `ll_cow_separate`'s "arrays
+        are not COW yet" — and one doc comment that sat on the wrong test.
+        Method that produced them: one reader per file with the six kinds
+        and the strip rule, then an adversary told to refute every cut,
+        which killed 8 of 38 proposals.
+      owed: `rfc/model/arrays-hashtable.md` still documents the **old
+        40-byte entry** (`next` at +16, `meta` at +20) and says this crate
+        cannot thread its chain through the element's padding, which is
+        what it has done since 2026-08-07. Three passages: the layout
+        block, "Why the ValueBox is last", and the footprint figure whose
+        arithmetic is taken at 40 bytes. Until it is corrected,
+        `array/entry.rs`'s module head is the only true description of the
+        entry in the tree.
 - [ ] S9.3 The comment pass over the runtime spine
       done: the same, over `refcount`, `gc`, `walk`, `collector`,
         `epoch`, `promote`, `static_block` and `journal/` — the last of
