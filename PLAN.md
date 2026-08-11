@@ -201,14 +201,14 @@ arrangement.
         Method that produced them: one reader per file with the six kinds
         and the strip rule, then an adversary told to refute every cut,
         which killed 8 of 38 proposals.
-      owed: `rfc/model/arrays-hashtable.md` still documents the **old
-        40-byte entry** (`next` at +16, `meta` at +20) and says this crate
-        cannot thread its chain through the element's padding, which is
-        what it has done since 2026-08-07. Three passages: the layout
-        block, "Why the ValueBox is last", and the footprint figure whose
-        arithmetic is taken at 40 bytes. Until it is corrected,
-        `array/entry.rs`'s module head is the only true description of the
-        entry in the tree.
+      paid: `rfc/model/arrays-hashtable.md` documented the **old 40-byte
+        entry** (`next` at +16, `meta` at +20) and said this crate cannot
+        thread its chain through the element's padding, which is what it
+        has done since 2026-08-07; a reader following the design would
+        have built the previous entry. Corrected in `rfc` `d14105f`
+        together with `weak-references.md`'s "disposed last", along the
+        layout block, the ValueBox paragraph, the footprint arithmetic and
+        the element-states heading.
 - [ ] S9.3 The comment pass over the runtime spine
       done: the same, over `refcount`, `gc`, `walk`, `collector`,
         `epoch`, `promote`, `static_block` and `journal/` — the last of
