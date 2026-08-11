@@ -209,11 +209,36 @@ arrangement.
         together with `weak-references.md`'s "disposed last", along the
         layout block, the ValueBox paragraph, the footprint arithmetic and
         the element-states heading.
-- [ ] S9.3 The comment pass over the runtime spine
+- [x] S9.3 The comment pass over the runtime spine
       done: the same, over `refcount`, `gc`, `walk`, `collector`,
         `epoch`, `promote`, `static_block` and `journal/` — the last of
         which is where this session's own density came from
       tier: T2 · role: Code Reviewer
+      Code Reviewer 2026-08-11: the pass wrote three false statements
+        while removing twenty — `walk.rs`'s cleanup comment explained
+        itself by a census test that compares deltas, `collector.rs`'s
+        head called the epoch stamp this side's only shared-memory write
+        beside the handshake, the epoch window and the verdict queue, and
+        `promote.rs` counted three `trace_entity` traversals where there
+        are four. Four smaller: a dangling pronoun, a doc retelling its
+        own `thread_local!`, an assert message crediting the wrong actor,
+        and a doc link that resolves only under `rc-walk`. All accepted
+        and fixed in `7ee0cec`, together with the one sentence the
+        `static_block` cut should have kept — the price of not having the
+        module.
+      handoff: 3 690 comment lines to 3 654 (`a819fa1` → `723cbe3` →
+        `7ee0cec`). **Twenty of the thirty-two edits are comments the code
+        contradicts**, against four in S9.2's scope: the spine has been
+        rewritten under its own documentation far more often than the
+        entity modules. Eight strips of twenty-nine shortened, and a loss
+        detector over all eight found nothing destroyed. The mechanical
+        half (`a819fa1`) closed the crate's last two unresolved doc links
+        — one of them, `Ring::closed_after`, naming a mechanism that does
+        not exist: nothing dates a ring's close, and what makes a window
+        stable is the counter pair a `Mark` already carries.
+      note: `--no-default-features` reports three unresolved doc links, all
+        to `crate::epoch`, all older than this stage — the module is gated
+        whole. Left as they are: a plain span would work in neither build.
 - [ ] S9.4 Tests leave the module bodies and arrive grouped
       done: every `#[cfg(test)] mod tests` in `src/` is its own file,
         each grouped into named submodules that say what is being pinned
