@@ -645,6 +645,114 @@ mod the_three_way_judgement {
         );
         arena.reset(|_| {});
     }
+
+    /// An array that moved its entries between the walk and the re-check
+    /// leaves the recorded cell in a chunk the epoch parks: intact,
+    /// written by nobody, and reading the walk's own value for the rest
+    /// of the epoch. So the re-read agrees with itself while the array
+    /// has given the child away, and the count agrees too — the move out
+    /// is a retain and a release around it.
+    ///
+    /// Nothing about the cell can see this, which is why the walk keeps
+    /// the storage version beside it (`PLAN.md` S13.4). Growth here is
+    /// the mover; compaction and the migration between representations
+    /// are the same event to the head.
+    #[test]
+    fn a_component_whose_array_moved_its_entries_is_acquitted() {
+        use crate::array::entity::ll_array_new;
+        use crate::array::table::Key;
+        use crate::array::testing;
+        let _g = crate::memory::block_pool::test_guard();
+        DESTRUCTS.store(0, Ordering::Relaxed);
+        let cls = ClassBuilder::new("CollectorMovedEntries")
+            .prop("table", true)
+            .destructor(counting_destructor as *const ())
+            .build();
+
+        let mut arena = Arena::new();
+        let mut ctx = LLContext { arena: &mut arena };
+        let holder = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+        let ring = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        // The holder the member ends up in. It keeps the count its
+        // factory returned and nothing points at it, so it is a root
+        // rather than a candidate.
+        let live = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        assert!(!ring.is_null() && !live.is_null());
+        unsafe {
+            Object::prop_at(holder, 16).write(Value::entity(Tag::Array, ring as *mut RcHeader));
+            crate::refcount::ll_retain(holder as *mut RcHeader);
+            testing::insert(
+                ring,
+                Key::Int(0),
+                Value::entity(Tag::Object, holder as *mut RcHeader),
+            );
+        }
+
+        assert!(!unsafe { ll_release(holder as *mut RcHeader) });
+
+        stepped_epoch(); // mature
+
+        let mut e = Epoch::open();
+        checkpoint();
+        e.snapshot();
+        e.walk();
+        e.judge();
+        assert_eq!(e.stats.candidates, 1, "the ring through the array");
+        e.condemn();
+
+        // Integer keys until the entries move, which is what parks the
+        // chunk the walk recorded an address in.
+        let chunk = unsafe { testing::storage_and_capacity(ring).0 };
+        let mut key = 1i64;
+        while unsafe { testing::storage_and_capacity(ring).0 } == chunk {
+            assert!(key < 1000, "the table never grew");
+            unsafe { testing::insert(ring, Key::Int(key), Value::int(key)) };
+            key += 1;
+        }
+
+        // The member moves to a holder outside the component, by the
+        // three steps a move takes: the count goes up, the entry hands
+        // its reference over, the borrow ends. The walk's row for the
+        // holder therefore reads back exactly.
+        unsafe {
+            crate::refcount::ll_retain(holder as *mut RcHeader);
+            let (value, string_key) = testing::remove(ring, Key::Int(0)).expect("the entry");
+            assert!(string_key.is_null(), "an integer key holds no string");
+            testing::insert(live, Key::Int(0), value);
+            assert!(!ll_release(holder as *mut RcHeader));
+        }
+
+        checkpoint(); // ack
+        e.recheck_and_post();
+        assert_eq!(
+            e.stats.acquitted, 1,
+            "the recorded cell is in a chunk the array has left"
+        );
+        assert_eq!(e.stats.confirmed, 0);
+        let _ = e.close();
+        checkpoint(); // flush
+        assert_eq!(
+            DESTRUCTS.load(Ordering::Relaxed),
+            0,
+            "acquitted: the member a live array holds is untouched"
+        );
+        assert_eq!(
+            unsafe { testing::get(live, Key::Int(0)) }
+                .expect("the live array still holds it")
+                .entity_ptr(),
+            holder as *mut RcHeader
+        );
+
+        // The chain gives itself back: the live array's last reference
+        // goes, which releases the member, which releases the ring.
+        unsafe {
+            assert!(ll_release(live as *mut RcHeader), "the test was its holder");
+            crate::object::ll_entity_die(live as *mut RcHeader);
+        }
+
+        assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "the member died last");
+        arena.reset(|_| {});
+    }
 }
 
 /// A word the walk reads can point anywhere, so an edge into a slot

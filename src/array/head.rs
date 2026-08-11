@@ -93,6 +93,13 @@ pub(crate) enum StorageTag {
 /// A reading of the head that a walker may act on: taken between two
 /// equal even versions, so the four words describe one moment.
 pub(crate) struct CoherentView {
+    /// The even version both readings agreed on. A reader that keeps an
+    /// address out of this chunk keeps this beside it: the address stays
+    /// readable after a move — the epoch parks the free — so re-reading
+    /// it answers about a chunk nobody writes any more, and this number
+    /// is what says the chunk stopped being the array's
+    /// (`collector::Edge`, `PLAN.md` S13.4).
+    pub(crate) version: usize,
     pub(crate) tag: StorageTag,
     /// Null when the representation has never allocated.
     pub(crate) storage: *mut u8,
@@ -215,13 +222,14 @@ impl StorageHead {
         self.version.store(v + 1, Ordering::Release);
     }
 
-    /// The version a walker validates its reading against.
+    /// The version a walker validates its reading against, read on its
+    /// own.
     ///
-    /// Tests only: [`coherent`](Self::coherent) reads the counter itself,
-    /// from a raw pointer it must not turn into a reference, so this
-    /// accessor exists for the tests that assert the counter moves — and
-    /// outside them it is a dead read that warns.
-    #[cfg(test)]
+    /// The Phase 3 re-check reads it this way: it holds the number a
+    /// [`CoherentView`] agreed on and asks whether the elements have
+    /// moved since. An odd answer is a move in progress and equals no
+    /// recorded version, so a caller comparing for equality needs no
+    /// case of its own for it.
     #[inline]
     pub(crate) fn version(&self) -> usize {
         self.version.load(Ordering::Acquire)
@@ -292,6 +300,7 @@ impl StorageHead {
             };
 
             return Some(CoherentView {
+                version: before,
                 tag,
                 storage,
                 nslots,

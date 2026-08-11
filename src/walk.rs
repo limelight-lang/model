@@ -182,6 +182,15 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
 /// Which kinds have counted cells, and why the rest have none, is the
 /// dispatch documented at [`trace_entity`].
 ///
+/// **The answer is the version of the storage the cells were read from**,
+/// for a kind that keeps them in storage it can replace. A cell's address
+/// stays readable after such a replacement — the epoch parks the free —
+/// so an address alone cannot say the cell stopped belonging to the
+/// entity, and the collector keeps this number to ask that
+/// (`collector::Edge`, `PLAN.md` S13.4). `None` covers both kinds whose
+/// cells never move and an array this walk gave up on, and those need no
+/// telling apart: neither yields a cell.
+///
 /// # Safety
 /// `entity` is a live entity of `kind` whose cells are readable, and
 /// under `R = RelaxedCells` it must be **mature** — the class word at
@@ -191,7 +200,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
     entity: *mut RcHeader,
     kind: u32,
     mut visit: impl FnMut(Cell),
-) {
+) -> Option<usize> {
     const OBJECT: u32 = EntityKind::Object as u32;
     const LAZY: u32 = EntityKind::Lazy as u32;
     const REFERENCE: u32 = EntityKind::Reference as u32;
@@ -205,6 +214,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
             let class =
                 unsafe { R::ptr((entity as *const u8).add(8)) } as *const crate::class::Class;
             unsafe { crate::object::for_each_counted_cell::<R>(entity as *mut u8, class, visit) };
+            None
         }
         REFERENCE => {
             let at = unsafe { (entity as *const u8).add(8) };
@@ -219,6 +229,8 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                     shape: CellShape::Box,
                 });
             }
+
+            None
         }
 
         // An array's cells live in storage the mutator moves, so this
@@ -232,7 +244,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 crate::array::entity::storage_head(entity as *mut crate::array::entity::LLArray)
             };
             let Some(view) = (unsafe { crate::array::head::StorageHead::coherent(head) }) else {
-                return;
+                return None;
             };
 
             // The stride is chosen here and nowhere earlier: the tag came
@@ -251,7 +263,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 crate::array::head::StorageTag::Hash => {}
                 crate::array::head::StorageTag::Typed => {
                     debug_assert!(false, "the walker has no stride for the typed vector");
-                    return;
+                    return None;
                 }
                 crate::array::head::StorageTag::Vector => {
                     let (elements, used) =
@@ -271,7 +283,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                         }
                     }
 
-                    return;
+                    return Some(view.version);
                 }
             }
 
@@ -304,8 +316,10 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                     });
                 }
             }
+
+            Some(view.version)
         }
-        _ => {}
+        _ => None,
     }
 }
 
@@ -367,10 +381,13 @@ pub(crate) unsafe fn sever_cells(
     const BOX: u32 = EntityKind::Box as u32;
     match kind {
         OBJECT | LAZY | REFERENCE => unsafe {
+            // The storage version the walk answers with is the epoch's
+            // instrument and nothing to a sever: these three kinds keep
+            // their cells in their own slot, which no move replaces.
             trace_cells::<PlainCells>(entity, kind, |cell| {
                 empty_cell(cell);
                 displaced.push(cell.child);
-            })
+            });
         },
         // Severing an array is the table's, not `empty_cell`'s: a
         // cleared entry is a hole rather than a null, and an

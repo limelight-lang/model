@@ -144,6 +144,11 @@ pub(crate) struct Epoch {
     rows: Vec<u32>,
     /// Flags as read with each row — the kind bits steer pass 2.
     flags: Vec<u32>,
+    /// Per row, the version of the storage its cells were read out of,
+    /// and `None` for a row whose cells cannot move
+    /// ([`crate::walk::trace_cells`]). Pass 2 fills it, and the Phase 3
+    /// re-check is its only reader.
+    storage_versions: Vec<Option<usize>>,
     edges: Vec<Edge>,
     /// Candidate components as indices into `entities`. Condemnation
     /// is this list and nothing else — collector-private since the
@@ -205,6 +210,7 @@ impl Epoch {
             entities: Vec::new(),
             rows: Vec::new(),
             flags: Vec::new(),
+            storage_versions: Vec::new(),
             edges: Vec::new(),
             candidates: Vec::new(),
             acks_needed,
@@ -321,7 +327,7 @@ impl Epoch {
             // every row here is mature, so the class word at `+8` was
             // published epochs ago and every handshake since ordered that
             // store before this load.
-            unsafe {
+            let storage_version = unsafe {
                 crate::walk::trace_cells::<crate::walk::RelaxedCells>(entity, kind, |cell| {
                     match census_row(blocks, first_slot, slot_rows, cell.child as usize) {
                         Some(dst) => edges.push(Edge {
@@ -335,7 +341,45 @@ impl Epoch {
                     }
                 })
             };
+
+            self.storage_versions.push(storage_version);
         }
+    }
+
+    /// Whether the cells recorded for row `src` are still that row's.
+    ///
+    /// A cell of an array lives in a storage chunk the array replaces on
+    /// growth, on compaction and on the migration between
+    /// representations, and the chunk it leaves is **parked** rather than
+    /// recycled: the epoch defers every buffer-chunk free
+    /// (`memory::deferred_free`), so the bytes stay intact and nobody
+    /// writes them for the rest of the epoch. Re-reading a recorded
+    /// address there compares a frozen copy of the walk value against the
+    /// walk value and answers "unchanged" for a cell the array no longer
+    /// has — which confirms a component while a live holder names one of
+    /// its members. The address cannot see this; the version the walk
+    /// validated its reading against can.
+    ///
+    /// Any change acquits, which is the direction
+    /// [`crate::array::head::StorageHead::coherent`] already takes when
+    /// it gives up: one epoch of leak, nothing freed early. A source that
+    /// died in the meantime reads whatever its slot now holds and
+    /// acquits for the same reason.
+    ///
+    /// # Safety
+    /// Row `src` was walked this epoch, so its entity address is one the
+    /// snapshot found and the epoch keeps readable.
+    unsafe fn cells_are_still_the_sources(&self, src: u32) -> bool {
+        let Some(walked) = self.storage_versions[src as usize] else {
+            return true;
+        };
+
+        let head = unsafe {
+            crate::array::entity::storage_head(
+                self.entities[src as usize] as *mut crate::array::entity::LLArray,
+            )
+        };
+        unsafe { (*head).version() == walked }
     }
 
     /// Phase 2 — DIFF and MARK, in private memory (`garbage_components`).
@@ -406,7 +450,9 @@ impl Epoch {
             if clean {
                 for &k in &component_edges[id] {
                     let edge = &self.edges[k as usize];
-                    if !unsafe { edge.still_designates_its_child() } {
+                    if !unsafe { edge.still_designates_its_child() }
+                        || !unsafe { self.cells_are_still_the_sources(edge.src) }
+                    {
                         clean = false;
                         break;
                     }
