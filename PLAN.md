@@ -303,11 +303,19 @@ key it cannot hold, both configurations green, Miri silent.
         silent after, over `array::entity` 24, `array::table` 34,
         `array::element` 29, `array::vector` 8, `walk::` 22 and
         `promote::` 20; loom's four cases unchanged.
-- [ ] S7.5 The COW copy takes a vector
+- [~] S7.5 The COW copy takes a vector
       done: a shared vector array separates into a vector copy, an arena
         one is copied out through the work list, and both hold what the
         source held, in both configurations
       tier: T2 · role: Critic
+      2026-08-12: **the code is in and the criterion is met (`f10e42f`),
+        and the Critic is owed.** `new_empty_copy` builds the destination
+        in the source's representation and `fill_from` splits by tag over
+        one shared half, `element_for_destination`, which carries the
+        barrier rules for both. Two tests, both seen failing on the tag
+        assertion when the vector arm is removed. Gate green, rc-walk 447
+        and rc-trace 428. Call the Critic on that commit before marking
+        this closed.
       2026-08-12, found by flipping the stamp inside S7.2 and reverting
         it: `separate` and `fill_from` reach for the table —
         `as_table(src)`, `as_table_mut(dst)` — so a vector array meeting
