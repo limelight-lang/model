@@ -404,7 +404,7 @@ key it cannot hold, both configurations green, Miri silent.
         tests, and its instrument is a counted free list read three ways.
         Gate green, 17 legs: rc-walk 452 → 454, rc-trace 433 → 435. Miri
         silent over `array::entity` and `array::element`.
-- [ ] S7.7 The deep copy preserves the source's sharing
+- [x] S7.7 The deep copy preserves the source's sharing
       done: a source whose child two entries name yields one copy of that
         child held twice, `separate` carries no `entered` vector, and a
         chain of thirty arrays each naming its predecessor twice is copied
@@ -445,11 +445,78 @@ key it cannot hold, both configurations green, Miri silent.
         in the source header is refused — it writes into words the
         collector reads at agreed widths, and it breaks the source being
         untouched, which the refusal path's simplicity rests on. Final.
-      2026-08-12, owed to the RFC by this step: `arrays-hashtable.md`'s
+      Critic 2026-08-12 round 1, on the executed ruling: **termination
+        still rests on count-equals-holders**, the gate being
+        `refcount > 1`, and the probe the ruling deleted had become a
+        statement of the ruling's own claim. Sent back to the Sage.
+        Four more accepted: the root is not recorded — kept unrecorded,
+        with the reason written where the loop starts, after recording it
+        was tried and reverted for moving every forced-refusal test's
+        branch; the shallow path paid `Table::dispose`'s release fence on
+        an empty table, now an early return; the association's refusal had
+        no test and had silently repointed S7.6's work-list test, both
+        answered by the fixture giving its builder's reference back; and
+        three claims that read wrong.
+      Sage 2026-08-12: **the probe returns with a message naming two
+        causes, and the gate stands.** Its deletion's ground was that it
+        fired on a diamond, and the association made a diamond enter once,
+        so the assertion became a theorem on every graph PHP value
+        semantics can build. Termination is by the association for a
+        shared child and by the count's one direction for a single-named
+        one — the same reading `element_for_copy` stakes its unwrap on —
+        and the earlier entry's "stops leaning on count-equals-holders" is
+        superseded. The `Vec` rather than the association, because the
+        entities that can wrongly re-enter are the ones it never records.
+        Final.
+      Critic 2026-08-12 round 2, on that response: **the header read had
+        been hoisted above the destination's category test**, so a shallow
+        separation paid a relaxed atomic load per element where it paid
+        none — the category is a parameter and is tested first again.
+        Three false statements corrected with it, each verified: the root
+        is not the only unrecorded source, only the only re-enterable one;
+        the depth-twelve chain is 8191 arrays rather than four thousand,
+        and in debug the probe reports before the count does; and the
+        association's refusal test cannot separate its branch from the
+        work list's by the allocator, only by the child's count and the
+        order of two calls — said in the test rather than implied.
+      handoff: commits `f97532c`, `3c3b64e` and `73a1a74`. The association
+        is `CopiesMade` in `array/entity.rs`, the generic `Table` used
+        bare beside the work list, consulted only for a child whose count
+        is above one and never for the root. Two decision entries of
+        2026-08-12 hold the ruling and its correction. Gate green, 17
+        legs: rc-walk 456 → 457, rc-trace 437 → 438. Miri silent over
+        `array::entity`, 41 passed. Two tests seen failing with the
+        association disabled: a diamond copied twice, and a twelve-level
+        chain at 8191 arrays against 13.
+- [ ] S7.8 The termination probe's container, and what it costs
+      done: `dev/DECISIONS.md` records what holds the entered set, priced
+        against the two facts its ruling did not name, and `separate`
+        carries whichever container that answers
+      tier: T2 · role: —
+      Critic 2026-08-12, found in S7.7's second round and each verified:
+        the restored probe is a `Vec`, and `WorkList`'s own doc four
+        hundred lines below records as a decision that a `Vec` is wrong
+        for this data — "the system allocator's `Vec` would abort the
+        process when it cannot grow, and growth here is driven by the
+        attacker's nesting depth". And the ruling priced the linear scan
+        as "quadratic in the distinct nested arena COW arrays of one
+        graph, which number in the tens today", while
+        `nesting_worked_through_a_list` copies a graph of 800 of them —
+        about 320 thousand pointer comparisons per run, on the test that
+        already runs under Miri. Debug-only in both cases; neither is a
+        defect in S7.7, and both are prices the ruling did not name, so
+        they go to the Sage rather than into a patch.
+      2026-08-12, a suspicion the same round could not build: an array
+        whose entry names the array itself would make the root re-enter
+        and fire the probe in debug while release finishes with one
+        redundant root copy. Whether such an edge can form depends on the
+        lowering's retain order, which is outside this repository.
+      2026-08-12, owed to the RFC by S7.7: `arrays-hashtable.md`'s
         "Depth is bounded by the arena-resident COW subtree" becomes work
         linear in the arena-resident COW sub*graph*, and its open item
         "recursion-depth guard on the escape copy" closes. Amending an
-        authoritative sentence is Edmond's to accept.
+        authoritative sentence is Edmond's to accept, and he has not
+        answered yet.
       2026-08-12, found by flipping the stamp inside S7.2 and reverting
         it: `separate` and `fill_from` reach for the table —
         `as_table(src)`, `as_table_mut(dst)` — so a vector array meeting
