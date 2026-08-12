@@ -20,7 +20,8 @@ cached across a promotion. S6 was the
 stage-end review's five demands, all of them behaviour-preserving: the
 element reference's composition left `table.rs`, the publication idiom
 became `barrier::publish_child` and `entity::publish_key`, the two
-teardowns of an unpublished entity became `element::destroy_unpublished`,
+teardowns of an unpublished entity became one `destroy_unpublished`,
+which S7.6 then moved to `object.rs` beside `ll_entity_die`,
 the four element operations state their order without linking a private
 function, the vivification test asks what a caller can observe, and
 `src/array/` has its four rows in `dev/ARCHITECTURE.md`. What survives it
@@ -343,7 +344,7 @@ key it cannot hold, both configurations green, Miri silent.
         rc-trace 428 → 430. Miri silent over `array::entity` (31 passed,
         1 ignored) and `array::element` (29 passed), which is the run S7.5
         and the stamp both owed.
-- [ ] S7.6 A refused copy gives back what it allocated
+- [x] S7.6 A refused copy gives back what it allocated
       done: a forced refusal of the nested destination reports null
         without dereferencing it, and a refusal part-way through
         `separate` leaves no array entity behind — proved by an instrument
@@ -362,6 +363,47 @@ key it cannot hold, both configurations green, Miri silent.
         `who_owns_a_key_reference::a_refused_heap_copy_gives_an_escaped_
         child_back_through_the_barrier` drives the second one and passes,
         the leaked slot sitting inside a block its own guard keeps alive.
+      Critic 2026-08-12 round 1, on the repair: **the giveback called
+        `array_die` directly, and `array_die` is a body rather than a
+        door.** `ll_entity_die` carries the teardown bracket and the
+        candidate-buffer duty, and `object.rs` states that a duty added at
+        one door is owed at the other; under rc-walk a child object's
+        `__destruct` then exits at depth zero and fires a checkpoint while
+        the destination still sits at count zero with children counted and
+        storage allocated. Accepted, and the repair removed a duplicate
+        with it: `element::destroy_unpublished` was already that
+        composition, so it moved to `object.rs` beside `ll_entity_die` and
+        both layers call it. Three more accepted: one free slot cannot
+        tell a root that gave its slot back from one never allocated, and
+        every refusal reached the giveback with an empty destination —
+        both answered by two slots, two nested children and a warmed
+        buffer arena; and `buffer_arena::FORCE_REFUSE_LONGLIVED` drives
+        the work list's refusal, which had no test. Its sixth stands as
+        written: the first test is a crash canary and now says so.
+      Critic 2026-08-12 round 2, on that response: **a slot count cannot
+        say a slot was taken** — two taken and two returned leave the same
+        free list as a refusal before anything was built, so the lower
+        bound read as proof. The count carries three readings now: two
+        allocations succeed, the third must fail, and the same fixture
+        with one more free slot must produce a copy rather than a refusal.
+        The upper bound was seen firing. **And the arena arm was recorded
+        unreachable on a false reason** — past the bump `Arena::alloc`
+        draws a pool block, which `FORCE_OOM` refuses, so a
+        `#[cfg(test)]` `Arena::room_left` lets the test leave exactly one
+        entity's worth and the production path reaches the arm. Accepted
+        with it: the flags are raised through a guard that lowers them in
+        `Drop`, because the panics that matter inside that window are the
+        crate's own `debug_assert`s rather than the test's; the moved
+        function's list of callers gained the fourth; and the doc link
+        that the move broke follows it.
+      handoff: commits `2fba016`, `84d80cb` and `9a96b73`.
+        `object::destroy_unpublished` is the one door for an entity no
+        slot ever named, and `array::entity::separate` and
+        `element_for_destination` both take it. The refusal group is
+        `src/array/entity/tests/what_a_refused_copy_gives_back.rs`, five
+        tests, and its instrument is a counted free list read three ways.
+        Gate green, 17 legs: rc-walk 452 → 454, rc-trace 433 → 435. Miri
+        silent over `array::entity` and `array::element`.
 - [ ] S7.7 The deep copy preserves the source's sharing
       done: a source whose child two entries name yields one copy of that
         child held twice, `separate` carries no `entered` vector, and a
@@ -463,6 +505,16 @@ key it cannot hold, both configurations green, Miri silent.
         moves into the head and bits 2–3 of `flags` return to the pool.
         `table.rs`'s own comment on `TABLE_APPEND_EXHAUSTED` says the
         same thing and is stale with it. Final.
+      2026-08-12, two more found while doing S7.6 and each verified
+        against the code, both in `arrays-hashtable.md`'s "The COW copy
+        has two depths": "releasing the prefix already built and freeing
+        the private storage restores every external count" describes an
+        unwind that leaves the private entity itself behind, which is the
+        leak S7.6 closed, so the private entity joins that sentence. And
+        "This is the arm `object.rs`'s `escape_copy` reserves with
+        `unreachable!(...)`" names an arm that exists: `escape_copy`
+        matches String and Array, and the `unreachable!` is the default
+        over the kinds that have no COW copy.
 
 The 1 → 2 transition stays out of the stage: strategy 1 has no producer
 in the crate, and an arm with no producer is what this crate has refused
