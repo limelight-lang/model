@@ -433,28 +433,14 @@ impl Heap {
     /// Allocate at least `size` bytes, or null if `size` exceeds the
     /// small-object range.
     ///
-    /// ## Why this is split into a fast path and `#[cold]` tails
-    ///
-    /// Everything rare — refilling from `BlockPool`, draining cross-thread
-    /// frees, walking past a full block — lives in separate `#[cold]`
-    /// `#[inline(never)]` functions rather than in this body. That is not
-    /// tidiness, it is the codegen: a function containing calls and needing
-    /// many live values gets a stack frame and callee-saved register
-    /// spills, and **the fast path pays for them on every call even though
-    /// only the rare branch needs them**. Disassembly of the pre-split
-    /// version showed `Heap::alloc` opening with five `push`es, a
-    /// `sub rsp, 48` and a `movaps` saving `xmm6` (LLVM had picked a
-    /// callee-saved SSE register to zero 16 bytes in `unlink`), plus the
-    /// mirror image on exit — roughly 20 instructions of frame management
-    /// around a ~4-instruction free-list pop, and no inlining into
-    /// `ll_alloc` because the function was too big.
-    ///
-    /// Kept as a leaf, this compiles to a handful of instructions with no
-    /// frame, and the cold tails are reached by a tail call — exactly the
-    /// shape mimalloc's `mi_malloc` has (`jmp _mi_malloc_generic`).
-    /// `refill` runs ~0.00003 times per alloc (measured); without `#[cold]`
-    /// LLVM has no way to know that and optimises the body as if the
-    /// branches were balanced.
+    /// **A frameless leaf**, with everything rare in separate `#[cold]`
+    /// `#[inline(never)]` tails: refilling from `BlockPool`, draining
+    /// cross-thread frees, walking past a full block. A body holding those
+    /// calls needs a stack frame and callee-saved spills, and the fast path
+    /// pays for them on every call although only the rare branch needs them
+    /// (`rfc/model/memory/heap-slot-allocation.md`, "Fix 5c — Fast path
+    /// split out of the slow paths"). `#[cold]` is what tells LLVM the
+    /// branch is rare; `refill` runs about 0.00003 times per alloc.
     #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         probe_count!(ALLOC_ENTRIES);
@@ -1179,30 +1165,21 @@ impl Heap {
 
     /// Re-link a block that was full and has just had a slot freed.
     ///
-    /// Deliberately **not** at the head, even though inserting behind it
-    /// costs three header writes against the head-insert's one. `alloc`
-    /// serves from the head, so a just-unfulled block placed there becomes
-    /// an allocation point with exactly one free slot: the next alloc drains
-    /// it and it is full again immediately. Measured — link at head instead
-    /// and the block-switch rate doubles (0.32 → 0.77 per alloc) for
-    /// **−21.7%** throughput. Behind the head, the block accumulates more
-    /// frees before `alloc` reaches it.
+    /// Deliberately **not** at the head. `alloc` serves from the head, so a
+    /// just-unfulled block placed there becomes an allocation point with
+    /// one free slot: the next alloc drains it and it is full again. Behind
+    /// the head it accumulates more frees before `alloc` reaches it, and
+    /// linking at the head instead costs 21.7% of throughput
+    /// (`rfc/model/memory/heap-slot-allocation.md`, "Why `relink_unfull` is
+    /// worth its cost, measured", and "What churn actually costs" for the
+    /// rule behind it: the rate of block switches is what costs, not the
+    /// bookkeeping around them).
     ///
-    /// This is the general rule for everything on this path: **the rate of
-    /// block switches is what costs, not the bookkeeping around them.** A
-    /// switch means loading a block header and free-list head this thread
-    /// has not touched recently; the pointer updates are noise beside it.
-    /// Replacing this whole list with a per-class bitmap — zero foreign
-    /// header traffic — was measured at +0.3%, i.e. nothing. See
-    /// `rfc/model/memory/heap-slot-allocation.md`, "What churn actually
-    /// costs".
-    /// `#[inline(never)]` but **not** `#[cold]`, and the difference is the
-    /// point. Out of line so `free`'s body stays short enough to inline
-    /// into `ll_free`; not `#[cold]`, because that is an assertion to LLVM
-    /// that the branch is rare, and here it is not obviously true — a
-    /// workload churning blocks across the full ↔ has-room boundary takes
-    /// it constantly. Claiming coldness that a workload disproves
-    /// deoptimizes a path that is actually hot.
+    /// `#[inline(never)]` but **not** `#[cold]`. Out of line so `free`'s
+    /// body stays short enough to inline into `ll_free`; not cold, because
+    /// that asserts to LLVM that the branch is rare, and a workload
+    /// churning blocks across the full ↔ has-room boundary takes it
+    /// constantly.
     #[inline(never)]
     fn relink_unfull(&mut self, ci: usize, block: *mut HeapBlockHeader) {
         probe_count!(LINK_CALLS);
@@ -1263,31 +1240,19 @@ impl Heap {
 
 // --- Thread-local heap slot -----------------------------------------------
 //
-// Disassembly of `ll_alloc`/`ll_free` (via `dumpbin /disasm`, see
-// `rfc/model/memory/heap-slot-allocation.md`) showed the compiler-emitted
-// `thread_local!`/`__declspec(thread)` access on windows-msvc costs THREE
-// dependent, non-pipelineable loads: `_tls_index` -> `gs:[0x58]`
-// (TEB.ThreadLocalStoragePointer) -> this module's TLS block -> the field.
-// That indirection exists to let a DLL's TLS block be found generically;
-// we don't need it, and it cost ~2.5-3 ns of the ~4 ns gap to mimalloc.
+// On windows-msvc the slot is read from the TEB's inline `TlsSlots` array
+// with one instruction, `gs:[0x1480 + slot*8]`, through inline `asm!`.
+// `TlsAlloc` runs once per process purely to reserve a slot number the OS
+// promises to nobody else; the reads and writes never call it again. It
+// falls back to `TlsGetValue`/`TlsSetValue` if the reserved slot lands
+// outside the first 64 fast slots, which is practically never but is
+// correct when it happens. What the compiler-emitted `thread_local!` costs
+// instead, and why the Win32 API is no cheaper, are in
+// `rfc/model/memory/heap-slot-allocation.md`, "Fix 3 — Fast TLS
+// (Windows)".
 //
-// mimalloc avoids it entirely, and *also* avoids calling the real Win32
-// `TlsGetValue`/`TlsSetValue` (those are real, non-inlined function calls
-// through the kernel32 import table — no cheaper than the module-indirected
-// path once you count the call/ret and the callee's own TEB lookup).
-// Instead it reads/writes the TEB's inline "TlsSlots" array directly:
-// `gs:[0x1480 + slot*8]`, one instruction, via the MSVC `__readgsqword`
-// intrinsic (`mimalloc/prim.h`, `MI_TLS_SLOT`). `TlsAlloc` is called once
-// (process-wide) purely to reserve a slot number the OS promises not to
-// hand to anyone else; the actual reads/writes never call it again. This
-// mirrors that exactly, via inline `asm!`. Falls back to the real
-// TlsGetValue/TlsSetValue API only if the reserved slot lands outside the
-// first 64 "fast" slots (the inline array's fixed size) — practically
-// never, since this is one of the first TLS allocations in the process,
-// but correctness for the rare case matters more than the fast path here.
-//
-// elsewhere (ELF `__thread` is already a single `%fs`-relative load, no
-// module table) the portable `thread_local!` stays as-is.
+// Elsewhere the portable `thread_local!` stays: ELF `__thread` is already
+// a single `%fs`-relative load with no module table.
 
 #[cfg(windows)]
 mod tls {
@@ -1775,30 +1740,18 @@ pub extern "C" fn ll_thread_init() {
         // Failing to register the guard is the right outcome instead: the
         // thread is already exiting, and its blocks are reclaimed by the
         // teardown in progress.
-        // This branch is entered once per *life* of a thread — a pool
-        // thread that runs init/exit per task enters it again, the exit
-        // having cleared the slot — so it is where the journal learns
-        // that a thread closed at its last exit may journal again. It
-        // gets a new ring with a new identity rather than reopening the
-        // one it retired, which is on the registry's retired list and no
-        // longer its to write.
-        //
-        // Only when the guard is armed, because the guard is what retires
-        // the ring: opening one on a thread whose retirement nothing will
-        // run leaves it on the live list for the life of the process,
-        // where every later window reads it as a live thread doing
-        // nothing.
-        // A heap rebuilt in the middle of an exit is that exit repairing
-        // itself — a destructor allocating on the way out — and not a new
-        // life. Lowering the phase there would tell every caller below
-        // that this thread may free again, on a thread whose deferral
-        // backlog is already gone.
-        //
-        // Nor is a heap rebuilt by a destructor *after* the exit, and the
-        // guard is what tells the two apart: a new life on a pooled
-        // thread can arm one, a thread in TLS teardown cannot. Leaving
-        // the phase `Exited` there is what keeps `thread_may_free` from
-        // answering yes on a thread whose deferral backlog is gone.
+        // The branch below is entered once per *life* of a thread, so a
+        // pool thread running init and exit per task enters it again and
+        // journals into a ring of a new identity rather than reopening the
+        // one it retired. Two conditions guard it. The exit guard, because
+        // the guard is what retires the ring, and a ring opened on a
+        // thread whose retirement nothing will run stays on the live list
+        // for the life of the process. And no exit in progress, because a
+        // heap rebuilt inside an exit is that exit repairing itself rather
+        // than a new life: lowering the phase there would tell
+        // `thread_may_free` that this thread may free again, on a thread
+        // whose deferral backlog is gone (`dev/DECISIONS.md`, "the journal
+        // is complete to the exit's last act and honest past it").
         if !thread_exit_running() && exit_guard_armed() {
             EXIT_PHASE.with(|phase| phase.set(ExitPhase::Live));
             crate::journal::reopen_thread();
