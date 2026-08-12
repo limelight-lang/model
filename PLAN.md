@@ -233,17 +233,19 @@ and up is cut to the contract or moved under a named section, and
         a function that moved modules, eighteen `dev/` citations by date
         and two by `PLAN.md` stage, and three `audit` numbers naming an
         untracked file that no longer holds them. Commit 462ac58.
-- [ ] S15.6 The eight blocks inside the test files
+- [x] S15.6 The eight blocks inside the test files
       done: each of the eight surveyed the same way, and no `dev/`
         citation in a test file gives a date where the entry has a title
       tier: T1 · role: —
-      Left out of S15.5's survey, which was scoped to non-test files:
-        `string/tests.rs:1236` (30 lines), `array/table/tests.rs:1423`,
-        `memory/retained/tests.rs:3`, `object/tests.rs:350`,
-        `journal/tests.rs:681`, `memory/heap/tests.rs:696`,
-        `hash/tests.rs:103` and `array/testing.rs:1`. Three by-date
-        citations go with them: `array/element/tests.rs:1824` and `:2192`,
-        `array/table/tests.rs:1257`.
+      handoff: six of the eight stand — a measurement `dev/BENCHMARKS.md`
+        does not hold, two repairs refused with the reason, the bound of a
+        claim — and two lose a line each. The yield was elsewhere:
+        `carry_out_of` is named in `array/table/tests.rs` and nowhere in
+        the crate, the operation being
+        `array::entity::carry_storage_out_of`, and seven citations gave a
+        date rather than a title, four more than this step listed. One of
+        those dates covers two entries that both name `carry_out_of`, the
+        later describing the state the earlier repealed. Commit 36176b8.
 
 ## S16 — The test files: one layout, and a size a reader can hold
 
