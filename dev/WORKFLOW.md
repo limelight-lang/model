@@ -233,6 +233,14 @@ number, and an item number from a list that has since been rewritten.
 When the section a comment needs does not exist yet, write it and give
 it a name.
 
+A **bolded lead-in** counts as a named section, quoted exactly:
+`rfc/model/gc/rc-walk.md`, "Batched releases". These documents state most
+of their rules that way, and a citation of the enclosing heading instead
+sends the reader to a page rather than to the sentence. What decides the
+form is which one a search finds — so the rule that follows from it is
+that a lead-in cited from code is never reworded in the document without
+the citation moving with it.
+
 **The test before leaving a comment in place.** Cover it and read the
 code. What you can no longer answer is what the comment is for; the rest
 was a retelling.
