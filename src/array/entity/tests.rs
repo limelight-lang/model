@@ -161,6 +161,7 @@ mod the_entity_around_the_table;
 mod the_flood_state_a_copy_inherits;
 mod the_head_a_walker_reads;
 mod the_order_destructors_run_in;
+mod the_sharing_a_copy_keeps;
 mod the_two_cow_doors;
 mod what_a_death_gives_back;
 mod what_a_refused_copy_gives_back;

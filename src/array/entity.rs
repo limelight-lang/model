@@ -426,11 +426,17 @@ pub unsafe fn needs_separation(a: *const LLArray) -> bool {
 /// which lives in a buffer-arena chunk (`dev/DECISIONS.md`, "the deep copy
 /// walks a list, and teardown is the half still on the stack").
 ///
-/// **Termination needs no visited set.** The list is entered only by an
-/// arena COW child, and a cycle cannot close inside a pure-COW subgraph
-/// while count-equals-holders holds: every entity a real ring passes
-/// through is non-COW and is published by the barrier rather than entered.
-/// A debug build checks that claim rather than paying for it.
+/// **The copy preserves the source's sharing**: one copy per distinct
+/// source entity, held once for each entry that names it
+/// ([`CopiesMade`]). A COW entity's identity is not observable, so the
+/// alternative differs only in cost — and it costs 2^depth on a source
+/// whose children name each other twice per level, which is
+/// attacker-shaped input on a store path.
+///
+/// **Termination is by that association rather than by an invariant.**
+/// Each distinct entity enters the list at most once, so a subgraph that
+/// closed on itself would be reproduced and handed to the tracing side
+/// rather than walked until memory refuses.
 ///
 /// **`reason` decides one element case and nothing else**
 /// ([`CopyReason`], and `element_for_copy` below): a duplication unwraps a
@@ -453,25 +459,16 @@ pub unsafe fn separate(
     }
 
     let mut pending = WorkList::new();
-    #[cfg(debug_assertions)]
-    let mut entered: Vec<*mut LLArray> = Vec::new();
+    let mut copies = CopiesMade::new();
     let mut next = Some((src, dst));
     while let Some((s, d)) = next {
-        #[cfg(debug_assertions)]
-        {
-            assert!(
-                !entered.contains(&s),
-                "a COW subgraph closed on itself: count-equals-holders is broken"
-            );
-            entered.push(s);
-        }
-
-        if !unsafe { fill_from(s, d, arena, &mut pending, reason) } {
+        if !unsafe { fill_from(s, d, arena, &mut pending, &mut copies, reason) } {
             // Refused part-way. The root's teardown cascades into every
             // copy this call published, nested ones included: each is
-            // held once, by the entry naming it.
+            // held once per entry naming it.
             unsafe { crate::object::destroy_unpublished(dst as *mut RcHeader) };
             pending.dispose();
+            copies.dispose();
             return std::ptr::null_mut();
         }
 
@@ -479,6 +476,7 @@ pub unsafe fn separate(
     }
 
     pending.dispose();
+    copies.dispose();
     dst
 }
 
@@ -598,14 +596,15 @@ unsafe fn fill_from(
     dst: *mut LLArray,
     arena: *mut crate::memory::arena::Arena,
     pending: &mut WorkList<(*mut LLArray, *mut LLArray)>,
+    copies: &mut CopiesMade,
     reason: CopyReason,
 ) -> bool {
     // Both arrays are in the source's representation, `new_empty_copy`
     // having built the destination from it, so one tag decides the pair.
     debug_assert_eq!(unsafe { (*src).head.tag() }, unsafe { (*dst).head.tag() });
     match unsafe { (*src).head.tag() } {
-        StorageTag::Hash => unsafe { fill_table_from(src, dst, arena, pending, reason) },
-        StorageTag::Vector => unsafe { fill_vector_from(src, dst, arena, pending, reason) },
+        StorageTag::Hash => unsafe { fill_table_from(src, dst, arena, pending, copies, reason) },
+        StorageTag::Vector => unsafe { fill_vector_from(src, dst, arena, pending, copies, reason) },
         StorageTag::Typed => unreachable!("no producer stamps the typed vector"),
     }
 }
@@ -619,6 +618,7 @@ unsafe fn fill_table_from(
     dst: *mut LLArray,
     arena: *mut crate::memory::arena::Arena,
     pending: &mut WorkList<(*mut LLArray, *mut LLArray)>,
+    copies: &mut CopiesMade,
     reason: CopyReason,
 ) -> bool {
     let category = unsafe { category_of(dst) };
@@ -636,9 +636,9 @@ unsafe fn fill_table_from(
             Key::Str(e.string_key())
         };
 
-        let Some(v) =
-            (unsafe { element_for_destination(e.value(), category, arena, pending, reason) })
-        else {
+        let Some(v) = (unsafe {
+            element_for_destination(e.value(), category, arena, pending, copies, reason)
+        }) else {
             return false;
         };
 
@@ -681,6 +681,7 @@ unsafe fn fill_vector_from(
     dst: *mut LLArray,
     arena: *mut crate::memory::arena::Arena,
     pending: &mut WorkList<(*mut LLArray, *mut LLArray)>,
+    copies: &mut CopiesMade,
     reason: CopyReason,
 ) -> bool {
     let category = unsafe { category_of(dst) };
@@ -694,7 +695,7 @@ unsafe fn fill_vector_from(
         };
 
         let Some(v) =
-            (unsafe { element_for_destination(element, category, arena, pending, reason) })
+            (unsafe { element_for_destination(element, category, arena, pending, copies, reason) })
         else {
             return false;
         };
@@ -728,6 +729,7 @@ unsafe fn element_for_destination(
     category: MemoryCategory,
     arena: *mut crate::memory::arena::Arena,
     pending: &mut WorkList<(*mut LLArray, *mut LLArray)>,
+    copies: &mut CopiesMade,
     reason: CopyReason,
 ) -> Option<Value> {
     let v = unsafe { element_for_copy(element, reason) };
@@ -737,6 +739,25 @@ unsafe fn element_for_destination(
 
     let child = v.entity_ptr();
     if unsafe { is_nested_arena_array(child, category) } {
+        // A child a single entry names cannot be met a second time, and
+        // in the arena the count is an upper bound on holders, so count
+        // one proves this entry is the only name and the association is
+        // neither read nor written for it. That is the reading
+        // [`element_for_copy`] already stakes its unwrap on.
+        let shared = unsafe { crate::refcount::header_refcount(child) } > 1;
+        if shared && let Some(made) = copies.get(child as *mut LLArray) {
+            // An ordinary longer-lived child from here: for a heap entity
+            // into a heap slot the barrier is a retain, which is the one
+            // reference this entry owes.
+            return unsafe {
+                crate::memory::barrier::publish_child(
+                    arena,
+                    category,
+                    Value::entity(v.tag(), made as *mut RcHeader),
+                )
+            };
+        }
+
         let copy = unsafe {
             new_empty_copy(
                 child as *mut LLArray,
@@ -748,7 +769,12 @@ unsafe fn element_for_destination(
             return None;
         }
 
-        if !pending.push((child as *mut LLArray, copy)) {
+        // Both refusals leave a structure naming a copy that is gone, and
+        // neither is ever read: every refusal path out of `separate`
+        // unwinds without popping the list or looking the map up.
+        if (shared && !copies.record(child as *mut LLArray, copy))
+            || !pending.push((child as *mut LLArray, copy))
+        {
             // The copy is named by nothing yet, so it goes back here
             // rather than through the root's cascade.
             unsafe { crate::object::destroy_unpublished(copy as *mut RcHeader) };
@@ -780,6 +806,63 @@ unsafe fn is_nested_arena_array(child: *mut RcHeader, category: MemoryCategory) 
         && flags & COW != 0
         && (flags & crate::refcount::ENTITY_KIND_MASK) >> crate::refcount::ENTITY_KIND_SHIFT
             == EntityKind::Array as u32
+}
+
+/// Which copy each source entity got, so that a child two entries name is
+/// copied once and held twice rather than copied twice
+/// (`dev/DECISIONS.md`, "the deep copy preserves the source's sharing").
+///
+/// **The generic [`Table`] used bare**, which is what that table was kept
+/// headerless and category-parameterised for: it allocates no entity and
+/// calls no barrier, so a source address is an ordinary integer key and a
+/// copy an ordinary value it never counts. Its storage is a buffer-arena
+/// chunk, the memory the work list beside it uses and for the same
+/// reasons.
+///
+/// The head is a local rather than an entity's field, so no walker can
+/// reach it and the rule against a `&mut` spanning a head does not arise:
+/// the pair here is one struct's two fields.
+struct CopiesMade {
+    table: Table,
+    head: StorageHead,
+}
+
+impl CopiesMade {
+    const CATEGORY: MemoryCategory = MemoryCategory::GcHeap;
+
+    /// Empty, and allocating nothing until the first child worth
+    /// recording — which is one named by more than a single entry.
+    fn new() -> Self {
+        CopiesMade {
+            table: Table::empty(),
+            head: StorageHead::empty(StorageTag::Hash),
+        }
+    }
+
+    fn get(&self, source: *mut LLArray) -> Option<*mut LLArray> {
+        self.table
+            .get(&self.head, Key::Int(source as i64))
+            .map(|v| v.entity_ptr() as *mut LLArray)
+    }
+
+    /// False when the association cannot grow, which the caller unwinds
+    /// like any other refusal: the channel keeps meaning out of memory.
+    fn record(&mut self, source: *mut LLArray, copy: *mut LLArray) -> bool {
+        self.table
+            .insert(
+                &self.head,
+                Self::CATEGORY,
+                Key::Int(source as i64),
+                Value::entity(Tag::Array, copy as *mut RcHeader),
+            )
+            .is_some()
+    }
+
+    /// Read by nobody: every refusal path unwinds without popping, so a
+    /// copy this names may already have been given back.
+    fn dispose(&mut self) {
+        self.table.dispose(&self.head, Self::CATEGORY);
+    }
 }
 
 /// The work a nesting-deep operation still owes, and the reason it is

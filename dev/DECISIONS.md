@@ -8,6 +8,74 @@ never edited or deleted.
 
 ---
 
+## 2026-08-12 — the deep copy preserves the source's sharing
+
+**Decided:** one copy per distinct source entity, held once for every
+entry that names it. `array::entity::separate` carries a source → copy
+association beside its work list, and the branch that copies a nested
+arena array consults it. This supersedes the visited-set half of the
+2026-08-07 ruling on the escape copy's recursion; the work-list half of
+that ruling stands unchanged.
+
+**Why:** the recursion was entered per *entry* rather than per entity, so
+a child two entries name was copied twice, and a source whose levels name
+each other twice cost 2^depth copies. Nesting depth on a store path is
+attacker-shaped input, which is the stated reason the work list exists —
+and the list bounds the machine stack while bounding nothing about the
+work. The two answers are semantically identical: a COW entity's identity
+is not observable (`memory/barrier.rs`, `store_category_barrier`), so a
+program cannot tell one copy held twice from two copies held once, every
+write going through separation either way. What is left between them is
+cost. Zend's `zend_array_dup` retains children and the shallow separation
+retains children; the deep copy exists because the destination outlives
+the arena, so it owes a lifetime rather than a proliferation.
+
+**The association is the generic `Table` used bare**: a stack
+`StorageHead`, category `GcHeap` so its storage is buffer-arena chunks —
+the memory the work list uses and for the same three reasons — the source
+address as an integer key and the copy carried as a value it never
+counts. That table allocates no entity, calls no barrier and takes its
+head and category as parameters precisely so a second customer could
+exist; this is that design paying out rather than a new structure.
+
+**It is consulted for a shared child only.** A count of one proves this
+entry is the only name — in the arena the count is an upper bound on
+holders, and two live entries would each have retained — so the ordinary
+path is untouched and pays one header read. A hit routes the existing
+copy through `barrier::publish_child`, which for a heap child into a heap
+slot is a retain, so the copy graph comes out isomorphic to the source
+graph, counts included.
+
+**Termination stops leaning on count-equals-holders.** Each distinct
+entity enters the list at most once, so a subgraph that closed on itself
+is reproduced and handed to the tracing side rather than walked until
+memory refuses. The `entered` probe that stood in `separate` is deleted
+with its message: it fired on a diamond, which is a graph the invariant
+allows, so it indicted an intact invariant. No substitute is claimed; a
+probe for that invariant belongs to the refcount machinery that maintains
+it.
+
+**Considered and rejected:** a forwarding pointer written into the source
+header, which needs no side allocation. It writes into live entities
+whose header words the collector reads at agreed widths, it breaks the
+source being untouched — which the refusal path's simplicity rests on —
+and undoing it after a refusal means walking an arbitrary prefix of the
+graph, which needs a list, funding the removal of one structure by
+building the same one. Also rejected: a hand-rolled pointer set beside
+`WorkList`, the table having been kept generic exactly so that sibling
+would never be written.
+
+**Cost:** the shallow duplication path pays nothing — with an arena
+destination the branch is statically unreachable. A deep copy with no
+shared nested children pays one header read per nested child, the table
+allocating on first insert. The path that pays is the one that was
+exponential: a thirty-level doubling chain goes from 2^30 array copies to
+31, and teardown of the result shrinks by the same factor. A refused
+insert into the association unwinds exactly as a refused `WorkList::push`
+does, so null keeps meaning out of memory.
+
+---
+
 ## 2026-08-12 — what the layout cost once it was applied
 
 **Decided:** the layout of the entry below stands, and its rule about

@@ -220,8 +220,14 @@ versions live in `docs/history/`, marked at the top.
   teardown recurses into nesting: both drain a `WorkList` in a buffer-
   arena chunk, because the depth is the caller's input and a frame set
   per level is a stack
-  overflow (`dev/DECISIONS.md`, 2026-08-07 and 2026-08-08). An object
-  chain still tears down through the machine stack.
+  overflow (`dev/DECISIONS.md`, 2026-08-07 and 2026-08-08). The copy
+  also **preserves the source's sharing** — one copy per distinct source
+  entity, held once per entry naming it, through a source → copy
+  association that is the generic `Table` used bare beside that list
+  (`dev/DECISIONS.md`, "the deep copy preserves the source's sharing").
+  A refusal anywhere in it hands the destination back through
+  `object::destroy_unpublished`, the one door for an entity no slot ever
+  named. An object chain still tears down through the machine stack.
   What is unbuilt is listed at the head of `PLAN.md`.
 - The event journal: `src/journal/` — what the runtime did, as
   32-byte records in a ring per thread, read back by marking a window
