@@ -243,7 +243,7 @@ fn a_destroyed_arena_copy_gives_its_children_back() {
             before + 1,
             "the replay was meant to take a reference of its own"
         );
-        destroy_unpublished(copy as *mut RcHeader);
+        crate::object::destroy_unpublished(copy as *mut RcHeader);
         assert_eq!(
             (*child).rc.refcount,
             before,

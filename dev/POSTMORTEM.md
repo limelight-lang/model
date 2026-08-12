@@ -631,3 +631,32 @@ whatever the block's verdict said. A pass of this kind ends with a review
 that opens every cited section — the only instrument that sees a fact
 which now exists nowhere, since the compiler and the suite see nothing at
 all.
+
+---
+
+## 2026-08-12 — a test that dies with `FORCE_OOM` raised reports the next test's crash
+
+**What happened.** S7.6's two new tests were run together for the first
+time. The first panicked on an `expect` between `FORCE_OOM.store(true)`
+and `FORCE_OOM.store(false)`; the second then died of SIGSEGV, and the
+run printed `FAILED` for the first with no message and the signal for the
+second, the process having died before the panic's line was flushed. The
+panic's text appeared only when that test was run alone. Unwinding does
+not restore a process-global fault-injection flag, so every later test on
+the thread met an allocator that refuses everything, and the first null it
+did not check was the crash.
+
+**Why it happened.** The panic was itself correct — the exhaustion loop
+had found no slot to take, because the thread had no warm entity block
+and the raised flag stopped it from drawing one, so the loop returned
+empty and the `expect` fired. The setup error and the reporting error
+compounded: the real defect was one line of ordering, and what it showed
+was a segfault in a different test.
+
+**The rules, and they are two.** Nothing between raising a
+fault-injection flag and lowering it may panic — assertions come after
+the flag is down, and a value the test needs from that window is read
+into a local and asserted on later. And an exhaustion loop under a raised
+flag needs its first block drawn **before** the flag goes up: with the
+pool refusing, an allocator with no warm block serves nothing, and
+"exhausted" and "never started" are the same empty vector.

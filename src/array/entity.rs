@@ -417,7 +417,7 @@ pub unsafe fn needs_separation(a: *const LLArray) -> bool {
 ///
 /// **Null on refusal**, with nothing published: the copy is private until
 /// it is returned, so a failure part-way releases what it has retained,
-/// gives the copy itself back through [`give_back_unheld_copy`], and
+/// gives the copy itself back through `object::destroy_unpublished`, and
 /// leaves the source untouched.
 ///
 /// **Nesting is worked through a list, not the machine stack**, depth here
@@ -470,7 +470,7 @@ pub unsafe fn separate(
             // Refused part-way. The root's teardown cascades into every
             // copy this call published, nested ones included: each is
             // held once, by the entry naming it.
-            unsafe { give_back_unheld_copy(dst) };
+            unsafe { crate::object::destroy_unpublished(dst as *mut RcHeader) };
             pending.dispose();
             return std::ptr::null_mut();
         }
@@ -480,23 +480,6 @@ pub unsafe fn separate(
 
     pending.dispose();
     dst
-}
-
-/// Give back a copy no holder ever took. The creation reference is spent
-/// here, the entry that would have spent it never having been written,
-/// and the teardown that follows is the ordinary one: the children this
-/// copy published, its storage and — in the GC heap — its own slot go
-/// back through the doors that free them anywhere else.
-///
-/// # Safety
-/// `a` is a live array entity at count one that no slot names.
-unsafe fn give_back_unheld_copy(a: *mut LLArray) {
-    let died = unsafe { crate::refcount::ll_release(a as *mut RcHeader) };
-    debug_assert!(
-        died || unsafe { category_of(a) } != MemoryCategory::GcHeap,
-        "a heap entity at one dies when its only count goes"
-    );
-    unsafe { array_die(a) };
 }
 
 /// An empty destination in the source's own representation, carrying
@@ -768,7 +751,7 @@ unsafe fn element_for_destination(
         if !pending.push((child as *mut LLArray, copy)) {
             // The copy is named by nothing yet, so it goes back here
             // rather than through the root's cascade.
-            unsafe { give_back_unheld_copy(copy) };
+            unsafe { crate::object::destroy_unpublished(copy as *mut RcHeader) };
             return None;
         }
 

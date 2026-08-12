@@ -768,6 +768,38 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     crate::gc::teardown_exit();
 }
 
+/// Tear an entity at count one down that no slot has ever named —
+/// children given back, out-of-line memory returned, the cell freed.
+/// Callers are the refusal branches of the operations that build an
+/// entity before publishing it: the copy `element::write_through` could
+/// not finish, the box `element::box_element` could not fill, and the
+/// destination `array::entity::separate` could not complete.
+///
+/// [`ll_entity_die`] rather than a kind's own body, so that the teardown
+/// bracket and the candidate-buffer duty this door carries are paid here
+/// too, and it runs **unconditionally** after the count is dropped,
+/// because the release verdict answers a narrower question than the
+/// caller is asking: an arena entity reports no death at any count, its
+/// cell being the reset's, and a refusal branch that waited for `true`
+/// left every reference the replay published — an arena COW child's
+/// count, a heap child's log record's +1 — held by a corpse until the
+/// reset. On the GC heap the verdict *is* death, which is all the
+/// assertion pins: the callers differ in the category they can arrive
+/// with, never in what they owe.
+///
+/// # Safety
+/// `entity` is a live entity at count 1 that no slot has ever named.
+pub(crate) unsafe fn destroy_unpublished(entity: *mut RcHeader) {
+    unsafe {
+        let died = crate::refcount::ll_release(entity);
+        debug_assert!(
+            died || header_category(entity) != MemoryCategory::GcHeap,
+            "a heap entity at one dies when its only count goes"
+        );
+        ll_entity_die(entity);
+    }
+}
+
 /// The copy-on-write write barrier: takes the pointer a holder has,
 /// returns the pointer it must store before writing
 /// (`rfc/model/values.md`, "Copy-on-Write Protocol"). A no-op unless

@@ -201,7 +201,7 @@ unsafe fn write_through(
             )
         }
     {
-        unsafe { destroy_unpublished(separated as *mut RcHeader) };
+        unsafe { crate::object::destroy_unpublished(separated as *mut RcHeader) };
         return false;
     }
 
@@ -489,34 +489,6 @@ pub unsafe fn get(slot: *const Value, key: Key) -> Option<Value> {
     Some(element)
 }
 
-/// Tear an entity at count one down that no slot has ever named —
-/// children given back, out-of-line memory returned, the cell freed. Two
-/// callers: the copy [`write_through`] could not finish, and the box
-/// [`box_element`] could not fill.
-///
-/// `ll_entity_die` runs **unconditionally** after the count is dropped,
-/// because the release verdict answers a narrower question than the
-/// caller is asking: an arena entity reports no death at any count, its
-/// cell being the reset's, and a refusal branch that waited for `true`
-/// left every reference the replay published — an arena COW child's
-/// count, a heap child's log record's +1 — held by a corpse until the
-/// reset. On the GC heap the verdict *is* death,
-/// which is all the assertion pins: the two callers differ in the
-/// category they can arrive with, never in what they owe.
-///
-/// # Safety
-/// `entity` is a live entity at count 1 that no slot has ever named.
-unsafe fn destroy_unpublished(entity: *mut RcHeader) {
-    unsafe {
-        let died = crate::refcount::ll_release(entity);
-        debug_assert!(
-            died || crate::object::header_category(entity) != MemoryCategory::GcHeap,
-            "a heap entity at one dies when its only count goes"
-        );
-        crate::object::ll_entity_die(entity);
-    }
-}
-
 /// The table half of [`set`]: publish the value and the key for `a`,
 /// insert, and settle the key's ownership on every outcome. False on
 /// refusal with everything given back and `a` unchanged. Both
@@ -723,7 +695,7 @@ unsafe fn box_element(
     } {
         Some(element) => element,
         None => {
-            unsafe { destroy_unpublished(boxed as *mut RcHeader) };
+            unsafe { crate::object::destroy_unpublished(boxed as *mut RcHeader) };
             return std::ptr::null_mut();
         }
     };
