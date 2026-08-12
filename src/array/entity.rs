@@ -6,38 +6,28 @@
 //! +48  Storage      the storage handle, in one of its representations
 //! ```
 //!
-//! **The head is the entity's and not the representation's**, which is
-//! the type rule every access path here exists to hold: a mutating
-//! operation is reached through `&mut (*a).storage`, and a `&mut` covers
-//! its whole range whatever is inside it, so a head inside the
-//! representation would sit inside that borrow and the walker's read of
-//! it would be undefined behaviour (`crate::array::head`,
-//! `dev/POSTMORTEM.md` 2026-08-10). The two references are derived field
-//! by field from the one `*mut LLArray` and are disjoint;
-//! [`as_table_mut`] and [`as_vector_mut`] are the only places that derive
-//! them, which is what makes the rule checkable rather than remembered.
+//! **The head is the entity's and not the representation's**, which is the
+//! type rule every access path here exists to hold: a mutating operation
+//! is reached through `&mut (*a).storage`, and a `&mut` covers its whole
+//! range whatever is inside it (`crate::array::head`). [`as_table_mut`]
+//! and [`as_vector_mut`] are the only places that derive the disjoint
+//! pair, which is what makes the rule checkable rather than remembered.
 //!
 //! **No per-instance class pointer**, the same construction as a string
-//! (`rfc/model/arrays.md`: "a single final class … no per-instance class
+//! (`rfc/model/arrays.md`, "a single final class … no per-instance class
 //! pointer, devirtualized methods"). The entity kind *is* the class:
-//! `array` is final, so nothing needs to be read to know what this is,
-//! and the storage-strategy tag is an internal bit invisible to
-//! `instanceof`. Spending eight bytes on a word that would hold the same
-//! value in every array ever allocated is exactly the trade the string
-//! layout already refused.
+//! `array` is final, and the storage-strategy tag is an internal bit
+//! invisible to `instanceof`. The table itself holds no header either, so
+//! this is what supplies the refcount, the memory category and the COW
+//! state, and the table is handed the category by every allocating call
+//! (`dev/DECISIONS.md`, "the table is handed its category and reads no
+//! header").
 //!
-//! The table itself holds no header: this is what supplies the refcount,
-//! the memory category and the COW state, and the table is handed the
-//! category by every allocating call (`dev/DECISIONS.md`, 2026-08-09).
-//!
-//! **COW separation is shallow**, which is what `rfc/model/arrays.md`
-//! says and what PHP's semantics require: the copy gets its own storage
-//! and its own index, and the children are retained and shared until one
-//! of them is written. That is a different operation from the store
-//! barrier's *escape* copy, which is deep and category-driven; conflating
-//! the two is the contradiction `rfc/model/arrays-hashtable.md` had to
-//! settle, and an implementer who reads "copy" without asking which one
-//! will build the wrong thing.
+//! **COW separation is shallow**: the copy gets its own storage and its
+//! own index, and the children are retained and shared until one of them
+//! is written. That is a different operation from the store barrier's
+//! *escape* copy, which is deep and category-driven, and reading "copy"
+//! without asking which one builds the wrong thing.
 
 use crate::array::head::{StorageHead, StorageTag};
 use crate::array::table::{Key, Table};
