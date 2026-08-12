@@ -8,6 +8,64 @@ never edited or deleted.
 
 ---
 
+## 2026-08-12 — the deep copy's termination probe, and what termination rests on
+
+**Decided:** the debug-only `entered` vector returns to `separate`'s loop
+with a rewritten message, and the count gate stands. This supersedes two
+sentences of the entry below — "Termination stops leaning on
+count-equals-holders" and the paragraph deleting the probe — and leaves
+the rest of it standing.
+
+**Why the probe comes back:** it was deleted because it fired on a
+diamond, and the same ruling's association made a diamond enter the list
+once. The assertion is now a theorem on every graph PHP value semantics
+can build, so it holds on healthy input and fires only on a real defect —
+the opposite of what was deleted.
+
+**What it now asserts, and what a firing means.** Two causes, and the
+message names the observable first because neither can be assumed: a
+child's count under-reporting its holders, or a graph that closes on
+itself through the root. The root is the one source the association does
+not hold, so a ring entered at the root re-enters once and is reproduced;
+a ring entered anywhere else terminates in one pass, its entry having two
+in-edges and therefore a count above one.
+
+**Termination rests on both halves, and the earlier sentence overstated
+it.** For a shared child the association is authoritative. For a
+single-named one the argument is "count one implies at most one holder" —
+count-equals-holders, read in the one direction, the same reading
+`element_for_copy` stakes its reference-box unwrap on. A count that
+under-reports for an arena COW array sends a doubling chain back to
+2^depth, and the probe is what names that at depth two instead of hanging.
+
+**The vector rather than the association.** The entities that can wrongly
+re-enter are exactly the ones the association never records — count-one
+children and the root — so a probe reading only what is already there
+observes nothing. Recording count-one children in debug builds was
+refused: the association's storage comes from the pool whose refusal
+`array::entity`'s tests choreograph, so a debug-only insert changes which
+allocation refuses, and a refused debug-record has no good answer.
+Recording the root was refused in both forms — in release it allocates a
+table on every deep copy, and debug-only it would make the debug build
+build a different graph than the release one. The `Vec` uses the system
+allocator, which no fault injection here names.
+
+**The gate stands.** Dropping it would make the association authoritative
+for every nested child and remove the count from the argument, at a table
+insert per nested child paid in release forever. The same count direction
+is already staked by `element_for_copy`, where an under-report collapses a
+reference another holder still names — a dangling reference rather than a
+cost — so hardening the cost symptom while the safety symptom stands
+unguarded protects the wrong flank.
+
+**Cost:** debug builds pay one system allocation per `separate` and a
+linear scan per level, quadratic in the distinct nested arena COW arrays
+of one graph, which number in the tens today. Release builds keep no
+guard, so a regression reaching only release shows as cost rather than as
+an assertion.
+
+---
+
 ## 2026-08-12 — the deep copy preserves the source's sharing
 
 **Decided:** one copy per distinct source entity, held once for every
@@ -41,10 +99,18 @@ exist; this is that design paying out rather than a new structure.
 **It is consulted for a shared child only.** A count of one proves this
 entry is the only name — in the arena the count is an upper bound on
 holders, and two live entries would each have retained — so the ordinary
-path is untouched and pays one header read. A hit routes the existing
-copy through `barrier::publish_child`, which for a heap child into a heap
-slot is a retain, so the copy graph comes out isomorphic to the source
-graph, counts included.
+path is untouched and pays nothing: the kind test and the sharing test
+read one header word between them (`refcount::header_pair`). A hit routes
+the existing copy through `barrier::publish_child`, which for a heap
+child into a heap slot is a retain, so the copy's shape reproduces the
+source's and **the copy holds exactly its holders** — its count is the
+number of entries in the copied graph naming it, where the source's also
+carries external holders and whatever the arena has not given back.
+
+**The root is the one source the association does not hold.** Meeting it
+again means a descendant names it, which is a cycle, and a cycle cannot
+close inside a pure-COW subgraph. Recording it would cost a table
+allocation on every escape copy to answer a shape nothing can build.
 
 **Termination stops leaning on count-equals-holders.** Each distinct
 entity enters the list at most once, so a subgraph that closed on itself
@@ -66,9 +132,11 @@ building the same one. Also rejected: a hand-rolled pointer set beside
 would never be written.
 
 **Cost:** the shallow duplication path pays nothing — with an arena
-destination the branch is statically unreachable. A deep copy with no
-shared nested children pays one header read per nested child, the table
-allocating on first insert. The path that pays is the one that was
+destination the branch is statically unreachable, and the association's
+disposal returns before `Table::dispose`'s release fence when nothing was
+ever inserted. A deep copy with no shared nested children pays nothing
+beyond the header word the kind test already reads, the table allocating
+on the first shared child. The path that pays is the one that was
 exponential: a thirty-level doubling chain goes from 2^30 array copies to
 31, and teardown of the result shrinks by the same factor. A refused
 insert into the association unwinds exactly as a refused `WorkList::push`

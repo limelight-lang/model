@@ -48,12 +48,18 @@ unsafe fn distinct_arrays(root: *mut LLArray) -> usize {
         }
 
         seen.push(a);
-        let (table, head) = unsafe { as_table(a) };
-        table.for_each_value(head, |v| {
-            if v.tag() == crate::value::Tag::Array {
-                stack.push(v.entity_ptr() as *mut LLArray);
-            }
-        });
+        // Through the tracing walk rather than the table, so the helper
+        // reads whichever representation the array holds.
+        unsafe {
+            for_each_counted_child(a, |child| {
+                let flags = crate::refcount::header_flags(child);
+                let kind = (flags & crate::refcount::ENTITY_KIND_MASK)
+                    >> crate::refcount::ENTITY_KIND_SHIFT;
+                if kind == crate::refcount::EntityKind::Array as u32 {
+                    stack.push(child as *mut LLArray);
+                }
+            })
+        };
     }
 
     seen.len()
@@ -95,9 +101,15 @@ fn a_child_two_entries_name_is_copied_once_and_held_twice() {
     arena.reset(|_| {});
 }
 
-/// Thirty levels, each naming the level below it twice: the copy holds
-/// thirty-one arrays. Per entry it would hold 2^30, which is the shape
-/// this exists to refuse — and which would not finish rather than fail.
+/// Twelve levels, each naming the level below it twice: the copy holds
+/// thirteen arrays. Per entry it would hold 4095, which is the shape this
+/// exists to refuse.
+///
+/// **Twelve rather than the thirty the stage's criterion names.** The
+/// depth decides what a regression does: at twelve the per-entry shape
+/// allocates four thousand arrays and reports, at thirty it exhausts the
+/// pool and takes the concurrently running tests with it. A probe that
+/// cannot report is not one.
 #[test]
 fn a_doubling_chain_costs_one_copy_a_level() {
     let _g = crate::memory::block_pool::test_guard();
@@ -107,7 +119,7 @@ fn a_doubling_chain_costs_one_copy_a_level() {
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
     crate::memory::context::set_current_context(context_ptr);
 
-    const DEPTH: usize = 30;
+    const DEPTH: usize = 12;
     let src = unsafe { doubling_chain(DEPTH) };
     let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr, CopyReason::Escape) };
     assert!(!copy.is_null(), "the copy was refused");

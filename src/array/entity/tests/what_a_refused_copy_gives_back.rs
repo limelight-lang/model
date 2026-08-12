@@ -84,13 +84,17 @@ unsafe fn arena_source_with_nested_arrays(n: i64) -> *mut LLArray {
         let nested = unsafe { ll_array_new(MemoryCategory::RequestArena) };
         unsafe {
             // The entry's own reference: `insert` writes the entry raw and
-            // leaves the counting to the caller.
+            // leaves the counting to the caller. The builder's own goes
+            // back straight after, so the entry is the only holder and
+            // the child's count says so — a copy reads that count to
+            // decide whether it can be met twice.
             crate::refcount::ll_retain(nested as *mut RcHeader);
             crate::array::testing::insert(
                 src,
                 Key::Int(i),
                 Value::entity(crate::value::Tag::Array, nested as *mut RcHeader),
             );
+            crate::refcount::ll_release(nested as *mut RcHeader);
         }
     }
 
@@ -295,6 +299,76 @@ fn a_refused_work_list_gives_the_nested_copy_back() {
         assert!(
             !b.is_null(),
             "the nested copy the list could not record kept its slot"
+        );
+        assert_ne!(a, b, "one slot came back twice");
+        assert!(
+            third.is_null(),
+            "the refusal gave back more slots than the copy took"
+        );
+
+        unsafe {
+            give_one_back(a);
+            give_one_back(b);
+            give_all_back(fillers);
+        }
+    }
+
+    crate::memory::context::set_current_context(std::ptr::null_mut());
+    arena.reset(|_| {});
+}
+
+/// The association refusing is the third arrival, and it comes before
+/// the work list: a child two entries name is looked up and recorded,
+/// and the recording is a `Table::insert` into a buffer-arena chunk.
+/// Which of the two refuses is decided by the child's count, so this
+/// test's source names its child twice where the one above names each
+/// child once.
+#[test]
+fn a_refused_association_gives_the_nested_copy_back() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = crate::memory::arena::Arena::new();
+    let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+    let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+    let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+    crate::memory::context::set_current_context(context_ptr);
+
+    let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let shared = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    unsafe {
+        for k in 0..2 {
+            crate::refcount::ll_retain(shared as *mut RcHeader);
+            crate::array::testing::insert(
+                src,
+                Key::Int(k),
+                Value::entity(crate::value::Tag::Array, shared as *mut RcHeader),
+            );
+        }
+
+        crate::refcount::ll_release(shared as *mut RcHeader);
+    }
+
+    let first = arr();
+    let second = arr();
+
+    {
+        let _pool = Refusing::raise(&FORCE_OOM);
+        let _buffers = Refusing::raise(&FORCE_REFUSE_LONGLIVED);
+        let fillers = unsafe { exhaust_heap_arrays() };
+        unsafe { give_one_back(first) };
+        unsafe { give_one_back(second) };
+        let copy = unsafe { separate(src, MemoryCategory::GcHeap, arena_ptr, CopyReason::Escape) };
+        let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let b = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        let third = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+
+        assert!(
+            copy.is_null(),
+            "the copy was meant to be refused at the association"
+        );
+        assert!(!a.is_null(), "the refusal gave no slot back");
+        assert!(
+            !b.is_null(),
+            "the copy the association could not record kept its slot"
         );
         assert_ne!(a, b, "one slot came back twice");
         assert!(

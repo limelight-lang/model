@@ -433,10 +433,14 @@ pub unsafe fn needs_separation(a: *const LLArray) -> bool {
 /// whose children name each other twice per level, which is
 /// attacker-shaped input on a store path.
 ///
-/// **Termination is by that association rather than by an invariant.**
-/// Each distinct entity enters the list at most once, so a subgraph that
-/// closed on itself would be reproduced and handed to the tracing side
-/// rather than walked until memory refuses.
+/// **Termination is by the association for a shared child and by the
+/// count for a single-named one.** A child reading count one is proved
+/// the only name by the arena's upper-bound reading, and one above it is
+/// recorded at its first meeting and hit at every later one, so each
+/// distinct entity enters the list once. A debug build asserts that
+/// composite claim per level; a subgraph closed through the root — the
+/// one source the association does not hold — re-enters once and is
+/// reproduced rather than walked until memory refuses.
 ///
 /// **`reason` decides one element case and nothing else**
 /// ([`CopyReason`], and `element_for_copy` below): a duplication unwraps a
@@ -460,8 +464,28 @@ pub unsafe fn separate(
 
     let mut pending = WorkList::new();
     let mut copies = CopiesMade::new();
+    // The root is the one source the association does not hold, and the
+    // exemption is the invariant rather than an oversight: meeting it
+    // again means a descendant names it, which is a cycle, and a cycle
+    // cannot close inside a pure-COW subgraph — every entity a real ring
+    // passes through is non-COW and is published by the barrier rather
+    // than entered. Recording it would cost a table allocation on every
+    // escape copy to answer a shape nothing can build.
+    #[cfg(debug_assertions)]
+    let mut entered: Vec<*mut LLArray> = Vec::new();
     let mut next = Some((src, dst));
     while let Some((s, d)) = next {
+        #[cfg(debug_assertions)]
+        {
+            assert!(
+                !entered.contains(&s),
+                "a source entered the deep copy twice: a child's count \
+                 under-reported its holders, or the graph closes on itself \
+                 through the root"
+            );
+            entered.push(s);
+        }
+
         if !unsafe { fill_from(s, d, arena, &mut pending, &mut copies, reason) } {
             // Refused part-way. The root's teardown cascades into every
             // copy this call published, nested ones included: each is
@@ -717,9 +741,13 @@ unsafe fn fill_vector_from(
 /// Published **before** the entry is written, so the entry never names
 /// something the copy does not hold, and so the barrier can hand back a
 /// different entity: an arena COW child crossing into a longer-lived copy
-/// is replaced by a copy of its own. A nested arena array is copied empty
-/// here and its filling pushed onto `pending`, because that is the one
-/// child whose copying recurses.
+/// is replaced by a copy of its own. A nested arena array is the one
+/// child whose copying recurses, so it is copied empty here and its
+/// filling pushed onto `pending` — unless `copies` already holds a copy
+/// of it, in which case that copy is published for this entry too and
+/// nothing is queued. Which of the two happens is decided by the child's
+/// count, the association being neither read nor written for a child a
+/// single entry names.
 ///
 /// # Safety
 /// `element` is a live element of a live array; `category` is the
@@ -738,13 +766,17 @@ unsafe fn element_for_destination(
     }
 
     let child = v.entity_ptr();
-    if unsafe { is_nested_arena_array(child, category) } {
+    // One read of the header word: the kind test and the sharing test
+    // both live in it, and under `rc-walk` the two accessors would load
+    // it twice.
+    let (count, flags) = unsafe { crate::refcount::header_pair(child) };
+    if is_nested_arena_array(flags, category) {
         // A child a single entry names cannot be met a second time, and
         // in the arena the count is an upper bound on holders, so count
         // one proves this entry is the only name and the association is
         // neither read nor written for it. That is the reading
         // [`element_for_copy`] already stakes its unwrap on.
-        let shared = unsafe { crate::refcount::header_refcount(child) } > 1;
+        let shared = count > 1;
         if shared && let Some(made) = copies.get(child as *mut LLArray) {
             // An ordinary longer-lived child from here: for a heap entity
             // into a heap slot the barrier is a retain, which is the one
@@ -793,15 +825,14 @@ unsafe fn element_for_destination(
 /// copying recurses, and the only one the work list exists for; the
 /// barrier's copy arm is a leaf for every other kind.
 ///
-/// # Safety
-/// `child` is a live entity.
+/// `flags` are the child's, read by the caller — which needs the count
+/// beside them and would otherwise load the same word twice.
 #[inline]
-unsafe fn is_nested_arena_array(child: *mut RcHeader, category: MemoryCategory) -> bool {
+fn is_nested_arena_array(flags: u32, category: MemoryCategory) -> bool {
     if category == MemoryCategory::RequestArena {
         return false;
     }
 
-    let flags = unsafe { crate::refcount::header_flags(child) };
     MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena
         && flags & COW != 0
         && (flags & crate::refcount::ENTITY_KIND_MASK) >> crate::refcount::ENTITY_KIND_SHIFT
@@ -860,7 +891,17 @@ impl CopiesMade {
 
     /// Read by nobody: every refusal path unwinds without popping, so a
     /// copy this names may already have been given back.
+    ///
+    /// The empty case returns before `Table::dispose`, which brackets its
+    /// three publications with a release fence and two more stores even
+    /// when there is nothing to free. Nothing here is walker-visible —
+    /// the head is a local — and a separation with no shared nested child
+    /// never allocates, which is every shallow one.
     fn dispose(&mut self) {
+        if self.head.storage().is_null() {
+            return;
+        }
+
         self.table.dispose(&self.head, Self::CATEGORY);
     }
 }

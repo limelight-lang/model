@@ -743,6 +743,20 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
     }
 }
 
+/// The count and the flags in one read, for a caller that needs both.
+/// Under `rc-walk` they are the halves of one word, so asking
+/// [`header_refcount`] and [`header_flags`] in turn loads that word
+/// twice and the compiler may merge neither, both being atomic.
+#[inline]
+pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
+    #[cfg(not(feature = "rc-walk"))]
+    return unsafe { ((*header).refcount, (*header).flags) };
+    #[cfg(feature = "rc-walk")]
+    unsafe {
+        mutator_load_header(header)
+    }
+}
+
 /// Rewrite the flags of a **published** header, same dispatch rule —
 /// the write twin of [`header_flags`]. Post-publish flag writes on a
 /// walked header must not be plain stores under `rc-walk`.
