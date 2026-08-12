@@ -410,20 +410,8 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
         let n = unsafe { crate::template::value_count_at::<R>(base) };
         for i in 0..n {
             let at = unsafe { base.add(crate::template::VALUES_OFFSET + i * 16) };
-            // A Box payload is read as an **integer**, not as a pointer,
-            // and that is `Value`'s doing rather than a shortcut here:
-            // `Value::entity` stores the address as a `u64`, so the bytes
-            // in the slot carry no provenance and reading them back as a
-            // pointer yields one Miri rejects on first use. `entity_ptr`
-            // has always recovered it by the same cast. Found by Miri.
-            let child = unsafe { R::word(at) } as *mut RcHeader;
-            if Value::refcounted_in_meta_word(unsafe { R::word(at.add(8)) }) {
-                visit(crate::walk::Cell {
-                    addr: at as usize,
-                    raw: child as u64,
-                    child,
-                    shape: crate::walk::CellShape::Box,
-                });
+            if let Some(cell) = unsafe { crate::walk::counted_box_cell::<R>(at) } {
+                visit(cell);
             }
         }
 
@@ -450,15 +438,8 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
     for run in unsafe { (*cls).box_runs() } {
         for i in 0..run.count {
             let at = unsafe { base.add((run.offset + i * 16) as usize) };
-            // An integer read — see the template arm above.
-            let child = unsafe { R::word(at) } as *mut RcHeader;
-            if Value::refcounted_in_meta_word(unsafe { R::word(at.add(8)) }) {
-                visit(crate::walk::Cell {
-                    addr: at as usize,
-                    raw: child as u64,
-                    child,
-                    shape: crate::walk::CellShape::Box,
-                });
+            if let Some(cell) = unsafe { crate::walk::counted_box_cell::<R>(at) } {
+                visit(cell);
             }
         }
     }

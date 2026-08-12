@@ -2,70 +2,56 @@
 //! that makes reading them coherent.
 //!
 //! An array has more than one storage representation
-//! (`rfc/model/arrays.md`), and the migration from one to the next
-//! replaces the representation under a walker that is mid-stride. A
-//! version counter kept inside a representation could not bracket that:
-//! it dies with the bytes it protects. So the counter, the chunk, the
-//! two counts and the tag saying which representation is present live
-//! **here**, and the migration is one more mover inside the same window
-//! (`PLAN.md` S7.1, Sage 2026-08-11).
+//! (`rfc/model/arrays.md`), and the migration to the next one replaces
+//! the representation under a walker that is mid-stride. A version
+//! counter kept inside a representation dies with the bytes it protects,
+//! so the counter, the chunk, the two counts and the tag live here, and
+//! the migration is one more mover inside the same window.
 //!
-//! **This struct is a field of the entity — `LLArray { rc, head,
-//! storage }` — and not a prefix inside either representation.** The
-//! placement is the type rule the crate has paid for twice: a mutating
+//! **This struct is a field of the entity, `LLArray { rc, head, storage
+//! }`, rather than a prefix inside either representation.** A mutating
 //! table or vector operation is reached through `&mut (*a).storage`, and
 //! a `&mut` asserts uniqueness over its whole range whatever the fields
-//! inside it are, the interior-mutability exemption belonging to shared
-//! references alone (`dev/POSTMORTEM.md`, 2026-08-10). A head inside the
-//! representation would therefore sit inside that borrow, and the
-//! walker's read of it is undefined behaviour rather than a race the
-//! atomics settle. Outside it, the two references are disjoint: every
-//! caller derives `&StorageHead` and `&mut Table` field by field from the
-//! one `*mut LLArray`, and no `&mut` in the crate ever spans this struct
-//! ([`crate::array::entity::as_table_mut`]).
+//! inside it are, so a head inside that borrow is read by the walker as
+//! undefined behaviour rather than as a race the atomics settle
+//! (`dev/POSTMORTEM.md`, 2026-08-10). Outside it the two references are
+//! disjoint: every caller derives `&StorageHead` and `&mut Table` field
+//! by field from the one `*mut LLArray`, and no `&mut` in the crate spans
+//! this struct ([`crate::array::entity::as_table_mut`]).
 //!
-//! Three rules hold this together, and none is negotiable:
+//! Three rules hold it together:
 //!
-//! - **Every field is atomic**, because a walker reads all of them and
-//!   each byte it reads must be written by one store of the same width.
-//!   A field only the mutator touches belongs in the representation's
-//!   own tail, never in this struct.
-//! - **The head is reached shared, always.** A `&mut StorageHead` would
-//!   be the same defect one level down, so nothing takes one — the
-//!   mutating methods here take `&self` and write through the atomics.
-//! - **The tag is loaded inside the bracket and branched on only after
-//!   it validates.** The read set does not depend on the tag, so a
-//!   stale tag can never select a stride: it is discarded with
-//!   everything else read beside it.
+//! - **Every field is atomic.** A walker reads all of them, and each byte
+//!   it reads is written by one store of the same width. A field only the
+//!   mutator touches belongs in the representation's own tail.
+//! - **The head is reached shared.** A `&mut StorageHead` would be the
+//!   same defect one level down, so the mutating methods here take
+//!   `&self` and write through the atomics.
+//! - **The tag is loaded inside the bracket** and branched on only after
+//!   it validates, so a stale tag cannot select a stride.
 //!
-//! And one rule that belongs to whoever writes the chunk rather than to
-//! this struct: **`used` never falls while `storage` stays the same.**
-//! A walker holds the pair from one accepted reading and strides
-//! `0..used` in that chunk, so a count that fell would leave it striding
-//! indices the mutator has taken back — and an insert writes a fresh
-//! entry's key word plainly, since no reader can reach an index above the
-//! published count. Lowering `used` in place would put those plain writes
-//! under the walker, and a half-written key word above `KEY_HOLE` is a
-//! phantom in-edge: the one direction that frees a live entity. Every
-//! operation that lowers the count therefore publishes a different chunk
-//! with it, save the one exempted below — `Table::move_entries` a fresh
-//! one, both `dispose` bodies a null one. This was true by accident
-//! until S13.1 and is load-bearing now (Critic, S13.1).
+//! And one rule for whoever writes the chunk: **`used` never falls while
+//! `storage` stays the same.** A walker holds the pair from one accepted
+//! reading and strides `0..used` in that chunk, while an insert writes a
+//! fresh entry's key word plainly, no reader being able to reach an index
+//! above the published count. A count that fell in place would put those
+//! plain writes under the walker, where a half-written key word above
+//! `KEY_HOLE` is a phantom in-edge: the one direction that frees a live
+//! entity. So every operation that lowers the count publishes a different
+//! chunk with it, `Table::move_entries` a fresh one and both `dispose`
+//! bodies a null one.
 //!
-//! One operation lowers the count in the chunk it keeps, and it is
-//! exempt for a reason that does not generalise:
-//! `Vector::sever_entries` empties a component the drain has already
-//! confirmed garbage, so the only writer that could follow it is the
-//! teardown, and the elements it does write go out as atomic stores
-//! (`vector::store_element`) rather than the plain key word the rule is
-//! about. A representation whose elements are written plainly, or one
-//! that can be inserted into after a sever, may not copy this.
+//! `Vector::sever_entries` is the one exemption, and it does not
+//! generalise: it empties a component the drain has already confirmed
+//! garbage, so the only writer that can follow is the teardown, whose
+//! elements go out as atomic stores (`vector::store_element`) rather than
+//! as the plain key word the rule is about. A representation whose
+//! elements are written plainly, or one that can be inserted into after a
+//! sever, may not copy this.
 //!
 //! **The window covers a release as well as a move.** `dispose` writes
-//! the same words growth does, so a reader that took them one at a time
-//! could pair a live chunk with the empty counts; the bracket is what
-//! keeps the order of the stores inside either body from carrying the
-//! argument (`PLAN.md` S13.2).
+//! the same words growth does, so a reader taking them one at a time
+//! could pair a live chunk with the empty counts.
 
 use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
 

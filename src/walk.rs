@@ -148,6 +148,37 @@ impl CellReader for RelaxedCells {
     }
 }
 
+/// The counted child of the sixteen-byte `Value` at `at`, or `None` when
+/// the cell holds nothing counted.
+///
+/// The payload word is read as an **integer** rather than as a pointer,
+/// which is `Value`'s doing rather than a shortcut: `Value::entity` stores
+/// the address as a `u64`, so the bytes carry no provenance and reading
+/// them back as a pointer yields one Miri rejects on first use.
+/// `entity_ptr` recovers it by the same cast.
+///
+/// The payload is read before the flags, and both readers may see a store
+/// land between the two: a `Value` torn across its words is what the
+/// epoch's re-check exists to catch (`collector::Edge`).
+///
+/// # Safety
+/// `at` addresses a readable, aligned `Value` of a live entity, which
+/// under `R = RelaxedCells` the mutator may be writing.
+#[inline]
+pub(crate) unsafe fn counted_box_cell<R: CellReader>(at: *const u8) -> Option<Cell> {
+    let child = unsafe { R::word(at) } as *mut RcHeader;
+    if !Value::refcounted_in_meta_word(unsafe { R::word(at.add(8)) }) {
+        return None;
+    }
+
+    Some(Cell {
+        addr: at as usize,
+        raw: child as u64,
+        child,
+        shape: CellShape::Box,
+    })
+}
+
 /// Visit every counted child of `entity`, dispatching on the kind bits
 /// **before** touching `+8`: only Object (0) and Lazy (6) carry a class
 /// pointer there, and reaching for the trace map through a class that
@@ -171,32 +202,26 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
     unsafe { trace_cells::<PlainCells>(entity, kind, |cell| visit(cell.child)) };
 }
 
-/// Every counted cell of `entity`, dispatched on its kind — **the single
-/// tracing dispatch**, serving the quiescent walk and the collector's
-/// epoch alike, which differ only in `R`.
+/// Every counted cell of `entity`, dispatched on its kind: the one
+/// tracing stride, shared by the quiescent walk and the collector's epoch,
+/// which differ only in `R`. Which kinds have counted cells is the
+/// dispatch at [`trace_entity`].
 ///
-/// `kind` is a parameter rather than a load, because the collector holds
-/// it from its own snapshot and must not re-read a header the mutator is
+/// `kind` is passed rather than loaded, because the collector holds it
+/// from its own snapshot and must not re-read a header the mutator is
 /// writing.
 ///
-/// Which kinds have counted cells, and why the rest have none, is the
-/// dispatch documented at [`trace_entity`].
-///
-/// **The answer is the version of the storage the cells were read from**,
-/// for a kind that keeps them in storage it can replace. A cell's address
-/// stays readable after such a replacement — the epoch parks the free —
-/// so an address alone cannot say the cell stopped belonging to the
-/// entity, and the collector keeps this number to ask that
-/// (`collector::Edge`, `PLAN.md` S13.4). `None` covers a kind that keeps
-/// its cells in its own slot and an array this walk gave up on, and those
-/// need no telling apart: neither can leave a cell behind in a chunk, so
-/// neither has anything for the re-check to ask a version about.
+/// Answers the version of the storage the cells came out of, and `None`
+/// for a kind that keeps its cells in its own slot or an array whose head
+/// would not read coherently. Neither can leave a cell behind in a chunk
+/// it has left, so neither gives the re-check anything to ask a version
+/// about (`collector::Edge`).
 ///
 /// # Safety
-/// `entity` is a live entity of `kind` whose cells are readable, and
-/// under `R = RelaxedCells` it must be **mature** — the class word at
-/// `+8` is chased, and that is safe only because a handshake ordered its
-/// publication epochs ago.
+/// `entity` is a live entity of `kind` whose cells are readable. Under
+/// `R = RelaxedCells` it must be **mature**: the class word at `+8` is
+/// chased, which is safe only because a handshake ordered its publication
+/// epochs ago.
 pub(crate) unsafe fn trace_cells<R: CellReader>(
     entity: *mut RcHeader,
     kind: u32,
@@ -219,27 +244,18 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
         }
         REFERENCE => {
             let at = unsafe { (entity as *const u8).add(8) };
-            // A Box payload, so an integer read — see
-            // `object::for_each_counted_cell`.
-            let child = unsafe { R::word(at) } as *mut RcHeader;
-            if Value::refcounted_in_meta_word(unsafe { R::word(at.add(8)) }) {
-                visit(Cell {
-                    addr: at as usize,
-                    raw: child as u64,
-                    child,
-                    shape: CellShape::Box,
-                });
+            if let Some(cell) = unsafe { counted_box_cell::<R>(at) } {
+                visit(cell);
             }
 
             None
         }
 
-        // An array's cells live in storage the mutator moves, so this
-        // starts by reading the head coherently and gives up rather than
-        // striding a fresh count over a stale chunk
-        // (`StorageHead::coherent`). Giving up leaks one epoch and frees
-        // nothing early: an entity the walk does not enumerate becomes a
-        // root source.
+        // The mutator moves an array's cells, so the head is read
+        // coherently first and the array given up rather than strided over
+        // a stale chunk (`StorageHead::coherent`). Giving it up leaks one
+        // epoch and frees nothing early: `rfc/model/gc/rc-walk.md`, "The
+        // central identity: roots are derived, not enumerated".
         ARRAY => {
             let head = unsafe {
                 crate::array::entity::storage_head(entity as *mut crate::array::entity::LLArray)
@@ -251,15 +267,12 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
             // The stride is chosen here and nowhere earlier: the tag came
             // out of the same validated reading as the chunk, so a stale
             // one was discarded with it rather than selecting a layout.
-            //
-            // Matched rather than tested against one value: a tag this
-            // walker has no stride for must give the array up, exactly as
-            // an incoherent reading does. Falling through to the hash
-            // stride instead would let a *valid* tag select the wrong
-            // layout, which is the defect the read protocol exists to
-            // prevent, one step over. `Typed` is that tag today
-            // (`StorageTag`, and `PLAN.md` S7 on the arm with no
-            // producer).
+            // Matched rather than tested against one value, because a tag
+            // with no stride here must give the array up the way an
+            // incoherent reading does. Falling through to the hash stride
+            // would let a *valid* tag select the wrong layout, which is
+            // what the read protocol exists to prevent. `Typed` is that
+            // tag today.
             match view.tag {
                 crate::array::head::StorageTag::Hash => {}
                 crate::array::head::StorageTag::Typed => {
@@ -273,14 +286,8 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                         // No key beside the element: a vector's key is the
                         // position, so every cell here is a Box.
                         let value_at = unsafe { elements.add(i * 16) as *const u8 };
-                        let child = unsafe { R::word(value_at) } as *mut RcHeader;
-                        if Value::refcounted_in_meta_word(unsafe { R::word(value_at.add(8)) }) {
-                            visit(Cell {
-                                addr: value_at as usize,
-                                raw: child as u64,
-                                child,
-                                shape: CellShape::Box,
-                            });
+                        if let Some(cell) = unsafe { counted_box_cell::<R>(value_at) } {
+                            visit(cell);
                         }
                     }
 
@@ -304,17 +311,9 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                     });
                 }
 
-                // The element is a Box like any other: an integer read for
-                // the payload, the flags in the second word.
                 let value_at = unsafe { at.add(VALUE_OFFSET) };
-                let child = unsafe { R::word(value_at) } as *mut RcHeader;
-                if Value::refcounted_in_meta_word(unsafe { R::word(value_at.add(8)) }) {
-                    visit(Cell {
-                        addr: value_at as usize,
-                        raw: child as u64,
-                        child,
-                        shape: CellShape::Box,
-                    });
+                if let Some(cell) = unsafe { counted_box_cell::<R>(value_at) } {
+                    visit(cell);
                 }
             }
 

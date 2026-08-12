@@ -713,36 +713,27 @@ pub struct Mark {
 pub enum Window {
     /// Every record written inside the window, oldest first.
     Records(Vec<Event>),
-    /// This ring cannot answer for the window: it was written past a
-    /// full lap, or the registry freed it before the read. `written`
-    /// counts the records the cursor pair spans, which is how much was
-    /// lost rather than how much survived. **Not the same as an empty
-    /// answer**, and the distinction is the reason a hunt can trust
-    /// "nothing happened".
+    /// The ring cannot answer for the window: it was written past a full
+    /// lap, or the registry freed it before the read. `written` counts the
+    /// records the cursor pair spans, which is how many were lost
+    /// (`dev/design/debug-modes.md` §9.3, "Eviction is reported, never
+    /// hidden").
     Unknown { thread: u64, written: u64 },
-    /// Rings the registry freed inside the window: whole thread histories
-    /// no answer above can carry, the ring having left the registry
-    /// between the two marks. Named by count alone, because what is gone
-    /// is what would have told a reader whose records they were.
+    /// Rings the registry freed between the two marks, by count alone:
+    /// what is gone is what would have said whose records they were.
     Evicted { rings: u64 },
-    /// The two marks were handed over in the wrong order, so they bound
-    /// no window: there is no interval to answer for, and no ring's
-    /// silence to report. An answer of its own rather than an empty list
-    /// of answers, which reads as "nothing happened anywhere" — and reads
-    /// that way even when no ring is named, which is where an answer per
-    /// ring cannot reach.
+    /// The two marks were handed over in the wrong order, so they bound no
+    /// interval. An answer of its own, because an empty list of answers
+    /// reads as "nothing happened anywhere".
     Reversed,
-    /// Records raised inside this window on a thread whose journaling had
-    /// already ended, and therefore dropped. The count is the report:
-    /// they cannot be saved, since the ring is retired and a retired ring
-    /// is one a quota may evict and another thread free.
+    /// Records raised inside the window on a thread whose journaling had
+    /// already ended, and therefore dropped. A difference between the two
+    /// marks rather than a running total (§9.3).
     Lost { records: u64 },
-    /// Threads left without a ring, in this process, ever — refused by the
-    /// allocator, or unable to guarantee a ring's retirement. They have
-    /// written nothing and are in no other answer, so a window that did
-    /// not carry this number would spell "these threads did nothing"
-    /// exactly as it spells "these threads do not exist". Cumulative, and
-    /// deliberately: a refusal is for the life of its thread.
+    /// Threads left without a ring in this process, refused by the
+    /// allocator or unable to guarantee a ring's retirement. They are in
+    /// no other answer, and the count is cumulative because a refusal
+    /// lasts the life of its thread.
     Refused { threads: u64 },
 }
 
