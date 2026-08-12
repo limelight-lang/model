@@ -8,6 +8,124 @@ never edited or deleted.
 
 ---
 
+## 2026-08-12 — a test file holds one group, and the group names what it pins
+
+**Decided:** tests stay in a file beside the module they test, and a test
+file holds one group. Every group becomes
+`src/<module>/tests/<group>.rs`, opening with the `//!` that stands above
+its `mod` today; `src/<module>/tests.rs` keeps the fixtures those groups
+share and, **after** them, the `mod` declarations. The rule is mechanical
+in one grep: a `tests.rs` containing `mod <name> {` is a file that has
+not been split. A fixture a second module needs stays in
+`src/test_support.rs`, as it is now.
+
+**The list goes last because a `macro_rules!` fixture is textually
+scoped.** `src/array/entity/tests.rs` defines `recording_class!`, and a
+child module declared above that definition cannot see it — `use
+super::*` imports items, not macros. Declarations after the fixtures also
+match how the crate already declares its test module: `#[cfg(test)] mod
+tests;` is the last item of every source file.
+
+**Why the file beside the module rather than the module body.** The
+inline form is what the ecosystem takes: of the 114 crates unpacked on
+this box, 67 carry `#[cfg(test)] mod tests { … }` at 319 sites, against
+16 crates at 19 sites for `mod tests;` and a file (counting a site as a
+`mod tests` declaration with `cfg(test)` within three lines above it).
+`std`, `core` and `alloc` go the other way, 57 separate against 2 inline;
+the other 228 inline sites in that tree are `stdarch`, `compiler-builtins`
+and vendored crates, 106 of them vendored and so partly the same crates
+as the registry sample. Neither count decides this crate, because the
+input differs: in those 319 inline hosts the test module is a quarter of
+the file, median 76 test lines against 407 of code, and tests exceed code
+in 7 % of them; here the median module carries 0.96 test lines for every
+line of code, and 18 of 40 carry more test than code. Inlining would
+double rather than extend it — `heap.rs` 2322 → 3140, `element.rs`
+689 → 2947, `table.rs` 1196 → 2724, `entity.rs` 1109 → 2585 — putting 7
+files past 2000 lines. Two are past it today, and one of those two is
+`element/tests.rs` at 2258, which is the file this stage was opened over.
+
+**Why one group per file.** A test is found by the name of what it pins,
+so the name has to be reachable without opening a file: as a file name it
+is in the directory listing and in a grep over paths, and it was already
+in the failure path. The size follows from that rather than being aimed
+at — the 141 groups run a median of 112 lines, and `element/tests.rs`
+becomes seven files, the largest 531.
+
+**No line count is part of the rule**, and the precedent is the comment
+pass of 2026-08-11: what decided whether a long comment was cut was
+whether its argument stood recorded elsewhere, never its length. A
+threshold has to be re-judged at every edit and answers a different
+question from the one asked, which is what a file is about.
+
+**The directory of group files is rare, and the counts above do not
+support it.** They settle only where a test lives relative to its module.
+Four of the 114 crates hold a `src/**/tests/` directory of more than one
+file — `sharded-slab`, `walkdir`, and `memchr` at two versions — and none
+of them splits by group: the directory is the crate's, not a module's.
+The second half of the rule rests on the goal alone.
+
+**A test crate beside this one is refused.** It is the third form in
+use — `library/coretests` and `library/alloctests` in the standard
+library — and it cannot work here: every test reads crate-internal state,
+through `pub(crate)` items and through `array::testing`, which exists
+because an assertion cannot destructure the head-and-tail pair.
+
+**The move changes no path, measured on `src/refcount/tests.rs` rather
+than argued.** Its 3 groups became a 15-line `tests.rs` and files of 79,
+112 and 81 lines; both configurations then ran what they ran before, 11
+tests under rc-walk and 8 under rc-trace; the probe was reverted. Nothing
+had to be re-pointed because a group is already a module at that path —
+all 141 open with `use super::*;`, none is nested — and a child module
+sees its parent's private items whether that child is a file or a brace.
+The macro is the exception, and the paragraph above is what it costs.
+
+**What the move moves.** 40 files become 181: 141 group files and 40
+lists. 18 949 body lines are dedented by one level, 761 `///` lines above
+the `mod` declarations become `//!` at the head of a file, and 282
+wrapper lines are dropped. The lists left behind hold 1538 lines, median
+11, the largest being `array/table` at 232, `array/element` at 224 and
+`array/entity` at 173 — so `refcount`'s 15-line list is the small end
+rather than the shape.
+
+**Four costs beyond the file count.** The group's description leaves the
+list: it becomes the file's `//!`, and no copy stays behind, a second
+copy of what already stands in a module doc being what
+`dev/WORKFLOW.md`'s comment rule forbids. So the list carries names, and
+a name is what a reader gets until a file is opened. `rustfmt` sorts each
+run of `mod` declarations, so the list is alphabetical and the order the
+groups are written in today is not preserved; that order is accepted as
+lost, the list being an index. **A test's history is reached by content,
+not by rename detection:** `git log --follow` and `git log -C` both fail
+here, a 531-line group scoring 22 % against the 2258-line file it came
+from and the default copy threshold being 50 %, so 131 of the 141 files
+are out of reach of `-C` in principle. What works is `git log -S 'fn
+<test name>'`, verified across the move S9.4 already performed — it names
+both that move and the commit the test was born in. And `dev/INDEX.md`'s
+"Tests" bullet states the present layout as fact, so it moves in the same
+commit as the code.
+
+**A gated group states its configuration twice, and both are required.**
+The `#[cfg]` goes on the `mod` declaration, where a configuration that
+drops a whole group is visible from the list; the file's `//!` says which
+configuration it belongs to, because a file whose gate is only in another
+file invites a test that is silently gated to one build. Five groups
+carry a `#[cfg]` today, and `refcount`'s already states the reason in
+prose.
+
+**What the rule does not decide:** four groups are over 400 lines, the
+largest being `element`'s `the_writes_and_the_separation_they_share` at
+531. A group that size is two subjects, and splitting it is a judgement
+about the group rather than about the layout.
+
+**The counts here were re-measured at HEAD `dbc9eb9` and supersede
+S16's opening figures.** They differ in three ways: the 42 files there
+count the two `loom` models, whose 8 tests no ordinary run executes, so
+the file count is 40; the ecosystem figures came from a different matcher
+and the one described above is what these numbers rest on; and the S17
+commits landed between the two measurements.
+
+---
+
 ## 2026-08-11 — releasing the storage takes the same window as moving it
 
 **Decided:** both `dispose` bodies drive `storage`, `nslots` and `used`

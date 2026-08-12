@@ -186,11 +186,40 @@ without scrolling past groups that pin something else.
 Done when: `dev/DECISIONS.md` records the layout and the reason for it,
 and every test file matches.
 
-- [ ] S16.1 The two forms priced against this crate
+- [x] S16.1 The two forms priced against this crate
       done: the decision names the form this crate takes and what the
         move costs, resting on the counts above rather than on
         recollection
       tier: T2 · role: Critic
+      Critic 2026-08-12 round 1: twelve findings, all acted on. Two are
+        the substance. **The history remedy did not work:** a 531-line
+        group scores 22 % against the 2258-line file it left and the
+        default copy threshold is 50 %, so `git log -C` reaches 10 of the
+        141 files rather than all; replaced by content search, `git log
+        -S 'fn <name>'`, verified across the move S9.4 already performed.
+        **A `macro_rules!` fixture is textually scoped**, so a group
+        declared above `recording_class!` in `array/entity/tests.rs`
+        cannot see it, and the list therefore goes after the fixtures
+        rather than before them. The rest: the single-group exception was
+        dropped for a uniform rule after the Critic showed both its
+        branches defective; two files pass 2000 lines today rather than
+        one, `element/tests.rs` being the second; the standard library's
+        72 separate sites are 57 once `stdarch` and 106 vendored inline
+        sites leave the corpus; the group's `///` description leaves the
+        list and nothing stays behind; a gated group states its
+        configuration in the file as well as on the `mod`; `19 526 lines
+        verbatim` was neither the count nor verbatim, the move being
+        18 949 dedented body lines, 761 docs turned into `//!` and 282
+        wrappers dropped; the adopted form is 4 of the 114 crates and
+        rests on the goal rather than on the counts; `dev/INDEX.md`'s
+        "Tests" bullet moves with S16.2.
+      handoff: `dev/DECISIONS.md`, 2026-08-12, "a test file holds one
+        group". 40 files become 181 — 141 group files under
+        `src/<module>/tests/`, 40 lists that keep the shared fixtures and
+        declare the groups after them. Checkable in one grep: a
+        `tests.rs` holding `mod <name> {` is unsplit. Cost measured on
+        `refcount`, not argued: same tests in both configurations before
+        and after, tree reverted.
 - [ ] S16.2 The crate matches the decision
       done: every test file follows it, the test count before and after
         is the same, and the suite is green in both configurations at the
