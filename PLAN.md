@@ -488,11 +488,11 @@ key it cannot hold, both configurations green, Miri silent.
         `array::entity`, 41 passed. Two tests seen failing with the
         association disabled: a diamond copied twice, and a twelve-level
         chain at 8191 arrays against 13.
-- [ ] S7.8 The termination probe's container, and what it costs
+- [x] S7.8 The termination probe's container, and what it costs
       done: `dev/DECISIONS.md` records what holds the entered set, priced
         against the two facts its ruling did not name, and `separate`
         carries whichever container that answers
-      tier: T2 · role: —
+      tier: T2 · role: Sage
       Critic 2026-08-12, found in S7.7's second round and each verified:
         the restored probe is a `Vec`, and `WorkList`'s own doc four
         hundred lines below records as a decision that a `Vec` is wrong
@@ -511,12 +511,6 @@ key it cannot hold, both configurations green, Miri silent.
         and fire the probe in debug while release finishes with one
         redundant root copy. Whether such an edge can form depends on the
         lowering's retain order, which is outside this repository.
-      2026-08-12, owed to the RFC by S7.7: `arrays-hashtable.md`'s
-        "Depth is bounded by the arena-resident COW subtree" becomes work
-        linear in the arena-resident COW sub*graph*, and its open item
-        "recursion-depth guard on the escape copy" closes. Amending an
-        authoritative sentence is Edmond's to accept, and he has not
-        answered yet.
       2026-08-12, found by flipping the stamp inside S7.2 and reverting
         it: `separate` and `fill_from` reach for the table —
         `as_table(src)`, `as_table_mut(dst)` — so a vector array meeting
@@ -529,6 +523,37 @@ key it cannot hold, both configurations green, Miri silent.
         stands ahead of S7.2 because the stamp is what exposes the door,
         and `rfc/model/arrays.md` says which copy to write: "Separation
         copies the storage in its current representation."
+      Sage 2026-08-12: **the entered set stays on the system allocator, and
+        the pool is refused for it at every count.** A `Table` or a
+        `WorkList` there gives a debug probe two answers to its own
+        refusal and both cost more than the abort they replace: refusing
+        the copy fails the two tests that hold `FORCE_REFUSE_LONGLIVED`
+        across the whole call, at the first iteration and before a nested
+        copy exists to reclaim, while skipping the check disarms the probe
+        for exactly the runs that exercise the refusal paths and leaves an
+        allocation every later refusal test must step around. The abort is
+        priced by a bound instead: one entry per live source against a
+        112-byte arena entity, so the arena refuses the graph first, and
+        `WorkList`'s abort sentence governs a release structure with no
+        such cap above it and keeps standing for the pending list. The
+        shape does not change — a counter bounded by the arena's
+        population fires late and names neither the entity nor the cause.
+        The container becomes a `HashSet` if the running measurement
+        attributes the test's Miri time to the scan. Final.
+      2026-08-12, the measurement that took the successor: one test,
+        `--test-threads=2`, Miri's own clock — 83.38 s with the scanning
+        `Vec`, 36.61 s with the probe compiled out, 45.35 s with the
+        `HashSet`. The probe cost 46.77 s of the first run and 8.74 s of
+        the third, so the swap landed with this step rather than at a
+        threshold.
+      handoff: `separate`'s probe is a `HashSet<*mut LLArray>` on the
+        system allocator, the comment above it carrying the bound and
+        citing `dev/DECISIONS.md`, "the termination probe's storage, and
+        the bound that prices its abort", which is the entry this step
+        owed. The stamp-door finding four lines above was closed by S7.5,
+        verified at this commit: `new_empty_copy` and `fill_from` both
+        dispatch on the tag. The RFC amendment owed by S7.7 moved to S7.4
+        and is still Edmond's to answer.
 - [ ] S7.2 Factories stamp the tag and the element write dispatches on it
       done: `ll_array_new` stamps `Vector`, and a strategy-2 write of a
         string key migrates through the tag rather than through a direct
@@ -582,6 +607,12 @@ key it cannot hold, both configurations green, Miri silent.
         `unreachable!(...)`" names an arm that exists: `escape_copy`
         matches String and Array, and the `unreachable!` is the default
         over the kinds that have no COW copy.
+      2026-08-12, owed to the RFC by S7.7 and moved here when S7.8 closed:
+        `arrays-hashtable.md`'s "Depth is bounded by the arena-resident COW
+        subtree" becomes work linear in the arena-resident COW sub*graph*,
+        and its open item "recursion-depth guard on the escape copy"
+        closes. Amending an authoritative sentence is Edmond's to accept,
+        and he has not answered yet.
 
 The 1 → 2 transition stays out of the stage: strategy 1 has no producer
 in the crate, and an arm with no producer is what this crate has refused
