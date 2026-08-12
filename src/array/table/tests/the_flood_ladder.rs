@@ -1,0 +1,249 @@
+//! The zeroth rung pays no mix: a fresh table indexes an integer key
+//! by its value, as Zend does, so the salt is paid where a flood
+//! shows up rather than by every honest table. A long chain draws
+//! the salt once and a second one escalates to the keyed hash
+//! instead of drawing again, which is what bounds an attacker at one
+//! rebuild and one escalation per table. A salt already drawn is
+//! never redrawn: redrawing in response to equal-hash keys is what
+//! made Perl's REHASH exploitable.
+
+use super::*;
+
+/// The ladder's zeroth rung: a fresh table indexes an integer key by
+/// its value, as Zend does, and pays no mix. Three stride keys
+/// sharing one bucket is the by-value signature — a salted mix would
+/// scatter them. The salt is paid where a flood shows up rather than by
+/// every honest table.
+#[test]
+fn a_fresh_table_indexes_an_integer_key_by_its_value() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    for i in 0..3i64 {
+        m.insert(Key::Int(i * 1024), Value::int(i));
+    }
+
+    assert!(
+        !m.is_reseeded(),
+        "three keys are far below the chain trigger"
+    );
+    assert_eq!(m.salt, 0, "an unsalted table holds no number to mix with");
+    let mut chain = 0usize;
+    let mut i = unsafe { *m.slots().add(0) };
+    while i != NONE {
+        chain += 1;
+        i = m.entry(i as usize).link();
+    }
+
+    assert_eq!(
+        chain, 3,
+        "stride keys share slot 0 only when indexed by value"
+    );
+    for i in 0..3i64 {
+        assert_eq!(m.get(Key::Int(i * 1024)).unwrap().as_int(), i);
+    }
+}
+
+/// The flood the zeroth rung admits by design: indexed by value, a
+/// power-of-two stride builds exactly one chain — which is the first
+/// rung's own trigger, so nobody had to predict where keys come
+/// from. The rung draws a salt and rebuilds; the mix scatters the
+/// rest of the flood and no key is lost across the rebuild.
+#[test]
+fn an_integer_flood_fires_the_first_rung_and_the_drawn_salt_scatters_it() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    for i in 0..512i64 {
+        m.insert(Key::Int(i * 1024), Value::int(i));
+    }
+
+    assert!(m.is_reseeded(), "the flood's own chain is the trigger");
+    assert!(
+        !m.is_strong(),
+        "differing hashes never take the strong rung"
+    );
+    assert_ne!(m.salt, 0, "the rung drew nothing");
+    // Longest chain: with the drawn salt this is a handful; by-value
+    // indexing would put all 512 in one bucket.
+    let mut longest = 0usize;
+    for slot in 0..m.nslots() {
+        let mut n = 0usize;
+        let mut i = unsafe { *m.slots().add(slot) };
+        while i != NONE {
+            n += 1;
+            i = m.entry(i as usize).link();
+        }
+
+        longest = longest.max(n);
+    }
+
+    assert!(
+        longest < 16,
+        "longest chain {longest} — the drawn salt is not being applied"
+    );
+    for i in 0..512i64 {
+        assert_eq!(
+            m.get(Key::Int(i * 1024)).unwrap().as_int(),
+            i,
+            "a key was lost across the rung's rebuild"
+        );
+    }
+}
+
+/// The ladder's rungs above the zeroth, in order and each once. A
+/// long chain of keys whose hashes differ draws the salt a fresh
+/// table does not have; the next one escalates instead of drawing
+/// again, which is what bounds the attacker at one rebuild and one
+/// escalation per table.
+///
+/// Seen failing at the escalation: without the reseed counter the
+/// chain trigger redraws forever, and for string keys it cannot even
+/// separate them — below `strong` a string's slot is its cached hash,
+/// which no salt enters — so every later insert pays another O(used)
+/// rebuild and the chain stays exactly as long.
+#[test]
+fn a_long_chain_draws_the_salt_once_and_then_escalates() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    assert_eq!(m.salt, 0, "a fresh table is the zeroth rung");
+
+    let first = extend_one_chain(&mut m, 0, CHAIN_LIMIT as usize + 1);
+    assert!(m.is_reseeded(), "the first long chain draws the salt");
+    assert_ne!(m.salt, 0, "and the drawn salt is a real one");
+    assert!(!m.is_strong(), "and does not escalate on the first firing");
+    let redrawn = m.salt;
+
+    let second = extend_one_chain(&mut m, CHAIN_LIMIT as usize + 1, CHAIN_LIMIT as usize + 2);
+    assert!(m.is_strong(), "the second firing escalates");
+    assert_eq!(
+        m.salt, redrawn,
+        "escalation redraws nothing: that is the Perl REHASH defect"
+    );
+
+    for (i, s) in first.iter().chain(second.iter()).enumerate() {
+        assert_eq!(
+            m.get(Key::Str(*s)).unwrap().as_int(),
+            i as i64,
+            "a key was lost across the ladder"
+        );
+    }
+}
+
+/// Equal full hashes take the strong rung directly — and firing from
+/// an unsalted table draws the salt on the way, because the keyed
+/// hash's key *is* the salt and zero is a key every attacker knows.
+#[test]
+fn equal_full_hashes_escalate_the_table_to_the_keyed_hash() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    assert!(!m.is_strong());
+    force_equal_hashes(&mut m, EQUAL_HASH_LIMIT as usize + 4);
+    assert!(
+        m.is_strong(),
+        "a set of equal full hashes must escalate, not reseed"
+    );
+    assert!(
+        m.is_reseeded(),
+        "strong implies a drawn salt: the two bits never separate"
+    );
+    assert_ne!(
+        m.salt, 0,
+        "escalation from the zeroth rung left the keyed hash keyed by zero"
+    );
+}
+
+#[test]
+fn every_key_still_resolves_after_escalation() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+
+    let honest: Vec<*mut LLString> = (0..50).map(|i| mk(format!("h{i}").as_bytes())).collect();
+    for (i, s) in honest.iter().enumerate() {
+        m.insert(Key::Str(*s), Value::int(1000 + i as i64));
+    }
+
+    let mut colliders = Vec::new();
+    for i in 0..(EQUAL_HASH_LIMIT as usize + 4) {
+        let s = mk(format!("collider-{i}").as_bytes());
+        unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
+        m.insert(Key::Str(s), Value::int(i as i64));
+        colliders.push(s);
+    }
+
+    assert!(m.is_strong());
+
+    for (i, s) in honest.iter().enumerate() {
+        assert_eq!(
+            m.get(Key::Str(*s)).unwrap().as_int(),
+            1000 + i as i64,
+            "escalation must not lose an honest key"
+        );
+    }
+
+    for (i, s) in colliders.iter().enumerate() {
+        assert_eq!(m.get(Key::Str(*s)).unwrap().as_int(), i as i64);
+    }
+
+    assert_eq!(m.len(), 50 + EQUAL_HASH_LIMIT as usize + 4);
+}
+
+#[test]
+fn escalation_scatters_a_colliding_set_instead_of_chaining_it() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    force_equal_hashes(&mut m, 64);
+    assert!(m.is_strong());
+
+    let mut longest = 0usize;
+    for slot in 0..m.nslots() {
+        let mut n = 0usize;
+        let mut i = unsafe { *m.slots().add(slot) };
+        while i != NONE {
+            n += 1;
+            i = m.entry(i as usize).link();
+        }
+
+        longest = longest.max(n);
+    }
+
+    assert!(
+        longest < 16,
+        "longest chain {longest} after escalation — the keyed hash is not separating them"
+    );
+}
+
+/// A salt that is already drawn stays exactly as it was across
+/// escalation: redrawing in response to equal-hash keys is what made
+/// Perl's REHASH exploitable. The *draw* an unsalted escalation
+/// makes is pinned by the test above; this pins that it never
+/// becomes a redraw.
+#[test]
+fn escalation_happens_once_and_a_drawn_salt_is_not_redrawn_on_equal_hashes() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    extend_one_chain(&mut m, 0, CHAIN_LIMIT as usize + 1);
+    assert!(m.is_reseeded(), "the chain draws the salt first");
+    let drawn = m.salt;
+    force_equal_hashes(&mut m, 64);
+    assert!(m.is_strong());
+    assert_eq!(
+        m.salt, drawn,
+        "redrawing the salt on equal hashes is the Perl REHASH defect"
+    );
+}
+
+#[test]
+fn the_cached_string_hash_is_not_touched_by_escalation() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    let s = mk(b"shared-with-other-tables");
+    let h = unsafe { LLString::hash(s) };
+    m.insert(Key::Str(s), Value::int(1));
+    force_equal_hashes(&mut m, 64);
+    assert!(m.is_strong());
+    assert_eq!(
+        unsafe { (*s).hash },
+        h,
+        "the +16 hash is shared across tables and must survive escalation"
+    );
+    assert_eq!(m.get(Key::Str(s)).unwrap().as_int(), 1);
+}
