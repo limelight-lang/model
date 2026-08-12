@@ -163,6 +163,7 @@ mod the_head_a_walker_reads;
 mod the_order_destructors_run_in;
 mod the_two_cow_doors;
 mod what_a_death_gives_back;
+mod what_a_refused_copy_gives_back;
 mod who_owns_a_key_reference;
 
 mod the_migration_out_of_the_vector;

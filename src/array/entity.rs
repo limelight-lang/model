@@ -406,18 +406,19 @@ pub unsafe fn needs_separation(a: *const LLArray) -> bool {
 /// operation (`dev/DECISIONS.md`, "the array entity, and separation is
 /// the shallow copy").
 ///
-/// **The barrier rather than a bare `ll_retain`**, because
-/// `release_children` gives references back through `drop_ref`, which
-/// calls `escape_lose`: a copy that recorded no gain would spend a
-/// hold-count belonging to a real holder.
+/// **The barrier rather than a bare `ll_retain`**, because the teardown
+/// gives references back through `drop_ref`, which calls `escape_lose`:
+/// a copy that recorded no gain would spend a hold-count belonging to a
+/// real holder.
 ///
 /// Insertion order survives, because the copy replays `src` in order,
 /// and so does the flood backstop's state: a copy of an attacked table
 /// is attacked.
 ///
 /// **Null on refusal**, with nothing published: the copy is private until
-/// it is returned, so a failure part-way releases what it has retained
-/// and leaves the source untouched.
+/// it is returned, so a failure part-way releases what it has retained,
+/// gives the copy itself back through [`give_back_unheld_copy`], and
+/// leaves the source untouched.
 ///
 /// **Nesting is worked through a list, not the machine stack**, depth here
 /// being attacker-shaped input on a store path: a nested arena array is
@@ -466,11 +467,10 @@ pub unsafe fn separate(
         }
 
         if !unsafe { fill_from(s, d, arena, &mut pending, reason) } {
-            // Refused part-way. Releasing the root's children cascades
-            // into every copy this call published, nested ones included:
-            // each is held once, by the entry naming it.
-            unsafe { release_children(dst) };
-            unsafe { dispose_storage(dst, category_of(dst)) };
+            // Refused part-way. The root's teardown cascades into every
+            // copy this call published, nested ones included: each is
+            // held once, by the entry naming it.
+            unsafe { give_back_unheld_copy(dst) };
             pending.dispose();
             return std::ptr::null_mut();
         }
@@ -480,6 +480,23 @@ pub unsafe fn separate(
 
     pending.dispose();
     dst
+}
+
+/// Give back a copy no holder ever took. The creation reference is spent
+/// here, the entry that would have spent it never having been written,
+/// and the teardown that follows is the ordinary one: the children this
+/// copy published, its storage and — in the GC heap — its own slot go
+/// back through the doors that free them anywhere else.
+///
+/// # Safety
+/// `a` is a live array entity at count one that no slot names.
+unsafe fn give_back_unheld_copy(a: *mut LLArray) {
+    let died = unsafe { crate::refcount::ll_release(a as *mut RcHeader) };
+    debug_assert!(
+        died || unsafe { category_of(a) } != MemoryCategory::GcHeap,
+        "a heap entity at one dies when its only count goes"
+    );
+    unsafe { array_die(a) };
 }
 
 /// An empty destination in the source's own representation, carrying
@@ -744,11 +761,14 @@ unsafe fn element_for_destination(
             )
         };
 
-        if copy.is_null() || !pending.push((child as *mut LLArray, copy)) {
-            // The copy is held by nothing yet, so it goes back here rather
-            // than through the root's cascade.
-            unsafe { crate::refcount::ll_release(copy as *mut RcHeader) };
-            unsafe { dispose_storage(copy, category_of(copy)) };
+        if copy.is_null() {
+            return None;
+        }
+
+        if !pending.push((child as *mut LLArray, copy)) {
+            // The copy is named by nothing yet, so it goes back here
+            // rather than through the root's cascade.
+            unsafe { give_back_unheld_copy(copy) };
             return None;
         }
 
