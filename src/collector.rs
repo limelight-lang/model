@@ -374,33 +374,23 @@ impl Epoch {
     /// up, one epoch of leak and nothing freed early.
     ///
     /// **What it buys is this filter's own contract rather than a live
-    /// entity.** Phase 4 re-traces every member through its current
-    /// fields before it frees anything — for an array that is the
-    /// current head and the current chunk, no recorded address anywhere
-    /// (`walk::drain_confirmed`, `exact_test`) — so a component
-    /// confirmed on a stale cell is dropped there instead. Measured with
-    /// this check disabled, on the regression below: confirmed 1, the
-    /// message dropped, nothing torn down. The price of doing without it
-    /// is a verdict posted and dropped per moved array, and a filter
-    /// reporting as verified what it did not read.
+    /// entity.** Phase 4 re-traces every member through its current fields
+    /// before freeing anything, so a component confirmed on a stale cell
+    /// is dropped there instead; the price of doing without this check is
+    /// a verdict posted and dropped per moved array, and a filter
+    /// reporting as verified what it did not read (`dev/DECISIONS.md`, "an
+    /// edge is re-checked by its shape, and its storage first").
     ///
-    /// The window it is decisive over is the handshake's:
-    /// [`Epoch::recheck_and_post`] runs after the condemn ack, which
-    /// orders what the mutator wrote before its checkpoint, so a move
-    /// that lands after the ack need not be visible to this load at all.
-    /// What holds is that no verdict is posted for a component that
-    /// changed before the ack, and Phase 4's exact test is what stands
-    /// behind the rest.
+    /// It is decisive over the handshake's window alone:
+    /// [`Epoch::recheck_and_post`] runs after the condemn ack, so a move
+    /// landing after that ack need not be visible to this load. What holds
+    /// is that no verdict is posted for a component that changed before
+    /// the ack.
     ///
     /// A source that died in between needs no case of its own, and no
-    /// source outside the component reaches here at all: the mark walk
-    /// propagates forward, so an edge out of a marked row has a marked
-    /// target and neither end can be a candidate
-    /// (`walk::garbage_components`). Every `row` is therefore one the
-    /// count comparison above has already put through — and that refuses
-    /// any member whose refcount left the value the walk recorded, a
-    /// corpse's zero among them, since pass 1 records a row only above
-    /// zero.
+    /// source outside the component reaches here: the mark walk propagates
+    /// forward, so an edge out of a marked row has a marked target and
+    /// neither end can be a candidate (`walk::garbage_components`).
     ///
     /// # Safety
     /// `row` was walked this epoch, so its entity address is one the

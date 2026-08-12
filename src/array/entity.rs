@@ -337,9 +337,9 @@ pub unsafe fn needs_separation(a: *const LLArray) -> bool {
 /// `rfc/model/arrays-hashtable.md` clause for clause. Two call sites, one
 /// operation (`dev/DECISIONS.md`).
 ///
-/// **The barrier rather than a bare `ll_retain`**, and not for tidiness:
+/// **The barrier rather than a bare `ll_retain`**, because
 /// `release_children` gives references back through `drop_ref`, which
-/// calls `escape_lose`, so a copy that recorded no gain would spend a
+/// calls `escape_lose`: a copy that recorded no gain would spend a
 /// hold-count belonging to a real holder.
 ///
 /// Insertion order survives, because the copy replays `src` in order,
@@ -350,24 +350,17 @@ pub unsafe fn needs_separation(a: *const LLArray) -> bool {
 /// it is returned, so a failure part-way releases what it has retained
 /// and leaves the source untouched.
 ///
-/// **Nesting is worked through a list, not the machine stack.** Depth
-/// here is attacker-shaped input on a store path — `$deep = [[[[…]]]]`
-/// in the arena, then one assignment into a heap slot — and a limit was
-/// rejected as the answer: it would have to refuse through a channel
-/// whose only meaning is "out of memory", PHP has no depth at which an
-/// assignment becomes invalid, and teardown of whatever the limit
-/// permitted was recursive as well — which [`array_die`] answers the same
-/// way rather than by a limit (`dev/DECISIONS.md`, 2026-08-07 and
-/// 2026-08-08).
-/// So a nested arena array is copied empty, published, and its filling
-/// pushed onto [`WorkList`], which lives in a buffer-arena chunk.
+/// **Nesting is worked through a list, not the machine stack**, depth here
+/// being attacker-shaped input on a store path: a nested arena array is
+/// copied empty, published, and its filling pushed onto [`WorkList`],
+/// which lives in a buffer-arena chunk (`dev/DECISIONS.md`, "the deep copy
+/// walks a list, and teardown is the half still on the stack").
 ///
 /// **Termination needs no visited set.** The list is entered only by an
 /// arena COW child, and a cycle cannot close inside a pure-COW subgraph
 /// while count-equals-holders holds: every entity a real ring passes
-/// through is non-COW, and those are published by the barrier rather
-/// than entered. A debug build checks that claim rather than paying for
-/// it.
+/// through is non-COW and is published by the barrier rather than entered.
+/// A debug build checks that claim rather than paying for it.
 ///
 /// **`reason` decides one element case and nothing else**
 /// ([`CopyReason`], and `element_for_copy` below): a duplication unwraps a

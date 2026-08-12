@@ -199,31 +199,23 @@ unsafe fn heap_children(e: *mut RcHeader) -> Vec<*mut RcHeader> {
 /// by the compiler, via [`ll_gc_maybe_collect`] (or an explicit
 /// [`ll_gc_collect_cycles`]).
 ///
-/// ## Buffering is best-effort, and that is what keeps it abort-free
+/// **Buffering is best-effort, which is what keeps it abort-free.** The
+/// buffer is a `Vec`, and `push` would resolve a failed growth by killing
+/// the process. Not buffering a candidate is always safe instead: nothing
+/// is corrupted and nothing dangles, the buffered bit being set only when
+/// the entry really went in. So growth is attempted and a refusal arms a
+/// collection.
 ///
-/// The buffer is a `Vec`, so growing it can fail — and `push` would
-/// resolve that failure by killing the process, an abort nobody chose
-/// and the ABI never mentions. There is a better answer here than
-/// anywhere else in the runtime: **not buffering a candidate is always
-/// safe.** Nothing is corrupted and nothing dangles, because the
-/// buffered bit is only set when the entry really went in. So growth is
-/// attempted, and a refusal arms a collection instead.
+/// The price is a leak rather than a delay. Buffering is edge-triggered on
+/// a non-zero decrement, so a refused root is never re-offered, and if
+/// that decrement was the last external release of a garbage cycle no
+/// later collection can find it, this buffer being the collector's only
+/// root set.
 ///
-/// The price is a leak, not a delay, and the doc should say so:
-/// buffering is edge-triggered on a non-zero decrement, so a refused
-/// root is never re-offered. If that decrement was the last external
-/// release of a garbage cycle, no further decrement comes and no later
-/// collection can find it — this buffer is the collector's only root
-/// set. Losing one cycle beats losing the process, but it is lost for
-/// the life of the thread.
-///
-/// ## Why this is out of line
-///
-/// Inlined, the whole of it lands in `ll_release`, the most frequent
-/// operation in the runtime, for work needed at most once per object per
-/// collection. `ll_release` tests the buffered bit itself, from flags it
-/// already holds, and calls this only when there is something to record
-/// (`dev/BENCHMARKS.md`, 2026-07-21, which carries the IR counts).
+/// Out of line, because inlined it lands in `ll_release` for work needed
+/// at most once per object per collection. `ll_release` tests the buffered
+/// bit itself, from flags it already holds, and calls this only when there
+/// is something to record (`dev/BENCHMARKS.md`).
 ///
 /// # Safety
 /// `entity` must be live.

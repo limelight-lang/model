@@ -506,8 +506,8 @@ pub(crate) unsafe fn new_with_hash(
 /// the slot raw instead of through `store_ptr` loses the escape
 /// registration; and the release precedes the drop because `drop_ref`
 /// runs `__destruct` bodies that can displace the copy from the slot just
-/// written (`dev/DECISIONS.md`, 2026-08-08 — the order is stated here
-/// because `array::element::set` needs it, not because a string does).
+/// written (`dev/DECISIONS.md`, "the creation reference is spent before
+/// the displaced original is dropped").
 /// **The original is not released here**: that is the holder's `drop_ref`
 /// above, a different obligation from the copy's creation reference.
 ///

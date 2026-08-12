@@ -133,12 +133,12 @@ unsafe fn write_through(
 
 /// The element store: `$a[k] = v` through the holder's slot.
 ///
-/// **The order every write here guarantees**, and the three below rest on
-/// it: a shared array is separated first, because a write is a write
-/// whatever it turns out to change; the copy is written into `slot`
-/// before this holder is taken off the displaced original; and the
-/// original's release comes last, so a `__destruct` body it runs finds
-/// the slot already naming the copy.
+/// **The order every write here guarantees**, which the three below rest
+/// on: a shared array is separated first, a write being a write whatever
+/// it turns out to change; the copy is written into `slot` before this
+/// holder is taken off the displaced original; and the original's release
+/// comes last, so a `__destruct` body it runs finds the slot already
+/// naming the copy.
 ///
 /// **Three refusals report `false`**, each an allocation no reserve
 /// funds: the separation's copy, the publication of an arena COW value
@@ -274,17 +274,16 @@ pub unsafe fn unset(
 /// `&$a[k]`: the element's `ReferenceBox`, boxing the element if it is
 /// not one already, with the holder's array separated first.
 ///
-/// **The separation comes before the boxing, and that order is the whole
-/// step.** Taking a reference is a write — it turns the element into a
-/// reference state every later store goes through — so it separates
-/// first, in [`set`]'s order and for [`set`]'s reason. Boxing a shared
-/// table instead would hand `$b`'s reference a box `$a` also names, and
-/// `$r = 2` would
-/// then be visible through `$a['x']`. The order settles the element that
-/// is **not** a box yet; an element already in a reference state comes
-/// out of the separation shared, provided a second name still holds the
-/// box — the separation itself unwraps a box nobody else holds
-/// (`array::entity::element_for_copy`), which is PHP's own rule.
+/// **The separation comes before the boxing.** Taking a reference is a
+/// write, turning the element into a reference state every later store
+/// goes through, so it separates first, in [`set`]'s order and for
+/// [`set`]'s reason. Boxing a shared table instead would hand `$b`'s
+/// reference a box `$a` also names, and `$r = 2` would then be visible
+/// through `$a['x']`. That order settles the element that is **not** a box
+/// yet; one already in a reference state comes out of the separation
+/// shared, provided a second name still holds the box, the separation
+/// itself unwrapping a box nobody else holds
+/// (`array::entity::element_for_copy`).
 ///
 /// **An absent key is created as null and referenced**, which is PHP's
 /// rule for `$r = &$a['nope']` and the reason this cannot simply forward
@@ -304,14 +303,12 @@ pub unsafe fn unset(
 /// retains for its own holder.
 ///
 /// **The box is a GC-heap entity even for an arena array**
-/// (`dev/DECISIONS.md`, 2026-08-08), so boxing an element of an arena
-/// array pays twice at the boundary: an arena COW element is copied to
-/// the heap and an arena non-COW one counts an escape, and the entry
-/// holding the heap box logs a release against the reset. Both crossings
-/// are paid where the box is composed (`box_element`), and both are what
-/// gives the box a counted count at all — exact in the heap, an upper
-/// bound in the arena, where a container gives its hold back at the reset
-/// rather than at its own death (`dev/DECISIONS.md`, 2026-08-08).
+/// (`dev/DECISIONS.md`, "a reference box is allocated in the GC heap,
+/// always"), so boxing an element of an arena array pays twice at the
+/// boundary: an arena COW element is copied to the heap, an arena non-COW
+/// one counts an escape, and the entry holding the heap box logs a release
+/// against the reset. Both crossings are paid where the box is composed
+/// (`box_element`).
 ///
 /// # Safety
 /// Per [`set`], less the value.
