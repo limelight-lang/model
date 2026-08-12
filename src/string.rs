@@ -500,7 +500,7 @@ pub(crate) unsafe fn new_with_hash(
 /// drop_ref(owner_cat, old);                         // old loses this holder
 /// ```
 ///
-/// Every line of it is load-bearing. Skipping the release leaves the
+/// No line of it is optional. Skipping the release leaves the
 /// copy at two for one holder, so the sharing test reads `2 > 1` on every
 /// later write and COW is off for the rest of that value's life; writing
 /// the slot raw instead of through `store_ptr` loses the escape

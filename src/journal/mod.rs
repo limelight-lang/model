@@ -367,8 +367,8 @@ thread_local! {
     /// This thread's ring: null before the first record site runs,
     /// [`CLOSED`] once its ring is retired, [`REFUSED`] if it never got
     /// one, otherwise the ring. Which of the two ends it is decides how
-    /// a later record is reported, and that is the whole reason there
-    /// are two of them.
+    /// a later record is reported, which is why there are two of them
+    /// rather than one.
     ///
     /// A `Cell<*mut _>` with no drop glue, under the rule every
     /// per-thread structure reachable from thread exit obeys
@@ -506,8 +506,8 @@ fn close_this_thread() {
 /// free.
 ///
 /// The stamping and the push happen under one lock, so the identity is in
-/// place before any reader can reach the ring through the registry —
-/// which is the whole of why the field needs no atomic.
+/// place before any reader can reach the ring through the registry, so the
+/// field needs no atomic.
 fn register_ring(ring: *mut Ring) -> Vec<*mut Ring> {
     let mut registry = locked();
     registry.next_thread += 1;

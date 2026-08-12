@@ -1622,7 +1622,7 @@ fn retire_the_journal() {
 /// (`rfc/model/gc/rc-walk.md`, "Prerequisite: entity blocks are
 /// segregated").
 ///
-/// `#[repr(C)]` with `raw` first, and that is load-bearing: the TLS slot
+/// `#[repr(C)]` with `raw` first, which the layout depends on: the TLS slot
 /// stores a pointer to this pair, and [`thread_heap`] hands the same
 /// pointer out as the raw heap — the `ll_malloc` hot path pays no offset
 /// and no second load for the split.
@@ -2174,8 +2174,8 @@ pub(crate) struct EntityBlockSnapshot {
     /// pay on.
     ///
     /// For a retained block this is `index.len()` — the survivors the
-    /// reset recorded, which is the whole of that block's population
-    /// because nothing allocates into a dead arena.
+    /// reset recorded, which is that block's whole population because
+    /// nothing allocates into a dead arena.
     ///
     /// **For a large-entity block it is 1, and that is soundness rather
     /// than economy.** The obvious formula, `BLOCK_PAYLOAD / class_size`,

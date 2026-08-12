@@ -52,23 +52,21 @@ thread_local! {
     /// notification — and before the buffer arena and the heaps
     /// (`heap::ll_thread_exit` fixes the order).
     ///
-    /// A raw pointer in a `Cell`, not a `RefCell<HashMap<_, _>>`, and
-    /// for soundness. A `HashMap` has drop glue, so its key is
-    /// registered for TLS destruction; this table is reached **from** a
-    /// TLS destructor, because thread exit runs the static-block
-    /// teardown whose deaths call [`notify_death`]. TLS destructor order
-    /// is unspecified — on glibc reverse registration order, which puts
-    /// the exit guard last exactly because it registers first — so the
-    /// table is reliably already destroyed, `with` panics with
-    /// `AccessError` inside a destructor, and a panic there cannot
-    /// unwind: the process aborts. `try_with` would be worse than the
-    /// abort, not better: a swallowed `notify_death` leaves the cell's
-    /// target dangling, and the next `__destruct` calling `get()`
-    /// receives a retained pointer into freed memory. A `Cell<*mut _>`
-    /// has no drop glue, is never registered, and stays readable for the
-    /// whole life of the thread; [`dispose`] frees it explicitly. The
-    /// initializer is `const` for the same reason: a lazily initialized
-    /// key can otherwise be first-initialized mid-destruction.
+    /// A raw pointer in a `Cell` rather than a `RefCell<HashMap<_, _>>`,
+    /// for soundness: a `HashMap` has drop glue, so its key is registered
+    /// for TLS destruction, and this table is reached **from** a TLS
+    /// destructor, thread exit running the static-block teardown whose
+    /// deaths call [`notify_death`]. With the order unspecified the table
+    /// is reliably already destroyed by then, `with` panics inside a
+    /// destructor, and a panic there aborts. `try_with` is worse rather
+    /// than better: a swallowed `notify_death` leaves the cell's target
+    /// dangling, and the next `__destruct` calling `get()` receives a
+    /// retained pointer into freed memory. A `Cell<*mut _>` has no drop
+    /// glue, is never registered and stays readable for the thread's whole
+    /// life; [`dispose`] frees it explicitly, and the initializer is
+    /// `const` so a lazily initialized key cannot be first-initialized
+    /// mid-destruction (`dev/DECISIONS.md`, "thread exit owns the order
+    /// its per-thread state dies in").
     static WEAK_TABLE: std::cell::Cell<*mut HashMap<usize, *mut LLWeakRef>> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
 }

@@ -95,12 +95,9 @@ pub(crate) unsafe fn entity_alloc_in(
 /// body above the same bound is legal and takes the dedicated-run path
 /// ([`body_alloc`]).
 ///
-/// The arena's row is enforced twice over rather than read here.
-/// `Arena::alloc` tests the bound itself, because `ll_arena_alloc`
-/// reaches it without passing this module and because the reverse
-/// dependency would close a cycle; `Arena::alloc_entity`, which this
-/// module's arena arm calls, splits at the same bound and serves the
-/// larger request from an allocation of its own.
+/// The arena's row is enforced twice rather than read here: `Arena::alloc`
+/// tests the bound itself, `ll_arena_alloc` reaching it without passing
+/// this module, and `Arena::alloc_entity` splits at the same bound.
 #[inline]
 pub(crate) fn slot_limit(category: MemoryCategory) -> usize {
     match category {

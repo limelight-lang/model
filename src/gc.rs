@@ -707,7 +707,7 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
 /// drain, parked-memory flush. The compiler emits it once **after** a
 /// run of [`ll_release_batch`](crate::refcount::ll_release_batch)
 /// calls (a scope exit), paired with one [`ll_gc_checkpoint_ack`]
-/// before the run: the trailing position is load-bearing — a pre-run
+/// before the run, and the trailing position is what makes it work: a pre-run
 /// pickup judges the scope's still-counted transients, the phase-lock
 /// shape (`rfc/model/gc/rc-walk.md`, "Batched releases", amendment
 /// 2026-07-28; the full argument lives in [`crate::epoch`]'s module

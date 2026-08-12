@@ -15,7 +15,8 @@
 //! and it is entered into the registry below because no region contains
 //! it.
 //!
-//! **Commissioning order, and the zero pass is the load-bearing half.**
+//! **Commissioning order, of which the zero pass is the half that
+//! decides.**
 //! The header is written, then the entity's first 8 bytes are zeroed,
 //! then the kind is published — release under `rc-walk`, because the
 //! collector reads every block's kind concurrently. That word is the
