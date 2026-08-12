@@ -542,12 +542,11 @@ impl Table {
 
     /// **The caller publishes its references before it inserts.** The
     /// entry is written raw and this counts nothing, so between the write
-    /// and the caller's retain the table names a child no reference backs.
-    /// While nothing walked an array concurrently that window was
-    /// invisible; the tracer reads one now, and a phantom in-edge pushes
+    /// and a later retain the table would name a child no reference backs,
+    /// and the concurrent tracer reads that as a phantom in-edge pushing
     /// the key toward looking unrooted. `barrier::publish_child` is the
-    /// operation to publish through — it takes the reference for the
-    /// entry and answers with the value the entry must name, which is a
+    /// operation to publish through: it takes the reference for the entry
+    /// and answers with the value the entry must name, which is a
     /// different one when the barrier copied an arena value out
     /// (`array::element::store_into` and `array::entity::fill_from` are
     /// the worked examples, one per key kind).
@@ -557,15 +556,12 @@ impl Table {
     /// table is unchanged. `Some(true)` means a new key was added.
     ///
     /// **`category` is the owner's, as it stands at this call.** Growth
-    /// allocates from it and teardown frees to it, so a value cached
-    /// across an arena reset frees to an allocator the storage never came
-    /// from: promotion rewrites the owner's header and the next call must
-    /// see the new answer. Read it at the call site — for an array that
-    /// is `array::entity::category_of` — and never keep a copy beside the
-    /// table, which is the field this structure had until it drifted
-    /// (`dev/DECISIONS.md`, 2026-08-07). The parameter is also what keeps
-    /// the table free of entity kinds, so a second kind of owner can use
-    /// it unchanged.
+    /// allocates from it and teardown frees to it, and promotion rewrites
+    /// the owner's header, so a value cached across an arena reset frees to
+    /// an allocator the storage never came from. Read it at the call site,
+    /// which for an array is `array::entity::category_of`, and keep no copy
+    /// beside the table (`dev/DECISIONS.md`, "the table is handed its
+    /// category and reads no header").
     ///
     /// The old value of an overwritten key is returned to the caller
     /// rather than dropped here: releasing it is the owner's, because the
@@ -779,17 +775,13 @@ impl Table {
     /// owes it a channel, forwarding nothing about a move today.
     ///
     /// **Into a fresh chunk rather than in place.** Sliding live entries
-    /// down inside the
-    /// published chunk writes thirty-two bytes plainly under a collector
-    /// that is reading them with relaxed atomic loads — undefined
-    /// behaviour rather than the torn value the epoch repairs, and Miri
-    /// reports it as a data race at the copy. Word-by-word atomic stores
-    /// would answer the race and not the arithmetic: a walker mid-stride
-    /// would then read one entry at two indices and count its child
-    /// twice, and an in-edge count above the truth is the one direction
-    /// that frees a live object. A chunk nothing has published is written
-    /// by one thread, so the copy stays a plain one and no reading can
-    /// name the destination until the window closes.
+    /// down inside the published chunk writes plainly under a collector
+    /// reading with relaxed atomic loads, and atomic stores would answer
+    /// the race without answering the arithmetic: a walker mid-stride
+    /// would read one entry at two indices and count its child twice
+    /// (`dev/DECISIONS.md`, "compaction moves the entries into a fresh
+    /// chunk"). A chunk nothing has published is written by one thread, so
+    /// the copy stays plain.
     ///
     /// The old chunk is freed after the window, and a walker still
     /// striding it reads intact bytes: the collector walks only inside an

@@ -891,21 +891,17 @@ pub(crate) unsafe fn storage_address(a: *mut LLArray) -> *mut u8 {
 /// is pinned by a test.
 ///
 /// Two routes, chosen by where the storage came from, and the same pair a
-/// string's payload takes for the same reasons (`dev/DECISIONS.md`,
-/// 2026-08-04): an **OS-direct** storage, over a block payload, is
-/// forgotten by the arena and keeps its address, allocating nothing and
-/// so refusing nothing; an **in-block** one is copied into a fresh
-/// buffer-arena chunk, bounded by a block payload.
+/// string's payload takes (`dev/DECISIONS.md`, "promotion carries a
+/// survivor's payload, and the two routes are not the same route"): an
+/// **OS-direct** storage, over a block payload, is forgotten by the arena
+/// and keeps its address, allocating nothing and so refusing nothing; an
+/// **in-block** one is copied into a fresh buffer-arena chunk.
 ///
-/// Nothing here records where the storage now lives. The category is the
-/// header's to say and promotion rewrites the header a moment later, so
-/// every later free of this storage reads the new answer with no second
-/// field to keep in step (`dev/DECISIONS.md` 2026-08-07). A refused carry
-/// is safe under the new category too: promotion stamps the storage's
-/// block `BLOCK_KIND_RETAINED` right after, and that is the one kind
-/// `buffer_free_longlived_payload` leaves alone — the same mechanism that
-/// protects a string's uncarried payload, rather than a second one of our
-/// own.
+/// Nothing here records where the storage now lives, the category being
+/// the header's to say and promotion rewriting the header a moment later.
+/// A refused carry is safe under the new category too: promotion stamps
+/// the storage's block `BLOCK_KIND_RETAINED`, the one kind
+/// `buffer_free_longlived_payload` leaves alone.
 ///
 /// **False when the copy was refused**, with the storage untouched.
 ///
@@ -971,26 +967,20 @@ pub(crate) unsafe fn carry_storage_out_of(
 /// string's: only the GC heap frees here, an arena entity dying with its
 /// reset and an immortal one not dying at all.
 ///
-/// **Nesting is drained, not recursed**, and for the reason the copy above
-/// takes the same shape: depth is the caller's input — `$deep = [[[…]]]`
-/// and then one release — so a frame set per level is a stack overflow,
-/// which the guard page turns into a dead process with no unwinding and
-/// no record. A nested array whose last reference this teardown drops is
-/// pushed onto a list and torn down by this call's own loop. The list
-/// lives in a buffer-arena chunk.
+/// **Nesting is drained, not recursed**, for the reason the copy above
+/// takes the same shape: depth is the caller's input, so a frame set per
+/// level is a stack overflow. A nested array whose last reference this
+/// teardown drops is pushed onto a list in a buffer-arena chunk and torn
+/// down by this call's own loop.
 ///
-/// **Destructors keep Zend's order**, which is depth first and, inside a
-/// level, the order the entries were inserted in: `[[$b], $a]` runs
-/// `$b`'s destructor before `$a`'s, exactly as the recursion did. That
-/// order is a contract on this path (`dev/DECISIONS.md`, 2026-08-08);
-/// the collector and the arena reset order their own destructors, as
-/// Zend's GC and its shutdown do.
-///
-/// Holding it costs no cursor into the table and one more kind of line
-/// on the list ([`Pending`]): a flat array pushes nothing, and from the
-/// first dying nested array the rest of that level is held, released in
-/// entry order after the subtree deferred before it
-/// (`dev/DECISIONS.md`, 2026-08-08).
+/// **Destructors keep Zend's order**, depth first and, inside a level, the
+/// order the entries were inserted in: `[[$b], $a]` runs `$b`'s destructor
+/// before `$a`'s. That order is a contract on this path, and holding it
+/// costs no cursor into the table and one more kind of line on the list
+/// ([`Pending`]) — a flat array pushes nothing, and from the first dying
+/// nested array the rest of that level is held, released in entry order
+/// after the subtree deferred before it (`dev/DECISIONS.md`, "the deep
+/// copy walks a list, and teardown is the half still on the stack").
 ///
 /// # Safety
 /// `a` must be a live array entity.
