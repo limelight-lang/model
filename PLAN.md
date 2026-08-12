@@ -185,10 +185,20 @@ and up is cut to the contract or moved under a named section, and
         `dev/POSTMORTEM.md`'s census-flake entry by title,
         `dev/design/debug-modes.md` §9 by section, and
         `crate::array::head`. Commit d31eec4.
-- [ ] S15.4 The 21 blocks of forty lines and up
+- [x] S15.4 The 21 blocks of forty lines and up
       done: each is cut to the contract or moved under a named section
         that the code then names
       tier: T2 · role: Critic
+      handoff: nineteen were rewritten and two were left as they are, the
+        loom models, whose docs are the only record of what each
+        configuration exhibits. The largest cuts came from moving the
+        argument into `docs/memory-manager.md`, which took
+        `deferred_free` from 95 lines to 22 and `heap` from 87 to 24 —
+        and which was wrong in the section that took the most: it
+        described the intrusive link the module had rejected and denied
+        that cross-thread frees park. The crate's comment share moved
+        only 32.0 % to 31.2 %, because 21 blocks are a tenth of the
+        volume; the rest is S15.5's. Commits 5843cc1..07ac543.
 - [ ] S15.5 The remaining 72 blocks of twenty lines and up
       done: the same test applied module by module, and the comment share
         measured again against the 32 % above

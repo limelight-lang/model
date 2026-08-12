@@ -13,10 +13,10 @@
 //! **The collision link lives inside the element's Box**, in the six bytes
 //! `rfc/model/values.md` reserves at +10, and that is the one fact to hold
 //! before reading anything else here. Zend threads its link through
-//! `zval.u2.next` and pays for it with a rule no macro may break: a value
-//! copy never carries `u2`. The rule here has to be stronger, because the
-//! concurrent collector reads the element's second word while a mutator
-//! writes it. It is enforced three ways:
+//! `zval.u2.next` under a rule no macro may break, that a value copy never
+//! carries `u2`; the rule here has to be stronger, the concurrent
+//! collector reading the element's second word while a mutator writes it.
+//! It is enforced three ways:
 //!
 //! - the element field is **private**, so `entry.element = v` does not
 //!   compile outside this module, and every write goes through
