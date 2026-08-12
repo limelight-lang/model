@@ -129,11 +129,10 @@ pub struct StorageHead {
     /// counts, so a reader that saw the count first would read an
     /// element nobody had written yet.
     used: AtomicUsize,
-    /// Written at construction, by `StorageHead::empty`, and by nothing
-    /// else in the crate today: the 2 → 3 migration is the second writer
-    /// the design allows and it does not exist yet.
-    /// When it lands it writes inside the window, like every other
-    /// change to what these words mean.
+    /// Written twice at most: by `StorageHead::empty` at construction,
+    /// and by the 2 → 3 migration, which is the only other writer the
+    /// design allows ([`set_tag`](Self::set_tag)). 3 is final, so no
+    /// third write exists to order against.
     tag: AtomicU8,
 }
 
@@ -188,6 +187,24 @@ impl StorageHead {
     #[inline]
     pub(crate) fn tag(&self) -> StorageTag {
         decode_tag(self.tag.load(Ordering::Relaxed)).expect("the tag is written by this crate only")
+    }
+
+    /// Stamp the representation the four words above now describe.
+    ///
+    /// **Called inside the window and nowhere else.** The tag decides how
+    /// a walker strides the chunk, so a tag published beside the old
+    /// chunk, or an old tag beside the new one, names a layout the bytes
+    /// never had — the one reading no later phase repairs. The migration
+    /// is the only caller (`array::entity::migrate_to_hash`), and it
+    /// writes 3, which is final.
+    #[inline]
+    #[allow(dead_code, reason = "the migration's caller lands with the dispatch")]
+    pub(crate) fn set_tag(&self, tag: StorageTag) {
+        debug_assert!(
+            self.version.load(Ordering::Relaxed) % 2 != 0,
+            "the tag changes inside an open window"
+        );
+        self.tag.store(tag as u8, Ordering::Release);
     }
 
     /// Open a window in which elements move. The version goes odd, and a

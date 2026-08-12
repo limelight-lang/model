@@ -72,6 +72,17 @@ impl Storage {
             vector: std::mem::ManuallyDrop::new(Vector::empty()),
         }
     }
+
+    /// An ordered hash that already holds entries, for the one operation
+    /// that replaces a representation rather than creating one
+    /// ([`migrate_to_hash`]). The tag saying so is written by that
+    /// operation, inside the same window as this.
+    #[allow(dead_code, reason = "the migration's caller lands with the dispatch")]
+    pub(crate) fn of_table(table: Table) -> Self {
+        Storage {
+            table: std::mem::ManuallyDrop::new(table),
+        }
+    }
 }
 
 /// The array entity.
@@ -156,6 +167,87 @@ pub(crate) unsafe fn as_vector_mut<'a>(a: *mut LLArray) -> (&'a mut Vector, &'a 
     debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
     let vector = unsafe { &mut (*a).storage.vector };
     (vector, unsafe { &(*a).head })
+}
+
+/// Replace a mixed vector with the ordered hash holding the same
+/// elements under the keys their positions were: the 2 → 3 transition of
+/// `rfc/model/arrays.md`, "Transition Rules".
+///
+/// **Insertion order and the append cursor carry over by construction.**
+/// The elements go in at `0..used` in that order, so the hash's own order
+/// is the vector's, and `Table::insert` advances the cursor past each
+/// integer key, which leaves it at the vector's length — the key that
+/// vector's next append would have taken. An empty vector inserts
+/// nothing and the cursor stays at "no integer key yet", which answers 0
+/// for the same reason.
+///
+/// **No reference moves.** Both representations belong to this array, so
+/// an element carried across is the same holder's: nothing is retained
+/// and nothing is given back, and a refused migration leaves every count
+/// where it was.
+///
+/// **False leaves the array a vector**, whole and serving, with the
+/// caller's references untouched. The only refusal is the table's own
+/// allocation, and the partly filled table dies with its chunk — the
+/// elements it copied are still the vector's, so freeing its storage
+/// releases no child.
+///
+/// The table is filled through a staging head of its own and swapped in
+/// inside one window, because a walker reads the four words and the tag
+/// as one reading: the chunk, the counts and the tag that says what they
+/// mean have to change together or the reading describes a layout the
+/// bytes never had (`crate::array::head`).
+///
+/// # Safety
+/// `a` a live array whose storage is the mixed vector, exclusively the
+/// caller's for this call; `category` the one its header carries now
+/// ([`category_of`]).
+#[allow(
+    dead_code,
+    reason = "the caller lands with the element layer's dispatch"
+)]
+pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) -> bool {
+    debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
+    let mut table = Table::empty();
+    // The head the table fills against, so that nothing a walker reads
+    // moves until the swap below. It is a local, and no walker can reach
+    // it: the array still describes its vector.
+    let staging = StorageHead::empty(StorageTag::Hash);
+
+    let n = unsafe { as_vector(a) }.1.used();
+    for i in 0..n {
+        // Derived per element and dropped again: the swap writes over the
+        // vector's bytes, so no reference to them may outlive the loop.
+        let (vector, head) = unsafe { as_vector(a) };
+        let element = vector.get(head, i).expect("a position below the count");
+        if table
+            .insert(&staging, category, Key::Int(i as i64), element)
+            .is_none()
+        {
+            table.dispose(&staging, category);
+            return false;
+        }
+    }
+
+    let (old_storage, old_capacity) = {
+        let (vector, head) = unsafe { as_vector_mut(a) };
+        (head.storage(), *vector.granted_capacity_mut())
+    };
+
+    let head = unsafe { &(*a).head };
+    head.begin_move();
+    unsafe { (&raw mut (*a).storage).write(Storage::of_table(table)) };
+    head.set_storage(staging.storage());
+    head.set_nslots(staging.nslots());
+    head.set_used(staging.used());
+    head.set_tag(StorageTag::Hash);
+    head.end_move();
+
+    if !old_storage.is_null() {
+        unsafe { crate::memory::routing::body_free(category, old_storage, old_capacity) };
+    }
+
+    true
 }
 
 /// Give the storage back, whichever representation holds it. The
