@@ -196,16 +196,26 @@ mod the_block_under_the_slots {
     /// `rfc/model/memory/heap-slot-allocation.md`.
     #[test]
     fn single_live_slot_churn_does_not_recarve_block() {
+        // The instrument is this thread's block cache, not `blocks_out`
+        // or `regions_carved`: both are process-global, and a thread
+        // that takes a block for any reason of its own — a journal ring
+        // among them — moves them under a test holding no lock over
+        // them. A block handed back per cycle lands in this cache and
+        // reads as one more than the baseline, which is the pathology
+        // itself rather than a symptom of it downstream. The sites are
+        // quiet so that this thread's own records take no block either
+        // (`dev/POSTMORTEM.md`, "a ring is a block, and a thread's first
+        // record decides when it is taken"), before the pool's guard as
+        // `set_sites_for_test` requires.
+        let _quiet = crate::journal::kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
-        let pool = BlockPool::global();
         let mut heap = Heap::new();
 
         // Warm up: this alloc carves the one block we expect to be
         // retained for the rest of the test.
         let warm = heap.alloc(64);
         unsafe { heap.free(warm) };
-        let blocks_out_before = pool.blocks_out();
-        let regions_before = pool.regions_carved();
+        let cached_before = crate::memory::block_pool::thread_cache_len();
 
         for i in 0..10_000u32 {
             let p = heap.alloc(64);
@@ -213,13 +223,11 @@ mod the_block_under_the_slots {
             unsafe { p.write(i as u8) };
             unsafe { heap.free(p) };
             assert_eq!(
-                pool.blocks_out(),
-                blocks_out_before,
-                "block was returned to the pool and re-carved on iteration {i}"
+                crate::memory::block_pool::thread_cache_len(),
+                cached_before,
+                "block was returned to the pool on iteration {i}"
             );
         }
-
-        assert_eq!(pool.regions_carved(), regions_before);
     }
 
     /// **Two blocks, because one proves nothing.** `Heap::retire_empty`

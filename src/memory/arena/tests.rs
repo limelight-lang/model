@@ -287,15 +287,6 @@ mod the_logs_the_reset_reads {
 
     #[test]
     fn reset_hands_destructors_and_recycles_blocks() {
-        // A ring is one pooled block, and `BlockPool::put` raises its
-        // record with the block already in the thread cache: a thread
-        // whose first record is the one inside this reset takes its ring
-        // out of the block the reset just returned, and the arena below
-        // then draws the next block instead. Which record is a thread's
-        // first depends on the process-wide mask, which every quieting
-        // test moves. Before the pool's guard, as `set_sites_for_test`
-        // requires.
-        let _quiet = crate::journal::kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
         let pool = BlockPool::global();
         let mut arena = Arena::new();

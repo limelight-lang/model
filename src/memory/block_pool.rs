@@ -575,6 +575,13 @@ pub(crate) fn test_guard() -> TestGuard {
     // test that is currently running and counting.
     let guard = TestGuard(LOCK.lock().unwrap_or_else(|e| e.into_inner()));
     crate::memory::heap::ll_thread_init();
+    // The ring too, and for the same reason as the init above: it is a
+    // block, so the record that allocates it draws one out of this
+    // thread's cache, and a test that names a block cannot have that
+    // happen halfway through it (`dev/POSTMORTEM.md`, "a ring is a block,
+    // and a thread's first record decides when it is taken").
+    #[cfg(feature = "debug-journal")]
+    crate::journal::take_ring_for_test();
     guard
 }
 

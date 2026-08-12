@@ -131,9 +131,20 @@ mod what_the_sites_record {
             .filter(|event| event.thread == ring && event.subject == block as u64)
             .map(|event| event.kind)
             .collect();
+        // The trip is the tail rather than the whole of what the ring
+        // holds for the address: `mark` frees the rings an eviction left
+        // for a live thread to free, that free decommissions a block
+        // onto this very ring, and the `get` above draws the same block
+        // straight back out of the thread cache. A record before the
+        // trip's own commission is therefore an earlier life of the
+        // address — seen 1 in 300 runs at eight threads.
+        let trip = mine
+            .iter()
+            .rposition(|&kind| kind == KIND_BLOCK_COMMISSIONED)
+            .expect("this thread's own commission of the block is in the window");
         assert_eq!(
-            mine,
-            vec![KIND_BLOCK_COMMISSIONED, KIND_BLOCK_DECOMMISSIONED]
+            &mine[trip..],
+            &[KIND_BLOCK_COMMISSIONED, KIND_BLOCK_DECOMMISSIONED]
         );
     }
 

@@ -516,33 +516,35 @@ mod a_ring_across_a_threads_life {
             retired_after, RETIRED_KEPT,
             "the retired list outgrew its bound"
         );
-        // Per identity, never by the list's totals. Another thread
-        // retiring a ring inside the loop above changes how many rings
-        // were dropped and which ones, and `test_guard()` does not
-        // serialise a retirement; what it cannot change is that the
-        // oldest of this test's own went and the rest stayed.
+        // Per identity, never by the list's totals, and as a boundary
+        // rather than a count. Another thread retiring a ring inside the
+        // loop above pushes the bound down on this test's rings too, and
+        // `test_guard()` does not serialise a retirement — so how many of
+        // them go is not this test's to state. What eviction guarantees
+        // is the order: it drains the front, so the rings that went are a
+        // prefix of the order they were retired in, and the oldest is
+        // always among them.
         assert!(
             freed.contains(&mine[0]),
             "the oldest of this test's rings was not dropped"
         );
-        assert_eq!(
-            rings_named(mine[0]).1,
-            0,
+        let surviving: Vec<bool> = mine.iter().map(|&t| rings_named(t).1 == 1).collect();
+        let surviving: Vec<bool> = mine.iter().map(|&t| rings_named(t).1 == 1).collect();
+        assert!(
+            !surviving[0],
             "the ring reported dropped is still on the list"
         );
-        for thread in &mine[1..] {
-            assert_eq!(
-                rings_named(*thread).1,
-                1,
-                "the list dropped a ring newer than its oldest"
-            );
-        }
+        assert!(
+            surviving.windows(2).all(|pair| pair[0] <= pair[1]),
+            "the list dropped a ring while keeping an older one: {surviving:?}"
+        );
 
         // Leave the list as it was found, so that a later test's window
         // does not carry this one's evictions.
-        for thread in mine.into_iter().skip(1) {
-            assert!(
+        for (thread, alive) in mine.into_iter().zip(surviving).skip(1) {
+            assert_eq!(
                 evict_retired_ring(thread),
+                alive,
                 "a ring of this test went missing"
             );
         }
@@ -907,7 +909,7 @@ mod a_thread_the_journal_could_not_serve {
         let _quiet = kinds::disable_sites_for_test();
         use crate::memory::block_pool::FORCE_OOM;
         let _g = crate::memory::block_pool::test_guard();
-        let counts_before = registry_counts();
+        let start = mark();
 
         let identity = std::thread::spawn(|| {
             crate::memory::heap::ll_thread_init();
@@ -925,13 +927,18 @@ mod a_thread_the_journal_could_not_serve {
         .expect("the journaling thread panicked");
 
         assert_eq!(identity, 0, "a refused thread ended up with a ring");
-        // The retired count, not the live one: the thread ran its exit,
-        // so a ring it did get would have moved off the live list before
-        // this line and left that count telling nothing.
+        // The refusal count rather than the registry's totals: every
+        // thread in the run moves those, and a ring retired by one of
+        // them inside this window reads exactly like a ring granted here
+        // (seen 1 in 300 runs at eight threads). One refusal is also the
+        // stronger claim — a second ask would be counted, granted or
+        // not — and the pool's guard holds the only tests that provoke
+        // one.
+        let end = mark();
         assert_eq!(
-            registry_counts(),
-            counts_before,
-            "a refused ring was asked for again, and granted"
+            end.refusals,
+            start.refusals + 1,
+            "the refusal was asked again rather than remembered"
         );
     }
 

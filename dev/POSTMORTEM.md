@@ -533,3 +533,70 @@ habit is taken more than once as easily as not, and the second call is
 silent at the source: it reads as an ordinary line. Before adding one,
 grep the whole test body rather than its head, and read a hung run as a
 lock held by the same thread until the wait is ruled out.
+
+---
+
+## 2026-08-12 — a ring is a block, and a thread's first record decides when it is taken
+
+**What happened.** `memory::arena::tests::the_logs_the_reset_reads::
+reset_hands_destructors_and_recycles_blocks` asserts that an arena built
+after a reset draws back the block the reset recycled, and it failed 1 in
+35 at eight threads under rc-trace with `debug-journal`. `BlockPool::put`
+pushes the block onto the thread cache, closes the borrow, and then raises
+`KIND_BLOCK_DECOMMISSIONED`; a thread whose first record is that one
+allocates its ring inside the site, through `ll_malloc`, and a ring is one
+pooled block. So the draw takes the block pushed a few instructions
+earlier and the arena below is served the next one. A 300-run leg at eight
+threads found the same site disturbing
+`put_then_get_reuses_without_new_region`,
+`an_overflowing_cache_keeps_half_and_flushes_the_rest` and
+`emptied_noncurrent_block_returns_to_pool`.
+
+**Why it was not caught.** Which record is a thread's first is no property
+of the test that suffers for it: the enabled mask is process-wide, and
+thirty call sites in the suite move it. A test thread that initialises
+while the mask is 0 journals nothing at `ll_thread_init`, so it reaches
+its first site later, in the middle of what the test measures. At the
+gate's width of 4 that overlap is rare enough for the suite to read as
+green, and the first two instances were repaired one at a time in
+`heap`'s tests without the shape being named.
+
+**The per-test remedy is what those two used, and it does not scale — it
+feeds the defect.** Quieting one test's sites widens the window in which
+*another* thread initialises without journaling, so each application makes
+the next test likelier to meet its first record late. Measured on this
+crate: three tests repaired that way, and the next 600-run leg surfaced
+five more, three of them tests that had never failed before.
+
+**The rule.** `block_pool::test_guard` takes this thread's ring before the
+test body runs (`journal::take_ring_for_test`, `debug-journal` builds
+only), so the draw lands where nothing is measuring and no site inside a
+test that holds the pool's lock can allocate a ring. That closed every
+instance at once — 1200 runs at eight threads across both GC
+configurations, no failure, including four tests nobody had repaired. The
+repair belongs to the fixture rather than to the pool: the draw is what
+the runtime really does, and a pool that served the journal from anywhere
+but the cache would be a worse allocator bought for one assertion.
+
+**A count every thread moves is not an instrument, and the fixture cannot
+help it.** `blocks_out`, the registry's live and retired totals and
+`regions_carved` are moved by threads that hold no pool guard —
+`single_live_slot_churn_does_not_recarve_block` read `blocks_out` one high
+6 times in 600 runs, `a_refused_ring_is_not_asked_for_a_second_time` read
+a ring another thread had retired as the ring it was refused, and
+`the_retired_list_keeps_the_newest_and_drops_the_oldest` demanded that
+only its own oldest be evicted while another thread's retirement pushes
+the bound down its list too. Each now measures what it is about: this
+thread's block cache, which the pathology fills at the free it denies; the
+refusal count, which only guard-holding tests move; and the *order* of
+eviction, which is the guarantee — the rings that go are a prefix of the
+order they were retired in, however many go.
+
+**A `mark` writes into the window it opens.** It takes the rings an
+eviction left for a live thread to free and frees them after capturing the
+cursors, so the decommission of a freed ring's block falls inside the
+window; the pool then hands that same block to the next `get`. So the
+round-trip test reads its trip as the tail of what its ring holds for the
+address rather than as the whole of it. Moving the frees above the capture
+does not fix it and cannot: the frees would then fall inside the window
+the *end* mark closes.

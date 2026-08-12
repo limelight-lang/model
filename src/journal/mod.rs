@@ -383,6 +383,26 @@ thread_local! {
     static ALLOCATING: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Take this thread's ring now, whatever the mask says. Tests only, and
+/// called from `block_pool::test_guard` so that every test holding the
+/// pool's lock has journaled before its body starts.
+///
+/// A ring is one pooled block, so the record that allocates one takes a
+/// block out of the thread cache; a test that names a block, counts the
+/// cache or reads a block's kind cannot have that happen in the middle of
+/// it (`dev/POSTMORTEM.md`, "a ring is a block, and a thread's first
+/// record decides when it is taken"). Which record is a thread's first is
+/// otherwise decided by the enabled mask, which every quieting test moves
+/// under every other thread in the run.
+///
+/// Idempotent, and silent about the outcome: a thread the allocator
+/// refuses is refused here too, which is the state the journal's own
+/// tests build deliberately.
+#[cfg(all(test, feature = "debug-journal"))]
+pub(crate) fn take_ring_for_test() {
+    let _ = ring_for_writing();
+}
+
 /// This thread's ring identity, or `0` when it has none. Tests only:
 /// identity is the registry's business, and no caller outside one has a
 /// reason to ask for its own — what a test wants it for is to read back
