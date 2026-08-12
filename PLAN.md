@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-12 · Active: S15, then S16, then S7
+Updated: 2026-08-12 · Active: S17, then S15, then S16, then S7
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -132,34 +132,64 @@ reentrant, so rc-trace deadlocked at every width down to a single thread
 while the default configuration stayed green, the test being
 `cfg(not(rc-walk))`. Trap in `dev/POSTMORTEM.md`, 2026-08-12.
 
-## S17 — An arena test asserts it gets the block the reset just returned
+## S17 — A test measures the pool while the journal takes a block out of it
 
 Found on 2026-08-12 by the gate's own triple run, and at the head because
-`dev/WORKFLOW.md` puts a known bug before new work.
+`dev/WORKFLOW.md` puts a known bug before new work. The first instance was
 `memory::arena::tests::the_logs_the_reset_reads::reset_hands_destructors_
-and_recycles_blocks` asserts that an arena created after a reset allocates
-out of **the same block** the reset recycled. Measured 1 in 35 at
+and_recycles_blocks`, which asserts that an arena created after a reset
+allocates out of **the same block** the reset recycled: 1 in 35 at
 `--test-threads=8` under rc-trace with `debug-journal`, and not seen at
 the gate's width of 4.
 
-Goal: the test states a property another thread cannot disturb, or the
-pool's identity guarantee is written down and the test rests on it.
+**The mechanism is named, and it serves the whole family.** A ring is one
+pooled block, and `BlockPool::put` raises its decommission record with the
+returned block already in the thread cache, so a thread whose first record
+is that one takes its ring out of the block just returned. Which record is
+a thread's first depends on the process-wide enabled mask, which every
+quieting test moves, so nothing about the pool decides it. A 300-run leg
+at eight threads then found three more tests of that shape and two journal
+tests whose own mechanism is not named yet.
 
-Done when: the cause is named from the code — which draw takes a block
-other than the one just returned, and why the per-thread cache does not
-make it deterministic — and 60 runs at eight threads in that
-configuration are clean.
+Goal: a test that measures the pool measures it in a world where the
+journal cannot take a block underneath it.
 
-- [ ] S17.1 Name what takes the block, and repair the test or the claim
+Done when: 300 runs at eight threads under rc-trace with `debug-journal`
+are clean, and every repair names the draw that disturbed its test rather
+than serialising until the symptom stops.
+
+- [x] S17.1 Name what takes the block, and repair the test or the claim
       done: a run that failed before the repair and 60 clean after, with
         the mechanism named rather than guessed
       tier: T2 · role: —
-      The suspect is the block pool's per-thread cache in front of the
-        global chain: on a fresh libtest thread the cache starts empty,
-        the reset's `put` fills it, and the next `alloc` should draw the
-        same block back. What breaks that is unmeasured, and the shape
-        of the failure — a different address, one region apart — says a
-        draw went past the cache.
+      handoff: the test holds `journal::kinds::disable_sites_for_test()`
+        before the pool's guard, that lock being the outer one. The proof
+        is an injection of the window a quieting test opens — the mask at
+        0 across `ll_thread_init`, the default set back before the reset
+        — which failed on the spot with the returned block stamped
+        `BLOCK_KIND_LARGE`, the ring's own kind, and the second arena one
+        block up rather than one region, as this stage first guessed. 300
+        runs at eight threads, no failure. Commit 9478205.
+- [ ] S17.2 The three pool tests of the same shape
+      done: `block_pool::…::an_overflowing_cache_keeps_half_and_flushes_
+        the_rest`, `block_pool::…::put_then_get_reuses_without_new_region`
+        and `buffer_arena::…::emptied_noncurrent_block_returns_to_pool`
+        each name the draw that disturbs them, and 300 runs at eight
+        threads are clean
+      tier: T1 · role: —
+      Failures in the 300-run leg: 6, 1 and 1. The first reads its cache
+        as 3 or as 8 where it demands 4, which is one ring taken after
+        the flush and one taken between the puts.
+- [ ] S17.3 The two journal tests, whose mechanism is not named yet
+      done: `kinds::…::a_block_round_trip_is_a_commission_and_a_
+        decommission` and `journal::…::a_refused_ring_is_not_asked_for_
+        a_second_time` are explained from the code and repaired
+      tier: T2 · role: —
+      One failure each in the leg. The round trip read `[6, 5, 6]` where
+        it demands `[5, 6]`, and it filters by its own ring and its own
+        block address, so the extra decommission is this thread's own —
+        which the pool's records alone do not explain. The refusal test
+        read `(0, 63)` where it demands `(1, 62)`.
 
 ## S15 — What a comment carries, and where the argument lives
 
