@@ -308,10 +308,6 @@ pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
 ///
 /// # Safety
 /// As [`ll_array_new`].
-#[allow(
-    dead_code,
-    reason = "the production producer lands with the factory's stamp"
-)]
 pub(crate) unsafe fn new_vector_array(category: MemoryCategory) -> *mut LLArray {
     unsafe { new_with_storage(category, StorageTag::Vector, Storage::vector()) }
 }
@@ -508,20 +504,27 @@ pub unsafe fn separate(
 /// # Safety
 /// `src` is a live array entity.
 unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LLArray {
-    if unsafe { (*src).head.tag() } == StorageTag::Vector {
-        return unsafe { new_vector_array(category) };
-    }
+    match unsafe { (*src).head.tag() } {
+        StorageTag::Vector => unsafe { new_vector_array(category) },
+        StorageTag::Hash => {
+            // The representation is named here rather than left to
+            // `ll_array_new`. That factory's stamp answers a different
+            // question — which representation a *fresh* array starts in —
+            // and this destination has to be the source's, so the two
+            // named factories are what the copy goes through.
+            let dst = unsafe { new_with_storage(category, StorageTag::Hash, Storage::hash()) };
+            if dst.is_null() {
+                return std::ptr::null_mut();
+            }
 
-    let dst = unsafe { ll_array_new(category) };
-    if dst.is_null() {
-        return std::ptr::null_mut();
+            let (source, _) = unsafe { as_table(src) };
+            let (copy, copy_head) = unsafe { as_table_mut(dst) };
+            copy.adopt_flood_state(copy_head, source);
+            copy.adopt_append_state(source);
+            dst
+        }
+        StorageTag::Typed => unreachable!("no producer stamps the typed vector"),
     }
-
-    let (source, _) = unsafe { as_table(src) };
-    let (copy, copy_head) = unsafe { as_table_mut(dst) };
-    copy.adopt_flood_state(copy_head, source);
-    copy.adopt_append_state(source);
-    dst
 }
 
 /// Why a copy is being made, which decides one thing and only one: a
