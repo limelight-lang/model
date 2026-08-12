@@ -1,55 +1,41 @@
-//! The `rc-trace` cycle collector.
+//! The `rc-trace` cycle collector: ARC as the primary reclamation path,
+//! arenas absorbing the bulk, and stop-the-thread tracing for cycles only.
+//! The four-interface strategy contract this composes with lives in
+//! `rfc/model/gc/strategies.md` rather than here.
 //!
-//! Per `rfc/model/gc/strategies.md` there is no universal GC: the
-//! collector is meant to be a strategy behind a fixed four-interface
-//! contract, chosen at build time. **That contract lives in the RFC, not
-//! in this file.** This crate implements one composition — `rc-trace`:
-//! ARC as the primary reclamation path, arenas absorbing the bulk, and
-//! stop-the-thread tracing for cycles only.
-//!
-//! There is **no selection mechanism today**, and the module should not
+//! There is **no selection mechanism today**, and the module does not
 //! pretend otherwise: `ll_release` calls [`buffer_candidate`] directly,
 //! and the three teardown doors call [`forget_candidate`] directly —
 //! `ll_entity_die`, `ll_object_die`, and the drain inside
-//! `array::entity::array_die`, which a nested array reaches instead of
-//! the first of those. A `nogc` or
-//! pure-`rc` build would compile the buffering away, and the tool for
-//! that is a cargo feature around those call sites — build-time
-//! selection with nothing left behind, which is what the contract asks
-//! for. It is not built yet.
+//! `array::entity::array_die`, which a nested array reaches instead of the
+//! first of those. A `nogc` or pure-`rc` build compiles the buffering away
+//! through a cargo feature around those call sites, which is build-time
+//! selection with nothing left behind. A `GcStrategy` trait is not the
+//! answer and was removed once: dispatch cannot deliver a build-time
+//! choice that compiles the other strategies away. It is worth
+//! reintroducing when a second real strategy exists and its shape is
+//! known.
 //!
-//! A `GcStrategy` trait with `NoGc`/`PureRc`/`RcTrace` impls used to sit
-//! here. It was removed: nothing constructed or called it, its methods
-//! took `&mut self` with no instance to hold, and being dispatch-shaped
-//! it could not deliver the one thing it claimed — a build-time choice
-//! that compiles the other strategies away. The abstraction is worth
-//! introducing when a second real strategy exists and its shape is
-//! known; MMTk, when it arrives, is that moment.
+//! The algorithm is Bacon-Rajan synchronous trial deletion: candidate
+//! roots are buffered on non-zero decrements, `mark_gray` trial-deletes
+//! internal edges, `scan` restores externally-reachable subgraphs, and
+//! white nodes are cyclic garbage. Colours live in the header bits
+//! reserved for them, flags 4-5 with the buffered bit 6.
 //!
-//! The `rc-trace` cycle collector is Bacon–Rajan synchronous trial
-//! deletion (the Zend architecture done right): candidate roots are
-//! buffered on non-zero decrements, `mark_gray` trial-deletes internal
-//! edges, `scan` restores externally-reachable subgraphs, white nodes
-//! are cyclic garbage. Colors live in the header bits reserved for
-//! exactly this (flags 4-5 + buffered bit 6). MMTK, when it arrives,
-//! plugs in as just another implementation — never special-cased.
-//!
-//! **Arm vs fire** (`rfc/model/gc/strategies.md`, "Triggering"): buffering
-//! a candidate runs from inside `ll_release`, mid-mutation, so it only
-//! *arms* a collection (sets a pending flag); the collector *fires* only at
-//! a clean point where refcounts and edges agree — an explicit
-//! [`ll_gc_collect_cycles`] or the compiler's [`ll_gc_maybe_collect`] poll.
-//! Firing inline would double-count a just-released edge and free a live
-//! object. The arming *policy* (which signals, which thresholds) is the
-//! compiler's decision; this crate is only the mechanism.
+//! **Arm against fire** (`rfc/model/gc/strategies.md`, "Triggering"):
+//! buffering a candidate runs from inside `ll_release`, mid-mutation, so
+//! it only *arms* a collection by setting a pending flag. The collector
+//! *fires* at a clean point where refcounts and edges agree, an explicit
+//! [`ll_gc_collect_cycles`] or the compiler's [`ll_gc_maybe_collect`]
+//! poll. Firing inline would double-count a just-released edge and free a
+//! live object. Which signals and thresholds arm is the compiler's
+//! decision; this crate is the mechanism.
 //!
 //! `__destruct` of cyclically-dead objects **is** run, before the white
-//! set is freed (`run_cyclic_destructors`). Because the counts are
-//! trial-mutated when whites are known, they are first restored to a
-//! consistent graph; then the destructors run through the ordinary
-//! teardown path, and the set is re-collected so a resurrected subgraph
-//! survives — the Zend-style discipline, with no new mechanism (no retain
-//! hook, no GC-window flag).
+//! set is freed (`run_cyclic_destructors`). The counts are trial-mutated
+//! when whites are known, so they are first restored to a consistent
+//! graph; then the destructors run through the ordinary teardown path, and
+//! the set is re-collected so a resurrected subgraph survives.
 
 use crate::object::Object;
 use crate::refcount::{

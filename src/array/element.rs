@@ -9,7 +9,7 @@
 //! would be unusable there.
 //!
 //! **The barrier and the entity factories are this layer's, and the
-//! table below only stores what it is handed** (S6.1). `store_into`
+//! table below only stores what it is handed**. `store_into`
 //! publishes a value and a key through `barrier::publish_child` and
 //! hands `Table::insert` values it may keep; `box_element` allocates the
 //! `ReferenceBox`, crosses the category boundary twice for it, and gives
@@ -122,7 +122,7 @@ unsafe fn write_through(
         // runs `__destruct`s, and one of them may displace the copy from
         // the slot — with the creation reference already spent, that
         // nested displacement is the copy's ordinary death rather than a
-        // count stranded at two (Critic, S2.5 round 1).
+        // count stranded at two.
         let died = crate::refcount::ll_release(separated as *mut RcHeader);
         debug_assert!(!died, "the slot's reference must outlive the creation one");
         crate::memory::barrier::drop_ref(owner_cat, current as *mut RcHeader);
@@ -155,7 +155,8 @@ unsafe fn write_through(
 /// of its own for what the array keeps: the value's entity is retained
 /// and published through `barrier::publish_child` (which may hand back
 /// a copy — an arena COW value crossing into a longer-lived array), and
-/// a string key follows S2.2's rule — consumed by a new entry, given
+/// a string key follows the table's ownership rule — consumed by a new
+/// entry, given
 /// back through `drop_ref` when the overwrite arm kept the entry's
 /// original key. The displaced element goes back the same way.
 ///
@@ -241,7 +242,7 @@ pub unsafe fn append(
 }
 
 /// `unset($a[k])`: drop the element and give both of the table's
-/// references back — the value's by the barrier, the key's by S2.2's
+/// references back — the value's by the barrier, the key's by the table's
 /// rule.
 ///
 /// **An absent key is not an error**, and neither is it a reason to skip
@@ -410,7 +411,7 @@ pub unsafe fn get(slot: *const Value, key: Key) -> Option<Value> {
 /// cell being the reset's, and a refusal branch that waited for `true`
 /// left every reference the replay published — an arena COW child's
 /// count, a heap child's log record's +1 — held by a corpse until the
-/// reset (Critic, S2.5 round 1). On the GC heap the verdict *is* death,
+/// reset. On the GC heap the verdict *is* death,
 /// which is all the assertion pins: the two callers differ in the
 /// category they can arrive with, never in what they owe.
 ///
@@ -428,7 +429,7 @@ unsafe fn destroy_unpublished(entity: *mut RcHeader) {
 }
 
 /// The table half of [`set`]: publish the value and the key for `a`,
-/// insert, and settle S2.2's ownership on every outcome. False on
+/// insert, and settle the key's ownership on every outcome. False on
 /// refusal with everything given back and `a` unchanged. Both
 /// publications are `barrier::publish_child`, which `fill_from` uses for
 /// the same pair.
@@ -492,7 +493,7 @@ unsafe fn store_into(
             }
 
             if !added {
-                // S2.2: the overwrite arm kept the entry's original key,
+                // Key ownership: the overwrite arm kept the entry's original key,
                 // so the reference published above goes back.
                 if let Key::Str(k) = published_key {
                     unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
@@ -652,7 +653,7 @@ unsafe fn box_element(
 /// two references back. Silent on an absent key, which PHP's `unset` is
 /// too.
 ///
-/// `drop_ref` rather than a bare release for both, by S2.2's rule: the
+/// `drop_ref` rather than a bare release for both, by the table's rule: the
 /// arena reset log or an escape hold-count may own either reference, and
 /// it absorbs the integer key's null itself.
 ///

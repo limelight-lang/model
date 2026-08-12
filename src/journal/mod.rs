@@ -1,84 +1,51 @@
 //! The event journal: a fixed-width record of what the runtime did,
-//! written into a per-thread ring and read back afterwards. It answers
-//! one question exactly — **what was recorded inside this window** —
-//! which neither a counter nor a census of what exists now can answer
-//! (`dev/design/debug-modes.md` §9).
+//! written into a per-thread ring and read back afterwards. It answers one
+//! question exactly — **what was recorded inside this window** — which
+//! neither a counter nor a census of what exists now can answer. The
+//! design is `dev/design/debug-modes.md` §9, and the decisions behind the
+//! shape are in `dev/DECISIONS.md` under "the event journal is one ring
+//! per thread" and the three entries beside it.
 //!
 //! **One ring per thread, and no global sequence number.** A window is
 //! marked by reading every registered ring's cursor before and after the
-//! interval; membership follows from the two readings. The price is that
-//! two records in different rings cannot be ordered against each other,
-//! and it is affordable because the investigation this exists for asks
-//! about membership rather than order. What it buys: the write path
-//! takes no atomic read-modify-write, a thread that allocates hard cannot
-//! evict the records of the thread under investigation, and thread
-//! identity lives in the ring header instead of in every record.
+//! interval, and membership follows from the two readings. Two records in
+//! different rings therefore cannot be ordered against each other.
 //!
-//! **An overflowed window answers `unknown`, never `none`.** A hunt that
-//! turns on "nothing of this kind happened inside the window" is worth
-//! nothing if a silent eviction can produce the same answer. The rule
-//! covers the ring that is gone as well as the ring that lapped: a
-//! [`Mark`] carries the registry's eviction count, so a window that lost
-//! a whole thread's history says so ([`Window::Evicted`]).
+//! **An overflowed window answers `unknown`, never `none`**, and so does a
+//! window that lost a whole ring: a [`Mark`] carries the registry's
+//! eviction count ([`Window::Evicted`]). A hunt that turns on "nothing of
+//! this kind happened here" is worth nothing if a silent eviction produces
+//! the same answer.
 //!
-//! The ring is allocated through [`crate::memory::stdapi::ll_malloc`] on
-//! the thread's first record, never from an arena and never through
-//! `entity_alloc`: the journal has to be readable while the collector
-//! holds an epoch and while an arena resets, and a site reached from
-//! inside that allocation records nothing rather than recursing.
-//!
-//! **The first record on a thread is the exception to §9.7, and it is one
-//! by design**: it initialises the thread, allocates the ring and takes
-//! the registry's lock, and only the records after it are free of all
-//! three. What follows for a record site ([`kinds`], §9.5) is a rule rather
-//! than a caveat — **a site must not sit anywhere that path can reach**:
-//! `ll_thread_init` and everything under it, the block pool's free list,
-//! and the pool's thread cache, whose `RefCell` is held across a push to
-//! the global list. The failure is not always the deadlock the phrase
-//! suggests; against the `RefCell` it is a borrow panic, and this crate
-//! aborts on a panic. [`ALLOCATING`] cannot save that case: it is raised
-//! once the first record has already decided to allocate. A refused
-//! allocation turns journaling off for that thread **for good** — the
-//! thread's slot holds [`REFUSED`] from then on, so no later record asks
-//! the allocator again — and the journaled operation proceeds. Refusals
-//! are counted, because a thread with no ring is in no window and the
-//! count is all that keeps its silence from reading as inactivity
-//! ([`Window::Refused`]).
+//! **A record site may not sit where the first record's own path runs.**
+//! That path initialises the thread, allocates the ring through
+//! [`crate::memory::stdapi::ll_malloc`] and takes the registry's lock, so
+//! it rules out `ll_thread_init` and everything under it, the block pool's
+//! free list, and the pool's thread cache, whose `RefCell` is held across
+//! a push to the global list. [`ALLOCATING`] cannot save that case, being
+//! raised once the first record has already decided to allocate, and the
+//! failure against a `RefCell` is a borrow panic rather than a deadlock,
+//! which in this crate is an abort. A refused allocation turns journaling
+//! off for that thread for good ([`REFUSED`]) and is counted, a thread
+//! with no ring being in no window ([`Window::Refused`]).
 //!
 //! Rings outlive their threads, because a thread's records matter most
 //! once it is gone. **The ring is retired by the last act of
-//! `heap::ll_thread_exit`**, after every step of the teardown — the
-//! `__destruct` bodies of step 1 and the block frees of the heap drop
-//! alike — so nothing a dying thread does inside the contract goes
-//! unrecorded, and a window over its death is complete rather than
-//! confessed. The ring is handed to the registry's retired list, which
-//! keeps the most recent [`RETIRED_KEPT`], and the thread's slot is
-//! closed the same way a refusal closes it. Nothing this thread still
-//! owes the allocator is freed there: its deferral backlog is gone by
-//! then, so an evicted ring waits for a live thread.
-//! `ll_thread_init` reopens a closed slot, so one OS thread running a
-//! pool's tasks journals each life into a ring of its own.
+//! `heap::ll_thread_exit`**, after every step of the teardown, so a window
+//! over a thread's death is complete; records arriving on the closed slot
+//! afterwards are counted and reported ([`Window::Lost`]) rather than
+//! written into a ring a quota may evict. `ll_thread_init` reopens a
+//! closed slot, so one OS thread running a pool's tasks journals each life
+//! into a ring of its own.
 //!
-//! **Completeness ends where the runtime's exit ends, and honesty does
-//! not.** A thread's own `thread_local!`s are destroyed after that exit
-//! wherever TLS goes in reverse registration order, so what they raise
-//! has no ring left to go in; the runtime's own handovers are drained
-//! inside the exit so as not to be among them, and everything else that
-//! arrives on a closed slot is counted and reported
-//! ([`Window::Lost`]). It is not saved: saving it would mean writing
-//! into a retired ring, which a quota may evict and another thread
-//! free.
+//! **A ring is named by identity, never by address**, wherever a name
+//! outlives the registry's lock: the address is a block eviction gives
+//! back and the allocator hands to somebody else.
 //!
-//! **A ring is named by identity, never by address, everywhere a name
-//! outlives the registry's lock.** The identity is a counter's next value
-//! handed out at registration; the address is a `ll_malloc` block that
-//! eviction gives back and the allocator hands to somebody else.
-//!
-//! This module is compiled into every build. What §9.6 promises to
-//! compile away without the `debug-journal` feature is the **record
-//! sites** on the allocation and death paths, not the ring: a ring nobody
-//! writes costs one thread-local pointer that stays null, and keeping the
-//! module in the ordinary build is what keeps its tests inside the gate.
+//! This module is compiled into every build. What §9.6 promises to compile
+//! away without the `debug-journal` feature is the **record sites**, not
+//! the ring, and keeping the module in the ordinary build is what keeps
+//! its tests inside the gate.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};

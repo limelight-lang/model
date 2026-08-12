@@ -1228,7 +1228,7 @@ mod nesting_worked_through_a_list {
     /// is why this shape is three levels rather than two thousand.
     ///
     /// It was untestable until `FORCE_REFUSE_LONGLIVED` existed for the
-    /// refused carry (S4.2); the plan recorded it as owed on the strength
+    /// refused carry; the plan recorded it as owed on the strength
     /// of `FORCE_OOM` alone, which the buffer arena can go around.
     #[test]
     fn a_refused_list_still_tears_everything_down_in_order() {
@@ -1288,7 +1288,7 @@ mod the_order_destructors_run_in {
 mod who_owns_a_key_reference {
     use super::*;
 
-    /// S2.2's ownership rule, both arms measured. Storing a new string
+    /// The table's key-ownership rule, both arms measured. Storing a new string
     /// key consumes the caller's reference; the overwrite arm keeps the
     /// entry's original key, so the caller's reference stays the
     /// caller's; removing hands the stored key's reference back. Two

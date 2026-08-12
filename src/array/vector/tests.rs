@@ -287,7 +287,7 @@ mod the_entity_over_a_vector {
     /// This is the door the tag has to be read at, and the one that had no
     /// reader for it: the carry used to name the ordered hash outright, so
     /// a surviving vector array had its `cap` read as a granted byte size
-    /// and its uninitialised tail read as a table (Critic, S7.1 round 2).
+    /// and its uninitialised tail read as a table.
     /// What the elements are is beside the point — a chunk is bytes — so
     /// this asserts what the operation owes: the storage leaves the arena
     /// for a buffer chunk, keeps its contents, and the head names the new

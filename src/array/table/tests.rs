@@ -460,7 +460,7 @@ mod what_moves_the_entries {
     /// **What forces a counter rather than a double read of `storage`
     /// has changed, and the counter stays.** The original argument was
     /// compaction sliding entries inside one chunk, which no reading of
-    /// the pointer can see; since S13.1 compaction allocates, so that
+    /// the pointer can see, and compaction allocates, so that
     /// case is gone. What remains is the 2 → 3 migration, which changes
     /// what the bytes *mean* at an address that may not move, and the
     /// three words themselves: `storage` and `used` are published
@@ -492,7 +492,7 @@ mod what_moves_the_entries {
         assert_ne!(
             m.storage(),
             before_compaction,
-            "compaction is a move into a fresh chunk since S13.1"
+            "compaction is a move into a fresh chunk"
         );
         assert_eq!(after_compaction % 2, 0, "the window was left open");
     }
@@ -503,7 +503,7 @@ mod what_moves_the_entries {
     /// `storage` non-null with `mask` set — is what the next insert reads
     /// as room for one: it wrote a 32-byte entry into sixteen granted
     /// bytes, and published the count for the walker to stride
-    /// (Critic, S13.1). The insert below is half the test.
+    /// The insert below is half the test.
     #[test]
     fn compacting_a_table_with_no_chunk_allocates_nothing() {
         let _g = crate::memory::block_pool::test_guard();

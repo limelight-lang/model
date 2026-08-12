@@ -110,7 +110,7 @@ mod who_survives_a_reset {
     /// reset, and comes out of it with exactly one holder.
     ///
     /// **What carries it is the escape count, since the box moved to the
-    /// heap** (S3.1): storing an arena object into a heap box is a
+    /// heap**: storing an arena object into a heap box is a
     /// crossing, so the object is an escapee in its own right and the
     /// reset promotes it from the escapee log. The test was written for a
     /// different mechanism — promotion gated recursion on `is_object`, so

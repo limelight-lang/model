@@ -1,51 +1,43 @@
-//! The mutator side of the rc-walk epoch protocol: the soft-handshake
-//! ack, the confirmation message queue, and the checkpoint that serves
-//! both (`rfc/model/gc/rc-walk.md`, Phases 3–4). The collector never
-//! frees anything itself — every confirmed component ends in exactly
-//! one message drained here, on the owning mutator thread, race-free.
-//! Acquittals post nothing since the eager-death amendment
-//! (2026-07-27): they are dropped in the collector's private tables.
+//! The mutator side of the rc-walk epoch protocol: the soft-handshake ack,
+//! the confirmation message queue, and the checkpoint that serves both
+//! (`rfc/model/gc/rc-walk.md`, Phases 3-4). The collector frees nothing
+//! itself — every confirmed component ends in exactly one message drained
+//! here, on the owning mutator thread. Acquittals post nothing since eager
+//! death; they are dropped in the collector's private tables.
 //!
-//! **Checkpoints ride the death branch of `ll_release`, not a
-//! compiler-inserted poll** (decision 2026-07-27; formerly the entity
-//! factory): the test lives in the `1 → 0` branch — already cold and
-//! about to run teardown — and in `ll_gc_maybe_collect` (the poll the
-//! reserve already refills at). Compiler-emitted runs of releases pay
-//! the test once, split around the run (amendment 2026-07-28): one
-//! `ll_gc_checkpoint_ack` before it, `ll_release_batch` per reference,
-//! one full `ll_gc_checkpoint` after it — a pre-run pickup would judge
-//! while the scope's transients are still counted, and a loop whose
-//! only checkpoints are scope exits would then phase-lock every pickup
-//! against the same held borrow. The raw
-//! `ll_malloc`/`ll_free` C-ABI paths and the factory carry no test —
-//! they are the hot paths, and a workload with no entity deaths
-//! starves the epoch no worse than the accepted limit (finding F2,
-//! reshaped: once a message is posted, the epoch waits for the
-//! thread's next death or poll; deliberately no fallback).
+//! **Checkpoints ride the death branch of `ll_release` rather than a
+//! compiler-inserted poll.** The test lives in the `1 → 0` branch, already
+//! cold and about to run teardown, and in `ll_gc_maybe_collect`, the poll
+//! the reserve refills at. A compiler-emitted run of releases pays the
+//! test once, split around the run: `ll_gc_checkpoint_ack` before it,
+//! `ll_release_batch` per reference, a full `ll_gc_checkpoint` after. A
+//! pre-run pickup would judge while the scope's transients are still
+//! counted, and a loop whose only checkpoints are scope exits would then
+//! phase-lock every pickup against the same held borrow. The raw
+//! `ll_malloc` and `ll_free` paths and the factory carry no test, being
+//! the hot paths: once a message is posted the epoch waits for the
+//! thread's next death or poll, deliberately without a fallback.
 //!
-//! **The death branch acks only; pickup rides teardown's exit**
-//! (review finding, 2026-07-27, `rfc/model/gc/rc-walk.md`). Between
-//! the committing zero store and dispose, the dying entity is
-//! committed-dead with a live weak cell — no user code may run there.
-//! A message picked up at that checkpoint runs drain destructors, and
-//! one holding a `WeakRef` to the dying entity would `get()` a strong
-//! reference to it: resurrection after commit, or a double teardown.
-//! So [`checkpoint_ack`] (the death branch) acks the handshake and
-//! nothing else, and the full [`checkpoint`] picks up messages only
-//! when no teardown is in flight on this thread ([`TEARDOWN_DEPTH`])
-//! and no synchronous collection runs (`walk_active` — drain-class,
-//! it holds guards a message may name) — it runs at the outermost
-//! dispose's exit, at the poll, and trailing a batched-release run.
+//! **The death branch acks only, and pickup rides teardown's exit.**
+//! Between the committing zero store and dispose the dying entity is
+//! committed-dead with a live weak cell, so no user code may run there. A
+//! message picked up at that checkpoint runs drain destructors, and one
+//! holding a `WeakRef` to the dying entity would `get()` a strong
+//! reference to it: resurrection after commit, or a double teardown. So
+//! [`checkpoint_ack`] acks the handshake and nothing else, and the full
+//! [`checkpoint`] picks up messages only when no teardown is in flight on
+//! this thread ([`TEARDOWN_DEPTH`]) and no synchronous collection runs
+//! (`walk_active`, which holds guards a message may name). It runs at the
+//! outermost dispose's exit, at the poll, and trailing a batched run.
 //!
-//! **The drain is not re-entrant** (finding F8): a destructor run by
-//! the drain releases references, and a release hitting zero
-//! checkpoints inside the drain. One thread-local bit closes the
-//! recursion — the nested entry acks a pending handshake, but never
-//! picks up a message.
+//! **The drain is not re-entrant.** A destructor run by the drain releases
+//! references, and a release hitting zero checkpoints inside the drain.
+//! One thread-local bit closes the recursion: the nested entry acks a
+//! pending handshake and never picks up a message.
 //!
-//! The queue is a mutex, not a lock-free structure: verdicts are a
-//! cold, per-epoch trickle, and cold concurrent structures take a lock
-//! here (`dev/DECISIONS.md`, 2026-07-20).
+//! The queue is a mutex rather than a lock-free structure, verdicts being a
+//! cold per-epoch trickle (`dev/DECISIONS.md`, "cold concurrent structures
+//! take a lock rather than a CAS loop").
 
 use std::cell::Cell;
 use std::collections::VecDeque;

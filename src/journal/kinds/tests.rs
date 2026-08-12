@@ -58,7 +58,7 @@ mod what_the_sites_record {
 
     /// The acceptance question of 2026-08-06 in miniature: which strings
     /// died inside this window, answered from the journal alone. The hunt
-    /// itself is S5.3; what this pins is that the two sites carry the
+    /// itself is covered elsewhere; what this pins is that the two sites carry the
     /// address and the kind it needs to ask.
     #[test]
     fn a_string_born_and_killed_inside_a_window_is_in_it_twice() {

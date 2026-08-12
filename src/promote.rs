@@ -1,48 +1,44 @@
-//! Arena death with promotion: the reset-time consumer of the escapee
-//! list and its hold-counts (`rfc/model/memory/arena-reset.md`).
+//! Arena death with promotion: the reset-time consumer of the escapee list
+//! and its hold-counts (`rfc/model/memory/arena-reset.md`).
 //!
-//! Phase 1 implements **retention only** — the safe default and,
-//! per the RFC, the whole of the first implementation: no copying, no
-//! identity machinery, no reference fixup. Sparse-block evacuation is
-//! purely additive and lands later.
+//! Phase 1 implements **retention only**, which the RFC makes the whole of
+//! the first implementation: no copying, no identity machinery, no
+//! reference fixup. Sparse-block evacuation is additive and lands later.
 //!
 //! The algorithm:
 //!
 //! 1. **Fixpoint** over the destructor log and the escapee list: from the
 //!    escapees whose hold-count is still non-zero, mark the surviving
 //!    subgraph, then run pre-destructors of dying, unescaped objects.
-//!    Destructors run PHP code: they may create new escapes (bumping
-//!    counts, appending to the list) and track new destructors — hence
-//!    the loop. No holder slot is ever dereferenced, so a holder that died
-//!    before now cannot dangle the reset (the remembered-set bug this
-//!    replaces).
-//! 2. **Count**: external references are already each root's `refcount`
-//!    (its `IS_ESCAPEE` hold-count, kept live by the barrier and holder
-//!    teardown); this pass only adds internal edges between survivors and
-//!    one compensating retain per heap entity a survivor holds (its
-//!    release-at-reset record assumed the holder would die; the survivor
-//!    now owes its own release at its real death). A **COW** survivor is
-//!    counted apart, in [`reconcile_cow_counts`], after the fixpoint: its
-//!    count is a value the mutator reads and destructors are mutator code,
-//!    so it cannot be zeroed while they still run.
-//!
+//!    Destructors run PHP code and may create new escapes or track new
+//!    destructors, hence the loop. No holder slot is ever dereferenced, so
+//!    a holder that died before now cannot dangle the reset.
+//! 2. **Count.** External references are already each root's `refcount`,
+//!    its `IS_ESCAPEE` hold-count kept live by the barrier and by holder
+//!    teardown, so this pass adds only internal edges between survivors
+//!    and one compensating retain per heap entity a survivor holds: that
+//!    entity's release-at-reset record assumed the holder would die, and
+//!    the survivor now owes its own release at its real death. A **COW**
+//!    survivor is counted apart, in [`reconcile_cow_counts`] after the
+//!    fixpoint, its count being a value the mutator reads and destructors
+//!    being mutator code.
 //! 3. **Retain blocks** carrying survivors: rewrite each survivor's
-//!    category to GcHeap in place (the pointer-tag alternative was
-//!    rejected exactly because this rewrite must be possible), stamp
-//!    the blocks `BLOCK_KIND_RETAINED`, keep them out of the pool.
-//!    A survivor that had a **block to itself** is the exception, and
-//!    the stamp is what it is exempt from: its block is a large entity's
-//!    own allocation, which the arena took through `Arena::alloc_entity`
-//!    and hands over here instead of retaining — out of the arena's
-//!    large-run log, into nothing else, since the run registry has held
-//!    it since it was allocated (`rfc/model/memory/large-entities.md`).
-//! 4. Release-at-reset log: one release per record, with real teardown
+//!    category to GcHeap in place, stamp the blocks `BLOCK_KIND_RETAINED`
+//!    and keep them out of the pool. The pointer-tag alternative was
+//!    rejected exactly because this rewrite must be possible. A survivor
+//!    that had a block to itself is the exemption: its block is a large
+//!    entity's own allocation, which the arena took through
+//!    `Arena::alloc_entity` and hands over here instead of retaining, out
+//!    of the arena's large-run log and into nothing else, the run registry
+//!    having held it since it was allocated
+//!    (`rfc/model/memory/large-entities.md`).
+//! 4. **Release-at-reset log**: one release per record, with real teardown
 //!    dispatch for entities that die of it.
 //!
-//! Every traversal of the reset — the mark, the re-trace, the count and
-//! the COW reconciliation — goes through `walk::trace_entity`, the
-//! crate's one kind-dispatched tracer, and never through a private kind
-//! test of promotion's own (`dev/DECISIONS.md`, 2026-08-04).
+//! Every traversal here — the mark, the re-trace, the count and the COW
+//! reconciliation — goes through `walk::trace_entity`, the crate's one
+//! kind-dispatched tracer, and never through a kind test of promotion's
+//! own (`dev/DECISIONS.md`, "the reset traces through one tracer").
 
 use std::collections::{HashMap, HashSet};
 

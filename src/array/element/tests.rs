@@ -553,7 +553,7 @@ mod the_writes_and_the_separation_they_share {
 
     /// `unset` through one holder of a shared array: the copy loses the
     /// entry, the other holder keeps it, and both of the table's
-    /// references come back — the key's by S2.2's rule, the value's by
+    /// references come back — the key's by the table's ownership rule, the value's by
     /// the barrier. The separation replays the entry and the removal
     /// gives it back, so the measurement is a net zero on each entity.
     #[test]
@@ -729,7 +729,7 @@ mod the_writes_and_the_separation_they_share {
         arena.reset(|_| {});
     }
 
-    /// The store's S2.2 half through `set` itself: a fresh string key is
+    /// The key-ownership half through `set` itself: a fresh string key is
     /// consumed, an equal-bytes overwrite hands the operation's own
     /// reference back, and a refused growth hands the published key
     /// back. Each arm seen failing under a targeted revert of its
@@ -1527,7 +1527,7 @@ mod an_element_in_a_reference_state {
         }
     }
 
-    /// S2.8's criterion in full: `$a=['x'=>1]; $b=$a; $r=&$b['x']; $r=2`
+    /// The whole of the shared-box rule: `$a=['x'=>1]; $b=$a; $r=&$b['x']; $r=2`
     /// leaves `$a['x']` at 1 and `$b['x']` at 2. The shared table is
     /// separated before the box is written, so `$a` never names the box
     /// and the reference is not refused.
@@ -1692,7 +1692,7 @@ mod a_box_outliving_what_moves_the_entry {
 mod what_a_copy_does_with_a_box {
     use super::*;
 
-    /// S3.2's criterion, four cases against php 8.3.6, in both memory
+    /// Four cases against php 8.3.6, in both memory
     /// categories. The copy unwraps a box nobody else names and shares
     /// one a live `&` still binds — which is where PHP collapses a
     /// reference, and the only place it does.
@@ -1750,7 +1750,7 @@ mod what_a_copy_does_with_a_box {
         assert_eq!(
             unsafe { crate::object::header_category(boxed as *const RcHeader) },
             MemoryCategory::GcHeap,
-            "an arena array's box is still a heap entity (S3.1)"
+            "an arena array's box is still a heap entity"
         );
         assert_eq!(
             unsafe { (*boxed).rc.flags } & crate::refcount::IS_ESCAPEE,
@@ -1778,7 +1778,7 @@ mod what_a_copy_does_with_a_box {
             );
             // A heap box is counted like any other heap entity, which is
             // the whole reason the box lives there: that count is what
-            // S3.2 reads to decide between sharing and unwrapping. It
+            // the copy reads to decide between sharing and unwrapping. It
             // stood at one before this copy, and the copy shared anyway,
             // because an escape copy is a store crossing a lifetime
             // boundary rather than a duplication and collapses nothing
@@ -1977,7 +1977,7 @@ mod what_a_copy_does_with_a_box {
         // `$r` is a name, and a name is a holder. The layer hands the box
         // back at the element's count and leaves the caller's reference to
         // the caller; without it the box has one holder and the copy below
-        // would unwrap it rather than share it (S3.2).
+        // would unwrap it rather than share it.
         unsafe { crate::refcount::ll_retain(r as *mut RcHeader) };
         assert_eq!(
             unsafe { (*slot_a).entity_ptr() } as *mut LLArray,
@@ -2125,7 +2125,7 @@ mod crossing_out_of_the_arena {
         crate::memory::context::set_current_context(std::ptr::null_mut());
     }
 
-    /// S3.1's third criterion: a whole request that takes a reference
+    /// A whole request that takes a reference
     /// ends with the box freed and no arena block retained. The box is a
     /// heap entity inside an arena array, so the only thing that can free
     /// it is the release the entry logged — the mechanism the ruling

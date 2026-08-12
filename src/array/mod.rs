@@ -18,10 +18,7 @@ pub mod table;
 // Strategy 2 is built one step ahead of its producer: `ll_array_new`
 // stamps the ordered hash until the element layer reads the tag, so until
 // then the vector's own operations are reached by its tests alone.
-#[allow(
-    dead_code,
-    reason = "the producer lands with the factory's stamp in S7.2"
-)]
+#[allow(dead_code, reason = "the producer lands with the factory's stamp")]
 pub mod vector;
 
 // One call per operation for the tests, which cannot destructure the

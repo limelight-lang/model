@@ -799,7 +799,7 @@ impl Table {
         // A table with no chunk has no holes and no capacity, and asking
         // for a chunk of `cap == 0` would hand back one no entry fits in
         // — with `mask` set and `storage` non-null, which is the state the
-        // next insert reads as "room for an entry" (Critic, S13.1).
+        // next insert reads as "room for an entry".
         if head.storage().is_null() {
             debug_assert_eq!(self.cap, 0, "a table with no chunk has no capacity");
             return Some(0);

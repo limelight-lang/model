@@ -155,10 +155,7 @@ pub(crate) unsafe fn as_table_mut<'a>(a: *mut LLArray) -> (&'a mut Table, &'a St
 /// # Safety
 /// `a` addresses a live array whose storage is the mixed vector.
 #[inline]
-#[allow(
-    dead_code,
-    reason = "the producer lands with the factory's stamp in S7.2"
-)]
+#[allow(dead_code, reason = "the producer lands with the factory's stamp")]
 pub(crate) unsafe fn as_vector<'a>(a: *mut LLArray) -> (&'a Vector, &'a StorageHead) {
     debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
     unsafe { (&(*a).storage.vector, &(*a).head) }
@@ -168,10 +165,7 @@ pub(crate) unsafe fn as_vector<'a>(a: *mut LLArray) -> (&'a Vector, &'a StorageH
 /// As [`as_vector`], and the caller holds exclusive use of the
 /// representation for the borrow's life.
 #[inline]
-#[allow(
-    dead_code,
-    reason = "the producer lands with the factory's stamp in S7.2"
-)]
+#[allow(dead_code, reason = "the producer lands with the factory's stamp")]
 pub(crate) unsafe fn as_vector_mut<'a>(a: *mut LLArray) -> (&'a mut Vector, &'a StorageHead) {
     debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
     let vector = unsafe { &mut (*a).storage.vector };
@@ -236,7 +230,7 @@ pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
 /// As [`ll_array_new`].
 #[allow(
     dead_code,
-    reason = "the production producer lands with the factory's stamp in S7.2"
+    reason = "the production producer lands with the factory's stamp"
 )]
 pub(crate) unsafe fn new_vector_array(category: MemoryCategory) -> *mut LLArray {
     unsafe { new_with_storage(category, StorageTag::Vector, Storage::vector()) }

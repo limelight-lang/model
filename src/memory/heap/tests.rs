@@ -395,7 +395,7 @@ mod what_a_walker_reads_between_the_slots {
     ///
     /// **Miri's data-race model is the instrument this test is for.**
     /// Under `cargo test` the two shapes are indistinguishable, which is
-    /// what let the plain store stand until S11.6 read it. Neither thread
+    /// what let the plain store stand until Miri read it. Neither thread
     /// waits on the other: the accesses are unordered whatever the
     /// interleaving, which is the whole of the report.
     #[cfg(feature = "rc-walk")]
