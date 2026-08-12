@@ -22,7 +22,7 @@ fn a_stored_key_is_consumed_and_a_dropped_key_comes_back() {
     let a = mk(b"key");
     let b = mk(b"key");
     assert_ne!(a, b, "two distinct entities, or neither arm is measured");
-    let e = arr();
+    let e = hash_arr();
     let a0 = unsafe { (*a).rc.refcount };
     let b0 = unsafe { (*b).rc.refcount };
 
@@ -79,7 +79,7 @@ fn an_arena_tables_key_release_is_owed_by_the_reset_log() {
     crate::memory::context::set_current_context(context_ptr);
 
     let key = mk(b"heap key in an arena table");
-    let e = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let e = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
 
     unsafe {
         crate::refcount::ll_retain(key as *mut RcHeader);
@@ -145,7 +145,7 @@ fn a_refused_heap_copy_gives_an_escaped_child_back_through_the_barrier() {
     // the copy's table storage and not on the copy's own slot.
     let warm = arr();
 
-    let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let d = unsafe {
         crate::string::ll_string_new_dynamic(context_ptr, MemoryCategory::RequestArena, b"p", 0)
     };

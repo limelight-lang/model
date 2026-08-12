@@ -29,7 +29,7 @@ unsafe fn reference_then_copy(
     let holder = unsafe { new_constructed(ctx, class, category) };
     let slot_a = unsafe { Object::prop_at(holder, 16) };
     let slot_b = unsafe { Object::prop_at(holder, 32) };
-    let a = unsafe { ll_array_new(category) };
+    let a = unsafe { crate::array::testing::hash_array(category) };
     unsafe {
         assert!(crate::memory::barrier::ref_store(
             arena,
@@ -150,7 +150,7 @@ fn a_copy_over_an_arena_source_shares_the_box() {
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
     crate::memory::context::set_current_context(context_ptr);
 
-    let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let boxed = unsafe {
         crate::array::testing::insert(src, Key::Int(0), Value::int(7));
         let boxed = box_element(src, arena_ptr, Key::Int(0));
@@ -266,7 +266,7 @@ fn the_arena_reads_a_box_count_as_an_upper_bound() {
         let slot_a = unsafe { Object::prop_at(holder, 16) };
         let slot_b = unsafe { Object::prop_at(holder, 32) };
         let slot_c = unsafe { Object::prop_at(holder, 48) };
-        let a = unsafe { ll_array_new(category) };
+        let a = unsafe { crate::array::testing::hash_array(category) };
         let answer = unsafe {
             assert!(crate::memory::barrier::ref_store(
                 arena_ptr,
@@ -362,7 +362,7 @@ fn a_write_through_a_shared_box_reaches_both_holders() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let class = ClassBuilder::new("SharedBoxHolder")
         .prop("a", true)
         .prop("b", true)

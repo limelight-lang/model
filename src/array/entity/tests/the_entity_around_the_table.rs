@@ -18,7 +18,11 @@ fn a_fresh_array_is_a_cow_entity_of_the_array_kind_at_count_one() {
             EntityKind::Array.to_flags()
         );
         assert_eq!(category_of(a), MemoryCategory::GcHeap);
-        assert!(crate::array::testing::table(a).is_empty());
+        // Strategy 2, which is what the factory stamps: a fresh array
+        // holds the mixed vector and reaches the ordered hash only by
+        // migrating (`rfc/model/arrays.md`, "Transition Rules").
+        assert_eq!((*storage_head(a)).tag(), StorageTag::Vector);
+        assert_eq!(crate::array::testing::used(a), 0);
         crate::array::entity::dispose_storage(a, category_of(a));
     }
 }

@@ -21,7 +21,7 @@ fn a_store_through_one_holder_leaves_the_other_holders_entries_alone() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     unsafe {
         crate::array::testing::insert(src, Key::Int(0), Value::int(10));
     }
@@ -117,7 +117,7 @@ fn a_store_in_place_gives_the_displaced_element_back() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let class = ClassBuilder::new("InPlaceHolder").prop("a", true).build();
     let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
     let slot = unsafe { Object::prop_at(h, 16) };
@@ -198,7 +198,7 @@ fn an_append_through_one_holder_leaves_the_other_holders_length_alone() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     unsafe {
         for i in 0..2i64 {
             crate::array::testing::insert(src, Key::Int(i), Value::int(10 + i));
@@ -264,7 +264,7 @@ fn an_unset_gives_the_key_back_and_leaves_the_other_holder_standing() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let key = mk(b"gone");
     let value = mk(b"payload");
     unsafe {
@@ -343,7 +343,7 @@ fn a_store_through_an_arena_holder_separates_into_the_arena() {
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
     crate::memory::context::set_current_context(context_ptr);
 
-    let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     unsafe {
         crate::array::testing::insert(src, Key::Int(0), Value::int(10));
     }
@@ -442,7 +442,7 @@ fn a_string_key_through_the_store_obeys_the_ownership_rule() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let class = ClassBuilder::new("KeyHolder").prop("a", true).build();
     let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
     let slot = unsafe { Object::prop_at(h, 16) };

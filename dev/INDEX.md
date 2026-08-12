@@ -127,7 +127,13 @@ versions live in `docs/history/`, marked at the top.
   parameter, and `entity::as_table_mut` is the one place the disjoint
   pair is derived. `entity::Storage` is the union of the two private
   tails; the tag is stamped in one place, `entity::new_with_storage`,
-  and the walker, the sever and the dispose dispatch on it. Two rules
+  and the walker, the sever and the dispose dispatch on it. **A fresh
+  array is strategy 2**: `ll_array_new` stamps the mixed vector, and an
+  array reaches the ordered hash by migrating under a key the dense range
+  cannot hold (`element::representation_for`) or by being copied from a
+  source that is one. What that means for a test is
+  `dev/DECISIONS.md`, "a test asks for the ordered hash, or takes what
+  the factory stamps". Two rules
   belong to whoever writes the chunk rather than to the head, and both
   are written where the head is: `used` never falls while `storage`
   stays the same — `Vector::sever_entries` is the one exemption and says

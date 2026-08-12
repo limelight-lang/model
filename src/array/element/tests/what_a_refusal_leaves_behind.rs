@@ -24,7 +24,7 @@ fn a_refused_separation_reports_and_changes_nothing() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     unsafe {
         crate::array::testing::insert(src, Key::Int(0), Value::int(10));
     }
@@ -80,7 +80,7 @@ fn a_refused_growth_reports_with_the_table_unchanged() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let class = ClassBuilder::new("OneHolder").prop("a", true).build();
     let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
     let slot = unsafe { Object::prop_at(h, 16) };
@@ -150,7 +150,7 @@ fn a_growth_refusal_inside_the_copy_destroys_the_copy_alone() {
 
     // Empty and shared: the separation's replay allocates nothing,
     // so the forced refusal lands on the copy's own first storage.
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let (h, slot_a, _slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
     let val = mk(b"unstored");
 
@@ -213,7 +213,7 @@ fn a_destroyed_arena_copy_gives_its_children_back() {
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
     crate::memory::context::set_current_context(context_ptr);
 
-    let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let child = unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"cow") };
     unsafe {
         crate::refcount::ll_retain(child as *mut RcHeader);
@@ -270,7 +270,7 @@ fn a_refused_escape_copy_of_the_value_reports_and_changes_nothing() {
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
     crate::memory::context::set_current_context(context_ptr);
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let class = ClassBuilder::new("EscapeHolder").prop("a", true).build();
     let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
     let slot = unsafe { Object::prop_at(h, 16) };
@@ -334,7 +334,7 @@ fn a_refused_box_takes_the_vivified_element_back_out() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let class = ClassBuilder::new("RefusedRefHolder")
         .prop("a", true)
         .build();

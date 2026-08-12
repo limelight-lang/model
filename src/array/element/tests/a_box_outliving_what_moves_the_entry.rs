@@ -14,7 +14,7 @@ fn a_reference_into_an_element_survives_growth() {
     let mut arena = Arena::new();
     let arena_ptr: *mut Arena = &mut arena;
 
-    let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let a = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     unsafe {
         crate::array::testing::insert(a, Key::Int(1), Value::int(41));
 
@@ -51,7 +51,7 @@ fn a_reference_into_an_element_survives_compaction() {
     let mut arena = Arena::new();
     let arena_ptr: *mut Arena = &mut arena;
 
-    let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let a = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     unsafe {
         for i in 0..200i64 {
             crate::array::testing::insert(a, Key::Int(i), Value::int(i));

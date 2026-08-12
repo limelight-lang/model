@@ -18,7 +18,7 @@ fn a_read_goes_through_a_reference_box_and_separates_nothing() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     unsafe {
         crate::array::testing::insert(src, Key::Int(0), Value::int(5));
         let boxed = box_element(src, arena_ptr, Key::Int(0));
@@ -60,7 +60,7 @@ fn a_store_into_a_boxed_element_goes_through_the_box() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let class = ClassBuilder::new("BoxHolder").prop("a", true).build();
     let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
     let slot = unsafe { Object::prop_at(h, 16) };
@@ -146,7 +146,7 @@ fn a_refused_store_through_the_box_keeps_the_displaced_value() {
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
     crate::memory::context::set_current_context(context_ptr);
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let class = ClassBuilder::new("RefusedBoxHolder")
         .prop("a", true)
         .build();
@@ -228,7 +228,7 @@ fn box_element_reports_on_an_absent_key() {
     let mut arena = Arena::new();
     let arena_ptr: *mut Arena = &mut arena;
 
-    let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let a = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     unsafe {
         crate::array::testing::insert(a, Key::Int(1), Value::int(1));
         assert!(box_element(a, arena_ptr, Key::Int(2)).is_null());
@@ -259,7 +259,7 @@ fn a_reference_to_an_absent_key_creates_it_as_null() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let class = ClassBuilder::new("VivifyHolder").prop("a", true).build();
     let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };
     let slot = unsafe { Object::prop_at(h, 16) };
@@ -320,7 +320,7 @@ fn taking_a_reference_separates_the_shared_table_first() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let x = mk(b"x");
     unsafe {
         crate::refcount::ll_retain(x as *mut RcHeader);

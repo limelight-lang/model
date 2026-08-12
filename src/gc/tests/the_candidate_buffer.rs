@@ -166,7 +166,6 @@ fn a_dying_array_forgets_its_candidacy() {
 #[test]
 fn a_nested_array_forgets_its_candidacy_when_the_drain_takes_it() {
     use crate::array::entity::ll_array_new;
-    use crate::array::table::Key;
     use crate::refcount::ll_retain;
     use crate::value::Tag;
     let _g = crate::memory::block_pool::test_guard();
@@ -183,11 +182,10 @@ fn a_nested_array_forgets_its_candidacy_when_the_drain_takes_it() {
             (*candidate_buffer()).contains(&(inner as *mut RcHeader)),
             "the non-zero decrement buffered the inner array"
         );
-        crate::array::testing::insert(
+        assert!(crate::array::testing::push(
             outer,
-            Key::Int(0),
-            Value::entity(Tag::Array, inner as *mut RcHeader),
-        );
+            Value::entity(Tag::Array, inner as *mut RcHeader)
+        ));
 
         assert!(ll_release(outer as *mut RcHeader), "the last reference");
         crate::object::ll_entity_die(outer as *mut RcHeader);

@@ -1,4 +1,5 @@
-//! The `array` entity: a refcounted header over the ordered hash.
+//! The `array` entity: a refcounted header over the storage, in
+//! whichever of the two representations it currently holds.
 //!
 //! ```text
 //! +0   RcHeader     (kind = Array, COW set)
@@ -77,7 +78,6 @@ impl Storage {
     /// that replaces a representation rather than creating one
     /// ([`migrate_to_hash`]). The tag saying so is written by that
     /// operation, inside the same window as this.
-    #[allow(dead_code, reason = "the migration's caller lands with the dispatch")]
     pub(crate) fn of_table(table: Table) -> Self {
         Storage {
             table: std::mem::ManuallyDrop::new(table),
@@ -152,7 +152,6 @@ pub(crate) unsafe fn as_table_mut<'a>(a: *mut LLArray) -> (&'a mut Table, &'a St
 /// # Safety
 /// `a` addresses a live array whose storage is the mixed vector.
 #[inline]
-#[allow(dead_code, reason = "the producer lands with the factory's stamp")]
 pub(crate) unsafe fn as_vector<'a>(a: *mut LLArray) -> (&'a Vector, &'a StorageHead) {
     debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
     unsafe { (&(*a).storage.vector, &(*a).head) }
@@ -162,7 +161,6 @@ pub(crate) unsafe fn as_vector<'a>(a: *mut LLArray) -> (&'a Vector, &'a StorageH
 /// As [`as_vector`], and the caller holds exclusive use of the
 /// representation for the borrow's life.
 #[inline]
-#[allow(dead_code, reason = "the producer lands with the factory's stamp")]
 pub(crate) unsafe fn as_vector_mut<'a>(a: *mut LLArray) -> (&'a mut Vector, &'a StorageHead) {
     debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
     let vector = unsafe { &mut (*a).storage.vector };
@@ -202,10 +200,6 @@ pub(crate) unsafe fn as_vector_mut<'a>(a: *mut LLArray) -> (&'a mut Vector, &'a 
 /// `a` a live array whose storage is the mixed vector, exclusively the
 /// caller's for this call; `category` the one its header carries now
 /// ([`category_of`]).
-#[allow(
-    dead_code,
-    reason = "the caller lands with the element layer's dispatch"
-)]
 pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) -> bool {
     debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
     let mut table = Table::empty();
@@ -284,6 +278,12 @@ pub(crate) unsafe fn storage_head(a: *mut LLArray) -> *const StorageHead {
 
 /// Allocate an empty array in `category`.
 ///
+/// **The storage is the mixed vector**, strategy 2 of
+/// `rfc/model/arrays.md`, "Storage Strategies": a fresh array holds a
+/// dense range keyed by position and reaches the ordered hash only by
+/// migrating, which the element layer asks for when a key arrives that
+/// the range cannot hold ([`crate::array::element`]).
+///
 /// **Null when the allocation fails.** An array can be built mid-request
 /// from a size the program chose, so a refusal has to reach a frame that
 /// can raise rather than end the process.
@@ -295,16 +295,15 @@ pub(crate) unsafe fn storage_head(a: *mut LLArray) -> *const StorageHead {
 /// # Safety
 /// Standard factory contract: the result is a fresh entity at count 1.
 pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
-    // The ordered hash, until the suite is rewritten to meet a vector: 130
-    // tests build a fresh array and reach for a table (`array::testing`),
-    // and until those are rewritten the stamp is the only thing between
-    // them and an assertion. The doors are ready — the element layer, the
-    // walk, the teardown, the carry and the COW copy all read the tag.
-    unsafe { new_with_storage(category, StorageTag::Hash, Storage::hash()) }
+    unsafe { new_with_storage(category, StorageTag::Vector, Storage::vector()) }
 }
 
-/// An empty array whose storage is the mixed vector — strategy 2, which
-/// `ll_array_new` does not stamp yet.
+/// An empty array whose storage is the mixed vector, for a caller that
+/// needs that representation rather than whatever a fresh array is.
+///
+/// It stamps what [`ll_array_new`] stamps today and is a separate door on
+/// purpose: the COW copy takes the **source's** representation, and a copy
+/// reading the factory's default would follow the default when it moves.
 ///
 /// # Safety
 /// As [`ll_array_new`].

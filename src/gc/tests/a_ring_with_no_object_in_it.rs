@@ -21,28 +21,25 @@ use super::*;
 #[test]
 fn a_ring_of_two_arrays_and_no_object_is_collected() {
     use crate::array::entity::ll_array_new;
-    use crate::array::table::Key;
     use crate::refcount::ll_retain;
     let _g = crate::memory::block_pool::test_guard();
 
     let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
     let b = unsafe { ll_array_new(MemoryCategory::GcHeap) };
     unsafe {
-        // The reference is taken before the entry is published, which
-        // is `Table::insert`'s contract: an entry a walker can reach
+        // The reference is taken before the element is published, which
+        // is `Vector::push`'s contract: an element a walker can reach
         // must already be backed by a count.
         ll_retain(b as *mut RcHeader);
-        crate::array::testing::insert(
+        assert!(crate::array::testing::push(
             a,
-            Key::Int(0),
-            Value::entity(Tag::Array, b as *mut RcHeader),
-        );
+            Value::entity(Tag::Array, b as *mut RcHeader)
+        ));
         ll_retain(a as *mut RcHeader);
-        crate::array::testing::insert(
+        assert!(crate::array::testing::push(
             b,
-            Key::Int(0),
-            Value::entity(Tag::Array, a as *mut RcHeader),
-        );
+            Value::entity(Tag::Array, a as *mut RcHeader)
+        ));
         // Drop the creation references: each array is held by the
         // other and by nothing else, which is the ring.
         assert!(!ll_release(a as *mut RcHeader), "a is still held by b");
@@ -80,7 +77,6 @@ fn a_ring_of_two_arrays_and_no_object_is_collected() {
 #[test]
 fn a_ring_whose_last_release_lands_on_a_reference_box_is_collected() {
     use crate::array::entity::ll_array_new;
-    use crate::array::table::Key;
     use crate::refcount::ll_retain;
     let _g = crate::memory::block_pool::test_guard();
 
@@ -90,13 +86,12 @@ fn a_ring_whose_last_release_lands_on_a_reference_box_is_collected() {
         // `&$a` moves the variable's hold onto the box rather than
         // adding one, so the box takes the array's creation reference.
         (*boxed).value = Value::entity(Tag::Array, array as *mut RcHeader);
-        // Retained before the entry is published, per `Table::insert`.
+        // Retained before the element is published, per `Vector::push`.
         ll_retain(boxed as *mut RcHeader);
-        crate::array::testing::insert(
+        assert!(crate::array::testing::push(
             array,
-            Key::Int(0),
-            Value::entity(Tag::Reference, boxed as *mut RcHeader),
-        );
+            Value::entity(Tag::Reference, boxed as *mut RcHeader)
+        ));
         // The frame's reference dies. It is the ring's only external
         // hold, and it lands on the box rather than on the array.
         assert!(

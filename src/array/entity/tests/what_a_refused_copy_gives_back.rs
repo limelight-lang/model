@@ -79,7 +79,7 @@ unsafe fn give_all_back(fillers: Vec<*mut LLArray>) {
 /// whose copies recurse and therefore the ones that ask for a heap slot
 /// each.
 unsafe fn arena_source_with_nested_arrays(n: i64) -> *mut LLArray {
-    let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     for i in 0..n {
         let nested = unsafe { ll_array_new(MemoryCategory::RequestArena) };
         unsafe {
@@ -339,7 +339,7 @@ fn a_refused_association_gives_the_nested_copy_back() {
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
     crate::memory::context::set_current_context(context_ptr);
 
-    let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let shared = unsafe { ll_array_new(MemoryCategory::RequestArena) };
     unsafe {
         for k in 0..2 {
@@ -417,7 +417,7 @@ fn a_refused_arena_separation_leaves_the_source_whole() {
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
     crate::memory::context::set_current_context(context_ptr);
 
-    let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     unsafe {
         crate::array::testing::insert(src, Key::Int(0), Value::int(7));
     }

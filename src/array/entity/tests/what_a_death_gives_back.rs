@@ -10,7 +10,7 @@ use super::*;
 #[test]
 fn releasing_children_walks_elements_and_string_keys_once_each() {
     let _g = crate::memory::block_pool::test_guard();
-    let a = arr();
+    let a = hash_arr();
     let key = mk(b"k");
     let child = mk(b"v");
     unsafe {
@@ -45,7 +45,7 @@ fn dying_through_the_kind_switch_releases_the_children_and_the_storage() {
     use crate::refcount::{ll_release, ll_retain};
     let _g = crate::memory::block_pool::test_guard();
 
-    let a = arr();
+    let a = hash_arr();
     let key = mk(b"key");
     let value = mk(b"value");
     unsafe {
@@ -119,8 +119,8 @@ fn a_child_the_array_held_last_is_torn_down_and_not_only_released() {
     use crate::refcount::ll_release;
     let _g = crate::memory::block_pool::test_guard();
 
-    let outer = arr();
-    let inner = arr();
+    let outer = hash_arr();
+    let inner = hash_arr();
     unsafe {
         crate::array::testing::insert(inner, Key::Int(1), Value::int(1));
         let (storage, capacity) = crate::array::testing::storage_and_capacity(inner);

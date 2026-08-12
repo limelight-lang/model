@@ -10,7 +10,7 @@ use super::*;
 #[test]
 fn a_canonical_numeric_string_finds_what_the_integer_key_stored() {
     let _g = crate::memory::block_pool::test_guard();
-    let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::GcHeap) };
+    let a = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     for (i, k) in [1i64, -1, i64::MAX, i64::MIN].into_iter().enumerate() {
         unsafe {
             crate::array::testing::insert(a, Key::Int(k), Value::int(i as i64));

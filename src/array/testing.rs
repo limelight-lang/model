@@ -18,6 +18,7 @@
 //! crate outside `#[cfg(test)]` may use it: an operation worth having in
 //! production is worth its own name at the element layer.
 
+use crate::MemoryCategory;
 use crate::array::entity::{
     LLArray, as_table, as_table_mut, as_vector_mut, category_of, storage_head,
 };
@@ -25,6 +26,29 @@ use crate::array::entry::Entry;
 use crate::array::table::Key;
 use crate::string::LLString;
 use crate::value::Value;
+
+/// A fresh array in the ordered hash, for a test whose subject is that
+/// representation. Null when the entity allocation is refused.
+///
+/// The array is built by the factory and migrated, which is the route
+/// production reaches strategy 3 by: `ll_array_new` stamps the mixed
+/// vector, and a fresh vector migrating carries no element and allocates
+/// no storage, so the migration here cannot refuse.
+///
+/// # Safety
+/// As `ll_array_new`: the result is a fresh entity at count 1.
+pub(crate) unsafe fn hash_array(category: MemoryCategory) -> *mut LLArray {
+    let a = unsafe { crate::array::entity::ll_array_new(category) };
+    if a.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    assert!(
+        unsafe { crate::array::entity::migrate_to_hash(a, category) },
+        "an empty vector's migration allocates nothing and cannot refuse"
+    );
+    a
+}
 
 /// The ordered hash alone, for the reads that need no head — `len`,
 /// `is_empty`, `is_strong`, `append_key`, `salt`, `is_reseeded`.
@@ -115,6 +139,16 @@ pub(crate) unsafe fn iter<'a>(a: *mut LLArray) -> impl Iterator<Item = &'a Entry
 pub(crate) unsafe fn storage_and_capacity(a: *mut LLArray) -> (*mut u8, usize) {
     let (table, head) = unsafe { as_table(a) };
     table.storage_and_capacity(head)
+}
+
+/// Read a position of a mixed vector, `None` past the count.
+///
+/// # Safety
+/// `a` is a live array whose storage is the mixed vector.
+#[inline]
+pub(crate) unsafe fn at(a: *mut LLArray, i: usize) -> Option<Value> {
+    let (vector, head) = unsafe { crate::array::entity::as_vector(a) };
+    vector.get(head, i)
 }
 
 /// Append to a mixed vector.

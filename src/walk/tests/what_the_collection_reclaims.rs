@@ -117,26 +117,26 @@ fn a_garland_and_its_hanging_subtree_die_as_one_unit() {
 #[test]
 fn a_ring_of_two_arrays_and_no_object_is_collected() {
     use crate::array::entity::ll_array_new;
-    use crate::array::table::Key;
     use crate::refcount::{ll_release, ll_retain};
     let _g = crate::memory::block_pool::test_guard();
 
+    // Both arrays are what the factory stamps, the mixed vector, so the
+    // walk and the sever are exercised over the representation a fresh
+    // array has. The hash's arms are `the_children_a_kind_has`.
     let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
     let b = unsafe { ll_array_new(MemoryCategory::GcHeap) };
     unsafe {
-        // Retained before the entry is published, per `Table::insert`.
+        // Retained before the entry is published, per `Vector::push`.
         ll_retain(b as *mut RcHeader);
-        crate::array::testing::insert(
+        assert!(crate::array::testing::push(
             a,
-            Key::Int(0),
-            Value::entity(Tag::Array, b as *mut RcHeader),
-        );
+            Value::entity(Tag::Array, b as *mut RcHeader)
+        ));
         ll_retain(a as *mut RcHeader);
-        crate::array::testing::insert(
+        assert!(crate::array::testing::push(
             b,
-            Key::Int(0),
-            Value::entity(Tag::Array, a as *mut RcHeader),
-        );
+            Value::entity(Tag::Array, a as *mut RcHeader)
+        ));
         // Drop the creation references: each array is now held by the
         // other and by nothing else, which is the ring.
         assert!(!ll_release(a as *mut RcHeader), "a is still held by b");
@@ -170,7 +170,6 @@ fn a_ring_of_two_arrays_and_no_object_is_collected() {
 #[test]
 fn a_ring_through_a_reference_box_and_an_array_is_collected() {
     use crate::array::entity::ll_array_new;
-    use crate::array::table::Key;
     use crate::refcount::{ll_release, ll_retain};
     let _g = crate::memory::block_pool::test_guard();
 
@@ -179,13 +178,12 @@ fn a_ring_through_a_reference_box_and_an_array_is_collected() {
     unsafe {
         // The box takes the array's creation reference, as `&$a` does.
         (*boxed).value = Value::entity(Tag::Array, array as *mut RcHeader);
-        // Retained before the entry is published, per `Table::insert`.
+        // Retained before the entry is published, per `Vector::push`.
         ll_retain(boxed as *mut RcHeader);
-        crate::array::testing::insert(
+        assert!(crate::array::testing::push(
             array,
-            Key::Int(0),
-            Value::entity(Tag::Reference, boxed as *mut RcHeader),
-        );
+            Value::entity(Tag::Reference, boxed as *mut RcHeader)
+        ));
         assert!(
             !ll_release(boxed as *mut RcHeader),
             "the box is still held by the array's element"

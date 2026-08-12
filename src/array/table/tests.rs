@@ -143,7 +143,7 @@ struct Handed(*mut crate::array::entity::LLArray);
 unsafe impl Send for Handed {}
 
 fn t() -> Owned {
-    let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::GcHeap) };
+    let a = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     assert!(!a.is_null(), "allocation refused in a test");
     Owned(a)
 }

@@ -87,7 +87,6 @@ fn a_collected_member_leaves_a_slot_the_walk_reads_as_free() {
 /// Seen failing on the storage never coming back.
 #[test]
 fn a_collected_array_gives_its_table_storage_back() {
-    use crate::array::entity::ll_array_new;
     use crate::array::table::Key;
     use crate::memory::buffer::{PressureMode, set_pressure_mode};
     use crate::memory::buffer_arena::with_buffer_arena;
@@ -99,7 +98,7 @@ fn a_collected_array_gives_its_table_storage_back() {
     let arena_ptr: *mut Arena = &mut arena;
     let mut ctx = LLContext { arena: arena_ptr };
     let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-    let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let a = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
 
     let (storage, capacity) = unsafe {
         // Retained before the entry is published, per `Table::insert`.

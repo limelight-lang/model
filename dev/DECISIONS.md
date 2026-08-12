@@ -8,6 +8,40 @@ never edited or deleted.
 
 ---
 
+## 2026-08-12 — a test asks for the ordered hash, or takes what the factory stamps
+
+**Decided:** with `ll_array_new` stamping the mixed vector, a test whose
+subject is the ordered hash builds one through `array::testing::hash_array`,
+and every other test takes what the factory stamps and fills it through
+`array::testing::push`. The rule decides 137 fixtures that broke on the
+stamp and every array fixture written after it.
+
+**`hash_array` is the factory plus the migration**, which is the only route
+production has to strategy 3 for a fresh array: an empty vector's migration
+carries no element and allocates nothing, so it cannot refuse, and a fixture
+built this way cannot drift from what the element layer produces. A second
+`#[cfg(test)]` factory stamping `Hash` directly was refused for that reason —
+it would be a producer no release build has, and the pair `(tag, storage)`
+stays assemblable in one place only (`entity::new_with_storage`).
+
+**What moved to the vector is what the runtime now meets there.** The
+collector's rings in both configurations
+(`walk::what_the_collection_reclaims`, `gc::a_ring_with_no_object_in_it`),
+the candidate buffer's nested array, and the carry of an arena array's
+storage out of a dying arena hold arrays the factory stamped, because after
+the flip that is what an ordinary array is on those paths and no test
+reached the vector's arm of them before. Their hash arms keep their own
+tests — `walk::the_children_a_kind_has` needs string keys, and the two
+block-sized carries measure the table's own growth — so both
+representations are covered rather than swapped.
+
+**What stayed on the hash is what the hash is for:** the table's own group,
+the element layer's writes, boxes, compaction and growth, the flood ladder,
+key ownership, and the COW copy's hash arm. Those tests were written against
+entries, holes and keys, and a vector has none of the three.
+
+---
+
 ## 2026-08-12 — the termination probe's storage, and the bound that prices its abort
 
 **Decided:** the entered set of `separate`'s debug termination probe stays on

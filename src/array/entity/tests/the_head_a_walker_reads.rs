@@ -35,7 +35,7 @@ fn a_walker_reads_the_head_while_the_mutator_writes_the_table() {
     /// over an untouched head.
     const READINGS: usize = 128;
     let _g = crate::memory::block_pool::test_guard();
-    let a = arr();
+    let a = hash_arr();
     let handed = Handed(unsafe { storage_head(a) });
     let walker = std::thread::spawn(move || {
         let handed = handed;

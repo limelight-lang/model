@@ -22,7 +22,6 @@ use super::*;
 #[test]
 fn an_array_reached_from_an_escapee_carries_its_storage_out() {
     use crate::array::entity::ll_array_new;
-    use crate::array::table::Key;
     use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK};
     let _g = crate::memory::block_pool::test_guard();
     let holder_cls = ClassBuilder::new("Cache").prop("last", true).build();
@@ -43,9 +42,12 @@ fn an_array_reached_from_an_escapee_carries_its_storage_out() {
         unsafe { new_constructed(&mut *context_ptr, owner_cls, MemoryCategory::RequestArena) };
     let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
 
+    // The mixed vector, which is what the factory stamps and therefore
+    // what an arena array carries when the reset finds it. The ordered
+    // hash's carry is the two tests below.
     let storage_before = unsafe {
-        crate::array::testing::insert(array, Key::Int(1), Value::int(11));
-        crate::array::testing::insert(array, Key::Int(2), Value::int(22));
+        assert!(crate::array::testing::push(array, Value::int(11)));
+        assert!(crate::array::testing::push(array, Value::int(22)));
         crate::array::entity::storage_address(array)
     };
 
@@ -85,18 +87,11 @@ fn an_array_reached_from_an_escapee_carries_its_storage_out() {
             "the storage is still arena memory the reset gave back"
         );
         assert_eq!(
-            crate::array::testing::get(array, Key::Int(1))
-                .unwrap()
-                .as_int(),
+            crate::array::testing::at(array, 0).unwrap().as_int(),
             11,
-            "the carried storage lost its entries"
+            "the carried storage lost its elements"
         );
-        assert_eq!(
-            crate::array::testing::get(array, Key::Int(2))
-                .unwrap()
-                .as_int(),
-            22
-        );
+        assert_eq!(crate::array::testing::at(array, 1).unwrap().as_int(), 22);
     }
 }
 
@@ -108,7 +103,6 @@ fn an_array_reached_from_an_escapee_carries_its_storage_out() {
 /// The address is therefore unchanged, which is the observable.
 #[test]
 fn an_over_block_storage_transfers_instead_of_being_copied() {
-    use crate::array::entity::ll_array_new;
     use crate::array::table::Key;
     use crate::memory::block_pool::BLOCK_PAYLOAD;
     let _g = crate::memory::block_pool::test_guard();
@@ -124,7 +118,7 @@ fn an_over_block_storage_transfers_instead_of_being_copied() {
     let holder = unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
     let owner =
         unsafe { new_constructed(&mut *context_ptr, owner_cls, MemoryCategory::RequestArena) };
-    let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let array = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
 
     let storage_before = unsafe {
         for i in 0..1100i64 {
@@ -187,7 +181,6 @@ fn an_over_block_storage_transfers_instead_of_being_copied() {
 /// test needs it.
 #[test]
 fn a_refused_carry_pins_the_block_and_the_payload_frees_it() {
-    use crate::array::entity::ll_array_new;
     use crate::array::table::Key;
     use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_MASK};
     use crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED;
@@ -207,7 +200,7 @@ fn a_refused_carry_pins_the_block_and_the_payload_frees_it() {
     let holder = unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
     let owner =
         unsafe { new_constructed(&mut *context_ptr, owner_cls, MemoryCategory::RequestArena) };
-    let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let array = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
 
     let storage_before = unsafe {
         crate::array::testing::insert(array, Key::Int(1), Value::int(11));

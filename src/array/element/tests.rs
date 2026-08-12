@@ -124,4 +124,5 @@ mod crossing_out_of_the_arena;
 mod the_key_a_spelling_means;
 mod the_writes_and_the_separation_they_share;
 mod what_a_copy_does_with_a_box;
+mod what_a_key_the_vector_cannot_hold_does;
 mod what_a_refusal_leaves_behind;

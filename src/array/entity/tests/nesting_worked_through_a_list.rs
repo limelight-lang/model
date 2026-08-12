@@ -61,10 +61,10 @@ fn deep_copy_body() {
     // below it under key 0, and the source stays entirely in the
     // arena, where COW children are shared rather than copied.
     let mut levels = Vec::with_capacity(DEPTH);
-    let innermost = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let innermost = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     levels.push(innermost);
     for _ in 1..DEPTH {
-        let outer = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+        let outer = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
         let inner = *levels.last().unwrap();
         unsafe {
             crate::refcount::ll_retain(inner as *mut RcHeader);
@@ -162,9 +162,9 @@ fn a_deep_array_tears_down_without_the_machine_stack() {
             // reference `ll_array_new` returns is what the entry
             // takes, so no level is retained twice and none is
             // released here.
-            let mut level = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+            let mut level = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
             for _ in 1..DEPTH {
-                let outer = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+                let outer = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
                 unsafe {
                     crate::array::testing::insert(
                         outer,

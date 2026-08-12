@@ -17,7 +17,7 @@ fn a_shared_array_separates_into_a_copy_of_its_own() {
     let mut arena = crate::memory::arena::Arena::new();
     let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
 
-    let src = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let key = mk(b"k");
     let value = mk(b"v");
     unsafe {
@@ -78,7 +78,7 @@ fn a_shared_array_separates_into_a_copy_of_its_own() {
 #[test]
 fn separation_is_needed_only_when_the_array_is_shared() {
     let _g = crate::memory::block_pool::test_guard();
-    let a = arr();
+    let a = hash_arr();
     unsafe {
         assert!(!needs_separation(a), "count 1 writes in place");
         crate::refcount::ll_retain(a as *mut RcHeader);
@@ -91,7 +91,7 @@ fn separation_is_needed_only_when_the_array_is_shared() {
 #[test]
 fn separation_copies_the_order_and_shares_the_children() {
     let _g = crate::memory::block_pool::test_guard();
-    let src = arr();
+    let src = hash_arr();
     let key = mk(b"shared");
     let child = mk(b"child-value");
     unsafe {
@@ -162,7 +162,7 @@ fn separation_copies_the_order_and_shares_the_children() {
 #[test]
 fn separation_carries_holes_away_rather_than_copying_them() {
     let _g = crate::memory::block_pool::test_guard();
-    let src = arr();
+    let src = hash_arr();
     unsafe {
         for i in 0..10i64 {
             crate::array::testing::insert(src, Key::Int(i), Value::int(i));
@@ -218,7 +218,7 @@ fn an_arena_array_taken_by_a_heap_holder_is_copied_out_with_its_children() {
         crate::object::new_constructed(context_ptr, holder_class, MemoryCategory::GcHeap)
     };
 
-    let src = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let src = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let element =
         unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"in the arena") };
     unsafe {
@@ -279,7 +279,7 @@ fn a_copy_inherits_the_append_cursor_over_a_hole() {
     let mut arena = crate::memory::arena::Arena::new();
     let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
 
-    let src = arr();
+    let src = hash_arr();
     unsafe {
         crate::array::testing::insert(src, Key::Int(9), Value::int(1));
         let _ = crate::array::testing::remove(src, Key::Int(9));

@@ -104,7 +104,7 @@ fn a_request_arena_storage_over_a_block_takes_the_large_run_path() {
 
     // An arena array, because an arena table's storage is routed by
     // the header in front of it like every other table's.
-    let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena) };
+    let a = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let (m, head) = unsafe { crate::array::entity::as_table_mut(a) };
     for i in 0..1100i64 {
         m.insert(
@@ -207,7 +207,7 @@ fn a_refused_carry_leaves_the_category_where_it_was() {
     let context_ptr: *mut LLContext = &mut context;
     set_current_context(context_ptr);
 
-    let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::RequestArena) };
+    let a = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let (m, head) = unsafe { crate::array::entity::as_table_mut(a) };
     for i in 0..8i64 {
         m.insert(

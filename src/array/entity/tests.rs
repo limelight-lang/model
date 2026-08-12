@@ -43,7 +43,7 @@ fn destructor_order_with(shape: Shape, refuse_the_list: bool) -> String {
     // from TLS, which is the shape generated code has.
     crate::memory::context::set_current_context(ctx_ptr);
 
-    let array = || unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let array = || unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let put = |owner: *mut LLArray, key: i64, tag: crate::value::Tag, child: *mut RcHeader| unsafe {
         crate::array::testing::insert(owner, Key::Int(key), Value::entity(tag, child));
     };
@@ -154,6 +154,13 @@ fn mk(bytes: &[u8]) -> *mut LLString {
 
 fn arr() -> *mut LLArray {
     unsafe { ll_array_new(MemoryCategory::GcHeap) }
+}
+
+/// An array in the ordered hash, for a test whose subject is that
+/// representation rather than whatever the factory stamps
+/// (`array::testing::hash_array`).
+fn hash_arr() -> *mut LLArray {
+    unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) }
 }
 
 mod nesting_worked_through_a_list;

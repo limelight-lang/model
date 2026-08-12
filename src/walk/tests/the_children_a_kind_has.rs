@@ -60,12 +60,11 @@ fn a_cycle_through_a_reference_box_is_collected() {
 /// through an array uncollectable.
 #[test]
 fn an_array_is_traced_through_its_elements_and_its_string_keys() {
-    use crate::array::entity::ll_array_new;
     use crate::array::table::Key;
     use crate::string::ll_string_new;
     let _g = crate::memory::block_pool::test_guard();
 
-    let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let a = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let key = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"k") };
     let value = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"v") };
     unsafe {
@@ -117,12 +116,11 @@ fn an_array_is_traced_through_its_elements_and_its_string_keys() {
 #[cfg(feature = "rc-walk")]
 #[test]
 fn the_relaxed_reader_sees_an_arrays_children() {
-    use crate::array::entity::ll_array_new;
     use crate::array::table::Key;
     use crate::string::ll_string_new;
     let _g = crate::memory::block_pool::test_guard();
 
-    let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let a = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     let key = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"k") };
     let value = unsafe { ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, b"v") };
     unsafe {

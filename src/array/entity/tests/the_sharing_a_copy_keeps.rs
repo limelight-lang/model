@@ -17,9 +17,9 @@ use super::*;
 /// entries take: an arena entity's cell is the reset's, so nothing here
 /// gives them back one at a time.
 unsafe fn doubling_chain(depth: usize) -> *mut LLArray {
-    let mut level = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    let mut level = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     for _ in 0..depth {
-        let next = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+        let next = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
         for k in 0..2 {
             unsafe {
                 crate::refcount::ll_retain(level as *mut RcHeader);

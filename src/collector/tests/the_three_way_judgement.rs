@@ -283,7 +283,6 @@ fn a_cell_that_stopped_holding_an_entity_acquits() {
 /// computed root every epoch, forever.
 #[test]
 fn a_mature_ring_through_an_array_is_collected() {
-    use crate::array::entity::ll_array_new;
     use crate::array::table::Key;
     let _g = crate::memory::block_pool::test_guard();
     DESTRUCTS.store(0, Ordering::Relaxed);
@@ -295,7 +294,7 @@ fn a_mature_ring_through_an_array_is_collected() {
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
     let holder = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-    let table = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let table = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     assert!(!table.is_null());
     unsafe {
         // The holder's property takes the array, and the array's only
@@ -349,7 +348,6 @@ fn a_mature_ring_through_an_array_is_collected() {
 /// counters are what this defect reaches.
 #[test]
 fn a_component_whose_array_moved_its_entries_is_acquitted() {
-    use crate::array::entity::ll_array_new;
     use crate::array::table::Key;
     use crate::array::testing;
     let _g = crate::memory::block_pool::test_guard();
@@ -362,11 +360,11 @@ fn a_component_whose_array_moved_its_entries_is_acquitted() {
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
     let holder = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-    let ring = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let ring = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     // The holder the member ends up in. It keeps the count its
     // factory returned and nothing points at it, so it is a root
     // rather than a candidate.
-    let live = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let live = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
     assert!(!ring.is_null() && !live.is_null());
     unsafe {
         Object::prop_at(holder, 16).write(Value::entity(Tag::Array, ring as *mut RcHeader));

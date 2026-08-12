@@ -29,7 +29,7 @@ fn a_copy_of_an_escalated_table_is_escalated() {
     let mut arena = crate::memory::arena::Arena::new();
     let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
 
-    let src = arr();
+    let src = hash_arr();
     let colliders: Vec<*mut LLString> = (0..EQUAL_HASH_LIMIT as usize + 4)
         .map(|i| {
             let s = mk(format!("collider-{i}").as_bytes());
@@ -111,7 +111,7 @@ fn a_copy_of_a_reseeded_table_inherits_the_drawn_salt() {
     let mut arena = crate::memory::arena::Arena::new();
     let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
 
-    let src = arr();
+    let src = hash_arr();
     for i in 0..(CHAIN_LIMIT as i64 + 1) {
         unsafe {
             crate::array::testing::insert(src, Key::Int(i * 1024), Value::int(i));
@@ -168,7 +168,7 @@ fn a_copy_of_an_unsalted_table_is_unsalted_and_climbs_its_own_ladder() {
     let mut arena = crate::memory::arena::Arena::new();
     let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
 
-    let src = arr();
+    let src = hash_arr();
     for i in 0..3i64 {
         unsafe {
             crate::array::testing::insert(src, Key::Int(i * 1024), Value::int(i));
