@@ -439,7 +439,8 @@ pub unsafe fn needs_separation(a: *const LLArray) -> bool {
 /// recorded at its first meeting and hit at every later one, so each
 /// distinct entity enters the list once. A debug build asserts that
 /// composite claim per level; a subgraph closed through the root — the
-/// one source the association does not hold — re-enters once and is
+/// only source that can re-enter and is not held by the association —
+/// re-enters once and is
 /// reproduced rather than walked until memory refuses.
 ///
 /// **`reason` decides one element case and nothing else**
@@ -464,7 +465,9 @@ pub unsafe fn separate(
 
     let mut pending = WorkList::new();
     let mut copies = CopiesMade::new();
-    // The root is the one source the association does not hold, and the
+    // The root is the only source that can be met again and is not
+    // recorded — a count-one child is unrecorded too, and cannot be met
+    // twice — and the
     // exemption is the invariant rather than an oversight: meeting it
     // again means a descendant names it, which is a cycle, and a cycle
     // cannot close inside a pure-COW subgraph — every entity a real ring
@@ -766,11 +769,16 @@ unsafe fn element_for_destination(
     }
 
     let child = v.entity_ptr();
-    // One read of the header word: the kind test and the sharing test
-    // both live in it, and under `rc-walk` the two accessors would load
-    // it twice.
-    let (count, flags) = unsafe { crate::refcount::header_pair(child) };
-    if is_nested_arena_array(flags, category) {
+    // The destination's category first, and it is a parameter rather than
+    // a load: with an arena destination no child recurses, and this is the
+    // shallow separation's own path — one element at a time, every write
+    // to a shared array. Only past it is the child's header worth reading,
+    // and then once for both tests: the kind and the count are halves of
+    // one word, which under `rc-walk` the two accessors would load twice.
+    if category != MemoryCategory::RequestArena
+        && let (count, flags) = unsafe { crate::refcount::header_pair(child) }
+        && is_nested_arena_array(flags)
+    {
         // A child a single entry names cannot be met a second time, and
         // in the arena the count is an upper bound on holders, so count
         // one proves this entry is the only name and the association is
@@ -826,13 +834,12 @@ unsafe fn element_for_destination(
 /// barrier's copy arm is a leaf for every other kind.
 ///
 /// `flags` are the child's, read by the caller — which needs the count
-/// beside them and would otherwise load the same word twice.
+/// beside them and would otherwise load the same word twice. **The
+/// destination's category is tested before the read**, by the caller and
+/// not here: it is a parameter, the read is an atomic load, and with an
+/// arena destination the answer is no for every child.
 #[inline]
-fn is_nested_arena_array(flags: u32, category: MemoryCategory) -> bool {
-    if category == MemoryCategory::RequestArena {
-        return false;
-    }
-
+fn is_nested_arena_array(flags: u32) -> bool {
     MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena
         && flags & COW != 0
         && (flags & crate::refcount::ENTITY_KIND_MASK) >> crate::refcount::ENTITY_KIND_SHIFT

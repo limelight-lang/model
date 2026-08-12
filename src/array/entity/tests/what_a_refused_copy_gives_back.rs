@@ -320,9 +320,16 @@ fn a_refused_work_list_gives_the_nested_copy_back() {
 /// The association refusing is the third arrival, and it comes before
 /// the work list: a child two entries name is looked up and recorded,
 /// and the recording is a `Table::insert` into a buffer-arena chunk.
-/// Which of the two refuses is decided by the child's count, so this
-/// test's source names its child twice where the one above names each
-/// child once.
+///
+/// **What separates it from the test above is the child's count**, which
+/// decides whether `copies.record` is called at all — one entry names
+/// each child there, two name this one. What does *not* separate them is
+/// the allocator: both refusals draw the same buffer-arena payload under
+/// the same flag, and which fires first is the order of the two calls in
+/// `element_for_destination`. Swap that order and this test passes on the
+/// list's branch, saying nothing. Discriminating on the allocator would
+/// need the arena warmed to serve exactly one payload, which is state no
+/// test here owns.
 #[test]
 fn a_refused_association_gives_the_nested_copy_back() {
     let _g = crate::memory::block_pool::test_guard();

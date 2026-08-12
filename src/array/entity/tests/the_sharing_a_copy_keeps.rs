@@ -106,10 +106,17 @@ fn a_child_two_entries_name_is_copied_once_and_held_twice() {
 /// exists to refuse.
 ///
 /// **Twelve rather than the thirty the stage's criterion names.** The
-/// depth decides what a regression does: at twelve the per-entry shape
-/// allocates four thousand arrays and reports, at thirty it exhausts the
-/// pool and takes the concurrently running tests with it. A probe that
-/// cannot report is not one.
+/// depth decides what a regression can report: copied per entry a
+/// twelve-level chain holds 8191 arrays, which a machine finishes and an
+/// assertion names, while thirty is 2^31 and exhausts the pool with the
+/// tests running beside it.
+///
+/// Which assertion reports depends on the build. In debug the probe at
+/// `separate`'s loop head fires first — the list is popped
+/// last-in-first-out, so the walk descends one spine and the first
+/// sibling re-enters a source already entered — and the count below is
+/// what a release build has instead. The 8191 was seen, with the
+/// association disabled and before that probe was restored.
 #[test]
 fn a_doubling_chain_costs_one_copy_a_level() {
     let _g = crate::memory::block_pool::test_guard();

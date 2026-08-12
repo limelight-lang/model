@@ -107,7 +107,9 @@ source's and **the copy holds exactly its holders** — its count is the
 number of entries in the copied graph naming it, where the source's also
 carries external holders and whatever the arena has not given back.
 
-**The root is the one source the association does not hold.** Meeting it
+**The root is the only source that can re-enter and is not recorded.**
+A count-one child is unrecorded too and cannot be met a second time, so
+the root is the one exemption that matters. Meeting it
 again means a descendant names it, which is a cycle, and a cycle cannot
 close inside a pure-COW subgraph. Recording it would cost a table
 allocation on every escape copy to answer a shape nothing can build.
