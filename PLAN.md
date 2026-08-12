@@ -214,26 +214,36 @@ and up is cut to the contract or moved under a named section, and
         that cross-thread frees park. The crate's comment share moved
         only 32.0 % to 31.2 %, because 21 blocks are a tenth of the
         volume; the rest is S15.5's. Commits 5843cc1..07ac543.
-- [~] S15.5 The remaining 72 blocks of twenty lines and up
+- [x] S15.5 The remaining blocks of twenty lines and up, outside the tests
       done: the same test applied module by module, and the comment share
         measured again against the 32 % above
       tier: T2 · role: Critic
-      Eleven blocks done so far, in `memory/heap.rs`, `array/table.rs`,
-        `array/entity.rs` and `refcount.rs`, each by naming the section
-        that already held its argument:
-        `rfc/model/memory/heap-slot-allocation.md`'s "Fix 3", "Fix 5c",
-        "Why `relink_unfull` is worth its cost" and "What churn actually
-        costs", and four `dev/DECISIONS.md` entries by title.
-      **The share barely moves, and the count of blocks moves less.**
-        32.0 % to 31.1 % over thirty rewritten blocks, and 93 blocks of
-        twenty lines and up to 90, because cutting a 40-line block to 25
-        leaves it in the bucket. The volume is elsewhere: `memory/heap.rs`
-        carries 973 comment lines and only 200 of them are in blocks of
-        fifteen lines or more. Finishing the remaining 90 blocks buys
-        perhaps two more points, which is worth doing but is not what
-        makes the crate a third comments. Whether the per-item docs
-        themselves move into the design documents is Edmond's, and the
-        step waits on it.
+      handoff: every non-test block of twenty lines or more — 80 of them —
+        was surveyed against the workflow's rule and given one of three
+        verdicts. **43 keep**, being contract or mechanism with nothing
+        behind them in a document, and that ratio is the finding: where a
+        module was written alongside a dense RFC section the share of cuts
+        is high (13 of 25 under `array/`), and where it was not it is low.
+        37 shortened; the share moved 31.1 % to 30.6 % and the count of
+        such blocks 89 to 74, the rest being blocks that shrank without
+        leaving the bucket.
+      **The yield was stale text again, not retelling.** Five flag names
+        deleted by the 2026-07-22 compaction, two citations of an RFC
+        section that says the opposite of what they claim, one pointer to
+        a function that moved modules, eighteen `dev/` citations by date
+        and two by `PLAN.md` stage, and three `audit` numbers naming an
+        untracked file that no longer holds them. Commit 462ac58.
+- [ ] S15.6 The eight blocks inside the test files
+      done: each of the eight surveyed the same way, and no `dev/`
+        citation in a test file gives a date where the entry has a title
+      tier: T1 · role: —
+      Left out of S15.5's survey, which was scoped to non-test files:
+        `string/tests.rs:1236` (30 lines), `array/table/tests.rs:1423`,
+        `memory/retained/tests.rs:3`, `object/tests.rs:350`,
+        `journal/tests.rs:681`, `memory/heap/tests.rs:696`,
+        `hash/tests.rs:103` and `array/testing.rs:1`. Three by-date
+        citations go with them: `array/element/tests.rs:1824` and `:2192`,
+        `array/table/tests.rs:1257`.
 
 ## S16 — The test files: one layout, and a size a reader can hold
 
