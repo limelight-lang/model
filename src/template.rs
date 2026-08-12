@@ -6,7 +6,9 @@
 //! logger — can read the two apart instead of receiving one flat string
 //! it has to parse back.
 //!
-//! **The parts are the site's, the values are the evaluation's.**
+//! **The parts are the site's, the values are the evaluation's**:
+//! [`TemplateShape`] carries the literals, the instance carries only the
+//! values.
 //!
 //! **The instance is an ordinary entity**: `RcHeader | class | shape |
 //! Value[n]`, an object whose body is a shape pointer and the values. The

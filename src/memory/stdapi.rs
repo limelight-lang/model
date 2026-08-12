@@ -11,7 +11,12 @@
 //! regions come from `VirtualAlloc` or `mmap` directly.
 //!
 //! **Size-less free works**, and the size split it routes on is
-//! `docs/memory-manager.md`, "Layers". One row is this module's own:
+//! `docs/memory-manager.md`, "Layers". The small path additionally needs
+//! an alignment of at most 16, which that section does not state. The
+//! three rows are `BLOCK_KIND_HEAP`, `BLOCK_KIND_LARGE` and
+//! `BLOCK_KIND_LARGE_RUN`, and a `LARGE_RUN` is handed back to the OS on
+//! free: what that section says is never returned in phase 1 is the
+//! region beneath it. One row is this module's own:
 //!
 //! - `BLOCK_KIND_ENTITY` (GC entities, allocated via `heap::entity_alloc`
 //!   and never by `ll_alloc`) → the thread's entity heap; `ll_free` covers

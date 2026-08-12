@@ -263,8 +263,8 @@ struct HeapBlockHeader {
     /// a shared reference it does not stop at an `UnsafeCell`. Splitting
     /// the word out is what makes the borrow legal, the same medicine
     /// `BlockShared` and `BlockRemote` were split out with
-    /// (`dev/DECISIONS.md`, 2026-07-20: "making it a type rule was the
-    /// only option that cannot be violated again").
+    /// (`dev/DECISIONS.md`, "the block header is split by access rule, not
+    /// by topic").
     kind: AtomicU32,
     /// The block's size class, and the second word the collector reads
     /// from another thread (`snapshot_entity_blocks`): written once at
@@ -1518,12 +1518,12 @@ pub extern "C" fn ll_thread_exit() {
     // alive while it runs.
     //
     // Nothing below is built on that. Every structure this function
-    // disposes is a no-drop-glue cell freed by hand
-    // (`dev/DECISIONS.md`, 2026-08-03), and the two that do have drop
-    // glue are reached through `try_with` on every non-test path, so a
-    // destroyed slot is reported rather than panicked on. A panic here
-    // cannot unwind out of a destructor, and under `panic = "abort"` it
-    // ends the process.
+    // disposes is a no-drop-glue cell freed by hand (`dev/DECISIONS.md`,
+    // "thread exit owns the order its per-thread state dies in"), and the
+    // two that do have drop glue are reached through `try_with` on every
+    // non-test path, so a destroyed slot is reported rather than panicked
+    // on. A panic here cannot unwind out of a destructor, and under
+    // `panic = "abort"` it ends the process.
 
     // 1. Static blocks let go of their roots (A6). The only step that
     //    runs user code, so it goes first, while every structure the
@@ -1783,7 +1783,8 @@ pub(crate) enum ExitPhase {
 thread_local! {
     /// This thread's [`ExitPhase`]. A `Cell` with no drop glue, under the
     /// rule every per-thread structure reachable from thread exit obeys
-    /// (`dev/DECISIONS.md`, 2026-08-03).
+    /// (`dev/DECISIONS.md`, "thread exit owns the order its per-thread
+    /// state dies in").
     static EXIT_PHASE: std::cell::Cell<ExitPhase> = const { std::cell::Cell::new(ExitPhase::Live) };
 }
 
@@ -1837,6 +1838,9 @@ pub(crate) fn exit_guard_armed() -> bool {
         return false;
     }
 
+    // `try_with`, not `with`: on a slot TLS teardown has destroyed `with`
+    // panics, and a panic inside a TLS destructor cannot unwind — under the
+    // release profile's `panic = "abort"` it ends the process.
     EXIT_GUARD.try_with(|_| {}).is_ok()
 }
 
@@ -2164,9 +2168,9 @@ pub(crate) struct EntityBlockSnapshot {
     /// header, so a virgin slot reads refcount 0 and skips — the same
     /// occupancy test as a freed one. Skipping the cursor keeps the
     /// mutator's `bump += 1` a plain store (an atomic one measured
-    /// +14% on larson, `dev/BENCHMARKS.md` 2026-07-26); the full-block
-    /// scan is collector-side work, which is always the right side to
-    /// pay on.
+    /// +14% on larson, `dev/BENCHMARKS.md`, "the rc-walk build vs default;
+    /// an atomic bump cursor rejected"); the full-block scan is
+    /// collector-side work, which is always the right side to pay on.
     ///
     /// For a retained block this is `index.len()` — the survivors the
     /// reset recorded, which is that block's whole population because
@@ -2239,10 +2243,10 @@ pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
 
     // Retained former-arena blocks join the same list, so the census's
     // single binary search covers both kinds and row omission stays one
-    // decision at one test (`dev/DECISIONS.md`, 2026-08-03). Their
-    // indexes are frozen — nothing allocates into a dead arena — so a
-    // snapshot taken here is as stable for the epoch as an entity
-    // block's slot count is.
+    // decision at one test (`dev/DECISIONS.md`, "retained blocks are
+    // walked through a per-block object index"). Their indexes are frozen
+    // — nothing allocates into a dead arena — so a snapshot taken here is
+    // as stable for the epoch as an entity block's slot count is.
     for (block, index) in crate::memory::retained::snapshot() {
         blocks.push(EntityBlockSnapshot {
             payload: block + LINE_SIZE,

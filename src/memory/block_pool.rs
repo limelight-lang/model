@@ -59,7 +59,10 @@ const FLUSH_MAX: usize = THREAD_CACHE_CAPACITY / 2 + 1;
 /// and it sits outside the half `Heap::alloc` borrows — position, not
 /// type, is what keeps that borrow legal (`docs/memory-manager.md`,
 /// "`HeapBlockHeader`, and why it is four structs"; `dev/POSTMORTEM.md`,
-/// "an atomic field does not survive a `&mut` over the struct").
+/// "an atomic field does not survive a `&mut` over the struct"). The one
+/// access the type does not defend against is a whole-struct store, which
+/// writes these four bytes plainly, so a header is commissioned field by
+/// field and its kind last, through here.
 #[inline]
 pub(crate) unsafe fn store_block_kind(kind_field: *const AtomicU32, kind: u32) {
     #[cfg(not(feature = "rc-walk"))]

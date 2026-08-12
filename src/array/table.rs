@@ -225,8 +225,8 @@ impl Table {
     ///
     /// No category field, and no read of one: which memory this table's
     /// storage comes from is the owning entity's header to say, and every
-    /// allocating call is handed the answer (`dev/DECISIONS.md`,
-    /// 2026-08-07).
+    /// allocating call is handed the answer (`dev/DECISIONS.md`, "the
+    /// table is handed its category and reads no header").
     pub const fn empty() -> Self {
         Table {
             storage_capacity: 0,

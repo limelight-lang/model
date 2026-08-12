@@ -293,7 +293,9 @@ unsafe fn decode_index(entity: *mut RcHeader) -> Option<usize> {
 /// switch, `ll_object_die` after `dispose` returns and never before, and
 /// `array::entity::array_die`'s drain for a nested array, which reaches
 /// teardown without passing `ll_entity_die` at all (`dev/DECISIONS.md`,
-/// 2026-08-07 and 2026-08-08).
+/// "the candidate buffer admits arrays, and leaving it belongs to the
+/// runtime"; the drain's own share of the duty is under the entry of
+/// 2026-08-08, whose heading names the pinned block instead).
 ///
 /// # Safety
 /// `entity` must still point at the (dying) entity.
@@ -363,7 +365,7 @@ fn candidate_buffer() -> *mut Vec<*mut RcHeader> {
 /// re-buffer it and its cycle leaks. Cross-thread entity survival is
 /// reserved today, so nothing reaches that case. Both, with the Miri
 /// finding that refused the obvious repair, in `dev/DECISIONS.md`,
-/// 2026-08-03.
+/// "thread exit owns the order its per-thread state dies in".
 ///
 /// Null-tolerant and idempotent.
 #[cfg_attr(feature = "rc-walk", allow(dead_code))]

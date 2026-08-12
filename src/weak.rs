@@ -11,7 +11,10 @@
 //! Knowledge split: this module owns the cell, the table, and every
 //! notification rule; teardown paths (`object::ll_default_dispose`, the
 //! cycle collectors, arena reset) own only *when* to call in, gated by
-//! bit 7.
+//! bit 7. A plain `HashMap` under no lock is sound because every
+//! notification site runs on the owning thread — teardown, the drain in
+//! the mutator's checkpoint, arena reset — and the collector thread never
+//! touches it.
 //!
 //! The row is a single canonical-cell pointer today; it widens to the
 //! design's tagged subscriber list when `WeakMap` lands and maps start

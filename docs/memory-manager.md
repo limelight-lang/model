@@ -477,10 +477,11 @@ value whose teardown is on the stack.
 
 Recording an escape or a release-at-reset can need memory, and the
 barrier has no way to report that it did not get any: `ll_ref_store`
-returns nothing, and a check after every store is the cost the whole
-design avoids. So two blocks per thread are held back (`memory::reserve`)
-and filled at `ll_thread_init`, where a refusal is still reportable.
-`Arena::grow_log` draws on them once the pool refuses.
+returns a `bool`, and that `bool` carries one refusal only, the escape
+copy a COW value takes when it leaves the arena. So two blocks per
+thread are held back (`memory::reserve`) and filled at
+`ll_thread_init`, where a refusal is still reportable. `Arena::grow_log`
+draws on them once the pool refuses.
 
 That does not make failure impossible — it moves it. Drawing sets a flag
 that `ll_gc_maybe_collect`, the compiler's safepoint poll, refills on;

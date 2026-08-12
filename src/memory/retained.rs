@@ -28,6 +28,10 @@
 //! thread walks next, and both walks are process-global, so the index is
 //! dropped **before** the block is handed to the pool.
 //!
+//! An index needs no version and no lock beyond the one guarding the
+//! registry map: nothing allocates into a dead arena, so a block's
+//! population only shrinks, and readers walk a cloned `Arc` outside it.
+//!
 //! A block may be retained for **bytes** rather than for occupants, when a
 //! survivor's out-of-line payload could not be carried out of the dying
 //! arena. It is then held by two populations and goes home when both are

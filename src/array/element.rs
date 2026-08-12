@@ -29,8 +29,8 @@ use crate::value::{Tag, Value};
 /// The separation composition every write here goes through: separate
 /// the holder's array if it is shared, run `write` on the array the
 /// write must reach, publish the result, and settle the three references
-/// in the order `dev/DECISIONS.md`, "the creation reference is spent
-/// before the displaced original is dropped", fixes.
+/// in the order `dev/DECISIONS.md` fixes under "the creation reference is
+/// spent before the displaced original is dropped".
 ///
 /// `slot` names the array (`Tag::Array`); `owner_cat` is the holder's
 /// category, a compiler parameter as at every store-side barrier.
@@ -422,7 +422,9 @@ unsafe fn destroy_unpublished(entity: *mut RcHeader) {
 /// its manual warns about copying an array with a reference in it.
 ///
 /// The lookup that decides this is a second chain walk on every store,
-/// on top of `insert`'s own. Unmeasured.
+/// on top of `insert`'s own. It cannot be shared with `insert` without
+/// changing what `insert` returns, `Table::get` handing out a copy of the
+/// Box rather than a borrow (`array/table.rs`). Unmeasured.
 ///
 /// # Safety
 /// `a` a live, exclusively owned array; `arena` the live mounted arena.

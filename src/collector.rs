@@ -534,7 +534,8 @@ impl Epoch {
 /// rejected by the remainder test, and a block absent from the snapshot
 /// — heap, arena, mid-commission — finds no payload match. Replaced a
 /// HashMap keyed by entity address: same verdicts, no hashing and no
-/// build pass over the walked set (`dev/BENCHMARKS.md`, 2026-07-28).
+/// build pass over the walked set (`dev/BENCHMARKS.md`, "dense census in
+/// the epoch walk: 2–3× on the walk step").
 fn census_row(
     blocks: &[EntityBlockSnapshot],
     first_slot: &[u32],

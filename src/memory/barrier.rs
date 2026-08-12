@@ -18,13 +18,16 @@
 //!   whole `Value`.
 //!
 //! **A publish can fail, and says so.** `store_ptr`, `store_box` and
-//! `ref_store` return whether the store happened. A refusal leaves the
-//! slot and every count as they were, which is why the `drop_ref` that
-//! would have followed must not run: the slot still holds the old entity
-//! and still owns its reference. So an overwriting store is `store_*` and
-//! then, **only on `true`**, `drop_ref`. Raising memory-exhausted is the
-//! caller's (`rfc/runtime/exceptions.md`, "The enumeration, and the three
-//! ways off the list"). `drop_ref` itself cannot fail and returns nothing.
+//! `ref_store` return whether the store happened, and what can refuse is
+//! the escape copy a COW value takes when it leaves the arena, that copy
+//! being an allocation. A refusal leaves the slot and every count as they
+//! were, which is why the `drop_ref` that would have followed must not
+//! run: the slot still holds the old entity and still owns its reference.
+//! So an overwriting store is `store_*` and then, **only on `true`**,
+//! `drop_ref`. Raising memory-exhausted is the caller's, through an
+//! exceptions runtime that does not exist yet
+//! (`rfc/runtime/exceptions.md`, "The enumeration, and the three ways off
+//! the list"). `drop_ref` itself cannot fail and returns nothing.
 //!
 //! Composition in this build (phase 1): RC operations and the category
 //! barrier (`rfc/model/memory/arenas.md`). Strategy hooks (SATB) plug into

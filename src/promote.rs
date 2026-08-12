@@ -193,8 +193,8 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     // hand the payload back to the pool. The bytes have a
                     // death event of their own — the owning entity's free
                     // — and it spends this pin (`retained.rs`, blocks
-                    // retained for bytes; `dev/DECISIONS.md`,
-                    // 2026-08-08).
+                    // retained for bytes; `dev/DECISIONS.md`, "a pinned
+                    // block goes home when its last payload is freed").
                     crate::memory::retained::pin(payload_block);
                 }
             }
@@ -402,7 +402,8 @@ unsafe fn external_memory_block(surv: *mut RcHeader) -> usize {
 /// reach a block first — the census by the 64 KiB alignment mask, the
 /// synchronous walk by scanning the region registry — so an index found
 /// from a block address costs no second mapping (`dev/DECISIONS.md`,
-/// 2026-08-03). A survivor whose block was *not* retained cannot occur
+/// "retained blocks are walked through a per-block object index"). A
+/// survivor whose block was *not* retained cannot occur
 /// here: retention is decided from this same list.
 fn index_retained_blocks(survivors: &[*mut RcHeader]) -> Vec<usize> {
     let mut emptied = Vec::new();

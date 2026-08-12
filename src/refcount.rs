@@ -540,8 +540,9 @@ unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
 /// must not mix a narrow store with the 8-byte word load: the next
 /// operation's wide load over a fresh narrow store defeats
 /// store-to-load forwarding — measured at ~3x on the retain/release
-/// pair (`dev/BENCHMARKS.md`, 2026-07-27). Narrow stores demand narrow
-/// loads.
+/// pair (`dev/BENCHMARKS.md`, "the narrow mutator lands: retain/release
+/// reach parity with rc-trace (and past it)"). Narrow stores demand
+/// narrow loads.
 #[cfg(feature = "rc-walk")]
 #[inline]
 unsafe fn refcount_load(header: *const RcHeader) -> u32 {
@@ -622,7 +623,8 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
         // it keeps the thread-local access and the `Vec` push out of this
         // function, and `buffer_candidate` is `#[inline(never)]` so they
         // stay out. It saves no call — the callee was inlined before the
-        // split (`dev/BENCHMARKS.md`, 2026-07-21). The callee keeps its own
+        // split (`dev/BENCHMARKS.md`, "`buffer_candidate` taken out of
+        // `ll_release`"). The callee keeps its own
         // copy of the test: it has other callers, and this one is an
         // optimization, not the invariant.
         //

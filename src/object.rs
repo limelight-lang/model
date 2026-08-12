@@ -524,8 +524,9 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
 pub type DisposeFn = unsafe extern "C" fn(*mut Object) -> bool;
 
 /// The default `dispose`: the generic stand-in a class carries until the
-/// compiler emits one specialized to its layout (`dev/DECISIONS.md`,
-/// 2026-07-25). It reads the trace map (via [`for_each_counted_child`]) to
+/// compiler emits one specialized to its layout (`dev/DECISIONS.md`, "a
+/// generated lifecycle body unrolls small, loops large"). It reads the
+/// trace map (via [`for_each_counted_child`]) to
 /// release children; a generated `dispose` would unroll the releases with no
 /// map read, to identical effect — so a test may install its own.
 ///
