@@ -642,9 +642,11 @@ and `FORCE_OOM.store(false)`; the second then died of SIGSEGV, and the
 run printed `FAILED` for the first with no message and the signal for the
 second, the process having died before the panic's line was flushed. The
 panic's text appeared only when that test was run alone. Unwinding does
-not restore a process-global fault-injection flag, so every later test on
-the thread met an allocator that refuses everything, and the first null it
-did not check was the crash.
+not restore a fault-injection flag, and both flags are process-global
+statics while `block_pool::test_guard` serializes only the tests that take
+it — so the party that meets an allocator refusing everything is every
+test running concurrently in the binary, not merely the next one on this
+thread. The first null one of them did not check was the crash.
 
 **Why it happened.** The panic was itself correct — the exhaustion loop
 had found no slot to take, because the thread had no warm entity block
@@ -653,10 +655,12 @@ empty and the `expect` fired. The setup error and the reporting error
 compounded: the real defect was one line of ordering, and what it showed
 was a segfault in a different test.
 
-**The rules, and they are two.** Nothing between raising a
-fault-injection flag and lowering it may panic — assertions come after
-the flag is down, and a value the test needs from that window is read
-into a local and asserted on later. And an exhaustion loop under a raised
-flag needs its first block drawn **before** the flag goes up: with the
-pool refusing, an allocator with no warm block serves nothing, and
-"exhausted" and "never started" are the same empty vector.
+**The rules, and they are two.** A fault-injection flag is raised through
+a guard that lowers it in `Drop`, never by a bare store: keeping
+assertions outside the window answers only the panics a test author
+writes, and the ones that matter are the crate's own `debug_assert`s
+firing inside it on exactly the regression the test exists to catch. And
+an exhaustion loop under a raised flag needs its first block drawn
+**before** the flag goes up: with the pool refusing, an allocator with no
+warm block serves nothing, and "exhausted" and "never started" are the
+same empty vector.

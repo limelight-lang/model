@@ -772,8 +772,11 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
 /// children given back, out-of-line memory returned, the cell freed.
 /// Callers are the refusal branches of the operations that build an
 /// entity before publishing it: the copy `element::write_through` could
-/// not finish, the box `element::box_element` could not fill, and the
-/// destination `array::entity::separate` could not complete.
+/// not finish, the box `element::box_element` could not fill, the
+/// destination `array::entity::separate` could not complete, and — the
+/// one that hands over an entity the caller's own destination does not
+/// name — the nested copy `array::entity::element_for_destination` built
+/// and could not record on the work list.
 ///
 /// [`ll_entity_die`] rather than a kind's own body, so that the teardown
 /// bracket and the candidate-buffer duty this door carries are paid here

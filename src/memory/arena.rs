@@ -149,6 +149,20 @@ impl Arena {
         self.alloc_slow(size)
     }
 
+    /// Bytes the current block still bump-serves, for a test that has to
+    /// leave the arena a known amount of room. The alternative is to
+    /// exhaust the bump and hope the remainder lands in the window a
+    /// refusal needs, which is a coin flip on the block payload and on
+    /// every size the allocation path rounds.
+    #[cfg(test)]
+    pub(crate) fn room_left(&self) -> usize {
+        if self.bump.is_null() {
+            return 0;
+        }
+
+        self.limit as usize - self.bump as usize
+    }
+
     #[cold]
     fn alloc_slow(&mut self, size: usize) -> *mut u8 {
         // The invariant, stated where the block is taken: `alloc` above

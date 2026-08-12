@@ -140,7 +140,7 @@ unsafe fn representation_for(a: *mut LLArray, key: Key) -> bool {
 /// still names the original at its old count, every table holds its old
 /// entries, and every reference the caller brought is still the
 /// caller's. A copy refused part-way dies whole
-/// ([`destroy_unpublished`]).
+/// ([`crate::object::destroy_unpublished`]).
 ///
 /// **The displaced original ends at one holder, up to the reset log.** A
 /// heap array displaced from an *arena* holder's slot is owed its release
