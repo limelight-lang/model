@@ -199,10 +199,26 @@ and up is cut to the contract or moved under a named section, and
         that cross-thread frees park. The crate's comment share moved
         only 32.0 % to 31.2 %, because 21 blocks are a tenth of the
         volume; the rest is S15.5's. Commits 5843cc1..07ac543.
-- [ ] S15.5 The remaining 72 blocks of twenty lines and up
+- [~] S15.5 The remaining 72 blocks of twenty lines and up
       done: the same test applied module by module, and the comment share
         measured again against the 32 % above
       tier: T2 · role: Critic
+      Eleven blocks done so far, in `memory/heap.rs`, `array/table.rs`,
+        `array/entity.rs` and `refcount.rs`, each by naming the section
+        that already held its argument:
+        `rfc/model/memory/heap-slot-allocation.md`'s "Fix 3", "Fix 5c",
+        "Why `relink_unfull` is worth its cost" and "What churn actually
+        costs", and four `dev/DECISIONS.md` entries by title.
+      **The share barely moves, and the count of blocks moves less.**
+        32.0 % to 31.1 % over thirty rewritten blocks, and 93 blocks of
+        twenty lines and up to 90, because cutting a 40-line block to 25
+        leaves it in the bucket. The volume is elsewhere: `memory/heap.rs`
+        carries 973 comment lines and only 200 of them are in blocks of
+        fifteen lines or more. Finishing the remaining 90 blocks buys
+        perhaps two more points, which is worth doing but is not what
+        makes the crate a third comments. Whether the per-item docs
+        themselves move into the design documents is Edmond's, and the
+        step waits on it.
 
 ## S16 — The test files: one layout, and a size a reader can hold
 
