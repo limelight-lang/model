@@ -142,21 +142,21 @@ allocates out of **the same block** the reset recycled: 1 in 35 at
 `--test-threads=8` under rc-trace with `debug-journal`, and not seen at
 the gate's width of 4.
 
-**The mechanism is named, and it serves the whole family.** A ring is one
+**The mechanism is named, and it served the whole family.** A ring is one
 pooled block, and `BlockPool::put` raises its decommission record with the
 returned block already in the thread cache, so a thread whose first record
 is that one takes its ring out of the block just returned. Which record is
 a thread's first depends on the process-wide enabled mask, which every
-quieting test moves, so nothing about the pool decides it. A 300-run leg
-at eight threads then found three more tests of that shape and two journal
-tests whose own mechanism is not named yet.
+quieting test moves, so nothing about the pool decides it. Legs at eight
+threads found eight more tests of that shape, and the remedy is one line
+in the fixture rather than one per test.
 
 Goal: a test that measures the pool measures it in a world where the
 journal cannot take a block underneath it.
 
-Done when: 300 runs at eight threads under rc-trace with `debug-journal`
-are clean, and every repair names the draw that disturbed its test rather
-than serialising until the symptom stops.
+Done when: 600 runs at eight threads in each GC configuration with
+`debug-journal` are clean, and every repair names the draw that disturbed
+its test rather than serialising until the symptom stops.
 
 - [x] S17.1 Name what takes the block, and repair the test or the claim
       done: a run that failed before the repair and 60 clean after, with
@@ -170,26 +170,34 @@ than serialising until the symptom stops.
         `BLOCK_KIND_LARGE`, the ring's own kind, and the second arena one
         block up rather than one region, as this stage first guessed. 300
         runs at eight threads, no failure. Commit 9478205.
-- [ ] S17.2 The three pool tests of the same shape
-      done: `block_pool::…::an_overflowing_cache_keeps_half_and_flushes_
-        the_rest`, `block_pool::…::put_then_get_reuses_without_new_region`
-        and `buffer_arena::…::emptied_noncurrent_block_returns_to_pool`
-        each name the draw that disturbs them, and 300 runs at eight
-        threads are clean
-      tier: T1 · role: —
-      Failures in the 300-run leg: 6, 1 and 1. The first reads its cache
-        as 3 or as 8 where it demands 4, which is one ring taken after
-        the flush and one taken between the puts.
-- [ ] S17.3 The two journal tests, whose mechanism is not named yet
-      done: `kinds::…::a_block_round_trip_is_a_commission_and_a_
-        decommission` and `journal::…::a_refused_ring_is_not_asked_for_
-        a_second_time` are explained from the code and repaired
+- [x] S17.2 The rest of the family, and the fixture that ends it
+      done: every test the legs name is repaired, and 600 runs at eight
+        threads in each GC configuration are clean
       tier: T2 · role: —
-      One failure each in the leg. The round trip read `[6, 5, 6]` where
-        it demands `[5, 6]`, and it filters by its own ring and its own
-        block address, so the extra decommission is this thread's own —
-        which the pool's records alone do not explain. The refusal test
-        read `(0, 63)` where it demands `(1, 62)`.
+      handoff: repairing tests one at a time made the suite worse, and
+        the leg said so — three quieted, five new instances in the next
+        600 runs, three of them tests that had never failed. So the
+        remedy moved into the fixture: `block_pool::test_guard` calls
+        `journal::take_ring_for_test`, the ring is drawn before the body,
+        and the seven per-test quiet guards came back out. 1200 runs
+        clean across both configurations, four of the repaired tests
+        never having been touched. Commit bd081c5, trap in
+        `dev/POSTMORTEM.md`.
+- [x] S17.3 The four instruments a fixture cannot help
+      done: each names what moves the count it reads, and measures
+        something no other thread can move
+      tier: T2 · role: —
+      handoff: `single_live_slot_churn_does_not_recarve_block` reads this
+        thread's block cache instead of `blocks_out`;
+        `a_refused_ring_is_not_asked_for_a_second_time` reads the refusal
+        count instead of the registry's totals;
+        `the_retired_list_keeps_the_newest_and_drops_the_oldest` states
+        that the evicted rings are a prefix of the retirement order
+        rather than exactly one; and `a_block_round_trip_is_a_commission_
+        and_a_decommission` reads its trip as the tail, because `mark`
+        frees the rings an eviction left pending and that free
+        decommissions a block the next `get` draws. Each seen failing by
+        injection first. Commit bd081c5.
 
 ## S15 — What a comment carries, and where the argument lives
 
