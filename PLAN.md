@@ -588,7 +588,7 @@ key it cannot hold, both configurations green, Miri silent.
         legs, 457 → 460 and 438 → 441; Miri silent over `array::element`,
         `array::entity`, `array::vector`, `array::table`, `promote::`,
         `walk::` and, in rc-trace, `gc::`.
-- [ ] S7.3 The 2 → 3 migration
+- [x] S7.3 The 2 → 3 migration
       done: a test pins insertion order across the migration, and the
         append cursor carries over with it — `next_free` is the vector's
         length, and `NEXT_FREE_NONE` for an empty one
@@ -597,6 +597,16 @@ key it cannot hold, both configurations green, Miri silent.
         vacuous — a vector never hashes, so it holds none, and 3 never
         returns to 2. Flood-state inheritance stays what it already is, a
         COW-copy concern through `adopt_flood_state`. Final.
+      handoff: closed by work that landed early, under S7.2's first half
+        (`123861c`, `entity::migrate_to_hash`). The criterion's two halves
+        are `the_entries_are_in_the_order_the_vector_held_them` and
+        `the_append_cursor_is_the_vectors_length`, in
+        `entity/tests/the_migration_out_of_the_vector.rs`; the empty case is
+        `an_empty_vector_becomes_an_empty_hash_that_appends_at_zero`, which
+        pins `NEXT_FREE_NONE` through its observable, `append_key`
+        answering 0, the field being `Table::empty`'s and the empty loop
+        leaving it alone. Five tests listed by name and run green at
+        `b63692f`; nothing was added for this step.
 - [ ] S7.4 The RFC corrections this stage owes
       done: `arrays.md`'s "strategy 1 never transitions",
         `memory/buffers.md`'s grouping of immortal with long-lived, and
