@@ -6,7 +6,7 @@
 //! compile as **relaxed atomics** instead — same instructions on x86-64
 //! and AArch64, but the collector thread reads headers concurrently and
 //! without the annotation that race is undefined behaviour
-//! (`rfc/model/gc/rc-walk.md`, "The two header bytes"). Still no atomic
+//! (`rfc/model/gc/rc-walk.md`, "The one header byte"). Still no atomic
 //! read-modify-write anywhere.
 
 use crate::journal::kinds::journal_event;
@@ -46,9 +46,10 @@ pub enum MemoryCategory {
     /// by construction). That is a comparison the store barrier makes, not
     /// an allocation.
     ///
-    /// Renaming the code after an owner was considered on 2026-08-06 and
-    /// deferred — the name has to wait for the mechanism, or it promises
-    /// what nothing delivers (`dev/DECISIONS.md`).
+    /// Renaming the code after an owner was considered and deferred: the
+    /// name has to wait for the mechanism, or it promises what nothing
+    /// delivers (`dev/DECISIONS.md`, "`LongLived` goes out of use, and its
+    /// rename waits for a mechanism").
     LongLived = 0b10,
     Immortal = 0b11,
 }
@@ -74,8 +75,7 @@ pub const GC_STATE_MASK: u32 = 0b11 << GC_STATE_SHIFT;
 /// GC-state field is idle for them and reset borrows its low bit here
 /// (`rfc/model/classes.md`, "Flags layout"; `rfc/model/memory/arena-reset.md`).
 /// Cleared when a survivor is promoted to the heap, where its whole
-/// category + GC-state is rewritten. Replaces the old dedicated `ESCAPED`
-/// flag bit, freed by the 2026-07-22 flags compaction.
+/// category + GC-state is rewritten.
 pub const ARENA_RESET_MARK: u32 = 1 << GC_STATE_SHIFT;
 
 /// Cycle-collector color (bits 4-5) + buffered bit (6).
@@ -87,11 +87,9 @@ pub const HAS_WEAK_REFERENCES: u32 = 1 << 7;
 /// This instance owes a `__destruct`: set only when the user constructor
 /// has returned successfully, and only for a class that has a destructor.
 /// What every teardown path dispatches on (`rfc/runtime/object-lifecycle.md`).
-/// Was `HAS_DESTRUCTOR` before the 2026-07-22 flags compaction.
 pub const DESTRUCTOR_PENDING: u32 = 1 << 8;
 /// `__destruct` has already run (exactly-once guard),
-/// `rfc/runtime/object-lifecycle.md`. Was `DESTRUCTED`, and now adjacent
-/// to [`DESTRUCTOR_PENDING`].
+/// `rfc/runtime/object-lifecycle.md`.
 pub const DESTRUCTOR_RAN: u32 = 1 << 9;
 /// Copy-on-write semantics: refcount is always maintained,
 /// writes with refcount > 1 must separate (`rfc/model/values.md`).
@@ -191,8 +189,7 @@ pub(crate) fn separation_category(owner_cat: MemoryCategory) -> MemoryCategory {
 /// self-describing for freeing and for a `mixed` conversion. `0` object is
 /// the zero default, so an entity built with no kind bits is an object;
 /// strings, arrays and the other kinds set theirs explicitly. Authoritative
-/// table: `rfc/model/classes.md`, "Flags layout". Replaces the old
-/// dedicated `ENTITY_OBJECT` flag bit.
+/// table: `rfc/model/classes.md`, "Flags layout".
 pub const ENTITY_KIND_SHIFT: u32 = 12;
 pub const ENTITY_KIND_MASK: u32 = 0b111 << ENTITY_KIND_SHIFT;
 
@@ -229,21 +226,12 @@ impl EntityKind {
 /// own nothing a ring can pass through and stay out by that same
 /// criterion.
 ///
-/// **A set rather than a mask over the kind bits**, because admitting
-/// `Reference 011` needs bit 0 clear in a mask and excluding `String 001`
-/// needs it set (`dev/DECISIONS.md`, "the candidate gate is a set of
-/// kinds, not a mask over their codes"). Membership costs a shift and a
-/// bit test on a word the release path already holds
-/// ([`kind_may_close_a_cycle`]).
-///
-/// Built from [`EntityKind`] rather than written as a literal, so the
-/// consolidation of codes 4-6 that `rfc/model/classes.md` argues for moves
-/// the value at compile time and leaves the meaning alone.
-///
-/// `Lazy` is admitted although no factory stamps that kind yet: the
-/// criterion is the slots the kind can hold, and an absent producer is no
-/// reason to exclude a kind. A kind left out until its producer arrives
-/// leaks every ring that closes through it in the meantime.
+/// Why a set rather than a mask over the kind bits, why it is built from
+/// [`EntityKind`] rather than written as a literal, and why `Lazy` is
+/// admitted before any factory stamps it: `dev/DECISIONS.md`, "the
+/// candidate gate is a set of kinds, not a mask over their codes".
+/// Membership costs a shift and a bit test on a word the release path
+/// already holds ([`kind_may_close_a_cycle`]).
 ///
 /// **rc-trace only**, like the buffer itself.
 pub const CANDIDATE_KINDS: u32 = (1 << EntityKind::Object as u32)
@@ -262,10 +250,9 @@ pub fn kind_may_close_a_cycle(flags: u32) -> bool {
 }
 
 /// True when the entity kind field is `Object` (the zero default). The
-/// dispatch every teardown and trace path makes on a bare header; replaces
-/// the old dedicated `ENTITY_OBJECT` flag test. Kept as a flags-word
-/// predicate because most call sites hold a raw `*mut RcHeader` and have
-/// the flags in a register already.
+/// dispatch every teardown and trace path makes on a bare header, and a
+/// flags-word predicate rather than a header one because most call sites
+/// hold a raw `*mut RcHeader` and have the flags in a register already.
 #[inline]
 pub fn is_object(flags: u32) -> bool {
     flags & ENTITY_KIND_MASK == 0
@@ -296,8 +283,8 @@ pub const CANDIDATE_INDEX_MASK: u32 = 0x0001_FFFF << CANDIDATE_INDEX_SHIFT;
 /// [`ARENA_RESET_MARK`] sits in the GC-state field. [`COW`] carries
 /// copy-on-write and nothing else: one bit could not say both for an
 /// oversize string, which is out of line by size and copy-on-write by
-/// semantics (`dev/DECISIONS.md`, 2026-08-10;
-/// `rfc/model/memory/large-entities.md`).
+/// semantics (`dev/DECISIONS.md`, "a string's layout is its own header
+/// bit"; `rfc/model/memory/large-entities.md`).
 pub const STRING_OUT_OF_LINE: u32 = 1 << 15;
 /// Largest buffer position the field can hold. Beyond it the index is
 /// stored as zero: 131 070 candidates is many full thresholds without a
@@ -451,7 +438,7 @@ pub(crate) unsafe fn collector_load_header(header: *mut RcHeader) -> u64 {
 /// The collector's maturity stamp: one plain byte store into header
 /// byte 6. A concurrent mutator whole-word store may bury it — the
 /// entity then reads "new" one more epoch: latency, never a verdict
-/// (`rfc/model/gc/rc-walk.md`, "The two header bytes").
+/// (`rfc/model/gc/rc-walk.md`, "The one header byte").
 ///
 /// # Safety
 /// `header` must point to an occupied entity-block slot.

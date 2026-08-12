@@ -5,7 +5,8 @@
 //! built** rather than selected at run time — the same axis the GC strategy
 //! uses — so the constant reaches every call site inlined and nothing
 //! dispatches through a pointer on the path that matters
-//! (`rfc/model/strings.md`, "The hash function is a build-time choice").
+//! (`rfc/model/strings.md`, "The hash function is a build-time choice,
+//! defaulting to rapidhash v3").
 //!
 //! That build-time choice exists because the hash is a contract between two
 //! programs, not one: the runtime computes a string's hash, and the compiler
@@ -16,10 +17,7 @@
 //!
 //! Zero is not a hash here. [`LLString`](crate::string::LLString) stores a
 //! zero in its `hash` field to mean "not computed yet", so this module maps a
-//! genuine zero to [`ZERO_REPLACEMENT`] before returning. The remap belongs to
-//! the definition of the hash and not to the caller: the compiler folding a
-//! literal's hash has to produce the same value, and it will not know which
-//! caller it is folding for.
+//! genuine zero to [`ZERO_REPLACEMENT`] before returning.
 
 pub mod rapidhash;
 

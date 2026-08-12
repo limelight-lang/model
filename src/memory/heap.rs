@@ -1732,14 +1732,9 @@ pub extern "C" fn ll_thread_init() {
         // store barrier has no channel at all
         // (`crate::memory::reserve`).
         let _ = crate::memory::reserve::replenish();
-        // `try_with`, not `with`: this can run *during* TLS teardown, when
-        // a destructor allocates and self-initializes a heap on a thread
-        // whose `EXIT_GUARD` slot is already destroyed. `with` panics
-        // there, and the release profile is `panic = "abort"`, so a
-        // perfectly ordinary thread exit would take the process down.
-        // Failing to register the guard is the right outcome instead: the
-        // thread is already exiting, and its blocks are reclaimed by the
-        // teardown in progress.
+        // Failing to arm the guard is the right outcome: the thread is
+        // already exiting, and its blocks are reclaimed by the teardown in
+        // progress.
         // The branch below is entered once per *life* of a thread, so a
         // pool thread running init and exit per task enters it again and
         // journals into a ring of a new identity rather than reopening the

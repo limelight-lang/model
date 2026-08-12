@@ -10,16 +10,9 @@
 //! refuses, and every allocation reports null. It becomes true once
 //! regions come from `VirtualAlloc` or `mmap` directly.
 //!
-//! **Size-less free works**, which is the key that makes a standard
-//! `free(ptr)` possible here: every allocation lives in a block-aligned
-//! block, so `ptr & !BLOCK_MASK` finds the block header, whose `kind`
-//! routes the free. Routing:
+//! **Size-less free works**, and the size split it routes on is
+//! `docs/memory-manager.md`, "Layers". One row is this module's own:
 //!
-//! - `≤ 8 KB`, align ≤ 16 → the small-object
-//!   [`Heap`](crate::memory::heap::Heap).
-//! - `8 KB .. block payload` → one pooled block (`BLOCK_KIND_LARGE`).
-//! - `> block payload` → an OS-direct block-aligned run
-//!   (`BLOCK_KIND_LARGE_RUN`), returned to the OS on free.
 //! - `BLOCK_KIND_ENTITY` (GC entities, allocated via `heap::entity_alloc`
 //!   and never by `ll_alloc`) → the thread's entity heap; `ll_free` covers
 //!   them so object teardown stays size-less.

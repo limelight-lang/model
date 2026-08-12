@@ -1,27 +1,13 @@
 //! The table itself: one storage allocation of `u32` index slots followed
-//! by the dense entry array, and the three operations over it.
-//!
-//! The index is the hashtable; the entry array is the insertion order.
-//! A lookup reads one index slot and then one entry — two dependent
-//! memory accesses, and no order-preserving design does better, because
-//! the entry read *is* the answer and the index read is what locates it
-//! (`rfc/model/arrays-hashtable.md`).
+//! by the dense entry array, and the three operations over it
+//! (`rfc/model/arrays-hashtable.md`, "The shape: an index array over a
+//! dense insertion-ordered entry array").
 //!
 //! Storage layout, one allocation:
 //!
 //! ```text
 //! [ u32 x nslots ][ padding to 8 ][ Entry x cap ]
 //! ```
-//!
-//! `nslots` is twice `cap` rounded up to a power of two, so a full table
-//! indexes at load 0.5 while the entry array is full — Zend's ratio, and
-//! the one the design's measurements were taken at.
-//!
-//! **Nothing inside the storage points into the storage.** Chain links
-//! are `u32` indices, so promotion can copy the whole block into the heap
-//! without fixing anything up (`rfc/model/strings.md`, and the same
-//! obligation for arrays). An implementer reaching for a pointer here
-//! would break promotion silently.
 
 use crate::array::entry::{Entry, MAX_ENTRIES, NONE};
 use crate::array::head::{StorageHead, StorageTag};
@@ -152,9 +138,10 @@ fn storage_bytes(nslots: usize, cap: usize) -> Option<usize> {
 /// The ordered hash. Holds no header of its own and reads none: the
 /// entity wrapper supplies the `RcHeader`, the COW state and — as a
 /// parameter to every allocating call — the memory category its storage
-/// comes from (`array::entity::category_of`, S10). Nothing here names an
-/// entity kind, which is what leaves the structure usable by a second
-/// one.
+/// comes from (`array::entity::category_of`, and `dev/DECISIONS.md`,
+/// "the table is handed its category and reads no header"). Nothing here
+/// names an entity kind, which is what leaves the structure usable by a
+/// second one.
 ///
 /// **This is the private tail, and the words a walker reads are not in
 /// it.** The chunk, the two counts, the tag and the version live in the
@@ -782,11 +769,6 @@ impl Table {
     /// (`dev/DECISIONS.md`, "compaction moves the entries into a fresh
     /// chunk"). A chunk nothing has published is written by one thread, so
     /// the copy stays plain.
-    ///
-    /// The old chunk is freed after the window, and a walker still
-    /// striding it reads intact bytes: the collector walks only inside an
-    /// epoch, and an epoch parks every buffer-chunk free instead of
-    /// recycling it (`memory::deferred_free`).
     pub fn compact(&mut self, head: &StorageHead, category: MemoryCategory) -> Option<usize> {
         // A table with no chunk has no holes and no capacity, and asking
         // for a chunk of `cap == 0` would hand back one no entry fits in
@@ -1083,17 +1065,9 @@ impl Table {
     /// fires on every insert an attacker chooses, each firing an
     /// O(`used`) rebuild, and the promised O(n) is O(n²).
     ///
-    /// **The two rungs defend different key kinds**, which is why both
-    /// exist and why the order is this one. The draw moves integer keys,
-    /// whose slot becomes `mix_int(k, salt)`, and cannot move string
-    /// keys at all: below `strong` a string's slot *is* its cached hash,
-    /// which no salt enters. Escalation answers the string side — it
-    /// rehashes string keys with a keyed function over their bytes — and
-    /// moves integer keys only in the one case where it also had to
-    /// draw, firing on a still-unsalted table ([`Table::escalate`]). So
-    /// a pure string flood spends one useless rebuild before the rung
-    /// that answers it, and a pure integer flood is answered by the
-    /// first rung or not at all.
+    /// **The two rungs defend different key kinds**, this one integer
+    /// keys and escalation string ones (`dev/DECISIONS.md`, "the flood
+    /// ladder's two rungs answer different key kinds").
     ///
     /// The salt is drawn at most once per table ([`Table::draw_salt`]),
     /// so there is no orbit to learn and no redraw to aim. A COW copy
@@ -1122,7 +1096,9 @@ impl Table {
     /// in flag bits, and table storage is not an entity and has no
     /// header, so the tracer enumerates elements from the storage itself;
     /// an array survivor has its elements' references erased rather than
-    /// ignored (`dev/DECISIONS.md`, 2026-08-04, and `traceable_in_full`).
+    /// ignored (`dev/DECISIONS.md`, "the COW reconciliation carries a
+    /// delta, because promotion is not the end of the reset", and
+    /// `traceable_in_full`).
     /// Scanning the dense prefix `0..used` and skipping holes satisfies
     /// that by construction — and the hole marker lives in `key`, outside
     /// the sixteen bytes the store barrier writes, precisely so that an

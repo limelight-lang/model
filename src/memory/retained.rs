@@ -1,11 +1,8 @@
 //! Object indexes for retained former-arena blocks.
 //!
-//! A retained block was filled by an arena's bump allocator, so its
-//! occupants have mixed sizes and no uniform stride: the walk cannot
-//! locate them by dividing an offset by a size class the way it does in an
-//! entity block. Without an inventory they are unwalkable, which makes
-//! them root sources and leaves a ring living entirely among promoted
-//! survivors uncollectable (`rfc/model/gc/retained-block-walk.md`).
+//! Why such a block cannot be walked without one, and what goes
+//! uncollected then: `rfc/model/gc/retained-block-walk.md`, and
+//! `docs/memory-manager.md`, "Arena reset: the settling loop".
 //!
 //! The inventory already exists: `promote`'s reset fixpoint collects every
 //! survivor into a vector. This module keeps it as one sorted array of
@@ -30,12 +27,6 @@
 //! is gone. An address that stops being mapped is a wild read on whichever
 //! thread walks next, and both walks are process-global, so the index is
 //! dropped **before** the block is handed to the pool.
-//!
-//! An index needs no version, no growth path and no lock beyond the one
-//! guarding the map: nothing allocates into a dead arena, so a retained
-//! block's population only shrinks, and it shrinks by entities dying
-//! rather than by slots being reissued. Readers clone the `Arc` and walk
-//! it outside the lock.
 //!
 //! A block may be retained for **bytes** rather than for occupants, when a
 //! survivor's out-of-line payload could not be carried out of the dying

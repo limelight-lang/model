@@ -10,10 +10,9 @@
 //! cold and about to run teardown, and in `ll_gc_maybe_collect`, the poll
 //! the reserve refills at. A compiler-emitted run of releases pays the
 //! test once, split around the run: `ll_gc_checkpoint_ack` before it,
-//! `ll_release_batch` per reference, a full `ll_gc_checkpoint` after. A
-//! pre-run pickup would judge while the scope's transients are still
-//! counted, and a loop whose only checkpoints are scope exits would then
-//! phase-lock every pickup against the same held borrow. The raw
+//! `ll_release_batch` per reference, a full `ll_gc_checkpoint` after —
+//! that split, and what a pre-run pickup cost instead, is
+//! `rfc/model/gc/rc-walk.md`, "Batched releases". The raw
 //! `ll_malloc` and `ll_free` paths and the factory carry no test, being
 //! the hot paths: once a message is posted the epoch waits for the
 //! thread's next death or poll, deliberately without a fallback.
@@ -37,7 +36,7 @@
 //!
 //! The queue is a mutex rather than a lock-free structure, verdicts being a
 //! cold per-epoch trickle (`dev/DECISIONS.md`, "cold concurrent structures
-//! take a lock rather than a CAS loop").
+//! take a lock, not a CAS loop").
 
 use std::cell::Cell;
 use std::collections::VecDeque;

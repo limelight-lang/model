@@ -28,21 +28,14 @@ use crate::value::{Tag, Value};
 
 /// The separation composition every write here goes through: separate
 /// the holder's array if it is shared, run `write` on the array the
-/// write must reach, publish the result, and settle the three
-/// references.
+/// write must reach, publish the result, and settle the three references
+/// in the order `dev/DECISIONS.md`, "the creation reference is spent
+/// before the displaced original is dropped", fixes.
 ///
 /// `slot` names the array (`Tag::Array`); `owner_cat` is the holder's
-/// category, a compiler parameter as at every store-side barrier. On a
-/// shared array the copy is filled privately and published only then, in
-/// this order: `store_box` writes the copy into `slot`, `ll_release`
-/// spends the copy's creation reference, and `drop_ref` takes this
-/// holder off the displaced original. The last two are in that order and
-/// not in `string::separate`'s, because `drop_ref` runs `__destruct`
-/// bodies and one of them can displace the copy from this very slot, so
-/// the creation reference is spent while no user code can run
-/// (`dev/DECISIONS.md`, "the creation reference is spent before the
-/// displaced original is dropped"). [`set`], [`append`] and [`unset`]
-/// differ only in what they pass as `write`.
+/// category, a compiler parameter as at every store-side barrier.
+/// [`set`], [`append`] and [`unset`] differ only in what they pass as
+/// `write`.
 ///
 /// **`false` reports a refusal with the arrays unchanged**: the slot
 /// still names the original at its old count, every table holds its old
@@ -300,14 +293,6 @@ pub unsafe fn unset(
 /// count its holders have given it. Either way a caller keeping the box
 /// retains for its own holder.
 ///
-/// **The box is a GC-heap entity even for an arena array**
-/// (`dev/DECISIONS.md`, "a reference box is allocated in the GC heap,
-/// always"), so boxing an element of an arena array pays twice at the
-/// boundary: an arena COW element is copied to the heap, an arena non-COW
-/// one counts an escape, and the entry holding the heap box logs a release
-/// against the reset. Both crossings are paid where the box is composed
-/// (`box_element`).
-///
 /// # Safety
 /// Per [`set`], less the value.
 pub unsafe fn make_ref(
@@ -437,10 +422,7 @@ unsafe fn destroy_unpublished(entity: *mut RcHeader) {
 /// its manual warns about copying an array with a reference in it.
 ///
 /// The lookup that decides this is a second chain walk on every store,
-/// on top of `insert`'s own. `Table::get` hands out a copy of the Box
-/// rather than a borrow, because an entry keeps its chain link in the
-/// element's reserved bytes, so the walk cannot be shared with `insert`
-/// without changing what `insert` returns. Unmeasured.
+/// on top of `insert`'s own. Unmeasured.
 ///
 /// # Safety
 /// `a` a live, exclusively owned array; `arena` the live mounted arena.
@@ -540,21 +522,11 @@ unsafe fn store_through_box(
 /// published into it.
 ///
 /// **A reference into an element is a `ReferenceBox`, never a pointer to
-/// the slot**: an element moves whenever growth or compaction reallocates
-/// the storage, and boxing means growth moves sixteen bytes containing a
-/// pointer while the box stays put.
-///
-/// **The box is a heap entity even when the array is an arena one**
-/// ([`crate::reference::ll_reference_new`]), so boxing an element of an
-/// arena array crosses a category boundary twice: the element into the
-/// box through `barrier::publish_child`, and the box into the entry
-/// through `store_category_barrier` alone, its factory count being the
-/// entry's. The element enters a longer-lived holder, so an arena COW
-/// element is copied to the heap and an arena
-/// non-COW one counts an escape; the box then enters the arena entry, so
-/// its release is logged against the reset. The array's own reference on
-/// the element is given back afterwards, publication before release as
-/// everywhere else.
+/// the slot**, and the box is a heap entity even for an arena array, so
+/// boxing crosses the category boundary twice
+/// (`rfc/model/arrays-hashtable.md`, "Element states";
+/// `dev/DECISIONS.md`, "a reference box is allocated in the GC heap,
+/// always"). The entry takes the box at its factory count.
 ///
 /// **The chain is walked twice**, once to read the element and once by
 /// the insert that replaces it, where the table's own version walked it

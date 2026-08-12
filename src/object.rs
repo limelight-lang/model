@@ -9,7 +9,8 @@
 //! drop of counted children), then frees the memory by category.
 //! `dispose` is a descriptor pointer — [`ll_default_dispose`] is the
 //! generic stand-in a class carries until the compiler generates one
-//! specialized to its layout (`dev/DECISIONS.md`, 2026-07-25).
+//! specialized to its layout (`dev/DECISIONS.md`, "a generated lifecycle
+//! body unrolls small, loops large").
 
 use crate::class::{Class, NO_DESTRUCT_SLOT};
 use crate::journal::kinds::journal_event;
@@ -372,11 +373,7 @@ pub(crate) unsafe fn for_each_counted_child(
 /// goes through: tracing, severing, the arena reset's walk, and the
 /// concurrent collector alike.
 ///
-/// It stood in three copies, and when the interpolated template moved its
-/// value count from the class to the instance all three had to learn it,
-/// the last found by review rather than by the suite. What differed
-/// between them was never the stride but how the memory is read, which is
-/// what `R` is (`crate::walk::CellReader`).
+/// `R` is how the memory is read (`crate::walk::CellReader`).
 ///
 /// Keyed on `(base, cls)` rather than on an entity pointer, because one
 /// caller has no entity to read a class from: a static block is a
@@ -709,7 +706,7 @@ pub(crate) unsafe fn header_category(header: *const RcHeader) -> MemoryCategory 
 /// crate can produce one (FFI), and reaching it today is a bug, not a
 /// leak policy; that arm owes the bit-7 weak-notify test — a Box is a
 /// legal `WeakReference` target (`rfc/model/weak-references.md`,
-/// "every entity kind honours bit 7").
+/// "Death notification").
 ///
 /// # Safety
 /// `entity` must be a live entity whose count just reached zero (or a

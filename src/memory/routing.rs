@@ -75,21 +75,12 @@ pub(crate) unsafe fn entity_alloc_in(
 /// The largest entity slot `category`'s allocator packs **into a block
 /// it shares**. A factory asks this rather than a block size: what the
 /// bound *is* belongs to the allocator, and it differs by allocator
-/// rather than by taste.
+/// rather than by taste (`dev/DECISIONS.md`, "the entity-slot limit
+/// differs by category, and past it nothing is packed").
 ///
 /// Past it an entity is not packed at all — it takes a block-aligned
 /// allocation of its own (`memory::large_entity`) — so this is a routing
 /// switch rather than a refusal.
-///
-/// Both arenas bump-pack within one block, so a slot either of them
-/// **shares** cannot exceed a block's payload — and past that bound
-/// neither refuses: the immortal region serves the request from a run of
-/// its own (`immortal_alloc_run`) and the request arena from a
-/// large-entity allocation it logs for the reset. The entity heap has
-/// size classes up to `MAX_SMALL`, and past that a packed slot would
-/// take a whole block and land outside the entity-block population the
-/// walk enumerates (`heap::entity_alloc`) — a leak no pass finds, which
-/// is why the heap's bound is the size class and not the block.
 ///
 /// This answers for an entity **slot**, never for a body: an out-of-line
 /// body above the same bound is legal and takes the dedicated-run path
@@ -199,15 +190,9 @@ pub(crate) unsafe fn body_ensure(
 /// reset and an immortal one never goes, so reaching this with either is
 /// a no-op rather than a mistake.
 ///
-/// **The category decides, and the block kind cannot replace it.** The
-/// kind looks like the more honest source — it is what the bytes are,
-/// while the category is a field promotion rewrites — but the two
-/// populations share a kind: a body over a block payload is an OS-direct
-/// run in *both* arenas, so `BLOCK_KIND_LARGE_RUN` names a run the arena
-/// logged and will free at its reset just as readily as one this call
-/// owns. Freeing by kind alone therefore double-frees an arena's large
-/// storage, which is a corrupted allocator rather than a leak; it was
-/// tried and it aborted the suite.
+/// **The category decides, and the block kind cannot replace it**
+/// (`dev/DECISIONS.md`, "category routing lives in one module, and the
+/// free still needs the category").
 ///
 /// # Safety
 /// `(ptr, capacity)` must be exactly one live body from [`body_alloc`]

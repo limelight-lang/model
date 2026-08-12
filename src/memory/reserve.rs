@@ -1,35 +1,10 @@
 //! The per-thread log reserve: blocks kept back so the store barrier
 //! cannot fail.
 //!
-//! `ll_ref_store` has no way to report a failure — it returns nothing,
-//! and giving it a channel would mean a check after every reference
-//! store, which is the Zend shape this runtime rejects
-//! (`rfc/runtime/exceptions.md`, "The enumeration"). But the barrier can
-//! fail: recording an escape or a release-at-reset grows an arena log,
-//! and growing it needs memory. A lost record is not a failed operation,
-//! it is a dangling reference at reset.
-//!
-//! So the memory is kept back in advance. Two blocks per mutator thread,
-//! filled where a refusal is already reportable (thread init, whose
-//! failure surfaces as a null from the thread's first allocation), drawn
-//! only by log growth and only after the ordinary path has been refused.
-//!
-//! **A reserve block never becomes an arena's bump block.** That is the
-//! rule the whole thing rests on: if ordinary allocation could reach it,
-//! the next object would eat the reserve instead of getting the null
-//! that lets a Limelight frame raise. The arena carves log segments from
-//! it with a cursor of its own and links the block into its block list,
-//! so reset returns it to the pool like any other.
-//!
-//! **What "cannot fail" means here is a conversion rather than a proof**,
-//! the reserve being finite. Drawing on it sets a flag the compiler's
-//! safepoint poll checks (`ll_gc_maybe_collect`), and that poll runs where
-//! a Limelight frame exists: it refills, and failing that it may raise
-//! memory-exhausted as an ordinary exception. So the failure the barrier
-//! could not report becomes a raise at the next poll, thousands of records
-//! before the reserve would run dry. The contract that makes the
-//! arithmetic hold, a bounded number of barrier operations between two
-//! polls, is owed by a compiler that does not exist yet.
+//! The protocol, and the compiler-side contract it rests on:
+//! `rfc/runtime/exceptions.md`, "Allocation failure is an ordinary
+//! exception". How this crate builds it: `docs/memory-manager.md`,
+//! "The log reserve".
 
 use std::cell::RefCell;
 

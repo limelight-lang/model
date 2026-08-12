@@ -1,34 +1,23 @@
-//! Interpolated string template: the runtime half of
-//! `rfc/model/strings.md`, rule 3.
+//! Interpolated string template: the runtime half of `rfc/model/strings.md`,
+//! "Rule 3: the shape of the template object, and how it flattens".
 //!
 //! A template preserves the seam between what the programmer wrote and
 //! what was substituted, so a consumer that cares — a query builder, a
 //! logger — can read the two apart instead of receiving one flat string
-//! it has to parse back. Parts and values alternate, part first and part
-//! last, so there is always exactly one more part than there are values
-//! and no offset map is needed to say which is which.
+//! it has to parse back.
 //!
-//! **The parts are the site's, the values are the evaluation's.** The
-//! literal fragments are compile-time constants: they live in a
-//! [`TemplateShape`] the compiler emits once per interpolation site and
-//! never frees, as interned immortal strings that no refcount and no
-//! collector has to touch. What differs from pass to pass is the values,
-//! and only they live in the instance.
+//! **The parts are the site's, the values are the evaluation's.**
 //!
 //! **The instance is an ordinary entity**: `RcHeader | class | shape |
-//! Value[n]`, an object whose body is a shape pointer and the values.
-//! One class serves every site — the site's identity is the shape, not a
-//! generated class — which is why the body's length is a property of the
-//! instance rather than of the class, and why the count is read from the
-//! shape in exactly **one** place: [`crate::object::for_each_counted_cell`],
-//! which both cell readers and the sever go through. A layout known in
-//! one place cannot be learned by three walkers and missed by a fourth.
+//! Value[n]`, an object whose body is a shape pointer and the values. The
+//! count is read from the shape in exactly **one** place:
+//! [`crate::object::for_each_counted_cell`], which both cell readers and
+//! the sever go through. A layout known in one place cannot be learned by
+//! three walkers and missed by a fourth.
 //!
 //! **Flattening is the rare path** (rule 2: an object exists only where
 //! the destination declared the interface), so it is one shared routine
-//! over the shape rather than a generated method per site. Two passes, as
-//! in Zend's rope: measure everything, allocate once, write each piece
-//! into place, with no temporary string per value.
+//! over the shape rather than a generated method per site.
 //!
 //! Not here, and deliberately: the C ABI a foreign consumer would read
 //! the structure through. There is no such consumer until the compiler

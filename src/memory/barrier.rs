@@ -18,24 +18,13 @@
 //!   whole `Value`.
 //!
 //! **A publish can fail, and says so.** `store_ptr`, `store_box` and
-//! `ref_store` return whether the store happened, and what can refuse is
-//! the deep copy a COW value takes when it leaves the arena, that copy
-//! being an allocation. A refusal leaves the slot and every count as they
-//! were, which is why the `drop_ref` that would have followed must not
-//! run: the slot still holds the old entity and still owns its reference.
-//! So an overwriting store is `store_*` and then, **only on `true`**,
-//! `drop_ref`. The caller's other duty is to raise memory-exhausted, which
-//! generated code will do through the exceptions runtime
-//! (`rfc/runtime/exceptions.md`) once it exists. `drop_ref` itself cannot
-//! fail and returns nothing.
-//!
-//! `owner_cat` is a **parameter, not a load from the owner**: the compiler
-//! knows the destination's category, and a slot has no header of its own,
-//! which is what makes a headerless destination (a static block, A6) a
-//! valid target. The stored value carries its own category as two bits in
-//! its `RcHeader` flags, stamped at allocation. Which arena's logs to
-//! write is answered by the context, one mounted arena per executing
-//! context.
+//! `ref_store` return whether the store happened. A refusal leaves the
+//! slot and every count as they were, which is why the `drop_ref` that
+//! would have followed must not run: the slot still holds the old entity
+//! and still owns its reference. So an overwriting store is `store_*` and
+//! then, **only on `true`**, `drop_ref`. Raising memory-exhausted is the
+//! caller's (`rfc/runtime/exceptions.md`, "The enumeration, and the three
+//! ways off the list"). `drop_ref` itself cannot fail and returns nothing.
 //!
 //! Composition in this build (phase 1): RC operations and the category
 //! barrier (`rfc/model/memory/arenas.md`). Strategy hooks (SATB) plug into
@@ -233,10 +222,11 @@ pub(crate) unsafe fn publish_child(
 /// The `store_ptr` micro-op (`rfc/model/gc/strategies.md` §1): **publish** a
 /// reference into a bare 8-byte pointer slot — retain, category barrier,
 /// write. Publish only: an initializing store is `store_ptr` alone, an
-/// overwriting one is `store_ptr` then [`drop_ref`] (publish before release,
-/// audit C1). `owner_cat` is a parameter, not a load from an owner header,
-/// so a headerless destination (a static block, A6) can be a slot. A `NULL`
-/// `new` (clearing the slot) just writes, nothing to retain or note.
+/// overwriting one is `store_ptr` then [`drop_ref`] — publish before release
+/// (`docs/memory-manager.md`, "The store barrier"). `owner_cat` is a
+/// parameter, not a load from an owner header, so a headerless destination
+/// (a static block, A6) can be a slot. A `NULL` `new` (clearing the slot)
+/// just writes, nothing to retain or note.
 ///
 /// # Safety
 /// `slot` a live 8-byte pointer slot; `new` null or a live entity; `arena`
@@ -433,12 +423,12 @@ pub(crate) unsafe fn drop_ref_deferred(
 ///
 /// `owner` is the entity containing `slot`; `old` is the slot's current
 /// entity (null for a non-entity); `new` is the whole `Value` being
-/// stored. Publish precedes drop (audit C1: the slot must not still point
-/// at `old` when its teardown runs and may collect).
+/// stored. Publish precedes drop: the slot must not still point at `old`
+/// when its teardown runs and may collect.
 ///
 /// `arena` is a raw pointer, not `&mut Arena`: `drop_ref`'s teardown runs
 /// `__destruct`, which reenters the runtime and resolves this same arena.
-/// Holding an exclusive borrow across that call would alias (audit H5).
+/// Holding an exclusive borrow across that call would alias.
 ///
 /// # Safety
 /// `owner` a live entity containing `slot`; `old` the entity the slot

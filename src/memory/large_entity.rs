@@ -1,19 +1,6 @@
 //! One entity per allocation, for an entity no size class serves
-//! (`rfc/model/memory/large-entities.md`).
-//!
-//! Past what a category's allocator packs in one slot an entity is not
-//! packed at all: it keeps its inline layout whole as the sole occupant
-//! of a block-aligned allocation whose first line is a block header,
-//! entity at `+LINE_SIZE`. Field access is unchanged, because the cells
-//! are at the offsets the class assigned them, and the walker visits
-//! exactly one slot in such a block.
-//!
-//! **The split is by size, and it decides who reclaims.** Up to one
-//! block payload the allocation is a pooled block, which the region scan
-//! already reaches; above it the allocation comes from the system
-//! allocator, block-aligned so the address mask still finds the header,
-//! and it is entered into the registry below because no region contains
-//! it.
+//! (`rfc/model/memory/large-entities.md`; `docs/memory-manager.md`,
+//! "Entity blocks: the second population").
 //!
 //! **Commissioning order, of which the zero pass is the half that
 //! decides.**

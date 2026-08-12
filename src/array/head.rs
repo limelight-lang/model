@@ -14,10 +14,11 @@
 //! a `&mut` asserts uniqueness over its whole range whatever the fields
 //! inside it are, so a head inside that borrow is read by the walker as
 //! undefined behaviour rather than as a race the atomics settle
-//! (`dev/POSTMORTEM.md`, 2026-08-10). Outside it the two references are
-//! disjoint: every caller derives `&StorageHead` and `&mut Table` field
-//! by field from the one `*mut LLArray`, and no `&mut` in the crate spans
-//! this struct ([`crate::array::entity::as_table_mut`]).
+//! (`dev/POSTMORTEM.md`, "an atomic field does not survive a `&mut` over
+//! the struct"). Outside it the two references are disjoint: every
+//! caller derives `&StorageHead` and `&mut Table` field by field from the
+//! one `*mut LLArray`, and no `&mut` in the crate spans this struct
+//! ([`crate::array::entity::as_table_mut`]).
 //!
 //! Three rules hold it together:
 //!

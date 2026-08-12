@@ -1,6 +1,7 @@
 //! A `loom` model of [`StorageHead`](super::head::StorageHead)'s version
 //! bracket, and of nothing else: a counter, two data words, one mover and
-//! one reader.
+//! one reader. What it demonstrated is `dev/DECISIONS.md`, "the table's
+//! version bracket orders both sides with fences".
 //!
 //! It models a **copy of the protocol** rather than the crate's code. The
 //! head cannot run under `--cfg loom` — loom replaces every atomic, cell
@@ -21,23 +22,15 @@
 //! those is why the counter sits above the representations rather than
 //! inside one.
 //!
-//! # What it demonstrated
-//!
-//! Run against the bracket as it was before the fences, loom finds the
-//! accepting execution in milliseconds, and finds it with either fence
-//! alone as well: three of the four combinations below fail and only the
-//! repaired one holds. That is the whole value of the model — a green run
-//! proves little, because loom's own README records that it does not
-//! explore load buffering, while a red one exhibits the execution.
-//!
 //! # Running it
 //!
 //! ```text
 //! RUSTFLAGS="--cfg loom" cargo test --lib version_bracket
 //! ```
 //!
-//! Not part of the commit gate (`dev/WORKFLOW.md`): the model has no
-//! dependency on the crate, so it can only break when someone edits it.
+//! Not part of the commit gate (`dev/WORKFLOW.md`, "Loom", which also
+//! records the limits that decide what a run here proves): the model has
+//! no dependency on the crate, so it can only break when someone edits it.
 
 use loom::sync::Arc;
 use loom::sync::atomic::{AtomicUsize, Ordering, fence};

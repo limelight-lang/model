@@ -8,11 +8,12 @@
 //! and the three teardown doors call [`forget_candidate`] directly —
 //! `ll_entity_die`, `ll_object_die`, and the drain inside
 //! `array::entity::array_die`, which a nested array reaches instead of the
-//! first of those. A `nogc` or pure-`rc` build compiles the buffering away
-//! through a cargo feature around those call sites, which is build-time
-//! selection with nothing left behind. A `GcStrategy` trait is not the
-//! answer and was removed once: dispatch cannot deliver a build-time
-//! choice that compiles the other strategies away. It is worth
+//! first of those. A `nogc` or pure-`rc` build would compile the buffering
+//! away through a cargo feature around those call sites — build-time
+//! selection with nothing left behind, and neither feature exists yet
+//! (`rfc/model/gc/strategies.md`, "Strategy Registry"). A `GcStrategy`
+//! trait is not the answer and was removed once: dispatch cannot deliver a
+//! build-time choice that compiles the other strategies away. It is worth
 //! reintroducing when a second real strategy exists and its shape is
 //! known.
 //!
@@ -22,14 +23,11 @@
 //! white nodes are cyclic garbage. Colours live in the header bits
 //! reserved for them, flags 4-5 with the buffered bit 6.
 //!
-//! **Arm against fire** (`rfc/model/gc/strategies.md`, "Triggering"):
-//! buffering a candidate runs from inside `ll_release`, mid-mutation, so
-//! it only *arms* a collection by setting a pending flag. The collector
-//! *fires* at a clean point where refcounts and edges agree, an explicit
-//! [`ll_gc_collect_cycles`] or the compiler's [`ll_gc_maybe_collect`]
-//! poll. Firing inline would double-count a just-released edge and free a
-//! live object. Which signals and thresholds arm is the compiler's
-//! decision; this crate is the mechanism.
+//! **Arm against fire** (`rfc/model/gc/strategies.md`, "Triggering: arm vs
+//! fire"): buffering a candidate only *arms* a collection, and the
+//! collector *fires* at a clean point where refcounts and edges agree.
+//! Which signals and thresholds arm is the compiler's decision; this crate
+//! is the mechanism.
 //!
 //! `__destruct` of cyclically-dead objects **is** run, before the white
 //! set is freed (`run_cyclic_destructors`). The counts are trial-mutated
@@ -121,10 +119,11 @@ thread_local! {
     /// Teardowns in flight on this thread, counted because teardown
     /// cascades: a child release inside a dispose is another teardown.
     /// While it is non-zero every fire point returns without collecting
-    /// (Edmond's ruling, 2026-08-07, `dev/DECISIONS.md`), which is what
-    /// makes the arm/fire split hold for user code as well as for the
-    /// runtime — a destructor may hold the compiler's poll, and the poll
-    /// must do nothing there. The rc-walk twin of this counter is
+    /// (`dev/DECISIONS.md`, "a fire point inside a teardown collects
+    /// nothing, and the runtime enforces it"), which is what makes the
+    /// arm/fire split hold for user code as well as for the runtime — a
+    /// destructor may hold the compiler's poll, and the poll must do
+    /// nothing there. The rc-walk twin of this counter is
     /// `epoch::TEARDOWN_DEPTH`, which brackets the same two doors for a
     /// different reason (message pickup).
     static TEARDOWN_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -382,7 +381,8 @@ pub(crate) fn dispose() {
 /// collection already running, which would recurse into the marker, and
 /// a teardown in flight, where the dying entity is still a buffered root
 /// at refcount zero and a collection would free it under the teardown
-/// that then frees it again (`dev/DECISIONS.md`, 2026-08-07). Neither
+/// that then frees it again (`dev/DECISIONS.md`, "a fire point inside a
+/// teardown collects nothing, and the runtime enforces it"). Neither
 /// clears `COLLECT_PENDING`, so the next poll at a clean point collects.
 ///
 /// # Safety

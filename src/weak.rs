@@ -11,14 +11,12 @@
 //! Knowledge split: this module owns the cell, the table, and every
 //! notification rule; teardown paths (`object::ll_default_dispose`, the
 //! cycle collectors, arena reset) own only *when* to call in, gated by
-//! bit 7. The table is per-thread and lock-free by construction: every
-//! notification site runs on the owning thread — ordinary teardown, the
-//! drain in the mutator's checkpoint, arena reset — and the collector
-//! thread never touches it.
+//! bit 7.
 //!
 //! The row is a single canonical-cell pointer today; it widens to the
 //! design's tagged subscriber list when `WeakMap` lands and maps start
-//! subscribing (`rfc/model/weak-references.md`, "The weak table").
+//! subscribing (`rfc/model/weak-references.md`, "The weak table: address
+//! → subscriber row").
 
 use std::collections::HashMap;
 
@@ -52,21 +50,10 @@ thread_local! {
     /// notification — and before the buffer arena and the heaps
     /// (`heap::ll_thread_exit` fixes the order).
     ///
-    /// A raw pointer in a `Cell` rather than a `RefCell<HashMap<_, _>>`,
-    /// for soundness: a `HashMap` has drop glue, so its key is registered
-    /// for TLS destruction, and this table is reached **from** a TLS
-    /// destructor, thread exit running the static-block teardown whose
-    /// deaths call [`notify_death`]. With the order unspecified the table
-    /// is reliably already destroyed by then, `with` panics inside a
-    /// destructor, and a panic there aborts. `try_with` is worse rather
-    /// than better: a swallowed `notify_death` leaves the cell's target
-    /// dangling, and the next `__destruct` calling `get()` receives a
-    /// retained pointer into freed memory. A `Cell<*mut _>` has no drop
-    /// glue, is never registered and stays readable for the thread's whole
-    /// life; [`dispose`] frees it explicitly, and the initializer is
-    /// `const` so a lazily initialized key cannot be first-initialized
-    /// mid-destruction (`dev/DECISIONS.md`, "thread exit owns the order
-    /// its per-thread state dies in").
+    /// A `Cell<*mut _>` with no drop glue, freed by [`dispose`]
+    /// (`dev/DECISIONS.md`, "thread exit owns the order its per-thread
+    /// state dies in"). Its initializer is `const`, so a lazily
+    /// initialized key cannot be first-initialized mid-destruction.
     static WEAK_TABLE: std::cell::Cell<*mut HashMap<usize, *mut LLWeakRef>> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
 }

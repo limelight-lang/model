@@ -5,25 +5,16 @@
 //! (bytes out of line with spare capacity) shares `len` at +8 and `hash`
 //! at +16 so that neither read has to decide which layout it is looking
 //! at; only byte access and teardown branch. Which layout a string has is
-//! the header flag [`STRING_OUT_OF_LINE`], and nothing promotes between
-//! the two at run time: it is chosen at allocation, and moving between
-//! them would rewrite the body under a header the collector may be
-//! reading.
+//! the header flag [`STRING_OUT_OF_LINE`] (`rfc/model/strings.md`, "Two
+//! Layouts Behind `StringInterface`").
 //!
 //! **Layout and copy-on-write are two facts, and the header keeps two
 //! bits.** [`COW`] says the value separates when a second holder writes,
 //! which is also what makes an arena entity counted and what makes it
-//! copied rather than held when it escapes. Out-of-line bytes arrive two
-//! ways: from a compiler proof of single ownership, where `COW` is clear
-//! and writes go in place, and from **size**, where the content exceeds
-//! what the category's allocator packs in one slot and the string is
-//! copy-on-write like any other (`rfc/model/memory/large-entities.md`).
+//! copied rather than held when it escapes.
 //!
-//! `len` is 32 bits, so a string holds at most [`MAX_LEN`] bytes. Every
-//! path that creates or grows one passes through [`fits`]: a length
-//! truncated to 32 bits is a write past the end of the buffer, which is
-//! the worst defect available here, and the check being in one place is
-//! also what gives a future wider string a single hook.
+//! `len` is 32 bits, so a string holds at most [`MAX_LEN`] bytes
+//! (`rfc/model/strings.md`, "A string holds at most 4 GiB").
 //!
 //! An **interned name is a string entity like any other** — immortal
 //! category, hash already computed — so `intern.rs` builds one through
@@ -39,8 +30,9 @@ use crate::refcount::{
 };
 
 /// The most bytes a string can hold: `len` is a `u32`
-/// (`rfc/dev/DECISIONS.md`, 2026-08-04). Language-visible — a program
-/// that builds a longer string gets an error, never a truncation.
+/// (`rfc/dev/DECISIONS.md`, "a string is capped at 4 GiB, and the length
+/// gives up half its width to pay for capacity"). Language-visible — a
+/// program that builds a longer string gets an error, never a truncation.
 pub const MAX_LEN: usize = u32::MAX as usize;
 
 /// The single length gate. Everything that creates or grows a string
@@ -94,8 +86,7 @@ impl LLString {
     /// immortal or long-lived string at creation, so the only strings
     /// left lazy are the ones a single thread owns. `intern` supplies the
     /// hash it already has; every other caller gets the same guarantee
-    /// without knowing it exists, which is the point — the invariant used
-    /// to be a convention `intern` happened to keep.
+    /// without knowing it exists.
     ///
     /// **Reads the bytes through [`string_bytes`], which branches on the
     /// layout.** The cached read does not have to — that is what the
@@ -557,12 +548,8 @@ pub unsafe fn separate(
 /// `hint` is a growth recommendation for the payload, 0 to let the
 /// pressure mode decide (`rfc/model/memory/buffers.md`).
 ///
-/// **Only `GcHeap` and `RequestArena`.** A dynamic string is the freely
-/// mutable form, so it cannot be immortal — that would be a
-/// process-wide shared string written in place — and it cannot be
-/// long-lived, because [`string_die`] can only reclaim the GC heap.
-/// `strings.md` permits both layouts in every category in general; this
-/// is the exclusion that follows from the non-COW half of it.
+/// **Only `GcHeap` and `RequestArena`** (`rfc/model/strings.md`, "Two
+/// Layouts Behind `StringInterface`").
 ///
 /// **Null** when either allocation fails or the content is past
 /// [`MAX_LEN`], leaving nothing half-built.
@@ -783,7 +770,9 @@ pub unsafe fn ll_string_append(ctx: *mut LLContext, s: *mut LLStringDynamic, ext
 /// pool at the reset, so the survivor would read recycled bytes. A
 /// payload above a block payload is OS-direct: ownership transfers, the
 /// pointer does not move and nothing can be refused. A smaller one is
-/// copied into a fresh heap payload (`dev/DECISIONS.md`, 2026-08-04).
+/// copied into a fresh heap payload (`dev/DECISIONS.md`, "promotion
+/// carries a survivor's payload, and the two routes are not the same
+/// route").
 ///
 /// **False when the copy was refused.** The caller keeps the payload's
 /// arena block out of circulation instead; the string then reads its old

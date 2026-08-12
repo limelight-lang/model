@@ -533,10 +533,15 @@ runs user code and therefore goes first, while every structure a
 buffer, then the parked-free backlog, then the weak table, and only
 then the heaps. The order is explicit because it cannot be delegated:
 `ll_thread_exit` runs from a TLS destructor, TLS destructor order is
-unspecified, and on glibc it is reverse registration order — which
-destroys the exit guard last precisely because it registers first. Every
-per-thread structure on this path is therefore a pointer cell with no
-drop glue, freed by hand (`dev/DECISIONS.md`, 2026-08-03).
+unspecified, and on glibc it is reverse registration order — so a
+structure first touched during the request registers after the guard and
+is destroyed before it runs. (Against the two slots `ll_thread_init`
+itself touches, the barrier reserve and the pool's thread cache, the
+guard registers *later* and therefore runs *first*; `heap.rs`'s
+`ll_thread_exit` states that half, which is the one easy to get
+backwards.) Every per-thread structure on this path is therefore a
+pointer cell with no drop glue, freed by hand (`dev/DECISIONS.md`,
+"thread exit owns the order its per-thread state dies in").
 
 **The survivor list outlives the reset.** It is grouped per block and
 registered as each retained block's object index (`memory/retained.rs`,

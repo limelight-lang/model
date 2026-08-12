@@ -73,17 +73,12 @@ impl Edge {
     /// child: the payload word unchanged, and for a sixteen-byte cell
     /// the flags beside it still saying that word is an entity address.
     ///
-    /// **Eight bytes are not the cell.** A `Value` is published as two
-    /// relaxed stores, the payload first (`array::entry::store_element`),
-    /// and a reader may observe them in either order — so a walk can
-    /// read the payload of the value being written against the flags of
-    /// the value being replaced. The written payload is whatever integer
-    /// the program chose, it is compared against every walked row like
-    /// any other word, and one that names a row becomes an in-edge no
-    /// cell holds. Re-reading eight bytes confirms that edge instead of
-    /// acquitting it: the payload store is the one that had already
-    /// landed, so the word is genuinely unchanged, and the entity it
-    /// names loses a holder it never had.
+    /// **Eight bytes are not the cell**, which is why the width is carried
+    /// (`dev/DECISIONS.md`, "an edge is re-checked by its shape, and its
+    /// storage first"). A `Value` is published as two relaxed stores, the
+    /// payload first (`array::entry::store_element`), so re-reading the
+    /// payload alone confirms an edge the walk assembled out of two
+    /// different values rather than acquitting it.
     ///
     /// The flags are tested rather than compared, and the reserved bytes
     /// above them are read as belonging to the container: an entry's
@@ -360,32 +355,18 @@ impl Epoch {
     /// Whether the cells recorded for `row` are still where the walk
     /// read them.
     ///
-    /// A cell of an array lives in a storage chunk the array replaces on
-    /// growth, on compaction and on the migration between
-    /// representations, and the chunk it leaves is **parked** rather than
-    /// recycled: the epoch defers every buffer-chunk free
-    /// (`memory::deferred_free`), so the bytes stay intact and nobody
-    /// writes them for the rest of the epoch. Re-reading a recorded
-    /// address there compares a frozen copy of the walk value against the
-    /// walk value and answers "unchanged" for a cell the array no longer
-    /// has. The address cannot see that; the version the walk validated
-    /// its reading against can, and any change acquits — the direction
+    /// The recorded address cannot answer it. A chunk an array leaves is
+    /// **parked** rather than recycled — the epoch defers every
+    /// buffer-chunk free (`memory::deferred_free`) — so a re-read there
+    /// compares a frozen copy of the walk value against the walk value and
+    /// answers "unchanged" for a cell the array no longer has. The version
+    /// the walk validated its reading against does answer, and any change
+    /// acquits: the direction
     /// [`crate::array::head::StorageHead::coherent`] takes when it gives
-    /// up, one epoch of leak and nothing freed early.
-    ///
-    /// **What it buys is this filter's own contract rather than a live
-    /// entity.** Phase 4 re-traces every member through its current fields
-    /// before freeing anything, so a component confirmed on a stale cell
-    /// is dropped there instead; the price of doing without this check is
-    /// a verdict posted and dropped per moved array, and a filter
-    /// reporting as verified what it did not read (`dev/DECISIONS.md`, "an
-    /// edge is re-checked by its shape, and its storage first").
-    ///
-    /// It is decisive over the handshake's window alone:
-    /// [`Epoch::recheck_and_post`] runs after the condemn ack, so a move
-    /// landing after that ack need not be visible to this load. What holds
-    /// is that no verdict is posted for a component that changed before
-    /// the ack.
+    /// up, one epoch of leak and nothing freed early. What the check buys,
+    /// what it costs and why the handshake alone is not enough are
+    /// `dev/DECISIONS.md`, "an edge is re-checked by its shape, and its
+    /// storage first".
     ///
     /// A source that died in between needs no case of its own, and no
     /// source outside the component reaches here: the mark walk propagates

@@ -15,19 +15,15 @@
 //!
 //! **No per-instance class pointer**, the same construction as a string
 //! (`rfc/model/arrays.md`, "a single final class … no per-instance class
-//! pointer, devirtualized methods"). The entity kind *is* the class:
-//! `array` is final, and the storage-strategy tag is an internal bit
-//! invisible to `instanceof`. The table itself holds no header either, so
-//! this is what supplies the refcount, the memory category and the COW
-//! state, and the table is handed the category by every allocating call
+//! pointer, devirtualized methods"). The table holds no header either, so
+//! this entity supplies the refcount, the memory category and the COW
+//! state, and takes the category as a parameter at every allocating call
 //! (`dev/DECISIONS.md`, "the table is handed its category and reads no
 //! header").
 //!
-//! **COW separation is shallow**: the copy gets its own storage and its
-//! own index, and the children are retained and shared until one of them
-//! is written. That is a different operation from the store barrier's
-//! *escape* copy, which is deep and category-driven, and reading "copy"
-//! without asking which one builds the wrong thing.
+//! **COW separation is shallow and the store barrier's escape copy is
+//! deep** — two operations, not one (`dev/DECISIONS.md`, "the array
+//! entity, and separation is the shallow copy").
 
 use crate::array::head::{StorageHead, StorageTag};
 use crate::array::table::{Key, Table};
@@ -264,18 +260,10 @@ unsafe fn new_with_storage(
     a
 }
 
-/// The memory category of `a`: the array's header holds it, and holding
-/// a second copy anywhere is the drift that cost a use-after-free once
-/// (`dev/DECISIONS.md`, 2026-08-07). Read it here at the moment it is
-/// needed — promotion rewrites the header, so a value cached across a
-/// reset describes an array that no longer exists.
-///
-/// `object::header_category` is the same read for a bare header and does
-/// the reading; this is the array's spelling of it, taking `*const
-/// LLArray` so that what a `debug_assert` on the kind field used to state
-/// at runtime the type states at compile time. The table below takes the
-/// answer as a parameter and names no entity at all, which is what leaves
-/// it reusable by a second kind (S10).
+/// The memory category of `a`, read from the header at the moment it is
+/// needed and never cached (`dev/DECISIONS.md`, "the `RcHeader` is the
+/// only authority on which memory an entity lives in", and "the table is
+/// handed its category and reads no header").
 ///
 /// **The array is a parameter and is never derived from the table.** A
 /// table sits one `RcHeader` past its array's header, so the address is
@@ -325,7 +313,8 @@ pub unsafe fn needs_separation(a: *const LLArray) -> bool {
 /// longer-lived destination over an arena source every arena COW child is
 /// copied in turn, which is the deep copy of
 /// `rfc/model/arrays-hashtable.md` clause for clause. Two call sites, one
-/// operation (`dev/DECISIONS.md`).
+/// operation (`dev/DECISIONS.md`, "the array entity, and separation is
+/// the shallow copy").
 ///
 /// **The barrier rather than a bare `ll_retain`**, because
 /// `release_children` gives references back through `drop_ref`, which
@@ -452,21 +441,10 @@ pub enum CopyReason {
 /// duplication is what collapses it, and `zend_array_dup_element` is the
 /// same rule (`rfc/model/arrays-hashtable.md`, "Element states").
 ///
-/// One holder means the source's own entry and nobody else, so no name
-/// in the program can observe the two arrays sharing the element. Two or
-/// more means a live `&` binding, and then the copy shares the box —
-/// which is how `$r = &$a['x']; $b = $a; $r = 3;` reaches `$b['x']`.
-/// A box is a heap entity in every case, so nothing special-cases the
-/// count; in the request arena it is an upper bound all the same, a
-/// container there giving its hold back at the reset rather than at its
-/// own death, so the copy errs toward sharing (`dev/DECISIONS.md`,
-/// 2026-08-08).
-///
-/// **Only a duplication collapses anything.** An escape copy is a store
-/// crossing a lifetime boundary, and PHP duplicates nothing there, so a
-/// box travels with the element and both arrays go on naming it — which
-/// is also what keeps the box's identity, the property `escape_copy`'s
-/// own contract rests on.
+/// One holder means the source's own entry and nobody else; in the
+/// request arena the count is an upper bound, so the copy errs toward
+/// sharing (`dev/DECISIONS.md`, "a copy collapses a reference nobody
+/// else names, and the arena reads that count as an upper bound").
 ///
 /// # Safety
 /// `element` is a live entry's value.
@@ -876,12 +854,10 @@ pub(crate) unsafe fn storage_address(a: *mut LLArray) -> *mut u8 {
 }
 
 /// Bring a surviving array's storage out of the arena that is about to
-/// reset, so that it outlives the reset under its promoted owner.
-///
-/// **One body for both representations, dispatched on the tag.** A
-/// storage chunk is bytes: the two differ only in where they keep the
-/// size they were granted, which is why each hands that field out
-/// (`granted_capacity_mut`) instead of carrying a copy of this operation.
+/// reset, so that it outlives the reset under its promoted owner — one
+/// body for both representations, dispatched on the tag
+/// (`dev/DECISIONS.md`, "the storage head is a field of the entity, and
+/// no `&mut` may span it").
 ///
 /// The entity's header stays where it is — promotion retains the block
 /// holding it — while the storage is arena memory that would go back to

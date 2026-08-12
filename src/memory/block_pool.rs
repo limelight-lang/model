@@ -55,18 +55,11 @@ const FLUSH_MAX: usize = THREAD_CACHE_CAPACITY / 2 + 1;
 /// nothing reads across threads and the store is relaxed, which is the
 /// plain write it used to be.
 ///
-/// The field's own type says what the word is and makes the write side
-/// legal: it is an [`AtomicU32`] in every header that overlays offset 0.
-/// **What keeps the borrow legal is its position, not its type** — the
-/// word sits outside the struct `Heap::alloc` takes a `&mut` to, because
-/// a `&mut` asserts uniqueness over its whole range whatever is inside
-/// it and an `UnsafeCell` buys nothing there. The interior-mutability
-/// exemption belongs to shared references. That was learned by running
-/// Miri after the atomic type landed and finding the same race at the
-/// same line (`dev/POSTMORTEM.md`, 2026-08-10). The one access the type
-/// does not defend against is a whole-struct store, which writes these
-/// four bytes plainly along with the rest, so a header is commissioned
-/// field by field and its kind last, through here.
+/// The field is an [`AtomicU32`] in every header that overlays offset 0,
+/// and it sits outside the half `Heap::alloc` borrows — position, not
+/// type, is what keeps that borrow legal (`docs/memory-manager.md`,
+/// "`HeapBlockHeader`, and why it is four structs"; `dev/POSTMORTEM.md`,
+/// "an atomic field does not survive a `&mut` over the struct").
 #[inline]
 pub(crate) unsafe fn store_block_kind(kind_field: *const AtomicU32, kind: u32) {
     #[cfg(not(feature = "rc-walk"))]
@@ -181,8 +174,8 @@ impl BlockHeader {
 /// still possible, and would need the pool's **own** link field at an
 /// offset no owner view aliases. The lock costs nothing measured on either
 /// benchmark; revisit if this path stops being cold
-/// (`dev/DECISIONS.md`, "cold concurrent structures take a lock rather
-/// than a CAS loop").
+/// (`dev/DECISIONS.md`, "cold concurrent structures take a lock, not a
+/// CAS loop").
 struct FreeList {
     head: *mut BlockHeader,
 }

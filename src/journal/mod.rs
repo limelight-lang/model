@@ -13,34 +13,15 @@
 //!
 //! **An overflowed window answers `unknown`, never `none`**, and so does a
 //! window that lost a whole ring: a [`Mark`] carries the registry's
-//! eviction count ([`Window::Evicted`]). A hunt that turns on "nothing of
-//! this kind happened here" is worth nothing if a silent eviction produces
-//! the same answer.
+//! eviction count ([`Window::Evicted`]).
 //!
-//! **A record site may not sit where the first record's own path runs.**
-//! That path initialises the thread, allocates the ring through
-//! [`crate::memory::stdapi::ll_malloc`] and takes the registry's lock, so
-//! it rules out `ll_thread_init` and everything under it, the block pool's
-//! free list, and the pool's thread cache, whose `RefCell` is held across
-//! a push to the global list. [`ALLOCATING`] cannot save that case, being
-//! raised once the first record has already decided to allocate, and the
-//! failure against a `RefCell` is a borrow panic rather than a deadlock,
-//! which in this crate is an abort. A refused allocation turns journaling
-//! off for that thread for good ([`REFUSED`]) and is counted, a thread
-//! with no ring being in no window ([`Window::Refused`]).
-//!
-//! Rings outlive their threads, because a thread's records matter most
-//! once it is gone. **The ring is retired by the last act of
-//! `heap::ll_thread_exit`**, after every step of the teardown, so a window
-//! over a thread's death is complete; records arriving on the closed slot
-//! afterwards are counted and reported ([`Window::Lost`]) rather than
-//! written into a ring a quota may evict. `ll_thread_init` reopens a
-//! closed slot, so one OS thread running a pool's tasks journals each life
-//! into a ring of its own.
-//!
-//! **A ring is named by identity, never by address**, wherever a name
-//! outlives the registry's lock: the address is a block eviction gives
-//! back and the allocator hands to somebody else.
+//! Where a record site may sit is §9.7, "Rules the record path obeys";
+//! where a ring lives and when it is retired, §9.4, "Where a ring lives,
+//! and what happens at thread exit"; why a ring is named by identity,
+//! §9.3, "The ring, and how a window is marked". [`ALLOCATING`] is raised
+//! once the first record has already decided to allocate, so a site the
+//! first record's own path reaches is unguarded by it and fails on that
+//! first record.
 //!
 //! This module is compiled into every build. What §9.6 promises to compile
 //! away without the `debug-journal` feature is the **record sites**, not
@@ -215,7 +196,7 @@ impl Ring {
         // record for all three of the other combinations. This is the
         // table's version bracket again, and `ck_sequence_read_retry`
         // fences and then loads plainly for the same reason
-        // (`array::table::coherent_entries`, `dev/RESEARCH.md`).
+        // (`array::head::StorageHead::coherent`, `dev/RESEARCH.md`).
         fence(Ordering::Acquire);
         let now = self.cursor.load(Ordering::Relaxed);
         if now.wrapping_sub(at) as usize >= CAPACITY {
@@ -372,9 +353,9 @@ thread_local! {
     ///
     /// A `Cell<*mut _>` with no drop glue, under the rule every
     /// per-thread structure reachable from thread exit obeys
-    /// (`dev/DECISIONS.md`, 2026-08-03): exit runs user code and TLS
-    /// destructor order is unspecified. [`retire_thread_ring`] hands it
-    /// over explicitly.
+    /// (`dev/DECISIONS.md`, "thread exit owns the order its per-thread
+    /// state dies in"): exit runs user code and TLS destructor order is
+    /// unspecified. [`retire_thread_ring`] hands it over explicitly.
     static RING: Cell<*mut Ring> = const { Cell::new(std::ptr::null_mut()) };
 
     /// Set while this thread is inside [`ring_for_writing`]'s allocation,

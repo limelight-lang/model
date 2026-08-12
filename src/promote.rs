@@ -1,9 +1,9 @@
 //! Arena death with promotion: the reset-time consumer of the escapee list
 //! and its hold-counts (`rfc/model/memory/arena-reset.md`).
 //!
-//! Phase 1 implements **retention only**, which the RFC makes the whole of
-//! the first implementation: no copying, no identity machinery, no
-//! reference fixup. Sparse-block evacuation is additive and lands later.
+//! Phase 1 implements **retention only** (`rfc/model/memory/arena-reset.md`,
+//! "Retention (dense blocks)", the "Phasing" bullet). Sparse-block
+//! evacuation is additive and lands later.
 //!
 //! The algorithm:
 //!
@@ -549,7 +549,8 @@ unsafe fn mark_one(
 /// release-log drain runs `__destruct` bodies after it: a destructor may
 /// hand an already-promoted string to a heap object that outlives the
 /// request, and that reference belongs to nobody the edge walk can see
-/// (`dev/DECISIONS.md`, 2026-08-04).
+/// (`dev/DECISIONS.md`, "the COW reconciliation carries a delta, because
+/// promotion is not the end of the reset").
 ///
 /// `at_promotion` is each COW survivor's count at the instant its
 /// category was rewritten — the last instant the reset can attribute it
