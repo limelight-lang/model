@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-12 · Active: S16, then S7, then S8, then S18
+Updated: 2026-08-12 · Active: S7, then S8, then S18
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -167,90 +167,25 @@ argument out of a comment deletes it, unless someone opens the section".
 Commits 40bc498, d31eec4, 5843cc1..07ac543, 462ac58, 36176b8, 9d3bd77 and
 8e2dfcf.
 
-## S16 — The test files: one layout, and a size a reader can hold
-
-Edmond's ruling of 2026-08-12: the present shape is wrong, and how tests
-are laid out is to be measured before anything moves.
-
-Measured before the work: 476 tests in 42 files, 21 488 lines, a median
-of 38 lines per test, of which 4 027 lines are comments;
-`src/array/element/tests.rs` is 2 256 lines. Across the 114 crates
-unpacked on this box the inline form (`#[cfg(test)] mod tests { … }` in
-the file it tests) stands at 348 sites in 67 crates against 23 sites in
-19 crates for the separate file, while the standard library takes the
-separate file 75 times.
-
-Goal: a test is found from the name of what it pins, and its file is read
-without scrolling past groups that pin something else.
-
-Done when: `dev/DECISIONS.md` records the layout and the reason for it,
-and every test file matches.
-
-- [x] S16.1 The two forms priced against this crate
-      done: the decision names the form this crate takes and what the
-        move costs, resting on the counts above rather than on
-        recollection
-      tier: T2 · role: Critic
-      Critic 2026-08-12 round 1: twelve findings, all acted on. Two are
-        the substance. **The history remedy did not work:** a 531-line
-        group scores 22 % against the 2258-line file it left and the
-        default copy threshold is 50 %, so `git log -C` reaches 10 of the
-        141 files rather than all; replaced by content search, `git log
-        -S 'fn <name>'`, verified across the move S9.4 already performed.
-        **A `macro_rules!` fixture is textually scoped**, so a group
-        declared above `recording_class!` in `array/entity/tests.rs`
-        cannot see it, and the list therefore goes after the fixtures
-        rather than before them. The rest: the single-group exception was
-        dropped for a uniform rule after the Critic showed both its
-        branches defective; two files pass 2000 lines today rather than
-        one, `element/tests.rs` being the second; the standard library's
-        72 separate sites are 57 once `stdarch` and 106 vendored inline
-        sites leave the corpus; the group's `///` description leaves the
-        list and nothing stays behind; a gated group states its
-        configuration in the file as well as on the `mod`; `19 526 lines
-        verbatim` was neither the count nor verbatim, the move being
-        18 949 dedented body lines, 761 docs turned into `//!` and 282
-        wrappers dropped; the adopted form is 4 of the 114 crates and
-        rests on the goal rather than on the counts; `dev/INDEX.md`'s
-        "Tests" bullet moves with S16.2.
-      handoff: `dev/DECISIONS.md`, 2026-08-12, "a test file holds one
-        group". 40 files become 181 — 141 group files under
-        `src/<module>/tests/`, 40 lists that keep the shared fixtures and
-        declare the groups after them. Checkable in one grep: a
-        `tests.rs` holding `mod <name> {` is unsplit. Cost measured on
-        `refcount`, not argued: same tests in both configurations before
-        and after, tree reverted.
-- [x] S16.2 The crate matches the decision
-      done: every test file follows it, the test count before and after
-        is the same, and the suite is green in both configurations at the
-        gate's width
-      tier: T2 · role: Critic
-      Critic 2026-08-12 round 1: nine findings, six acted on, and the two
-        that mattered are ones a green suite of the same size cannot see.
-        **30 citations of the form `module::tests::<test>` stopped naming
-        the file that holds the test** — 15 were given their group,
-        including two in shipped code (`walk.rs`, `object.rs`), and the
-        ones in closed `dev/DECISIONS.md` entries keep their form, that
-        file forbidding the edit. **The rule's own word "share" was false
-        of 39 of the 100 names the lists declared**, each having one group
-        behind it; they moved into that group's file, and
-        `memory/routing`'s list went from 83 lines serving a 61-line group
-        to three. Also acted on: five doc comments whose scope or
-        direction moved with them, one of which had been false before the
-        stage; the loom models, now exempted in `dev/INDEX.md` and both
-        named in `dev/WORKFLOW.md`, whose Loom section claimed one model
-        and gave a command that never ran the other four cases;
-        `array::testing` named beside `test_support` as the second fixture
-        home. Recorded rather than repaired, in a second decision entry:
-        that 77 of 141 group files still read with their list open, that
-        the first entry's figures were the source's rather than the
-        result's, and that the `macro_rules!` ordering does not bind until
-        a group calls one.
-      handoff: 40 files became 181 and the fixtures follow the groups
-        that use them. The test list is **byte-identical** in all three
-        configurations before and after, which is a stronger check than
-        the count and is the one to repeat next time. Gate green, 17 legs.
-        Commits ccda6ac and the repair beside it.
+**S16 is closed and deleted by rule 23.1.3.** Two steps: the two forms
+priced against this crate, and the crate brought to the answer. The layout
+is one group to a file — `src/<module>/tests/<group>.rs`, named by what it
+pins, with `src/<module>/tests.rs` keeping the fixtures its groups share
+and declaring them after those fixtures — and 40 files became 181. What
+refuses the inline form is the ratio rather than taste: in the 319 inline
+hosts of the 114 crates unpacked here the test module is a quarter of the
+file, while this crate's median module carries 0.96 test lines per line of
+code, so inlining would double every module and put seven files past 2000
+lines. The stage's own review found what a green suite of the same size
+cannot: 30 citations reading `module::tests::<test>` had been pointers to a
+file that now holds only a list, and the rule's word "share" was false of
+39 of the 100 names the lists declared. What survives it is two entries in
+`dev/DECISIONS.md` of 2026-08-12 — the layout, and what it cost once
+applied — `dev/INDEX.md`'s "Tests" bullet, `dev/WORKFLOW.md`'s Loom section,
+which claimed one model where there are two, and the five group files still
+over 400 lines, whose size the layout deliberately does not decide. Commits
+cdc2daa, ccda6ac, 6055ce3 and 039a3c9, the last being the Code Reviewer
+pass.
 
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
 
