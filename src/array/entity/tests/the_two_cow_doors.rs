@@ -313,3 +313,157 @@ fn a_copy_inherits_the_append_cursor_over_a_hole() {
         crate::object::ll_entity_die(src as *mut RcHeader);
     }
 }
+
+/// The copy takes the source's representation, so separating a vector
+/// hands back a vector (`rfc/model/arrays.md`, "External Contract":
+/// "Separation copies the storage in its current representation"). A copy
+/// into the ordered hash would answer every later question the same way
+/// and pay twice the bytes for it.
+#[test]
+fn a_shared_vector_separates_into_a_vector_copy() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = crate::memory::arena::Arena::new();
+    let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
+
+    let src = unsafe { crate::array::entity::new_vector_array(MemoryCategory::GcHeap) };
+    let first = mk(b"first");
+    let second = mk(b"second");
+    unsafe {
+        // The vector's own references, taken before the elements are
+        // published, for the reason the hash's tests take them: an
+        // element a walker can reach is already backed by a count.
+        crate::refcount::ll_retain(first as *mut RcHeader);
+        crate::refcount::ll_retain(second as *mut RcHeader);
+        assert!(crate::array::testing::push(
+            src,
+            Value::entity(crate::value::Tag::String, first as *mut RcHeader)
+        ));
+        assert!(crate::array::testing::push(
+            src,
+            Value::entity(crate::value::Tag::String, second as *mut RcHeader)
+        ));
+    }
+
+    unsafe { crate::refcount::ll_retain(src as *mut RcHeader) };
+    let copy = unsafe {
+        crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, src as *mut RcHeader)
+    } as *mut LLArray;
+    assert_ne!(copy, src, "the shared array was written in place");
+
+    let (vector, head) = unsafe { crate::array::entity::as_vector(copy) };
+    assert_eq!(
+        head.tag(),
+        crate::array::head::StorageTag::Vector,
+        "the copy is in the source's representation"
+    );
+    assert_eq!(head.used(), 2);
+    assert_eq!(
+        vector.get(head, 0).unwrap().entity_ptr(),
+        first as *mut RcHeader,
+        "the children are shared, not copied"
+    );
+    assert_eq!(
+        vector.get(head, 1).unwrap().entity_ptr(),
+        second as *mut RcHeader
+    );
+    // Three each: this test, the source vector, and the copy.
+    assert_eq!(
+        unsafe { crate::refcount::header_refcount(first as *mut RcHeader) },
+        3,
+        "the copy took a reference of its own on the shared child"
+    );
+
+    unsafe {
+        assert!(ll_release(copy as *mut RcHeader));
+        crate::object::ll_entity_die(copy as *mut RcHeader);
+        assert!(!ll_release(src as *mut RcHeader));
+        assert!(ll_release(src as *mut RcHeader));
+        crate::object::ll_entity_die(src as *mut RcHeader);
+        assert!(ll_release(first as *mut RcHeader));
+        crate::object::ll_entity_die(first as *mut RcHeader);
+        assert!(ll_release(second as *mut RcHeader));
+        crate::object::ll_entity_die(second as *mut RcHeader);
+    }
+}
+
+/// The deep door over a vector: an arena vector taken by a heap holder is
+/// copied out, and the nested arena vector inside it is copied in turn
+/// through the work list rather than shared.
+#[test]
+fn an_arena_vector_taken_by_a_heap_holder_is_copied_out_with_its_children() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = crate::memory::arena::Arena::new();
+    let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+    let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
+    let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
+    crate::memory::context::set_current_context(context_ptr);
+
+    let holder_class = crate::class::ClassBuilder::new("VectorHolder")
+        .prop("a", true)
+        .build();
+    let holder = unsafe {
+        crate::object::new_constructed(context_ptr, holder_class, MemoryCategory::GcHeap)
+    };
+
+    let src = unsafe { crate::array::entity::new_vector_array(MemoryCategory::RequestArena) };
+    let nested = unsafe { crate::array::entity::new_vector_array(MemoryCategory::RequestArena) };
+    let leaf = unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"deep") };
+    unsafe {
+        crate::refcount::ll_retain(leaf as *mut RcHeader);
+        assert!(crate::array::testing::push(
+            nested,
+            Value::entity(crate::value::Tag::String, leaf as *mut RcHeader)
+        ));
+        assert!(crate::array::testing::push(
+            src,
+            Value::entity(crate::value::Tag::Array, nested as *mut RcHeader)
+        ));
+    }
+
+    unsafe {
+        assert!(crate::memory::barrier::ref_store(
+            arena_ptr,
+            holder as *mut RcHeader,
+            crate::object::Object::prop_at(holder, 16),
+            std::ptr::null_mut(),
+            Value::entity(crate::value::Tag::Array, src as *mut RcHeader),
+        ));
+    }
+
+    let stored =
+        unsafe { (*crate::object::Object::prop_at(holder, 16)).entity_ptr() } as *mut LLArray;
+    assert_ne!(stored, src, "the heap slot took the arena array itself");
+    let (copy, copy_head) = unsafe { crate::array::entity::as_vector(stored) };
+    assert_eq!(
+        copy_head.tag(),
+        crate::array::head::StorageTag::Vector,
+        "the copy is a vector too"
+    );
+
+    let copied_child = copy.get(copy_head, 0).unwrap().entity_ptr();
+    assert_ne!(
+        copied_child, nested as *mut RcHeader,
+        "the nested arena array was shared rather than copied"
+    );
+    assert_eq!(
+        unsafe { crate::object::header_category(copied_child) },
+        MemoryCategory::GcHeap,
+        "the nested copy did not leave the arena"
+    );
+
+    let (deep, deep_head) =
+        unsafe { crate::array::entity::as_vector(copied_child as *mut LLArray) };
+    let copied_leaf = deep.get(deep_head, 0).unwrap().entity_ptr();
+    assert_ne!(
+        copied_leaf, leaf as *mut RcHeader,
+        "the leaf string stayed in the arena"
+    );
+
+    unsafe {
+        assert!(ll_release(holder as *mut RcHeader));
+        crate::object::ll_object_die(holder);
+    }
+
+    crate::memory::context::set_current_context(std::ptr::null_mut());
+    arena.reset(|_| {});
+}

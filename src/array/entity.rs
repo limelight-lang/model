@@ -295,10 +295,11 @@ pub(crate) unsafe fn storage_head(a: *mut LLArray) -> *const StorageHead {
 /// # Safety
 /// Standard factory contract: the result is a fresh entity at count 1.
 pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
-    // The ordered hash, until the COW copy takes a vector: the element
-    // layer reads the tag now, but `separate` and `fill_from` still reach
-    // for the table, and a fresh array cannot be a vector while one door
-    // it goes through cannot describe it.
+    // The ordered hash, until the suite is rewritten to meet a vector: 130
+    // tests build a fresh array and reach for a table (`array::testing`),
+    // and until those are rewritten the stamp is the only thing between
+    // them and an assertion. The doors are ready — the element layer, the
+    // walk, the teardown, the carry and the COW copy all read the tag.
     unsafe { new_with_storage(category, StorageTag::Hash, Storage::hash()) }
 }
 
@@ -485,17 +486,32 @@ pub unsafe fn separate(
     dst
 }
 
-/// A destination array with the source's salt, flood state and append
-/// cursor, and no entries. Null when the allocation is refused.
+/// An empty destination in the source's own representation, carrying
+/// whatever state the entries cannot reproduce. Null when the allocation
+/// is refused.
 ///
-/// The flood state goes in before the first insert, because it decides
-/// how a key is hashed: a copy that starts weak re-installs an
-/// attacker's whole collision set under the hash the source escalated
-/// away from.
+/// **The copy takes the source's representation** rather than a canonical
+/// one (`rfc/model/arrays.md`, "External Contract": "Separation copies the
+/// storage in its current representation"). A vector copied into a hash
+/// would answer every later question the same way and cost twice the
+/// bytes for it, and a hash copied into a vector could not hold what it
+/// held.
+///
+/// For the ordered hash the state is the salt, the flood rung and the
+/// append cursor. The flood state goes in before the first insert,
+/// because it decides how a key is hashed: a copy that starts weak
+/// re-installs an attacker's whole collision set under the hash the
+/// source escalated away from. A vector carries none of the three — it
+/// hashes nothing, and its cursor is its length, which the copy reaches
+/// by taking the same elements.
 ///
 /// # Safety
 /// `src` is a live array entity.
 unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LLArray {
+    if unsafe { (*src).head.tag() } == StorageTag::Vector {
+        return unsafe { new_vector_array(category) };
+    }
+
     let dst = unsafe { ll_array_new(category) };
     if dst.is_null() {
         return std::ptr::null_mut();
@@ -581,6 +597,27 @@ unsafe fn fill_from(
     pending: &mut WorkList<(*mut LLArray, *mut LLArray)>,
     reason: CopyReason,
 ) -> bool {
+    // Both arrays are in the source's representation, `new_empty_copy`
+    // having built the destination from it, so one tag decides the pair.
+    debug_assert_eq!(unsafe { (*src).head.tag() }, unsafe { (*dst).head.tag() });
+    match unsafe { (*src).head.tag() } {
+        StorageTag::Hash => unsafe { fill_table_from(src, dst, arena, pending, reason) },
+        StorageTag::Vector => unsafe { fill_vector_from(src, dst, arena, pending, reason) },
+        StorageTag::Typed => unreachable!("no producer stamps the typed vector"),
+    }
+}
+
+/// [`fill_from`] over the ordered hash: every live entry, with its key.
+///
+/// # Safety
+/// As [`fill_from`], and both arrays are the ordered hash.
+unsafe fn fill_table_from(
+    src: *mut LLArray,
+    dst: *mut LLArray,
+    arena: *mut crate::memory::arena::Arena,
+    pending: &mut WorkList<(*mut LLArray, *mut LLArray)>,
+    reason: CopyReason,
+) -> bool {
     let category = unsafe { category_of(dst) };
     let (source, source_head) = unsafe { as_table(src) };
     let n = source_head.used();
@@ -596,38 +633,11 @@ unsafe fn fill_from(
             Key::Str(e.string_key())
         };
 
-        // Publish the element for the copy *before* the entry is written,
-        // so the entry never names something the copy does not hold, and
-        // so the barrier can hand back a different entity: an arena COW
-        // child crossing into a longer-lived copy is replaced by a copy of
-        // its own.
-        let mut v = unsafe { element_for_copy(e.value(), reason) };
-        if v.is_refcounted() {
-            let child = v.entity_ptr();
-            if unsafe { is_nested_arena_array(child, category) } {
-                let copy = unsafe {
-                    new_empty_copy(
-                        child as *mut LLArray,
-                        crate::refcount::separation_category(category),
-                    )
-                };
-
-                if copy.is_null() || !pending.push((child as *mut LLArray, copy)) {
-                    // The copy is held by nothing yet, so it goes back
-                    // here rather than through the root's cascade.
-                    unsafe { crate::refcount::ll_release(copy as *mut RcHeader) };
-                    unsafe { dispose_storage(copy, category_of(copy)) };
-                    return false;
-                }
-
-                v = Value::entity(v.tag(), copy as *mut RcHeader);
-            } else {
-                match unsafe { crate::memory::barrier::publish_child(arena, category, v) } {
-                    Some(published) => v = published,
-                    None => return false,
-                }
-            }
-        }
+        let Some(v) =
+            (unsafe { element_for_destination(e.value(), category, arena, pending, reason) })
+        else {
+            return false;
+        };
 
         let published_key = match unsafe { publish_key(arena, category, key) } {
             Some(published) => published,
@@ -652,6 +662,97 @@ unsafe fn fill_from(
     }
 
     true
+}
+
+/// [`fill_from`] over the mixed vector: every position in order, and no
+/// key at all — the position is the key, so the copy reproduces both by
+/// appending in the same order.
+///
+/// There are no holes to skip and nothing to publish for a key, which is
+/// the whole of the difference from the hash's pass.
+///
+/// # Safety
+/// As [`fill_from`], and both arrays are the mixed vector.
+unsafe fn fill_vector_from(
+    src: *mut LLArray,
+    dst: *mut LLArray,
+    arena: *mut crate::memory::arena::Arena,
+    pending: &mut WorkList<(*mut LLArray, *mut LLArray)>,
+    reason: CopyReason,
+) -> bool {
+    let category = unsafe { category_of(dst) };
+    let n = unsafe { as_vector(src) }.1.used();
+    for i in 0..n {
+        let element = {
+            let (source, source_head) = unsafe { as_vector(src) };
+            source
+                .get(source_head, i)
+                .expect("a position below the count")
+        };
+
+        let Some(v) =
+            (unsafe { element_for_destination(element, category, arena, pending, reason) })
+        else {
+            return false;
+        };
+
+        let (copy, copy_head) = unsafe { as_vector_mut(dst) };
+        if !copy.push(copy_head, category, v) {
+            unsafe { give_value_back(category, &v) };
+            return false;
+        }
+    }
+
+    true
+}
+
+/// What the destination must store for one element of the source, with
+/// every reference it needs already taken, or `None` on a refusal that
+/// took nothing.
+///
+/// Published **before** the entry is written, so the entry never names
+/// something the copy does not hold, and so the barrier can hand back a
+/// different entity: an arena COW child crossing into a longer-lived copy
+/// is replaced by a copy of its own. A nested arena array is copied empty
+/// here and its filling pushed onto `pending`, because that is the one
+/// child whose copying recurses.
+///
+/// # Safety
+/// `element` is a live element of a live array; `category` is the
+/// destination's; `arena` the live mounted arena.
+unsafe fn element_for_destination(
+    element: Value,
+    category: MemoryCategory,
+    arena: *mut crate::memory::arena::Arena,
+    pending: &mut WorkList<(*mut LLArray, *mut LLArray)>,
+    reason: CopyReason,
+) -> Option<Value> {
+    let v = unsafe { element_for_copy(element, reason) };
+    if !v.is_refcounted() {
+        return Some(v);
+    }
+
+    let child = v.entity_ptr();
+    if unsafe { is_nested_arena_array(child, category) } {
+        let copy = unsafe {
+            new_empty_copy(
+                child as *mut LLArray,
+                crate::refcount::separation_category(category),
+            )
+        };
+
+        if copy.is_null() || !pending.push((child as *mut LLArray, copy)) {
+            // The copy is held by nothing yet, so it goes back here rather
+            // than through the root's cascade.
+            unsafe { crate::refcount::ll_release(copy as *mut RcHeader) };
+            unsafe { dispose_storage(copy, category_of(copy)) };
+            return None;
+        }
+
+        return Some(Value::entity(v.tag(), copy as *mut RcHeader));
+    }
+
+    unsafe { crate::memory::barrier::publish_child(arena, category, v) }
 }
 
 /// Whether publishing `child` into a slot of `category` would copy it
