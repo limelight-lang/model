@@ -581,7 +581,7 @@ but the cache would be a worse allocator bought for one assertion.
 **A count every thread moves is not an instrument, and the fixture cannot
 help it.** `blocks_out`, the registry's live and retired totals and
 `regions_carved` are moved by threads that hold no pool guard —
-`single_live_slot_churn_does_not_recarve_block` read `blocks_out` one high
+`single_live_slot_churn_keeps_its_block` read `blocks_out` one high
 6 times in 600 runs, `a_refused_ring_is_not_asked_for_a_second_time` read
 a ring another thread had retired as the ring it was refused, and
 `the_retired_list_keeps_the_newest_and_drops_the_oldest` demanded that

@@ -385,7 +385,8 @@ thread_local! {
 
 /// Take this thread's ring now, whatever the mask says. Tests only, and
 /// called from `block_pool::test_guard` so that every test holding the
-/// pool's lock has journaled before its body starts.
+/// pool's lock has its ring before its body starts. It writes no record,
+/// so a window opened by the test body carries nothing from this call.
 ///
 /// A ring is one pooled block, so the record that allocates one takes a
 /// block out of the thread cache; a test that names a block, counts the

@@ -190,24 +190,21 @@ mod the_block_under_the_slots {
 
     /// Regression test for the pathology found via a real `larson.cpp`
     /// benchmark run: alloc-then-immediately-free of one object,
-    /// repeated, must reuse the retained block instead of returning it
-    /// to `BlockPool` and re-carving on every single cycle (which cost
-    /// ~140 ns/op instead of ~8 ns/op). See
+    /// repeated, must reuse the retained block instead of handing it back
+    /// to `BlockPool` and taking it again on every cycle, which cost
+    /// ~140 ns/op instead of ~8 ns/op. The re-carve that follows from
+    /// that traffic is not what is watched here: carving is counted
+    /// process-wide, while the hand-back is the first half of the
+    /// pathology and belongs to this thread. See
     /// `rfc/model/memory/heap-slot-allocation.md`.
     #[test]
-    fn single_live_slot_churn_does_not_recarve_block() {
+    fn single_live_slot_churn_keeps_its_block() {
         // The instrument is this thread's block cache, not `blocks_out`
         // or `regions_carved`: both are process-global, and a thread
         // that takes a block for any reason of its own — a journal ring
         // among them — moves them under a test holding no lock over
         // them. A block handed back per cycle lands in this cache and
-        // reads as one more than the baseline, which is the pathology
-        // itself rather than a symptom of it downstream. The sites are
-        // quiet so that this thread's own records take no block either
-        // (`dev/POSTMORTEM.md`, "a ring is a block, and a thread's first
-        // record decides when it is taken"), before the pool's guard as
-        // `set_sites_for_test` requires.
-        let _quiet = crate::journal::kinds::disable_sites_for_test();
+        // reads as one more than the baseline.
         let _g = crate::memory::block_pool::test_guard();
         let mut heap = Heap::new();
 

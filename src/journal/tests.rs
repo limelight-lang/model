@@ -529,7 +529,6 @@ mod a_ring_across_a_threads_life {
             "the oldest of this test's rings was not dropped"
         );
         let surviving: Vec<bool> = mine.iter().map(|&t| rings_named(t).1 == 1).collect();
-        let surviving: Vec<bool> = mine.iter().map(|&t| rings_named(t).1 == 1).collect();
         assert!(
             !surviving[0],
             "the ring reported dropped is still on the list"
@@ -545,7 +544,7 @@ mod a_ring_across_a_threads_life {
             assert_eq!(
                 evict_retired_ring(thread),
                 alive,
-                "a ring of this test went missing"
+                "the list holds a different set of this test's rings than it reported"
             );
         }
     }
@@ -930,10 +929,10 @@ mod a_thread_the_journal_could_not_serve {
         // The refusal count rather than the registry's totals: every
         // thread in the run moves those, and a ring retired by one of
         // them inside this window reads exactly like a ring granted here
-        // (seen 1 in 300 runs at eight threads). One refusal is also the
-        // stronger claim — a second ask would be counted, granted or
-        // not — and the pool's guard holds the only tests that provoke
-        // one.
+        // (seen 1 in 300 runs at eight threads). Exactly one is the
+        // stronger claim: a second ask refused again counts twice, and a
+        // second ask granted shows in the identity asserted above. The
+        // pool's guard holds the only tests that provoke a refusal.
         let end = mark();
         assert_eq!(
             end.refusals,
