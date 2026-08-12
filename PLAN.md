@@ -152,21 +152,39 @@ Done when: nothing in `src/` cites `PLAN.md`, every block of forty lines
 and up is cut to the contract or moved under a named section, and
 `dev/WORKFLOW.md` states the rule that decides which.
 
-- [ ] S15.1 The rule in `dev/WORKFLOW.md`
+- [x] S15.1 The rule in `dev/WORKFLOW.md`
       done: it says what stays in the code, which document takes the
         rest, and how a reference is written; applied to
         `walk::trace_cells`, `journal::Window::Unknown` and
         `array/head.rs`'s module doc it yields an answer without asking
       tier: T1 · role: —
-- [ ] S15.2 The five copies of the counted-cell read become one
+      handoff: the section is "Comments: the contract in the code, the
+        argument in a document", between the documentation rule and the
+        test rules. Its first draft made `dev/` journals unciteable from
+        code, which the crate contradicts everywhere and usefully; the
+        correction is that they are cited by an entry's title, never by
+        its date. Commits 40bc498 and d31eec4.
+- [x] S15.2 The five copies of the counted-cell read become one
       done: `object.rs` and `walk.rs` decide a cell's shape in one place,
         and the suite is green in both configurations
       tier: T2 · role: —
-- [ ] S15.3 The references to `PLAN.md` leave the code
+      handoff: `walk::counted_box_cell` is the operation, and four copies
+        of the paragraph about reading the payload as an integer went with
+        the code. The payload is still read before the flags: the order
+        decides which torn readings a relaxed reader can observe, so it is
+        not free to change. Miri silent over `walk::`, 22 tests. Commit
+        5843cc1.
+- [x] S15.3 The references to `PLAN.md` leave the code
       done: `grep -rn 'PLAN\.md' src/` finds nothing, and every argument
         such a reference carried is either in the comment or under a
         named section in `rfc` or `docs/`
       tier: T1 · role: —
+      handoff: forty references in twenty-two files, most already naming a
+        deleted stage. Nearly all carried their fact in the same sentence
+        and simply lost the citation; the three that did not now name
+        `dev/POSTMORTEM.md`'s census-flake entry by title,
+        `dev/design/debug-modes.md` §9 by section, and
+        `crate::array::head`. Commit d31eec4.
 - [ ] S15.4 The 21 blocks of forty lines and up
       done: each is cut to the contract or moved under a named section
         that the code then names

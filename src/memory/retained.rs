@@ -2,62 +2,47 @@
 //!
 //! A retained block was filled by an arena's bump allocator, so its
 //! occupants have mixed sizes and no uniform stride: the walk cannot
-//! locate them by dividing an offset by a size class the way it does in
-//! an entity block. Without an inventory they are unwalkable, which
-//! makes them root sources and leaves a ring living entirely among
-//! promoted survivors uncollectable
-//! (`rfc/model/gc/retained-block-walk.md`).
+//! locate them by dividing an offset by a size class the way it does in an
+//! entity block. Without an inventory they are unwalkable, which makes
+//! them root sources and leaves a ring living entirely among promoted
+//! survivors uncollectable (`rfc/model/gc/retained-block-walk.md`).
 //!
-//! The inventory already exists. `promote`'s reset fixpoint collects
-//! every survivor into a vector; this module keeps it, one sorted array
-//! of addresses per retained block, and hands it to the two enumerators
-//! that need it — `heap::for_each_entity_slot` for the synchronous walk
-//! and `heap::snapshot_entity_blocks` for the collector's epoch.
+//! The inventory already exists: `promote`'s reset fixpoint collects every
+//! survivor into a vector. This module keeps it as one sorted array of
+//! addresses per retained block and hands it to the two enumerators that
+//! need it, `heap::for_each_entity_slot` for the synchronous walk and
+//! `heap::snapshot_entity_blocks` for the collector's epoch.
 //!
 //! # What this module does not know
 //!
-//! What lives at those addresses. It stores block addresses and arrays
-//! of addresses; entities, classes, refcounts and verdicts belong to
-//! the layers above. It reads one word of one of them, in exactly two
-//! places and for one purpose: the refcount word is the occupancy test,
-//! and the live-occupant count below is what decides when a block has
-//! emptied. Everything else about an address stays the readers'.
+//! What lives at those addresses. It stores block addresses and arrays of
+//! addresses; entities, classes, refcounts and verdicts belong to the
+//! layers above. It reads one word of one of them, in two places and for
+//! one purpose: the refcount word is the occupancy test, and the
+//! live-occupant count is what decides when a block has emptied.
 //!
 //! # The one requirement on an address
 //!
 //! Every address in a registered index stays **readable** for as long as
 //! the index is registered. Both enumerators read its refcount word
-//! without first testing that the block still exists — they can, because
-//! a retained block leaves circulation only once its last survivor is
-//! gone — so an address that stops being mapped is a wild read on
-//! whichever thread walks next, and both walks are process-global. The
-//! index is therefore dropped **before** the block is handed to the
-//! pool, never after.
+//! without first testing that the block still exists, which they may
+//! because a retained block leaves circulation only once its last survivor
+//! is gone. An address that stops being mapped is a wild read on whichever
+//! thread walks next, and both walks are process-global, so the index is
+//! dropped **before** the block is handed to the pool.
 //!
-//! # Why the arrays never change under a reader
+//! An index needs no version, no growth path and no lock beyond the one
+//! guarding the map: nothing allocates into a dead arena, so a retained
+//! block's population only shrinks, and it shrinks by entities dying
+//! rather than by slots being reissued. Readers clone the `Arc` and walk
+//! it outside the lock.
 //!
-//! Nothing allocates into a dead arena, so a retained block's
-//! population only shrinks, and it shrinks by entities dying rather
-//! than by slots being reissued: a retained block leaves circulation
-//! only when all of its survivors are gone. An index therefore needs no
-//! version, no growth path and no lock beyond the one guarding the map
-//! itself; readers clone the `Arc` and walk it outside the lock.
-//!
-//! # Blocks retained for bytes rather than for occupants
-//!
-//! A survivor whose out-of-line payload could not be carried out of the
-//! dying arena retains the block those bytes lie in (`promote`'s refused
-//! carry). The block is then held by two populations at once, and it
-//! goes home when both are empty: its live occupants, counted here since
-//! the index was built, and the payloads it was pinned for, counted by
-//! [`pin`] and spent by [`payload_freed`].
-//!
-//! The payload's death event is the owning entity's own free. A promoted
-//! string or table frees its body through
-//! `buffer_arena::buffer_free_longlived_payload`, which reads the block
-//! kind under the pointer and finds `BLOCK_KIND_RETAINED`: the bytes are
-//! left where they are, because former arena memory has no free list to
-//! return them to, and the block is what is reclaimed instead.
+//! A block may be retained for **bytes** rather than for occupants, when a
+//! survivor's out-of-line payload could not be carried out of the dying
+//! arena. It is then held by two populations and goes home when both are
+//! empty: occupants counted here, payloads counted by [`pin`] and spent by
+//! [`payload_freed`] (`dev/DECISIONS.md`, "a pinned block goes home when
+//! its last payload is freed").
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};

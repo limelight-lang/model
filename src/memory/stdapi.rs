@@ -1,46 +1,36 @@
 //! Standard allocator API: a `GlobalAlloc` implementation and C
 //! `malloc`/`free`/`calloc`/`realloc`/`aligned_alloc` exports over the
-//! Limelight memory manager.
+//! Limelight memory manager, so the allocator can run the real C benchmark
+//! suites unchanged and be reused outside the runtime.
 //!
-//! This lets the allocator (a) run the real C benchmark suites
-//! unchanged and (b) be reused outside the runtime.
+//! **Not yet usable as a Rust `#[global_allocator]`**, despite the impl at
+//! the bottom of this file: regions come from `std::alloc::alloc` with
+//! block alignment (`block_pool::carve_region`), so installing this
+//! globally makes region carving re-enter `ll_alloc` with an alignment it
+//! refuses, and every allocation reports null. It becomes true once
+//! regions come from `VirtualAlloc` or `mmap` directly.
 //!
-//! **Not yet usable as a Rust `#[global_allocator]`**, despite the impl
-//! at the bottom of this file: regions come from `std::alloc::alloc`
-//! with block alignment (`block_pool::carve_region`), so installing
-//! this as the global allocator makes region carving re-enter
-//! `ll_alloc` with an alignment it refuses — every allocation would
-//! then report null. It becomes true once regions come from
-//! `VirtualAlloc`/`mmap` directly.
+//! **Size-less free works**, which is the key that makes a standard
+//! `free(ptr)` possible here: every allocation lives in a block-aligned
+//! block, so `ptr & !BLOCK_MASK` finds the block header, whose `kind`
+//! routes the free. Routing:
 //!
-//! **Size-less free works** — the key that makes a standard `free(ptr)`
-//! possible over our design: every allocation lives in a block-aligned
-//! block, so `ptr & !BLOCK_MASK` finds the block header, whose `kind` routes
-//! the free. No caller-provided size needed. Routing:
-//!
-//! - `≤ 8 KB`, align ≤ 16 → the small-object [`Heap`](crate::memory::heap::Heap).
+//! - `≤ 8 KB`, align ≤ 16 → the small-object
+//!   [`Heap`](crate::memory::heap::Heap).
 //! - `8 KB .. block payload` → one pooled block (`BLOCK_KIND_LARGE`).
 //! - `> block payload` → an OS-direct block-aligned run
 //!   (`BLOCK_KIND_LARGE_RUN`), returned to the OS on free.
-//! - `BLOCK_KIND_ENTITY` (GC entities, allocated via
-//!   `heap::entity_alloc`, never by `ll_alloc`) → the thread's entity
-//!   heap; `ll_free` covers them so object teardown stays size-less.
+//! - `BLOCK_KIND_ENTITY` (GC entities, allocated via `heap::entity_alloc`
+//!   and never by `ll_alloc`) → the thread's entity heap; `ll_free` covers
+//!   them so object teardown stays size-less.
 //!
-//! The `+256` payload offset is 256-aligned, so any alignment ≤ 256 is
-//! satisfied for free (covers malloc's 16-byte guarantee and
-//! `aligned_alloc` up to 256).
+//! The `+256` payload offset is 256-aligned, so any alignment up to 256 is
+//! satisfied for free, which covers malloc's 16-byte guarantee and
+//! `aligned_alloc`.
 //!
-//! **Thread-safety:** all paths are multi-threaded. Large paths use the
-//! thread-safe pool/OS; the small path routes a cross-thread free to the
-//! owning block's lock-free stack (see `heap`). A thread that exits hands
-//! its blocks over automatically on every target — empty ones to the
-//! pool, ones still holding objects to the global abandoned list, from
-//! which the next thread needing that size class adopts them.
-//!
-//! Known limit: an abandoned block is reclaimed only when someone adopts
-//! it, so a size class that goes permanently idle keeps its abandoned
-//! blocks. Bounded by what was live at thread exit; no periodic trim
-//! exists yet.
+//! **Thread-safety:** all paths are multi-threaded, and what a
+//! cross-thread free and a thread exit cost is `docs/memory-manager.md`,
+//! "Cross-thread free" and "Thread exit: abandonment and adoption".
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::AtomicU32;

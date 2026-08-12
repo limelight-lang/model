@@ -1,90 +1,27 @@
 //! Small-object heap: individually-freeable allocations for long-lived
-//! objects (unlike the arena, which frees only in bulk at reset).
+//! objects, unlike the arena, which frees only in bulk at reset.
 //!
-//! Design: the mimalloc model, chosen after studying jemalloc / mimalloc
-//! / snmalloc (best-benchmarked for small frequent allocations, and the
-//! best fit for infrastructure we already have):
-//!
-//! - **One 64 KB block per size class**, carved into fixed-size slots.
-//!   The block is mimalloc's "page".
-//! - **Pointer → block by mask** (`ptr & !BLOCK_MASK`) — no radix tree or
-//!   pagemap needed (jemalloc/snmalloc pay for those; our aligned blocks
-//!   give it for one AND).
-//! - **Intrusive free list per block, plus a bump cursor for virgin
-//!   slots** — mimalloc's `page->free`/extend scheme. `alloc` pops the
-//!   list head (or bump-carves if the list is empty), `free` pushes the
-//!   slot back. Both are O(1) and branch-only.
-//!
-//!   A bitmap was tried instead (one bit per slot, `tzcnt` to find a free
-//!   one) and **lost**: it needs a side allocation per block, so every
-//!   alloc pays a second dependent load into a line nothing else touches,
-//!   answering "is this block full?" costs a scan of every word, and
-//!   `free` needs `(ptr - base) / class_size` — a real integer division,
-//!   since `class_size` isn't a power of two for most classes. The free
-//!   list has none of those: its `next` lives *inside* the slot, which is
-//!   the very memory the caller is about to write (on alloc) or has just
-//!   stopped using (on free), so it rides a line that is already hot and
-//!   needs no index arithmetic at all. Measured +18-20% on a real
-//!   `larson.cpp` through the C ABI. See
-//!   `rfc/model/memory/heap-slot-allocation.md` ("Fix 5") — including why
-//!   the benchmark that originally chose the bitmap was not measuring what
-//!   it claimed.
-//! - **A fully-free block returns to the global pool** — real individual
-//!   reclamation, at block granularity (subject to the bounded
-//!   empty-block retention below).
+//! The mimalloc model, chosen after studying jemalloc, mimalloc and
+//! snmalloc: one 64 KB block per size class carved into fixed-size slots,
+//! pointer to block by mask (`ptr & !BLOCK_MASK`) rather than through a
+//! radix tree or pagemap, an intrusive free list per block beside a bump
+//! cursor for virgin slots, and a fully-free block returned to the global
+//! pool. `alloc` pops the list head or bump-carves when the list is empty,
+//! `free` pushes the slot back, and both are O(1) and branch-only.
 //!
 //! The heap runs **twice per thread** over this same code: a raw heap
 //! (`BLOCK_KIND_HEAP`) for C-ABI buffers and an entity heap
 //! (`BLOCK_KIND_ENTITY`) for GC entities, as one [`ThreadHeaps`] pair
-//! behind the TLS slot. Segregation, the bytes-8–15 free-list link, the
-//! commissioning zero pass and [`for_each_entity_slot`] are rc-walk
-//! build step 1 (`rfc/model/gc/rc-walk.md`; `docs/memory-manager.md`,
-//! "Entity blocks").
+//! behind the TLS slot. That segregation, the bytes-8-15 free-list link,
+//! the commissioning zero pass and [`for_each_entity_slot`] are rc-walk
+//! build step 1 (`rfc/model/gc/rc-walk.md`).
 //!
-//! ## Cross-thread free (multi-threaded)
-//!
-//! Every block carries its own lock-free MPSC stack, `remote_free`. A
-//! `free(ptr)` whose block is owned by *another* heap does one atomic push
-//! onto **that block's** stack and touches nothing else.
-//!
-//! Per block, not per heap, and that is load-bearing: it is what makes
-//! adoption (below) race-free. A thread freeing a slot reads `owner`, sees
-//! it is not itself, and pushes. If an adoption is racing that read it does
-//! not matter which owner was seen — the message lands in the block, and the
-//! block's *current* owner drains it. Parked in a per-heap stack instead, a
-//! message posted to a dying owner after adoption is stranded forever.
-//!
-//! The owner collects a block's parked frees in two places, both cold:
-//! [`Heap::alloc_block_full`], when it has just run that block out of slots
-//! (exactly when they are worth having), and [`Heap::collect_owned`], which
-//! sweeps this class's blocks before asking the pool for more. The sweep is
-//! not optional: a block unlinked as full is never revisited otherwise, so
-//! its parked frees would sit forever and the thread would refill instead —
-//! measured at 34.2M -> 2.3M ops/s on the bleeding pattern when it was
-//! missing. mimalloc's full queue exists for the same reason.
-//!
-//! `used` is written **only by the owning thread** (on alloc, local free,
-//! and collect) — no atomics on it. A cross-thread free just parks the slot;
-//! the owner accounts for it at collect time. That is also why `used == 0` is
-//! safe to act on: a parked slot still counts as live, so a block with one
-//! can never look empty.
-//!
-//! ## Thread-exit abandonment
-//!
-//! [`ll_thread_exit`] hands a dying thread's blocks over: empty ones to the
-//! pool, ones still holding live objects onto a global per-class abandoned
-//! list, from which the next thread needing that class adopts them
-//! ([`Heap::adopt`], on the refill path).
-//!
-//! This is not an optimisation. Without it every block a thread still owned
-//! when it died was stranded permanently, along with every later
-//! cross-thread free into it. Real `larson.cpp` — whose entire point is that
-//! a server's workers come and go, so it respawns its worker every ~20 ms —
-//! held **1.7 GiB against a 2.5 MiB live set**. With it: 10 MiB.
-//!
-//! Known limit: an abandoned block is only reclaimed when someone adopts it,
-//! so a class that goes permanently idle keeps its abandoned blocks. Bounded
-//! by what was live at thread exit, and no periodic trim exists yet.
+//! What the rejected alternatives cost, why the cross-thread stack is per
+//! block rather than per heap, why `used` is written by the owner alone,
+//! and what abandonment at thread exit buys are in
+//! `docs/memory-manager.md` — "Heap: small objects", "Cross-thread free",
+//! "Thread exit: abandonment and adoption" — the document `memory/mod.rs`
+//! declares this module implements.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};

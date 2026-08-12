@@ -2,57 +2,44 @@
 //! §1). A reference store is not one hook: it is composed from small
 //! operations the compiler picks per site and inlines, specialized to the
 //! slot's kind and to a compile-time-constant `owner_cat`. This crate
-//! provides the pieces; the *composition* — which ops, in what order, with
-//! which checks elided — is lowering's, and the runtime never sees it.
+//! provides the pieces; the *composition* is lowering's, and the runtime
+//! never sees it.
 //!
 //! - [`store_ptr`] / [`store_box`] — **publish** a reference into an
 //!   8-byte pointer slot or a 16-byte `Value` slot: retain, category
 //!   barrier, write. No release: an initializing store is `store_*` alone.
-//! - [`drop_ref`] — **drop** the entity a slot held (overwrite, clear, or
-//!   holder teardown): release, cascade. Independent of the slot's kind.
-//!   An overwriting store is `store_*` and then, **only if it returned
-//!   true**, `drop_ref` — see the failure paragraph below: a refused
-//!   store leaves the slot holding the old entity, so dropping it anyway
-//!   dangles the slot.
+//! - [`drop_ref`] — **drop** the entity a slot held, on overwrite, clear
+//!   or holder teardown: release, cascade. Independent of the slot's kind.
 //! - [`publish_child`] — the publish alone, for a holder whose slot this
-//!   module does not write: an array's entry is written by
-//!   `Table::insert` and its string key is no slot at all.
-//! - [`ref_store`] — the convenience composition of `store_box` +
-//!   `drop_ref` for a Box-slot overwrite, kept for callers holding an
-//!   owner header and a whole `Value`.
+//!   module does not write: an array's entry is written by `Table::insert`
+//!   and its string key is no slot at all.
+//! - [`ref_store`] — the composition of `store_box` and `drop_ref` for a
+//!   Box-slot overwrite, kept for callers holding an owner header and a
+//!   whole `Value`.
 //!
-//! Composition in this build (phase 1): RC operations + the category
-//! barrier (`rfc/model/memory/arenas.md`). Strategy hooks (SATB) plug
-//! into `drop_ref` later (A5).
-//!
-//! **A publish can fail, and says so** (2026-08-04). `store_ptr`,
-//! `store_box` and `ref_store` return whether the store happened, and
-//! the one thing that can refuse is the deep copy a COW value takes when
-//! it leaves the arena: the copy is an allocation. A refusal leaves the
-//! slot and every count exactly as they were — which is exactly why the
-//! `drop_ref` that would have followed must not run: the slot still holds
-//! the old entity and still owns its reference. The caller's two duties
-//! are therefore to skip the drop and to raise memory-exhausted, which
+//! **A publish can fail, and says so.** `store_ptr`, `store_box` and
+//! `ref_store` return whether the store happened, and what can refuse is
+//! the deep copy a COW value takes when it leaves the arena, that copy
+//! being an allocation. A refusal leaves the slot and every count as they
+//! were, which is why the `drop_ref` that would have followed must not
+//! run: the slot still holds the old entity and still owns its reference.
+//! So an overwriting store is `store_*` and then, **only on `true`**,
+//! `drop_ref`. The caller's other duty is to raise memory-exhausted, which
 //! generated code will do through the exceptions runtime
 //! (`rfc/runtime/exceptions.md`) once it exists. `drop_ref` itself cannot
 //! fail and returns nothing.
 //!
-//! This is not the reserve's shape and could not be: the log reserve
-//! funds the barrier's *own* allocation because a log record is
-//! fixed-size, and a copy is the size of the value.
-//!
 //! `owner_cat` is a **parameter, not a load from the owner**: the compiler
-//! knows the destination's category, so it is passed. A slot has no header
-//! of its own, which is why this works even for a headerless destination
-//! (a static block, A6). Which arena's logs to write is answered by the
-//! context: one mounted arena per executing context, kept correct by the
-//! compiler.
+//! knows the destination's category, and a slot has no header of its own,
+//! which is what makes a headerless destination (a static block, A6) a
+//! valid target. The stored value carries its own category as two bits in
+//! its `RcHeader` flags, stamped at allocation. Which arena's logs to
+//! write is answered by the context, one mounted arena per executing
+//! context.
 //!
-//! Category sources: the stored value carries its own memory category as
-//! 2 bits in its `RcHeader` flags, stamped at allocation; the
-//! destination's is `owner_cat`, supplied by the caller. Actor arenas are
-//! unreachable from outside, so a store creating an escape always runs
-//! with the owner's arena mounted.
+//! Composition in this build (phase 1): RC operations and the category
+//! barrier (`rfc/model/memory/arenas.md`). Strategy hooks (SATB) plug into
+//! `drop_ref` later (A5).
 
 use crate::memory::arena::Arena;
 use crate::memory::context::{LLContext, resolve_arena};

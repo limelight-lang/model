@@ -140,8 +140,16 @@ virgin slot at `bump`. Both are O(1) and branch-only.
 The free list is **intrusive**: a free slot's `next` lives in the slot's
 own bytes 8–15. It therefore costs no side allocation and no metadata
 line — the link rides a cache line the caller has just stopped touching.
-A bitmap was tried instead and lost; the module doc in `heap.rs` records
-why, including the measurement. The link lived in bytes 0–7 until
+A bitmap was tried instead (one bit per slot, `tzcnt` to find a free
+one) and **lost**, by 18-20% on a real `larson.cpp` through the C ABI.
+It needs a side allocation per block, so every alloc pays a second
+dependent load into a line nothing else touches; answering "is this
+block full?" costs a scan of every word; and `free` needs
+`(ptr - base) / class_size`, a real integer division, `class_size` not
+being a power of two for most classes. The free list has none of those
+(`rfc/model/memory/heap-slot-allocation.md`, "Fix 5", which also says why
+the benchmark that first chose the bitmap was not measuring what it
+claimed). The link lived in bytes 0–7 until
 rc-walk step 1 moved it: bytes 0–7 must survive a free untouched, because
 in an entity block they keep the dead entity's final refcount-0 header —
 the walker's occupancy test. One offset for both populations keeps a
@@ -211,18 +219,59 @@ in circulation.
 
 ### Deferred free (rc-walk builds)
 
-While an rc-walk collection epoch is in flight, `ll_free` **parks**
-every freeable kind instead of recycling it (`deferred_free.rs`): one
-relaxed load of a global activity bit and a predicted branch, after the
-kind dispatch, active only during an epoch. The entity still dies on
-time, destructor included — only reuse waits, so a walked slot cannot
-become a different object mid-epoch (identity is what makes the Phase 4
-exact test sound, `rfc/model/gc/rc-walk.md`). Parked memory threads a
-thread-local intrusive list through its own bytes 8–15 — bytes 0–7 keep
-the dead entity's refcount-0 header, the walker's vacancy stamp — and
-the owning thread flushes the list through the real free once the epoch
-closes. Cross-thread frees do not park (single-mutator crate; actors
-reopen this).
+While an rc-walk collection epoch is in flight, a free **parks** instead
+of recycling (`deferred_free.rs`): one relaxed load of a global activity
+bit and a predicted branch, after the kind dispatch, active only during
+an epoch. The entity still dies on time, destructor included, and only
+reuse waits, so a walked slot cannot become a different object
+mid-epoch. Identity is what makes the Phase 4 exact test sound
+(`rfc/model/gc/rc-walk.md`).
+
+**Parking is out of band.** The parked pointer goes into a thread-local
+vector, and the parked memory is not written until the flush. The first
+draft threaded an intrusive link through the allocation's bytes 8-15,
+which in an entity slot is the class word the walker dereferences one
+pass after reading the header: a wild read under the walker's feet. Out
+of band a corpse stays intact — header reading refcount 0, class word
+live, fields nulled — so a walker chasing a stale pointer lands on
+readable bytes. The price is a park path that may allocate, cold and
+epoch-only.
+
+**What rides.** Every block kind that reaches `ll_free` and can put
+memory back in circulation: heap raw buffers, entity slots, pooled
+large, OS-direct runs and retained blocks. Buffer-arena chunks never
+reach `ll_free` at all, `buffer_free_longlived_payload` calling
+`BufferArena::free` directly, so that branch makes the test itself and
+parks the whole call: `free` is size-carrying and can hand an emptied
+block back to the pool to be re-stamped as another kind. A payload in a
+retained block arrives from the same function and hands back no memory
+of its own; what it may hand back is the block those bytes pinned. So a
+parked record names the free it replays rather than deriving it from a
+size.
+
+**What does not.** The arena kind, which recycles nothing, so identity
+holds without parking. A retained block rides for a reason of its own:
+nothing is recycled inside it, former arena memory having neither stride
+nor free list, but the death of its last live occupant hands the whole
+block to the pool, and a block reissued mid-epoch is the identity loss
+parking exists to prevent.
+
+**Cross-thread frees ride like any other.** The epoch test fires on the
+block kind alone and stands before the owner dispatch, so during an
+epoch a free of another thread's heap or entity slot parks on the
+freeing thread and reaches `free_foreign` only when the flush replays
+it. The crate is single-mutator today, so nothing depends on that
+ordering yet; actors reopen the question.
+
+**Known limit.** A thread that parks and exits before flushing leaks its
+parked list until process end, bounded by what that thread freed inside
+one epoch window and measured in blocks rather than bytes: a dropped
+chunk record leaves `live` above zero on its block forever, and a block
+that never empties bounces between the abandoned list and its adopters
+instead of going home, so one record can pin 64 KiB. A large-entity run
+raises that ceiling to the run's own size
+(`rfc/model/memory/large-entities.md`) and keeps its registry entry, so
+the collector walks it once per epoch for the life of the process.
 
 ### Cross-thread free
 
@@ -249,7 +298,9 @@ live, so a block with one can never look empty.
 The owner collects in two cold places: when it has just run a block out
 of slots, and when sweeping its blocks before asking the pool for more.
 The sweep is not optional — a block unlinked as full is never revisited
-otherwise, and its parked frees would sit forever.
+otherwise, and its parked frees would sit forever, the thread refilling
+instead: 34.2M to 2.3M ops/s on the bleeding pattern when it was
+missing. mimalloc's full queue exists for the same reason.
 
 ### Thread exit: abandonment and adoption
 

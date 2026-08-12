@@ -1,97 +1,24 @@
-//! Deferred physical release — the GC activity bit of
+//! Deferred physical release: the GC activity bit of
 //! `rfc/model/gc/heap-design.md`, demanded by the rc-walk collector
 //! (`rfc/model/gc/rc-walk.md`, "Deferred physical release, and when an
 //! epoch ends"). While a collection epoch is in flight, memory released
-//! by ordinary refcount death is **parked rather than recycled**: the
-//! entity dies normally and on time, `__destruct` included — only reuse
-//! waits, so the walker cannot read a slot that has become a different
-//! object underneath it.
+//! by ordinary refcount death is parked rather than recycled: the entity
+//! dies on time, `__destruct` included, and only reuse waits.
 //!
-//! The queue's real job is **identity**, which makes it soundness, not
-//! comfort: an id must name one entity from walk to drain. Without it a
-//! slot could be freed and recycled mid-epoch, and the Phase 4 exact
-//! test could balance by coincidence on an object that was never
+//! The queue's job is **identity**, which makes it soundness rather than
+//! comfort: an id must name one entity from walk to drain, or the Phase 4
+//! exact test can balance by coincidence on an object that was never
 //! judged.
 //!
-//! Mechanics: one process-global flag, tested with a relaxed load and a
-//! predicted branch in `ll_free` after the block-kind dispatch — the
-//! single funnel every ordinary local free passes. Parking is
-//! **out-of-band**: a thread-local vector of parked pointers, and the
-//! parked memory itself is **never written until the flush** (review
-//! finding, 2026-07-27, `rfc/model/gc/rc-walk.md`). The first draft
-//! threaded an intrusive link through the allocation's bytes 8–15 —
-//! which in an entity slot is exactly the class word the walker
-//! dereferences one pass after reading the header: a wild read under
-//! the walker's feet. Out-of-band, a corpse stays intact — header
-//! reading refcount 0 (occupancy), class word live, fields nulled —
-//! so a walker chasing a stale pointer lands on readable bytes. The
-//! cost: the park path may allocate (a `Vec` push, cold, epoch-only),
-//! which the in-slot draft avoided.
+//! Which kinds park, which do not, and why parking is out of band are in
+//! `docs/memory-manager.md`, "Deferred free (rc-walk builds)" — the
+//! document `memory/mod.rs` declares this module implements.
 //!
-//! What rides the queue: every block kind that reaches `ll_free` and can
-//! put memory back in circulation — heap raw buffers, entity slots,
-//! pooled large, OS-direct runs and retained blocks (the last for the
-//! reason given below) — and **buffer-arena chunks**, which do not reach
-//! `ll_free` at all. A chunk is freed
-//! by `buffer_arena::buffer_free_longlived_payload` calling
-//! `BufferArena::free` directly, so it never passes `ll_free`'s test;
-//! that branch does its own, and parks the whole call rather than the
-//! link write, because `free` also decrements the block's live count
-//! and can hand an emptied block back to the pool to be re-stamped as
-//! another kind. Parked chunks are the reason a parked record carries a
-//! size at all: `BufferArena::free` is size-carrying, the chunk itself
-//! holds no metadata, and the block header would be gone by flush time
-//! anyway. The third rider is a **payload in a retained block**, which
-//! arrives from the same function and hands back no memory of its own —
-//! what it may hand back is the block those bytes pinned
-//! (`retained::payload_freed`). A record therefore names the free it
-//! replays rather than deriving it from a size. A string payload and an
-//! array's table storage both live in
-//! buffer chunks, and since `walk::trace_cells` gained its Array arm the
-//! walker strides an array's entries inside its chunk — so a chunk freed
-//! mid-epoch is memory a walker may be reading, which is what parking it
-//! answers.
-//!
-//! What does not ride it: the arena kind, which recycles nothing, so
-//! identity holds without parking. A **retained** block rides it, and
-//! not for the usual reason: nothing is recycled *inside* such a
-//! block — former arena memory has neither stride nor free list — but
-//! the death of its last live occupant hands the whole block to the
-//! pool (`retained::occupant_freed`), and a block reissued mid-epoch is
-//! exactly the identity loss the queue exists to prevent. The free of a
-//! payload such a block was pinned for reaches the pool the same way and
-//! parks for the same reason.
-//!
-//! **A cross-thread free rides it like any other.** The epoch test in
-//! `stdapi::ll_free` fires on the block kind alone and stands *before*
-//! the owner dispatch, so during an epoch a free of another thread's heap
-//! or entity slot parks on the freeing thread and reaches `free_foreign`
-//! only when [`release`] replays it at the flush. The crate is
-//! single-mutator today, so nothing depends on that ordering yet; actors
-//! will reopen the question, and the answer to read then is this
-//! paragraph rather than the block below, which is about where the flush
-//! runs.
-//!
-//! Known limit: a thread that parks and exits before flushing leaks its
-//! parked list until process end — bounded by what that thread freed
-//! inside one epoch window. **Measured in blocks, not bytes**, once
-//! buffer chunks ride it: a dropped 16-byte chunk record leaves `live`
-//! above zero on its block forever, and a block never empties, so it
-//! bounces between the abandoned list and its adopters instead of going
-//! home. One record can therefore pin 64 KiB — and a large-entity run
-//! raises that ceiling to the run's own size, which the class decides:
-//! 192 KiB for the ten-thousand-property instance
-//! `rfc/model/memory/large-entities.md` measures, 3.2 MB for the
-//! 200 000-property one, unbounded in general. A dropped run record also
-//! keeps its registry entry, so the collector walks it once per epoch
-//! for the life of the process.
-//!
-//! Two obligations on the epoch protocol (build step 3, commit 4):
-//! the collector must **publish the flag through a handshake before
-//! snapshotting** — a mutator that has not yet observed the flag can
-//! still recycle a slot the snapshot is about to include — and the
-//! flush runs **on the owning thread** after the epoch closes, because
-//! the parked list is thread-local and the underlying frees are
+//! Two obligations on the epoch protocol: the collector publishes the flag
+//! **through a handshake before snapshotting**, since a mutator that has
+//! not yet observed it may still recycle a slot the snapshot is about to
+//! include; and the flush runs **on the owning thread** after the epoch
+//! closes, the parked list being thread-local and the underlying frees
 //! owner-bound.
 
 use std::cell::Cell;

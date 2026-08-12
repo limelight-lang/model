@@ -2,52 +2,36 @@
 //!
 //! Realloc-heavy buffer churn isolated from the object heap so its
 //! fragmentation never pollutes it (`rfc/model/memory/buffers.md`). No
-//! size classes — buffers vary continuously — so this is bump
-//! allocation plus a **per-block intrusive LIFO free list**:
+//! size classes, buffers varying continuously, so this is bump allocation
+//! plus a **per-block intrusive LIFO free list**:
 //!
-//! - the list head lives in the block's header, the chain never leaves
-//!   the block (L2-resident by construction);
-//! - a freed chunk threads `{ next, size }` through its own payload —
-//!   zero metadata on live buffers (minimum chunk is 16 bytes for it);
-//! - `plenty`/`tight` allocation just bumps; `critical` first-fit
+//! - the list head lives in the block's header, and the chain never leaves
+//!   the block, so it is L2-resident by construction;
+//! - a freed chunk threads `{ next, size }` through its own payload, so a
+//!   live buffer carries no metadata (minimum chunk 16 bytes for it);
+//! - `plenty` and `tight` allocation just bump; `critical` first-fit
 //!   searches at most [`CRITICAL_SEARCH_BOUND`] entries across the lists
 //!   of the blocks this arena owns, current first;
-//! - chunks never coalesce (accepted: damage bounded by one block);
+//! - chunks never coalesce, the damage being bounded by one block;
 //! - a per-block live count returns fully-emptied blocks to the pool.
 //!
-//! Payloads larger than a block payload are OS-direct (`ll_alloc` /
+//! Payloads larger than a block payload are OS-direct (`ll_alloc` and
 //! `ll_free`), invisible to this machinery.
 //!
-//! ## Cross-thread free
-//!
 //! A buffer here holds the body of an entity — a string's bytes and an
-//! array's table storage — and an entity dies wherever its last
-//! reference is dropped. So this heap obeys the same ownership rules as
-//! the object heap (`heap.rs`), for the same reason and in the same
-//! shape: each block carries an `owner` and its own lock-free MPSC
-//! stack, a free from another thread posts to **that block's** stack and
-//! touches nothing else, and the owner accounts for the posted chunks
-//! when it collects. `live` is written only by the owner, so a block
-//! holding a posted chunk can never look empty and be recycled under
-//! its real holder.
+//! array's table storage — and an entity dies wherever its last reference
+//! is dropped, so this heap obeys the object heap's ownership rules in the
+//! same shape: per-block `owner`, per-block lock-free stack for frees from
+//! other threads, owner-written `live`, hand-over at thread exit, adoption
+//! on the refill path (`docs/memory-manager.md`, "Cross-thread free").
 //!
-//! At thread exit blocks are handed over rather than dropped: empty ones
-//! to the pool, ones still holding chunks onto a global abandoned list,
-//! from which the next thread that needs a block adopts one. Without
-//! that, every block a thread still owned when it died was stranded, and
-//! so was every later cross-thread free posted into it.
-//!
-//! An adopted block is **reused, not merely reclaimed**: its bump cursor
-//! lives in its own header, so the adopter resumes the tail its previous
-//! owner left, and its inherited free list is searched with everything
-//! else the arena owns. A block abandoned with one live chunk would
-//! otherwise hold the other 63 KiB out of circulation until that chunk
-//! died (`dev/DECISIONS.md`, 2026-08-05).
-//!
-//! This arrived on 2026-08-04 with the first entity body that lives
-//! here. Until then the module carried a Phase-1 note deferring it until
-//! "a real consumer needs it", and the note outlived its own trigger by
-//! one task (`dev/DECISIONS.md`).
+//! An adopted block is **reused rather than merely reclaimed**: its bump
+//! cursor lives in its own header, so the adopter resumes the tail its
+//! previous owner left, and the inherited free list is searched with
+//! everything else the arena owns. A block abandoned with one live chunk
+//! would otherwise hold the other 63 KiB out of circulation until that
+//! chunk died (`dev/DECISIONS.md`, "a buffer block carries its own cursor,
+//! so an adopted block is reused and not just held").
 
 use std::cell::Cell;
 use std::sync::Mutex;
