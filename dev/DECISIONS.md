@@ -8,6 +8,58 @@ never edited or deleted.
 
 ---
 
+## 2026-08-12 — the termination probe's storage, and the bound that prices its abort
+
+**Decided:** the entered set of `separate`'s debug termination probe stays on
+the system allocator and becomes a `HashSet<*mut LLArray>`. This supersedes the
+cost paragraph of the entry below, "the deep copy's termination probe, and what
+termination rests on", and leaves the rest of that entry standing.
+
+**The abort is priced by a bound the `WorkList` sentence does not reach.** Every
+entry in the set is one live source, and every source past the root is a
+112-byte arena array entity (`size_of::<LLArray>()`, asserted in
+`array/entity/tests/the_entity_around_the_table.rs`). A level of attacker
+nesting therefore costs the arena 112 bytes to cost the set a pointer and a
+control byte, so the arena refuses the graph before the set reaches the
+allocator's abort. `WorkList`'s "a refusal has to be a value rather than an
+abort" governs a release structure whose growth has no such cap above it, and it
+keeps that sentence: it stays true of the pending list. Nothing in the harness
+exhausts the system allocator, so this margin is stated rather than exhibited —
+there is no arm to force and no test to write for it.
+
+**Refused: the bare `Table` and the `WorkList` as the entered set.** Both draw
+from the pool whose refusals `array::entity`'s tests choreograph, and both
+answers a debug probe can give its own refusal are worse than the abort they
+replace. A probe that refuses the copy fails
+`a_refused_work_list_gives_the_nested_copy_back` and
+`a_refused_association_gives_the_nested_copy_back` at the first iteration: those
+tests hold `FORCE_OOM` and `FORCE_REFUSE_LONGLIVED` raised across the whole
+`separate` call, so the probe refuses before the root's `fill_from` and the
+nested copy they reclaim is never built. A probe that skips its check instead
+keeps them green while standing disarmed for every forced-refusal run, and its
+first insert becomes an allocation each later refusal test has to step around —
+the S7.7 class, where a test stayed green measuring an allocation that had moved
+beneath it. The `WorkList` is refused a second time over for keeping membership
+a scan.
+
+**The scan's price, measured.** "In the tens today" was already wrong when it
+was written: `a_deep_arena_array_is_copied_out_through_the_work_list` copies a
+chain of 800 distinct entities, which is 319,600 pointer comparisons per run,
+and Miri runs that test. One test, `--test-threads=2`, Miri's own clock:
+83.38 s with the scanning `Vec`, 36.61 s with the probe compiled out, 45.35 s
+with the `HashSet`. The probe accounted for 46.77 s of the first run and for
+8.74 s of the third; the native cost of any of the three is unmeasured. A graph
+larger still would change the structure and not the allocator — the pool stays
+refused at every count.
+
+**The claim is unchanged, so nothing replaces it.** A counter bounded by the
+arena's population would assert only that the loop runs no more times than there
+are entities, and it would fire at the end of a doubling walk naming neither the
+entity nor the cause. The assertion fires at the second entry and names both
+causes, which is what it was restored for.
+
+---
+
 ## 2026-08-12 — the deep copy's termination probe, and what termination rests on
 
 **Decided:** the debug-only `entered` vector returns to `separate`'s loop

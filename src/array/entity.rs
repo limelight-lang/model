@@ -474,19 +474,26 @@ pub unsafe fn separate(
     // passes through is non-COW and is published by the barrier rather
     // than entered. Recording it would cost a table allocation on every
     // escape copy to answer a shape nothing can build.
+    //
+    // The set draws from the system allocator, which no fault injection
+    // in this crate names, so the probe cannot move which allocation a
+    // refusal test measures. Its growth is capped by the arena: one entry
+    // per live source, and a source past the root is a 112-byte arena
+    // array entity, so the arena refuses the graph long before the set
+    // reaches the allocator's abort (`dev/DECISIONS.md`, "the termination
+    // probe's storage, and the bound that prices its abort").
     #[cfg(debug_assertions)]
-    let mut entered: Vec<*mut LLArray> = Vec::new();
+    let mut entered: std::collections::HashSet<*mut LLArray> = std::collections::HashSet::new();
     let mut next = Some((src, dst));
     while let Some((s, d)) = next {
         #[cfg(debug_assertions)]
         {
             assert!(
-                !entered.contains(&s),
+                entered.insert(s),
                 "a source entered the deep copy twice: a child's count \
                  under-reported its holders, or the graph closes on itself \
                  through the root"
             );
-            entered.push(s);
         }
 
         if !unsafe { fill_from(s, d, arena, &mut pending, &mut copies, reason) } {
