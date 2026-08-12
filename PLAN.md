@@ -303,19 +303,111 @@ key it cannot hold, both configurations green, Miri silent.
         silent after, over `array::entity` 24, `array::table` 34,
         `array::element` 29, `array::vector` 8, `walk::` 22 and
         `promote::` 20; loom's four cases unchanged.
-- [~] S7.5 The COW copy takes a vector
+- [x] S7.5 The COW copy takes a vector
       done: a shared vector array separates into a vector copy, an arena
         one is copied out through the work list, and both hold what the
         source held, in both configurations
       tier: T2 · role: Critic
-      2026-08-12: **the code is in and the criterion is met (`f10e42f`),
-        and the Critic is owed.** `new_empty_copy` builds the destination
-        in the source's representation and `fill_from` splits by tag over
-        one shared half, `element_for_destination`, which carries the
-        barrier rules for both. Two tests, both seen failing on the tag
-        assertion when the vector arm is removed. Gate green, rc-walk 447
-        and rc-trace 428. Call the Critic on that commit before marking
-        this closed.
+      2026-08-12: `new_empty_copy` builds the destination in the source's
+        representation and `fill_from` splits by tag over one shared half,
+        `element_for_destination`, which carries the barrier rules for
+        both. Two tests, both seen failing on the tag assertion when the
+        vector arm is removed (`f10e42f`).
+      Critic 2026-08-12: **the destination's representation came from the
+        factory rather than from the source.** The hash arm built `dst`
+        through `ll_array_new`, whose stamp S7.2 flips, so the first
+        separation of a migrated array after that flip asserts in debug
+        and in release runs `Table::insert` under a head reading `Vector`:
+        a walker then takes the vector stride over the table's index
+        slots, and `dispose_storage` frees the chunk through
+        `Vector::dispose`, which reads `Table::mask` where the granted
+        size should be. Fixed — both arms go through the two named
+        factories, and the `if tag == Vector` became an exhaustive match,
+        which is the shape S7.1's round-2 finding in `walk.rs` already
+        cost once. Seen failing with the stamp flipped to `Vector`:
+        `left: Vector, right: Hash` at `entity.rs:142`. Two coverage gaps
+        closed with it — the deep vector test's source was one element
+        long, so the pass was pinned only at n = 1, and no test put a
+        reference box in a vector, so the vector pass never exercised the
+        one place PHP collapses a reference.
+      Critic 2026-08-12, three findings older than this step, each
+        verified against the code: two on the refusal path, which are
+        S7.6; and the recursion entered per entry rather than per entity,
+        which went to the Sage and is S7.7.
+      handoff: commits `f10e42f` and `e978e08`. `new_empty_copy` matches
+        on the source's tag and names the representation itself, with
+        `ll_array_new` out of that path;
+        `a_hash_source_is_copied_into_a_hash_whatever_the_factory_
+        stamps` builds its source through `new_with_storage` so the pin
+        survives S7.2. Gate green, 17 legs: rc-walk 447 → 449 passed,
+        rc-trace 428 → 430. Miri silent over `array::entity` (31 passed,
+        1 ignored) and `array::element` (29 passed), which is the run S7.5
+        and the stamp both owed.
+- [ ] S7.6 A refused copy gives back what it allocated
+      done: a forced refusal of the nested destination reports null
+        without dereferencing it, and a refusal part-way through
+        `separate` leaves no array entity behind — proved by an instrument
+        that can see one slot, the block pool's guard being unable to
+      tier: T2 · role: Critic
+      Critic 2026-08-12, both older than S7.5 and both verified:
+        `element_for_destination`'s refusal block calls `ll_release` and
+        `dispose_storage` on `copy` after `copy.is_null()` has
+        short-circuited the `||`, and neither call guards null —
+        `ll_release` opens with `&mut *entity` under rc-trace and with
+        `flags_load(entity)` under rc-walk. And every refusal path out of
+        `separate` releases the children and disposes the storage without
+        freeing `dst` itself, which stays a GcHeap entity at count 1 that
+        no edge names — a computed root by the derived-roots corollary,
+        so nothing reclaims it later either.
+        `who_owns_a_key_reference::a_refused_heap_copy_gives_an_escaped_
+        child_back_through_the_barrier` drives the second one and passes,
+        the leaked slot sitting inside a block its own guard keeps alive.
+- [ ] S7.7 The deep copy preserves the source's sharing
+      done: a source whose child two entries name yields one copy of that
+        child held twice, `separate` carries no `entered` vector, and a
+        chain of thirty arrays each naming its predecessor twice is copied
+        in 31 array allocations
+      tier: T2 · role: Critic
+      Critic 2026-08-12: the recursion is entered per entry rather than
+        per entity, so a diamond pushes the same source twice, and
+        `separate`'s loop then fires `assert!(!entered.contains(&s), "a
+        COW subgraph closed on itself")` on a DAG whose invariant is
+        intact. In release the work doubles per level: thirty arena
+        arrays, each naming its predecessor twice, cost 2^30 copies when
+        the outermost crosses into a GcHeap slot. Depth on a store path is
+        attacker-shaped input, which is the reason the work list exists,
+        and the list bounds the machine stack alone. Older than S7.5, and
+        the price is one the recursion ruling never named, so it went to
+        the Sage rather than into the step.
+      Sage 2026-08-12: **the copy preserves the source's sharing** — one
+        distinct source entity yields one copy, held once per entry that
+        names it. A COW entity's identity is not observable (`barrier.rs`,
+        `store_category_barrier`), so the two answers differ only in cost,
+        and the cost is 2^depth on input the RFC itself calls
+        attacker-shaped. The association is the generic `Table` used bare:
+        a stack `StorageHead`, category `GcHeap` so the storage is
+        buffer-arena chunks like the work list's, the source pointer as
+        the key and the copy carried as an uninterpreted value — the
+        second customer that table was kept headerless for. It is disposed
+        beside `pending` on every exit of `separate`. It is consulted
+        inside the `is_nested_arena_array` branch alone, and there only
+        when the child's count is above one: count 1 proves this entry is
+        the only name, which is the reading `element_for_copy` already
+        stakes its unwrap on. A hit routes the existing copy through
+        `barrier::publish_child`, which for a heap child into a heap slot
+        is a retain. A refused insert unwinds the way a refused
+        `pending.push` does, so null keeps meaning out of memory. The
+        `entered` vector and its assertion are deleted, message and all: a
+        probe that indicts an intact invariant is worse than none, and
+        termination rests on the association instead. A forwarding pointer
+        in the source header is refused — it writes into words the
+        collector reads at agreed widths, and it breaks the source being
+        untouched, which the refusal path's simplicity rests on. Final.
+      2026-08-12, owed to the RFC by this step: `arrays-hashtable.md`'s
+        "Depth is bounded by the arena-resident COW subtree" becomes work
+        linear in the arena-resident COW sub*graph*, and its open item
+        "recursion-depth guard on the escape copy" closes. Amending an
+        authoritative sentence is Edmond's to accept.
       2026-08-12, found by flipping the stamp inside S7.2 and reverting
         it: `separate` and `fill_from` reach for the table —
         `as_table(src)`, `as_table_mut(dst)` — so a vector array meeting
