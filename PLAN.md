@@ -554,7 +554,7 @@ key it cannot hold, both configurations green, Miri silent.
         verified at this commit: `new_empty_copy` and `fill_from` both
         dispatch on the tag. The RFC amendment owed by S7.7 moved to S7.4
         and is still Edmond's to answer.
-- [ ] S7.2 Factories stamp the tag and the element write dispatches on it
+- [x] S7.2 Factories stamp the tag and the element write dispatches on it
       done: `ll_array_new` stamps `Vector`, and a strategy-2 write of a
         string key migrates through the tag rather than through a direct
         table call
@@ -577,6 +577,17 @@ key it cannot hold, both configurations green, Miri silent.
         because a hole and a rewound cursor are both states a dense range
         has no bytes for; and `make_ref` migrates before it vivifies an
         absent key, so that its own undo cannot refuse.
+      handoff: commit `3093fc2`. The stamp cost 137 fixtures, and the rule
+        that split them is `dev/DECISIONS.md`, "a test asks for the ordered
+        hash, or takes what the factory stamps": `array::testing::hash_array`
+        is the factory plus the migration, and a test about an array rather
+        than about the hash now meets a vector and fills it with
+        `testing::push`. The step's own group is
+        `array::element::tests::what_a_key_the_vector_cannot_hold_does`,
+        three tests, all seen failing on the old stamp. Gate green on 17
+        legs, 457 → 460 and 438 → 441; Miri silent over `array::element`,
+        `array::entity`, `array::vector`, `array::table`, `promote::`,
+        `walk::` and, in rc-trace, `gc::`.
 - [ ] S7.3 The 2 → 3 migration
       done: a test pins insertion order across the migration, and the
         append cursor carries over with it — `next_free` is the vector's
