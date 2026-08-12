@@ -607,7 +607,7 @@ key it cannot hold, both configurations green, Miri silent.
         answering 0, the field being `Table::empty`'s and the empty loop
         leaving it alone. Five tests listed by name and run green at
         `b63692f`; nothing was added for this step.
-- [ ] S7.4 The RFC corrections this stage owes
+- [~] S7.4 The RFC corrections this stage owes
       done: `arrays.md`'s "strategy 1 never transitions",
         `memory/buffers.md`'s grouping of immortal with long-lived, and
         `arrays-hashtable.md`'s "two bits for the strategy … live there
@@ -634,6 +634,15 @@ key it cannot hold, both configurations green, Miri silent.
         and its open item "recursion-depth guard on the escape copy"
         closes. Amending an authoritative sentence is Edmond's to accept,
         and he has not answered yet.
+      2026-08-12: five of the six landed in `rfc` as `2841ab4` — the two
+        documents now agree on 1 → 2, the strategy tag is out of the byte
+        the flood ladder writes, immortal has a bullet of its own with
+        neither growth nor free, the refused publish gives the private
+        entity back as well as its storage, and the `unreachable!` is
+        named as the default beside the string and array arms. `rfc` was
+        at `d807b12` rather than the handoff's `d14105f`: one commit of
+        Edmond's about the backlog had landed. What is left is the
+        sentence above, which is his.
 
 The 1 → 2 transition stays out of the stage: strategy 1 has no producer
 in the crate, and an arm with no producer is what this crate has refused
