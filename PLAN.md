@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-12 · Active: S17, then S15, then S16, then S7
+Updated: 2026-08-12 · Active: S15, then S16, then S7
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -132,72 +132,20 @@ reentrant, so rc-trace deadlocked at every width down to a single thread
 while the default configuration stayed green, the test being
 `cfg(not(rc-walk))`. Trap in `dev/POSTMORTEM.md`, 2026-08-12.
 
-## S17 — A test measures the pool while the journal takes a block out of it
-
-Found on 2026-08-12 by the gate's own triple run, and at the head because
-`dev/WORKFLOW.md` puts a known bug before new work. The first instance was
-`memory::arena::tests::the_logs_the_reset_reads::reset_hands_destructors_
-and_recycles_blocks`, which asserts that an arena created after a reset
-allocates out of **the same block** the reset recycled: 1 in 35 at
-`--test-threads=8` under rc-trace with `debug-journal`, and not seen at
-the gate's width of 4.
-
-**The mechanism is named, and it served the whole family.** A ring is one
-pooled block, and `BlockPool::put` raises its decommission record with the
-returned block already in the thread cache, so a thread whose first record
-is that one takes its ring out of the block just returned. Which record is
-a thread's first depends on the process-wide enabled mask, which every
-quieting test moves, so nothing about the pool decides it. Legs at eight
-threads found eight more tests of that shape, and the remedy is one line
-in the fixture rather than one per test.
-
-Goal: a test that measures the pool measures it in a world where the
-journal cannot take a block underneath it.
-
-Done when: 600 runs at eight threads in each GC configuration with
-`debug-journal` are clean, and every repair names the draw that disturbed
-its test rather than serialising until the symptom stops.
-
-- [x] S17.1 Name what takes the block, and repair the test or the claim
-      done: a run that failed before the repair and 60 clean after, with
-        the mechanism named rather than guessed
-      tier: T2 · role: —
-      handoff: the test holds `journal::kinds::disable_sites_for_test()`
-        before the pool's guard, that lock being the outer one. The proof
-        is an injection of the window a quieting test opens — the mask at
-        0 across `ll_thread_init`, the default set back before the reset
-        — which failed on the spot with the returned block stamped
-        `BLOCK_KIND_LARGE`, the ring's own kind, and the second arena one
-        block up rather than one region, as this stage first guessed. 300
-        runs at eight threads, no failure. Commit 9478205.
-- [x] S17.2 The rest of the family, and the fixture that ends it
-      done: every test the legs name is repaired, and 600 runs at eight
-        threads in each GC configuration are clean
-      tier: T2 · role: —
-      handoff: repairing tests one at a time made the suite worse, and
-        the leg said so — three quieted, five new instances in the next
-        600 runs, three of them tests that had never failed. So the
-        remedy moved into the fixture: `block_pool::test_guard` calls
-        `journal::take_ring_for_test`, the ring is drawn before the body,
-        and the seven per-test quiet guards came back out. 1200 runs
-        clean across both configurations, four of the repaired tests
-        never having been touched. Commit bd081c5, trap in
-        `dev/POSTMORTEM.md`.
-- [x] S17.3 The four instruments a fixture cannot help
-      done: each names what moves the count it reads, and measures
-        something no other thread can move
-      tier: T2 · role: —
-      handoff: `single_live_slot_churn_does_not_recarve_block` reads this
-        thread's block cache instead of `blocks_out`;
-        `a_refused_ring_is_not_asked_for_a_second_time` reads the refusal
-        count instead of the registry's totals;
-        `the_retired_list_keeps_the_newest_and_drops_the_oldest` states
-        that the evicted rings are a prefix of the retirement order
-        rather than exactly one; and `a_block_round_trip_is_a_commission_
-        and_a_decommission` reads its trip as the tail, because `mark`
-        frees the rings an eviction left pending and that free
-        decommissions a block the next `get` draws. Each seen failing by
-        injection first. Commit bd081c5.
+**S17 is closed and deleted by rule 23.1.3.** An arena test asserted it
+got back the block its reset had just returned, and it was one instance of
+a family: a journal ring is one pooled block, so the record that allocates
+one takes a block out of the thread cache, and a test whose thread
+journals for the first time mid-body has what it measures taken from under
+it. Repairing tests one at a time made the suite worse — each quieted test
+widens the window for the rest — so `block_pool::test_guard` takes the
+ring before the body instead, and four instruments that read process-wide
+counters were replaced by ones no other thread can move. 1200 runs at
+eight threads across both GC configurations, no failure, against 10 in 300
+when the hunt began. What survives it is `dev/POSTMORTEM.md`, 2026-08-12,
+"a ring is a block, and a thread's first record decides when it is taken",
+and the doc on `journal::take_ring_for_test`. Commits 9478205, bd081c5 and
+29ea0f9; the stage's Code Reviewer pass is the last of them.
 
 ## S15 — What a comment carries, and where the argument lives
 
