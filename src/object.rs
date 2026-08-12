@@ -372,12 +372,11 @@ pub(crate) unsafe fn for_each_counted_child(
 /// goes through: tracing, severing, the arena reset's walk, and the
 /// concurrent collector alike.
 ///
-/// It existed in three copies until 2026-08-06, and the copies cost real
-/// defects rather than tidiness: when the interpolated template moved its
-/// value count from the class to the instance, three walkers had to learn
-/// it and the third was found by review after the fact. The difference
-/// between those copies was never the stride — it was how the memory is
-/// read — so that is what `R` is (`crate::walk::CellReader`).
+/// It stood in three copies, and when the interpolated template moved its
+/// value count from the class to the instance all three had to learn it,
+/// the last found by review rather than by the suite. What differed
+/// between them was never the stride but how the memory is read, which is
+/// what `R` is (`crate::walk::CellReader`).
 ///
 /// Keyed on `(base, cls)` rather than on an entity pointer, because one
 /// caller has no entity to read a class from: a static block is a

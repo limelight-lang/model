@@ -25,7 +25,8 @@
 //!
 //! What the option buys, what it costs, why neither arm defends against
 //! hash flooding, and what a pre-forking server does to "per process":
-//! `dev/DECISIONS.md`, 2026-08-04.
+//! `dev/DECISIONS.md`, "folding a literal key's hash is a build option,
+//! and it is off by default".
 
 use super::rapidhash;
 

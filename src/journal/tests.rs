@@ -487,11 +487,14 @@ mod a_ring_across_a_threads_life {
     /// drops is the oldest. That bound is the only thing between a
     /// program that spawns a thread per request and a ring per request
     /// held for the life of the process.
+    ///
+    /// Read per identity through [`rings_named`], because the list is
+    /// process-global and a thread exiting elsewhere in the suite retires
+    /// a ring into it while this test counts.
     #[test]
     fn the_retired_list_keeps_the_newest_and_drops_the_oldest() {
         let _quiet = kinds::disable_sites_for_test();
         let _g = crate::memory::block_pool::test_guard();
-        let (_, retired_before) = registry_counts();
 
         let mut mine = Vec::new();
         let mut freed = Vec::new();
@@ -513,14 +516,27 @@ mod a_ring_across_a_threads_life {
             retired_after, RETIRED_KEPT,
             "the retired list outgrew its bound"
         );
-        assert_eq!(
-            freed.len(),
-            retired_before + 1,
-            "the list dropped a number of rings other than its overflow"
+        // Per identity, never by the list's totals. Another thread
+        // retiring a ring inside the loop above changes how many rings
+        // were dropped and which ones, and `test_guard()` does not
+        // serialise a retirement; what it cannot change is that the
+        // oldest of this test's own went and the rest stayed.
+        assert!(
+            freed.contains(&mine[0]),
+            "the oldest of this test's rings was not dropped"
         );
-        // Oldest first: everything that was there before, then the first
-        // of this test's own.
-        assert_eq!(freed.last(), mine.first().map(|_| &mine[0]));
+        assert_eq!(
+            rings_named(mine[0]).1,
+            0,
+            "the ring reported dropped is still on the list"
+        );
+        for thread in &mine[1..] {
+            assert_eq!(
+                rings_named(*thread).1,
+                1,
+                "the list dropped a ring newer than its oldest"
+            );
+        }
 
         // Leave the list as it was found, so that a later test's window
         // does not carry this one's evictions.
