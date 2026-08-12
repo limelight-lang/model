@@ -18,13 +18,112 @@
 //! those rules.
 
 use crate::array::entity::{
-    LLArray, as_table, as_table_mut, category_of, give_value_back, publish_key,
+    LLArray, as_table, as_table_mut, as_vector, as_vector_mut, category_of, give_value_back,
+    migrate_to_hash, publish_key, storage_head,
 };
+use crate::array::head::StorageTag;
 use crate::array::table::Key;
+use crate::array::vector::Vector;
 use crate::memory::context::LLContext;
 use crate::refcount::{MemoryCategory, RcHeader};
 use crate::string::{LLString, string_bytes};
 use crate::value::{Tag, Value};
+
+/// Which representation `a` holds, read once per operation.
+///
+/// Every function in this layer that reaches the storage asks this first:
+/// the two representations answer the same questions with different
+/// strides, and reading the tag is the only way to know which. The
+/// mutator may read it plainly — a walker takes it from a validated
+/// reading instead (`crate::array::head`).
+///
+/// # Safety
+/// `a` addresses a live array.
+#[inline]
+unsafe fn tag_of(a: *mut LLArray) -> StorageTag {
+    unsafe { (*storage_head(a)).tag() }
+}
+
+/// The element under `key` as the storage holds it, or `None` for an
+/// absent key. A reference-state element comes back as the box's
+/// `Value`, which is what every caller here wants to see.
+///
+/// A vector answers `None` for every key outside `0..used`, including a
+/// string key: what such a key *means* is a migration, and that decision
+/// belongs to the writes rather than to a read
+/// (`crate::array::vector::Vector::get`).
+///
+/// # Safety
+/// `a` addresses a live array; `key` is canonical.
+#[inline]
+unsafe fn element_at(a: *mut LLArray, key: Key) -> Option<Value> {
+    match unsafe { tag_of(a) } {
+        StorageTag::Hash => {
+            let (table, head) = unsafe { as_table(a) };
+            table.get(head, key)
+        }
+        StorageTag::Vector => {
+            let position = dense_position(key)?;
+            let (vector, head) = unsafe { as_vector(a) };
+            vector.get(head, position)
+        }
+        StorageTag::Typed => unreachable!("no producer stamps the typed vector"),
+    }
+}
+
+/// The key the next append takes, or `None` when no successor is left —
+/// [`append`] asks before it separates, so this reads and moves nothing.
+///
+/// # Safety
+/// `a` addresses a live array.
+#[inline]
+unsafe fn append_cursor(a: *mut LLArray) -> Option<i64> {
+    match unsafe { tag_of(a) } {
+        StorageTag::Hash => unsafe { as_table(a) }.0.append_key(),
+        StorageTag::Vector => Vector::append_key(unsafe { as_vector(a) }.1),
+        StorageTag::Typed => unreachable!("no producer stamps the typed vector"),
+    }
+}
+
+/// `key` as a vector position, or `None` when it is not one: a string
+/// key, or a negative integer.
+///
+/// A position past the end is still a position here — the caller decides
+/// whether that is an absence, an append or a migration.
+#[inline]
+fn dense_position(key: Key) -> Option<usize> {
+    match key {
+        Key::Int(k) if k >= 0 => Some(k as usize),
+        _ => None,
+    }
+}
+
+/// Bring `a` to a representation that can hold `key`, which for a vector
+/// meeting a key outside `0..=used` is the 2 → 3 migration
+/// (`rfc/model/arrays.md`, "Transition Rules": a string key or a sparse
+/// index ends the dense list).
+///
+/// **`0..=used` rather than `0..used`**, because the position one past
+/// the end is the append and a vector holds it by growing. Everything
+/// else a write could name — a string key, a negative key, a gap — is a
+/// state the representation has no bytes for.
+///
+/// False is the migration's own refusal, with the array still a vector
+/// holding everything it held.
+///
+/// # Safety
+/// `a` a live, exclusively owned array; `key` canonical.
+unsafe fn representation_for(a: *mut LLArray, key: Key) -> bool {
+    if unsafe { tag_of(a) } != StorageTag::Vector {
+        return true;
+    }
+
+    let used = unsafe { as_vector(a) }.1.used();
+    match dense_position(key) {
+        Some(position) if position <= used => true,
+        _ => unsafe { migrate_to_hash(a, category_of(a)) },
+    }
+}
 
 /// The separation composition every write here goes through: separate
 /// the holder's array if it is shared, run `write` on the array the
@@ -220,8 +319,7 @@ pub unsafe fn append(
         "the slot names an array"
     );
     let current = unsafe { (*slot).entity_ptr() } as *mut LLArray;
-    let (table, _) = unsafe { as_table(current) };
-    let Some(key) = table.append_key() else {
+    let Some(key) = (unsafe { append_cursor(current) }) else {
         return false;
     };
 
@@ -243,8 +341,11 @@ pub unsafe fn append(
 /// table this holder does not exclusively own, and would make the
 /// holder's sharing state depend on the argument.
 ///
-/// `false` reports the separation's refusal, the only one here: removal
-/// allocates nothing, and the array is unchanged as it is for [`set`].
+/// `false` reports two refusals, each leaving every array unchanged as
+/// they do for [`set`]: the separation's copy, and — on a strategy-2
+/// array holding the key — the migration a removal needs before it can
+/// express what it leaves behind ([`remove_from`]). Removal itself
+/// allocates nothing.
 ///
 /// # Safety
 /// Per [`set`], less the value.
@@ -254,12 +355,7 @@ pub unsafe fn unset(
     slot: *mut Value,
     key: Key,
 ) -> bool {
-    unsafe {
-        write_through(ctx, owner_cat, slot, |a, _arena| {
-            remove_from(a, key);
-            true
-        })
-    }
+    unsafe { write_through(ctx, owner_cat, slot, |a, _arena| remove_from(a, key)) }
 }
 
 /// `&$a[k]`: the element's `ReferenceBox`, boxing the element if it is
@@ -312,10 +408,20 @@ pub unsafe fn make_ref(
     let mut boxed = std::ptr::null_mut();
     let separated = unsafe {
         write_through(ctx, owner_cat, slot, |a, arena| {
-            let (table, head) = as_table(a);
-            let vivified = !table.contains(head, key);
-            if vivified && !store_into(a, arena, key, Value::null()) {
-                return false;
+            let vivified = element_at(a, key).is_none();
+            if vivified {
+                // The undo below may not be able to refuse, and on a
+                // vector a removal is a migration, which can. So the
+                // migration happens here, before anything is vivified,
+                // where its refusal is this call's ordinary `false` with
+                // nothing to take back.
+                if tag_of(a) == StorageTag::Vector && !migrate_to_hash(a, category_of(a)) {
+                    return false;
+                }
+
+                if !store_into(a, arena, key, Value::null()) {
+                    return false;
+                }
             }
 
             boxed = box_element(a, arena, key);
@@ -327,7 +433,11 @@ pub unsafe fn make_ref(
                 // to throw away, so the two paths would disagree about
                 // what `false` means.
                 if vivified {
-                    remove_from(a, key);
+                    let removed = remove_from(a, key);
+                    debug_assert!(
+                        removed,
+                        "the vivification left a hash, whose removal is free"
+                    );
                 }
 
                 return false;
@@ -370,8 +480,7 @@ pub unsafe fn get(slot: *const Value, key: Key) -> Option<Value> {
         "the slot names an array"
     );
     let a = unsafe { (*slot).entity_ptr() } as *mut LLArray;
-    let (table, head) = unsafe { as_table(a) };
-    let element = table.get(head, key)?;
+    let element = unsafe { element_at(a, key) }?;
     if element.tag() == Tag::Reference {
         let boxed = element.entity_ptr() as *const crate::reference::LLReference;
         return Some(unsafe { (*boxed).value });
@@ -434,12 +543,21 @@ unsafe fn store_into(
     key: Key,
     value: Value,
 ) -> bool {
-    let (table, head) = unsafe { as_table(a) };
-    if let Some(element) = table.get(head, key) {
+    // Before the element is read, because a migration moves every element
+    // and the reading would be of the representation that is going away.
+    if !unsafe { representation_for(a, key) } {
+        return false;
+    }
+
+    if let Some(element) = unsafe { element_at(a, key) } {
         if element.tag() == Tag::Reference {
             let boxed = element.entity_ptr() as *mut crate::reference::LLReference;
             return unsafe { store_through_box(arena, boxed, value) };
         }
+    }
+
+    if unsafe { tag_of(a) } == StorageTag::Vector {
+        return unsafe { store_into_vector(a, arena, key, value) };
     }
 
     let category = unsafe { category_of(a) };
@@ -482,6 +600,45 @@ unsafe fn store_into(
             true
         }
     }
+}
+
+/// [`store_into`]'s vector half: overwrite a position or append past the
+/// last one, the two writes a dense range can take.
+///
+/// The key is an integer inside `0..=used` — [`representation_for`] has
+/// migrated everything else away — so the only refusals are the value's
+/// publication and the vector's growth, and both leave the array as it
+/// was. The reference-state element is the caller's case, settled before
+/// this is reached.
+///
+/// # Safety
+/// `a` a live, exclusively owned array whose storage is the mixed vector;
+/// `arena` the live mounted arena.
+unsafe fn store_into_vector(
+    a: *mut LLArray,
+    arena: *mut crate::memory::arena::Arena,
+    key: Key,
+    value: Value,
+) -> bool {
+    let position = dense_position(key).expect("a key the vector cannot hold has migrated");
+    let category = unsafe { category_of(a) };
+    let v = match unsafe { crate::memory::barrier::publish_child(arena, category, value) } {
+        Some(published) => published,
+        None => return false,
+    };
+
+    let (vector, head) = unsafe { as_vector_mut(a) };
+    if let Some(displaced) = vector.set(head, position, v) {
+        unsafe { give_value_back(category, &displaced) };
+        return true;
+    }
+
+    if vector.push(head, category, v) {
+        return true;
+    }
+
+    unsafe { give_value_back(category, &v) };
+    false
 }
 
 /// Write into an element that is in a reference state: into the box's
@@ -544,8 +701,7 @@ unsafe fn box_element(
     arena: *mut crate::memory::arena::Arena,
     key: Key,
 ) -> *mut crate::reference::LLReference {
-    let (table, head) = unsafe { as_table(a) };
-    let current = match table.get(head, key) {
+    let current = match unsafe { element_at(a, key) } {
         Some(element) => element,
         None => return std::ptr::null_mut(),
     };
@@ -590,21 +746,29 @@ unsafe fn box_element(
         "a heap non-COW entity is never copied by the barrier"
     );
     let element = Value::entity(Tag::Reference, boxed as *mut RcHeader);
-    // The key is present, so the entry is overwritten rather than added:
+    // The key is present, so the element is overwritten rather than added:
     // no growth, nothing to refuse, and the key this call passes is never
-    // the one the entry keeps.
-    let (table, head) = unsafe { as_table_mut(a) };
-    let displaced = match table.insert(head, category, key, element) {
-        Some((_, displaced)) => displaced,
-        None => {
-            debug_assert!(false, "an overwrite of a present key cannot be refused");
-            // Not `destroy_unpublished`: the barrier above published this
-            // box, and for an arena array that publication is a
-            // release-at-reset record naming it. It goes back the way any
-            // published entity does, so the record still has an entity to
-            // release when the reset reaches it.
-            unsafe { crate::memory::barrier::drop_ref(category, boxed as *mut RcHeader) };
-            return std::ptr::null_mut();
+    // the one an entry keeps. A vector holds a boxed element at a position
+    // like any other Value, so this is the one write of the pair that
+    // needs no migration.
+    let displaced = if unsafe { tag_of(a) } == StorageTag::Vector {
+        let position = dense_position(key).expect("a present vector element sits at a position");
+        let (vector, head) = unsafe { as_vector_mut(a) };
+        vector.set(head, position, element)
+    } else {
+        let (table, head) = unsafe { as_table_mut(a) };
+        match table.insert(head, category, key, element) {
+            Some((_, displaced)) => displaced,
+            None => {
+                debug_assert!(false, "an overwrite of a present key cannot be refused");
+                // Not `destroy_unpublished`: the barrier above published
+                // this box, and for an arena array that publication is a
+                // release-at-reset record naming it. It goes back the way
+                // any published entity does, so the record still has an
+                // entity to release when the reset reaches it.
+                unsafe { crate::memory::barrier::drop_ref(category, boxed as *mut RcHeader) };
+                return std::ptr::null_mut();
+            }
         }
     };
 
@@ -618,7 +782,7 @@ unsafe fn box_element(
     boxed
 }
 
-/// The table half of [`unset`]: remove the entry and give the table's
+/// The storage half of [`unset`]: remove the entry and give the table's
 /// two references back. Silent on an absent key, which PHP's `unset` is
 /// too.
 ///
@@ -626,15 +790,36 @@ unsafe fn box_element(
 /// arena reset log or an escape hold-count may own either reference, and
 /// it absorbs the integer key's null itself.
 ///
+/// **A vector migrates before it removes anything**, and false is that
+/// migration's refusal — the one thing removal can refuse. A dense range
+/// has no bytes for the state a removal leaves: a position taken out of
+/// the middle is a hole, and the last one taken out would rewind the
+/// append cursor, which is the vector's length and may not fall
+/// (`Table::adopt_append_state`, on the cursor a removal leaves standing).
+/// An absent key needs no representation of its own, so it is answered
+/// before the migration and costs nothing.
+///
 /// # Safety
 /// `a` a live, exclusively owned array.
-unsafe fn remove_from(a: *mut LLArray, key: Key) {
+unsafe fn remove_from(a: *mut LLArray, key: Key) -> bool {
+    if unsafe { tag_of(a) } == StorageTag::Vector {
+        if unsafe { element_at(a, key) }.is_none() {
+            return true;
+        }
+
+        if !unsafe { migrate_to_hash(a, category_of(a)) } {
+            return false;
+        }
+    }
+
     let category = unsafe { category_of(a) };
     let (table, head) = unsafe { as_table_mut(a) };
     if let Some((old, removed_key)) = table.remove(head, key) {
         unsafe { give_value_back(category, &old) };
         unsafe { crate::memory::barrier::drop_ref(category, removed_key as *mut RcHeader) };
     }
+
+    true
 }
 
 /// The key a PHP subscript denotes: an integer for the canonical
