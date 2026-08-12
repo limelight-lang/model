@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-11 · Active: S14, then S7 (S13 closed and awaiting its stage review)
+Updated: 2026-08-12 · Active: S15, then S16, then S7
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -63,9 +63,9 @@ the one class of defect no other tool in this crate can see.
 
 The stages below are in **work order, which is the file's order rather
 than the numbers' one**: a number is never reissued once given, so a stage
-added later sits where it is to be done. S12 is such a stage, and it
-sits at the head because `dev/WORKFLOW.md` puts a known bug before new
-work — a test that cannot fail being one.
+added later sits where it is to be done. S15 and S16 are such stages,
+and they sit at the head because Edmond ruled on 2026-08-12 that the
+crate's comments and its test layout are unfit to build on.
 
 The five that were there first were ordered by the Sage on 2026-08-08 and
 approved by Edmond the same day; the three at the head of that order are
@@ -105,228 +105,106 @@ because the clock could not resolve it), `dev/INDEX.md`'s entry for
 `memory::large_entity`, and the code's own doc blocks. The design
 document in `rfc` stays.
 
-## S13 — Four ways a walker reads what was never written
+**S13 is closed and deleted by rule 23.1.3.** Four ways a walker read
+what was never written, each verified against the code and each older
+than the step that found it: compaction writing the published chunk, both
+`dispose` bodies publishing three words unbracketed, Phase 3 re-checking
+eight bytes of a sixteen-byte cell, and Phase 3 re-reading a cell in a
+chunk the array had left. What survives it is in `dev/DECISIONS.md`
+(2026-08-11, three entries), `dev/INDEX.md`, `dev/ARCHITECTURE.md`'s row
+for `array/head`, and the doc blocks on `StorageHead`, `collector::Edge`
+and `Epoch::row_still_has_its_cells`. Its own stage review found the
+crate's `dev/` records naming `Table::coherent_entries` and a bracket in
+`array/table.rs`, both of which moved with S7.1; the addresses are
+corrected in `dev/RESEARCH.md` and the decision they belong to keeps its
+old wording, that file forbidding edits to a closed entry.
 
-Found by S7.1's Critic, each verified against the code, each older than
-that step; the fourth came from S13.1's own Critic and is older still. At
-the head by `dev/WORKFLOW.md`'s bugs-first rule.
+**S14 is closed and deleted by rule 23.1.3.** Two steps. The append test
+now asks the arena for the room before each append and counts a move
+against the string path only where the block could have held the growth,
+so the short tail of an adopted block no longer reads as a defect
+(`dev/POSTMORTEM.md`, 2026-08-11). Its criterion ran at eight threads
+rather than sixteen, Edmond having lowered the width on 2026-08-12: 30
+runs in each configuration, no failure. The leg found one defect of its
+own, in S14.2's uncommitted work. A `test_guard()` was added to a test
+that already took one further down its body, and that lock is not
+reentrant, so rc-trace deadlocked at every width down to a single thread
+while the default configuration stayed green, the test being
+`cfg(not(rc-walk))`. Trap in `dev/POSTMORTEM.md`, 2026-08-12.
 
-Goal: the collector never observes a combination of bytes that was not a
-state of the array.
+## S15 — What a comment carries, and where the argument lives
 
-Done when: each defect has a test seen failing against it, under Miri
-where that is the only instrument.
+Edmond's ruling of 2026-08-12: the comments retell the code, they run
+long, and they cite `PLAN.md`, whose stages are deleted as they close. An
+argument worth keeping goes to `rfc` when it is about the model and to
+`docs/` when it is about this crate; the code keeps the contract and
+names the section the argument sits under.
 
-- [x] S13.1 `Table::compact_entries` writes the published chunk plainly
-      done: the entry move is atomic word by word, or the compaction
-        happens somewhere no accepted view can name; Miri's data-race
-        report on a walker against a compacting mutator goes silent
-      tier: T2 · role: Critic
-      It memcpys 32-byte entries inside the chunk the collector is
-        reading with relaxed atomic loads. A non-atomic write racing an
-        atomic read is UB rather than the torn value phases 3 and 4
-        repair, and `walk.rs`'s `CellReader` split exists to avoid
-        exactly this.
-      The criterion's first option was refused, and by arithmetic rather
-        than by cost: word-by-word atomic stores answer the race and
-        leave a walker mid-stride reading one entry at two indices, so
-        its child is counted twice. An in-edge count above the truth is
-        the one direction that frees a live object, where a missed edge
-        only leaks. So the move goes to a chunk nothing has published —
-        the destination is this thread's alone until the window opens,
-        which makes the copy legally plain.
-      handoff: `Table::move_entries` is the one body both growth and
-        compaction go through, with `EntryMove` saying what happens to
-        the holes; `compact` returns `Option<usize>` because it allocates
-        now and can be refused, and `grow`'s hole branch propagates that.
-        The old chunk is freed after the window, which is safe for the
-        reason the module doc gives: a collector walks only inside an
-        epoch and an epoch parks every buffer-chunk free
-        (`memory::deferred_free`). Regression:
-        `what_a_walker_reads_during_a_move`, gated to rc-walk on the
-        group because both instruments are that collector's — seen red
-        under Miri ("Data race ... (1) atomic load ... (2) non-atomic
-        write" at the memcpy) and silent after. 433 → 434, gate green.
-      Critic 2026-08-11 round 2, over the repair: **compaction of a
-        table with no chunk allocated one no entry fits in.** `cap` is
-        zero there, `pow2ge(0) * 2` is two slots and eight bytes, the
-        arena grants its sixteen-byte minimum, and the table is left with
-        `storage` non-null and `mask` set — the state the next insert
-        reads as room for an entry, writing thirty-two bytes into sixteen
-        and publishing the count for the walker. `grow`'s doubling arm
-        reported success for `0 * 2` as well. Both guarded, and the
-        regression is `compacting_a_table_with_no_chunk_allocates_nothing`,
-        seen failing on the missing guard. Two claims narrowed rather than
-        defended: the copy is single-threaded only for the *entries*, the
-        index region being written after publication and safe only because
-        no walker reads a slot; and `compact`'s number is the hole count
-        rather than how many entries changed index, which the doc now says
-        and which iterator repair will have to compute for itself. Its
-        severity-1 finding is not this step's and is S13.4 below.
-      Found with it: the counter's strongest justification moved. The
-        original argument was in-place compaction, which no double read
-        of `storage` can see; that case is gone, and what forces a
-        counter now is the 2 → 3 migration plus the fact that `storage`
-        and `used` are published separately. The test that stated the old
-        reason says the new one.
-- [x] S13.2 Both `dispose` bodies publish three words unbracketed
-      done: `storage`, `nslots` and `used` go to their empty values
-        inside one `begin_move`/`end_move`, and a test pins that no
-        reading mixes the old chunk with the new counts
+Measured before the work: comments are 13 946 of the 43 954 lines in
+`src/`, in 361 blocks of ten lines and up, 93 of twenty and up, 21 of
+forty and up. Of the 25 references to a `PLAN.md` stage number, 18 name a
+stage that is already deleted.
+
+Goal: a comment gives the contract and the one fact the code cannot
+state, and the argument behind it is a named section in one document.
+
+Done when: nothing in `src/` cites `PLAN.md`, every block of forty lines
+and up is cut to the contract or moved under a named section, and
+`dev/WORKFLOW.md` states the rule that decides which.
+
+- [ ] S15.1 The rule in `dev/WORKFLOW.md`
+      done: it says what stays in the code, which document takes the
+        rest, and how a reference is written; applied to
+        `walk::trace_cells`, `journal::Window::Unknown` and
+        `array/head.rs`'s module doc it yields an answer without asking
       tier: T1 · role: —
-      An entity dies mid-epoch and the collector's snapshot still holds
-        the slot, so the mixture is reachable. For the table it strides
-        the index region as entries; the vector escapes only because its
-        `nslots` is already zero.
-      Critic 2026-08-11, on the same bodies: what keeps a walker safe
-        today is that `set_storage(null)` comes **first**, every
-        acceptable intermediate reading therefore carrying a null chunk,
-        which `entries_of` and `elements_of` short-circuit on. Nothing
-        says so, and the tidier-looking order — counters before the
-        pointer — publishes `(old chunk, nslots 0, used 8)`, a state no
-        live array ever had. The bracket makes the order moot, so this
-        step is the place to stop relying on it.
-      handoff: both bodies drive their words to the empty state between
-        `begin_move` and `end_move` and free the chunk after the window
-        closes, which is `move_entries`' order. Regression:
-        `disposing_hands_out_no_state_the_array_never_had` — a second
-        thread accepting coherent views while the owner fills and
-        releases in a loop, seen reporting 275 mixed readings in 4096
-        rounds before the bracket and none after; both representations
-        also pin the version delta. **All 275 were the harmless class**,
-        the null chunk against live counts, because the body did publish
-        the pointer first; the class that frees a live entity is one
-        tidy-up away and the test asks for both. 435 → 438, gate green,
-        Miri silent over the new module and `array::vector`.
-      Found beside it: `Vector::sever_entries` lowers `used` to zero in
-        the chunk it keeps, which is the one thing `array::head`'s rule
-        says no operation does. It is a counterexample to the sentence
-        rather than a defect — the sever runs on a component the drain
-        has confirmed garbage, so teardown is the only writer that
-        follows, and a vector's elements go out as atomic stores rather
-        than the plain key word the rule is about. The exemption and its
-        two conditions are stated where the rule is.
-- [x] S13.3 Phase 3 re-checks eight bytes of a sixteen-byte cell
-      done: `recheck_and_post` compares the meta word beside the payload,
-        so a Value torn between its two stores is caught rather than
-        confirmed
+- [ ] S15.2 The five copies of the counted-cell read become one
+      done: `object.rs` and `walk.rs` decide a cell's shape in one place,
+        and the suite is green in both configurations
       tier: T2 · role: —
-      `Cell` already carries the address; the payload word matches after
-        an ordinary `$a[0] = 1` whose meta store has not landed, so the
-        phantom in-edge is posted and only the next phase's re-trace
-        acquits it — an epoch spent per torn read.
-      handoff: the re-check is `Edge::still_designates_its_child`, and
-        `Edge` carries the cell's shape to reach it — a pointer cell is
-        eight bytes and `field + 8` is not its business, or the entity's.
-        **The flags are tested, not compared**, and the reserved bytes
-        above them are left to the container: an entry's chain link lives
-        there and an insert repoints it without touching a value, so a
-        whole-word comparison would acquit a component once per re-index.
-        What the walk recorded about that word is one bit. Regression:
-        `a_cell_that_stopped_holding_an_entity_acquits`, which applies
-        the second store of `$a->child = 1` without its first, seen
-        reporting `acquitted 0` against the payload-only re-check.
-        438 → 439, gate green. Argued rather than tested: that a
-        repointed chain link still confirms — nothing reads those bits,
-        so only a future whole-word comparison could break it.
-
-- [x] S13.4 Phase 3 re-reads an edge cell whose chunk was replaced
-      done: a component whose array moved its entries between the walk and
-        the re-check is acquitted rather than confirmed, and a test builds
-        that interleaving and sees the component survive
-      tier: T2 · role: Critic
-      Found by S13.1's Critic, 2026-08-11, and older than S13.1: growth
-        has always had it. `collector::Edge` keeps `field`, the raw
-        address the child pointer was read from, and `recheck_and_post`
-        re-reads exactly that address. For an array that address is inside
-        the storage chunk, and every move of the entries replaces the
-        chunk — after which the old one is **parked**, so it is intact and
-        written by nobody for the rest of the epoch. The re-check then
-        compares a frozen copy of the walk value against the walk value
-        and concludes "unchanged".
-      The interleaving, with `A` an array holding `C` in a ring: the walk
-        records `rc(C) = 1` and the edge at `chunk0 + …`; the mutator
-        inserts into `A` until it grows, so the entries move to `chunk1`
-        and `chunk0` parks; the mutator then moves `C` out of `A` into a
-        live array — retain to 2, `remove` writes the hole into `chunk1`,
-        release to 1 — so every refcount reads what the walk recorded and
-        the recorded cell still reads `C`. The component is confirmed and
-        torn down while a live array holds `C`.
-      Parking is what turns a stale read into a false acquittal, so the
-        fix cannot be "read the cell more carefully". The shape the Critic
-        proposes: the head already counts every move, so hand the version
-        out with each cell, keep it in `Edge`, and acquit any component
-        whose array's version has changed — one word per edge and one
-        relaxed load per array. Whether that is the whole answer is the
-        step's first question; an alternative is re-reading through a
-        fresh coherent view and a logical index, which needs `Cell` to
-        carry the owning entity.
-      **The consequence above is overstated and the correction is the
-        step's, measured rather than argued.** With the check disabled
-        the regression reports `confirmed 1` — and then Phase 4's exact
-        test re-traces every member through its *current* fields
-        (`walk::drain_confirmed`), finds the hole in the current chunk,
-        and drops the message: no destructor runs, the live array keeps
-        its element. So the defect costs a verdict per moved array and a
-        filter that reports as verified what it did not read, and the
-        teardown of a live entity is Phase 4's to prevent. It also
-        bounds what the check can promise: `recheck_and_post` runs after
-        the condemn ack, so a move landing after that ack need not be
-        visible to it at all.
-      Critic 2026-08-11, over the repair: no interleaving defeats it —
-        the only unbracketed writer of the three words is
-        `entity::carry_storage_out_of`, which asserts `RequestArena` and
-        so never runs on a walked row. Four demands, all taken: the
-        consequence above corrected in the doc and here; the version
-        asked **before** any cell of the component is re-read, since the
-        recorded address is readable only by the parked-free invariant
-        and the check that knows it is stale ran second; `storage_versions`
-        sized by pass 1 and assigned by index, so a future `continue` in
-        pass 2 cannot slide a row's version onto its neighbour; and the
-        dead-source sentence argued from `dispose` being a mover rather
-        than from what a freed slot happens to hold.
-      handoff: `trace_cells` answers with the version its cells were read
-        at, `Epoch::storage_versions` keeps one per walked row, and
-        `Epoch::row_still_has_its_cells` is what Phase 3 asks first, once
-        per run of edges sharing a source. Per row rather than per edge:
-        every cell of one array is read at one version, so the word is
-        the array's. Regression:
-        `a_component_whose_array_moved_its_entries_is_acquitted`, seen
-        reporting `acquitted 0` with the check disabled. 439 → 440, gate
-        green, Miri silent over `collector::` (16 tests) on the tree
-        before the Critic's round.
-
-## S14 — A string test that fails at wide test widths
-
-Found on 2026-08-11 while closing S7.1, and older than it: measured 1 in
-15 at `--test-threads=16` on HEAD `ab68006`, 3 in 15 on the tree that
-closed S7.1, and 0 in 25 at the gate's width of 4. It sits behind S13
-because the gate cannot see it and because the three above are UB rather
-than a false report.
-
-Goal: the suite tells the truth at a width the gate does not use, so the
-next real failure at 16 threads is not read as this one.
-
-Done when: 30 runs at `--test-threads=16` in both configurations with no
-failure, and the reason the old count was wrong is named.
-
-- [ ] S14.1 `an_append_loop_moves_its_payload_once` counts a move it does
-      not own
-      done: the test states what it measures in a form another thread
-        cannot disturb, or it holds whatever it needs to make "the last
-        chunk the buffer arena bumped" true for its own payload; seen
-        failing at 16 threads before the repair and 30 runs clean after
+- [ ] S15.3 The references to `PLAN.md` leave the code
+      done: `grep -rn 'PLAN\.md' src/` finds nothing, and every argument
+        such a reference carried is either in the comment or under a
+        named section in `rfc` or `docs/`
       tier: T1 · role: —
-      The test asserts exactly one payload move over 256 appends, which
-        holds only while nothing else bumps the same buffer arena between
-        two of them. `test_guard()` serialises the block pool, not the
-        arena, so a test on another thread allocating a long-lived chunk
-        makes the payload no longer the last chunk bumped and the next
-        append copies instead of extending. Whether the repair is the
-        test's isolation or the arena's accounting is the first thing to
-        settle: an in-place extension that a foreign allocation can
-        silently turn into a copy is a performance contract nothing else
-        pins.
+- [ ] S15.4 The 21 blocks of forty lines and up
+      done: each is cut to the contract or moved under a named section
+        that the code then names
+      tier: T2 · role: Critic
+- [ ] S15.5 The remaining 72 blocks of twenty lines and up
+      done: the same test applied module by module, and the comment share
+        measured again against the 32 % above
+      tier: T2 · role: Critic
+
+## S16 — The test files: one layout, and a size a reader can hold
+
+Edmond's ruling of 2026-08-12: the present shape is wrong, and how tests
+are laid out is to be measured before anything moves.
+
+Measured before the work: 476 tests in 42 files, 21 488 lines, a median
+of 38 lines per test, of which 4 027 lines are comments;
+`src/array/element/tests.rs` is 2 256 lines. Across the 114 crates
+unpacked on this box the inline form (`#[cfg(test)] mod tests { … }` in
+the file it tests) stands at 348 sites in 67 crates against 23 sites in
+19 crates for the separate file, while the standard library takes the
+separate file 75 times.
+
+Goal: a test is found from the name of what it pins, and its file is read
+without scrolling past groups that pin something else.
+
+Done when: `dev/DECISIONS.md` records the layout and the reason for it,
+and every test file matches.
+
+- [ ] S16.1 The two forms priced against this crate
+      done: the decision names the form this crate takes and what the
+        move costs, resting on the counts above rather than on
+        recollection
+      tier: T2 · role: Critic
+- [ ] S16.2 The crate matches the decision
+      done: every test file follows it, the test count before and after
+        is the same, and the suite is green in both configurations at the
+        gate's width
+      tier: T2 · role: Critic
 
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
 

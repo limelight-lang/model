@@ -194,6 +194,49 @@ the new one. The reasoning in an old design document usually outlives
 its accuracy, and deleting it throws away the record of what was
 considered.
 
+## Comments: the contract in the code, the argument in a document
+
+A comment carries the contract and the facts the code cannot state. The
+argument behind it goes into a document: the measurement, the
+alternative that was tried and refused, the protocol the code obeys. The
+comment names that document's section and stops there.
+
+**What stays in the code.** The contract at every declaration another
+module can reach, which is what the caller gets, what each parameter
+means, what is refused and what the caller must not do. The facts an
+expression cannot carry: units, ownership, the invariant that holds
+here, what a zero or a `None` means. The reason for a line that a reader
+who does not know it would undo. And the cross-reference of the form
+"change this, change that too", written by name.
+
+**What leaves.** A retelling of the line below it. A second copy of an
+argument that already stands in this file or in the module doc. A
+closing sentence that lands the point instead of adding a fact. The
+history of the change, which git already holds: "now", "used to",
+"since the fix".
+
+**Where the argument goes.** To `rfc/` when it is about the model or the
+protocol, which is what the runtime guarantees, what a walker may
+observe, how two threads agree; that design is normative and outlives
+any rewrite of this crate. To `docs/` when it is about how this crate is
+built, which is the layer, the data structure, the allocation path;
+`docs/memory-manager.md` is the pattern, and `memory/mod.rs` declares it
+normative for that module. A dated decision still goes to
+`dev/DECISIONS.md` and a trap to `dev/POSTMORTEM.md`, but those are the
+record rather than a target a comment points at.
+
+**How a reference is written.** By file and named section:
+`rfc/model/gc/rc-walk.md`, "Deferred physical release". Never by a
+number that gets reissued or removed, which rules out a `PLAN.md` stage
+(closed stages are deleted from that file), a dated `dev/` entry, a line
+number, and an item number from a list that has since been rewritten.
+When the section a comment needs does not exist yet, write it and give
+it a name.
+
+**The test before leaving a comment in place.** Cover it and read the
+code. What you can no longer answer is what the comment is for; the rest
+was a retelling.
+
 ## Tests
 
 **Every fix needs a regression test verified to fail on the bug.**
