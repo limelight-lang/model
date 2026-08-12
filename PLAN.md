@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-12 · Active: S16, then S7, then S8
+Updated: 2026-08-12 · Active: S16, then S7, then S8, then S17
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -1478,6 +1478,49 @@ Deliberately not next, each with its reason:
 - **rc-walk escalation rung 4 and every trigger threshold** — blocked on
   measurement, which is blocked on real workloads, which are blocked on
   the vertical slice (Phase D). Do not design further on paper.
+
+## S17 — `walk`: an optional second behaviour pointer on the class descriptor
+
+Raised by `limelight-lang/io` on 2026-08-12 and agreed with Edmond the
+same day. A coroutine there is an ordinary object of a runtime-provided
+class, and it embeds its waker: two wait halves inline, and a raw block
+holding them all when a wait has more than two. The block's cells lie
+**outside** the object, so `ptr_runs` and `box_runs` cannot describe
+them — the runs are offsets within the entity.
+
+Goal: a class may name counted cells the runs cannot reach, and every
+consumer of an object's cells sees them.
+
+Done when: `Class` carries an optional `walk` beside `dispose`, it is
+honoured on the one path all three consumers already go through, it is
+inherited the way `dispose` is, and a test proves a class that uses it is
+traced, collected and torn down correctly in both configurations.
+
+Two things the consumer must be told, and they belong in the decision
+rather than in the code alone. The hook yields **cells**, not children:
+the collector records a cell's address and raw word and re-reads it in
+Phase 3, so a hook that yielded only the child could not serve it. And a
+block whose cells the collector has recorded may not be freed while an
+epoch is in flight — it goes through `deferred_free`, which exists for
+exactly that.
+
+- [ ] S17.1 The hook's signature and its single call site
+      done: `dev/DECISIONS.md` records the signature, why it yields cells
+        through the reader rather than children, and that
+        `object::for_each_counted_cell` calls it after striding the runs
+        so that rc-walk, rc-trace and teardown all get it from one place
+      tier: T2 · role: Critic
+- [ ] S17.2 The field, the builder, and inheritance
+      done: `Class` carries it, `ClassBuilder` installs it, a descriptor
+        built for a subclass copies it as it copies `dispose`, and a test
+        fails if that copy is dropped
+      tier: T2 · role: Critic
+- [ ] S17.3 A class whose cells lie outside itself, end to end
+      done: a test class with an out-of-object block is traced by
+        rc-walk, collected by rc-trace and released at teardown, its
+        block freed through the deferred path; the suite is green at the
+        gate's width in both configurations
+      tier: T2 · role: Critic
 
 ## Status snapshot (2026-07-24, HEAD `bad9bd6`)
 
