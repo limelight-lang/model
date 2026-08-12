@@ -932,7 +932,8 @@ mod what_a_death_gives_back {
 
             // Released first: a slot freed while its header still reads
             // refcount 1 is enumerated as a live entity by every later
-            // process-global walk (`PLAN.md`, the census flake).
+            // process-global walk (`dev/POSTMORTEM.md`, "an entity killed
+            // at refcount 1").
             assert!(ll_release(key as *mut RcHeader));
             crate::object::ll_entity_die(key as *mut RcHeader);
             assert!(ll_release(value as *mut RcHeader));

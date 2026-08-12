@@ -224,13 +224,13 @@ pub(crate) unsafe fn storage_head(a: *mut LLArray) -> *const StorageHead {
 /// Standard factory contract: the result is a fresh entity at count 1.
 pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
     // The ordered hash, until the element layer reads the tag: a fresh
-    // array cannot be a vector before every call that reaches its
-    // storage asks which representation it is (`PLAN.md` S7.2).
+    // array cannot be a vector before every call that reaches its storage
+    // asks which representation it is.
     unsafe { new_with_storage(category, StorageTag::Hash, Storage::hash()) }
 }
 
 /// An empty array whose storage is the mixed vector — strategy 2, which
-/// `ll_array_new` does not stamp yet (`PLAN.md` S7.2).
+/// `ll_array_new` does not stamp yet.
 ///
 /// # Safety
 /// As [`ll_array_new`].
@@ -818,7 +818,7 @@ pub(crate) unsafe fn publish_key(
 ///
 /// An adapter over the one tracing stride rather than a walk of its own:
 /// the array's cells are `walk::trace_cells`' since the coherent read
-/// exists (`PLAN.md`, item 12). Kept as a name because the release side
+/// exists. Kept as a name because the release side
 /// reads better for it, and because a caller here has an `LLArray` rather
 /// than a bare header and a kind.
 ///

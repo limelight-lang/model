@@ -85,7 +85,7 @@ pub(crate) struct CoherentView {
     /// readable after a move — the epoch parks the free — so re-reading
     /// it answers about a chunk nobody writes any more, and this number
     /// is what says the chunk stopped being the array's
-    /// (`collector::Edge`, `PLAN.md` S13.4).
+    /// (`collector::Edge`).
     pub(crate) version: usize,
     pub(crate) tag: StorageTag,
     /// Null when the representation has never allocated.
@@ -130,7 +130,7 @@ pub struct StorageHead {
     used: AtomicUsize,
     /// Written at construction, by `StorageHead::empty`, and by nothing
     /// else in the crate today: the 2 → 3 migration is the second writer
-    /// the design allows and it does not exist yet (`PLAN.md` S7.3).
+    /// the design allows and it does not exist yet.
     /// When it lands it writes inside the window, like every other
     /// change to what these words mean.
     tag: AtomicU8,

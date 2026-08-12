@@ -222,8 +222,8 @@ any rewrite of this crate. To `docs/` when it is about how this crate is
 built, which is the layer, the data structure, the allocation path;
 `docs/memory-manager.md` is the pattern, and `memory/mod.rs` declares it
 normative for that module. A dated decision still goes to
-`dev/DECISIONS.md` and a trap to `dev/POSTMORTEM.md`, but those are the
-record rather than a target a comment points at.
+`dev/DECISIONS.md` and a trap to `dev/POSTMORTEM.md`, and code may cite
+either by the entry's title rather than by its date.
 
 **How a reference is written.** By file and named section:
 `rfc/model/gc/rc-walk.md`, "Deferred physical release". Never by a

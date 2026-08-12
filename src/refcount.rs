@@ -244,8 +244,7 @@ impl EntityKind {
 /// consolidation of codes 4-6 that `rfc/model/classes.md` argues for moves
 /// the value at compile time and leaves the meaning alone. The entity-kind
 /// renumbering that would have bought these four kinds a single masked
-/// compare is rejected on its own grounds (`PLAN.md`, the ruling on the
-/// renumbering); this set does not need it.
+/// compare is rejected on its own grounds, and this set does not need it.
 ///
 /// `Lazy` is admitted although no factory stamps that kind yet: the
 /// criterion is the slots the kind can hold, and an absent producer is no

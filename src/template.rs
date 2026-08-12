@@ -33,8 +33,7 @@
 //!
 //! Not here, and deliberately: the C ABI a foreign consumer would read
 //! the structure through. There is no such consumer until the compiler
-//! exists, and a signature invented now would be a guess
-//! (`model/PLAN.md`, task 9).
+//! exists, and a signature invented now would be a guess.
 
 use crate::class::{CLASS_TEMPLATE, Class};
 use crate::memory::context::{LLContext, resolve_arena};

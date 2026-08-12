@@ -545,7 +545,7 @@ mod the_three_way_judgement {
     /// to whatever row the program's integer names, and the payload word
     /// re-reads unchanged afterwards — the payload store being the one
     /// that had landed — so eight bytes confirm a component holding an
-    /// entity nobody points at (`PLAN.md` S13.3).
+    /// entity nobody points at.
     #[test]
     fn a_cell_that_stopped_holding_an_entity_acquits() {
         let _g = crate::memory::block_pool::test_guard();
@@ -606,7 +606,7 @@ mod the_three_way_judgement {
     /// the epoch could not see it until the array's entries could be read
     /// coherently: the edge *into* the array was counted and the edge
     /// *out* was not, so the holder read `RC` above `IN` and was a
-    /// computed root every epoch, forever (`PLAN.md`, item 12).
+    /// computed root every epoch, forever.
     #[test]
     fn a_mature_ring_through_an_array_is_collected() {
         use crate::array::entity::ll_array_new;
@@ -662,7 +662,7 @@ mod the_three_way_judgement {
     /// is a retain and a release around it.
     ///
     /// Nothing about the cell can see this, which is why the walk keeps
-    /// the storage version beside it (`PLAN.md` S13.4). Growth here is
+    /// the storage version beside it. Growth here is
     /// the mover; compaction and the migration between representations
     /// are the same event to the head.
     ///

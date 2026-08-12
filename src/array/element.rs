@@ -1,4 +1,4 @@
-//! The generic element layer over the table (`PLAN.md`, stage S2).
+//! The generic element layer over the table.
 //!
 //! The five element operations are here — `get`, `set`, `append`,
 //! `unset` and `make_ref`. Every write goes through one composition,
@@ -212,8 +212,8 @@ pub unsafe fn set(
 ///
 /// `false` for [`set`]'s three refusals, and for a fourth that is not an
 /// allocation: `i64::MAX` has been a key, so no successor exists and the
-/// append refuses rather than wrapping onto a live entry (`PLAN.md`
-/// S2.4). Every array is unchanged either way.
+/// append refuses rather than wrapping onto a live entry. Every array is
+/// unchanged either way.
 ///
 /// # Safety
 /// Per [`set`], with `value` in place of the key-and-value pair.
@@ -444,8 +444,7 @@ unsafe fn destroy_unpublished(entity: *mut RcHeader) {
 /// on top of `insert`'s own. `Table::get` hands out a copy of the Box
 /// rather than a borrow, because an entry keeps its chain link in the
 /// element's reserved bytes, so the walk cannot be shared with `insert`
-/// without changing what `insert` returns. Unmeasured, and the array
-/// performance stage in `PLAN.md` owns the number.
+/// without changing what `insert` returns. Unmeasured.
 ///
 /// # Safety
 /// `a` a live, exclusively owned array; `arena` the live mounted arena.

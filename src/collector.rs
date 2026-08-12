@@ -83,7 +83,7 @@ impl Edge {
     /// cell holds. Re-reading eight bytes confirms that edge instead of
     /// acquitting it: the payload store is the one that had already
     /// landed, so the word is genuinely unchanged, and the entity it
-    /// names loses a holder it never had (`PLAN.md` S13.3).
+    /// names loses a holder it never had.
     ///
     /// The flags are tested rather than compared, and the reserved bytes
     /// above them are read as belonging to the container: an entry's

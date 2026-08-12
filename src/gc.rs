@@ -62,8 +62,8 @@ use crate::value::Value;
 
 // --- rc-trace machinery ----------------------------------------------------
 
-/// Candidate-root buffer fill that *arms* a collection (Zend uses 10K; to
-/// be calibrated, PLAN.md). Crossing it never runs the collector inline —
+/// Candidate-root buffer fill that *arms* a collection (Zend uses 10K;
+/// uncalibrated here). Crossing it never runs the collector inline —
 /// it only records that one is due (see `buffer_candidate`).
 pub const CANDIDATE_THRESHOLD: usize = 10_000;
 

@@ -37,7 +37,7 @@ mod the_default_set {
 ///
 /// Only where the sites exist: without the feature there is nothing here
 /// to test, which is the whole of §9.6's claim and is checked over the
-/// emitted IR instead (`PLAN.md`, S5.2).
+/// emitted IR instead.
 #[cfg(feature = "debug-journal")]
 mod what_the_sites_record {
     use super::*;

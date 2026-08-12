@@ -399,8 +399,8 @@ mod the_append_cursor {
     /// PHP's append rule, its three table-side clauses: removal never
     /// rewinds the cursor, an explicit key moves it past itself, and a
     /// fresh table appends at 0. The PHP 8.3 arm — a negative key moves
-    /// the cursor too, `$a[-5] = 1; $a[] = 2;` appending at −4 — is the
-    /// assumption `PLAN.md` S2.4 records for Edmond to overturn.
+    /// the cursor too, `$a[-5] = 1; $a[] = 2;` appending at −4 — is an
+    /// assumption, Edmond's to overturn.
     #[test]
     fn the_append_cursor_never_rewinds_and_an_explicit_key_moves_it() {
         let _g = crate::memory::block_pool::test_guard();
@@ -455,8 +455,7 @@ mod what_moves_the_entries {
     /// Every operation that moves entries has to be visible to a walker
     /// that is reading them, and the version is how: odd while the move
     /// runs, changed afterwards. A walker validates its reading of
-    /// `storage`, `nslots` and `used` against two readings of this
-    /// (`PLAN.md`, item 12).
+    /// `storage`, `nslots` and `used` against two readings of this.
     ///
     /// **What forces a counter rather than a double read of `storage`
     /// has changed, and the counter stays.** The original argument was
@@ -746,8 +745,8 @@ mod the_flood_ladder {
     /// The ladder's zeroth rung: a fresh table indexes an integer key by
     /// its value, as Zend does, and pays no mix. Three stride keys
     /// sharing one bucket is the by-value signature — a salted mix would
-    /// scatter them (`PLAN.md` S2.1, Edmond 2026-08-07: the salt is paid
-    /// where a flood shows up, not by every honest table).
+    /// scatter them. The salt is paid where a flood shows up rather than by
+    /// every honest table.
     #[test]
     fn a_fresh_table_indexes_an_integer_key_by_its_value() {
         let _g = crate::memory::block_pool::test_guard();
@@ -1321,9 +1320,9 @@ mod where_the_storage_comes_from {
 /// says the same of the head's placement): the walker's loads are
 /// relaxed atomics, the mutator's writes are ordinary, and a run
 /// reports nothing whichever way the entries are moved. What decides
-/// it is Miri's data-race detector, so the test below is the
-/// regression for `PLAN.md` S13.1 and its verdict is read from a Miri
-/// run rather than from the suite.
+/// it is Miri's data-race detector, so the test below is the regression
+/// for the in-place slide and its verdict is read from a Miri run rather
+/// than from the suite.
 ///
 /// Gated to `rc-walk`, and on the group rather than on the test: both
 /// instruments it needs are that collector's — the relaxed reader and the

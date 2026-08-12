@@ -258,7 +258,8 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // Test-only, and it earned its place: killing an entity at
     // refcount 1 is a mistake with no local symptom, and the one it
     // does have surfaced as a census flake in an unrelated test on
-    // another thread half an hour later (`PLAN.md`).
+    // another thread half an hour later (`dev/POSTMORTEM.md`, "an entity
+    // killed at refcount 1").
     #[cfg(test)]
     if kind == BLOCK_KIND_ENTITY || crate::memory::large_entity::is_large_entity(kind) {
         let header = unsafe { *(ptr as *const u64) };

@@ -74,7 +74,8 @@ unsafe fn census_with_addresses() -> (Census, Vec<(usize, u64)>) {
 /// Print what left the census and what joined it, each address with
 /// the state of the block the enumerator gates on.
 ///
-/// The census flake under investigation (`PLAN.md`) is entities
+/// The census flake behind this test (`dev/POSTMORTEM.md`, "an entity
+/// killed at refcount 1") is entities
 /// *leaving*: the count fails to grow because a live entity stopped
 /// being enumerated, which is the direction that matters — a missed
 /// entity contributes none of its out-edges, so its children read as
@@ -356,8 +357,8 @@ mod the_children_a_kind_has {
             // slot reaches the free list carrying the refcount-0 header
             // the process-global enumerators use as their occupancy test.
             // Killing at 1 leaves a freed slot that every later census in
-            // the process reads as a live entity (`PLAN.md`, the census
-            // flake).
+            // the process reads as a live entity (`dev/POSTMORTEM.md`,
+            // "an entity killed at refcount 1").
             assert!(ll_release(a as *mut RcHeader));
             crate::object::ll_entity_die(a as *mut RcHeader);
             assert!(ll_release(key as *mut RcHeader));

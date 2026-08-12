@@ -142,8 +142,7 @@ mod what_crossing_a_category_boundary_costs {
     /// so the holder takes a **copy** in the heap rather than a hold on
     /// arena memory. Before this, the store went down the escape counter
     /// and overwrote a live holder count with a hold-count of one —
-    /// caught by a `debug_assert` in debug and silently wrong in release
-    /// (`PLAN.md` task 15).
+    /// caught by a `debug_assert` in debug and silently wrong in release.
     #[test]
     fn a_cow_value_leaving_the_arena_is_copied_rather_than_counted() {
         let _g = crate::memory::block_pool::test_guard();

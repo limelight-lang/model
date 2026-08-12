@@ -1057,8 +1057,7 @@ mod a_thread_the_journal_could_not_serve {
 mod the_hunt_the_journal_was_built_for {
     use super::*;
 
-    /// It is this stage's acceptance criterion
-    /// (`dev/design/debug-modes.md` §9, `PLAN.md` S5.3).
+    /// The journal's acceptance criterion, `dev/design/debug-modes.md` §9.
     ///
     /// The four strings are created before any of them dies, so that the
     /// four addresses are distinct while the window is being marked: a

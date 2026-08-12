@@ -190,15 +190,14 @@ pub struct Table {
     /// holes and would otherwise rewind past a removed high key.
     ///
     /// A negative key moves it too: PHP 8.3 semantics, where
-    /// `$a[-5] = 1; $a[] = 2;` appends at −4 (assumption recorded in
-    /// `PLAN.md` S2.4, Edmond's to overturn — the pre-8.3 answer is one
-    /// comparison away).
+    /// `$a[-5] = 1; $a[] = 2;` appends at −4. An assumption, Edmond's to
+    /// overturn: the pre-8.3 answer is one comparison away.
     next_free: i64,
     /// The table's one-bit state, [`TABLE_STRONG`], [`TABLE_RESEEDED`]
     /// and [`TABLE_APPEND_EXHAUSTED`]. One byte rather than a `bool`
     /// apiece, and written plainly: the concurrent walker never reads it,
     /// which is why the storage-strategy tag cannot live here and sits in
-    /// the head instead (`PLAN.md` S7.1, Sage 2026-08-11).
+    /// the head instead ([`crate::array::head`]).
     flags: u8,
 }
 
@@ -235,7 +234,7 @@ impl Table {
     /// **Unsalted** — the flood ladder's zeroth rung: integer keys index
     /// by their value until a long chain fires [`Table::reseed`], which
     /// draws the salt. No caller selects a mode, because the trigger is
-    /// the flood itself (`PLAN.md` S2.1, Edmond 2026-08-07).
+    /// the flood itself.
     ///
     /// No category field, and no read of one: which memory this table's
     /// storage comes from is the owning entity's header to say, and every
@@ -255,7 +254,7 @@ impl Table {
     }
 
     /// The key the next append takes, or `None` once `i64::MAX` has been
-    /// a key — the refusal `PLAN.md` S2.4 requires in place of wrapping.
+    /// a key, which is refused rather than wrapped onto a live entry.
     /// Reading it moves nothing: the append's own insert is what
     /// advances the cursor.
     pub fn append_key(&self) -> Option<i64> {
@@ -572,7 +571,7 @@ impl Table {
     /// rather than dropped here: releasing it is the owner's, because the
     /// order matters to the collector.
     ///
-    /// **Key ownership** (`PLAN.md` S2.2): storing a *new* string key
+    /// **Key ownership.** Storing a *new* string key
     /// consumes the caller's reference — the retain published before this
     /// call becomes the table's one reference per stored key, given back
     /// by [`Table::remove`] or by teardown. The overwrite arm keeps the
@@ -674,8 +673,8 @@ impl Table {
     /// genuinely shorter, which is the property an open-addressed index
     /// cannot have.
     ///
-    /// The second half of the pair is the ownership rule of `PLAN.md`
-    /// S2.2: the table owes one reference per stored string key, and
+    /// The second half of the pair is the ownership rule above: the table
+    /// owes one reference per stored string key, and
     /// dropping a key hands that reference to the caller — `make_hole`
     /// overwrites the key word, so a reference not handed out here is
     /// dropped with nothing left to release it. Null for an integer key,
@@ -779,8 +778,8 @@ impl Table {
     /// whoever builds iterator repair owes the other number, and `insert`
     /// owes it a channel, forwarding nothing about a move today.
     ///
-    /// **Into a fresh chunk rather than in place, and that is the whole
-    /// of `PLAN.md` S13.1.** Sliding live entries down inside the
+    /// **Into a fresh chunk rather than in place.** Sliding live entries
+    /// down inside the
     /// published chunk writes thirty-two bytes plainly under a collector
     /// that is reading them with relaxed atomic loads — undefined
     /// behaviour rather than the torn value the epoch repairs, and Miri

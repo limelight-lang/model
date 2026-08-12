@@ -8,8 +8,8 @@ use crate::value::Tag;
 /// An array whose storage is a vector, at count one, empty.
 ///
 /// Through `new_with_storage` rather than `ll_array_new`, which stamps
-/// the ordered hash until the element layer reads the tag (`PLAN.md`
-/// S7.2). That is what makes these tests the vector's only producer for
+/// the ordered hash until the element layer reads the tag. That is what
+/// makes these tests the vector's only producer for
 /// one step, and it is why they build the entity rather than the bare
 /// representation: what the criterion asks about is an array.
 fn vector_array(category: MemoryCategory) -> *mut LLArray {
@@ -127,7 +127,7 @@ mod the_dense_range {
     /// Releasing the storage publishes the same words growth does, so it
     /// takes the same window: a collector whose snapshot holds the slot
     /// of a dying array must not be handed the chunk with the counts of
-    /// the empty state (`PLAN.md` S13.2). The mixture this
+    /// the empty state. The mixture this
     /// representation could offer is narrower than the ordered hash's —
     /// it has no index region to stride — and the bracket is what says
     /// so rather than the order of two stores.

@@ -16,9 +16,8 @@ pub mod entry;
 pub mod head;
 pub mod table;
 // Strategy 2 is built one step ahead of its producer: `ll_array_new`
-// stamps the ordered hash until the element layer reads the tag
-// (`PLAN.md` S7.2), so for that one step the vector's own operations are
-// reached by its tests alone.
+// stamps the ordered hash until the element layer reads the tag, so until
+// then the vector's own operations are reached by its tests alone.
 #[allow(
     dead_code,
     reason = "the producer lands with the factory's stamp in S7.2"

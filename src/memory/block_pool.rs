@@ -443,8 +443,7 @@ impl BlockPool {
         // failure is a borrow panic rather than the deadlock §9.7's
         // phrasing suggests, and under `panic = "abort"` it ends the
         // process. So the flush copies out and the borrow closes
-        // (`debug-modes.md` §9.7, and the Sage's ruling for S5.2 in
-        // `PLAN.md`).
+        // (`dev/design/debug-modes.md` §9.7).
         //
         // `try_with` for the same reason as `get`: this runs from a TLS
         // destructor on the thread-exit path, where the cache may be gone.
@@ -594,8 +593,8 @@ pub(crate) fn test_guard() -> TestGuard {
 /// Holds the test lock and, on drop, releases this thread's heap *while
 /// still holding it*. Without this the heap goes back via the TLS
 /// destructor after the test body released the lock, so its
-/// `BlockPool::put`s mutate `blocks_out` under a later test's feet —
-/// the stats-test flake recorded in PLAN.md.
+/// `BlockPool::put`s mutate `blocks_out` under a later test's feet, which
+/// is what made the stats test flake.
 #[cfg(test)]
 pub(crate) struct TestGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 

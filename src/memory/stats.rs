@@ -1,5 +1,6 @@
-//! Aggregate memory telemetry — layer 1 of the two-layer design
-//! (PLAN.md): cheap always-on numbers in the mimalloc/jemalloc spirit.
+//! Aggregate memory telemetry: layer 1 of the two-layer design of
+//! `dev/design/debug-modes.md`, cheap always-on numbers in the
+//! mimalloc/jemalloc spirit.
 //!
 //! **Design decision: zero hot-path tax.** No allocation path
 //! increments anything per object. The counters live only on the rare

@@ -60,8 +60,8 @@ use crate::memory::block_pool::{
 };
 use crate::memory::buffer::{Buffer, PressureMode, pressure_mode};
 
-/// Bound on the critical-mode free-list walk. Tunable; calibration is
-/// blocked on real workloads (PLAN.md).
+/// Bound on the critical-mode free-list walk. Tunable, and uncalibrated
+/// until there is a workload to calibrate against.
 pub const CRITICAL_SEARCH_BOUND: usize = 16;
 
 /// A free chunk threads this through its own first 16 bytes.
