@@ -131,16 +131,13 @@ pub const IS_ESCAPEE: u32 = 1 << 11;
 /// 3. **Count above one → separate**, otherwise the holder is alone and
 ///    writes in place.
 ///
-/// The `IS_ESCAPEE` arm `values.md` used to print between 2 and 3 is
-/// gone (2026-08-04). It existed because bit 11 makes the count field
-/// hold an escape hold-count rather than a reference count, and a COW
-/// entity can no longer carry that bit at all: the store barrier copies
+/// `values.md` prints an `IS_ESCAPEE` arm between 2 and 3 which this does
+/// not have: a COW entity cannot carry that bit, the store barrier copying
 /// a COW value out of the arena instead of counting an escape into it
-/// (`memory/barrier::store_category_barrier`). Testing a bit that cannot
-/// be set is a branch on the write path and a claim in the rule that
-/// nothing can produce.
+/// (`dev/DECISIONS.md`, "a COW value is copied out of the arena, and the
+/// store barrier can say no").
 ///
-/// Takes the header word's two halves rather than a pointer so a caller
+/// Takes the header word's two halves rather than a pointer, so a caller
 /// that already has the flags in a register spends nothing.
 #[inline]
 pub fn cow_separation_needed(flags: u32, refcount: u32) -> bool {
@@ -232,19 +229,16 @@ impl EntityKind {
 /// own nothing a ring can pass through and stay out by that same
 /// criterion.
 ///
-/// **A set rather than a mask over the kind bits**, because no mask can
-/// express this one: admitting `Reference 011` needs bit 0 clear in the
-/// mask, and excluding `String 001` needs it set. A mask admits only kind
-/// sets closed under clearing a bit, so the contradiction belongs to
-/// masking rather than to this pair of codes. Membership costs a shift
-/// and a bit test on a word the release path already holds
+/// **A set rather than a mask over the kind bits**, because admitting
+/// `Reference 011` needs bit 0 clear in a mask and excluding `String 001`
+/// needs it set (`dev/DECISIONS.md`, "the candidate gate is a set of
+/// kinds, not a mask over their codes"). Membership costs a shift and a
+/// bit test on a word the release path already holds
 /// ([`kind_may_close_a_cycle`]).
 ///
 /// Built from [`EntityKind`] rather than written as a literal, so the
 /// consolidation of codes 4-6 that `rfc/model/classes.md` argues for moves
-/// the value at compile time and leaves the meaning alone. The entity-kind
-/// renumbering that would have bought these four kinds a single masked
-/// compare is rejected on its own grounds, and this set does not need it.
+/// the value at compile time and leaves the meaning alone.
 ///
 /// `Lazy` is admitted although no factory stamps that kind yet: the
 /// criterion is the slots the kind can hold, and an absent producer is no
