@@ -655,6 +655,19 @@ empty and the `expect` fired. The setup error and the reporting error
 compounded: the real defect was one line of ordering, and what it showed
 was a segfault in a different test.
 
+**A third rule, and the same day paid for it twice.** A fault-injection
+flag is scoped to what it forces. `gc::FORCE_BUFFER_REFUSAL` was a
+process-global static forcing a **thread-local** candidate buffer, and
+one test raised it while `the_candidate_buffer::forgetting_a_candidate_
+keeps_the_moved_one_findable` ran beside it on another thread: three of
+that test's four candidates were refused, and it reported "buffered in
+order" with one address where four belonged. It failed once in ten
+rc-trace runs at four threads and not at all in the eighty-six after the
+flag became thread-local. The lock was not the missing piece and could
+not have been: `block_pool::test_guard` serializes the tests that take
+it, the raiser took it and the victim did not, and a victim cannot be
+expected to know which global a stranger raises.
+
 **The rules, and they are two.** A fault-injection flag is raised through
 a guard that lowers it in `Drop`, never by a bare store: keeping
 assertions outside the window answers only the panics a test author

@@ -48,18 +48,15 @@ fn buffering_is_deduplicated_and_death_forgets_the_candidate() {
 /// hunt for something that was never there.
 #[test]
 fn a_refused_candidate_is_left_unmarked_and_arms_a_collection() {
-    // `FORCE_BUFFER_REFUSAL` is process-global, so this has to hold
-    // the test lock like any other fault injection here.
     let _g = crate::memory::block_pool::test_guard();
-    use std::sync::atomic::Ordering;
 
     let mut e = RcHeader::new(MemoryCategory::GcHeap, 0);
     let p = &mut e as *mut RcHeader;
     COLLECT_PENDING.with(|f| f.set(false));
 
-    FORCE_BUFFER_REFUSAL.store(true, Ordering::Relaxed);
+    FORCE_BUFFER_REFUSAL.with(|f| f.set(true));
     unsafe { buffer_candidate(p) };
-    FORCE_BUFFER_REFUSAL.store(false, Ordering::Relaxed);
+    FORCE_BUFFER_REFUSAL.with(|f| f.set(false));
 
     assert!(
         unsafe { (*candidate_buffer()).is_empty() },

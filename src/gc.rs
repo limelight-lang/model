@@ -87,10 +87,21 @@ pub(crate) fn set_test_threshold(n: usize) {
     TEST_THRESHOLD.with(|c| c.set(n));
 }
 
-/// Tests only: make the candidate buffer refuse to grow.
 #[cfg(all(test, not(feature = "rc-walk")))]
-pub(crate) static FORCE_BUFFER_REFUSAL: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    /// Tests only: make the candidate buffer refuse to grow, on this
+    /// thread alone.
+    ///
+    /// **Thread-local because the buffer it forces is thread-local.** A
+    /// process-global flag is read by every test running beside the one
+    /// that raised it, so the refusal lands in buffers the raiser never
+    /// looks at — and a test that asserts its own buffer's contents then
+    /// fails for a reason nothing in it names. `block_pool::test_guard`
+    /// serializes only the tests that take it, so a lock cannot close
+    /// this (`dev/POSTMORTEM.md`, 2026-08-12).
+    pub(crate) static FORCE_BUFFER_REFUSAL: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
 
 thread_local! {
     /// A raw pointer in a `Cell`, not a `RefCell<Vec<_>>`, and for
@@ -234,7 +245,7 @@ pub(crate) unsafe fn buffer_candidate(entity: *mut RcHeader) {
         // provoked on demand, and an untested failure path is a guess
         // (same reasoning as `block_pool::FORCE_OOM`).
         #[cfg(all(test, not(feature = "rc-walk")))]
-        if FORCE_BUFFER_REFUSAL.load(std::sync::atomic::Ordering::Relaxed) {
+        if FORCE_BUFFER_REFUSAL.with(|f| f.get()) {
             return None;
         }
 
