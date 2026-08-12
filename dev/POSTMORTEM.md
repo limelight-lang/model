@@ -600,3 +600,34 @@ round-trip test reads its trip as the tail of what its ring holds for the
 address rather than as the whole of it. Moving the frees above the capture
 does not fix it and cannot: the frees would then fall inside the window
 the *end* mark closes.
+
+---
+
+## 2026-08-12 — moving an argument out of a comment deletes it, unless someone opens the section
+
+**What happened.** S15.5 shortened 37 comment blocks by moving their
+argument to a document section the comment then names. Seven of those cuts
+took a fact the named section does not carry: why `exit_guard_armed` takes
+`try_with` and what a panic inside a TLS destructor costs, why the weak
+table is sound without a lock, the whole-struct store an atomic field
+cannot defend against, the retained index's one lock, that a `LARGE_RUN`
+returns to the OS on free, what can refuse a publish, and what blocks
+sharing a chain walk between `Table::get` and `insert`. The stage's Code
+Reviewer found all seven by opening each cited section and reading it
+against the deleted lines; the suite could not, the tests being green
+throughout.
+
+**Why it happened.** Each cut was made by a worker that had verified the
+section held *the block's argument* — and it did. What the section did not
+hold was the one sentence beside that argument which the code site needs:
+the argument is the design, the sentence is the local obligation. The two
+read alike in the diff, and the verdict form the survey produced ("move to
+X §Y") does not separate them.
+
+**The rule.** A cut toward a document is verified sentence by sentence,
+not block by block: for each line leaving the code, name the sentence in
+the cited section that now carries it. Where none does, the line stays,
+whatever the block's verdict said. A pass of this kind ends with a review
+that opens every cited section — the only instrument that sees a fact
+which now exists nowhere, since the compiler and the suite see nothing at
+all.

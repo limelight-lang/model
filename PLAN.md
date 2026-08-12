@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-12 · Active: S15, then S16, then S7
+Updated: 2026-08-12 · Active: S16, then S7, then S8
 
 **S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
 step: `Table` takes its memory category as a parameter and reads no
@@ -147,105 +147,25 @@ when the hunt began. What survives it is `dev/POSTMORTEM.md`, 2026-08-12,
 and the doc on `journal::take_ring_for_test`. Commits 9478205, bd081c5 and
 29ea0f9; the stage's Code Reviewer pass is the last of them.
 
-## S15 — What a comment carries, and where the argument lives
-
-Edmond's ruling of 2026-08-12: the comments retell the code, they run
-long, and they cite `PLAN.md`, whose stages are deleted as they close. An
-argument worth keeping goes to `rfc` when it is about the model and to
-`docs/` when it is about this crate; the code keeps the contract and
-names the section the argument sits under.
-
-Measured before the work: comments are 13 946 of the 43 954 lines in
-`src/`, in 361 blocks of ten lines and up, 93 of twenty and up, 21 of
-forty and up. Of the 25 references to a `PLAN.md` stage number, 18 name a
-stage that is already deleted.
-
-Goal: a comment gives the contract and the one fact the code cannot
-state, and the argument behind it is a named section in one document.
-
-Done when: nothing in `src/` cites `PLAN.md`, every block of forty lines
-and up is cut to the contract or moved under a named section, and
-`dev/WORKFLOW.md` states the rule that decides which.
-
-- [x] S15.1 The rule in `dev/WORKFLOW.md`
-      done: it says what stays in the code, which document takes the
-        rest, and how a reference is written; applied to
-        `walk::trace_cells`, `journal::Window::Unknown` and
-        `array/head.rs`'s module doc it yields an answer without asking
-      tier: T1 · role: —
-      handoff: the section is "Comments: the contract in the code, the
-        argument in a document", between the documentation rule and the
-        test rules. Its first draft made `dev/` journals unciteable from
-        code, which the crate contradicts everywhere and usefully; the
-        correction is that they are cited by an entry's title, never by
-        its date. Commits 40bc498 and d31eec4.
-- [x] S15.2 The five copies of the counted-cell read become one
-      done: `object.rs` and `walk.rs` decide a cell's shape in one place,
-        and the suite is green in both configurations
-      tier: T2 · role: —
-      handoff: `walk::counted_box_cell` is the operation, and four copies
-        of the paragraph about reading the payload as an integer went with
-        the code. The payload is still read before the flags: the order
-        decides which torn readings a relaxed reader can observe, so it is
-        not free to change. Miri silent over `walk::`, 22 tests. Commit
-        5843cc1.
-- [x] S15.3 The references to `PLAN.md` leave the code
-      done: `grep -rn 'PLAN\.md' src/` finds nothing, and every argument
-        such a reference carried is either in the comment or under a
-        named section in `rfc` or `docs/`
-      tier: T1 · role: —
-      handoff: forty references in twenty-two files, most already naming a
-        deleted stage. Nearly all carried their fact in the same sentence
-        and simply lost the citation; the three that did not now name
-        `dev/POSTMORTEM.md`'s census-flake entry by title,
-        `dev/design/debug-modes.md` §9 by section, and
-        `crate::array::head`. Commit d31eec4.
-- [x] S15.4 The 21 blocks of forty lines and up
-      done: each is cut to the contract or moved under a named section
-        that the code then names
-      tier: T2 · role: Critic
-      handoff: nineteen were rewritten and two were left as they are, the
-        loom models, whose docs are the only record of what each
-        configuration exhibits. The largest cuts came from moving the
-        argument into `docs/memory-manager.md`, which took
-        `deferred_free` from 95 lines to 22 and `heap` from 87 to 24 —
-        and which was wrong in the section that took the most: it
-        described the intrusive link the module had rejected and denied
-        that cross-thread frees park. The crate's comment share moved
-        only 32.0 % to 31.2 %, because 21 blocks are a tenth of the
-        volume; the rest is S15.5's. Commits 5843cc1..07ac543.
-- [x] S15.5 The remaining blocks of twenty lines and up, outside the tests
-      done: the same test applied module by module, and the comment share
-        measured again against the 32 % above
-      tier: T2 · role: Critic
-      handoff: every non-test block of twenty lines or more — 80 of them —
-        was surveyed against the workflow's rule and given one of three
-        verdicts. **43 keep**, being contract or mechanism with nothing
-        behind them in a document, and that ratio is the finding: where a
-        module was written alongside a dense RFC section the share of cuts
-        is high (13 of 25 under `array/`), and where it was not it is low.
-        37 shortened; the share moved 31.1 % to 30.6 % and the count of
-        such blocks 89 to 74, the rest being blocks that shrank without
-        leaving the bucket.
-      **The yield was stale text again, not retelling.** Five flag names
-        deleted by the 2026-07-22 compaction, two citations of an RFC
-        section that says the opposite of what they claim, one pointer to
-        a function that moved modules, eighteen `dev/` citations by date
-        and two by `PLAN.md` stage, and three `audit` numbers naming an
-        untracked file that no longer holds them. Commit 462ac58.
-- [x] S15.6 The eight blocks inside the test files
-      done: each of the eight surveyed the same way, and no `dev/`
-        citation in a test file gives a date where the entry has a title
-      tier: T1 · role: —
-      handoff: six of the eight stand — a measurement `dev/BENCHMARKS.md`
-        does not hold, two repairs refused with the reason, the bound of a
-        claim — and two lose a line each. The yield was elsewhere:
-        `carry_out_of` is named in `array/table/tests.rs` and nowhere in
-        the crate, the operation being
-        `array::entity::carry_storage_out_of`, and seven citations gave a
-        date rather than a title, four more than this step listed. One of
-        those dates covers two entries that both name `carry_out_of`, the
-        later describing the state the earlier repealed. Commit 36176b8.
+**S15 is closed and deleted by rule 23.1.3.** Six steps: the rule in
+`dev/WORKFLOW.md`, the five copies of the counted-cell read, the
+references to `PLAN.md` out of the code, the 21 blocks of forty lines and
+up, every remaining non-test block of twenty lines and up, and the eight
+inside the test files. The share of `src/` that is comments moved 32.0 %
+to 30.6 % and the blocks of twenty lines and up 93 to 74, but the volume
+was never the point: 43 of the last 80 blocks stayed, being contract or
+mechanism with nothing behind them, and what the pass found instead was
+stale text — five flag names deleted by the 2026-07-22 compaction, two
+citations of an RFC section that says the opposite of what they claim,
+`carry_out_of` and `coherent_entries` naming functions that moved, and
+thirty-odd `dev/` citations giving a date where the entry has a title.
+Its own review then found seven cuts that had taken the only record of a
+fact, all restored. What survives it is `dev/WORKFLOW.md`'s section
+"Comments: the contract in the code, the argument in a document" with the
+bolded-lead-in rule beside it, and `dev/POSTMORTEM.md`, "moving an
+argument out of a comment deletes it, unless someone opens the section".
+Commits 40bc498, d31eec4, 5843cc1..07ac543, 462ac58, 36176b8, 9d3bd77 and
+8e2dfcf.
 
 ## S16 — The test files: one layout, and a size a reader can hold
 
