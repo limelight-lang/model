@@ -295,9 +295,10 @@ pub(crate) unsafe fn storage_head(a: *mut LLArray) -> *const StorageHead {
 /// # Safety
 /// Standard factory contract: the result is a fresh entity at count 1.
 pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
-    // The ordered hash, until the element layer reads the tag: a fresh
-    // array cannot be a vector before every call that reaches its storage
-    // asks which representation it is.
+    // The ordered hash, until the COW copy takes a vector: the element
+    // layer reads the tag now, but `separate` and `fill_from` still reach
+    // for the table, and a fresh array cannot be a vector while one door
+    // it goes through cannot describe it.
     unsafe { new_with_storage(category, StorageTag::Hash, Storage::hash()) }
 }
 

@@ -303,6 +303,23 @@ key it cannot hold, both configurations green, Miri silent.
         silent after, over `array::entity` 24, `array::table` 34,
         `array::element` 29, `array::vector` 8, `walk::` 22 and
         `promote::` 20; loom's four cases unchanged.
+- [ ] S7.5 The COW copy takes a vector
+      done: a shared vector array separates into a vector copy, an arena
+        one is copied out through the work list, and both hold what the
+        source held, in both configurations
+      tier: T2 · role: Critic
+      2026-08-12, found by flipping the stamp inside S7.2 and reverting
+        it: `separate` and `fill_from` reach for the table —
+        `as_table(src)`, `as_table_mut(dst)` — so a vector array meeting
+        either door asserts in a debug build and reads `Table` fields out
+        of `Vector` bytes in a release one. Seventeen `array::element`
+        tests failed and
+        `nesting_worked_through_a_list::a_deep_arena_array_is_copied_out_
+        through_the_work_list` took the run down with a SIGSEGV after the
+        assertion, the panic crossing the work list's frame. The step
+        stands ahead of S7.2 because the stamp is what exposes the door,
+        and `rfc/model/arrays.md` says which copy to write: "Separation
+        copies the storage in its current representation."
 - [ ] S7.2 Factories stamp the tag and the element write dispatches on it
       done: `ll_array_new` stamps `Vector`, and a strategy-2 write of a
         string key migrates through the tag rather than through a direct
@@ -315,6 +332,17 @@ key it cannot hold, both configurations green, Miri silent.
         and leaves the stamp on `Hash`, and this step flips it. The cost
         is one step in which `Vector` has no producer, and it is paid
         inside the stage rather than shipped.
+      2026-08-12: the two halves that do not need the stamp are done and
+        green with it still on `Hash` — the 2 → 3 migration (`123861c`,
+        `entity::migrate_to_hash`, five tests) and the element layer's
+        dispatch (`cffbe43`, `element_at`, `append_cursor`,
+        `representation_for`, `store_into_vector`). What is left in this
+        step is the stamp itself, and it waits on S7.5. Two contract
+        changes landed with the dispatch and belong to whoever reads this:
+        `unset` can now refuse, a removal from a vector migrating first
+        because a hole and a rewound cursor are both states a dense range
+        has no bytes for; and `make_ref` migrates before it vivifies an
+        absent key, so that its own undo cannot refuse.
 - [ ] S7.3 The 2 → 3 migration
       done: a test pins insertion order across the migration, and the
         append cursor carries over with it — `next_free` is the vector's
