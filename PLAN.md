@@ -132,6 +132,35 @@ reentrant, so rc-trace deadlocked at every width down to a single thread
 while the default configuration stayed green, the test being
 `cfg(not(rc-walk))`. Trap in `dev/POSTMORTEM.md`, 2026-08-12.
 
+## S17 — An arena test asserts it gets the block the reset just returned
+
+Found on 2026-08-12 by the gate's own triple run, and at the head because
+`dev/WORKFLOW.md` puts a known bug before new work.
+`memory::arena::tests::the_logs_the_reset_reads::reset_hands_destructors_
+and_recycles_blocks` asserts that an arena created after a reset allocates
+out of **the same block** the reset recycled. Measured 1 in 35 at
+`--test-threads=8` under rc-trace with `debug-journal`, and not seen at
+the gate's width of 4.
+
+Goal: the test states a property another thread cannot disturb, or the
+pool's identity guarantee is written down and the test rests on it.
+
+Done when: the cause is named from the code — which draw takes a block
+other than the one just returned, and why the per-thread cache does not
+make it deterministic — and 60 runs at eight threads in that
+configuration are clean.
+
+- [ ] S17.1 Name what takes the block, and repair the test or the claim
+      done: a run that failed before the repair and 60 clean after, with
+        the mechanism named rather than guessed
+      tier: T2 · role: —
+      The suspect is the block pool's per-thread cache in front of the
+        global chain: on a fresh libtest thread the cache starts empty,
+        the reset's `put` fills it, and the next `alloc` should draw the
+        same block back. What breaks that is unmeasured, and the shape
+        of the failure — a different address, one region apart — says a
+        draw went past the cache.
+
 ## S15 — What a comment carries, and where the argument lives
 
 Edmond's ruling of 2026-08-12: the comments retell the code, they run
