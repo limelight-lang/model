@@ -4,8 +4,6 @@
 
 use super::*;
 
-// ---- a reference into an element ---------------------------------
-
 /// The box outlives the storage the element lived in. A slot pointer
 /// would be dangling after the growth below; the box is not, which is
 /// the whole reason an element reference is boxed

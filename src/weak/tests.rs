@@ -14,10 +14,6 @@ fn with_ctx<R>(f: impl FnOnce(*mut LLContext) -> R) -> R {
     r
 }
 
-// --- Notification ordering (rfc/model/weak-references.md) ------------
-
-// --- Cycle collection (walk::collect_cycles, both configurations) ----
-
 mod a_cell_that_dies_before_its_target;
 mod across_the_arena_reset;
 mod the_cell_and_the_table_behind_it;

@@ -6,6 +6,7 @@ use crate::object::new_constructed;
 use crate::refcount::{MemoryCategory, ll_release};
 use crate::test_support::{POOLED_FILLERS, RUN_FILLERS};
 use crate::value::{Tag, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Collect the addresses the walk currently yields. Tests assert
 /// membership, never totals: the registry is process-global, and
@@ -16,10 +17,6 @@ fn walked_addresses() -> Vec<usize> {
     unsafe { for_each_entity_slot(|e| seen.push(e as usize)) };
     seen
 }
-
-// --- collect_cycles (build step 2) -------------------------------
-
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
 

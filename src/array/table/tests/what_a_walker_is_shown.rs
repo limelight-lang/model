@@ -7,8 +7,6 @@
 
 use super::*;
 
-// ---- what the memory manager is owed -----------------------------
-
 #[test]
 fn enumeration_is_complete_over_the_dense_prefix_and_skips_holes() {
     let _g = crate::memory::block_pool::test_guard();

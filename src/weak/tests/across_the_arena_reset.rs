@@ -6,8 +6,6 @@
 
 use super::*;
 
-// --- Arena reset ------------------------------------------------------
-
 #[test]
 fn arena_reset_nulls_cells_of_dying_arena_targets() {
     let _g = crate::memory::block_pool::test_guard();

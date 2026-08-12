@@ -75,7 +75,8 @@ fn free_string_fillers(fillers: Vec<*mut LLString>) {
 
 /// A heap holder object with two array-slot props, both naming
 /// `src`, which therefore reads as shared: the two-`$var` setup of
-/// every criterion below, built through the real barrier.
+/// every criterion the groups taking it measure, built through the
+/// real barrier.
 unsafe fn two_holders(
     ctx: *mut crate::memory::context::LLContext,
     arena: *mut Arena,

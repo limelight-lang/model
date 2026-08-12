@@ -1,6 +1,6 @@
-//! Never zero, since zero is the string field's "not computed"
-//! sentinel; equal for equal bytes whatever their source; and under
-//! the seed this build installed.
+//! A hash is never zero, since zero is the string field's "not
+//! computed" sentinel; equal for equal bytes whatever their source;
+//! and under the seed this build installed.
 
 use super::*;
 

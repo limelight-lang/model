@@ -148,8 +148,6 @@ fn t() -> Owned {
     Owned(a)
 }
 
-// ---- string keys -----------------------------------------------
-
 fn mk(bytes: &[u8]) -> *mut LLString {
     unsafe { crate::string::ll_string_new(std::ptr::null_mut(), MemoryCategory::GcHeap, bytes) }
 }
@@ -174,8 +172,6 @@ fn chain(m: &Owned, slot: usize) -> Vec<usize> {
 
     walked
 }
-
-// ---- the flood backstop -----------------------------------------
 
 mod keys_that_are_strings;
 mod the_append_cursor;

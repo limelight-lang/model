@@ -6,11 +6,11 @@
 
 use super::*;
 
+static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
+
 unsafe extern "C" fn counting_destructor(_obj: *mut Object) {
     DESTRUCTS.fetch_add(1, Ordering::Relaxed);
 }
-
-static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
 
 /// The heap case: a static's reference is the object's last one, so
 /// thread exit is what runs its `__destruct` and frees it.

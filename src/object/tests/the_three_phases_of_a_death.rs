@@ -7,6 +7,12 @@
 
 use super::*;
 
+static TRANSIENT_DEATHS: AtomicUsize = AtomicUsize::new(0);
+
+static RESURRECT_INTO: AtomicUsize = AtomicUsize::new(0);
+
+static DISPOSE_DISPATCHED: AtomicUsize = AtomicUsize::new(0);
+
 /// `$x = $this;` then `$x` leaves scope: a transient retain + release.
 /// Under the destructor guard the release must NOT report death — a
 /// reported death here re-enters teardown and double-frees `obj`.
@@ -31,12 +37,6 @@ unsafe extern "C" fn counting_dispose(obj: *mut Object) -> bool {
     DISPOSE_DISPATCHED.fetch_add(1, Ordering::Relaxed);
     unsafe { ll_default_dispose(obj) }
 }
-
-static TRANSIENT_DEATHS: AtomicUsize = AtomicUsize::new(0);
-
-static RESURRECT_INTO: AtomicUsize = AtomicUsize::new(0);
-
-static DISPOSE_DISPATCHED: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
 fn die_runs_three_phases_and_cascades_to_children() {
