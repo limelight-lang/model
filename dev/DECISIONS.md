@@ -8,6 +8,61 @@ never edited or deleted.
 
 ---
 
+## 2026-08-12 — what the layout cost once it was applied
+
+**Decided:** the layout of the entry below stands, and its rule about
+fixtures gains the clause applying it required. A list keeps a fixture
+that more than one group needs **directly or through another fixture the
+list keeps**; a fixture with one group behind it belongs in that group's
+file. Read as direct use alone, the rule was false of 39 of the 100 names
+the lists declared, so those 39 moved down, and `memory/routing`'s list —
+83 lines of fixture serving a 61-line group — became three lines.
+
+**A group file is read with its list open, which the first entry did not
+name.** 77 of the 141 group files use a name their list declares — `mk`,
+`ctx`, `t`, `with_ctx`, `tie`, and the destructor probes that count what
+they saw — so reading one test is a two-file operation where the old shape
+kept those fixtures at the top of the same file. The 39 moves took that
+from 80 to 77, which is all such a move can buy: the rest are shared in
+earnest, and the alternative to sharing them is a copy per group.
+
+**The figures the first entry gives are the source's, not the result's.**
+Measured at the applied state: the largest group file is 537 lines rather
+than the 531 predicted, the median 124 rather than 112, five over 400
+rather than four, and the 40 lists hold 1160 lines at a median of 10, the
+largest being `array/table`'s at 189. Two things account for it — a
+group's `///` was counted where it stood rather than where it landed, and
+the 39 fixtures moved after the entry was written.
+
+**`include_bytes!` resolves against the file that spells it**, so
+`hash/tests.rs`'s reference to `vendor/rapidhash/rapidhash.h` needed one
+more `../` from a directory one deeper. It is the crate's only such
+macro — no `include_str!`, no `include!`, no `#[path]` — which is why the
+cost is one line rather than a class of work.
+
+**The `macro_rules!` ordering does not bind today, and the reason to hold
+the order anyway does.** No group file calls `recording_class!`;
+`array/entity/tests.rs` uses it in two fixtures of its own, and
+declarations placed above the macro compile and pass. So what holds the
+order is the crate's own shape, `#[cfg(test)] mod tests;` being the last
+item of every source file, and the macro is why the order must not be
+reversed the first time a group needs one.
+
+**A citation of the form `module::tests::<test>` stopped naming the file
+that holds the test**, the list having taken that name. 15 of them were
+given their group and name a file again. The ones inside closed entries of
+this journal keep their old form, this file forbidding an edit to a closed
+entry: they resolve by the test's name, through `cargo test <name>` or a
+grep, rather than by opening `src/<module>/tests.rs`.
+
+**Two group names repeat across the crate:** `past_one_block` in
+`memory/buffer` and `memory/immortal`, `under_concurrency` in `intern` and
+`memory/immortal`. A group is named uniquely inside its module, which is
+what the test path and the directory require; a search over basenames
+alone answers twice.
+
+---
+
 ## 2026-08-12 — a test file holds one group, and the group names what it pins
 
 **Decided:** tests stay in a file beside the module they test, and a test

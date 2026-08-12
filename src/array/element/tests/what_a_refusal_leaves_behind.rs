@@ -10,6 +10,9 @@
 
 use super::*;
 
+/// A table's first storage: 8 index slots and 8 entries.
+const FIRST_STORAGE_BYTES: usize = 288;
+
 /// The separation's refusal: `false`, and nothing observable moved —
 /// the slot, the original's count, its entries and the caller's value
 /// reference all read as before the call.

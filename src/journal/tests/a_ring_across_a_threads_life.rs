@@ -9,6 +9,24 @@
 
 use super::*;
 
+/// How many live rings and how many retired ones carry this
+/// identity. Tests only, and the answer a test wants where the
+/// registry's totals are somebody else's: `RETIRED_KEPT` bounds the
+/// retired list, so a suite whose threads journal keeps it full and
+/// a count of the whole list moves for reasons the test is not
+/// about.
+fn rings_named(thread: u64) -> (usize, usize) {
+    let registry = locked();
+    let carrying = |rings: &Vec<*mut Ring>| {
+        rings
+            .iter()
+            .filter(|&&ring| unsafe { (*ring).thread } == thread)
+            .count()
+    };
+
+    (carrying(&registry.live), carrying(&registry.retired))
+}
+
 /// A thread's records matter most once it is gone — the census flake
 /// this journal was designed for is a hypothesis about a *finishing*
 /// thread — so a retired ring stays readable and stays in the window.

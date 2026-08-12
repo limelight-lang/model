@@ -3,12 +3,26 @@
 //! moves the elements, which is why it runs inside the head's window.
 //!
 //! Every test here works through an array rather than a bare `Vector`,
-//! and not for the reason the entity tests below do: since the head
+//! and not for the reason `the_entity_over_a_vector`'s do: since the head
 //! became the entity's (`array::head`), a `Vector` on its own has no
 //! version, no chunk and no count, so there is nothing about it to
 //! measure without the array in front of it.
 
 use super::*;
+
+/// Give an array whose elements are integers back: the last reference
+/// goes, then the teardown frees the storage and the slot. A test holding
+/// entities releases them itself instead — the drain would take them a
+/// second time.
+fn discard(a: *mut LLArray) {
+    unsafe {
+        assert!(
+            ll_release(a as *mut RcHeader),
+            "the test was the only holder"
+        );
+        crate::object::ll_entity_die(a as *mut RcHeader);
+    }
+}
 
 #[test]
 fn a_fresh_vector_is_strategy_two_and_holds_nothing() {

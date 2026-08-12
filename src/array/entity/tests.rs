@@ -26,14 +26,6 @@ macro_rules! recording_class {
     }};
 }
 
-/// Build one of the shapes out of heap arrays and recording objects,
-/// release the outermost array, and return what the destructors
-/// wrote. Every entity is created at +1 and handed to the entry that
-/// takes it, so the outermost array is the only holder.
-fn destructor_order(shape: Shape) -> String {
-    destructor_order_with(shape, false)
-}
-
 /// The same, with the drain's list refused for the teardown alone —
 /// the flag is raised after the shape is built, because it also
 /// refuses the storage every array here allocates.

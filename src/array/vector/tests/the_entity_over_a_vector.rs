@@ -6,6 +6,13 @@
 
 use super::*;
 
+/// A child array, handed to the caller at the +1 its factory returns.
+fn child() -> *mut LLArray {
+    let c = unsafe { crate::array::entity::ll_array_new(MemoryCategory::GcHeap) };
+    assert!(!c.is_null());
+    c
+}
+
 #[test]
 fn every_element_is_a_counted_child_and_nothing_else_is() {
     let _g = crate::memory::block_pool::test_guard();

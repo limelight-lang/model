@@ -162,7 +162,7 @@ fn a_ring_of_two_arrays_and_no_object_is_collected() {
 }
 
 /// The rc-walk twin of
-/// `gc::tests::a_ring_whose_last_release_lands_on_a_reference_box_is_collected`:
+/// `gc::tests::a_ring_with_no_object_in_it::a_ring_whose_last_release_lands_on_a_reference_box_is_collected`:
 /// `$a[0] = &$a`, with the ring's only external hold landing on the
 /// box. This walk computes its roots and buffers no candidates, so
 /// which kind took the last decrement cannot reach it. The twin runs

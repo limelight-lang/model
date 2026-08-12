@@ -320,10 +320,13 @@ is an artefact of the test, not of the runtime.
 
 Loom explores the executions the C11 model permits, which is how an
 ordering defect is exhibited on a box whose hardware reorders nothing.
-One model exists, `src/array/version_bracket_model.rs`:
+Two models exist, four cases each — `src/array/version_bracket_model.rs`
+for the array table's version bracket and `src/journal/ring_model.rs` for
+the journal ring's, which is the same bracket read the other way round:
 
 ```
 RUSTFLAGS="--cfg loom" cargo test --lib version_bracket
+RUSTFLAGS="--cfg loom" cargo test --lib ring_bracket
 ```
 
 It is outside the commit gate, and the dependency is gated the same way

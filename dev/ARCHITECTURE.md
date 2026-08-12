@@ -287,12 +287,12 @@ write them. Each is load-bearing for at least two modules.
 
 1. **The block header is a tagged union**: `kind` at offset 0 in every
    block, always; the pool's `next` overlays the heap's `used`. Layout
-   pinned by `heap::tests::block_header_halves_are_laid_out_as_the_design_requires`.
+   pinned by `heap::tests::the_block_under_the_slots::block_header_halves_are_laid_out_as_the_design_requires`.
 2. **Every block is 64 KB and size-aligned**, so `ptr & !BLOCK_MASK`
    finds its header. Foundation of size-less free, remote free, and
    slot walking. Regions never return to the OS (phase 1).
 3. **Every entity begins with the 8-byte `RcHeader` at offset 0**
-   (pinned by `refcount::tests::header_is_8_bytes_at_offset_zero`).
+   (pinned by `refcount::tests::the_header_the_compiler_shares::header_is_8_bytes_at_offset_zero`).
    What `+8` holds depends on the entity kind; nothing reads `+8`
    without a kind dispatch.
 4. **A dead entity slot keeps its final refcount-0 header** in bytes

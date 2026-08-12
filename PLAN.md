@@ -220,11 +220,37 @@ and every test file matches.
         `tests.rs` holding `mod <name> {` is unsplit. Cost measured on
         `refcount`, not argued: same tests in both configurations before
         and after, tree reverted.
-- [ ] S16.2 The crate matches the decision
+- [x] S16.2 The crate matches the decision
       done: every test file follows it, the test count before and after
         is the same, and the suite is green in both configurations at the
         gate's width
       tier: T2 · role: Critic
+      Critic 2026-08-12 round 1: nine findings, six acted on, and the two
+        that mattered are ones a green suite of the same size cannot see.
+        **30 citations of the form `module::tests::<test>` stopped naming
+        the file that holds the test** — 15 were given their group,
+        including two in shipped code (`walk.rs`, `object.rs`), and the
+        ones in closed `dev/DECISIONS.md` entries keep their form, that
+        file forbidding the edit. **The rule's own word "share" was false
+        of 39 of the 100 names the lists declared**, each having one group
+        behind it; they moved into that group's file, and
+        `memory/routing`'s list went from 83 lines serving a 61-line group
+        to three. Also acted on: five doc comments whose scope or
+        direction moved with them, one of which had been false before the
+        stage; the loom models, now exempted in `dev/INDEX.md` and both
+        named in `dev/WORKFLOW.md`, whose Loom section claimed one model
+        and gave a command that never ran the other four cases;
+        `array::testing` named beside `test_support` as the second fixture
+        home. Recorded rather than repaired, in a second decision entry:
+        that 77 of 141 group files still read with their list open, that
+        the first entry's figures were the source's rather than the
+        result's, and that the `macro_rules!` ordering does not bind until
+        a group calls one.
+      handoff: 40 files became 181 and the fixtures follow the groups
+        that use them. The test list is **byte-identical** in all three
+        configurations before and after, which is a stronger check than
+        the count and is the one to repeat next time. Gate green, 17 legs.
+        Commits ccda6ac and the repair beside it.
 
 ## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
 
@@ -399,7 +425,7 @@ explicitly deferred.
 
 ## Closed: the census flake was two tests killing an entity at refcount 1
 
-`walk::tests::census_counts_objects_and_their_edges` failed at roughly 5 in 30
+`walk::tests::what_the_walk_enumerates::census_counts_objects_and_their_edges` failed at roughly 5 in 30
 under load. Under the same load it now fails 0 in 60 in rc-trace and 0 in 30 in
 rc-walk, against 3 in 30, 7 in 40, 6 in 40 and 9 in 40 measured on this box
 before the fix. The reproducer stays worth keeping: build the test binary with
@@ -415,10 +441,10 @@ earlier hunt measured correctly and read the wrong way round: the strings had
 been freed *before* the window, with their headers never driven to zero.
 
 **What does that is a test killing an entity with `ll_entity_die` while its
-refcount is still 1.** `walk::tests::an_array_is_traced_through_its_elements_
-and_its_string_keys` did it three times and
-`array::entity::tests::dying_through_the_kind_switch_releases_the_children_and_
-the_storage` twice — the second half of item 14, which named the shape and was
+refcount is still 1.** `walk::tests::the_children_a_kind_has::an_array_is_
+traced_through_its_elements_and_its_string_keys` did it three times and
+`array::entity::tests::what_a_death_gives_back::dying_through_the_kind_
+switch_releases_the_children_and_the_storage` twice — the second half of item 14, which named the shape and was
 never connected to this. The slot then reaches the free list carrying a
 live-looking header, and that word is the occupancy test both process-global
 enumerators apply. For a string it is an over-count. For an object it is worse:
@@ -1448,7 +1474,7 @@ task; it belongs to the memory manager and is written up under
     `BLOCK_KIND_BUFFER` arm its silent default was swallowing, and
     `deferred_free`'s module doc now describes the chunk rider instead of
     claiming the door was shut in advance. Regression:
-    `deferred_free::tests::a_buffer_chunk_parks_instead_of_being_written_into`,
+    `deferred_free::tests::what_parks_while_an_epoch_is_open::a_buffer_chunk_parks_instead_of_being_written_into`,
     seen failing. Below is what the task said before it was done.
 
     The parking
@@ -1863,7 +1889,7 @@ Memory manager, still open:
   was void on its own terms — two runs of the same arm disagreed by 4.6%
   — so the evidence is a count instead: an append loop moves its payload
   once now and nine times before
-  (`string::tests::an_append_loop_moves_its_payload_once`,
+  (`string::tests::the_payload_and_who_frees_it::an_append_loop_moves_its_payload_once`,
   `dev/BENCHMARKS.md` 2026-08-05). Accepted on three grounds needing no
   measurement: less work, no payload free on the growth path and so
   nothing to park during an epoch, and no chain of holes that never

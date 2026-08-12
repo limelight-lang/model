@@ -6,6 +6,14 @@
 
 use super::*;
 
+/// Build one of the shapes out of heap arrays and recording objects,
+/// release the outermost array, and return what the destructors
+/// wrote. Every entity is created at +1 and handed to the entry that
+/// takes it, so the outermost array is the only holder.
+fn destructor_order(shape: Shape) -> String {
+    destructor_order_with(shape, false)
+}
+
 /// The order `__destruct` bodies run in when a nested array dies is
 /// Zend's: depth first, and inside a level the order the entries were
 /// inserted in. The drain has to reproduce it, because a program

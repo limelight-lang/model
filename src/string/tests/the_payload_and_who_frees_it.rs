@@ -121,7 +121,7 @@ fn an_os_direct_payload_transfers_instead_of_being_copied() {
 
 /// Teardown returns a heap dynamic string's payload to the arena it
 /// came from, and this is the assertion that says so — deleting the
-/// payload half of `string_die` leaves every other test in this file
+/// payload half of `string_die` leaves every other test `string` has
 /// green. The proof is the buffer arena's own: in critical mode a
 /// freed chunk goes on the block's free list and a fitting allocation
 /// finds it, so the same address coming back means the chunk was

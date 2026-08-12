@@ -1,10 +1,6 @@
 use super::*;
 use crate::memory::context::LLContext;
 
-fn ctx() -> *mut LLContext {
-    std::ptr::null_mut()
-}
-
 /// A table whose storage is released when the binding is dropped, so
 /// a test cannot leak blocks into the pool's free-list order and
 /// disturb an unrelated test (which is exactly what happened once).
@@ -179,47 +175,7 @@ fn chain(m: &Owned, slot: usize) -> Vec<usize> {
     walked
 }
 
-/// The same chain read as integer keys, which is what a test that built
-/// it from a stride can compare against.
-fn chain_keys(m: &Owned, slot: usize) -> Vec<i64> {
-    chain(m, slot)
-        .into_iter()
-        .map(|i| {
-            let e = m.entry(i);
-            assert!(e.is_int_key(), "entry {i} is not an integer key");
-            e.hash_or_key as i64
-        })
-        .collect()
-}
-
 // ---- the flood backstop -----------------------------------------
-
-/// Forge the state the backstop exists for: many entries whose *full*
-/// 64-bit hash agrees. Real construction of such a set needs a break
-/// of the hash; here the stored hash is written directly, which
-/// exercises the same code path the attack would reach.
-fn force_equal_hashes(m: &mut Owned, n: usize) {
-    for i in 0..n {
-        let s = mk(format!("collider-{i}").as_bytes());
-        unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
-        m.insert(Key::Str(s), Value::int(i as i64));
-    }
-}
-
-/// Forge the other trigger's state: keys whose full hashes *differ*,
-/// so the equal-hash trigger stays quiet, but whose low 16 bits agree,
-/// so every one lands in the same index slot at any table size up to
-/// 65536 and they form one chain.
-fn extend_one_chain(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LLString> {
-    (from..to)
-        .map(|i| {
-            let s = mk(format!("chain-{i}").as_bytes());
-            unsafe { (*s).hash = ((i as u64 + 1) << 16) | 0xC0DE };
-            m.insert(Key::Str(s), Value::int(i as i64));
-            s
-        })
-        .collect()
-}
 
 mod keys_that_are_strings;
 mod the_append_cursor;

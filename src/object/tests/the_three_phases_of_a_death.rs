@@ -7,6 +7,37 @@
 
 use super::*;
 
+/// `$x = $this;` then `$x` leaves scope: a transient retain + release.
+/// Under the destructor guard the release must NOT report death — a
+/// reported death here re-enters teardown and double-frees `obj`.
+unsafe extern "C" fn transient_this_destructor(obj: *mut Object) {
+    DESTRUCTS.fetch_add(1, Ordering::Relaxed);
+    unsafe { ll_retain(obj as *mut RcHeader) };
+    if unsafe { ll_release(obj as *mut RcHeader) } {
+        TRANSIENT_DEATHS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+unsafe extern "C" fn resurrecting_destructor(obj: *mut Object) {
+    DESTRUCTS.fetch_add(1, Ordering::Relaxed);
+    unsafe { ll_retain(obj as *mut RcHeader) };
+    RESURRECT_INTO.store(obj as usize, Ordering::Relaxed);
+}
+
+/// A stand-in for a compiler-generated specialized `dispose`: it marks
+/// that the descriptor's pointer was dispatched to, then delegates the
+/// real teardown to the default so the effects are unchanged.
+unsafe extern "C" fn counting_dispose(obj: *mut Object) -> bool {
+    DISPOSE_DISPATCHED.fetch_add(1, Ordering::Relaxed);
+    unsafe { ll_default_dispose(obj) }
+}
+
+static TRANSIENT_DEATHS: AtomicUsize = AtomicUsize::new(0);
+
+static RESURRECT_INTO: AtomicUsize = AtomicUsize::new(0);
+
+static DISPOSE_DISPATCHED: AtomicUsize = AtomicUsize::new(0);
+
 #[test]
 fn die_runs_three_phases_and_cascades_to_children() {
     let _g = crate::memory::block_pool::test_guard();

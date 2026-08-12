@@ -10,6 +10,12 @@
 
 use super::*;
 
+/// [`crate::test_support::wide_class`] with the counting destructor
+/// every ring test here uses.
+fn wide_class(name: &str, fillers: usize) -> *const crate::class::Class {
+    crate::test_support::wide_class(name, fillers, Some(counting_destructor as *const ()))
+}
+
 /// The concurrent collector reads cells relaxed-atomically and so
 /// keeps its own copy of the slot stride — which means a template's
 /// values, counted by its shape rather than by its class, have to be

@@ -4,9 +4,10 @@ use super::*;
 /// what the module doc requires of anything registered here.
 ///
 /// The registry is process-global, so an index left in it is read by
-/// every later walk in the process. The tests below hold the block
-/// pool's test guard, which is what serializes them against the walks
-/// that take it; the cells are **leaked** on top of that, because a
+/// every later walk in the process. Every test in the groups declared
+/// below holds the block pool's test guard, which is what serializes
+/// them against the walks that take it; the cells are **leaked** on top
+/// of that, because a
 /// test that panics before it empties its index leaves that index
 /// registered for the rest of the run and no guard covers that.
 /// Freeing the cells would make such an entry a use-after-free rather

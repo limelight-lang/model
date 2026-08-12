@@ -597,7 +597,8 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
     // the drops below cascade into user code, and a child's `__destruct`
     // calling `get()` on this refcount-zero object would receive a strong
     // reference that outlives the free (`rfc/model/weak-references.md`;
-    // regression: `weak::tests::own_destructor_still_sees_the_object_...`).
+    // regression: `weak::tests::when_the_notification_arrives::
+    // own_destructor_still_sees_the_object_but_a_child_destructor_sees_null`).
     // Read the flags fresh: the `__destruct` above may itself have created
     // the weak state.
     if unsafe { crate::refcount::header_flags(obj as *const RcHeader) }

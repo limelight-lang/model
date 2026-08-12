@@ -7,6 +7,10 @@
 
 use super::*;
 
+extern "C" fn m3() {}
+
+extern "C" fn m2_override() {}
+
 /// Not runnable under Miri: it compares vtable entries against the
 /// functions they should hold, and Miri does not give a function a
 /// single address — `m2 as *const ()` yields a different pointer at

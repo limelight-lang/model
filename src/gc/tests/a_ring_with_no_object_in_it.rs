@@ -14,8 +14,8 @@ use super::*;
 /// got a root, and the ring leaked in the configuration whose whole
 /// purpose is cycles. Both configurations are required legs of the
 /// gate, so rc-trace was green with a systematic leak in it; the
-/// rc-walk twin is `walk::tests::a_ring_of_two_arrays_and_no_object_
-/// is_collected`.
+/// rc-walk twin is `walk::tests::what_the_collection_reclaims::
+/// a_ring_of_two_arrays_and_no_object_is_collected`.
 ///
 /// Seen failing on the candidacy assertion below.
 #[test]
@@ -75,7 +75,7 @@ fn a_ring_of_two_arrays_and_no_object_is_collected() {
 /// judges it and it lives to process exit.
 ///
 /// The rc-walk twin is
-/// `walk::tests::a_ring_through_a_reference_box_and_an_array_is_collected`,
+/// `walk::tests::what_the_collection_reclaims::a_ring_through_a_reference_box_and_an_array_is_collected`,
 /// which needs no candidate at all.
 #[test]
 fn a_ring_whose_last_release_lands_on_a_reference_box_is_collected() {

@@ -5,10 +5,6 @@ extern "C" fn m1() {}
 
 extern "C" fn m2() {}
 
-extern "C" fn m2_override() {}
-
-extern "C" fn m3() {}
-
 fn base() -> *const Class {
     ClassBuilder::new("Animal")
         .prop("name", true)

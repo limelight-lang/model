@@ -9,6 +9,16 @@
 
 use super::*;
 
+/// `$GLOBALS['keep'] = $this;` inside `__destruct`: an ordinary
+/// counted store, so the component must be acquitted.
+unsafe extern "C" fn resurrecting_destructor(obj: *mut Object) {
+    DESTRUCTS.fetch_add(1, Ordering::Relaxed);
+    unsafe { crate::refcount::ll_retain(obj as *mut RcHeader) };
+    RESURRECTED.store(obj as usize, Ordering::Relaxed);
+}
+
+static RESURRECTED: AtomicUsize = AtomicUsize::new(0);
+
 /// A destructor that stores `$this` somewhere lasting gives the
 /// member `RC > IN` beyond the guard: the re-verify acquits the whole
 /// component, survivors keep true counts, and the destructor is

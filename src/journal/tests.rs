@@ -19,28 +19,10 @@ fn pending_count() -> usize {
     locked().pending_free.len()
 }
 
-/// How many live rings and how many retired ones carry this
-/// identity. Tests only, and the answer a test wants where the
-/// registry's totals are somebody else's: `RETIRED_KEPT` bounds the
-/// retired list, so a suite whose threads journal keeps it full and
-/// a count of the whole list moves for reasons the test is not
-/// about.
-fn rings_named(thread: u64) -> (usize, usize) {
-    let registry = locked();
-    let carrying = |rings: &Vec<*mut Ring>| {
-        rings
-            .iter()
-            .filter(|&&ring| unsafe { (*ring).thread } == thread)
-            .count()
-    };
-
-    (carrying(&registry.live), carrying(&registry.retired))
-}
-
 /// Free one retired ring by identity, the way the quota's eviction
 /// frees the oldest. Tests only: firing the quota takes
 /// `RETIRED_KEPT + 1` threads and 2 MiB of rings to observe one line
-/// of arithmetic, while what the tests below are about is what a
+/// of arithmetic, while what the tests taking this are about is what a
 /// window says once a ring is gone.
 fn evict_retired_ring(thread: u64) -> bool {
     let ring = {

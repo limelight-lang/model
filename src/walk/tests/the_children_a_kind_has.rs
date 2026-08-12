@@ -9,6 +9,12 @@
 
 use super::*;
 
+/// [`crate::test_support::wide_class`] with the counting destructor,
+/// so the only edge is the one the ring ties.
+fn wide_ring_class(name: &str, fillers: usize) -> *const crate::class::Class {
+    crate::test_support::wide_class(name, fillers, Some(counting_destructor as *const ()))
+}
+
 /// The `$a->r = &$a` ring: object → reference box → object. The
 /// first non-object kind inside a collected component — the
 /// tracer's reference arm, the drain's reference sever and the kind

@@ -10,8 +10,9 @@ use super::*;
 ///
 /// This is the case an append loop is in on every iteration, and it is
 /// worth a test of its own because the alternative — reallocate and
-/// copy — is correct, passes every other assertion in this file, and
-/// costs a copy of everything written so far on each step.
+/// copy — is correct, passes every other assertion `buffer_arena`'s
+/// tests make, and costs a copy of everything written so far on each
+/// step.
 #[test]
 fn a_payload_at_the_bump_top_grows_without_moving() {
     let _g = crate::memory::block_pool::test_guard();
@@ -44,7 +45,7 @@ fn a_payload_at_the_bump_top_grows_without_moving() {
 ///
 /// The spacer is what puts the payload off the top. Without it this
 /// grows in place and there is no old chunk to recycle, which is the
-/// case the test below covers instead.
+/// case `a_payload_at_the_bump_top_grows_without_moving` covers instead.
 #[test]
 fn a_payload_off_the_bump_top_moves_and_leaves_a_reusable_hole() {
     let _g = crate::memory::block_pool::test_guard();

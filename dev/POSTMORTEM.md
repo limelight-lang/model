@@ -173,7 +173,7 @@ makes the write side legal — but it is not what makes the borrow legal.
 about one run in twelve — five times in sixty, measured — always with
 the same signature: `flush runs only between epochs`, from
 `deferred_free::flush`, inside
-`collector::tests::a_free_running_mutator_survives_concurrent_epochs`.
+`collector::tests::the_epoch_as_a_whole::a_free_running_mutator_survives_concurrent_epochs`.
 A `debug_assert` failing in a function that cannot unwind aborts the
 process, so the whole suite died and took its passing tests with it.
 
@@ -365,7 +365,7 @@ next. They were removed before the change landed.
 
 ## 2026-08-06 — an entity killed at refcount 1
 
-**What happened.** `walk::tests::census_counts_objects_and_their_edges`
+**What happened.** `walk::tests::what_the_walk_enumerates::census_counts_objects_and_their_edges`
 failed at roughly 5 in 30 under load, and stayed unexplained for a
 session. The cause was two array tests calling `ll_entity_die` on
 entities whose refcount was still 1. The slot reaches the free list
@@ -466,7 +466,7 @@ review of S6, 2026-08-09.
 
 ## 2026-08-11 — a test measured a block's tail and called it a code path
 
-`string::tests::an_append_loop_moves_its_payload_once` asserted that 256
+`string::tests::the_payload_and_who_frees_it::an_append_loop_moves_its_payload_once` asserted that 256
 appends move the payload exactly once: allocated on the first append,
 extended in place after that. It failed about one run in thirteen at
 `--test-threads=16` and never at the gate's width of four, and the count

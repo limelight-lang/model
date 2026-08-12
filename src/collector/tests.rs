@@ -48,12 +48,6 @@ fn stepped_epoch() -> EpochStats {
     stats
 }
 
-/// [`crate::test_support::wide_class`] with the counting destructor
-/// every ring test here uses.
-fn wide_class(name: &str, fillers: usize) -> *const crate::class::Class {
-    crate::test_support::wide_class(name, fillers, Some(counting_destructor as *const ()))
-}
-
 mod an_edge_the_walk_may_not_record;
 mod the_epoch_as_a_whole;
 mod the_three_way_judgement;

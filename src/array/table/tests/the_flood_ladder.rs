@@ -9,6 +9,33 @@
 
 use super::*;
 
+/// Forge the state the backstop exists for: many entries whose *full*
+/// 64-bit hash agrees. Real construction of such a set needs a break
+/// of the hash; here the stored hash is written directly, which
+/// exercises the same code path the attack would reach.
+fn force_equal_hashes(m: &mut Owned, n: usize) {
+    for i in 0..n {
+        let s = mk(format!("collider-{i}").as_bytes());
+        unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
+        m.insert(Key::Str(s), Value::int(i as i64));
+    }
+}
+
+/// Forge the other trigger's state: keys whose full hashes *differ*,
+/// so the equal-hash trigger stays quiet, but whose low 16 bits agree,
+/// so every one lands in the same index slot at any table size up to
+/// 65536 and they form one chain.
+fn extend_one_chain(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LLString> {
+    (from..to)
+        .map(|i| {
+            let s = mk(format!("chain-{i}").as_bytes());
+            unsafe { (*s).hash = ((i as u64 + 1) << 16) | 0xC0DE };
+            m.insert(Key::Str(s), Value::int(i as i64));
+            s
+        })
+        .collect()
+}
+
 /// The ladder's zeroth rung: a fresh table indexes an integer key by
 /// its value, as Zend does, and pays no mix. Three stride keys
 /// sharing one bucket is the by-value signature — a salted mix would

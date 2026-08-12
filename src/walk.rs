@@ -83,7 +83,7 @@ pub(crate) enum CellShape {
 /// but the quiescent walk chases a template shape that may be an ordinary
 /// Rust static, and that one Miri refuses. Found by Miri, not by reasoning:
 /// the first version of this trait had only `word`, and
-/// `template::tests::a_dying_template_releases_what_it_held` reported a
+/// `template::tests::the_instance_as_an_ordinary_entity::a_dying_template_releases_what_it_held` reported a
 /// dangling pointer with no provenance.
 pub(crate) trait CellReader {
     /// Read the eight bytes at `addr` as an integer. For the second word

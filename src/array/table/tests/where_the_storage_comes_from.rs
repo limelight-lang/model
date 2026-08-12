@@ -188,7 +188,7 @@ fn a_table_disposed_on_another_thread_leaves_the_owners_block_alive() {
 /// Where the next storage then comes from is no longer the table's to
 /// decide — since S10 it is handed a category and routes by it — so
 /// what it does with a promoted array is measured one layer up, in
-/// `element::tests::a_promoted_array_takes_its_next_storage_from_the_heap`.
+/// `element::tests::crossing_out_of_the_arena::a_promoted_array_takes_its_next_storage_from_the_heap`.
 /// The danger both halves guard is one: an owner still answering
 /// `RequestArena` takes its next storage from whatever arena is
 /// mounted then, and that arena's reset returns the chunk to the pool

@@ -386,14 +386,18 @@ versions live in `docs/history/`, marked at the top.
   group", where the rest of the layout's price is recorded too). No
   `tests/` directory at the crate root: every test is a unit test and
   reads crate-internal state. A fixture a second module needs is in
-  `src/test_support.rs`.
+  `src/test_support.rs`, and one only the array modules need is in
+  `src/array/testing.rs`. The two `loom` models are outside this layout
+  and stay so: each is a hand-written copy of a protocol rather than a
+  group of tests over a module, and each is compiled only under
+  `--cfg loom`.
 - Benches: `benches/alloc.rs`, `benches/standard.rs`,
   `benches/lifecycle.rs` (object create/release GC-protocol tax, both
   configs), `benches/strings.rs` (hash across the function's branch
   boundaries, create-hash-die, and the append loop in both memory
   categories — the harness the bump-top growth optimization was blocked
   on); collector-side epoch cost probe:
-  `collector::tests::measure_epoch_cost` (ignored, run with
+  `collector::tests::the_epoch_as_a_whole::measure_epoch_cost` (ignored, run with
   `--ignored`, release mode); external probes in `bench-external/`.
 
 `src/memory/reserve.rs` — the per-thread block reserve that keeps the

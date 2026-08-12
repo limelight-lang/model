@@ -6,12 +6,6 @@ use crate::object::{Object, new_constructed};
 use crate::value::{Tag, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-static DESTRUCTS: AtomicUsize = AtomicUsize::new(0);
-
-unsafe extern "C" fn counting_destructor(_obj: *mut Object) {
-    DESTRUCTS.fetch_add(1, Ordering::Relaxed);
-}
-
 /// A static block is a bare allocation with an object's layout and
 /// no header — exactly what the compiler will emit for a class's
 /// `static` properties.

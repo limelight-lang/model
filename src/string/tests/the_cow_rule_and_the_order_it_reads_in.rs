@@ -137,7 +137,7 @@ fn a_long_lived_string_separates_although_its_count_is_real() {
 /// it, so the combination cannot occur (`dev/DECISIONS.md`, "a COW
 /// value is copied out of the arena, and the store barrier can say
 /// no"); it is asserted where it is produced,
-/// `barrier::tests::a_cow_value_leaving_the_arena_is_copied_rather_than_counted`.
+/// `barrier::tests::what_crossing_a_category_boundary_costs::a_cow_value_leaving_the_arena_is_copied_rather_than_counted`.
 ///
 /// **`COW = 0`**: the form the compiler allocates for a proved single
 /// owner, which `ll_string_new_dynamic` builds and no lowering emits

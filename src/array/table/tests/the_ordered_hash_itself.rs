@@ -6,6 +6,23 @@
 
 use super::*;
 
+fn ctx() -> *mut LLContext {
+    std::ptr::null_mut()
+}
+
+/// The same chain read as integer keys, which is what a test that built
+/// it from a stride can compare against.
+fn chain_keys(m: &Owned, slot: usize) -> Vec<i64> {
+    chain(m, slot)
+        .into_iter()
+        .map(|i| {
+            let e = m.entry(i);
+            assert!(e.is_int_key(), "entry {i} is not an integer key");
+            e.hash_or_key as i64
+        })
+        .collect()
+}
+
 #[test]
 fn an_empty_table_finds_nothing_and_does_not_allocate() {
     let _g = crate::memory::block_pool::test_guard();
