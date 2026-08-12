@@ -21,15 +21,14 @@
 //! generated class — which is why the body's length is a property of the
 //! instance rather than of the class, and why the count is read from the
 //! shape in exactly **one** place: [`crate::object::for_each_counted_cell`],
-//! which both cell readers share and which the sever goes through as well
-//! as the two tracers. A layout known in one place cannot be learned by
-//! three walkers and missed by a fourth, which is what happened here.
+//! which both cell readers and the sever go through. A layout known in
+//! one place cannot be learned by three walkers and missed by a fourth.
 //!
 //! **Flattening is the rare path** (rule 2: an object exists only where
 //! the destination declared the interface), so it is one shared routine
-//! over the shape rather than a generated method per site. Two passes,
-//! as in Zend's rope: measure everything, allocate once, write each piece
-//! into place — no temporary string per value.
+//! over the shape rather than a generated method per site. Two passes, as
+//! in Zend's rope: measure everything, allocate once, write each piece
+//! into place, with no temporary string per value.
 //!
 //! Not here, and deliberately: the C ABI a foreign consumer would read
 //! the structure through. There is no such consumer until the compiler

@@ -27,7 +27,8 @@
 //! Why the order is LIFO, why the drops go through `drop_ref`, and why
 //! the process's last thread runs the pass in full like every other:
 //! `rfc/model/classes.md`, "Teardown at thread exit", and
-//! `dev/DECISIONS.md`, 2026-08-03.
+//! `dev/DECISIONS.md`, "thread exit owns the order its per-thread state
+//! dies in".
 
 use crate::class::Class;
 use crate::refcount::{MemoryCategory, RcHeader};

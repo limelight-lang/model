@@ -38,12 +38,11 @@ use crate::value::{Tag, Value};
 /// spends the copy's creation reference, and `drop_ref` takes this
 /// holder off the displaced original. The last two are in that order and
 /// not in `string::separate`'s, because `drop_ref` runs `__destruct`
-/// bodies and one of them can displace the copy from this very slot; the
-/// creation reference is therefore spent while no user code can run
-/// (`dev/DECISIONS.md`, 2026-08-08). Held in one function, the "copy
-/// left at two separates forever" trap is unreachable from any call
-/// site — which is why [`set`], [`append`] and [`unset`] differ only in
-/// what they pass as `write`.
+/// bodies and one of them can displace the copy from this very slot, so
+/// the creation reference is spent while no user code can run
+/// (`dev/DECISIONS.md`, "the creation reference is spent before the
+/// displaced original is dropped"). [`set`], [`append`] and [`unset`]
+/// differ only in what they pass as `write`.
 ///
 /// **`false` reports a refusal with the arrays unchanged**: the slot
 /// still names the original at its old count, every table holds its old
@@ -51,13 +50,12 @@ use crate::value::{Tag, Value};
 /// caller's. A copy refused part-way dies whole
 /// ([`destroy_unpublished`]).
 ///
-/// **The displaced original ends at one holder — up to the reset log.**
-/// A heap array displaced from an *arena* holder's slot is owed its
-/// release by the log, not by this `drop_ref`, so its count stays high
+/// **The displaced original ends at one holder, up to the reset log.** A
+/// heap array displaced from an *arena* holder's slot is owed its release
+/// by the log rather than by this `drop_ref`, so its count stays high
 /// until the reset and a later write through another holder separates
-/// once more: conservative — a count above the holders can only copy
-/// more, never corrupt — and inherent to log ownership rather than a
-/// defect here.
+/// once more. A count above the holders can only copy more, never
+/// corrupt.
 ///
 /// `write` is handed an array no other holder can see once a copy was
 /// made, and reports whether it wrote.
@@ -542,9 +540,9 @@ unsafe fn store_through_box(
 /// published into it.
 ///
 /// **A reference into an element is a `ReferenceBox`, never a pointer to
-/// the slot** (`dev/DECISIONS.md`, 2026-08-06): an element moves whenever
-/// growth or compaction reallocates the storage, and boxing means growth
-/// moves sixteen bytes containing a pointer while the box stays put.
+/// the slot**: an element moves whenever growth or compaction reallocates
+/// the storage, and boxing means growth moves sixteen bytes containing a
+/// pointer while the box stays put.
 ///
 /// **The box is a heap entity even when the array is an arena one**
 /// ([`crate::reference::ll_reference_new`]), so boxing an element of an

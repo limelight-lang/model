@@ -173,28 +173,16 @@ impl BlockHeader {
 /// front of it and refills in batches (`REFILL_BATCH`), so the global
 /// chain is touched only on a cache miss or an overflow flush.
 ///
-/// It was a Treiber stack with an ABA tag packed into the block-aligned
-/// low bits. That was **unsound**, though not because of ABA, and not
-/// because of reclamation either — regions are never unmapped, so
-/// dereferencing a node popped from under you cannot fault. The defect
-/// was narrower and particular to this codebase: `pop_global` read
-/// `(*ptr).next` non-atomically, and the block header is a tagged union
-/// in which those same bytes are the heap's `used` counter, which the
-/// block's new owner writes non-atomically on every allocation. Two
-/// conflicting accesses, at least one non-atomic, is a data race by the
-/// memory model however harmless it looks — and Miri reports it.
-///
-/// Note what that does *not* say: a correct lock-free version is
-/// perfectly possible. Making `next` atomic alone would not do it, since
-/// the racing write is the owner's and lives on the allocation hot path
-/// where it must stay non-atomic. But giving the pool its **own** link
-/// field, at an offset no owner view aliases, would — atomic on both
-/// sides, with the existing tag for ABA.
-///
-/// The lock is a trade, not a necessity. Measured live it costs nothing
-/// on either benchmark, and it removes the race and the ABA tag together
-/// rather than adding a layout invariant to a union five modules already
-/// share. Revisit if this path ever stops being cold.
+/// The Treiber stack it replaced was unsound here for a reason
+/// particular to this crate rather than for ABA: `pop_global` read
+/// `(*ptr).next` non-atomically, and those same bytes are the heap's
+/// `used` counter in the tagged union, written non-atomically by the
+/// block's new owner on every allocation. A correct lock-free version is
+/// still possible, and would need the pool's **own** link field at an
+/// offset no owner view aliases. The lock costs nothing measured on either
+/// benchmark; revisit if this path stops being cold
+/// (`dev/DECISIONS.md`, "cold concurrent structures take a lock rather
+/// than a CAS loop").
 struct FreeList {
     head: *mut BlockHeader,
 }

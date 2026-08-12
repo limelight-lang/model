@@ -776,11 +776,11 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
 /// [`crate::refcount::cow_separation_needed`] fires, in which case the
 /// entity is copied and the copy comes back.
 ///
-/// **A separated copy comes back at +1, owned by the caller**; the store
-/// site owes the rest — store, release the creation reference, drop the
-/// displaced original, every line of it load-bearing.
-/// [`crate::string::separate`] writes the composition out with the counts;
-/// the order is argued in `dev/DECISIONS.md`, 2026-08-08.
+/// **A separated copy comes back at +1, owned by the caller**, and the
+/// store site owes the rest: store, release the creation reference, drop
+/// the displaced original. [`crate::string::separate`] writes that
+/// composition out with the counts (`dev/DECISIONS.md`, "the creation
+/// reference is spent before the displaced original is dropped").
 ///
 /// `owner_cat` is the **holder's** category, supplied by the compiler as
 /// it is to every other store-side barrier (`memory/barrier.rs`), and

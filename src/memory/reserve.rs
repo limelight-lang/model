@@ -21,16 +21,15 @@
 //! it with a cursor of its own and links the block into its block list,
 //! so reset returns it to the pool like any other.
 //!
-//! **What "cannot fail" really means.** The reserve is finite, so this
-//! is not a proof — it is a conversion. Drawing on it sets a flag that
-//! the compiler's safepoint poll checks (`ll_gc_maybe_collect`), and the
-//! poll runs where a Limelight frame exists: it refills, and if it
-//! cannot, it is free to raise memory-exhausted as an ordinary
-//! exception. The failure the barrier could not report becomes a raise
-//! at the next poll, thousands of records before the reserve would
-//! actually run dry. The contract that makes the arithmetic hold — a
-//! bounded number of barrier operations between two polls — is owed by
-//! the compiler, and there is no compiler yet.
+//! **What "cannot fail" means here is a conversion rather than a proof**,
+//! the reserve being finite. Drawing on it sets a flag the compiler's
+//! safepoint poll checks (`ll_gc_maybe_collect`), and that poll runs where
+//! a Limelight frame exists: it refills, and failing that it may raise
+//! memory-exhausted as an ordinary exception. So the failure the barrier
+//! could not report becomes a raise at the next poll, thousands of records
+//! before the reserve would run dry. The contract that makes the
+//! arithmetic hold, a bounded number of barrier operations between two
+//! polls, is owed by a compiler that does not exist yet.
 
 use std::cell::RefCell;
 
