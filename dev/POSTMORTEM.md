@@ -463,3 +463,73 @@ between its factory and this line, not what the function is called: the
 same pointer at count one is "never published" before a barrier call and
 "published" after it, and the type says nothing. Found by the stage-end
 review of S6, 2026-08-09.
+
+## 2026-08-11 — a test measured a block's tail and called it a code path
+
+`string::tests::an_append_loop_moves_its_payload_once` asserted that 256
+appends move the payload exactly once: allocated on the first append,
+extended in place after that. It failed about one run in thirteen at
+`--test-threads=16` and never at the gate's width of four, and the count
+it reported was 2.
+
+**What it was really measuring.** A rotation adopts an abandoned block
+before it takes a fresh one, because a block with no owner has nobody to
+collect the frees posted into it (`dev/DECISIONS.md`, 2026-08-05). So a
+test thread's arena can begin bumping in the few kilobytes another
+thread left, and a payload doubling past that tail is copied once
+however well the in-place path works. Measured from a failing run: the
+payload was allocated in a block with 3280 bytes free and copied when it
+grew to 4096, into a block with 61184. Sixteen threads make abandoned
+blocks plentiful; four rarely do.
+
+**What made it look like a code-path assertion.** The property the test
+is for — the string path reaches `BufferArena::try_grow_in_place` — is
+real and was measured when it was written: one move with the in-place
+path against nine without it. But `try_grow_in_place` has two
+conditions, adjacency and room, and the test asserted the outcome of
+both while only one of them is the string path's. `test_guard()` does
+not close the gap: it serialises the block pool, not the tails other
+threads abandon.
+
+**What changed so it cannot repeat.** The test asks the arena for the
+room before each append and counts a move against the path only when the
+block could have held the growth, which is the second condition written
+out. It also asserts that at least one growth was served in place, so a
+run where the room never sufficed fails loudly instead of passing with
+nothing measured.
+
+**The shape to watch for.** An assertion on a count that a shared
+allocator produces is an assertion about every other thread's history.
+Before writing one, ask which of the conditions behind the number belong
+to the code under test — and make the test establish the rest, or stop
+asserting on them.
+
+## 2026-08-12 — a guard taken twice in one test, and the configuration that hid it
+
+S14.2 added `block_pool::test_guard()` to the top of
+`barrier::tests::publication_before_teardown::a_collecting_destructor_
+cannot_see_the_slot_it_is_being_removed_from`, which already took one
+thirty lines further down its body. The guard locks a
+`std::sync::Mutex`, which is not reentrant, and `let _g` shadowing does
+not drop the first binding, so the second call waits on a lock the same
+thread holds. The suite stopped there and stayed stopped: no failure, no
+output past that test name, every thread in `futex_wait` with no CPU
+time accruing.
+
+**Why the scan that placed it did not see the existing call.** The step
+looked for tests that allocate without the guard, and it read the head
+of each `#[test]` body. This test takes its guard after two `static`s
+and an `extern "C"` destructor body, past where the reading stopped.
+
+**Why it stayed invisible for a day.** The test is
+`#[cfg(not(feature = "rc-walk"))]`, so it is compiled only into
+rc-trace, and the tree had been verified in the default configuration
+alone: `cargo test --lib -- --test-threads=4`, green, 440 tests. The gate
+runs both configurations for exactly this reason, and the gate had not
+been run since the edit.
+
+**The shape to watch for.** A lock taken by a helper that tests call by
+habit is taken more than once as easily as not, and the second call is
+silent at the source: it reads as an ordinary line. Before adding one,
+grep the whole test body rather than its head, and read a hung run as a
+lock held by the same thread until the wait is ruled out.

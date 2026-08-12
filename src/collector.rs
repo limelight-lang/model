@@ -50,14 +50,21 @@ fn next_epoch_number() -> u8 {
 struct Edge {
     src: u32,
     dst: u32,
-    /// Address of the 8-byte cell the child pointer was read from (the
-    /// pointer slot, or a Box's payload word).
+    /// Where the cell starts: the pointer slot, or a Box's payload word
+    /// with the flags eight bytes above it. How far it runs is `shape`.
     field: usize,
     /// The raw word read at walk time.
     raw: u64,
     /// How wide the cell is, which decides whether there is a second
     /// word to re-check beside `field` and whether `field + 8` is even
     /// inside the entity.
+    ///
+    /// One byte carrying one bit, and it costs eight: the padding after
+    /// it takes an edge from 24 bytes to 32, measured. Paid rather than
+    /// packed because the list is transient — it lives for one epoch and
+    /// is walked twice — and because the alternative is deriving the
+    /// width from `src`'s kind at the re-check, which reads a header the
+    /// mutator is writing.
     shape: CellShape,
 }
 
@@ -145,7 +152,8 @@ pub(crate) struct Epoch {
     /// Flags as read with each row — the kind bits steer pass 2.
     flags: Vec<u32>,
     /// Per row, the version of the storage its cells were read out of,
-    /// and `None` for a row whose cells cannot move
+    /// and `None` for a row that recorded no movable cell — a kind
+    /// holding its cells in its own slot, or an array the walk gave up on
     /// ([`crate::walk::trace_cells`]). Pass 1 sizes it beside `rows` and
     /// `flags` and pass 2 assigns by index, so a row that pass 2 ever
     /// leaves early keeps a version of its own rather than the next
@@ -384,11 +392,15 @@ impl Epoch {
     /// changed before the ack, and Phase 4's exact test is what stands
     /// behind the rest.
     ///
-    /// A source that died in between needs no case of its own: a member
-    /// is gone from the count comparison above, which breaks out on a
-    /// zero refcount, and any other source reads whatever its slot now
-    /// holds — a head still there reads two versions on, `dispose` being
-    /// a mover like the rest (`PLAN.md` S13.2).
+    /// A source that died in between needs no case of its own, and no
+    /// source outside the component reaches here at all: the mark walk
+    /// propagates forward, so an edge out of a marked row has a marked
+    /// target and neither end can be a candidate
+    /// (`walk::garbage_components`). Every `row` is therefore one the
+    /// count comparison above has already put through — and that refuses
+    /// any member whose refcount left the value the walk recorded, a
+    /// corpse's zero among them, since pass 1 records a row only above
+    /// zero.
     ///
     /// # Safety
     /// `row` was walked this epoch, so its entity address is one the
@@ -493,7 +505,11 @@ impl Epoch {
                 }
             }
 
-            // Recorded in-edge cells re-read against their walk values.
+            // Every cell this component's edges were read from, against
+            // the words the walk read there. An edge is filed under the
+            // component when either end is a member, so a member's edge
+            // into a root is re-read like the rest — the cell belongs to
+            // the source either way.
             if clean {
                 for &k in &component_edges[id] {
                     if !unsafe { self.edges[k as usize].still_designates_its_child() } {

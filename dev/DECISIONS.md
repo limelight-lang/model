@@ -8,6 +8,70 @@ never edited or deleted.
 
 ---
 
+## 2026-08-11 — releasing the storage takes the same window as moving it
+
+**Decided:** both `dispose` bodies drive `storage`, `nslots` and `used`
+to their empty values between `begin_move` and `end_move`, and free the
+chunk after the window closes. The vector does it too, although its
+`nslots` is zero throughout and no reading of it can mix.
+
+**Why:** a dying array is still read — it dies mid-epoch and the
+collector's snapshot holds its slot — so three separate publications
+offer readings no array was ever in. What kept that harmless was the
+order of the stores, the null pointer going out first, which
+`entries_of` short-circuits on. Nothing said so, and the tidier order
+publishes a live chunk against `nslots` zero, which strides the index
+region as entries and posts phantom in-edges. The window makes the
+order free to choose, which is the point: an argument that rests on
+statement order is one edit from being false.
+
+**Cost:** two more relaxed stores per teardown, on a path that is
+already freeing memory.
+
+**The `used` rule keeps exactly one exemption.** `Vector::sever_entries`
+lowers the count in the chunk it keeps, and may: it empties a component
+the drain has confirmed garbage, so teardown is the only writer that
+can follow, and a vector's elements go out as atomic stores rather than
+the plain key word the rule is about. Written where the rule is
+(`array/head.rs`), because a representation whose elements are written
+plainly may not copy it.
+
+---
+
+## 2026-08-11 — an edge is re-checked by its shape, and its storage first
+
+**Decided:** `collector::Edge` carries the width of the cell it was read
+from, and Phase 3 asks a sixteen-byte cell whether the flags beside the
+payload still say "entity". The walk also answers with the version of
+the storage its cells came from; the epoch keeps one per walked row and
+Phase 3 requires the array's counter to still read it, **before** any
+cell of that component is re-read.
+
+**Why:** eight bytes are not the cell. A `Value` is two relaxed stores,
+payload first, so a walk can pair the payload of the value being written
+with the flags of the one being replaced — and the integer the program
+wrote is looked up in the census like any other word. And an address is
+not a cell either: every move of an array's entries leaves the old chunk
+parked, intact and unwritten for the rest of the epoch, so re-reading a
+recorded address there answers with the walk's own value.
+
+**What it buys, measured rather than argued:** Phase 3's contract and
+one verdict round trip per moved array. Phase 4 re-traces every member
+through its current fields before freeing anything, so a component
+confirmed on a stale cell is dropped there — measured with the check
+disabled: confirmed 1, nothing torn down. The teardown of a live entity
+was never reachable through this.
+
+**Cost, measured:** an edge grows from 24 bytes to 32, the shape's one
+byte paid for in padding. Rejected for the version: one word per edge,
+which the stage proposed. Every cell of one array is read at one
+version, so the number is the array's and the list keeps its size.
+
+**Bounded by the handshake.** The re-check runs after the condemn ack,
+which orders what the mutator wrote before its checkpoint, so a move
+landing after the ack need not be visible to it. What holds is that no
+verdict is posted for a component that changed before the ack.
+
 ## 2026-08-11 — compaction moves the entries into a fresh chunk
 
 From stage S13.1. **The ordered hash reclaims its holes by copying the

@@ -48,9 +48,9 @@
 //! under the walker, and a half-written key word above `KEY_HOLE` is a
 //! phantom in-edge: the one direction that frees a live entity. Every
 //! operation that lowers the count therefore publishes a different chunk
-//! with it — `Table::move_entries` a fresh one, both `dispose` bodies a
-//! null one. This was true by accident until S13.1 and is load-bearing
-//! now (Critic, S13.1).
+//! with it, save the one exempted below — `Table::move_entries` a fresh
+//! one, both `dispose` bodies a null one. This was true by accident
+//! until S13.1 and is load-bearing now (Critic, S13.1).
 //!
 //! One operation lowers the count in the chunk it keeps, and it is
 //! exempt for a reason that does not generalise:
@@ -90,8 +90,9 @@ pub(crate) enum StorageTag {
     Hash = 3,
 }
 
-/// A reading of the head that a walker may act on: taken between two
-/// equal even versions, so the four words describe one moment.
+/// A reading of the head that a walker may act on: the four words below
+/// taken between two equal even versions, so they describe one moment,
+/// with that version kept beside them.
 pub(crate) struct CoherentView {
     /// The even version both readings agreed on. A reader that keeps an
     /// address out of this chunk keeps this beside it: the address stays
@@ -123,6 +124,14 @@ pub struct StorageHead {
     /// are the same even number. A stale-but-coherent view is a missed
     /// edge, which the epoch's later phases repair; an incoherent one is
     /// an edge that never existed, which nothing repairs.
+    ///
+    /// One mover skips the bracket: `entity::carry_storage_out_of`
+    /// copies an arena array's elements into a fresh chunk and publishes
+    /// the chunk bare. It may, because a walker enumerates GcHeap rows
+    /// alone (`collector::Epoch::walk_rows`) and that array still reads
+    /// `RequestArena` — promotion rewrites the category after the carry.
+    /// An array a walker can reach may not copy this, and the category
+    /// that makes it safe is asserted in debug builds only.
     version: AtomicUsize,
     /// The one allocation the representation keeps its elements in.
     storage: AtomicPtr<u8>,
@@ -133,9 +142,11 @@ pub struct StorageHead {
     /// counts, so a reader that saw the count first would read an
     /// element nobody had written yet.
     used: AtomicUsize,
-    /// Written once at construction, and once more by a migration, both
-    /// times inside the window. A representation that cannot be migrated
-    /// away from never writes it again.
+    /// Written at construction, by `StorageHead::empty`, and by nothing
+    /// else in the crate today: the 2 → 3 migration is the second writer
+    /// the design allows and it does not exist yet (`PLAN.md` S7.3).
+    /// When it lands it writes inside the window, like every other
+    /// change to what these words mean.
     tag: AtomicU8,
 }
 
@@ -230,6 +241,7 @@ impl StorageHead {
     /// moved since. An odd answer is a move in progress and equals no
     /// recorded version, so a caller comparing for equality needs no
     /// case of its own for it.
+    #[cfg(any(feature = "rc-walk", test))]
     #[inline]
     pub(crate) fn version(&self) -> usize {
         self.version.load(Ordering::Acquire)

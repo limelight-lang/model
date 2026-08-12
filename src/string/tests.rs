@@ -1233,19 +1233,36 @@ mod the_payload_and_who_frees_it {
         arena.reset(|_| {});
     }
 
-    /// An append loop on a GC-heap string moves its payload once — for the
-    /// first allocation — and never again.
+    /// An append loop on a GC-heap string allocates its payload once and
+    /// extends it in place from then on, for as long as the block it sits
+    /// in has room.
     ///
     /// The buffer arena extends a payload that is still the last chunk it
     /// bumped, and this is what says that the string path reaches that,
     /// rather than only the arena's own unit test. Measured both ways on
     /// 2026-08-05: one move with the in-place path, nine without it, for
-    /// the same 256 appends of 16 bytes.
+    /// the same 256 appends of 16 bytes. Nine moves are nine copies of
+    /// everything written so far, which is the cost this exists to keep
+    /// at one. The benchmark could not resolve the difference
+    /// (`dev/BENCHMARKS.md`), so the count is the evidence, not the clock.
     ///
-    /// Nine moves are nine copies of everything written so far, which is
-    /// the cost this exists to keep at one. The benchmark could not resolve
-    /// the difference (`dev/BENCHMARKS.md`), so the count is the evidence,
-    /// not the clock.
+    /// **The room is asked for rather than assumed, and that is the whole
+    /// difference between this and the version that failed one run in
+    /// thirteen at sixteen threads.** A rotation adopts an abandoned
+    /// block before it takes a fresh one — a block with no owner has
+    /// nobody to collect the frees posted into it (`dev/DECISIONS.md`,
+    /// 2026-08-05) — so this thread's arena can begin in a block with a
+    /// few kilobytes of tail left, and a payload doubling past that tail
+    /// is copied once however well the in-place path works. Measured on
+    /// 2026-08-11, from the run that failed: the payload was allocated in
+    /// a block with 3280 bytes free and copied when it grew to 4096, into
+    /// a block with 61184. The number of appends cannot fix this and
+    /// neither can `test_guard()`, which serialises the block pool rather
+    /// than the tails other threads abandon. So a move is counted against
+    /// the path only when the block could have held the growth, which is
+    /// [`try_grow_in_place`]'s own second condition.
+    ///
+    /// [`try_grow_in_place`]: crate::memory::buffer_arena::BufferArena::try_grow_in_place
     #[test]
     fn an_append_loop_moves_its_payload_once() {
         let _g = crate::memory::block_pool::test_guard();
@@ -1255,17 +1272,43 @@ mod the_payload_and_who_frees_it {
 
         let chunk = [b'x'; 16];
         let mut moves = 0;
+        let mut out_of_room = 0;
+        let mut extensions = 0;
         let mut last = unsafe { (*s).data };
         for _ in 0..256 {
+            let capacity = unsafe { (*s).capacity };
+            let room =
+                crate::memory::buffer_arena::with_buffer_arena(|a| a.room_in_the_current_block());
+
             assert!(unsafe { ll_string_append(std::ptr::null_mut(), s, &chunk) });
+            let grown = unsafe { (*s).capacity } - capacity;
             let now = unsafe { (*s).data };
-            if now != last {
-                moves += 1;
-                last = now;
+            if now == last {
+                if grown > 0 {
+                    extensions += 1;
+                }
+
+                continue;
+            }
+
+            moves += 1;
+            last = now;
+            // The first allocation is not a move: there was no chunk to
+            // extend. After it, the block's tail is what decides.
+            if capacity > 0 && room < grown as usize {
+                out_of_room += 1;
             }
         }
 
-        assert_eq!(moves, 1, "the payload was reallocated instead of extended");
+        assert!(
+            extensions > 0,
+            "no growth was served in place, so the loop measured nothing"
+        );
+        assert_eq!(
+            moves - out_of_room,
+            1,
+            "the payload was reallocated with room to extend it"
+        );
         assert_eq!(unsafe { (*s).len }, 256 * 16);
         assert!(
             unsafe { LLStringDynamic::bytes(s) }

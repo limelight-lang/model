@@ -27,7 +27,11 @@ versions live in `docs/history/`, marked at the top.
   epoch state machine (Phases 1–3: snapshot, walk with the three-way
   classification, judge, condemn, snapshot-compare re-check, verdict
   posting), steppable for the forcing harness; `run_epoch` is the
-  threaded driver. Block snapshots: `heap::snapshot_entity_blocks`;
+  threaded driver. The re-check is two questions per edge:
+  `Edge::still_designates_its_child` re-reads the recorded cell by its
+  width — a sixteen-byte one has its flags tested beside the payload —
+  and `Epoch::row_still_has_its_cells` asks whether the storage those
+  cells came out of is still the row's. Block snapshots: `heap::snapshot_entity_blocks`;
   the walk's child test is the dense census (`collector::census_row`).
   Trigger is an explicit call — thresholds are unmeasured.
 - Static blocks and thread exit: `src/static_block.rs` — the per-thread
@@ -123,7 +127,13 @@ versions live in `docs/history/`, marked at the top.
   parameter, and `entity::as_table_mut` is the one place the disjoint
   pair is derived. `entity::Storage` is the union of the two private
   tails; the tag is stamped in one place, `entity::new_with_storage`,
-  and the walker, the sever and the dispose dispatch on it. A vector keys on the position, so it stores no key, has
+  and the walker, the sever and the dispose dispatch on it. Two rules
+  belong to whoever writes the chunk rather than to the head, and both
+  are written where the head is: `used` never falls while `storage`
+  stays the same — `Vector::sever_entries` is the one exemption and says
+  why — and a release goes through the window like a move, both
+  `dispose` bodies publishing the empty state inside one bracket
+  (`dev/DECISIONS.md`, 2026-08-11). A vector keys on the position, so it stores no key, has
   no index, no holes and none of the hash's flood defences. One storage
   allocation holds `u32` index slots followed by a dense insertion-ordered
   array of 32-byte entries (`entry.rs`): `hash_or_key`, `key`, and the
@@ -186,7 +196,12 @@ versions live in `docs/history/`, marked at the top.
   epoch rather than striding a fresh count over a stale chunk. Both ends of that bracket are ordered by
   a fence rather than by a release store and an acquire load, and
   `version_bracket_model.rs` is the loom model that exhibits what the
-  other shape admits (`dev/WORKFLOW.md`, "Loom"). `entity::for_each_counted_child` is an
+  other shape admits (`dev/WORKFLOW.md`, "Loom"). The version travels
+  out with the reading: the walk answers with it, the epoch keeps one
+  per walked row (`collector::Epoch::storage_versions`), and Phase 3
+  asks it before re-reading any recorded cell — an address inside a
+  chunk the array has left reads the walk's own value back, the epoch
+  having parked the free (`Epoch::row_still_has_its_cells`). `entity::for_each_counted_child` is an
   adapter over it, and `ll_entity_die`'s Array arm goes through that; the
   release side uses the barrier's `drop_ref`, so a child the array held
   last is torn down rather than only decremented. An arena array that

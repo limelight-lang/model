@@ -187,9 +187,10 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
 /// stays readable after such a replacement — the epoch parks the free —
 /// so an address alone cannot say the cell stopped belonging to the
 /// entity, and the collector keeps this number to ask that
-/// (`collector::Edge`, `PLAN.md` S13.4). `None` covers both kinds whose
-/// cells never move and an array this walk gave up on, and those need no
-/// telling apart: neither yields a cell.
+/// (`collector::Edge`, `PLAN.md` S13.4). `None` covers a kind that keeps
+/// its cells in its own slot and an array this walk gave up on, and those
+/// need no telling apart: neither can leave a cell behind in a chunk, so
+/// neither has anything for the re-check to ask a version about.
 ///
 /// # Safety
 /// `entity` is a live entity of `kind` whose cells are readable, and

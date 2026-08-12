@@ -138,8 +138,17 @@ impl Drop for Owned {
     }
 }
 
+/// An array address for a second thread, which the compiler will not
+/// send on its own. Every test that hands one over joins the thread
+/// before the array dies, and that join is what makes the address good
+/// for the reading thread's whole life.
+struct Handed(*mut crate::array::entity::LLArray);
+unsafe impl Send for Handed {}
+
 fn t() -> Owned {
-    Owned(unsafe { crate::array::entity::ll_array_new(MemoryCategory::GcHeap) })
+    let a = unsafe { crate::array::entity::ll_array_new(MemoryCategory::GcHeap) };
+    assert!(!a.is_null(), "allocation refused in a test");
+    Owned(a)
 }
 
 // ---- string keys -----------------------------------------------
@@ -221,6 +230,7 @@ mod the_ordered_hash_itself {
 
     #[test]
     fn an_empty_table_finds_nothing_and_does_not_allocate() {
+        let _g = crate::memory::block_pool::test_guard();
         let m = t();
         assert!(m.is_empty());
         assert!(m.get(Key::Int(0)).is_none());
@@ -1348,11 +1358,6 @@ mod what_a_walker_reads_during_a_move {
             m.insert(Key::Int(i), Value::int(i));
         }
 
-        /// The entity, for the collector's thread. The array outlives
-        /// the walk: the join below is what makes that true.
-        struct Handed(*mut crate::array::entity::LLArray);
-        unsafe impl Send for Handed {}
-
         let handed = Handed(m.0);
         let walker = std::thread::spawn(move || {
             let handed = handed;
@@ -1416,26 +1421,25 @@ mod what_a_walker_reads_while_the_storage_is_released {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    /// The head's address, for the reading thread. The array outlives
-    /// every reading: the join below is what makes that true.
-    struct Handed(*const StorageHead);
-    unsafe impl Send for Handed {}
-
     /// Fill and release, over and over, against a thread doing nothing
     /// but accepting readings.
     ///
     /// The count of rounds is what the test costs and what it buys: a
-    /// mixed reading is available only for the two stores between the
-    /// chunk and the last count, so against the unbracketed `dispose`
-    /// this replaced, 4096 rounds reported 275 of them — about one round
-    /// in fifteen, which is a coin no single round should be asked to
-    /// flip. Under Miri the interpreter costs orders of magnitude more
-    /// per round and explores no hardware interleaving anyway, so the
-    /// count drops to what still builds the arrangement.
+    /// mixed reading is on offer only while the two stores between the
+    /// chunk and the last count are in flight, so it is rare and its rate
+    /// is not steady. Against the unbracketed `dispose` this replaced,
+    /// seven runs of 4096 rounds reported 13, 26, 30, 60, 84, 204 and 275
+    /// mixed readings — an order of magnitude apart and never zero. A
+    /// reading is not a round, the reader taking several inside one
+    /// window, so those counts bound the rounds that caught it from
+    /// above rather than below, and no single round should be asked to
+    /// flip that coin. Under Miri the interpreter costs orders of
+    /// magnitude more per round and explores no hardware interleaving
+    /// anyway, so the count drops to what still builds the arrangement.
     ///
-    /// **All 275 were the harmless half**, and that is the point of
-    /// asking both clauses: the body published the null chunk first, so
-    /// what a reader could catch was the null chunk against the counts
+    /// **Every mixed reading was the harmless half**, and that is the
+    /// point of asking both clauses: the body published the null chunk
+    /// first, so what a reader could catch was the null chunk against the counts
     /// of the live state, which `entries_of` short-circuits before it
     /// strides anything. The half that frees a live entity — a live
     /// chunk against the empty counts, strided as `nslots` zero says the
@@ -1449,7 +1453,7 @@ mod what_a_walker_reads_while_the_storage_is_released {
         let _g = crate::memory::block_pool::test_guard();
 
         let mut m = t();
-        let handed = Handed(unsafe { crate::array::entity::storage_head(m.0) });
+        let handed = Handed(m.0);
         let stop = Arc::new(AtomicBool::new(false));
         let mixed = Arc::new(AtomicUsize::new(0));
         let empty = Arc::new(AtomicUsize::new(0));
@@ -1459,8 +1463,9 @@ mod what_a_walker_reads_while_the_storage_is_released {
                 (stop.clone(), mixed.clone(), empty.clone(), filled.clone());
             std::thread::spawn(move || {
                 let handed = handed;
+                let head = unsafe { crate::array::entity::storage_head(handed.0) };
                 while !stop.load(Ordering::Relaxed) {
-                    let Some(view) = (unsafe { StorageHead::coherent(handed.0) }) else {
+                    let Some(view) = (unsafe { StorageHead::coherent(head) }) else {
                         continue;
                     };
 

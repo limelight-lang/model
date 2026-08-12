@@ -15,12 +15,12 @@ library itself is not a candidate dependency, being C and covering
 ground `std::sync::atomic` already covers. Its value is the algorithms
 and the reasoning written into the source comments.
 
-### The version bracket in `array/table.rs` is half a barrier short
+### The version bracket is half a barrier short
 
 `ck_sequence.h` is the reference seqlock, and against it our version
 counter orders one side of each bracket in the wrong direction.
 
-Opening the window (`table.rs:428`, `begin_entry_move`) stores the odd
+Opening the window (`StorageHead::begin_move`) stores the odd
 version with `Ordering::Release`. A release *store* orders accesses that
 precede it; what the bracket needs is the opposite, that the odd version
 becomes visible before the entry moves that follow. ck writes the odd
@@ -28,15 +28,15 @@ value with a plain store and then issues `ck_pr_fence_store()`. The
 equivalent here is `store(v + 1, Relaxed)` followed by
 `fence(Ordering::Release)`.
 
-The read side has the mirror defect. `coherent_entries` opens with
-`version.load(Acquire)` (`table.rs:472`), which is correct, because an
+The read side has the mirror defect. `StorageHead::coherent` opens with
+`version.load(Acquire)`, which is correct, because an
 acquire load orders the three data loads after it. The closing check
-(`table.rs:479`) is also an acquire load, and there the ordering is
+is also an acquire load, and there the ordering is
 needed in the other direction: the three data loads must be complete
 before the version is re-read. ck puts `ck_pr_fence_load()` ahead of
 that load, so the fix is `fence(Ordering::Acquire)` before it.
 
-Closing the window (`end_entry_move`) is already correct: a release
+Closing the window (`StorageHead::end_move`) is already correct: a release
 store publishes the entry writes before the even version.
 
 **Not observed, derived from the code.** On x86-64 neither defect can

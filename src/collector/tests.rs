@@ -331,6 +331,14 @@ mod what_the_snapshot_reaches {
 /// returned restores the snapshot exactly and confirms — correctly,
 /// the Phase 4 exact test proving every reference is in-component at
 /// drain time.
+///
+/// **Reverting a fix to watch a test here go red needs a timeout.** A
+/// failed assertion between the post and the drain leaves the epoch's
+/// verdicts unacked, and `Epoch::drop` waits for that ack while the
+/// panic has taken the mutator off the checkpoint path — so the run
+/// prints the assertion and then hangs rather than ending. That is the
+/// harness rather than these tests, and it is what makes a bare
+/// `cargo test` the wrong instrument for the check.
 mod the_three_way_judgement {
     use super::*;
 

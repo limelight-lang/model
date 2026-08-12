@@ -355,6 +355,19 @@ impl BufferArena {
     }
 
     #[inline]
+    /// What is left in the current block, for a test that has to know
+    /// whether a growth could have been served in place.
+    ///
+    /// A test-only shorthand rather than a widening of [`remaining`]:
+    /// production code decides adjacency and room inside
+    /// [`try_grow_in_place`](Self::try_grow_in_place), where both are one
+    /// question, and a caller able to ask them separately would be able
+    /// to act on an answer that is stale by the time it does.
+    #[cfg(test)]
+    pub(crate) fn room_in_the_current_block(&self) -> usize {
+        self.remaining()
+    }
+
     fn remaining(&self) -> usize {
         self.limit as usize - self.bump as usize
     }
