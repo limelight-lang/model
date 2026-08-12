@@ -462,8 +462,9 @@ mod the_cow_rule_and_the_order_it_reads_in {
     ///
     /// **`IS_ESCAPEE`**: not an arm of the rule. The store barrier copies
     /// a COW value out of the arena rather than counting an escape into
-    /// it, so the combination cannot occur (`dev/DECISIONS.md`,
-    /// 2026-08-04); it is asserted where it is produced,
+    /// it, so the combination cannot occur (`dev/DECISIONS.md`, "a COW
+    /// value is copied out of the arena, and the store barrier can say
+    /// no"); it is asserted where it is produced,
     /// `barrier::tests::a_cow_value_leaving_the_arena_is_copied_rather_than_counted`.
     ///
     /// **`COW = 0`**: the form the compiler allocates for a proved single
@@ -1251,15 +1252,17 @@ mod the_payload_and_who_frees_it {
     /// thirteen at sixteen threads.** A rotation adopts an abandoned
     /// block before it takes a fresh one — a block with no owner has
     /// nobody to collect the frees posted into it (`dev/DECISIONS.md`,
-    /// 2026-08-05) — so this thread's arena can begin in a block with a
-    /// few kilobytes of tail left, and a payload doubling past that tail
-    /// is copied once however well the in-place path works. Measured on
-    /// 2026-08-11, from the run that failed: the payload was allocated in
-    /// a block with 3280 bytes free and copied when it grew to 4096, into
-    /// a block with 61184. The number of appends cannot fix this and
-    /// neither can `test_guard()`, which serialises the block pool rather
-    /// than the tails other threads abandon. So a move is counted against
-    /// the path only when the block could have held the growth, which is
+    /// "a buffer block carries its own cursor, so an adopted block is
+    /// reused and not just held") — so this thread's arena can begin in
+    /// a block with a few kilobytes of tail left, and a payload doubling
+    /// past that tail is copied once however well the in-place path
+    /// works. Measured on 2026-08-11, from the run that failed: the
+    /// payload was allocated in a block with 3280 bytes free and copied
+    /// when it grew to 4096, into a block with 61184. The number of
+    /// appends cannot fix this and neither can `test_guard()`, which
+    /// serialises the block pool rather than the tails other threads
+    /// abandon. So a move is counted against the path only when the
+    /// block could have held the growth, which is
     /// [`try_grow_in_place`]'s own second condition.
     ///
     /// [`try_grow_in_place`]: crate::memory::buffer_arena::BufferArena::try_grow_in_place

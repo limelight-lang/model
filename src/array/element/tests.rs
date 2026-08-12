@@ -1821,7 +1821,8 @@ mod what_a_copy_does_with_a_box {
     /// The sequence that separates an exact holder count from an upper
     /// bound, pinned in both categories because the two answers differ
     /// and the difference is decided rather than accidental
-    /// (`dev/DECISIONS.md`, 2026-08-08, the arena's upper bound).
+    /// (`dev/DECISIONS.md`, "a copy collapses a reference nobody else
+    /// names, and the arena reads that count as an upper bound").
     ///
     /// `$a=[1]; $r=&$a[0]; $b=$a; $b[0]=3; unset($b); unset($r);
     /// $c=$a; $c[0]=9;` then `($a[0], $c[0])`. php 8.3.6 answers
@@ -2189,7 +2190,8 @@ mod crossing_out_of_the_arena {
     /// that answer would allocate out of whatever arena is mounted, whose
     /// reset then hands the chunk back with a live heap array pointing
     /// into it — a use-after-free rather than the leak a refusal looks
-    /// like (`dev/DECISIONS.md`, 2026-08-07).
+    /// like (`dev/DECISIONS.md`, "the `RcHeader` is the only authority
+    /// on which memory an entity lives in").
     ///
     /// The table cannot make this test itself since S10: it is handed a
     /// category and routes by it, so what is under test is the write

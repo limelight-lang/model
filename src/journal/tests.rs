@@ -791,9 +791,10 @@ mod where_the_retirement_sits_inside_the_exit {
     /// one of them does is this module's.
     ///
     /// The drop glue here is deliberate and is a test's own: the rule
-    /// against it (`dev/DECISIONS.md`, 2026-08-03) exists so that runtime
-    /// structures do not depend on TLS order, and this test depends on
-    /// nothing but its own cell.
+    /// against it (`dev/DECISIONS.md`, "thread exit owns the order its
+    /// per-thread state dies in") exists so that runtime structures do
+    /// not depend on TLS order, and this test depends on nothing but its
+    /// own cell.
     #[test]
     fn a_destructor_running_after_the_exit_is_recorded_or_counted() {
         let _quiet = kinds::disable_sites_for_test();
@@ -1070,10 +1071,10 @@ mod a_thread_the_journal_could_not_serve {
     }
 }
 
-/// The acceptance question of 2026-08-06, answered from journal
-/// reads and nothing else: which strings died inside this window.
-/// What it replaces is a ring of `(thread, address)` written by hand
-/// for that one question. It needs the record sites, so it is the
+/// The acceptance question of `dev/design/debug-modes.md` §9, answered
+/// from journal reads and nothing else: which strings died inside this
+/// window. What it replaces is a ring of `(thread, address)` written by
+/// hand for that one question. It needs the record sites, so it is the
 /// `debug-journal` build's alone.
 #[cfg(feature = "debug-journal")]
 mod the_hunt_the_journal_was_built_for {

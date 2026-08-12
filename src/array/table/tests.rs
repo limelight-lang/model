@@ -10,7 +10,8 @@ fn ctx() -> *mut LLContext {
 /// disturb an unrelated test (which is exactly what happened once).
 /// A table **inside its array**, which is the only place a table
 /// lives: the memory its storage comes from is the owning entity's
-/// header to say (`dev/DECISIONS.md` 2026-08-07), so a test needs the
+/// header to say (`dev/DECISIONS.md`, "the `RcHeader` is the only
+/// authority on which memory an entity lives in"), so a test needs the
 /// entity to have a category to pass. Derefs to the table, so a test
 /// reads as if it held one.
 struct Owned(*mut crate::array::entity::LLArray);
@@ -1252,9 +1253,9 @@ mod where_the_storage_comes_from {
 
     /// A refused carry decides no category of its own: it leaves the
     /// storage where it is and the header saying `RequestArena`, so
-    /// promotion is what changes the answer a moment later, and the four
-    /// rewrites `carry_out_of` used to make are gone
-    /// (`dev/DECISIONS.md`, 2026-08-07).
+    /// promotion is what changes the answer a moment later
+    /// (`dev/DECISIONS.md`, "the `RcHeader` is the only authority on
+    /// which memory an entity lives in").
     ///
     /// Where the next storage then comes from is no longer the table's to
     /// decide — since S10 it is handed a category and routes by it — so

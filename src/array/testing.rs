@@ -11,9 +11,8 @@
 //! one call, so a test that is about insertion order or about a
 //! refcount stays about that rather than about how to reach a table.
 //!
-//! **The category is the array's own**, read through
-//! [`category_of`] at the call, which is what every test passed by hand
-//! before. A test needing a different one calls the table directly.
+//! **The category is the array's own**, read through [`category_of`] at
+//! the call. A test needing a different one calls the table directly.
 //!
 //! Nothing here is compiled into a release build, and nothing in the
 //! crate outside `#[cfg(test)]` may use it: an operation worth having in

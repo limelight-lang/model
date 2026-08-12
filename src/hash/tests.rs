@@ -107,8 +107,7 @@ mod the_port_against_its_reference {
     /// the same file, so a header that was edited — patched by hand,
     /// swapped for another version, corrupted in transit — yields a
     /// self-consistent table, a self-consistent port and a green suite.
-    /// `vendor/rapidhash/README.md` records a sha256 for it, and until now
-    /// nothing compared anything against that record.
+    /// `vendor/rapidhash/README.md` records a sha256 for it.
     ///
     /// The digest below is this crate's own hash of the file rather than
     /// its sha256, because computing sha256 would mean carrying an
