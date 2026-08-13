@@ -8,6 +8,122 @@ never edited or deleted.
 
 ---
 
+## 2026-08-13 — a class with cells outside itself carries one flag and one group of five
+
+**Decided:** the descriptor gains a `CLASS_OUTSIDE_CELLS` flag and one
+pointer to an immortal group of five function pointers. Not a family of
+independently nullable fields: three nullable pointers make eight states
+of which two are coherent, and the incoherent ones fail silently — a walk
+without a sever corrupts a table entry at collection, a sever without a
+walk makes every child of the table a computed root and leaks the ring
+quietly.
+
+```rust
+struct OutsideCells {
+    walk_plain:   unsafe fn(*mut u8, *const Class, &mut dyn FnMut(Cell)) -> Option<usize>,
+    #[cfg(feature = "rc-walk")]
+    walk_relaxed: unsafe fn(*mut u8, *const Class, &mut dyn FnMut(Cell)) -> Option<usize>,
+    recheck:      unsafe fn(*mut u8, *const Class, walked: usize) -> bool,
+    sever:        unsafe fn(*mut RcHeader, &mut Vec<*mut RcHeader>),
+    free:         unsafe fn(*mut RcHeader),
+}
+```
+
+**The flag is the predicate and it is free.** `for_each_counted_cell`
+already loads `flags` for `CLASS_TEMPLATE`, so the test rides a word
+already in a register and a class without outside cells loads nothing
+extra. `Class` stores the group as `*const ()` and transmutes, as it
+already does for `dispose`, because `Cell` is crate-private and `Class`
+is public.
+
+**One group rather than loose fields also keeps the descriptor's shape
+build-independent.** `Class` is `#[repr(C)]` with its vtable starting at
+`size_of::<Class>()`, so a field that exists only under `rc-walk` would
+move the vtable, every itable and every generated descriptor between the
+two strategy builds. Inside a crate-private group the `cfg` costs
+nothing.
+
+**Two walk pointers, because a function pointer cannot be generic.**
+`for_each_counted_cell` is generic over `CellReader` and monomorphizes to
+a bare stride; a pointer in a descriptor has to have its reader chosen
+before the call. The class installs both instantiations of one generic
+body, and `CellReader` gains the associated function that picks the
+member — the trait already being the one place the two readers differ.
+
+**The visitor crosses as `&mut dyn FnMut`, one indirect call per cell.**
+A real departure from "why tracing stays data", accepted because only a
+class with outside cells pays it; the runs keep their monomorphized
+stride.
+
+**`recheck` exists because Phase 3 cannot ask a non-array for a version.**
+The re-check finds the version by casting the entity to `LLArray` and
+taking the head at +8, which on an object is the class word: a map would
+answer `class_ptr != walked`, be acquitted every epoch forever, and
+materialise a 40-byte reference over a body that may be 16. So the walk
+answers `Option<usize>` and `Epoch::row_still_has_its_cells` dispatches:
+Array keeps the head, a class with the flag asks `recheck`, everything
+else stays `true`. `None` means no cell came out of versioned storage.
+
+**The sever hook takes the entity and hangs off the drain's arm, not
+`sever_counted_slots`.** The object sever the collector actually runs is
+`walk::sever_cells`' `OBJECT | LAZY | REFERENCE` arm, which traces and
+calls `empty_cell` per cell; `sever_counted_slots` has one caller in the
+crate and it is static-block teardown, which has a layout and no entity.
+Emptying a table entry cell-wise is wrong twice: a whole-Box store zeroes
+the reserved bytes carrying the collision link, which then reads as entry
+index 0 and closes a chain on itself, and a null in the key word reads as
+an integer key rather than a hole, leaving a live entry and a stale
+count. A static block therefore may not be laid out by a descriptor
+carrying the flag, and the builder asserts it.
+
+**`free` exists because rc-trace frees the white set itself.** It does
+not call `dispose` there by design, and dispatches per entity kind for
+kinds owning memory outside their slot; `Object` falls to the default
+arm, so without this member a cyclic-garbage map's chunk is never freed
+and holds its block's live count above zero for the life of the process.
+This is the member S18.3's criterion needs, not the sever.
+
+**The block a hook yields cells from must be parkable.** A block whose
+cells the collector recorded may not be freed while an epoch is in
+flight, and the parking machinery takes a freeable block kind or a
+buffer-arena chunk — a `std::alloc` allocation cannot be parked at all.
+So a hooked class draws its outside storage from the memory manager, and
+`free` parks rather than frees during an epoch. This is a constraint on
+the contract, not a note.
+
+**The hooks supplement the generic stride; they do not replace it**, or a
+subclass's own properties go untraced. `for_each_counted_cell` strides
+the runs and then calls the walk hook, and the template arm becomes a
+third arm rather than an early return, so a template class with outside
+cells is not silently skipped.
+
+**Inheritance is not what `dispose` does today, and that is a defect
+S18.2 fixes with this.** `ClassBuilder::build` seeds `ptr_runs`,
+`box_runs`, `props` and the vtable from the parent and does **not** seed
+`dispose`: a subclass declaring no dispose of its own gets
+`ll_default_dispose`. For a map subclass that is a leak of the whole
+table. The group and `dispose` are both seeded from the parent, and a
+subclass that declares either replaces it wholesale.
+
+**A give-up is the racing reader's alone.** The walk may answer `None`
+having yielded nothing when it cannot get a coherent reading of its head,
+and that is safe for the collector, where a missed edge only pins its
+target. It is not safe for the arena reset: `reconcile_cow_counts`
+*assigns* a survivor's count from the edges the trace finds, so a hook
+that gave up there writes a count below the truth and the next release
+frees a live entity. The plain reader has no writer to race and never
+needs to give up, so `CellReader` carries an associated constant saying
+whether it may be raced and the give-up asserts on it.
+
+**The consumers, counted honestly.** The walk hook serves the quiescent
+tracer and the collector's relaxed one from `for_each_counted_cell`, and
+teardown's release through the same door — but only for a class that
+keeps the default dispose, and a map overrides it, so for the class this
+is built for teardown goes through the class's own body. `recheck`,
+`sever` and `free` each have one call site of their own. The claim that
+one door serves all three consumers was true of the hook S18 was raised
+for and is not true of this group.
+
 ## 2026-08-13 — the flood ladder gets kind-dispatched triggers, a third rung, and a key it does not have
 
 **Decided, by the Sage, after two Critic rounds on the map design:** the

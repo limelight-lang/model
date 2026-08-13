@@ -69,7 +69,7 @@ second gates the first.
   `ll_string_new_dynamic`'s refusal of that category — today nothing
   would reclaim such a string. Blocked on design, not scheduled.
 
-## S18 — `walk`: an optional second behaviour pointer on the class descriptor
+## S18 — cells a class owns outside its own body
 
 Raised by `limelight-lang/io` on 2026-08-12 and agreed with Edmond the
 same day. A coroutine there is an ordinary object of a runtime-provided
@@ -81,36 +81,71 @@ them — the runs are offsets within the entity.
 Goal: a class may name counted cells the runs cannot reach, and every
 consumer of an object's cells sees them.
 
-Done when: `Class` carries an optional `walk` beside `dispose`, it is
-honoured on the one path all three consumers already go through, it is
-inherited the way `dispose` is, and a test proves a class that uses it is
-traced, collected and torn down correctly in both configurations.
+Done when: `Class` carries the flag and the group, every consumer of an
+object's cells honours it, a subclass inherits it, and a test proves a
+class that uses it is traced, collected and torn down correctly in both
+configurations.
 
-Two things the consumer must be told, and they belong in the decision
-rather than in the code alone. The hook yields **cells**, not children:
-the collector records a cell's address and raw word and re-reads it in
-Phase 3, so a hook that yielded only the child could not serve it. And a
-block whose cells the collector has recorded may not be freed while an
-epoch is in flight — it goes through `deferred_free`, which exists for
-exactly that.
+The shape was settled by S18.1 and is wider than the stage was raised
+for: a `CLASS_OUTSIDE_CELLS` flag and one pointer to an immortal group of
+five — a walk per cell reader, a Phase 3 re-check, a sever and a free.
+`dev/DECISIONS.md`, 2026-08-13, "a class with cells outside itself
+carries one flag and one group of five", holds the reasoning, and
+`rfc/model/maps.md` is the second customer that widened it.
 
-- [ ] S18.1 The hook's signature and its single call site
+- [x] S18.1 The hook's signature and its call sites
       done: `dev/DECISIONS.md` records the signature, why it yields cells
-        through the reader rather than children, and that
-        `object::for_each_counted_cell` calls it after striding the runs
-        so that rc-walk, rc-trace and teardown all get it from one place
+        through the reader rather than children, and where each member is
+        called from
       tier: T2 · role: Critic
-- [ ] S18.2 The field, the builder, and inheritance
-      done: `Class` carries it, `ClassBuilder` installs it, a descriptor
-        built for a subclass copies it as it copies `dispose`, and a test
-        fails if that copy is dropped
+      Critic 2026-08-13: seven findings, and the shape changed under
+        them. Phase 3 finds a version by casting the entity to `LLArray`
+        and reading +8, which on an object is the class word, so a
+        re-check member is needed rather than a returned number alone.
+        The object sever the drain runs is `walk::sever_cells`' arm, not
+        `sever_counted_slots`, whose only caller is static-block
+        teardown. rc-trace frees the white set itself without calling
+        `dispose`, so a chunk needs a free member. `dispose` is not
+        inherited today, so "inherited the way `dispose` is" specified
+        "not copied". Three nullable pointers make six incoherent states.
+        A `std::alloc` block cannot be parked at all. And the give-up on
+        an incoherent head is unsafe for `reconcile_cow_counts`, which
+        assigns a count from the edges a trace finds. All accepted.
+      handoff: the decision entry names the flag, the group of five, the
+        call site of each member, and the two documents it corrected —
+        `rfc/model/maps.md`'s inheritance sentence and this stage's own
+        "done when". Two defects of the crate are named in it and fall to
+        S18.2: `ClassBuilder::build` does not seed `dispose` from the
+        parent, and `CellReader` has no constant saying whether it may be
+        raced.
+- [ ] S18.2 The flag, the group, the builder, and inheritance
+      done: `Class` carries the flag and the group pointer, `ClassBuilder`
+        installs a group whole or rejects a partial one at build time, a
+        subclass descriptor inherits both the group and `dispose` — which
+        it does not inherit today — and a test fails if either copy is
+        dropped
       tier: T2 · role: Critic
+      2026-08-13, from S18.1: two crate defects land here. `dispose` is
+        not seeded from the parent, so a subclass declaring none gets
+        `ll_default_dispose` and a map subclass would leak its whole
+        table. And `CellReader` needs the constant saying whether it may
+        be raced, so that a hook's give-up asserts against the plain
+        reader rather than silently under-counting an arena survivor.
+        A static block may not be laid out by a descriptor carrying the
+        flag, and the builder asserts that too.
 - [ ] S18.3 A class whose cells lie outside itself, end to end
       done: a test class with an out-of-object block is traced by
         rc-walk, collected by rc-trace and released at teardown, its
         block freed through the deferred path; the suite is green at the
         gate's width in both configurations
       tier: T2 · role: Critic
+      2026-08-13, from S18.1: the rc-trace half of this criterion is the
+        group's `free` member rather than its sever — that collector
+        frees the white set itself and does not call `dispose`, so
+        without it the block is never freed and holds its own block's
+        live count up for the life of the process. The test class draws
+        its block from the memory manager, because the parking machinery
+        cannot take a `std::alloc` allocation.
 
 ## What is left of the old phase lists
 
