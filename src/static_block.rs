@@ -76,11 +76,10 @@ thread_local! {
 pub unsafe extern "C" fn ll_static_block_register(block: *mut u8, layout: *const Class) {
     debug_assert!(!block.is_null() && !layout.is_null());
     // A static block is severed through `object::sever_counted_slots`,
-    // which walks the body's runs and knows nothing of a class's outside
-    // cells; and it has no header, so the group's own sever, which takes
-    // an entity, could not be called for it either. A layout carrying the
-    // flag would therefore lose whatever it keeps outside itself, quietly
-    // (`dev/DECISIONS.md`, 2026-08-13).
+    // which strides the body alone; the group's own sever takes an
+    // entity, and a block has no header to be one. So a layout carrying
+    // the flag would keep cells nothing here severs and nothing here
+    // frees (`dev/DECISIONS.md`, 2026-08-13).
     debug_assert_eq!(
         unsafe { (*layout).flags } & crate::class::CLASS_OUTSIDE_CELLS,
         0,

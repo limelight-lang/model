@@ -386,8 +386,11 @@ impl Epoch {
         // cells outside its body is asked through its descriptor,
         // because that offset on an object is the class word
         // (`dev/DECISIONS.md`, 2026-08-13).
+        // The kind comes from the snapshot, never from the header: the
+        // mutator writes that word as one relaxed atomic store, and a
+        // plain load beside it is a data race rather than a stale value.
         let entity = self.entities[row as usize];
-        let kind = unsafe { (*entity).flags } & crate::refcount::ENTITY_KIND_MASK;
+        let kind = self.flags[row as usize] & crate::refcount::ENTITY_KIND_MASK;
         if kind == crate::refcount::EntityKind::Array.to_flags() {
             let head = unsafe {
                 crate::array::entity::storage_head(entity as *mut crate::array::entity::LLArray)

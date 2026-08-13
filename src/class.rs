@@ -386,10 +386,13 @@ impl ClassBuilder {
     }
 
     /// Install a specialized `dispose` (`crate::object::DisposeFn`),
-    /// modeling the per-class teardown the compiler would generate.
-    /// Declared by neither this class nor an ancestor, it is
-    /// [`crate::object::ll_default_dispose`]; declared by an ancestor and
-    /// not here, it is the ancestor's.
+    /// modeling the per-class teardown the compiler would generate. Not
+    /// inherited: a subclass that declares none gets
+    /// [`crate::object::ll_default_dispose`], which strides the runs it
+    /// inherited rather than only the parent's.
+    ///
+    /// **A specialized dispose on a class with outside cells owes the
+    /// group's `free`**, which the default one makes for it.
     pub fn dispose(mut self, code: *const ()) -> Self {
         self.dispose = Some(code);
         self
@@ -820,15 +823,18 @@ impl ClassBuilder {
             return std::ptr::null();
         }
 
-        // Both are inherited, and neither was before: a subclass
-        // declaring no `dispose` used to get `ll_default_dispose` rather
-        // than its parent's, which for a class whose teardown is its own
-        // is the whole body lost (`dev/DECISIONS.md`, 2026-08-13).
-        let dispose = self.dispose.unwrap_or_else(|| {
-            parent.map_or(crate::object::ll_default_dispose as *const (), |p| {
-                p.dispose
-            })
-        });
+        // **The group is inherited and `dispose` is not**, and the
+        // asymmetry is the point. A specialized dispose releases the
+        // slots of the class that declared it, and a subclass has more:
+        // handing it down would release the parent's children and leak
+        // every slot the subclass added. What a subclass needs is
+        // `ll_default_dispose`, which strides the full runs it inherited
+        // and frees the group's storage as its last act — so inheriting
+        // the group is what makes not inheriting the dispose safe
+        // (`dev/DECISIONS.md`, 2026-08-13).
+        let dispose = self
+            .dispose
+            .unwrap_or(crate::object::ll_default_dispose as *const ());
         let outside = if self.outside.is_null() {
             parent.map_or(std::ptr::null(), |p| p.outside)
         } else {

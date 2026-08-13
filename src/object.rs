@@ -404,19 +404,7 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
     // so replacing the stride would leave them untraced — a computed root
     // and a ring that never collects.
     let group = unsafe { crate::class::Class::outside_cells(cls) }?;
-    match unsafe { R::outside_walk(group)(base, cls, &mut visit) } {
-        crate::walk::OutsideRead::Version(v) => Some(v),
-        crate::walk::OutsideRead::NoStorage => None,
-        crate::walk::OutsideRead::GaveUp => {
-            debug_assert!(
-                R::MAY_RACE,
-                "a class gave up its outside cells to a reader with no writer to lose to: \
-                 the arena reset assigns a survivor's count from the edges a trace finds, \
-                 so yielding none writes it below the truth"
-            );
-            None
-        }
-    }
+    unsafe { R::walk_outside(group, base, cls, &mut visit) }
 }
 
 /// The cells inside the entity's own body, and none outside it: the
@@ -483,12 +471,14 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::walk::CellReader>(
 /// is the dispatch this serves).
 ///
 /// Takes a base and a descriptor rather than an entity because a static
-/// block carries no header to read a class from (A6).
+/// block carries no header to read a class from (A6) — which is also why
+/// it strides the body alone: a class's outside cells are severed through
+/// the group, and the group takes an entity. A static block's layout may
+/// not carry [`crate::class::CLASS_OUTSIDE_CELLS`], and
+/// `ll_static_block_register` says so.
 ///
-/// Three callers — object teardown, the drain's sever, and the
-/// thread-exit pass — and the third is why this takes a base and a
-/// descriptor rather than an entity: a static block has no header to read
-/// a class from.
+/// One caller, the thread-exit pass over static blocks. The drain severs
+/// an entity through `walk::sever_cells`, which reaches the group.
 ///
 /// # Safety
 /// `base` must address a live region laid out by `cls`, with its slots
@@ -499,7 +489,7 @@ pub(crate) unsafe fn sever_counted_slots(
     displaced: &mut Vec<*mut RcHeader>,
 ) {
     unsafe {
-        for_each_counted_cell::<crate::walk::PlainCells>(base, cls, |cell| {
+        for_each_body_cell::<crate::walk::PlainCells>(base, cls, &mut |cell| {
             crate::walk::empty_cell(cell);
             displaced.push(cell.child);
         })
@@ -655,6 +645,19 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
         for_each_counted_child(obj, |child| {
             crate::memory::barrier::drop_ref(owner_cat, child);
         });
+    }
+
+    // Phase 2, last act — the storage a class keeps outside its own body,
+    // after its cells have been released and never before. Here rather
+    // than left to a specialized `dispose`, because this is the only body
+    // a class inherits without writing one: a subclass of a class with
+    // outside cells declares properties of its own, gets this default,
+    // and would otherwise leave the parent's storage behind on every
+    // death (`dev/DECISIONS.md`, 2026-08-13). A class that installs its
+    // own `dispose` owes the same call.
+    let cls = unsafe { (*obj).class };
+    if let Some(group) = unsafe { crate::class::Class::outside_cells(cls) } {
+        unsafe { (group.free)(obj as *mut RcHeader) };
     }
 
     true

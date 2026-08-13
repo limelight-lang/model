@@ -80,15 +80,22 @@ pub(crate) enum CellShape {
 /// at all, so a hooked class draws its storage from the memory manager.
 pub(crate) struct OutsideCells {
     /// Yield every cell outside the body, on a quiescent heap. Answers
-    /// the storage version the cells were read at, or `None` when there
-    /// is no versioned storage behind them — which also covers a class
-    /// that could not read its head coherently and gave the entity up,
-    /// since giving up yields nothing and records nothing.
-    pub walk_plain: WalkOutsideFn,
-    /// The same body under the collector's reader. Inside the group
-    /// rather than beside it in `Class`, so the descriptor's shape does
-    /// not differ between the two strategy builds — the vtable begins at
-    /// `size_of::<Class>()`.
+    /// the storage version the cells were read at, or `None` when no
+    /// versioned storage is behind them.
+    ///
+    /// **It has no way to say "I gave up"**, and that is the type doing
+    /// the work an assertion would otherwise do: a pass that reads
+    /// plainly has no writer to lose a race to, and one of them assigns a
+    /// survivor's count from the edges it finds
+    /// (`promote::reconcile_cow_counts`), so a walk that yielded nothing
+    /// would write that count below the truth.
+    pub walk_plain:
+        unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)) -> Option<usize>,
+    /// The same cells under the collector's reader, which may find the
+    /// head mid-move and give the entity up for the epoch. Inside the
+    /// group rather than beside it in `Class`, so the descriptor's shape
+    /// does not differ between the two strategy builds — the vtable
+    /// begins at `size_of::<Class>()`.
     #[cfg(feature = "rc-walk")]
     pub walk_relaxed: WalkOutsideFn,
     /// Is the storage still the one `walked` came from? Phase 3 asks
@@ -108,10 +115,11 @@ pub(crate) struct OutsideCells {
     pub free: unsafe fn(*mut RcHeader),
 }
 
-/// One instantiation of a class's outside-cell walk. Two of them sit in
-/// [`OutsideCells`] because a function pointer cannot be generic and the
-/// reader has to be chosen before the call; [`CellReader::outside_walk`]
-/// is what chooses.
+/// The racing instantiation of a class's outside-cell walk. Two walks sit
+/// in [`OutsideCells`] because a function pointer cannot be generic and
+/// the reader has to be chosen before the call; the plain one answers a
+/// narrower type, which is where the give-up is ruled out.
+#[cfg(feature = "rc-walk")]
 pub(crate) type WalkOutsideFn =
     unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)) -> OutsideRead;
 
@@ -119,13 +127,14 @@ pub(crate) type WalkOutsideFn =
 /// two: the epoch may conflate the last with the first, and the arena
 /// reset may not.
 ///
-/// Only a class's own hook constructs one, and the first such class is
-/// `limelight-lang/io`'s coroutine, outside this crate; the tests here
-/// build one of their own.
+/// Only a class's own hook constructs one, and no class does yet: the
+/// first is the map of `rfc/model/maps.md`, and the tests here build one
+/// of their own.
+#[cfg(feature = "rc-walk")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(
     not(test),
-    allow(dead_code, reason = "the first producer is another crate")
+    allow(dead_code, reason = "no producer yet; the map is the first")
 )]
 pub(crate) enum OutsideRead {
     /// The cells came out of storage nothing replaces, so there is no
@@ -134,9 +143,8 @@ pub(crate) enum OutsideRead {
     /// Every cell was yielded, out of storage at this version.
     Version(usize),
     /// Nothing was yielded: the head would not read coherently and the
-    /// entity is given up for this epoch. Legal only for a reader that
-    /// races a mutator ([`CellReader::MAY_RACE`]) — a pass that assigns a
-    /// count from the edges it finds would write it below the truth.
+    /// entity is given up for this epoch. Only the racing reader's walk
+    /// can answer it, the plain one having no such variant to return.
     GaveUp,
 }
 
@@ -167,21 +175,22 @@ pub(crate) enum OutsideRead {
 /// `template::tests::the_instance_as_an_ordinary_entity::a_dying_template_releases_what_it_held` reported a
 /// dangling pointer with no provenance.
 pub(crate) trait CellReader {
-    /// Whether a mutator may be writing the memory this reader reads.
+    /// Walk a class's cells outside its own body with this reader's
+    /// member of the group, and answer the storage version they came out
+    /// of. The trait is the one place the two readers differ, so the
+    /// choice belongs here — and so does the difference in what each
+    /// member may answer: the racing walk may give the entity up, the
+    /// plain one has no way to say it.
     ///
-    /// A class's outside-cell walk is allowed to yield nothing and answer
-    /// `None` when it cannot read its head coherently, and that licence
-    /// is this reader's alone. The arena reset traces plainly and
-    /// *assigns* a survivor's count from the edges it finds
-    /// (`promote::reconcile_cow_counts`), so a give-up there writes a
-    /// count below the truth and the next release frees a live entity.
-    /// A hook asserts on this before giving up.
-    const MAY_RACE: bool;
-
-    /// This reader's member of a class's [`OutsideCells`]. The trait is
-    /// the one place the two readers differ, so it is where the choice
-    /// belongs.
-    fn outside_walk(group: &OutsideCells) -> WalkOutsideFn;
+    /// # Safety
+    /// As the group's own members: `base` addresses a live region laid
+    /// out by `cls`, whose class carries the group.
+    unsafe fn walk_outside(
+        group: &OutsideCells,
+        base: *mut u8,
+        cls: *const crate::class::Class,
+        visit: &mut dyn FnMut(Cell),
+    ) -> Option<usize>;
 
     /// Read the eight bytes at `addr` as an integer. For the second word
     /// of a `Value`, which carries the tag and flags rather than an
@@ -206,11 +215,14 @@ pub(crate) trait CellReader {
 pub(crate) struct PlainCells;
 
 impl CellReader for PlainCells {
-    const MAY_RACE: bool = false;
-
     #[inline]
-    fn outside_walk(group: &OutsideCells) -> WalkOutsideFn {
-        group.walk_plain
+    unsafe fn walk_outside(
+        group: &OutsideCells,
+        base: *mut u8,
+        cls: *const crate::class::Class,
+        visit: &mut dyn FnMut(Cell),
+    ) -> Option<usize> {
+        unsafe { (group.walk_plain)(base, cls, visit) }
     }
 
     #[inline]
@@ -231,11 +243,17 @@ pub(crate) struct RelaxedCells;
 
 #[cfg(feature = "rc-walk")]
 impl CellReader for RelaxedCells {
-    const MAY_RACE: bool = true;
-
     #[inline]
-    fn outside_walk(group: &OutsideCells) -> WalkOutsideFn {
-        group.walk_relaxed
+    unsafe fn walk_outside(
+        group: &OutsideCells,
+        base: *mut u8,
+        cls: *const crate::class::Class,
+        visit: &mut dyn FnMut(Cell),
+    ) -> Option<usize> {
+        match unsafe { (group.walk_relaxed)(base, cls, visit) } {
+            OutsideRead::Version(v) => Some(v),
+            OutsideRead::NoStorage | OutsideRead::GaveUp => None,
+        }
     }
 
     #[inline]
