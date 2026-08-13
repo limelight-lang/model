@@ -1,5 +1,5 @@
 //! A class whose counted cells lie in a block outside the object's own
-//! body, and the five behaviours that reach them
+//! body, and the six behaviours that reach them
 //! (`crate::walk::OutsideCells`).
 //!
 //! Neither real customer is in this crate — `limelight-lang/io`'s
@@ -19,7 +19,7 @@
 //! version word beside it is the array head's bracket in miniature
 //! (`crate::array::head::StorageHead::coherent`): odd while the pointer
 //! moves, and read on both sides of the collector's own reading. It is
-//! here because the re-check is one of the five, and Phase 3 has nothing
+//! here because the re-check is one of the six, and Phase 3 has nothing
 //! to ask about a class whose storage never moves. The window covers the
 //! release as well as the move, which is `StorageHead`'s rule too: a
 //! class whose block goes away while the instance lives — a coroutine
@@ -43,7 +43,7 @@ use crate::memory::context::LLContext;
 use crate::object::Object;
 use crate::refcount::RcHeader;
 use crate::value::Value;
-use crate::walk::{Cell, CellReader, OutsideCells, PlainCells};
+use crate::walk::{Cell, CellReader, OutsideCarry, OutsideCells, PlainCells};
 #[cfg(feature = "rc-walk")]
 use crate::walk::{OutsideRead, RelaxedCells};
 
@@ -254,7 +254,7 @@ unsafe fn close_move(base: *mut u8) {
     unsafe { store_version(base, closed, Ordering::Release) };
 }
 
-/// The group, whose five members are the whole of what a class owes for
+/// The group, whose six members are the whole of what a class owes for
 /// cells the runs cannot describe.
 static GROUP: OutsideCells = OutsideCells {
     walk_plain,
@@ -263,6 +263,7 @@ static GROUP: OutsideCells = OutsideCells {
     recheck,
     sever,
     free,
+    carry,
 };
 
 /// The quiescent walk: every cell of the block, and the version they came
@@ -363,6 +364,46 @@ unsafe fn free(entity: *mut RcHeader) {
     unsafe { store_version(base, opened + 1, Ordering::Release) };
     let category = unsafe { (*entity).memory_category() };
     unsafe { crate::memory::routing::body_free(category, block, capacity(base)) };
+}
+
+/// Take the block out of the dying arena: a fresh one under the category
+/// the survivor is about to have, the cells copied into it, and the
+/// pointer published through the window like any other move.
+///
+/// The old block is left where it is — arena memory has no free — and the
+/// destination category is named rather than read from the header, which
+/// still says `RequestArena`: promotion rewrites it after the carry, so
+/// that everything a survivor owns moves while the category still
+/// describes where it lives (`array::entity::carry_storage_out_of` does
+/// the same, for the same reason).
+unsafe fn carry(_: *mut Arena, entity: *mut RcHeader) -> OutsideCarry {
+    let base = entity as *mut u8;
+    let block = unsafe { block_at::<PlainCells>(base) };
+    if block.is_null() {
+        return OutsideCarry::Nothing;
+    }
+
+    let granted = unsafe { capacity(base) };
+    debug_assert!(
+        granted <= crate::memory::block_pool::BLOCK_PAYLOAD,
+        "a block of {CELLS} cells is never an OS-direct run"
+    );
+    let (fresh, fresh_granted) = unsafe {
+        crate::memory::routing::body_alloc(
+            std::ptr::null_mut(),
+            crate::refcount::MemoryCategory::GcHeap,
+            granted,
+        )
+    };
+
+    if fresh.is_null() {
+        return OutsideCarry::Refused { memory: block };
+    }
+
+    unsafe { std::ptr::copy_nonoverlapping(block, fresh, granted) };
+    unsafe { publish_block(base, fresh) };
+    unsafe { store_capacity(base, fresh_granted) };
+    OutsideCarry::Carried
 }
 
 /// The block's cells, as the reader `R` sees them. A cell is a 16-byte

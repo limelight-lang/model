@@ -166,15 +166,16 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         for &surv in &survivors[counted..] {
             // Out-of-line memory comes with the survivor, before the
             // category stops describing where it lives. Asked through one
-            // kind-dispatched call so promotion keeps knowing nothing
-            // about any layout (`rfc/model/strings.md`).
-            if !unsafe { carry_external_memory(arena, surv) } {
-                // Refused. The bytes stay where they are and the block
-                // holding them stays out of circulation with the
-                // survivors' blocks — the same mechanism, for the same
-                // reason. Reset has no caller left to report to, which is
-                // why there is a fallback here at all.
-                let payload_block = unsafe { external_memory_block(surv) };
+            // call, dispatched on the entity, so promotion keeps knowing
+            // nothing about any layout (`rfc/model/strings.md`).
+            if let ExternalCarry::Refused(payload_block) =
+                unsafe { carry_external_memory(arena, surv) }
+            {
+                // The bytes stay where they are and the block holding them
+                // stays out of circulation with the survivors' blocks —
+                // the same mechanism, for the same reason. Reset has no
+                // caller left to report to, which is why there is a
+                // fallback here at all.
                 if payload_block != 0 {
                     let header = payload_block as *mut BlockHeader;
                     if retained.insert(payload_block) {
@@ -324,32 +325,79 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     );
 }
 
-/// Bring a survivor's out-of-line memory with it, if its kind has any.
-/// One call, kind-dispatched, so nothing about any layout leaks into the
-/// reset: promotion holds a block by the address of a header and does
-/// not otherwise look inside an entity.
+/// Bring a survivor's out-of-line memory with it, if it has any.
+/// One call, dispatched on the entity, so nothing about any layout leaks
+/// into the reset: promotion holds a block by the address of a header and
+/// does not otherwise look inside an entity.
 ///
-/// False when the carry was refused; the caller keeps the memory alive
-/// instead. Kinds with nothing out of line answer true.
+/// A refusal answers the block holding the bytes, which the caller keeps
+/// alive instead. Every arm computes that address out of the value it
+/// already carried, so no second classification can disagree with the one
+/// that refused.
 ///
 /// # Safety
 /// `surv` is a live survivor of `arena`, mid-reset.
-unsafe fn carry_external_memory(arena: *mut Arena, surv: *mut RcHeader) -> bool {
+unsafe fn carry_external_memory(arena: *mut Arena, surv: *mut RcHeader) -> ExternalCarry {
     match unsafe { external_memory(surv) } {
-        External::StringPayload(s) => unsafe { crate::string::carry_payload_out_of(arena, s) },
-        External::ArrayStorage(a) => unsafe {
-            crate::array::entity::carry_storage_out_of(arena, a)
+        External::StringPayload(s) => {
+            if unsafe { crate::string::carry_payload_out_of(arena, s) } {
+                ExternalCarry::Done
+            } else {
+                ExternalCarry::Refused(block_holding(unsafe { (*s).data }))
+            }
+        }
+        External::ArrayStorage(a) => {
+            if unsafe { crate::array::entity::carry_storage_out_of(arena, a) } {
+                ExternalCarry::Done
+            } else {
+                ExternalCarry::Refused(block_holding(unsafe {
+                    crate::array::entity::storage_address(a)
+                }))
+            }
+        }
+        // A class with cells outside its body answers both halves itself:
+        // the group's `carry` is the only code that knows where the
+        // storage is (`crate::walk::OutsideCells`).
+        External::Outside(group) => match unsafe { (group.carry)(arena, surv) } {
+            crate::walk::OutsideCarry::Carried | crate::walk::OutsideCarry::Nothing => {
+                ExternalCarry::Done
+            }
+            crate::walk::OutsideCarry::Refused { memory } => {
+                ExternalCarry::Refused(block_holding(memory))
+            }
         },
-        External::None => true,
+        External::None => ExternalCarry::Done,
     }
 }
 
-/// What a survivor owns outside its own entity. Two kinds do today; the
-/// rest answer [`External::None`] and cost one flags read.
+/// The block header holding `memory`, or 0 for a null address — the one
+/// place a refusal's address becomes a block, so a caller cannot skip the
+/// mask.
+fn block_holding(memory: *mut u8) -> usize {
+    if memory.is_null() {
+        0
+    } else {
+        BlockHeader::of_ptr(memory as *const u8) as usize
+    }
+}
+
+/// What the reset does next about a survivor's out-of-line memory.
+enum ExternalCarry {
+    /// It came along, or there was none.
+    Done,
+    /// The move was refused: the bytes stay put and this block is held
+    /// out of circulation. Zero when the memory has no block of the
+    /// arena's.
+    Refused(usize),
+}
+
+/// What a survivor owns outside its own entity. Three shapes do today;
+/// the rest answer [`External::None`] and cost one flags read.
 enum External {
     None,
     StringPayload(*mut crate::string::LLStringDynamic),
     ArrayStorage(*mut crate::array::entity::LLArray),
+    Outside(&'static crate::walk::OutsideCells),
 }
 
 /// Classify a survivor once, so the carry and the block it falls back on
@@ -369,28 +417,18 @@ unsafe fn external_memory(surv: *mut RcHeader) -> External {
         k if k == EntityKind::Array.to_flags() => {
             External::ArrayStorage(surv as *mut crate::array::entity::LLArray)
         }
+        // Both kinds that carry a class word at +8, because a specialized
+        // teardown is not inherited while the group is: a subclass of a
+        // hooked class owns the same storage.
+        k if k == EntityKind::Object.to_flags() || k == EntityKind::Lazy.to_flags() => {
+            let cls = unsafe { (*(surv as *mut crate::object::Object)).class };
+            match unsafe { crate::class::Class::outside_cells(cls) } {
+                Some(group) => External::Outside(group),
+                None => External::None,
+            }
+        }
         _ => External::None,
     }
-}
-
-/// The block holding a survivor's out-of-line memory, or 0 — the address
-/// the caller retains when [`carry_external_memory`] refused. An
-/// OS-direct payload has no block of the arena's and never refuses.
-///
-/// # Safety
-/// As [`carry_external_memory`].
-unsafe fn external_memory_block(surv: *mut RcHeader) -> usize {
-    let memory = match unsafe { external_memory(surv) } {
-        External::StringPayload(s) => unsafe { (*s).data },
-        External::ArrayStorage(a) => unsafe { crate::array::entity::storage_address(a) },
-        External::None => return 0,
-    };
-
-    if memory.is_null() {
-        return 0;
-    }
-
-    BlockHeader::of_ptr(memory as *const u8) as usize
 }
 
 /// Group the settled survivors by the block holding them and hand each

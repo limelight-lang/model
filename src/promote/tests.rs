@@ -34,6 +34,13 @@ unsafe fn store_prop(arena: *mut Arena, holder: *mut Object, offset: u32, value:
     }
 }
 
+/// The kind stamped on the block holding `memory`, read the way every
+/// concurrent reader of that word reads it.
+unsafe fn block_kind(memory: *const u8) -> u32 {
+    let header = BlockHeader::of_ptr(memory) as *const std::sync::atomic::AtomicU32;
+    unsafe { crate::memory::block_pool::load_block_kind(header) }
+}
+
 mod the_memory_a_survivor_takes_with_it;
 mod the_release_log;
 mod what_a_destructor_does_during_the_fixpoint;

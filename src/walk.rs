@@ -59,9 +59,9 @@ pub(crate) enum CellShape {
     Box,
 }
 
-/// The five behaviours a class owes when its counted cells lie outside
+/// The six behaviours a class owes when its counted cells lie outside
 /// its own body — a coroutine's waker block, a map's table chunk. One
-/// group rather than five nullable fields, because a class carrying some
+/// group rather than six nullable fields, because a class carrying some
 /// of them and not others fails silently in both directions: a walk
 /// without a sever lets the drain empty a table entry cell-wise, and a
 /// sever without a walk makes every child of the chunk a computed root
@@ -84,12 +84,19 @@ pub(crate) enum CellShape {
 /// arena object gets phase 1 only at reset, so storage drawn under any
 /// other category is storage nothing ever gives back.
 ///
-/// **An arena instance is refused meanwhile**, in `ll_object_new`, because
-/// the category rule covers a corpse and not a survivor: promotion carries
-/// an array's storage and a string's payload out by kind, and the group
-/// owes a carry of its own before a hooked class can live in the arena
-/// (`dev/DECISIONS.md`, "a hooked class draws its storage under its own
-/// category, and the arena carry waits").
+/// The category rule covers the corpse, whose storage dies with the
+/// arena's pages, and [`OutsideCells::carry`] covers the survivor, whom
+/// the reset promotes into the heap while its storage is still arena
+/// memory (`dev/DECISIONS.md`, "a hooked class draws its storage under its
+/// own category, and the arena carry waits").
+///
+/// **The category rule is the class's to keep, and nothing here can check
+/// it.** A corpse runs no member of this group — that is what makes the
+/// rule worth having — so the one moment the mistake matters is the one
+/// moment the crate is not called. A class that draws its storage under
+/// `GcHeap` for an arena instance passes every test the crate can write:
+/// its survivors are carried correctly and merely leak the old chunk,
+/// and its corpses leak one chunk each with no symptom short of RSS.
 pub(crate) struct OutsideCells {
     /// Yield every cell outside the body, on a quiescent heap. Answers
     /// the storage version the cells were read at, or `None` when no
@@ -125,6 +132,51 @@ pub(crate) struct OutsideCells {
     /// calling `dispose`, so this is the only member that reaches a
     /// cyclic-garbage instance's chunk.
     pub free: unsafe fn(*mut RcHeader),
+    /// Bring the storage out of a dying request arena, for an instance
+    /// the reset promotes. The corpse needs nothing: its storage was
+    /// drawn under its own category and dies with the pages.
+    ///
+    /// Three things the implementer owes, none of them derivable from the
+    /// signature. The destination category is **named**, `GcHeap`, and not
+    /// read from the header, which still says `RequestArena` here —
+    /// promotion rewrites it after this call, so that everything a
+    /// survivor owns moves while the category still describes where it
+    /// lives. The old storage is **not** freed: arena memory has no free,
+    /// and the pages go back whole at the end of the reset. And `arena` is
+    /// the dying arena, for the one operation that needs it — an
+    /// allocation the arena made directly from the system is transferred
+    /// by forgetting the arena's record of it (`Arena::forget_large`),
+    /// never copied and never refused.
+    ///
+    /// The argument for the shape is `dev/DECISIONS.md`, "the arena carry
+    /// is the group's sixth member, and a refusal answers the bytes it
+    /// left behind".
+    pub carry: unsafe fn(*mut crate::memory::arena::Arena, *mut RcHeader) -> OutsideCarry,
+}
+
+/// What a class's [`OutsideCells::carry`] did about a survivor's storage.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum OutsideCarry {
+    /// The storage is out of the arena, and the instance points at it.
+    Carried,
+    /// The move was refused: the bytes stay where they are, at `memory`,
+    /// and the reset keeps the block holding them out of circulation.
+    ///
+    /// **The bytes, not their block.** The reset masks the address into a
+    /// block header itself, as it does for the two kinds that answer
+    /// through their own carry — a stamp written through an unmasked
+    /// pointer lands in the storage's own first word and leaves the block
+    /// unretained.
+    ///
+    /// **Only memory inside a block of this arena may be refused.** An
+    /// allocation the arena made directly from the system has no block of
+    /// the arena's, and the reset frees every one it logged, so such
+    /// storage is transferred rather than refused — the arena forgets the
+    /// record and the address does not move
+    /// (`array::entity::carry_storage_out_of` is the worked example).
+    Refused { memory: *mut u8 },
+    /// The instance has no storage to carry.
+    Nothing,
 }
 
 /// The racing instantiation of a class's outside-cell walk. Two walks sit

@@ -359,17 +359,18 @@ versions live in `docs/history/`, marked at the top.
   region registry are in `heap.rs`/`block_pool.rs` (design:
   `rfc/model/gc/rc-walk.md`; decision entry 2026-07-26).
 - Cells a class owns **outside** the object body: `src/walk.rs`'s
-  `OutsideCells`, a group of five behaviours — a walk per reader, the
-  Phase 3 re-check, the sever and the free — reached through
+  `OutsideCells`, a group of six behaviours — a walk per reader, the
+  Phase 3 re-check, the sever, the free and the arena carry — reached through
   `class::Class::outside_cells` when the descriptor carries
   `CLASS_OUTSIDE_CELLS`. A coroutine's waker block and a map's table
   chunk are the customers, both outside this crate, so the only class
   with the flag today is `src/test_support/outside_block.rs`. The
-  storage is drawn under the instance's own category, and
-  `ll_object_new` refuses the arena until the group has a carry across
-  the reset (`dev/DECISIONS.md`, "a class with cells outside itself
-  carries one flag and one group of five" and "a hooked class draws its
-  storage under its own category, and the arena carry waits").
+  storage is drawn under the instance's own category, which is what makes
+  a corpse's storage die with the arena's pages; a survivor's is carried
+  out by the group's own `carry`, reached from `promote::external_memory`
+  (`dev/DECISIONS.md`, "a class with cells outside itself carries one flag
+  and one group of five" and "the arena carry is the group's sixth
+  member, and a refusal answers the bytes it left behind").
 - Weak references (rc-walk step 4): `src/weak.rs` — the kind-5 weak
   cell, the per-thread weak table, death notification (`notify_death` /
   `notify_members` / `drain_arena_weak_log`) and the

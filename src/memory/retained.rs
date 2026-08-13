@@ -222,6 +222,20 @@ unsafe fn is_occupied(address: usize) -> bool {
     header & 0xffff_ffff != 0
 }
 
+/// How many payloads the block is pinned for ([`pin`]), and zero for a
+/// block nobody pinned or nobody retained. What a test asks instead of
+/// the block's kind, and why (`dev/DECISIONS.md`, "the arena carry is the
+/// group's sixth member, and a refusal answers the bytes it left
+/// behind").
+#[cfg(test)]
+pub(crate) fn pinned_payloads(block: usize) -> usize {
+    registry()
+        .lock()
+        .expect("retained index registry poisoned")
+        .get(&block)
+        .map_or(0, |index| index.payloads)
+}
+
 /// Every retained block and its index, as `(block address, occupants)`.
 ///
 /// The `Arc`s are cloned under the lock and read outside it, so a

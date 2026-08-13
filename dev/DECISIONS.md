@@ -8,6 +8,57 @@ never edited or deleted.
 
 ---
 
+## 2026-08-13 — the arena carry is the group's sixth member, and a refusal answers the bytes it left behind
+
+**Supersedes** the closing clause of "a hooked class draws its storage
+under its own category, and the arena carry waits" below: the refusal in
+`ll_object_new` is gone, and a class with cells outside its body may live
+in a request arena.
+
+**`OutsideCells` grows a sixth member**, `carry(arena, entity)`, called
+from the reset's survivor loop before the category is rewritten — while
+the category still describes where the storage lives. It answers three
+things rather than two: `Carried`, `Refused { memory }`, and `Nothing`.
+
+**A refusal answers the bytes, not their block.** Only the class knows
+where its storage is, so the refusal carries that address and the reset
+masks it into a block header itself — `promote::block_holding`, the one
+place that mask is written. The first shape had the class answer a block,
+and a class handing back the storage pointer it already holds would have
+stamped a block kind over its own first word, left the real block
+unretained and filed a pin under a key nothing would ever look up.
+
+**Promotion classifies once.** It used to classify a survivor twice —
+once to carry, once more to find the address to pin when the carry was
+refused — and its own doc guarded against the two disagreeing. Each arm
+now produces its own answer out of the classification it already holds,
+so the two cannot disagree for any kind.
+
+**Only memory inside a block of this arena may be refused.** An
+allocation the arena took directly from the system has no block of the
+arena's and the reset frees every one it logged, so such storage is
+transferred rather than refused — the arena forgets the record and the
+address does not move.
+
+**The corpse owes nothing**, which is what the category rule below bought:
+its storage is arena memory and dies with the pages. A per-corpse free at
+reset was refused as unbuildable — the reset enumerates only the
+destructor log, so it would need a registration of every hooked instance,
+paid on every allocation.
+
+**Promotion still learns no layout.** `external_memory` is its sanctioned
+kind switch, and the new arm calls one function pointer out of the group
+exactly as the string and array arms call `carry_payload_out_of` and
+`carry_storage_out_of`. Object **and** Lazy, because a subclass inherits
+the group.
+
+**A test asks `retained::pins` rather than the block's kind.** A block
+holding a survivor is stamped retained whether or not a refused carry
+pinned it, so the kind answers a different question; the first version of
+the refusal test passed with the refusal naming no block at all.
+
+---
+
 ## 2026-08-13 — a hooked class draws its storage under its own category, and the arena carry waits
 
 **Decided** by the Sage, on a hole a Critic found while S18.3 was being

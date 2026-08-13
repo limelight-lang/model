@@ -27,6 +27,7 @@ static PROBE: OutsideCells = OutsideCells {
     recheck: probe_recheck,
     sever: probe_sever,
     free: probe_free,
+    carry: probe_carry,
 };
 
 /// A group whose cells sit in storage nothing replaces.
@@ -37,6 +38,7 @@ static UNVERSIONED: OutsideCells = OutsideCells {
     recheck: probe_recheck,
     sever: probe_sever,
     free: probe_free,
+    carry: probe_carry,
 };
 
 /// A group whose racing walk gives the entity up. Only the racing one
@@ -49,6 +51,7 @@ static QUITTER: OutsideCells = OutsideCells {
     recheck: probe_recheck,
     sever: probe_sever,
     free: probe_free,
+    carry: probe_carry,
 };
 
 unsafe fn probe_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) -> Option<usize> {
@@ -89,6 +92,13 @@ unsafe fn probe_sever(
 }
 
 unsafe fn probe_free(_: *mut crate::refcount::RcHeader) {}
+
+unsafe fn probe_carry(
+    _: *mut crate::memory::arena::Arena,
+    _: *mut crate::refcount::RcHeader,
+) -> crate::walk::OutsideCarry {
+    crate::walk::OutsideCarry::Nothing
+}
 
 /// A stand-in with the real signature. `Class::dispose` is transmuted to
 /// `unsafe extern "C" fn(*mut Object) -> bool`, so a body returning
@@ -204,10 +214,6 @@ fn the_version_a_class_answers_reaches_the_walk() {
         "immortal region refused a class"
     );
 
-    // Heap instances: the factory refuses this flag in the arena until a
-    // hooked class has a carry across the reset (`dev/DECISIONS.md`, "a
-    // hooked class draws its storage under its own category, and the
-    // arena carry waits").
     let mut arena = crate::memory::arena::Arena::new();
     let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
     for (cls, expected) in [(fixed, None), (moving, Some(PROBE_VERSION))] {
@@ -335,6 +341,7 @@ static COUNTING: OutsideCells = OutsideCells {
     recheck: probe_recheck,
     sever: probe_sever,
     free: counting_free,
+    carry: probe_carry,
 };
 
 unsafe fn counting_free(_: *mut crate::refcount::RcHeader) {

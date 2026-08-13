@@ -8,23 +8,22 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-13 · Active: S19
+Updated: 2026-08-13 · Active: none — the sections below are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S18, so
-S19 is the only stage left. A number is never reissued, so a stage added
-later sits where it is to be done rather than where its number falls, and
-the prose sections after the stages are the backlog they are drawn from.
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S19, so no
+stage is open. A number is never reissued, so a stage added later sits
+where it is to be done rather than where its number falls, and the prose
+sections below are the backlog stages are drawn from.
 
-**`array::` still owes a Miri run in slices.** The module costs about an
-hour at two threads, so it goes as `array::entry`, `array::table`,
-`array::element` and `array::entity`, each a foreground run under a
-`timeout`. `array::element`, `array::entity` and `array::vector` have had
-theirs; `array::entry` and `array::table` have not. Invocation and thread
-cap: `dev/WORKFLOW.md`, Miri.
+**`array::` has had its Miri run, in slices**, and the hour the module was
+feared to cost was `array::entity`'s alone: `array::entry` took 4 seconds
+over 7 tests and `array::table` 92 over 38, both clean, on 2026-08-13 at
+`8d3728d`. A slice is still how the module is run — invocation and thread
+cap in `dev/WORKFLOW.md`, Miri.
 
 ## Then: arrays as a performance problem
 
@@ -68,42 +67,6 @@ second gates the first.
   `rfc/model/memory/regions.md` is the starting point. It also gates
   `ll_string_new_dynamic`'s refusal of that category — today nothing
   would reclaim such a string. Blocked on design, not scheduled.
-
-## S19 — a class with outside cells across the arena reset
-
-Opened 2026-08-13 by the Sage's ruling on a hole S18.3's Critic found:
-`dev/DECISIONS.md`, "a hooked class draws its storage under its own
-category, and the arena carry waits". Until it lands, `ll_object_new`
-refuses the pairing, so nothing in the crate can build the instance this
-stage serves — which is why the stage waits rather than blocks.
-
-Goal: an instance of a hooked class may live in a request arena, and its
-storage crosses the reset with it or dies with the pages.
-
-Done when: the refusal in `ll_object_new` is gone, an arena instance that
-survives a reset holds storage the reset did not hand back, and one that
-does not survive leaves nothing behind.
-
-**It comes before any map stage.** `rfc/model/maps.md` leans on
-arena-resident maps in the escape copy, the key barrier and the
-pointer-tag budget, so a map class built while the refusal stands would
-be a class that cannot be instantiated where the RFC puts it.
-
-- [ ] S19.1 The carry, and promotion's arm for it
-      done: `OutsideCells` gains a `carry` answering carried, refused
-        with the block to pin, or nothing; `promote::External` reaches it
-        for an Object or a Lazy whose class carries the flag; the
-        refusal in `ll_object_new` goes; and a test proves both halves —
-        a survivor's storage outlives the reset and a corpse's does not
-        outlive its pages
-      tier: T2 · role: Critic
-      2026-08-13, from the Sage: three answers rather than two, because
-        promotion today splits the carry from the address it pins and
-        its own doc guards against the two disagreeing — for a hooked
-        class both belong to the class author, so one call removes the
-        split by construction. Opening it also asks `limelight-lang/io`
-        whether a coroutine is ever arena-allocated, which decides
-        whether that class's carry body is real or answers nothing.
 
 ## What is left of the old phase lists
 

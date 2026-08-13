@@ -131,21 +131,6 @@ pub unsafe fn ll_object_new(
     let cls = unsafe { &*class };
     let size = cls.object_size as usize;
 
-    // A class with cells outside its body has no arena instance yet. An
-    // arena object never reaches full teardown — the reset runs phase 1
-    // and nothing else — and promotion carries out-of-line memory by
-    // entity kind, which for an object answers "none", so a corpse's
-    // storage would never be freed and a survivor would keep a pointer
-    // into memory the reset handed back to the pool. This is the one door
-    // that sees the class and the category together
-    // (`dev/DECISIONS.md`, "a hooked class draws its storage under its own
-    // category, and the arena carry waits").
-    debug_assert!(
-        cls.flags & crate::class::CLASS_OUTSIDE_CELLS == 0
-            || category != MemoryCategory::RequestArena,
-        "a class with cells outside its body has no arena carry yet"
-    );
-
     let mem = unsafe { crate::memory::routing::entity_alloc_in(ctx, category, size) };
     // Out of memory. The caller raises; nothing here is half-built,
     // because nothing was built (`rfc/runtime/exceptions.md`: the Rust

@@ -111,25 +111,6 @@ fn a_dying_object_releases_its_outside_cells_and_frees_the_block() {
     });
 }
 
-/// The factory refuses the one category the group cannot serve. An arena
-/// object never reaches full teardown, and promotion carries out-of-line
-/// memory by entity kind, which for an object answers "none" — so the
-/// storage of a corpse would never be freed and a survivor would keep a
-/// pointer into memory the reset handed back. The carry that lifts the
-/// refusal is its own stage (`dev/DECISIONS.md`, "a hooked class draws
-/// its storage under its own category, and the arena carry waits").
-#[test]
-#[should_panic(expected = "no arena carry")]
-#[cfg_attr(not(debug_assertions), ignore = "the tripwire is a debug assertion")]
-fn the_factory_refuses_a_hooked_class_in_the_arena() {
-    let _g = crate::memory::block_pool::test_guard();
-
-    with_ctx(|ctx| unsafe {
-        let cls = outside_block::class("WakerInAnArena");
-        ll_object_new(ctx, cls, MemoryCategory::RequestArena);
-    });
-}
-
 /// An instance that never took a block is the same class, and every
 /// member of the group meets it: the walk yields nothing, the teardown
 /// frees nothing, and neither reads the null as an address.

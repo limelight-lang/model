@@ -404,3 +404,189 @@ fn an_unpromoted_large_arena_entity_is_freed_by_the_reset() {
         "the corpse's run went with the reset"
     );
 }
+
+/// A class whose counted cells lie outside the object body owns its
+/// storage the way an array owns its chunk, and the reset reaches that
+/// storage through the group rather than through the entity kind. An
+/// escapee's promotion is the moment it matters: the object becomes a
+/// heap entity while its block is still arena memory, and the pages go
+/// back at the end of the reset.
+///
+/// The cell's own child is what makes the copy observable — the carry
+/// moves the bytes, so a walk of the promoted object has to find the
+/// same child at the new address.
+#[test]
+fn a_hooked_survivor_carries_its_block_out_of_the_arena() {
+    use crate::memory::block_pool::{BLOCK_KIND_ARENA, BLOCK_KIND_BUFFER};
+    use crate::test_support::outside_block;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let holder_cls = ClassBuilder::new("WakerHolder").prop("waker", true).build();
+    let waker_cls = outside_block::class("WakerPromoted");
+    let child_cls = ClassBuilder::new("WakerPromotedChild").build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let holder = unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let waker =
+        unsafe { new_constructed(&mut *context_ptr, waker_cls, MemoryCategory::RequestArena) };
+    let child = unsafe { new_constructed(&mut *context_ptr, child_cls, MemoryCategory::GcHeap) };
+
+    let block_before = unsafe { outside_block::install_block(context_ptr, waker) };
+    assert_eq!(
+        unsafe { block_kind(block_before) },
+        BLOCK_KIND_ARENA,
+        "the block was drawn under some other category than the instance's"
+    );
+
+    unsafe {
+        assert!(outside_block::store_cell(
+            arena_ptr,
+            waker,
+            0,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Object, child as *mut RcHeader),
+        ));
+        // The escape: a heap holder takes the arena object, which is the
+        // only reason anything here survives.
+        store_prop(arena_ptr, holder, 16, waker);
+        assert!(!crate::refcount::ll_release(child as *mut RcHeader));
+    }
+
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+
+    unsafe {
+        assert_eq!(
+            (*(waker as *mut RcHeader)).memory_category(),
+            MemoryCategory::GcHeap,
+            "the waker stayed behind in the dying arena"
+        );
+
+        let block_after = outside_block::block_of(waker);
+        assert_ne!(block_after, block_before, "the block never moved");
+        assert_eq!(
+            block_kind(block_after),
+            BLOCK_KIND_BUFFER,
+            "the storage is still arena memory the reset gave back"
+        );
+
+        let mut seen = Vec::new();
+        crate::walk::trace_entity(waker as *mut RcHeader, |c| seen.push(c));
+        assert_eq!(
+            seen,
+            vec![child as *mut RcHeader],
+            "the cell lost its child in the move"
+        );
+
+        // The promoted waker is an ordinary counted object now: the
+        // holder's death releases it, and its own teardown gives the
+        // carried block back.
+        assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+        ll_object_die(holder);
+    }
+}
+
+/// The other half: an instance nothing holds dies with the reset, and
+/// its storage needs no free of its own — the category rule is what
+/// makes that true, the block being arena memory like the entity's own.
+/// A block drawn from anywhere else would still be out here, with no
+/// pointer left to it.
+#[test]
+fn a_hooked_corpse_leaves_nothing_behind() {
+    use crate::memory::block_pool::BLOCK_KIND_ARENA;
+    use crate::test_support::outside_block;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let waker_cls = outside_block::class("WakerAbandoned");
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let waker =
+        unsafe { new_constructed(&mut *context_ptr, waker_cls, MemoryCategory::RequestArena) };
+    let block = unsafe { outside_block::install_block(context_ptr, waker) };
+    let block_address = BlockHeader::of_ptr(block) as usize;
+    assert_eq!(
+        unsafe { block_kind(block) },
+        BLOCK_KIND_ARENA,
+        "the corpse's block is the arena's, so the pages are its free"
+    );
+
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+
+    assert!(
+        !crate::memory::retained::snapshot()
+            .iter()
+            .any(|(b, _)| *b == block_address),
+        "the reset held the block for a payload nobody carried out"
+    );
+}
+
+/// A refused carry answers the bytes it left behind, and the reset pins
+/// the block holding them instead of handing it back. The address comes
+/// out of the same call that refused, so nothing can pin the block of an
+/// entity other than this one — and the promoted instance's own teardown
+/// is what spends the pin.
+#[test]
+fn a_refused_hooked_carry_pins_the_block_its_bytes_lie_in() {
+    use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED};
+    use crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED;
+    use crate::test_support::outside_block;
+    use std::sync::atomic::Ordering;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let holder_cls = ClassBuilder::new("RefusedWakerHolder")
+        .prop("waker", true)
+        .build();
+    let waker_cls = outside_block::class("WakerRefused");
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let holder = unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let waker =
+        unsafe { new_constructed(&mut *context_ptr, waker_cls, MemoryCategory::RequestArena) };
+    let block_before = unsafe { outside_block::install_block(context_ptr, waker) };
+    let block_address = BlockHeader::of_ptr(block_before) as usize;
+
+    unsafe { store_prop(arena_ptr, holder, 16, waker) };
+
+    FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
+
+    unsafe {
+        assert_eq!(
+            outside_block::block_of(waker),
+            block_before,
+            "the carry was not refused, so this test proves nothing"
+        );
+        assert_eq!(
+            *(block_address as *const u32),
+            BLOCK_KIND_RETAINED,
+            "a refused carry did not retain the block its bytes lie in"
+        );
+        // The kind alone proves nothing here: this block holds the
+        // survivor too, so it is retained for an occupant whatever the
+        // carry answered. The pin is the refusal's own mark.
+        assert_eq!(
+            crate::memory::retained::pinned_payloads(block_address),
+            1,
+            "the refusal named no block, so nothing pinned this one"
+        );
+
+        assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+        ll_object_die(holder);
+        assert_eq!(
+            *(block_address as *const u32),
+            BLOCK_KIND_FREE,
+            "the block outlived the storage it was pinned for"
+        );
+    }
+}
