@@ -607,7 +607,7 @@ key it cannot hold, both configurations green, Miri silent.
         answering 0, the field being `Table::empty`'s and the empty loop
         leaving it alone. Five tests listed by name and run green at
         `b63692f`; nothing was added for this step.
-- [~] S7.4 The RFC corrections this stage owes
+- [x] S7.4 The RFC corrections this stage owes
       done: `arrays.md`'s "strategy 1 never transitions",
         `memory/buffers.md`'s grouping of immortal with long-lived, and
         `arrays-hashtable.md`'s "two bits for the strategy … live there
@@ -634,6 +634,16 @@ key it cannot hold, both configurations green, Miri silent.
         and its open item "recursion-depth guard on the escape copy"
         closes. Amending an authoritative sentence is Edmond's to accept,
         and he has not answered yet.
+      Sage 2026-08-13: the sixth sentence becomes two, because it carried
+        two claims. "The work is linear in the arena-resident COW subgraph
+        reachable from the source: one copy per distinct entity, held once
+        per entry naming it" replaces the bound, and a second sentence
+        prices depth: a list in a buffer-arena chunk rather than the
+        machine stack, so depth costs a refusable allocation. The open
+        item is deleted outright rather than reworded — no recursion is
+        left to guard and no constant is left to tune. One clause more
+        falls to the same reasoning, "copied recursively" at the head of
+        the paragraph, which becomes "copied in turn". Final.
       2026-08-12: five of the six landed in `rfc` as `2841ab4` — the two
         documents now agree on 1 → 2, the strategy tag is out of the byte
         the flood ladder writes, immortal has a bullet of its own with
@@ -643,6 +653,13 @@ key it cannot hold, both configurations green, Miri silent.
         at `d807b12` rather than the handoff's `d14105f`: one commit of
         Edmond's about the backlog had landed. What is left is the
         sentence above, which is his.
+      handoff: closed by `rfc` commit `b340169`, the sixth correction and
+        the two the Sage's ruling pulled in with it. `rfc/model/arrays-hashtable.md`
+        now states the bound over the subgraph, prices depth against the
+        buffer arena, and has no "recursion-depth guard" left in its Open
+        list. Both repositories are level with origin: `model` at
+        `9e10157`, `rfc` at `b340169`. Nothing in the crate changed, so
+        nothing was rerun.
 
 The 1 → 2 transition stays out of the stage: strategy 1 has no producer
 in the crate, and an arm with no producer is what this crate has refused
