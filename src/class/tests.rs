@@ -15,5 +15,6 @@ fn base() -> *const Class {
 }
 
 mod the_init_bitmap_at_the_layout_tail;
+mod what_a_subclass_inherits;
 mod what_the_descriptor_dispatches_through;
 mod where_a_property_lands;

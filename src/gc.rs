@@ -540,6 +540,17 @@ unsafe fn collect_cycles_inner() -> usize {
                         );
                         crate::memory::stdapi::ll_free(w as *mut u8);
                     }
+                    // A class whose cells lie outside its body owns that
+                    // storage the way an array owns its chunk, and this
+                    // collector calls no `dispose`, so the group's own
+                    // free is the only thing that reaches it.
+                    k if k == EntityKind::Object.to_flags() => {
+                        let cls = (*(w as *mut crate::object::Object)).class;
+                        if let Some(group) = crate::class::Class::outside_cells(cls) {
+                            (group.free)(w);
+                        }
+                        crate::memory::stdapi::ll_free(w as *mut u8);
+                    }
                     _ => crate::memory::stdapi::ll_free(w as *mut u8),
                 }
             }

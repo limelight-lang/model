@@ -59,6 +59,87 @@ pub(crate) enum CellShape {
     Box,
 }
 
+/// The five behaviours a class owes when its counted cells lie outside
+/// its own body — a coroutine's waker block, a map's table chunk. One
+/// group rather than five nullable fields, because a class carrying some
+/// of them and not others fails silently in both directions: a walk
+/// without a sever lets the drain empty a table entry cell-wise, and a
+/// sever without a walk makes every child of the chunk a computed root
+/// (`dev/DECISIONS.md`, "a class with cells outside itself carries one
+/// flag and one group of five").
+///
+/// The group is immortal static data, reached through
+/// [`crate::class::Class::outside_cells`], and the flag
+/// [`crate::class::CLASS_OUTSIDE_CELLS`] is the predicate: a class
+/// without it loads nothing here.
+///
+/// **The storage these yield cells from must be parkable.** A block whose
+/// cells the collector recorded may not be freed while an epoch is in
+/// flight, and the parking machinery takes a freeable block kind or a
+/// buffer-arena chunk — an allocation from `std::alloc` cannot be parked
+/// at all, so a hooked class draws its storage from the memory manager.
+pub(crate) struct OutsideCells {
+    /// Yield every cell outside the body, on a quiescent heap. Answers
+    /// the storage version the cells were read at, or `None` when there
+    /// is no versioned storage behind them — which also covers a class
+    /// that could not read its head coherently and gave the entity up,
+    /// since giving up yields nothing and records nothing.
+    pub walk_plain: WalkOutsideFn,
+    /// The same body under the collector's reader. Inside the group
+    /// rather than beside it in `Class`, so the descriptor's shape does
+    /// not differ between the two strategy builds — the vtable begins at
+    /// `size_of::<Class>()`.
+    #[cfg(feature = "rc-walk")]
+    pub walk_relaxed: WalkOutsideFn,
+    /// Is the storage still the one `walked` came from? Phase 3 asks
+    /// this instead of casting the entity to an array and reading the
+    /// head at `+8`, which on an object is the class word.
+    #[cfg_attr(not(feature = "rc-walk"), expect(dead_code))]
+    pub recheck: unsafe fn(*mut u8, *const crate::class::Class, walked: usize) -> bool,
+    /// Empty the outside cells and collect their former occupants,
+    /// without dropping them. Not [`empty_cell`], which writes a whole
+    /// `Value` and a bare `NULL`: in a table entry the first zeroes the
+    /// collision link into a self-referencing chain and the second reads
+    /// as an integer key rather than a hole.
+    pub sever: unsafe fn(*mut RcHeader, &mut Vec<*mut RcHeader>),
+    /// Release the storage itself. rc-trace frees the white set without
+    /// calling `dispose`, so this is the only member that reaches a
+    /// cyclic-garbage instance's chunk.
+    pub free: unsafe fn(*mut RcHeader),
+}
+
+/// One instantiation of a class's outside-cell walk. Two of them sit in
+/// [`OutsideCells`] because a function pointer cannot be generic and the
+/// reader has to be chosen before the call; [`CellReader::outside_walk`]
+/// is what chooses.
+pub(crate) type WalkOutsideFn =
+    unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)) -> OutsideRead;
+
+/// What a class's outside-cell walk answers, and the three cases are not
+/// two: the epoch may conflate the last with the first, and the arena
+/// reset may not.
+///
+/// Only a class's own hook constructs one, and the first such class is
+/// `limelight-lang/io`'s coroutine, outside this crate; the tests here
+/// build one of their own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the first producer is another crate")
+)]
+pub(crate) enum OutsideRead {
+    /// The cells came out of storage nothing replaces, so there is no
+    /// version and nothing for Phase 3 to ask about.
+    NoStorage,
+    /// Every cell was yielded, out of storage at this version.
+    Version(usize),
+    /// Nothing was yielded: the head would not read coherently and the
+    /// entity is given up for this epoch. Legal only for a reader that
+    /// races a mutator ([`CellReader::MAY_RACE`]) — a pass that assigns a
+    /// count from the edges it finds would write it below the truth.
+    GaveUp,
+}
+
 /// How a walk reads the entity memory it strides over.
 ///
 /// This is the **only** difference between the three walks that used to
@@ -86,6 +167,22 @@ pub(crate) enum CellShape {
 /// `template::tests::the_instance_as_an_ordinary_entity::a_dying_template_releases_what_it_held` reported a
 /// dangling pointer with no provenance.
 pub(crate) trait CellReader {
+    /// Whether a mutator may be writing the memory this reader reads.
+    ///
+    /// A class's outside-cell walk is allowed to yield nothing and answer
+    /// `None` when it cannot read its head coherently, and that licence
+    /// is this reader's alone. The arena reset traces plainly and
+    /// *assigns* a survivor's count from the edges it finds
+    /// (`promote::reconcile_cow_counts`), so a give-up there writes a
+    /// count below the truth and the next release frees a live entity.
+    /// A hook asserts on this before giving up.
+    const MAY_RACE: bool;
+
+    /// This reader's member of a class's [`OutsideCells`]. The trait is
+    /// the one place the two readers differ, so it is where the choice
+    /// belongs.
+    fn outside_walk(group: &OutsideCells) -> WalkOutsideFn;
+
     /// Read the eight bytes at `addr` as an integer. For the second word
     /// of a `Value`, which carries the tag and flags rather than an
     /// address.
@@ -109,6 +206,13 @@ pub(crate) trait CellReader {
 pub(crate) struct PlainCells;
 
 impl CellReader for PlainCells {
+    const MAY_RACE: bool = false;
+
+    #[inline]
+    fn outside_walk(group: &OutsideCells) -> WalkOutsideFn {
+        group.walk_plain
+    }
+
     #[inline]
     unsafe fn word(at: *const u8) -> u64 {
         unsafe { (at as *const u64).read() }
@@ -127,6 +231,13 @@ pub(crate) struct RelaxedCells;
 
 #[cfg(feature = "rc-walk")]
 impl CellReader for RelaxedCells {
+    const MAY_RACE: bool = true;
+
+    #[inline]
+    fn outside_walk(group: &OutsideCells) -> WalkOutsideFn {
+        group.walk_relaxed
+    }
+
     #[inline]
     unsafe fn word(at: *const u8) -> u64 {
         unsafe {
@@ -239,8 +350,10 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
             // reader; the descriptor it names is immortal and does not.
             let class =
                 unsafe { R::ptr((entity as *const u8).add(8)) } as *const crate::class::Class;
-            unsafe { crate::object::for_each_counted_cell::<R>(entity as *mut u8, class, visit) };
-            None
+            // The answer is the class's, not this arm's: a class with
+            // cells outside its body may keep them in storage it
+            // replaces, and then the re-check has a version to ask about.
+            unsafe { crate::object::for_each_counted_cell::<R>(entity as *mut u8, class, visit) }
         }
         REFERENCE => {
             let at = unsafe { (entity as *const u8).add(8) };
@@ -382,14 +495,35 @@ pub(crate) unsafe fn sever_cells(
     const WEAKREF: u32 = EntityKind::WeakRef as u32;
     const BOX: u32 = EntityKind::Box as u32;
     match kind {
-        OBJECT | LAZY | REFERENCE => unsafe {
-            // The storage version the walk answers with is the epoch's
-            // instrument and nothing to a sever: these three kinds keep
-            // their cells in their own slot, which no move replaces.
+        // A reference box has no class word at `+8` — its `Value` is
+        // there — so it takes the tracing walker, which dispatches on the
+        // kind, and it can own nothing outside itself.
+        REFERENCE => unsafe {
             trace_cells::<PlainCells>(entity, kind, |cell| {
                 empty_cell(cell);
                 displaced.push(cell.child);
             });
+        },
+        OBJECT | LAZY => unsafe {
+            // The body's own cells, and only those: `empty_cell` writes a
+            // whole `Value` or a bare `NULL`, which is right for a cell
+            // inside the entity and wrong for anything a class keeps
+            // outside it. The storage version the walk answers with is
+            // the epoch's instrument and nothing to a sever.
+            let cls = (*(entity as *mut Object)).class;
+            crate::object::for_each_body_cell::<PlainCells>(entity as *mut u8, cls, &mut |cell| {
+                empty_cell(cell);
+                displaced.push(cell.child);
+            });
+
+            // A class whose cells lie outside its body empties them
+            // itself: a table entry cleared cell-wise loses its collision
+            // link to a whole-Box store and reads its key word's null as
+            // an integer key rather than a hole (`dev/DECISIONS.md`,
+            // 2026-08-13).
+            if let Some(group) = crate::class::Class::outside_cells(cls) {
+                (group.sever)(entity, displaced);
+            }
         },
         // Severing an array is the table's, not `empty_cell`'s: a
         // cleared entry is a hole rather than a null, and an

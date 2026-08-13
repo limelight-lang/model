@@ -46,6 +46,14 @@ pub const CLASS_HAS_DESTRUCTOR: u32 = 1 << 3;
 /// belongs to the instance.
 pub const CLASS_TEMPLATE: u32 = 1 << 4;
 
+/// This class owns counted cells outside its own body, and
+/// [`field@Class::outside`] points at the group of behaviours that reach
+/// them. The predicate is a flag rather than a null test so that a class
+/// without such cells loads nothing extra: `flags` is already in a
+/// register wherever this is asked (`dev/DECISIONS.md`, "a class with
+/// cells outside itself carries one flag and one group of five").
+pub const CLASS_OUTSIDE_CELLS: u32 = 1 << 5;
+
 /// No `__destruct`.
 pub const NO_DESTRUCT_SLOT: u32 = u32::MAX;
 
@@ -203,6 +211,11 @@ pub struct Class {
     /// into per-class code. Holds [`crate::object::ll_default_dispose`]
     /// until the compiler generates a specialized one.
     pub dispose: *const (),
+    /// The [`crate::walk::OutsideCells`] group when
+    /// [`CLASS_OUTSIDE_CELLS`] is set, null otherwise. Erased for the
+    /// same reason `dispose` is: the group names crate-private types and
+    /// this struct is public.
+    pub outside: *const (),
     /// Counted-pointer trace runs (stride 8, skip `NULL`).
     pub ptr_runs: *const Run,
     /// Box trace runs (stride 16, skip when the refcounted flag is clear).
@@ -220,6 +233,23 @@ pub struct Class {
 static NEXT_IFACE_ID: AtomicU32 = AtomicU32::new(1);
 
 impl Class {
+    /// The group of behaviours for cells this class owns outside its own
+    /// body, or `None` for every class that has none — which is every
+    /// class the compiler emits today.
+    ///
+    /// # Safety
+    /// `cls` points at a linked class descriptor.
+    #[inline]
+    pub(crate) unsafe fn outside_cells<'a>(
+        cls: *const Class,
+    ) -> Option<&'a crate::walk::OutsideCells> {
+        if unsafe { (*cls).flags } & CLASS_OUTSIDE_CELLS == 0 {
+            return None;
+        }
+
+        Some(unsafe { &*((*cls).outside as *const crate::walk::OutsideCells) })
+    }
+
     /// The inline trailing vtable.
     ///
     /// Takes a raw pointer rather than `&self` on purpose: the vtable is
@@ -335,7 +365,10 @@ pub struct ClassBuilder {
     props: Vec<(*const LLString, SlotKind, bool)>,
     methods: Vec<(*const LLString, *const ())>,
     interfaces: Vec<(u32, Vec<u32>)>,
-    dispose: *const (),
+    /// `None` until this class declares one, so that `build` can tell
+    /// "declared nothing" from "declared the default" and inherit.
+    dispose: Option<*const ()>,
+    outside: *const (),
 }
 
 impl ClassBuilder {
@@ -347,15 +380,37 @@ impl ClassBuilder {
             props: Vec::new(),
             methods: Vec::new(),
             interfaces: Vec::new(),
-            dispose: crate::object::ll_default_dispose as *const (),
+            dispose: None,
+            outside: std::ptr::null(),
         }
     }
 
     /// Install a specialized `dispose` (`crate::object::DisposeFn`),
-    /// modeling the per-class teardown the compiler would generate. The
-    /// default is [`crate::object::ll_default_dispose`].
+    /// modeling the per-class teardown the compiler would generate.
+    /// Declared by neither this class nor an ancestor, it is
+    /// [`crate::object::ll_default_dispose`]; declared by an ancestor and
+    /// not here, it is the ancestor's.
     pub fn dispose(mut self, code: *const ()) -> Self {
-        self.dispose = code;
+        self.dispose = Some(code);
+        self
+    }
+
+    /// Install the group of behaviours for counted cells this class owns
+    /// outside its own body ([`crate::walk::OutsideCells`]), which also
+    /// raises [`CLASS_OUTSIDE_CELLS`]. A subclass inherits it.
+    ///
+    /// The group is taken whole. A class carrying some of its members and
+    /// not others fails silently in both directions, which is why there
+    /// is one pointer here rather than one per behaviour.
+    ///
+    /// The first caller is `limelight-lang/io`'s coroutine, outside this
+    /// crate; the tests here declare one of their own.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the first caller is another crate")
+    )]
+    pub(crate) fn outside_cells(mut self, group: &'static crate::walk::OutsideCells) -> Self {
+        self.outside = group as *const crate::walk::OutsideCells as *const ();
         self
     }
 
@@ -765,12 +820,33 @@ impl ClassBuilder {
             return std::ptr::null();
         }
 
+        // Both are inherited, and neither was before: a subclass
+        // declaring no `dispose` used to get `ll_default_dispose` rather
+        // than its parent's, which for a class whose teardown is its own
+        // is the whole body lost (`dev/DECISIONS.md`, 2026-08-13).
+        let dispose = self.dispose.unwrap_or_else(|| {
+            parent.map_or(crate::object::ll_default_dispose as *const (), |p| {
+                p.dispose
+            })
+        });
+        let outside = if self.outside.is_null() {
+            parent.map_or(std::ptr::null(), |p| p.outside)
+        } else {
+            self.outside
+        };
+        let flags = self.flags
+            | if outside.is_null() {
+                0
+            } else {
+                CLASS_OUTSIDE_CELLS
+            };
+
         unsafe {
             cls.write(Class {
-                flags: self.flags,
+                flags,
                 object_size,
                 layout_end,
-                interface_id: if self.flags & CLASS_INTERFACE != 0 {
+                interface_id: if flags & CLASS_INTERFACE != 0 {
                     NEXT_IFACE_ID.fetch_add(1, Ordering::Relaxed)
                 } else {
                     0
@@ -790,7 +866,8 @@ impl ClassBuilder {
                 props: props_mem,
                 methods: methods_mem,
                 interfaces: interfaces_mem,
-                dispose: self.dispose,
+                dispose,
+                outside,
                 ptr_runs: ptr_runs_mem,
                 box_runs: box_runs_mem,
                 undef_runs: undef_runs_mem,

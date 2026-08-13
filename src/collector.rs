@@ -381,12 +381,25 @@ impl Epoch {
             return true;
         };
 
-        let head = unsafe {
-            crate::array::entity::storage_head(
-                self.entities[row as usize] as *mut crate::array::entity::LLArray,
-            )
-        };
-        unsafe { (*head).version() == walked }
+        // Which entity holds the version is the kind's business. An
+        // array keeps it in the head at a fixed offset; a class with
+        // cells outside its body is asked through its descriptor,
+        // because that offset on an object is the class word
+        // (`dev/DECISIONS.md`, 2026-08-13).
+        let entity = self.entities[row as usize];
+        let kind = unsafe { (*entity).flags } & crate::refcount::ENTITY_KIND_MASK;
+        if kind == crate::refcount::EntityKind::Array.to_flags() {
+            let head = unsafe {
+                crate::array::entity::storage_head(entity as *mut crate::array::entity::LLArray)
+            };
+            return unsafe { (*head).version() == walked };
+        }
+
+        let cls = unsafe { (*(entity as *mut crate::object::Object)).class };
+        match unsafe { crate::class::Class::outside_cells(cls) } {
+            Some(group) => unsafe { (group.recheck)(entity as *mut u8, cls, walked) },
+            None => true,
+        }
     }
 
     /// Phase 2 — DIFF and MARK, in private memory (`garbage_components`).

@@ -396,13 +396,49 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
     base: *mut u8,
     cls: *const crate::class::Class,
     mut visit: impl FnMut(crate::walk::Cell),
-) {
-    let flags = unsafe { (*cls).flags };
+) -> Option<usize> {
+    unsafe { for_each_body_cell::<R>(base, cls, &mut visit) };
 
+    // The outside cells come after the body's, never instead of them: a
+    // subclass declares properties of its own and those live in the runs,
+    // so replacing the stride would leave them untraced — a computed root
+    // and a ring that never collects.
+    let group = unsafe { crate::class::Class::outside_cells(cls) }?;
+    match unsafe { R::outside_walk(group)(base, cls, &mut visit) } {
+        crate::walk::OutsideRead::Version(v) => Some(v),
+        crate::walk::OutsideRead::NoStorage => None,
+        crate::walk::OutsideRead::GaveUp => {
+            debug_assert!(
+                R::MAY_RACE,
+                "a class gave up its outside cells to a reader with no writer to lose to: \
+                 the arena reset assigns a survivor's count from the edges a trace finds, \
+                 so yielding none writes it below the truth"
+            );
+            None
+        }
+    }
+}
+
+/// The cells inside the entity's own body, and none outside it: the
+/// template's shape-counted values, or the two run kinds in order.
+///
+/// Separate from [`for_each_counted_cell`] because the sever needs
+/// exactly this half — `walk::empty_cell` writes a whole `Value` or a
+/// bare `NULL`, which is right for a cell in the body and wrong for
+/// whatever a class keeps outside it.
+///
+/// # Safety
+/// As [`for_each_counted_cell`].
+#[inline]
+pub(crate) unsafe fn for_each_body_cell<R: crate::walk::CellReader>(
+    base: *mut u8,
+    cls: *const crate::class::Class,
+    visit: &mut impl FnMut(crate::walk::Cell),
+) {
     // A template's children are counted by its shape, because one class
     // serves every interpolation site and the runs would have to differ
     // per instance (`crate::template`).
-    if flags & crate::class::CLASS_TEMPLATE != 0 {
+    if unsafe { (*cls).flags } & crate::class::CLASS_TEMPLATE != 0 {
         let n = unsafe { crate::template::value_count_at::<R>(base) };
         for i in 0..n {
             let at = unsafe { base.add(crate::template::VALUES_OFFSET + i * 16) };
