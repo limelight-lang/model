@@ -683,58 +683,6 @@ explicitly deferred.
         hash on a work list rather than the machine stack
       tier: T2 · role: Critic
 
-## Closed: the census flake was two tests killing an entity at refcount 1
-
-`walk::tests::what_the_walk_enumerates::census_counts_objects_and_their_edges` failed at roughly 5 in 30
-under load. Under the same load it now fails 0 in 60 in rc-trace and 0 in 30 in
-rc-walk, against 3 in 30, 7 in 40, 6 in 40 and 9 in 40 measured on this box
-before the fix. The reproducer stays worth keeping: build the test binary with
-`--no-run`, pin it to two cores with `taskset -c 0,1` at `--test-threads 4`, and
-run two spinners on the same cores.
-
-**Nothing left the walk.** The two censuses yield the *same* address set; the
-count fails to grow because the first census already counted the two slots the
-test's own objects then land on. At the first census those slots read
-`0x0000_1400_0000_0001` — an inline string at refcount 1 — and at the second
-they read the fresh objects. No string died inside the window, which the
-earlier hunt measured correctly and read the wrong way round: the strings had
-been freed *before* the window, with their headers never driven to zero.
-
-**What does that is a test killing an entity with `ll_entity_die` while its
-refcount is still 1.** `walk::tests::the_children_a_kind_has::an_array_is_
-traced_through_its_elements_and_its_string_keys` did it three times and
-`array::entity::tests::what_a_death_gives_back::dying_through_the_kind_
-switch_releases_the_children_and_the_storage` twice — the second half of item 14, which named the shape and was
-never connected to this. The slot then reaches the free list carrying a
-live-looking header, and that word is the occupancy test both process-global
-enumerators apply. For a string it is an over-count. For an object it is worse:
-the free-list link is written at bytes 8-15, where the class pointer was, so a
-walk that believes such a slot follows a free-list link as a `*const Class`.
-
-**The guard is what keeps it closed.** `stdapi::ll_free` asserts in test builds
-that an entity slot arrives with a refcount-0 header, so killing at 1 fails in
-the test that does it rather than in an unrelated test on another thread half an
-hour later. Kept with it: the census test's drift report, which on a mismatch
-names the addresses that came and went and the block state behind each
-(`heap::describe_slot`). Lesson in `dev/POSTMORTEM.md`.
-
-Both earlier hypotheses stay retired and are now explained rather than merely
-unobserved: retained blocks never returned to the pool, and ThreadSanitizer was
-silent because there was no race to find.
-
-Two certain defects were found beside it and both are closed (`576ffc1`).
-`retained.rs`'s tests registered fabricated addresses in the **process-global**
-retained registry, which a concurrent walk dereferences; they now register
-leaked zeroed cells, and the third test is the regression — it was seen
-segfaulting on the fabricated version. The `ll_thread_exit` comment had the
-registration order backwards: `replenish` runs before `EXIT_GUARD` is
-registered, so on glibc the guard runs *first* of the three, and the safety
-rests on the no-drop-glue rule plus `try_with` rather than on the order.
-
-**One thing the new regression is worth knowing about:** it walks the process
-heap the way the census test does, so if it ever fails intermittently, that is
-this flake and not a new one.
-
 ## Urgent, ahead of everything: the GC's walk exists in copies
 
 Edmond's ruling, 2026-08-06, and it outranks every item below including the COW

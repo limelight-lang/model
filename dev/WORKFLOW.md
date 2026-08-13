@@ -256,6 +256,13 @@ passes it by construction. There the Miri run *is* the regression test,
 and the same discipline applies: see it report the violation before the
 fix, and see it silent after.
 
+**A flake that appears only under load is reproduced by making the
+load.** Build the test binary with `--no-run`, pin it to two cores with
+`taskset -c 0,1` at `--test-threads 4`, and run two spinners on the same
+cores. The census flake of 2026-08-06 failed 3 in 30, 7 in 40, 6 in 40
+and 9 in 40 that way, and 0 in 60 after the fix under the same load
+(`dev/POSTMORTEM.md`, "an entity killed at refcount 1").
+
 **Never mute, skip, weaken or delete an existing test to go green.** A
 failing old test is a signal: either the change broke behaviour, or the
 contract genuinely moved. Those cannot be told apart silently — ask.
