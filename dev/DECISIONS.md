@@ -8,6 +8,135 @@ never edited or deleted.
 
 ---
 
+## 2026-08-13 — a map is a runtime class over the generic table, not a new entity kind
+
+**Decided:** `Map` is an ordinary object — entity kind `Object` — of a
+class the runtime provides, holding the crate's generic `Table`. It gets
+no kind code of its own and it is not a fourth storage strategy of the
+array kind. Edmond's, and it is the third answer to a question the plan
+had posed as a pair.
+
+**What it buys.** Teardown is the class descriptor's `dispose`, the
+candidate gate already admits `Object`, promotion and the walk already
+serve objects, and `Table` is reached as it was built to be — it
+allocates no entity, calls no store barrier and names no entity kind, so
+a second customer costs it nothing. A new kind code would have bought the
+opposite: an arm in every kind switch in the crate, each one a place
+where an omission leaks rather than fails, out of a code space where `7`
+is reserved and `4`–`6` are the family the RFC wants consolidated.
+
+**What it needs, and it is already planned.** A map's cells are its
+entries, and they live in a chunk outside the entity, where `ptr_runs`
+and `box_runs` cannot describe them. So a map is the second customer of
+the optional `walk` hook on the class descriptor, S18, raised for a
+coroutine whose waker cells lie outside the object the same way. The
+hook's two rules are the map's too: it yields cells rather than children,
+because Phase 3 re-reads a recorded cell; and the chunk goes through
+`deferred_free` while an epoch is in flight.
+
+**What it forecloses.** Array-like value semantics by default. That is
+the entry below.
+
+## 2026-08-13 — a map is a reference by default and a value by attribute
+
+**Decided:** copy-on-write is an attribute of a map's class, not a
+property of the type. Without it a map behaves as any object does: `$b =
+$a` is a second name, and a write through either is seen through both.
+With it, assignment must yield an independent map, which is what the
+attribute means and the only reason the copy exists.
+
+**What a copy copies is the container.** Separation on write builds a new
+map entity and a new chunk, moves the entries across, and retains every
+key and every value — nothing below the entries is duplicated, exactly as
+the array's shallow separation works. The deep copy is the other door: a
+map taken out of the request arena by a longer-lived holder copies each
+arena COW child out, takes the hold-count route for an arena object or
+reference box, and merely retains anything already long-lived. Keys and
+values go through that door on the same rule; there is no asymmetry
+between them.
+
+**The class owes two bodies for it.** A COW map's separation is the
+descriptor's `clone` and `deep_clone`, the slots the lifecycle family
+reserved and never filled, and the deep one drains an explicit list
+rather than the machine stack — nesting depth is the program's input on a
+store path, which this crate has ruled on twice.
+
+## 2026-08-13 — Map and MapMixed are two classes, and the split is identity against content
+
+**Decided:** two classes, with no inheritance between them. `Map` admits
+object keys only. `MapMixed` admits integer, string, object and array
+keys. Integer and string keys with reference semantics are not a gap
+worth a third class: an array already serves them.
+
+**The split is where equality comes from.** An object key is equal by
+address, so `Map`'s lookup path has no key kind to dispatch on, no
+numeric-string canonicalisation, no string-key ownership, and one shape
+of counted child. An array key is equal by content, which is what drags
+in the content hash and the recursive walk; `MapMixed` pays for that and
+`Map` never links it. This is the shape `SplObjectStorage` has, and it
+falls out of the split rather than being designed for.
+
+**Why not one class with a set of admitted key kinds:** the admitted set
+would be tested on every write, the content-hash machinery would be
+linked into maps that never see an array key, and hashing a key would
+become a dispatch before every lookup.
+
+**Why not inheritance:** it runs the wrong way. `MapMixed` admits more
+keys, so substituting one where a `Map` is expected is safe for writing
+and unsafe for reading — a reader of `Map`'s keys may assume they are
+objects.
+
+## 2026-08-13 — an object key is indexed by a rotation of its id, and inherits the flood ladder
+
+**Decided:** an object key's bucket comes from its `spl_object_id`
+rotated, not from a salted mix and not from the id as it stands. The
+rotation is what a fixed slot stride needs: entity slots are aligned and
+evenly spaced, so the low bits of an address carry almost no entropy and
+neighbouring objects would land in neighbouring buckets. The rotation
+amount is `MapMixed`'s and `Map`'s to settle against the stride, which is
+arithmetic rather than a decision.
+
+**Against a deliberate flood the rotation does nothing**, being a
+bijection with no salt, and it does not have to: an object key is a key
+like an integer key, and the table's existing ladder covers both. A table
+starts unsalted, counts entries whose full 64-bit hash equals the new
+key's, and escalates once to a keyed hash. Nothing new is built for maps.
+
+## 2026-08-13 — an array key's content hash lives in the map's entry
+
+**Decided, by the Sage:** the hash of an array key is stored in the map's
+own entry, in `hash_or_key`, and the array entity gains no field, no bit
+and no byte. It is computed once on the insert path by a content walk
+that works through a `WorkList` in a buffer-arena chunk and refuses like
+any allocation, never on the machine stack. A lookup hashes its probe
+afresh, which is the O(size) a value key costs anyway, the confirming
+comparison being O(size) regardless.
+
+**Nothing invalidates it, and nothing can.** The entry retains the key,
+so any prospective writer names an array whose count is at least two, and
+`cow_separation_needed` makes that write separate first: the map's key is
+never mutated in place. The freeze is transitive — a nested child with
+any external name has a count of two itself, and one at count one is
+reachable only through the frozen parent. The insert-path window where
+the count may still be one is closed by a different argument: hashing
+runs no user code, so the walk and the retain are one uninterrupted
+mutator sequence. An escape copy out of the arena preserves the number
+too, naming content rather than an address.
+
+**The entry survives the table's own moves** because growth and
+compaction copy whole entries and `rebuild_index` re-reads the stored
+hash rather than the key's bytes — the mechanism a string key's cached
+hash already rides.
+
+**The closest alternative was a lazy cache in the array entity**, guarded
+by a "not computed" bit as a string's hash is at +16. It died on the
+header-bit ledger: no free bit exists in either build configuration —
+0–14 are assigned, and 15 with the top half is rc-trace's candidate index
+for every kind that can close a cycle, Array among them. Behind the
+ledger stood the price it was never worth: an invalidation store on every
+array write, a path that has nothing to do with maps, paid by the
+overwhelming majority of arrays that never become a key.
+
 ## 2026-08-13 — an arm with no producer is not built, and strategy 1 is the standing case
 
 **Decided:** a representation, a kind arm or a numbered vocabulary entry is

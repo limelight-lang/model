@@ -34,15 +34,37 @@ reserved answered before a line of code.
 Done when: the design document exists and its open section is empty or
 explicitly deferred.
 
-- [ ] S8.1 The reserved questions put to Edmond, one at a time
+- [x] S8.1 The reserved questions put to Edmond, one at a time
       done: every question in the `Map` section below is answered and
         recorded in `dev/DECISIONS.md`
       tier: T2 · role: —
+      Sage 2026-08-13: an array key's content hash lives in the map's
+        entry, in `hash_or_key`, computed once on insert through a work
+        list; nothing invalidates it, because the entry's own reference
+        puts the key's count at two and every write separates first. The
+        lazy cache in the array entity died on the header-bit ledger,
+        there being no free bit in either configuration. Final.
+      handoff: five answers in `dev/DECISIONS.md`, 2026-08-13, five
+        entries. Two of them reshape the stage: a map is a class of the
+        `Object` kind rather than a new entity kind, which makes it the
+        second customer of S18's `walk` hook and puts S18 under S8.2
+        rather than after it; and `Map` takes object keys only while
+        `MapMixed` takes all four, so `Map` has no key kind to dispatch
+        on at all. The plan's own `Map` section below is older than these
+        answers where the two disagree.
 - [ ] S8.2 The design document in `rfc/model`
-      done: it covers where the walker reads a key's kind, the object key
-        as a counted child in trace and sever, and `MapMixed`'s content
-        hash on a work list rather than the machine stack
+      done: it covers the two classes and what each admits as a key, the
+        object key as a counted child through S18's `walk` hook in trace
+        and sever, `MapMixed`'s content hash on a work list rather than
+        the machine stack, and what the COW attribute obliges a class to
+        carry
       tier: T2 · role: Critic
+      2026-08-13: the five answers of S8.1 are the document's input, and
+        they leave it dependent on S18: a map's entries lie outside the
+        entity, so the walker reaches them only through the class
+        descriptor's hook. The document may be written before S18 is
+        built, naming the hook as its dependency, but it cannot be
+        written around it.
 
 ## Then: arrays as a performance problem
 
