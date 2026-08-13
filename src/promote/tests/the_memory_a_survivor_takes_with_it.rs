@@ -689,10 +689,21 @@ fn a_pin_spent_inside_the_reset_leaves_the_block_to_its_survivors() {
         assert!(!crate::refcount::ll_release(boxed as *mut RcHeader));
     }
 
+    let refusals_before = crate::memory::buffer_arena::refusals();
     FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
     unsafe { arena_reset_full(&mut *arena_ptr) };
     FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
 
+    // The subject is what the refusal leaves behind, and the entity that
+    // was refused is dead by now, so the count is the only thing that
+    // tells this run from one where the carry succeeded and no pin was
+    // ever taken (`dev/POSTMORTEM.md`, "a forced-refusal test that never
+    // proved the refusal").
+    assert_eq!(
+        crate::memory::buffer_arena::refusals() - refusals_before,
+        1,
+        "the carry was not refused, so nothing pinned the block"
+    );
     assert_eq!(
         unsafe { block_kind(block_address as *const u8) },
         BLOCK_KIND_RETAINED,
@@ -716,10 +727,12 @@ fn a_pin_spent_inside_the_reset_leaves_the_block_to_its_survivors() {
     }
 }
 
-/// The end of the same case: the pinned block has no survivor left
-/// either, so nobody outside the reset will ever report it empty and the
-/// reset hands it over itself. The count it held until the index was
-/// built is what makes that a reset-time question rather than a leak.
+/// The end of the case
+/// [`a_pin_spent_inside_the_reset_leaves_the_block_to_its_survivors`]
+/// builds: the pinned block has no survivor left either, so nobody
+/// outside the reset will ever report it empty and the reset hands it
+/// over itself. The count it held until the index was built is what
+/// makes that a reset-time question rather than a leak.
 #[test]
 fn a_block_whose_pin_and_occupants_both_go_inside_the_reset_goes_home() {
     use crate::memory::block_pool::BLOCK_KIND_FREE;
@@ -763,15 +776,20 @@ fn a_block_whose_pin_and_occupants_both_go_inside_the_reset_goes_home() {
         assert!(!crate::refcount::ll_release(boxed as *mut RcHeader));
     }
 
+    let refusals_before = crate::memory::buffer_arena::refusals();
     FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
     unsafe { arena_reset_full(&mut *arena_ptr) };
     FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
 
     assert_eq!(
+        crate::memory::buffer_arena::refusals() - refusals_before,
+        1,
+        "the carry was not refused, so nothing pinned the block"
+    );
+    assert_eq!(
         unsafe { block_kind(block_address as *const u8) },
         BLOCK_KIND_FREE,
-        "the block is held by nothing and went to neither the pool nor \
-         anybody else"
+        "the block stayed out of the pool with nothing holding it"
     );
     assert!(
         !crate::memory::retained::snapshot()

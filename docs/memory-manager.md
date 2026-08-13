@@ -567,7 +567,11 @@ retained block stays out of circulation while its survivors live
 block goes home since 2026-08-08: the last occupant's death reports
 through `ll_free`'s retained arm, and a block held for a payload the
 reset could not carry out waits for that payload's own free
-(`memory/retained.rs`).
+(`memory/retained.rs`). A payload freed **inside** the reset that pinned
+its block is the exception, and the reset holds a count of its own
+against exactly that: until it has finished establishing occupant
+counts, no death can empty such a block, and one that is empty when the
+count goes is handed over by the reset itself.
 
 ## What is not here
 

@@ -333,12 +333,18 @@ versions live in `docs/history/`, marked at the top.
   2026-08-03). The live count is what returns the block: each
   occupant's death reports through `stdapi::ll_free`'s retained arm, and
   the last one drops the index, restamps the block and hands it to the
-  pool (`dev/DECISIONS.md`, 2026-08-08). Two shapes sit beside that — a
+  pool (`dev/DECISIONS.md`, 2026-08-08). Three shapes sit beside that — a
   block retained for a **payload** the reset could not carry out waits
   for that payload's own free the way it waits for an occupant's death,
   the pin being a count because one block can hold several survivors'
-  payloads, and a block whose every occupant died inside the reset is
-  handed over by the reset itself, after `finish_reset`. The payload's
+  payloads; a block whose every occupant died inside the reset is
+  handed over by the reset itself, after `finish_reset`; and a payload
+  freed **inside** the reset that pinned its block spends a pin the reset
+  is still holding a second count against, released through
+  `retained::reset_pin_released` once occupant counts are established and
+  handing the block over there if nothing is left to report it
+  (`dev/DECISIONS.md`, "the reset holds a pin of its own, and releases it
+  after the index is real"). The payload's
   free arrives through `buffer_arena::buffer_free_longlived_payload`,
   which reads a retained block under the pointer, leaves the bytes where
   they are — former arena memory has no free list — and reclaims the

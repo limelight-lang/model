@@ -7,6 +7,40 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-13 — a forced-refusal test that never proved the refusal
+
+**What happened.** Both regression tests for the reset's pin were written
+against `buffer_arena::FORCE_REFUSE_LONGLIVED`, saw the defect, and were
+committed. The review that followed took the flag away on paper and
+traced them again: both still pass. The carry succeeds, no pin is taken,
+and the block reaches the very state each test asserts — retained with
+two live occupants in one, free with no index in the other. They were
+regression tests that can stop reproducing without failing.
+
+**Why it was possible.** Each test asserts on state the refused entity
+does not own — a block's kind, the presence of an index — and that state
+has two roads to it. The refusal is upstream of the assertion by the
+whole of a reset, and the entity that would carry the proof is dead by
+the time the test looks: the survivor whose payload was refused is torn
+down inside the reset, so its block pointer cannot be read afterwards and
+a post-reset `pinned_payloads` reads zero whether the fix worked or the
+refusal never happened.
+
+**Why nothing caught it.** The suite was green and the tests had each
+been seen failing for the right reason before the repair, which is the
+crate's own standard and was met. What the standard does not cover is a
+test that reaches the right answer by a road the change did not build:
+seeing it fail once proves the assertion is reachable from the defect,
+not that the assertion is reachable only through the mechanism under
+test. The two sibling tests written the same day do carry the guard —
+`pinned_payloads(block) == 1` and a block pointer that did not move — and
+neither guard transfers to a test whose subject dies inside the reset.
+
+**The rule.** A test that forces a refusal proves the refusal happened,
+in the same run, by an observable of its own:
+`buffer_arena::REFUSALS`, read before and after and asserted as an exact
+delta. A proxy that the refusal *could* have happened is not that proof.
+
 ## 2026-08-13 — a harness that measures a configuration the design does not use
 
 **What happened.** The first set of index measurements for the array

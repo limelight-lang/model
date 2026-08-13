@@ -862,6 +862,7 @@ pub fn buffer_alloc_longlived_payload(size: usize) -> (*mut u8, usize) {
     // and the half a carried array storage takes.
     #[cfg(test)]
     if FORCE_REFUSE_LONGLIVED.load(std::sync::atomic::Ordering::Relaxed) {
+        REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return (std::ptr::null_mut(), 0);
     }
 
@@ -887,6 +888,7 @@ pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usiz
     // refuses, so a test using it says which.
     #[cfg(test)]
     if FORCE_REFUSE_LONGLIVED.load(std::sync::atomic::Ordering::Relaxed) {
+        REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return std::ptr::null_mut();
     }
 
@@ -993,6 +995,23 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
 #[cfg(test)]
 pub(crate) static FORCE_REFUSE_LONGLIVED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// How many allocations the flag above has refused, for a test whose
+/// subject is what happens **after** a refusal. Such a test asserts on
+/// state the refused entity no longer owns — a block's kind, an index —
+/// and the same state can be reached with no refusal at all, so the
+/// count is what tells the two runs apart
+/// (`dev/POSTMORTEM.md`, "a forced-refusal test that never proved the
+/// refusal").
+#[cfg(test)]
+pub(crate) static REFUSALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The refusals so far, which a test reads on both sides of the call it
+/// is forcing.
+#[cfg(test)]
+pub(crate) fn refusals() -> usize {
+    REFUSALS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Free a chunk without building this thread's arena to do it.
 ///

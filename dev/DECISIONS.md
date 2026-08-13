@@ -8,6 +8,50 @@ never edited or deleted.
 
 ---
 
+## 2026-08-13 — the reset holds a pin of its own, and releases it after the index is real
+
+**Supersedes nothing; it completes** "a pinned block goes home when its
+last payload is freed" below, which decided who spends a pin and left
+open when a pin may be spent.
+
+**A pin taken during a reset is unspendable until that reset has finished
+establishing occupant counts.** The reset raises one payload count of its
+own per block it pins and releases it after `finish_reset`. Until then
+the block cannot empty, whatever arrives.
+
+The reason is an asymmetry between the two populations that hold a
+retained block. The occupant count is built at the very end, at
+`index_retained_blocks`, and that lateness is what makes the occupant
+side safe: an occupant dying mid-reset finds no entry and reports
+nothing. The pin side has to publish at the refusal, which is early, so
+between the two moments `live` reads zero for every block — and a
+payload freed in that window emptied a block on paper while survivors
+were still living in it. The window is not theoretical: the heap box
+behind `&` produces a survivor whose logged release kills it inside the
+same reset, and its teardown frees the very bytes the refusal pinned the
+block for.
+
+**The release leaves the index in place**, which is why it is
+`retained::reset_pin_released` and not `payload_freed`. The latter drops
+the index when the count reaches zero, and `ll_free`'s retained arm
+answers off the index — a block freed through it with no index reads as a
+block the registry knows nothing about and never reaches the pool. The
+new door leaves the index exactly as `register` leaves it, and a block
+that empties on the release joins the `emptied` vector the reset already
+drains through `ll_free`, because no later death exists to report it.
+
+**Zero occupants at that release means "nothing indexed holds this
+block", not "every occupant died".** A block holding bytes but no
+survivor is never registered at all, so its `live` stays zero for good.
+Both shapes are correct on the same reading, and the counter is the whole
+of the state that distinguishes them.
+
+**The reset asserts the count it spends is its own.** Of the three doors
+into these counters this is the one where a miscount ends at the block
+pool rather than at a `false`, so the debug assertion sits there rather
+than being left to the layer that would discover it half an hour later in
+a recycled block.
+
 ## 2026-08-13 — the arena carry is the group's sixth member, and a refusal answers the bytes it left behind
 
 **Supersedes** the closing clause of "a hooked class draws its storage

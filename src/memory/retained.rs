@@ -40,11 +40,11 @@
 //! its last payload is freed").
 //!
 //! The reset holds one payload count of its own per block it pins, from
-//! the refusal until it has finished establishing occupant counts,
-//! because a payload freed before then would find no occupant to hold the
-//! block: `live` is zero for every block until [`register`] runs, and for
-//! a block that holds bytes but no survivor it stays zero for good
-//! (`promote::arena_reset_full`).
+//! the refusal until it has finished establishing occupant counts, and
+//! spends it through [`reset_pin_released`]. Why the count exists, and
+//! why its release leaves the index standing: `dev/DECISIONS.md`, "the
+//! reset holds a pin of its own, and releases it after the index is
+//! real".
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -186,16 +186,14 @@ pub(crate) fn payload_freed(block: usize) -> bool {
 
 /// Release the count the reset held on `block` past the last moment an
 /// occupant count could still be established for it ([`pin`], module
-/// doc). **True** when nothing else holds the block, and then the index
-/// is left in place rather than dropped, exactly as [`register`] leaves
-/// it: the caller frees the block through `ll_free`, whose retained arm
-/// answers off the index through [`occupant_freed`] and would take a
-/// missing one for a block it knows nothing about.
+/// doc). **True** when nothing else holds the block, and the index is
+/// then left standing rather than dropped, as [`register`] leaves it —
+/// the caller frees the block through `ll_free`, which answers off the
+/// index.
 ///
-/// A zero `live` here reads as **nothing indexed holds this block**,
-/// which covers both shapes it can have: a block whose occupants all died
-/// inside the reset, and one that never held an occupant at all, where
-/// [`register`] was never called and no index was ever built.
+/// A zero `live` here means nothing indexed holds the block, which
+/// covers a block whose occupants all died inside the reset and one that
+/// never held an occupant at all.
 #[must_use = "true means the block is empty and the caller owes it to the pool"]
 pub(crate) fn reset_pin_released(block: usize) -> bool {
     let mut map = registry().lock().expect("retained index registry poisoned");

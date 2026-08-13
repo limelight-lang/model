@@ -8,14 +8,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-13 · Active: S20 — the prose sections below are the backlog
+Updated: 2026-08-13 · Active: none — the sections below are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S19, and
-S20 below is the one open stage. A number is never reissued, so a stage added later sits
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S20, so no
+stage is open. A number is never reissued, so a stage added later sits
 where it is to be done rather than where its number falls, and the prose
 sections below are the backlog stages are drawn from.
 
@@ -24,52 +24,6 @@ feared to cost was `array::entity`'s alone: `array::entry` took 4 seconds
 over 7 tests and `array::table` 92 over 38, both clean, on 2026-08-13 at
 `8d3728d`. A slice is still how the module is run — invocation and thread
 cap in `dev/WORKFLOW.md`, Miri.
-
-## S20 — a retained block's pin outlives the reset that took it  [in progress]
-
-Goal: a block the reset retains for a payload it could not carry out
-stays retained until the reset has registered that block's occupants, so
-the two counts `retained.rs` keeps are never read while one of them is
-still provisional. What the step below reproduces is recorded outside
-this repository (`dev/WORKFLOW.md`, "Files that must stay untracked");
-the commit closing S20.2 is where it is described.
-
-Done when: S20.1's test fails before S20.2 and passes after, and the
-gate is green in both GC configurations.
-
-- [x] S20.1 The reproduction, in `promote::tests`
-      done: the test reads the block's kind after the reset and finds it
-        free while two survivors of the same block are alive; the index
-        is checked beside it and is the weaker reading, because
-        `index_retained_blocks` rebuilds it at the end of the reset
-      tier: T1 · role: —
-      handoff: `the_memory_a_survivor_takes_with_it::`
-        `a_pin_spent_inside_the_reset_leaves_the_block_to_its_survivors`.
-        Fails today with kind 0 against 7. The early free comes from a
-        heap `&` box stored into an arena slot: the log's release kills
-        the pinned survivor during the drain. Uncommitted until S20.2 —
-        a red test on `main` is a broken gate.
-- [x] S20.2 The reset holds a pin of its own across `finish_reset`
-      done: S20.1 green, `promote::`, `memory::retained` and
-        `memory::buffer_arena` groups green in both configurations, and
-        Miri silent over `promote::` and `memory::retained` in both
-      tier: T2 · role: Critic
-      Critic 2026-08-13: the accounting holds, and four findings beside
-        it. Accepted: a `debug_assert` on the count this door spends,
-        this being the one of the three whose miscount ends at the block
-        pool; and the window's wording, since a block holding bytes but
-        no survivor is never registered at all. Rejected: a `Drop` guard
-        for the pin set — `pin` and `register` write the same global
-        registry already, and an unwind here loses the arena whole. Two
-        findings are older defects outside this stage, recorded in the
-        audit file: the reset reads a dead survivor's block header, and
-        the parked-free flush replays in reverse.
-      handoff: `retained::reset_pin_released` releases without dropping
-        the index, because `ll_free`'s retained arm answers off it.
-        Gate green on 17 legs (478 / 456 / 484 / 462, folding 478, both
-        releases, fmt); Miri green over `promote::` (25) and
-        `memory::retained` (7) in both configurations. Code Reviewer is
-        still owed on the stage.
 
 ## Then: arrays as a performance problem
 
