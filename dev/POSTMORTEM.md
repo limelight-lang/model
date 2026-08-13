@@ -7,6 +7,35 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-13 — a harness that measures a configuration the design does not use
+
+**What happened.** The first set of index measurements for the array
+table — chains against a control-byte index — was published and then
+withdrawn whole. An independent review found six defects in the harness
+across two passes. Two decided the result: every table size was a power
+of two, so the open-addressed index ran at load 0.5 rather than the
+0.875 it exists for, and the deletion rule truncated the probe sequences
+of unrelated keys, losing live entries. The numbers that stand are the
+second set, and they stand for integer keys only. It cost a day.
+
+**Why it was possible.** The harness was written from the data structure
+rather than from the design point. A load factor is not a property of
+the code under test, it is a property of the workload the test builds,
+so nothing in the index's own source says which load it is being asked
+about — and the number the harness produced was a real measurement of a
+configuration nobody would ship.
+
+**Why nothing caught it.** Both arms ran the same harness, so the defect
+was symmetric in appearance and asymmetric in effect: it moved one index
+off its design point and left the other on it. The result looked like a
+clean comparison and reproduced.
+
+**What changed.** `rfc/model/arrays-hashtable.md` states each index's
+design load beside the comparison, names the equal-N basis, and records
+what was measured and what was refused as unquotable. The general rule
+this is the third instance of is the entry of 2026-07-20 (second):
+validity is measured, not assumed.
+
 ## 2026-08-13 — an entity nobody named yet is still an entity, and at count 1 nothing reclaims it
 
 **What happened.** Every refusal path out of `array::entity::separate`

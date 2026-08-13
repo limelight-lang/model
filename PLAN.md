@@ -8,662 +8,23 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-12 · Active: S7, then S8, then S18
+Updated: 2026-08-13 · Active: S8, then S18
 
-**S4, S5, S6 and S10 are closed and deleted by rule 23.1.3.** S10 was one
-step: `Table` takes its memory category as a parameter and reads no
-header, so the ordered hash names no entity kind and `Map` inherits the
-reuse. What survives it is `dev/DECISIONS.md` (2026-08-09) and
-`Table::insert`'s contract, which states the rule the deleted assertion
-used to: the category passed is the owner's at that call, never one
-cached across a promotion. S6 was the
-stage-end review's five demands, all of them behaviour-preserving: the
-element reference's composition left `table.rs`, the publication idiom
-became `barrier::publish_child` and `entity::publish_key`, the two
-teardowns of an unpublished entity became one `destroy_unpublished`,
-which S7.6 then moved to `object.rs` beside `ll_entity_die`,
-the four element operations state their order without linking a private
-function, the vivification test asks what a caller can observe, and
-`src/array/` has its four rows in `dev/ARCHITECTURE.md`. What survives it
-is in that map, in `dev/POSTMORTEM.md` (2026-08-09, the private teardown
-of a published box) and in the code's doc blocks. S4 was the teardown
-drain, the pinned block's release and the plan hygiene. S5 was the opt-in
-event journal, built end to end: the ring, the registry and the window,
-then the record sites of §9.5 behind the `debug-journal` feature, then
-the acceptance hunt of 2026-08-06 run through it with no ring written by
-hand. What survives them is in `dev/DECISIONS.md` (seven entries of
-2026-08-08), `dev/POSTMORTEM.md`, `dev/BENCHMARKS.md` (the journal's IR
-count, and the timing arm it still owes), `dev/INDEX.md` and the code's
-own doc blocks. `dev/design/debug-modes.md` §9 is the journal's design
-and stays.
+**Closed stages are deleted whole** (rule 23.1.3), and what outlived each
+of them is in the journals rather than here: `dev/DECISIONS.md` for a
+decision and its reason, `dev/POSTMORTEM.md` for a trap,
+`dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S7, and S9
+through S17. A number is never reissued, so the stages below sit in work
+order rather than in numerical order, and the prose sections after them
+are the backlog the stages were drawn from.
 
-**The whole-suite Miri run is done, in both configurations**, and it
-covers S4 and S5.1: rc-walk 384 passed, 0 failed, 7 ignored in 948 s;
-rc-trace 373 passed, 0 failed, 4 ignored in 724 s (2026-08-08, HEAD
-`6ab0bcf`). It is not part of a stage's criterion — `dev/WORKFLOW.md`
-keeps Miri beside the commit gate rather than inside it. S6 is covered by
-a targeted run over the module it touched: `array::` 91 passed, 0 failed,
-1 ignored (2026-08-09, HEAD `b126240`) — the "155 s" that run reported is
-Miri's emulated clock, not the wall's (`dev/WORKFLOW.md`).
-
-**S10 owes the same run and it is not done.** At two threads the module
-costs about an hour, so it goes in four slices — `array::entry`,
-`array::table`, `array::element`, `array::entity` — each a foreground run
-under a `timeout`. What exists so far is the first 15 tests of the module,
-0 failed, cut off by that timeout. The default thread count is what took
-the machine down on 2026-08-09; two held.
-
-**It is a quarter-hour job again, and the figure that said otherwise was
-one test.** The 28 minutes for 86 tests measured earlier that day was
-`a_deep_array_tears_down_without_the_machine_stack` dominating the run;
-its repair is in `dev/POSTMORTEM.md` under the same date, and the whole
-suite has cost 12 and 16 minutes since. So the question of whether such a
-run belongs at every stage or only at a release is cheap to answer either
-way, and it is still Edmond's: half an hour for both configurations buys
-the one class of defect no other tool in this crate can see.
-
-The stages below are in **work order, which is the file's order rather
-than the numbers' one**: a number is never reissued once given, so a stage
-added later sits where it is to be done. S15 and S16 are such stages,
-and they sit at the head because Edmond ruled on 2026-08-12 that the
-crate's comments and its test layout are unfit to build on.
-
-The five that were there first were ordered by the Sage on 2026-08-08 and
-approved by Edmond the same day; the three at the head of that order are
-done and gone, and the argument for the rest is unchanged. S7 gives the
-strategy tag the second occupant it was deferred for, which is also what
-makes two of `Map`'s design questions answerable; S8 writes that design,
-since building it first would decide by accident what Edmond has
-reserved. The prose sections after the stages are the reasoning behind
-them and the backlog they were drawn from.
-
-**S9 is closed and deleted by rule 23.1.3.** Five steps, in the order
-they ran: the mechanical style rules over the whole crate, then the
-comment pass over `src/memory/`, the entity modules and the runtime
-spine, then the tests out of the module bodies and into a file each. Its
-answer to Edmond's length ruling is that `dev/` holds a strip's argument
-far less often than the count of strips suggests — eight of forty-four
-shortened — so most long comments are the only record and stay. What
-survives it is in `dev/INDEX.md` (the test layout, which the last step
-overturned), `dev/POSTMORTEM.md` (2026-08-11, twice: the guard checked
-against the wrong limit, and a doc written from a test's name inherits
-its false promise), the corrections in `rfc` `d14105f`, and S12, which is
-the list of tests its own review found unable to fail.
-
-**S11 is closed and deleted by rule 23.1.3.** Nine steps: the refusal
-that replaced an abort, the per-category slot limit with one home, the
-design in `rfc/model/memory/large-entities.md`, the string built out of
-line by size, the allocator and registry for an entity no size class
-serves, the walk that reaches one, the request arena's entity door with
-the reset's exception to block retention, the documents, and — found by
-the stage's own Miri run — the block kind's move out of the borrow that
-covered it. What survives it is in `dev/DECISIONS.md` (two entries of
-2026-08-10: the string's layout bit, and the per-category limit with the
-compile-time cap that was rejected), `dev/POSTMORTEM.md` (2026-08-10, an
-atomic field does not survive a `&mut` over its struct),
-`dev/BENCHMARKS.md` (2026-08-10, the parity argued in the emitted code
-because the clock could not resolve it), `dev/INDEX.md`'s entry for
-`memory::large_entity`, and the code's own doc blocks. The design
-document in `rfc` stays.
-
-**S13 is closed and deleted by rule 23.1.3.** Four ways a walker read
-what was never written, each verified against the code and each older
-than the step that found it: compaction writing the published chunk, both
-`dispose` bodies publishing three words unbracketed, Phase 3 re-checking
-eight bytes of a sixteen-byte cell, and Phase 3 re-reading a cell in a
-chunk the array had left. What survives it is in `dev/DECISIONS.md`
-(2026-08-11, three entries), `dev/INDEX.md`, `dev/ARCHITECTURE.md`'s row
-for `array/head`, and the doc blocks on `StorageHead`, `collector::Edge`
-and `Epoch::row_still_has_its_cells`. Its own stage review found the
-crate's `dev/` records naming `Table::coherent_entries` and a bracket in
-`array/table.rs`, both of which moved with S7.1; the addresses are
-corrected in `dev/RESEARCH.md` and the decision they belong to keeps its
-old wording, that file forbidding edits to a closed entry.
-
-**S14 is closed and deleted by rule 23.1.3.** Two steps. The append test
-now asks the arena for the room before each append and counts a move
-against the string path only where the block could have held the growth,
-so the short tail of an adopted block no longer reads as a defect
-(`dev/POSTMORTEM.md`, 2026-08-11). Its criterion ran at eight threads
-rather than sixteen, Edmond having lowered the width on 2026-08-12: 30
-runs in each configuration, no failure. The leg found one defect of its
-own, in S14.2's uncommitted work. A `test_guard()` was added to a test
-that already took one further down its body, and that lock is not
-reentrant, so rc-trace deadlocked at every width down to a single thread
-while the default configuration stayed green, the test being
-`cfg(not(rc-walk))`. Trap in `dev/POSTMORTEM.md`, 2026-08-12.
-
-**S17 is closed and deleted by rule 23.1.3.** An arena test asserted it
-got back the block its reset had just returned, and it was one instance of
-a family: a journal ring is one pooled block, so the record that allocates
-one takes a block out of the thread cache, and a test whose thread
-journals for the first time mid-body has what it measures taken from under
-it. Repairing tests one at a time made the suite worse — each quieted test
-widens the window for the rest — so `block_pool::test_guard` takes the
-ring before the body instead, and four instruments that read process-wide
-counters were replaced by ones no other thread can move. 1200 runs at
-eight threads across both GC configurations, no failure, against 10 in 300
-when the hunt began. What survives it is `dev/POSTMORTEM.md`, 2026-08-12,
-"a ring is a block, and a thread's first record decides when it is taken",
-and the doc on `journal::take_ring_for_test`. Commits 9478205, bd081c5 and
-29ea0f9; the stage's Code Reviewer pass is the last of them.
-
-**S15 is closed and deleted by rule 23.1.3.** Six steps: the rule in
-`dev/WORKFLOW.md`, the five copies of the counted-cell read, the
-references to `PLAN.md` out of the code, the 21 blocks of forty lines and
-up, every remaining non-test block of twenty lines and up, and the eight
-inside the test files. The share of `src/` that is comments moved 32.0 %
-to 30.6 % and the blocks of twenty lines and up 93 to 74, but the volume
-was never the point: 43 of the last 80 blocks stayed, being contract or
-mechanism with nothing behind them, and what the pass found instead was
-stale text — five flag names deleted by the 2026-07-22 compaction, two
-citations of an RFC section that says the opposite of what they claim,
-`carry_out_of` and `coherent_entries` naming functions that moved, and
-thirty-odd `dev/` citations giving a date where the entry has a title.
-Its own review then found seven cuts that had taken the only record of a
-fact, all restored. What survives it is `dev/WORKFLOW.md`'s section
-"Comments: the contract in the code, the argument in a document" with the
-bolded-lead-in rule beside it, and `dev/POSTMORTEM.md`, "moving an
-argument out of a comment deletes it, unless someone opens the section".
-Commits 40bc498, d31eec4, 5843cc1..07ac543, 462ac58, 36176b8, 9d3bd77 and
-8e2dfcf.
-
-**S16 is closed and deleted by rule 23.1.3.** Two steps: the two forms
-priced against this crate, and the crate brought to the answer. The layout
-is one group to a file — `src/<module>/tests/<group>.rs`, named by what it
-pins, with `src/<module>/tests.rs` keeping the fixtures its groups share
-and declaring them after those fixtures — and 40 files became 181. What
-refuses the inline form is the ratio rather than taste: in the 319 inline
-hosts of the 114 crates unpacked here the test module is a quarter of the
-file, while this crate's median module carries 0.96 test lines per line of
-code, so inlining would double every module and put seven files past 2000
-lines. The stage's own review found what a green suite of the same size
-cannot: 30 citations reading `module::tests::<test>` had been pointers to a
-file that now holds only a list, and the rule's word "share" was false of
-39 of the 100 names the lists declared. What survives it is two entries in
-`dev/DECISIONS.md` of 2026-08-12 — the layout, and what it cost once
-applied — `dev/INDEX.md`'s "Tests" bullet, `dev/WORKFLOW.md`'s Loom section,
-which claimed one model where there are two, and the five group files still
-over 400 lines, whose size the layout deliberately does not decide. Commits
-cdc2daa, ccda6ac, 6055ce3 and 039a3c9, the last being the Code Reviewer
-pass.
-
-## S7 — Storage strategy 2, the tag, and the 2 → 3 migration
-
-Goal: the mixed vector exists, the strategy tag has the second occupant
-it was deferred for, and insertion order survives the migration by
-construction. Read `rfc/model/arrays.md` first; that design is
-authoritative.
-
-Done when: a fresh array is strategy 2 and migrates to strategy 3 under a
-key it cannot hold, both configurations green, Miri silent.
-
-- [x] S7.1 The mixed vector as storage strategy 2
-      done: an integer-keyed array whose storage is a `Vector` is traced,
-        severed and torn down through S4.1's drain, in both
-        configurations, and every call that reaches the storage goes
-        through the tag
-      tier: T2 · role: Sage → Critic
-      Sage 2026-08-11: one version counter, in a `StorageHead` both
-        representations begin with — `version`, `storage`, `nslots`,
-        `used`, `tag`, every field atomic, 40 bytes, at `LLArray + 8`
-        under either tag. A counter inside a representation dies with it
-        at the 2 → 3 migration, and a swap counter above two inner ones
-        still lets a walker load at the other tag's offsets before its
-        re-check, so the atomic-width rule forces the walker-visible
-        words to coincide anyway. The head is a **prefix inside** both
-        `Vector` and `Table` rather than a field beside a union, which
-        leaves `Table` self-contained for `Map`. The walker loads all
-        four words plus the tag unconditionally and branches on the tag
-        only after the bracket validates, so a stale tag can never pick
-        a stride. Both fences stay. The migration builds the new chunk
-        off-line and swaps it inside one window; the tag is written once
-        and 3 is final. Final.
-      Critic 2026-08-11 round 1: **the head is in the wrong place, and
-        the crate has paid for this twice.** Every mutating operation
-        goes through `as_table_mut` / `as_vector_mut`, and a `&mut`
-        asserts uniqueness over its whole range whatever is inside it —
-        the interior-mutability exemption belongs to shared references
-        (`dev/POSTMORTEM.md`, 2026-08-10: the atomic type landed and Miri
-        reported the same race at the same line). So the walker's raw
-        pointer into the head does not survive the mutator's borrow of
-        the representation the head sits inside. `block_pool.rs` carried
-        the opposite claim and is corrected. The shape the crate's own
-        type rule forces is `LLArray { rc, head, storage }`, with each
-        representation holding only its private tail — which the Sage
-        weighed and set aside for Table's self-containment. Correctness
-        outranks structure, so the price goes back to the Sage rather
-        than into the step. Not yet acted on.
-      Sage 2026-08-11 round 2: **the placement half of the first ruling
-        is overturned; everything else stands.** The head becomes a field
-        of the entity — `LLArray { rc, head, storage }` — and each
-        representation keeps only its private tail. The type rule that
-        follows: no `&mut` may ever span the head, and the only one near
-        it is field-precise, `&mut (*a).storage`. The bracket calls stay
-        textually inside `grow`, `compact` and `realloc_storage`, because
-        the entity cannot see when a move happens — growth fires inside
-        `insert`, and bracketing every insert would leave every insert in
-        an odd window and starve the walker. So every table and vector
-        method that touches the head gains a `head: &StorageHead`
-        parameter: a **shared** reference to a struct of atomics is the
-        exempted case, and it is disjoint from the `&mut` over the tail,
-        both derived field-precisely from the one `*mut LLArray`. This is
-        `category`'s precedent — threaded per call rather than stored
-        beside the table, so nothing drifts. `Map` owns a head of its own
-        the same way, stamped `Hash` and never rewritten. `storage_head`
-        stops casting and names the field, and both `offset_of` const
-        assertions are **deleted with nothing in their place**: the
-        identity they guarded ceases to be a fact. Cost on the hot path
-        is one register argument per call and no extra load. The loom
-        model stands verbatim. The decisive check is a Miri run of a
-        walker-against-mutator test that exhibits today's retag, red
-        before and green after. Final.
-      Also found, each verified and each older than this step:
-        `Table::compact_entries` memcpys 32-byte entries inside the
-        **published** chunk while the collector reads it with relaxed
-        atomic loads — a non-atomic write racing an atomic read, which is
-        UB rather than the torn value the epoch repairs; both `dispose`
-        bodies publish `storage`, `nslots` and `used` unbracketed, so a
-        walker can accept a mixture that never existed, and for the table
-        that mixture strides the index region as entries; and Phase 3's
-        re-check compares the payload word alone, so a Value torn between
-        its two words is confirmed rather than caught and costs an epoch.
-        None of the three is this step's to fix — steps of their own.
-      Critic 2026-08-11 round 2, over the executed ruling: **the type
-        rule holds for every path in the crate — nothing forms a
-        reference spanning bytes 8..48 of an array, and every threaded
-        head is its own array's — but two doors read the union with no
-        tag test and one reader guesses.** `entity::carry_storage_out_of`
-        and `entity::storage_address` named the ordered hash outright, so
-        a surviving vector array had its `cap` read as a granted byte
-        size and its uninitialised tail read as a table, which is S7.1's
-        own criterion broken rather than an S7.2 debt. And `walk.rs`
-        tested the tag against `Vector` alone, so `Typed` — a value
-        `decode_tag` accepts — selected the hash stride: a valid tag
-        choosing the wrong layout, which is the defect the read protocol
-        exists to prevent. Both fixed. Two traps closed with them:
-        `LLArray::needs_separation` took `&self`, the crate's only
-        reference over a whole array entity, which invalidates any
-        outstanding `&mut Table` — now a raw pointer, `category_of`'s
-        shape; and `head` is private to `entity.rs`, so `&mut (*a).head`
-        cannot be spelled elsewhere. The `(tag, storage)` pair is no
-        longer assemblable by a caller: `new_with_storage` is private
-        behind `ll_array_new` and `new_vector_array`. Its fourth finding
-        — `dispose` publishing three words in an order that is
-        load-bearing and unstated — is S13.2's and is recorded there.
-      handoff: `LLArray { rc, head, storage }`: the head is the entity's
-        field at +8, private to `entity.rs`, and every table and vector
-        operation over a walker-visible word takes `head: &StorageHead`.
-        `entity::as_table_mut` is the one place the disjoint pair is
-        derived and the only place the tag is asserted; the carry out of
-        a dying arena is one body there too, dispatched on the tag, both
-        representations handing it `granted_capacity_mut`. Tests reach
-        the pair through `array::testing`, which is test-only and exists
-        because an assertion cannot destructure. 431 → 433, gate green on
-        the commit that closed this step; Miri red before the move and
-        silent after, over `array::entity` 24, `array::table` 34,
-        `array::element` 29, `array::vector` 8, `walk::` 22 and
-        `promote::` 20; loom's four cases unchanged.
-- [x] S7.5 The COW copy takes a vector
-      done: a shared vector array separates into a vector copy, an arena
-        one is copied out through the work list, and both hold what the
-        source held, in both configurations
-      tier: T2 · role: Critic
-      2026-08-12: `new_empty_copy` builds the destination in the source's
-        representation and `fill_from` splits by tag over one shared half,
-        `element_for_destination`, which carries the barrier rules for
-        both. Two tests, both seen failing on the tag assertion when the
-        vector arm is removed (`f10e42f`).
-      Critic 2026-08-12: **the destination's representation came from the
-        factory rather than from the source.** The hash arm built `dst`
-        through `ll_array_new`, whose stamp S7.2 flips, so the first
-        separation of a migrated array after that flip asserts in debug
-        and in release runs `Table::insert` under a head reading `Vector`:
-        a walker then takes the vector stride over the table's index
-        slots, and `dispose_storage` frees the chunk through
-        `Vector::dispose`, which reads `Table::mask` where the granted
-        size should be. Fixed — both arms go through the two named
-        factories, and the `if tag == Vector` became an exhaustive match,
-        which is the shape S7.1's round-2 finding in `walk.rs` already
-        cost once. Seen failing with the stamp flipped to `Vector`:
-        `left: Vector, right: Hash` at `entity.rs:142`. Two coverage gaps
-        closed with it — the deep vector test's source was one element
-        long, so the pass was pinned only at n = 1, and no test put a
-        reference box in a vector, so the vector pass never exercised the
-        one place PHP collapses a reference.
-      Critic 2026-08-12, three findings older than this step, each
-        verified against the code: two on the refusal path, which are
-        S7.6; and the recursion entered per entry rather than per entity,
-        which went to the Sage and is S7.7.
-      handoff: commits `f10e42f` and `e978e08`. `new_empty_copy` matches
-        on the source's tag and names the representation itself, with
-        `ll_array_new` out of that path;
-        `a_hash_source_is_copied_into_a_hash_whatever_the_factory_
-        stamps` builds its source through `new_with_storage` so the pin
-        survives S7.2. Gate green, 17 legs: rc-walk 447 → 449 passed,
-        rc-trace 428 → 430. Miri silent over `array::entity` (31 passed,
-        1 ignored) and `array::element` (29 passed), which is the run S7.5
-        and the stamp both owed.
-- [x] S7.6 A refused copy gives back what it allocated
-      done: a forced refusal of the nested destination reports null
-        without dereferencing it, and a refusal part-way through
-        `separate` leaves no array entity behind — proved by an instrument
-        that can see one slot, the block pool's guard being unable to
-      tier: T2 · role: Critic
-      Critic 2026-08-12, both older than S7.5 and both verified:
-        `element_for_destination`'s refusal block calls `ll_release` and
-        `dispose_storage` on `copy` after `copy.is_null()` has
-        short-circuited the `||`, and neither call guards null —
-        `ll_release` opens with `&mut *entity` under rc-trace and with
-        `flags_load(entity)` under rc-walk. And every refusal path out of
-        `separate` releases the children and disposes the storage without
-        freeing `dst` itself, which stays a GcHeap entity at count 1 that
-        no edge names — a computed root by the derived-roots corollary,
-        so nothing reclaims it later either.
-        `who_owns_a_key_reference::a_refused_heap_copy_gives_an_escaped_
-        child_back_through_the_barrier` drives the second one and passes,
-        the leaked slot sitting inside a block its own guard keeps alive.
-      Critic 2026-08-12 round 1, on the repair: **the giveback called
-        `array_die` directly, and `array_die` is a body rather than a
-        door.** `ll_entity_die` carries the teardown bracket and the
-        candidate-buffer duty, and `object.rs` states that a duty added at
-        one door is owed at the other; under rc-walk a child object's
-        `__destruct` then exits at depth zero and fires a checkpoint while
-        the destination still sits at count zero with children counted and
-        storage allocated. Accepted, and the repair removed a duplicate
-        with it: `element::destroy_unpublished` was already that
-        composition, so it moved to `object.rs` beside `ll_entity_die` and
-        both layers call it. Three more accepted: one free slot cannot
-        tell a root that gave its slot back from one never allocated, and
-        every refusal reached the giveback with an empty destination —
-        both answered by two slots, two nested children and a warmed
-        buffer arena; and `buffer_arena::FORCE_REFUSE_LONGLIVED` drives
-        the work list's refusal, which had no test. Its sixth stands as
-        written: the first test is a crash canary and now says so.
-      Critic 2026-08-12 round 2, on that response: **a slot count cannot
-        say a slot was taken** — two taken and two returned leave the same
-        free list as a refusal before anything was built, so the lower
-        bound read as proof. The count carries three readings now: two
-        allocations succeed, the third must fail, and the same fixture
-        with one more free slot must produce a copy rather than a refusal.
-        The upper bound was seen firing. **And the arena arm was recorded
-        unreachable on a false reason** — past the bump `Arena::alloc`
-        draws a pool block, which `FORCE_OOM` refuses, so a
-        `#[cfg(test)]` `Arena::room_left` lets the test leave exactly one
-        entity's worth and the production path reaches the arm. Accepted
-        with it: the flags are raised through a guard that lowers them in
-        `Drop`, because the panics that matter inside that window are the
-        crate's own `debug_assert`s rather than the test's; the moved
-        function's list of callers gained the fourth; and the doc link
-        that the move broke follows it.
-      handoff: commits `2fba016`, `84d80cb` and `9a96b73`.
-        `object::destroy_unpublished` is the one door for an entity no
-        slot ever named, and `array::entity::separate` and
-        `element_for_destination` both take it. The refusal group is
-        `src/array/entity/tests/what_a_refused_copy_gives_back.rs`, five
-        tests, and its instrument is a counted free list read three ways.
-        Gate green, 17 legs: rc-walk 452 → 454, rc-trace 433 → 435. Miri
-        silent over `array::entity` and `array::element`.
-- [x] S7.7 The deep copy preserves the source's sharing
-      done: a source whose child two entries name yields one copy of that
-        child held twice, `separate` carries no `entered` vector, and a
-        chain of thirty arrays each naming its predecessor twice is copied
-        in 31 array allocations
-      tier: T2 · role: Critic
-      Critic 2026-08-12: the recursion is entered per entry rather than
-        per entity, so a diamond pushes the same source twice, and
-        `separate`'s loop then fires `assert!(!entered.contains(&s), "a
-        COW subgraph closed on itself")` on a DAG whose invariant is
-        intact. In release the work doubles per level: thirty arena
-        arrays, each naming its predecessor twice, cost 2^30 copies when
-        the outermost crosses into a GcHeap slot. Depth on a store path is
-        attacker-shaped input, which is the reason the work list exists,
-        and the list bounds the machine stack alone. Older than S7.5, and
-        the price is one the recursion ruling never named, so it went to
-        the Sage rather than into the step.
-      Sage 2026-08-12: **the copy preserves the source's sharing** — one
-        distinct source entity yields one copy, held once per entry that
-        names it. A COW entity's identity is not observable (`barrier.rs`,
-        `store_category_barrier`), so the two answers differ only in cost,
-        and the cost is 2^depth on input the RFC itself calls
-        attacker-shaped. The association is the generic `Table` used bare:
-        a stack `StorageHead`, category `GcHeap` so the storage is
-        buffer-arena chunks like the work list's, the source pointer as
-        the key and the copy carried as an uninterpreted value — the
-        second customer that table was kept headerless for. It is disposed
-        beside `pending` on every exit of `separate`. It is consulted
-        inside the `is_nested_arena_array` branch alone, and there only
-        when the child's count is above one: count 1 proves this entry is
-        the only name, which is the reading `element_for_copy` already
-        stakes its unwrap on. A hit routes the existing copy through
-        `barrier::publish_child`, which for a heap child into a heap slot
-        is a retain. A refused insert unwinds the way a refused
-        `pending.push` does, so null keeps meaning out of memory. The
-        `entered` vector and its assertion are deleted, message and all: a
-        probe that indicts an intact invariant is worse than none, and
-        termination rests on the association instead. A forwarding pointer
-        in the source header is refused — it writes into words the
-        collector reads at agreed widths, and it breaks the source being
-        untouched, which the refusal path's simplicity rests on. Final.
-      Critic 2026-08-12 round 1, on the executed ruling: **termination
-        still rests on count-equals-holders**, the gate being
-        `refcount > 1`, and the probe the ruling deleted had become a
-        statement of the ruling's own claim. Sent back to the Sage.
-        Four more accepted: the root is not recorded — kept unrecorded,
-        with the reason written where the loop starts, after recording it
-        was tried and reverted for moving every forced-refusal test's
-        branch; the shallow path paid `Table::dispose`'s release fence on
-        an empty table, now an early return; the association's refusal had
-        no test and had silently repointed S7.6's work-list test, both
-        answered by the fixture giving its builder's reference back; and
-        three claims that read wrong.
-      Sage 2026-08-12: **the probe returns with a message naming two
-        causes, and the gate stands.** Its deletion's ground was that it
-        fired on a diamond, and the association made a diamond enter once,
-        so the assertion became a theorem on every graph PHP value
-        semantics can build. Termination is by the association for a
-        shared child and by the count's one direction for a single-named
-        one — the same reading `element_for_copy` stakes its unwrap on —
-        and the earlier entry's "stops leaning on count-equals-holders" is
-        superseded. The `Vec` rather than the association, because the
-        entities that can wrongly re-enter are the ones it never records.
-        Final.
-      Critic 2026-08-12 round 2, on that response: **the header read had
-        been hoisted above the destination's category test**, so a shallow
-        separation paid a relaxed atomic load per element where it paid
-        none — the category is a parameter and is tested first again.
-        Three false statements corrected with it, each verified: the root
-        is not the only unrecorded source, only the only re-enterable one;
-        the depth-twelve chain is 8191 arrays rather than four thousand,
-        and in debug the probe reports before the count does; and the
-        association's refusal test cannot separate its branch from the
-        work list's by the allocator, only by the child's count and the
-        order of two calls — said in the test rather than implied.
-      handoff: commits `f97532c`, `3c3b64e` and `73a1a74`. The association
-        is `CopiesMade` in `array/entity.rs`, the generic `Table` used
-        bare beside the work list, consulted only for a child whose count
-        is above one and never for the root. Two decision entries of
-        2026-08-12 hold the ruling and its correction. Gate green, 17
-        legs: rc-walk 456 → 457, rc-trace 437 → 438. Miri silent over
-        `array::entity`, 41 passed. Two tests seen failing with the
-        association disabled: a diamond copied twice, and a twelve-level
-        chain at 8191 arrays against 13.
-- [x] S7.8 The termination probe's container, and what it costs
-      done: `dev/DECISIONS.md` records what holds the entered set, priced
-        against the two facts its ruling did not name, and `separate`
-        carries whichever container that answers
-      tier: T2 · role: Sage
-      Critic 2026-08-12, found in S7.7's second round and each verified:
-        the restored probe is a `Vec`, and `WorkList`'s own doc four
-        hundred lines below records as a decision that a `Vec` is wrong
-        for this data — "the system allocator's `Vec` would abort the
-        process when it cannot grow, and growth here is driven by the
-        attacker's nesting depth". And the ruling priced the linear scan
-        as "quadratic in the distinct nested arena COW arrays of one
-        graph, which number in the tens today", while
-        `nesting_worked_through_a_list` copies a graph of 800 of them —
-        about 320 thousand pointer comparisons per run, on the test that
-        already runs under Miri. Debug-only in both cases; neither is a
-        defect in S7.7, and both are prices the ruling did not name, so
-        they go to the Sage rather than into a patch.
-      2026-08-12, a suspicion the same round could not build: an array
-        whose entry names the array itself would make the root re-enter
-        and fire the probe in debug while release finishes with one
-        redundant root copy. Whether such an edge can form depends on the
-        lowering's retain order, which is outside this repository.
-      2026-08-12, found by flipping the stamp inside S7.2 and reverting
-        it: `separate` and `fill_from` reach for the table —
-        `as_table(src)`, `as_table_mut(dst)` — so a vector array meeting
-        either door asserts in a debug build and reads `Table` fields out
-        of `Vector` bytes in a release one. Seventeen `array::element`
-        tests failed and
-        `nesting_worked_through_a_list::a_deep_arena_array_is_copied_out_
-        through_the_work_list` took the run down with a SIGSEGV after the
-        assertion, the panic crossing the work list's frame. The step
-        stands ahead of S7.2 because the stamp is what exposes the door,
-        and `rfc/model/arrays.md` says which copy to write: "Separation
-        copies the storage in its current representation."
-      Sage 2026-08-12: **the entered set stays on the system allocator, and
-        the pool is refused for it at every count.** A `Table` or a
-        `WorkList` there gives a debug probe two answers to its own
-        refusal and both cost more than the abort they replace: refusing
-        the copy fails the two tests that hold `FORCE_REFUSE_LONGLIVED`
-        across the whole call, at the first iteration and before a nested
-        copy exists to reclaim, while skipping the check disarms the probe
-        for exactly the runs that exercise the refusal paths and leaves an
-        allocation every later refusal test must step around. The abort is
-        priced by a bound instead: one entry per live source against a
-        112-byte arena entity, so the arena refuses the graph first, and
-        `WorkList`'s abort sentence governs a release structure with no
-        such cap above it and keeps standing for the pending list. The
-        shape does not change — a counter bounded by the arena's
-        population fires late and names neither the entity nor the cause.
-        The container becomes a `HashSet` if the running measurement
-        attributes the test's Miri time to the scan. Final.
-      2026-08-12, the measurement that took the successor: one test,
-        `--test-threads=2`, Miri's own clock — 83.38 s with the scanning
-        `Vec`, 36.61 s with the probe compiled out, 45.35 s with the
-        `HashSet`. The probe cost 46.77 s of the first run and 8.74 s of
-        the third, so the swap landed with this step rather than at a
-        threshold.
-      handoff: `separate`'s probe is a `HashSet<*mut LLArray>` on the
-        system allocator, the comment above it carrying the bound and
-        citing `dev/DECISIONS.md`, "the termination probe's storage, and
-        the bound that prices its abort", which is the entry this step
-        owed. The stamp-door finding four lines above was closed by S7.5,
-        verified at this commit: `new_empty_copy` and `fill_from` both
-        dispatch on the tag. The RFC amendment owed by S7.7 moved to S7.4
-        and is still Edmond's to answer.
-- [x] S7.2 Factories stamp the tag and the element write dispatches on it
-      done: `ll_array_new` stamps `Vector`, and a strategy-2 write of a
-        string key migrates through the tag rather than through a direct
-        table call
-      tier: T2 · role: —
-      2026-08-11, from S7.1: the factory's stamp moved here from S7.1.
-        A fresh array cannot be strategy 2 before the element layer reads
-        the tag, because every element test then meets a representation
-        its call does not fit; so S7.1 builds the vector and the dispatch
-        and leaves the stamp on `Hash`, and this step flips it. The cost
-        is one step in which `Vector` has no producer, and it is paid
-        inside the stage rather than shipped.
-      2026-08-12: the two halves that do not need the stamp are done and
-        green with it still on `Hash` — the 2 → 3 migration (`123861c`,
-        `entity::migrate_to_hash`, five tests) and the element layer's
-        dispatch (`cffbe43`, `element_at`, `append_cursor`,
-        `representation_for`, `store_into_vector`). What is left in this
-        step is the stamp itself, and it waits on S7.5. Two contract
-        changes landed with the dispatch and belong to whoever reads this:
-        `unset` can now refuse, a removal from a vector migrating first
-        because a hole and a rewound cursor are both states a dense range
-        has no bytes for; and `make_ref` migrates before it vivifies an
-        absent key, so that its own undo cannot refuse.
-      handoff: commit `3093fc2`. The stamp cost 137 fixtures, and the rule
-        that split them is `dev/DECISIONS.md`, "a test asks for the ordered
-        hash, or takes what the factory stamps": `array::testing::hash_array`
-        is the factory plus the migration, and a test about an array rather
-        than about the hash now meets a vector and fills it with
-        `testing::push`. The step's own group is
-        `array::element::tests::what_a_key_the_vector_cannot_hold_does`,
-        three tests, all seen failing on the old stamp. Gate green on 17
-        legs, 457 → 460 and 438 → 441; Miri silent over `array::element`,
-        `array::entity`, `array::vector`, `array::table`, `promote::`,
-        `walk::` and, in rc-trace, `gc::`.
-- [x] S7.3 The 2 → 3 migration
-      done: a test pins insertion order across the migration, and the
-        append cursor carries over with it — `next_free` is the vector's
-        length, and `NEXT_FREE_NONE` for an empty one
-      tier: T2 · role: —
-      Sage 2026-08-11: the old criterion's "flood state carries over" is
-        vacuous — a vector never hashes, so it holds none, and 3 never
-        returns to 2. Flood-state inheritance stays what it already is, a
-        COW-copy concern through `adopt_flood_state`. Final.
-      handoff: closed by work that landed early, under S7.2's first half
-        (`123861c`, `entity::migrate_to_hash`). The criterion's two halves
-        are `the_entries_are_in_the_order_the_vector_held_them` and
-        `the_append_cursor_is_the_vectors_length`, in
-        `entity/tests/the_migration_out_of_the_vector.rs`; the empty case is
-        `an_empty_vector_becomes_an_empty_hash_that_appends_at_zero`, which
-        pins `NEXT_FREE_NONE` through its observable, `append_key`
-        answering 0, the field being `Table::empty`'s and the empty loop
-        leaving it alone. Five tests listed by name and run green at
-        `b63692f`; nothing was added for this step.
-- [x] S7.4 The RFC corrections this stage owes
-      done: `arrays.md`'s "strategy 1 never transitions",
-        `memory/buffers.md`'s grouping of immortal with long-lived, and
-        `arrays-hashtable.md`'s "two bits for the strategy … live there
-        together" are all amended in `rfc`
-      tier: T1 · role: —
-      Sage 2026-08-11: the tag cannot share the flags byte the flood
-        ladder writes plainly, the walker reading it atomically, so it
-        moves into the head and bits 2–3 of `flags` return to the pool.
-        `table.rs`'s own comment on `TABLE_APPEND_EXHAUSTED` says the
-        same thing and is stale with it. Final.
-      2026-08-12, two more found while doing S7.6 and each verified
-        against the code, both in `arrays-hashtable.md`'s "The COW copy
-        has two depths": "releasing the prefix already built and freeing
-        the private storage restores every external count" describes an
-        unwind that leaves the private entity itself behind, which is the
-        leak S7.6 closed, so the private entity joins that sentence. And
-        "This is the arm `object.rs`'s `escape_copy` reserves with
-        `unreachable!(...)`" names an arm that exists: `escape_copy`
-        matches String and Array, and the `unreachable!` is the default
-        over the kinds that have no COW copy.
-      2026-08-12, owed to the RFC by S7.7 and moved here when S7.8 closed:
-        `arrays-hashtable.md`'s "Depth is bounded by the arena-resident COW
-        subtree" becomes work linear in the arena-resident COW sub*graph*,
-        and its open item "recursion-depth guard on the escape copy"
-        closes. Amending an authoritative sentence is Edmond's to accept,
-        and he has not answered yet.
-      Sage 2026-08-13: the sixth sentence becomes two, because it carried
-        two claims. "The work is linear in the arena-resident COW subgraph
-        reachable from the source: one copy per distinct entity, held once
-        per entry naming it" replaces the bound, and a second sentence
-        prices depth: a list in a buffer-arena chunk rather than the
-        machine stack, so depth costs a refusable allocation. The open
-        item is deleted outright rather than reworded — no recursion is
-        left to guard and no constant is left to tune. One clause more
-        falls to the same reasoning, "copied recursively" at the head of
-        the paragraph, which becomes "copied in turn". Final.
-      2026-08-12: five of the six landed in `rfc` as `2841ab4` — the two
-        documents now agree on 1 → 2, the strategy tag is out of the byte
-        the flood ladder writes, immortal has a bullet of its own with
-        neither growth nor free, the refused publish gives the private
-        entity back as well as its storage, and the `unreachable!` is
-        named as the default beside the string and array arms. `rfc` was
-        at `d807b12` rather than the handoff's `d14105f`: one commit of
-        Edmond's about the backlog had landed. What is left is the
-        sentence above, which is his.
-      handoff: closed by `rfc` commit `b340169`, the sixth correction and
-        the two the Sage's ruling pulled in with it. `rfc/model/arrays-hashtable.md`
-        now states the bound over the subgraph, prices depth against the
-        buffer arena, and has no "recursion-depth guard" left in its Open
-        list. Both repositories are level with origin: `model` at
-        `9e10157`, `rfc` at `b340169`. Nothing in the crate changed, so
-        nothing was rerun.
-
-The 1 → 2 transition stays out of the stage: strategy 1 has no producer
-in the crate, and an arm with no producer is what this crate has refused
-twice. Confirm that against `arrays.md` when the stage opens.
+**`array::` still owes a Miri run in slices.** The module costs about an
+hour at two threads, so it goes as `array::entry`, `array::table`,
+`array::element` and `array::entity`, each a foreground run under a
+`timeout`. `array::element`, `array::entity` and `array::vector` have had
+theirs; `array::entry` and `array::table` have not. Invocation and thread
+cap: `dev/WORKFLOW.md`, Miri.
 
 ## S8 — The Map design, written before it is built
 
@@ -678,604 +39,39 @@ explicitly deferred.
         recorded in `dev/DECISIONS.md`
       tier: T2 · role: —
 - [ ] S8.2 The design document in `rfc/model`
-      done: it covers the key-kind word beside the entry, the object key
+      done: it covers where the walker reads a key's kind, the object key
         as a counted child in trace and sever, and `MapMixed`'s content
         hash on a work list rather than the machine stack
       tier: T2 · role: Critic
 
-## Urgent, ahead of everything: the GC's walk exists in copies
-
-Edmond's ruling, 2026-08-06, and it outranks every item below including the COW
-doors. **For the GC an object, an array and a string are almost the same
-thing**, so an algorithm written once for an object has to handle every other
-kind. The generalization he asks for takes `*mut RcHeader` at the entrance.
-
-The kind *dispatch* is not the debt — `walk::trace_entity` and
-`ll_entity_die` already take a bare header. The debt is the **slot walk**:
-where a kind keeps its counted children was written out again in every
-operation that needed it, so one layout was known in five places.
-
-**Steps 1 and 2 have landed.** Step 1 (`348d24b`) made the object layout's
-stride one place, `object::for_each_counted_cell`, keyed on `(base, class)` so
-that a headerless static block can be walked too, and generic over a
-`CellReader` with two zero-sized implementations: plain reads for a quiescent
-walk, relaxed atomic reads for the collector, which needs them because a plain
-read racing a mutator store is undefined behaviour rather than the torn read
-Phases 3 and 4 repair. Step 2 (`8bd73d3`) made `trace_cells` the single tracing
-dispatch and deleted `collector::trace_mature` along with the last copy of the
-Box layout arithmetic; the pin is a differential test, which asserts that on a
-quiescent heap the two readers yield the same child set for every walked
-entity. `f5234fd` then repaired what Miri caught inside the reader: a pointer
-cell is read as a pointer and a Box payload as an integer, because
-`Value::entity` stores the address as a `u64` and those bytes carry no
-provenance to recover.
-
-**Step 3, the sever, has landed too.** `walk::sever_cells` is the single
-sever dispatch, and it goes *through* `trace_cells` rather than striding
-again: one layout, one stride, two operations over it. What made that
-possible is one field — a cell now carries its shape, pointer or Box, which
-is the only fact about it the address does not give and the only reason the
-sever needed a stride of its own. `object::sever_counted_slots` is four
-lines over the shared walker and keeps its base-and-descriptor signature
-for the static-block pass, which has no header to read a class from.
-`6afd220` had moved the reference sever onto the store barrier ahead of
-this, because a plain store there raced the collector's relaxed loads.
-
-Left standing on purpose: `Table::sever_entries`, reached through the
-Array arm. An array's cells are not `trace_cells`' (below), and emptying
-one is not a null — a cleared entry is a hole, and an integer-keyed entry
-has no key cell. The table owns both facts, so the dispatch delegates
-rather than absorbing it.
-
-**Arrays stay outside `trace_cells` deliberately**, and the reason is in
-`8bd73d3` rather than a step left half-done: an array's cells live in storage
-that moves on growth, so a relaxed reader can observe a `used` that outran the
-`storage` it read and stride past the end of a stale chunk. Parked frees keep
-that chunk readable and bound nothing. The bound is item 12's, and until it
-exists `trace_entity` keeps its own array arm and says so.
-
-This is debt rather than taste, and the repository has already paid twice. The
-interpolated template moved its value count from the class to the instance and
-**three** walkers had to learn it, the third found late by review. The array was
-wired into the child walkers and not into the sever, and a confirmed-garbage
-ring of two arrays was un-freeable in both configurations until `144b318`.
-
-The nuances that have to survive step 3 are known and are not objections to it:
-the collector's reader cannot use the ordinary accessors, the store barrier
-stays the only writer of a published slot, clearing an array cell means a hole
-rather than a null and an integer-keyed entry has no key cell at all, and the
-child walkers are `#[inline]` and generic precisely so no caller pays an
-indirect call per child (`rfc/model/classes.md`, "Why tracing stays data").
-
-**Items 11 and 12 wait on step 3**, and the reasoning is that both *add arms*
-to doors this refactor may delete: written now they are written twice, and item
-12's arm needs the storage bound the array is excluded for.
-
-This supersedes item 13, whose earlier proposal — exhaustive matches, `const fn`
-predicates and a `specimen` registry — the critic showed would not have caught
-any of the misses, every door having had a legal-looking arm already.
-
-## Then: the COW doors, and the publish-first repair that must ride with them
-
-Three live defects found by the second critic pass of 2026-08-06 are
-closed (`2e55036`, `144b318`, `f56a035`); the section **"What the second
-critic pass of 2026-08-06 found"** below carries the rest, items 15–20,
-and its two rulings. Read it before the older list: it renames the
-problem. **A kind has seven doors, not six** — `walk::sever_component` was
-in nobody's list and was the worst of them — and the count is a symptom
-rather than the thing to fix, since every door the array missed had a
-legal-looking arm for it already.
-
-What to take next, in this order and for these reasons.
-
-1. ~~**Item 11, the two COW doors**~~ — closed. Both arms are
-   `array::entity::separate`, one body with the destination category
-   supplying the depth, exactly as the ruling below settled: with an arena
-   destination the copy arm cannot fire and the children are shared, with a
-   longer-lived destination over an arena source every arena COW child is
-   copied in turn. Each child is published through
-   `barrier::store_category_barrier`, now `pub(crate)` — that is also the
-   crate-internal publish-without-a-slot-write the repair in item 12 needs,
-   so it is built. `separation_category` moved to `refcount.rs` beside
-   `cow_separation_needed`, being the COW rule rather than a string rule,
-   and item 14's escape-ledger asymmetry went with it. The work list the
-   ruling calls for is built: a nested arena array is copied empty,
-   published, and its filling pushed onto `WorkList`, which lives in a
-   buffer-arena chunk and refuses rather than aborting when it cannot
-   grow. Termination is asserted in debug builds instead of paid for.
-   The other half — teardown of what the copy produces, recursive at one
-   frame set per level — was closed as S4.1 on 2026-08-08 by giving
-   `array_die` the same drain. An object chain is still the machine
-   stack's.
-2. ~~**Item 12's concurrent-walk arm together with the publish-first
-   repair of the key slot.**~~ — closed. The arm is in `trace_cells`, so
-   the array is inside the one tracing dispatch like every other kind, and
-   `array::entity::for_each_counted_child` is an adapter over it rather
-   than a second stride. The bound is a version counter bracketing growth
-   and compaction plus a validated read of the three words
-   (`Table::coherent_entries`); failing it skips the array for one epoch,
-   which leaks rather than frees early. The publish-first contract is
-   stated on `Table::insert` and worked in `array::entity::separate`.
-   The test call sites this entry once owed are already publish-first:
-   every `table.insert` of an entity value in the crate takes its count
-   before the entry exists, checked site by site on 2026-08-08 (S4.3).
-3. ~~**Item 20, the candidate gate**~~ — closed. The gate masks
-   `0b101` of the kind field, so `{Object 000, Array 010}` pass in the
-   one compare the object-only test already was
-   (`refcount::CANDIDATE_KIND_MASK`). Forgetting a candidate moved off
-   `ll_default_dispose`, which is class code an array never runs, onto
-   the teardown doors: `ll_entity_die` before the kind switch, and
-   `ll_object_die` after `dispose` returns, because a `__destruct` can
-   buffer the object afresh. What holds the window between those two
-   points is not their ordering but Edmond's ruling of the same day: a
-   fire point reached from inside a teardown collects nothing
-   (`gc::TEARDOWN_DEPTH`, `dev/DECISIONS.md`). `ll_free` asserts in test
-   builds that an entity arrives unbuffered, beside the refcount-0
-   assertion. Three regression tests in `gc.rs`, each seen failing: a
-   ring of two arrays with no object in it, an array forgetting its
-   candidacy as it dies, and a collection fired from a destructor
-   reclaiming nothing. Miri closed the stage's verification a session
-   later, 2026-08-07, both logs read whole: rc-walk 320 passed, 0
-   failed, 6 ignored; rc-trace — the configuration where the gate
-   predicate is live — 308 passed, 0 failed, 3 ignored.
-
-   **The two leaks this entry named are closed with it.** A ring taking
-   its last external release on a ReferenceBox (`$a['x'] = &$a`) or on a
-   Lazy proxy produced no candidate while the gate was a mask, and no
-   mask could admit `Reference 011` without admitting `String 001`. The
-   gate became a **set of kinds** the same day —
-   `refcount::CANDIDATE_KINDS` is `{Object, Array, Reference, Lazy}`,
-   a kind belonging to it exactly when it holds counted slots a cycle can
-   close through (`dev/DECISIONS.md`, 2026-08-07) — so nothing here waits
-   on the renumbering.
-
-Both questions that were open on 2026-08-06 are answered, neither by
-Edmond. The recursion bound of the deep escape copy is an explicit work
-list rather than a depth limit; the ring with no object in it is a real
-obligation and the gate diverges from the RFC over it. The reasoning for
-each is below, with what is still Edmond's to accept.
-
-## Then: finish the hashtable — two pieces are left
-
-Read this first in a fresh session. The design is in
-`rfc/model/arrays-hashtable.md` (rfc `ca0d197`, `eb68707`, `9e5ae3d`,
-`2a9ce2e`) and **the crate now has `src/array/`** with 41 tests, green in
-both configurations and silent under Miri: the entry layout, the table
-core, string keys, the flood backstop, element references, the entity
-wrapper and the storage's home in the buffer arena (`model` `514c526`,
-`80494ff`, `eaf6a03`, `42c2a6f`, `3316343`, `3025757`).
-
-### What is left, in order
-
-**First a prerequisite nobody had written down, done 2026-08-06** (task 10
-in the session tool). `ll_array_new` stamps `EntityKind::Array` and the COW
-flag, so the crate produces the entity — but no dispatch site handled it.
-`ll_entity_die` had no arm: a `debug_assert` in debug and a silent no-op in
-release, so children kept the references the array owed them and the
-storage was never returned. `walk::trace_entity` skipped it while its doc
-still called Array a kind "the crate does not yet produce". Both now have
-their arm, sharing one walk — `array::entity::for_each_counted_child`,
-which yields elements and string keys alike, a table holding a reference
-to each string it keys on. Promotion could not have been built before
-this: it takes its survivors from the trace, and a refused carry falls
-back onto the death path.
-
-That work also found a leak in `release_children`: it discarded what
-`ll_release` returns, and that answer is an obligation — whoever gets
-`true` owes the teardown. It goes through the barrier's `drop_ref` now,
-which also settles the escape hold-count and leaves a heap child inside an
-arena array to the release-at-reset log. Seen failing through a nested
-array, whose storage is a buffer chunk that can be watched for.
-
-**Still owed on that front:** `escape_copy` has no Array arm either, and
-there it is an `unreachable!()` rather than a no-op. The design is written
-(`rfc/model/arrays-hashtable.md`, "The COW copy has two depths"): the
-escape copy republishes each element through the barrier with the
-destination's category, so an arena COW child is copied recursively while
-a heap or immortal one is merely retained. Its recursion-depth guard is
-still open in that document, and nesting depth is attacker-shaped input on
-a store path — which is why it was not built in the same breath.
-
-
-1. **The 2 → 3 migration** from the mixed vector: walk the vector in
-   order and append each element with its integer key, so insertion order
-   survives by construction. Needs the mixed vector to exist first, which
-   it does not — so this may become the reason to build strategy 2 next
-   instead.
-2. ~~**Promotion of the storage out of the arena.**~~ — done 2026-08-06.
-   Both routes, the same pair a string's payload takes: an in-block
-   storage is copied into a buffer-arena chunk, and one over a block
-   payload is an OS-direct run the arena forgets, so it keeps its address
-   and nothing can be refused. The flat copy is legal because every link
-   inside the storage is a `u32` index, which a test already pinned.
-
-   **The route into it is not the one the entry assumed.** An array is a
-   COW entity, so it never escapes on its own — the barrier copies a COW
-   value out of the arena instead — and it becomes a survivor only as a
-   *child* of something that did escape. That edge exists only since the
-   tracing arm above, which is why the two had to land in this order.
-
-   Two things the work had to settle. The table keeps its own copy of the
-   memory category, so it can be used without an entity around it, and
-   promotion rewrites the header — so the carry rewrites the copy too, in
-   every outcome including refusal, or every later free of that storage
-   would take an arm that frees nothing. And `promote::traceable_in_full`,
-   a guard the earlier work left in advance, had to learn the Array kind:
-   it asserts that a survivor's children are all enumerable, because the
-   COW reconciliation decides a count from the edges it finds and a
-   skipped kind would erase holders rather than be ignored.
-
-   Two tests, both seen failing: the in-block carry, on the storage's
-   block kind reading arena-retained rather than buffer; and the
-   OS-direct transfer, which segfaults without the `forget_large` — the
-   reset frees every logged run, so a missed record is a use-after-free
-   rather than a leak.
-3. ~~**Thread hand-over.**~~ — done 2026-08-06. Storage in a long-lived
-   category is a buffer-arena chunk, so it is under the owner/abandon/adopt
-   protocol (`dev/DECISIONS.md`, 2026-08-04), which matters because a table
-   dies wherever its last reference is dropped: the chunk is routinely
-   freed by a thread that did not allocate it, and the buffer block carries
-   the owner and the stack that free posts to. The size split is the
-   string's — over a block payload the storage is an OS-direct run, since
-   an arena chunk is bounded by one block. The table records the *granted*
-   byte size rather than the requested one: a reused chunk may be larger
-   and the arena's free is size-carrying, so freeing by the request would
-   lose the difference from the block's free list. Storage still never
-   goes through `entity_alloc`, which would put headerless bytes in a
-   block the collector reads as entities.
-
-   **The independent review found a live abort next door**, in the branch
-   this work rewrote rather than in what it added: a request-arena table
-   called `Arena::alloc` for a storage of program-visible size, and that
-   asserts above a block payload, so the 1025th element of a request array
-   killed the process — by abort in release, the profile not unwinding.
-   Both arenas split by size and neither split belonged in the table, so
-   there is now `Arena::alloc_body` beside
-   `buffer_arena::buffer_alloc_longlived_payload`, and `buffer::
-   buffer_ensure` — which had the same split inline for a string payload —
-   goes through it too.
-
-   **One latent defect next door was closed with it.** `string::
-   grow_payload` routed every category but the request arena through a
-   catch-all into the buffer arena, immortal included. Unreachable today —
-   `ll_string_new_dynamic` refuses both long-lived categories, so no
-   dynamic string carries either — but the wrong answer was written down
-   waiting for a caller: an immortal payload in a buffer chunk holds its
-   block's `live` above zero for the life of the process, and growth there
-   frees the old payload, whose address an immortal reader may have cached
-   forever. The match is exhaustive now and those two arms refuse. The RFC
-   is where the wrong answer came from: `memory/buffers.md` groups
-   immortal with long-lived in the buffer arena while `memory/arenas.md`
-   and `strings.md` say the opposite — the correction is owed there and
-   not yet made.
-
-   Four tests. Seen failing first:
-   `a_request_arena_storage_over_a_block_takes_the_large_run_path` on the
-   assert above, and
-   `heap_storage_is_a_buffer_arena_chunk_and_is_returned_to_it` on the old
-   routing, with the block kind reading heap rather than buffer. The other
-   two are edges rather than regressions:
-   `a_storage_over_a_block_payload_is_an_os_direct_run` and
-   `a_table_disposed_on_another_thread_leaves_the_owners_block_alive`.
-4. **The strategy tag and the `arrays.md` hole.** Two bits for the
-   strategy plus the strong-mode bit live in the ArrayBox body, not the
-   flags word, which has none free. And `arrays.md`'s "strategy 1 never
-   transitions" cannot hold: separation copies the storage in its current
-   representation, so a callee can store a pointer into a proven
-   `array<int>`. The generic element write has to dispatch on the tag and
-   transition 1 → 2.
-
-### What the critic pass of 2026-08-06 found, and none of it is closed
-
-An independent pass over the tracing-and-death commit found four doors the
-array has not gone through. Each was verified against the code before
-being written down. **Read this before adding any entity kind**, because
-the shape of the problem is more important than the four instances.
-
-11. ~~**The two COW doors.**~~ — closed; see the ordered list above. What
-    the entry said when it was open: `ll_array_new` stamps the COW flag, so
-    both COW dispatch sites answer wrongly. `object::ll_cow_separate` has a
-    `debug_assert` and returns the original entity, which in release writes
-    a *shared* array in place — PHP's semantics broken with no signal. The
-    shallow copy it needs already exists (`array::entity::separate`); what
-    has to move with it is `string.rs`'s private `separation_category`,
-    which is the COW rule and not a string rule. `object::escape_copy` has
-    `unreachable!()`, and that arm is the deep, category-driven copy of
-    `rfc/model/arrays-hashtable.md` — each element republished through the
-    barrier with the destination's category. Its recursion-depth guard is
-    open in that document, and nesting depth is attacker-shaped input on a
-    store path; Edmond was asked to choose between a fixed limit that
-    refuses and an iterative copy with an explicit stack, and had not
-    answered when the session ended.
-12. **Both collectors are blind to arrays.** The concurrent tracer takes
-    no arm on kind 2, so a ring through a heap array is never collected —
-    the edge in is seen, the edge out is not, the holder reads RC above IN
-    and is judged a root every epoch. It no longer needs a stride of its
-    own: `trace_cells` is the one dispatch and the array is excluded from
-    it by decision, so the arm is an arm rather than a fourth walker. And
-    rc-trace's candidate
-    gate in `refcount.rs` buffers only kind 0, one masked compare on the
-    hot release path, so a ring with no object in it — an array holding a
-    ReferenceBox holding the array, which is `$a['x'] = &$a` — never
-    becomes a candidate. Both configurations are required legs of the
-    gate, so rc-trace is green today with a systematic leak.
-    **The bound the arm waits on is a design question, not an
-    implementation one — 2026-08-06, and the first answer was wrong within
-    the hour.** A relaxed reader cannot read `storage`, `nslots` and `used`
-    as unrelated words: growth moves the entries, so it could stride a
-    fresh count over a stale chunk. The obvious repair — read `storage`,
-    then the counts, then `storage` again, retrying while the two readings
-    differ — is refuted by `Table::compact`, which slides live entries down
-    **inside the same chunk** and lowers `used`. The storage pointer does
-    not change, so the double read sees nothing and the reader walks
-    entries that moved under it. Whatever the bound is, it has to cover an
-    in-place rearrangement as well as a move.
-
-    A version counter bumped by both operations is the obvious next shape:
-    read the version, read the three words, read the version again, retry
-    while it changed. It costs the mutator one relaxed store per growth and
-    per compaction, both rare, and nothing on insert or lookup.
-
-    **What a walker does when the read never stabilizes, corrected.** An
-    earlier note here called giving up the dangerous direction. It is the
-    opposite: an entity the walk does not enumerate becomes a **root
-    source** by the derived-roots corollary — its out-edges land in `RC`
-    and never in `IN`, so its children are computed roots and survive
-    (`walk.rs`, `a_ring_among_promoted_survivors_is_collected`, and
-    `rfc/model/gc/retained-block-walk.md`). Skipping an array the walker
-    cannot read coherently therefore leaks, exactly as skipping it
-    unconditionally leaks today, and frees nothing early. So the fallback
-    is sound and the only question left is how much it leaks: a bounded
-    retry, then skip, costs a ring through that array one more epoch.
-
-    That also re-dates the danger in the wrong-sign direction. What must
-    never happen is an *incoherent* read — `storage` from one chunk with
-    `used` from another, or a key from one entry with a value from the
-    entry that replaced it. That is not a stale snapshot, it is an edge
-    that never existed, and no phase repairs it.
-
-    **What must change on the mutator side either way, and it is a defect
-    today rather than an omission.** `Table::insert` bumps `self.used`
-    *before* it writes the entry (`array/table.rs`, the `let k = self.used;
-    self.used += 1;` pair). A reader that sees the bumped count reads an
-    entry nobody has written. It is latent while nothing walks an array
-    concurrently and becomes live at exactly the commit that teaches the
-    tracer to, which is why it has no regression test of its own. The
-    repair is publication order — write the entry, then publish the count —
-    and the same rule applies to `grow`: fill the new chunk, then publish
-    `storage` last. Both stores the collector reads must also *be* atomic
-    stores, or the mutator's plain write against a relaxed load is a data
-    race rather than a torn value.
-
-13. **The dispatch surface itself.** A kind has six doors —
-    `ll_entity_die`, `walk::trace_entity`, `collector::trace_mature`, the
-    candidate gate, `ll_cow_separate`, `escape_copy` — plus
-    `promote::traceable_in_full` as a guard. The array went through two and
-    missed four, and nothing made that visible: a miss hides in an empty
-    default arm or in a masked compare. Proposal on the table: dispatch on
-    `EntityKind` with exhaustive matches, so a new kind fails to compile
-    until every door has an arm. Two doors are hot and `trace_mature`
-    cannot use the ordinary accessors, so the shape has to survive both.
-14. **Three smaller ones.** The escape ledger is asymmetric inside
-    `array/entity.rs`: `separate` takes references with a bare `ll_retain`,
-    a no-op on an arena entity, while `release_children` gives them back
-    through `drop_ref`, which calls `escape_lose` — a copy that recorded no
-    gain spends a hold-count belonging to a real holder. Unreachable today.
-    Several array tests call `ll_entity_die` on an entity still at
-    refcount 1, leaving a slot the process-global walks enumerate as live.
-    And `ll_array_new` accepts `LongLived` while `array_die` frees only
-    `GcHeap`, one commit after that category was marked out of use, with
-    its `salt` parameter carrying a security policy that has no contract
-    comment and no named source.
-
-### What the second critic pass of 2026-08-06 found, and the two rulings
-
-A pass over an architect's answers to the two open questions found three
-live defects nobody had named, and refuted the architect's main
-recommendation. Each was verified against the code before being acted on.
-Items 15–17 are closed; 18–20 are not.
-
-15. ~~**`walk::sever_component` had no Array arm**~~ — closed `144b318`.
-    The seventh door, and the one that matters most about the count: a
-    kind that falls off it does not leak in a way the next pass finds. The
-    component has already been confirmed garbage, so its members are
-    guarded, severed of nothing, and un-guarded back to the counts they
-    started at — `collected` reads zero and the same work repeats on every
-    later call. A ring of two arrays with no object in it was
-    uncollectable in **both** configurations. The mixed object-array ring
-    did free, but by accident, and in a way that broke the deferred-drop
-    property the function's own doc exists to guarantee.
-16. ~~**The white set was freed without regard to what an entity holds
-    outside its own slot**~~ — closed `f56a035`, and wider than it was
-    reported. An array's storage was the reported half; a dynamic string's
-    payload is the other, older than arrays, and reached by any cyclic
-    garbage with a string property.
-17. ~~**`carry_out_of` left the category wrong on refusal**~~ — closed
-    `2e55036`. The damage was on the allocation side rather than the free
-    side its own doc worries about, which is why it survived review: a
-    promoted heap array took its next storage from whatever request arena
-    was mounted.
-18. ~~**The flood ladder's second rung does not exist.**~~ — closed. A
-    table carries `TABLE_RESEEDED` beside `TABLE_STRONG` in one byte of
-    flags, and a second long chain escalates instead of rebuilding again,
-    which is the bound the documents promise. The salt's redraw mixes the
-    process seed and the storage address into the LCG step, so the orbit
-    is no longer computable from the initial salt alone; under
-    `hash-folding` the seed is a build constant and only the address is
-    left. Regression: the ladder's two rungs in order, seen failing at the
-    escalation. **Found while doing it, and owed to the RFC:** below
-    `strong` a string key's slot *is* its cached hash, which no salt
-    enters, so the first rung cannot separate string keys at all and the
-    second cannot separate integer keys — the two rungs answer different
-    key kinds rather than escalating one defence. What the entry said:
-
-    `rfc/model/arrays-hashtable.md` both say a second firing escalates,
-    and both bound the attacker at one rebuild and one escalation per
-    table. There is no reseed counter: the chain trigger calls `reseed`,
-    only the equal-hash trigger calls `escalate`, and `reseed` returns
-    early only on `strong`. So the chain trigger fires without bound, each
-    firing an O(`used`) rebuild. The new salt is a public LCG over the old
-    with no entropy added, so an attacker who knows the initial salt knows
-    the whole orbit offline and can make every insert reseed: O(n²),
-    against a document that promises O(n) twice.
-19. ~~**A COW copy silently de-escalates an attacked table.**~~ — closed.
-    `separate` takes the source's flood state before its first insert
-    (`Table::adopt_flood_state`), since the mode decides how a key is
-    hashed and a table that adopts it afterwards has already indexed its
-    entries the other way.
-
-    **The entry overstated the damage and the test says why.** While the
-    colliding set is still in the table the copy re-escalates on its own —
-    the equal-hash trigger fires again on the ninth collider it
-    re-inserts — so the weak window is bounded by the trigger rather than
-    open for the life of the copy. What makes the loss permanent is
-    `unset`: with the set thinned below the threshold nothing re-fires,
-    and the copy is back to the hash the attacker already knows, ready
-    for the same flood. The regression is built that way and was seen
-    failing on it.
-20. ~~**The candidate gate diverges from the RFC, and costs one
-    constant.**~~ — closed; see the ordered list above and
-    `dev/DECISIONS.md`, 2026-08-07. One correction to what the entry
-    proposed: `forget_candidate` could not simply move up into
-    `ll_entity_die`, because the object's own `__destruct` runs *inside*
-    `dispose` and can buffer the object again, so `ll_object_die` calls it
-    a second time after `dispose` returns. The duty the entry wanted gone
-    — one every generated `dispose` must remember forever — is gone.
-
-**The renumbering is rejected, and the reason is worth keeping.** The
-architect proposed moving the four kinds that carry traceable slots to
-codes 0–3 so the gate could admit `{Object, Lazy, Array, Reference}` in
-one compare — the set that would catch `$a['x'] = &$a`, which
-`{Object, Array}` does not, the last external release landing on the
-ReferenceBox. The crate itself is clean: every use is symbolic, `is_object`
-survives because Object stays 0, and the compiler holds no kind constant.
-The RFC was not, and by 2026-08-07 it is: Edmond ruled the codes out of
-it altogether, so the documents name kinds and the assignment is
-normative in `EntityKind` alone (`rfc` `f170662`). Two of the three
-reasons recorded here went with that ruling. **The third was wrong
-arithmetic and is corrected rather than kept:** consolidating the Proxy
-family buys codes, not a bit — seven kinds take three bits and five kinds
-take three bits — so the family's adjacency was never a route to a free
-bit, and `layouts.md` had been counting codes all along. What remains
-against the renumbering is that the set-membership gate makes it
-unnecessary, and that a numbering fix expires at the next kind that needs
-admitting. Revisit it when `resource` needs a code, and price the Proxy
-family then.
-
-**Ruling on the escape copy's recursion, and on the two depths.** An
-explicit work list, not a depth limit. A limit would have to refuse
-through a channel whose only meaning is "out of memory", which is a lie
-while memory is plentiful and unfixable until the exceptions runtime
-exists; PHP has no nesting depth at which an assignment becomes invalid;
-and the limit would not even remove recursion from the crate, since
-teardown of what it permits is recursive too. The list itself belongs in
-a buffer-arena chunk rather than on the machine stack or in arena bump
-memory. Termination needs no visited set: recursion enters only arena COW
-children, and a cycle cannot close inside a pure-COW subgraph while the
-count-equals-holders invariant holds — every entity a real ring must pass
-through is non-COW and is counted rather than entered. Assert that under a
-debug feature rather than paying for it.
-
-The deep and shallow copies are **one body parameterized by destination
-category**, with the barrier supplying the depth: called with an arena
-destination the copy arm cannot fire, called with a heap destination on an
-arena source it is clause for clause the RFC's deep copy. The two depths
-are two call sites, not two operations. `ll_cow_separate` never presents
-the deep configuration — `store_category_barrier` copies every arena COW
-entity crossing into a longer-lived slot, so no longer-lived slot ever
-holds an arena array to separate. **This amends an authoritative sentence**
-(`arrays-hashtable.md`, "two depths … must not be confused") and the
-module comment in `array/entity.rs` that follows it, so it is Edmond's to
-accept; the code shape does not depend on which wording wins.
-
-`separation_category` is the COW rule and not a string rule — every reason
-it gives has an array counterpart that was verified — so it moves out of
-`string.rs` rather than being copied.
-
-**One window, documented rather than closed by the table.** `Table::insert`
-writes an entry raw and leaves the counting to the caller, so a string key
-appears as an out-edge before any reference backs it, and the extra
-in-edge pushes the key toward looking unrooted. It is absorbed today by
-three independent things — a fresh copy is allocate-blacked and never
-traced, the phantom edge supplies its own mark path from an array the
-mutator provably reaches, and Phase 4 recomputes on the owning thread —
-but relying on that is exactly the distant dependency item 13 exists to
-make visible. The repair is a crate-internal barrier entry that publishes
-an already-retained reference: `store_category_barrier` is that operation
-already, minus the slot write. It must land with or before item 12's arm.
-
 ## Then: arrays as a performance problem
 
-Opened 2026-08-07 at Edmond's request, and it gathers work the plan had
-scattered rather than adding any. Everything here is measurement or
-representation; nothing in it is a defect.
+Opened 2026-08-07 at Edmond's request. What was representation work in it
+is built — the generic element write, the strategy tag in the head, the
+32-byte entry with its collision link inside the element Box, and the
+2 → 3 migration — and the reasoning behind each is in `dev/DECISIONS.md`
+(2026-08-07 for the entry, 2026-08-11 for the head). What is left is
+measurement.
 
-**The generic element write ran first**, by Edmond's ruling of
-2026-08-07: the strategy tag exists for the dispatch inside that write,
-so the write came before the tag rather than after it. That write is
-`src/array/element.rs`, built and closed as stage S2.
-
-**The representation, and the tag waits for its second occupant.** Two
-bits of `Table::flags` name the storage strategy, which nothing sets yet.
-It was drafted as the last step of the element-write stage and taken
-out: with one strategy
-built the dispatch has one arm, no test can tell a write that reads the
-tag from one that calls the table directly, and `arrays.md` makes a fresh
-dense array strategy 2 — so a test pinning "a fresh array is strategy 3"
-is one the strategy-2 work would have to rewrite. The crate refused this
-shape once already, leaving the hash-function selection unbuilt with one
-occupant for the same reason. The cost of deferring is that the write is
-edited twice, and the write is a few lines. Behind the tag: the generic
-element write dispatches on it and performs the 1 → 2 transition
-`arrays.md` says never happens — it must, because separation copies the
-storage in its current representation and a callee can then store a
-pointer into a proven `array<int>`. Then the 2 → 3 migration, walking
-the vector in order and appending each element under its integer key, so
-insertion order survives by construction.
-
-**The entry is 32 bytes and the inline hash survived.** Settled
-2026-08-07, by reasoning rather than by the clock, which is why it could
-be settled here at all. The eight bytes came from the `next` field, not
-from the hash: the collision link moved into the element Box's reserved
-bytes at +28, `meta` went with it, and an entry is now `hash_or_key`,
-`key` and the element. Per element of capacity that is 40 bytes against
-`zend_array` 7.3+'s 40 — parity, where it had been 48.
-
-What the move costs is not memory but a rule, and the rule is enforced
-rather than remembered: the element field is private, so no caller can
-assign a whole Box over the link; every write goes through
-`Entry::store_element` or `Entry::store_link`, which compose tag, flags
-and link into one relaxed atomic store matching the eight-byte relaxed
-load the collector performs; and every read hands the Box out through
-`Value::without_reserved`. Two rejected shapes are worth keeping: the
-link in the *element's* reserved bytes with a narrowed store barrier
-(mixed-width atomics against the collector's load, and it breaks on
-objects before arrays), and the entry as two `Value`s with the link in
-the key half (the key's tag has to be read by the collector, so the link
-would share a word with it again). `dev/DECISIONS.md`, 2026-08-07.
-
-**The numbers still unmeasured.** The string-key check's reversal
-threshold, the compaction threshold borrowed from Zend at ~3 % rather
-than measured, and the two flood constants. None of these can be settled
-on this box: `dev/BENCHMARKS.md` puts its noise floor at 1.5–3 %, and
-every effect above is smaller than that.
-
-**What had to come first is done** (`a2e1318`): the `RcHeader` rule of
-2026-08-07 (`dev/DECISIONS.md`) took `category` out of `Table`, so the
-strategy tag goes into a struct whose fields have stopped moving.
+**Four constants stand on borrowed or invented numbers**: the string-key
+check's reversal threshold, the compaction threshold taken from Zend at
+about 3 %, and the flood ladder's two, `EQUAL_HASH_LIMIT` and
+`CHAIN_LIMIT`. None of the four can be settled on this box —
+`dev/BENCHMARKS.md` puts its noise floor at 1.5–3 %, and every effect in
+question is smaller than that. So this is not a task waiting for someone
+to pick it up: it waits for a machine that can resolve it, and measuring
+here would produce a number indistinguishable from noise and harder to
+retract than to publish.
 
 ## Then: `Map`, whose keys may be objects
 
-**After the stage above, and Edmond ruled the order on 2026-08-07: the
-array is finished first.** A map is strategy 3 with a wider key, so it
-becomes the entry's second customer — and every question the stage above
-still has open is a question about that entry. The 40-versus-32-byte
-measurement decides whether the inline hash survives; the key-kind tag a
-map needs wants the reserved `meta` word beside it; the strategy tag
-decides whether a map is a strategy or a kind. Building the map first
-would fix all three by accident, in whatever shape the first
-implementation happened to take, and the array would then be optimized
-around a customer rather than the customer around the array.
+**Edmond ruled the order on 2026-08-07 — the array is finished first —
+and it is.** A map is strategy 3 with a wider key, so it becomes the
+entry's second customer, and the three entry questions the map would
+otherwise have decided by accident are settled: the entry is 32 bytes
+with the inline hash kept, the reserved room beside the collision link
+went into the element's atomic second word, and the strategy tag lives in
+the head rather than in the table. What is left below is the map's own.
 
 Edmond's, 2026-08-07. A `Map` is the ordered hash again — strategy 3's
 structure unchanged, one chunk of `u32` index slots over a dense array of
@@ -1297,10 +93,14 @@ is the first thing to build.** `Entry::key` distinguishes its three
 states by value: `KEY_INT = 0`, `KEY_HOLE = 1`, anything above is a
 string pointer — and that last test is what a *walker* makes on the raw
 word (`array/entry.rs`). An object pointer passes it, so a Map would
-hand the tracer an `LLString` that is an `Object`. The kind has to move
-somewhere the walker reads: `Entry::meta` is the reserved `u32` beside
-`next` and is the obvious home, at the cost of one more load per walked
-entry.
+hand the tracer an `LLString` that is an `Object`. The kind has to sit
+somewhere the walker reads, and the `meta` field this entry used to
+name for it no longer exists: the collision link took the element's
+second word and the two spare bytes above the tag and the flags are what
+is left there. Where the kind goes is therefore part of S8.2's design
+rather than a settled answer, and the atomic-width rule decides it —
+every byte the collector reads is written by one store of the width it
+loads.
 
 **An object key is a counted child**, exactly as a string key is: the
 table owes it a reference, `for_each_counted_child` has to yield it, and
@@ -1350,397 +150,26 @@ whether copying a map copies its keys.
 ### Beside the hashtable: the memory categories
 
 Opened 2026-08-06, out of the same review chain, and independent of the
-four items above. Numbered as they are in the session tool.
+questions above. The routing item of that round is closed
+(`memory/routing.rs`, and `dev/DECISIONS.md`); two are left, and the
+second gates the first.
 
-5. ~~**One place for the category → allocator routing.**~~ — closed.
-   `memory/routing.rs` holds `entity_alloc_in` for the seven factories
-   and `body_alloc` / `body_ensure` / `body_free` for the two out-of-line
-   bodies. Each call site keeps only what is its own: the dynamic string
-   factory's refusal of the two long-lived categories, and
-   `carry_out_of`'s naming of the destination, which cannot come from
-   `self.category` because that field still says `RequestArena` when the
-   copy is made.
-
-   **The free does not dispatch on the block kind, and the entry was
-   wrong to say it could.** Both arenas put a body over a block payload
-   in an OS-direct run, so `BLOCK_KIND_LARGE_RUN` names a run the request
-   arena logged and will free at its reset exactly as readily as one the
-   caller owns. Freeing by kind alone double-frees arena storage — the
-   suite aborted on `corrupted size vs. prev_size`, which is how this was
-   found. The category decides between the two populations; the block
-   kind decides inside the long-lived one, which is what
-   `buffer_free_longlived_payload` was already doing.
-6. **~~RFC: rename the categories where they are defined~~** and
-   7. **~~carry it through the referring documents~~**, 8. **~~rename them
-   in the crate~~** — all three **deferred 2026-08-06**, reasoning in
-   `dev/DECISIONS.md`. `LongLived` is named after a duration rather than
-   an owner, which is why its reclamation was never decided; but `Region`
-   would mark exactly the entities no region owns, since a `#[Region]`
-   class owns *arenas*, and `Arena` would make `arenas.md`'s "between two
-   request arenas: forbidden" false before the mechanism justifying it
-   exists. Both wait on item 9. Meanwhile the category is marked out of
-   use on the enum itself.
-9. **The region reset, and the refusal that waits on it.** The mechanism
-   that would make a long-lived category mean something: what a region
-   owns, when it resets, how the owner's O(1) death reaches its entities,
-   and what promotion across a region boundary is.
-   `rfc/model/memory/regions.md` is the starting point. It also gates
-   `ll_string_new_dynamic`'s refusal of that category — today nothing
-   would reclaim such a string. Blocked on design, not scheduled.
-
-### Two defects this work found, worth not repeating
-
-The entry's `hash_or_key` holds the key's own identity — the raw integer
-or the string's cached hash — while the index slot comes from a
-*different* number, the salted mix or the keyed hash. Conflating them
-makes insertion succeed and lookup lose every key, and it happened twice.
-And table storage must never go through `entity_alloc`: the collector
-reads the first eight bytes of every occupied slot in an entity block as
-an `RcHeader`, and storage has no header.
-
-### The design, so it is not re-litigated
-
-The string stage before all this is finished: all 16 tasks below are
-closed, both critic passes are done and their findings fixed, and the gate
-and Miri were green in both configurations as of 2026-08-05.
-
-The table is one
-allocation of `u32` index slots plus a dense insertion-ordered array of
-40-byte entries; the collision link is an explicit `next` field, because
-`values.md` forbids per-slot state in the ValueBox's padding — the store
-barrier writes all sixteen bytes, so Zend's trick of threading the chain
-through the element would be severed by the first value store; the
-ValueBox sits last, at +24, so no write it performs reaches the key or the
-link. The index layer is **decided**, not deferred: chains, on measurement
-at each index's design load, with the reversal test named in the
-document's Open section.
-
-**What it deliberately leaves open**, each a measurement rather than a
-question of design: the string-key check with its named reversal threshold;
-the compaction threshold, borrowed from Zend at ~3 % rather than measured;
-and the two flood constants.
-
-**One retraction is recorded there and repeated here**, because it cost a
-day. The first set of index measurements was withdrawn after an
-independent review found six defects in the harness across two passes —
-among them that every table size was a power of two, so the open-addressed
-index silently ran at load 0.5 rather than the 0.875 it exists for, and
-that its deletion rule truncated the probe sequence of unrelated keys and
-lost live entries. The numbers that stand are the second set, and they
-stand for integer keys only.
-
-What follows is the state of the string work, not the design.
-
-**What landed 2026-08-05**, so that nobody starts it again: the rapidhash
-v3 port with its generated vector table, the seed and the `hash-folding`
-build option with its stamp, the critic pass on all of that, the first
-string benchmark (`benches/strings.rs`), growing a long-lived payload off
-the bump top, and rules 1–3 for the interpolated template in the RFC.
-Commits `ec8d8f6`, `2d6be59`, `12fe843`, `98ca50c`, `c81cdf5`, `3c25db8`,
-`d65ecac`.
-
-**Also landed 2026-08-05**, after the two open pieces were written down
-as a choice: adopted buffer blocks are reused rather than only held (the
-Residual entry below, and `dev/DECISIONS.md` of that date). It was taken
-first because it can be verified end to end today, and because array
-storage lands in the same arena later.
-
-**Task 9's runtime half also landed 2026-08-05** (`src/template.rs`),
-which closes the last of the sixteen. What it deliberately does not
-include is at task 9 below: the C ABI for a foreign consumer, and
-flattening a float or an object.
-
-**The collision-flooding debt the hash stage recorded as unpaid is now
-placed**, though not yet built: neither arm of the seed defends against it
-(`dev/DECISIONS.md`, 2026-08-04), and the table is where the defence
-lives. It counts, per insert and against current state, the entries whose
-full 64-bit hash equals the new key's — a size-independent constant,
-unreachable by chance, and unaffected by deletion, which a running maximum
-would not be. Firing escalates the table once to a keyed hash over the key
-bytes; the cached string hash at +16 is untouched, being shared across
-tables. Integer keys are indexed through a salted avalanche mix rather
-than by value, since `0, 1024, 2048, …` otherwise share a bucket with no
-knowledge of any seed.
-
-**What today changed underneath everything else**, worth knowing before
-touching any of it (all four entries are in `dev/DECISIONS.md`,
-2026-08-04): a COW value leaving the arena is now **copied** by the store
-barrier rather than counted as an escapee, and a publish can therefore
-refuse — `store_ptr` / `store_box` / `ref_store` return whether the store
-happened, and the `drop_ref` that follows an overwriting store must not
-run when it refused. The buffer arena is a heap with the object heap's
-ownership rules (per-block owner, MPSC stack for foreign frees, hand-over
-and adoption at thread exit). The arena reset traces through
-`walk::trace_entity` and settles a COW survivor's count as
-`edges + delta`. Buffer chunks park during a collector epoch.
-
-**Settled, and not to be re-derived:**
-
-- Two layouts, one entity kind. `COW = 1` is inline
-  (`RcHeader | len | hash | bytes`), `COW = 0` is dynamic
-  (`RcHeader | len | capacity | hash | data`). `len` and `hash` sit at
-  the same offsets in both, +8 and +16, so only byte access and teardown
-  branch.
-- `len` is `u32` (2026-08-04), which caps a string at 4 GiB and buys the
-  dynamic layout its `capacity` inside the padding the 8-aligned `hash`
-  creates anyway: that header goes from 40 bytes to 32, the inline one
-  stays at 24. The cap is language-visible; every growth path checks it
-  through one choke point and raises rather than truncating. Strings
-  above it are a separate class later, not a third transparent form —
-  that would branch every string operation and spend the last free
-  `EntityKind` code.
-- The COW flag is set at allocation and never flips, which is what makes
-  it readable as the layout. No sub-mode bit exists; the flags word has
-  no free one.
-- A dynamic string never copies on write: it is the non-COW form, writes
-  go in place, no sharing test. The compiler allocates one only where it
-  proved a single owner.
-- An inline string obeys the barrier rule in `rfc/model/values.md`, which
-  reads **category, then the count** — an immortal entity's count is
-  pinned at 1 by the retain/release early-outs, and the `IS_ESCAPEE` arm
-  is gone (2026-08-04): a COW value is copied out of the arena at the
-  store, so it never carries an escape count.
-- On a COW entity the count equals the number of holders; deferred ARC
-  does not apply to them at any tier.
-- No freeze operation, and no runtime promotion between layouts: both
-  would rewrite the body under a header `rc-walk` may be reading.
-- Arena promotion becomes layout-aware — the header stays, the payload is
-  reallocated into the heap, an OS-direct payload transfers ownership.
-
-**Open, and blocking nothing yet:** the
-cross-thread slot memory model that decides whether freeing a displaced
-string must route through epoch-deferred reclamation.
-
-**Task list, in dependency order** (16 items, all closed as of
-2026-08-05). This list *is* the task
-list — the session tool that tracks it
-does not survive a cleared context, so it is rebuilt from here. The
-bump-top growth above is not in this list because it is not a string
-task; it belongs to the memory manager and is written up under
-"Residual".
-
-1. ~~Sweep the contract and list the holes~~ — done 2026-08-03.
-2. ~~Find a home for a sub-mode bit~~ — dropped: the COW flag is the
-   layout.
-3. ~~Inline string in the GC heap: allocation, header, lazy hash~~ —
-   done 2026-08-04, `src/string.rs`. `ll_string_new` in every category,
-   the layout pinned by a test, the lazy hash with zero as "not
-   computed" and the remap inside `hash_bytes`, `fits` as the single
-   length gate, the `String` arm of `ll_entity_die`, and the walker
-   counting a string as the leaf it is. Not here: the rapidhash port
-   (its own step — it needs the reference test vectors in CI) and the
-   dynamic layout.
-4. ~~String teardown by layout~~ — done 2026-08-04. Inline frees its own
-   block, dynamic frees the payload too, and an arena payload is left to
-   the reset. Both assertions are the kind that fail when the branch they
-   name is deleted: the heap payload has to reappear from the buffer
-   arena's free list, and the arena payload has to still read back as its
-   own content. Both collector configurations.
-5. ~~Separation on write for inline strings, in the rule's order~~ —
-   done 2026-08-04. `refcount::cow_separation_needed` decides,
-   `string::separate` copies, and `object::ll_cow_separate` dispatches by
-   kind, so whether to separate is a property of the header and how to
-   copy a property of the layout. The copy's category comes from the
-   holder, not from the original; it returns at +1 like every other
-   factory here; its hash starts unset. The COW flag is tested before the
-   category, which `values.md`'s order does not do — that order would
-   copy a non-COW plain object when immortal or escaped and break
-   reference identity.
-6. ~~Dynamic string: buffer fields in the string's own order, growth in
-   place, compiler-chosen at allocation~~ — done 2026-08-04. Payload
-   through the memory manager's buffer machinery, routed by category;
-   heap or request arena only. Left open behind it: an arena dynamic
-   string cannot escape until 13 lands (refused at `escape_gain`), and
-   buffer-arena frees do not park during an epoch — harmless for strings,
-   load-bearing before arrays (task 16 in the TaskList).
-7. ~~Freeze a builder into an immutable string~~ — dropped with the
-   builder/frozen sub-modes: there is no freeze operation and no runtime
-   promotion between layouts.
-8. ~~`buffer_arena` on the thread-exit path~~ — done 2026-08-04, and it
-   was not a tail but a live abort the moment `string_die` began freeing
-   payloads. Converted to the no-drop-glue cell and disposed explicitly,
-   fifth in `ll_thread_exit`'s order (`dev/DECISIONS.md`).
-9. ~~Interpolated template as its own class — the runtime half~~ — done
-   2026-08-05, `src/template.rs`. The design landed the same day as rules
-   1–3 (`rfc/model/strings.md`), and Edmond amended rule 3 while this was
-   being built: **one class for every site**, with the parts in a static
-   per-site `TemplateShape` that is never allocated and never freed,
-   rather than a generated class per site. The instance is
-   `RcHeader | class | shape | Value[n]`, an ordinary entity; because the
-   value count belongs to the instance, `object.rs`'s two child walkers
-   branch on `CLASS_TEMPLATE` and read it from the shape.
-
-   Built: the factory (its own references, published through the store
-   barrier, refusal unwound), the walker and teardown branch, and the
-   shared flattening routine — measure, allocate once through
-   `string::new_uninit`, write each piece into place.
-
-   **Left open, each waiting on something outside this crate.** The C ABI
-   a foreign consumer would read the structure through is not written:
-   Edmond's call, since there is no consumer until the compiler exists.
-   Flattening refuses a float (the language's precision rules are
-   undecided) and an object (`__toString` is user code with no call path
-   in the crate); rule 3 puts that call in the measuring pass, so the
-   place it goes is already fixed. Rules 1 and 2 stay the compiler's, so
-   none of this can be exercised end to end yet.
-10. ~~Documents move with behaviour, in the same commit; `rfc` stays in
-    sync~~ — the two corrections owed to the RFC landed 2026-08-04 in
-    `rfc` `1fa621c`. `values.md`'s COW rule now separates the immortal
-    and long-lived arms and gives each its own reason, since "the count
-    is pinned" described immortal only. `strings.md` no longer permits
-    both layouts in every memory category: it names the two the dynamic
-    layout is refused in, and why `ll_string_new_dynamic` refuses rather
-    than redirects.
-11. ~~The verification gate in `dev/WORKFLOW.md`, plus Miri in both
-    configurations~~ — run 2026-08-04 on the stage as it stands. The gate
-    is green: 223 tests under `rc-walk` and 207 under `rc-trace`, three
-    threaded runs each at the 4-thread width, both release builds. Miri is
-    silent in both configurations (218 and 204 tests). Neither is evidence
-    about the four defects the critic found the same day — a mixed-width
-    race is invisible to both tools, and the promotion count defect is
-    masked by the retained block.
-12. ~~Critic on the finished stage, then Fable on whatever the critic
-    finds~~ — done 2026-08-04. Seven findings, each verified against the
-    code before acting. Three mechanical ones fixed in `f1ea847`; the two
-    structural ones went to Fable for the fix shape and landed as
-    `49be716` (the reset's tracer and the COW count) and `b5781d9` (the
-    buffer arena's ownership rules). Fable also corrected the critic on
-    one point: the reset has no live stack, so the frame-slot half of its
-    scenario cannot occur — the defect was real by two other routes.
-13. ~~Layout-aware arena promotion: carry the payload~~ — done
-    2026-08-04. One kind-dispatched call in the survivor pass, so
-    promotion still knows nothing about any layout. An OS-direct payload
-    transfers (the arena forgets the run, nothing is allocated, so the
-    reset cannot be refused at a point with no caller left to report to);
-    an in-block one is copied, bounded by a block payload. On refusal the
-    payload's block joins the retained set, and a retained block is the
-    one route `buffer_free_longlived_payload` leaves alone. The escape
-    ban this replaced lasted a day. Arrays will need the same.
-
-14. ~~**Port rapidhash v3**~~ — done 2026-08-04, in `src/hash/`. The
-    function is transcribed from the header vendored at
-    `vendor/rapidhash/` at a pinned commit, and the part that was the
-    task — proving the transcription — is a table generated from that
-    header, since the author publishes no vectors of his own. Seen
-    failing: one bit inverted in `secret[0]` breaks it at generated
-    length 113.
-
-    **The seed's home came out differently from the sentence above.**
-    That sentence read the split as JIT versus AOT; it is really folding
-    versus not, and the two halves are one question, because a compiler
-    that folds has to know the seed while it compiles. Edmond's call was
-    to make it optional rather than settle it: the `hash-folding` cargo
-    feature, off by default, selects a build-time seed from
-    `LL_HASH_SEED` plus folding, and off selects a per-process seed drawn
-    from the OS plus no folding. Reasoning, including why folding buys
-    one load rather than the multiplies the RFC priced, and why neither
-    arm defends against hash flooding: `dev/DECISIONS.md`, and the RFC
-    section it amended.
-
-    **"The build-time selection of the function" is not built, and
-    deliberately.** There is one function. The second slot the RFC names
-    is HighwayHash for long keys, gated on a length threshold that is a
-    measurement with no number yet, and a selection mechanism with one
-    occupant is a second untested path in the gate. The axis that does
-    exist — `hash-folding` — is selected exactly the way the GC strategy
-    is, so the pattern is in place when the second function arrives.
-
-    **Owed by the compiler, not by this crate:** emitting the program's
-    half of `hash::seed::STAMP` and calling `ll_hash_stamp_matches` at
-    startup. Until that exists, a folding build has nothing checking that
-    the program and the runtime hash alike.
-15. ~~**Resolve `IS_ESCAPEE` against the COW count**~~ — done
-    2026-08-04, Edmond's call: build the deep copy. The store barrier
-    copies a request-arena COW value into the GC heap when a longer-lived
-    slot takes it, so a COW entity never becomes an escapee and the two
-    invariants stop describing the same field. The rule's `IS_ESCAPEE`
-    arm is gone with it, and a publish now reports refusal, because the
-    copy is an allocation no reserve can fund (`dev/DECISIONS.md`; rfc
-    `2b94246`). What the task said before it was done:
-
-    **The old entry.** — a design question,
-    not an implementation one, and it needs Edmond. `values.md` asserts
-    two invariants over the same four bytes: on a COW entity the count
-    equals the number of holders, always and in every category; and while
-    bit 11 is set, the field holds the arena escape hold-count. Both
-    cannot hold for a COW arena entity, which is the class the separation
-    rule's third line exists for. Today the contradiction is suppressed by
-    an assert in `barrier::escape_gain` forbidding a COW entity to escape
-    at all, so that arm of the rule is unreachable by construction.
-    `arenas.md` names the intended route — a deep copy at the barrier for
-    value-like data — and it is unbuilt. Three ways out: build the deep
-    copy; declare the arm dead for COW and take it out of the rule; or
-    give COW escapees a second field. The present state, a live test for
-    an arm the barrier forbids, is the worst of the three.
-16. ~~**Park buffer-arena frees during a collector epoch**~~ — done
-    2026-08-04. The epoch test `ll_free` makes is made in
-    `buffer_free_longlived_payload`'s buffer branch instead, since that
-    free never reaches `ll_free`; the whole call parks, so the block
-    cannot empty and be re-stamped; the parked record carries
-    `(pointer, size)`, because `BufferArena::free` is size-carrying and a
-    chunk holds no metadata. `ll_free_large` gained the
-    `BLOCK_KIND_BUFFER` arm its silent default was swallowing, and
-    `deferred_free`'s module doc now describes the chunk rider instead of
-    claiming the door was shut in advance. Regression:
-    `deferred_free::tests::what_parks_while_an_epoch_is_open::a_buffer_chunk_parks_instead_of_being_written_into`,
-    seen failing. Below is what the task said before it was done.
-
-    The parking
-    test lives in `stdapi::ll_free`, and a buffer-arena chunk never
-    reaches it: `buffer_free_longlived_payload` branches on the block
-    kind and calls `BufferArena::free` directly, which writes a
-    `{ next, size }` link into the freed chunk and can return a whole
-    block to the pool mid-epoch. Harmless for strings — a payload is
-    bytes and the walker never reads it — and load-bearing before array
-    storage arrives, which the walker will chase. Park in that branch,
-    not in `ll_free`; park the whole call, not just the link write, so
-    the block cannot empty and be re-stamped; widen the parked record to
-    `(pointer, size)`, since the arena's free is size-carrying. Two
-    adjacent repairs: `ll_free_large`'s default arm silently ignores
-    `BLOCK_KIND_BUFFER`, and `deferred_free`'s module doc claims the door
-    was closed in advance for arrays, which is false while this stands.
-
-**Why strings and not something else** (decided 2026-08-03, before the
-design work): `rfc/model/strings.md` is written, A2's entity-kind switch
-is what was blocking it, and it is the first real subsystem rather than a
-tail. It also unblocks arrays, which nothing else does.
-
-**Arrays are unblocked as of 2026-08-06.** One array class with three
-storage strategies is designed in `rfc/model/arrays.md`, and the hashtable
-under strategy 3 is now designed in
-`rfc/model/arrays-hashtable.md`. Two holes in `arrays.md` were found while
-writing it and are answered there, so read both before coding: the depth
-of the store barrier's COW copy, which `arrays.md` calls shallow and
-`values.md` calls deep — they describe two different operations, and the
-escape copy is the deep one; and strategy 1's claim never to transition,
-which cannot hold, because separation copies the storage in its current
-representation and a callee can then store a pointer into a proven
-`array<int>`.
-
-Deliberately not next, each with its reason:
-
-- **A7, no zeroing by default** — the only Phase A item left, and small.
-  It is a performance change, so it needs a measurement, and the
-  expected effect is smaller than this box's 1.5–3% noise floor
-  (`dev/BENCHMARKS.md`). Worth doing on a machine that can resolve it.
-- **`domains`** (`rfc/model/gc/domains.md`) — rc-walk with more than one
-  mutator. A proposal with holes it names itself: no per-domain block
-  enumeration, the snapshot is global, and thread exit and adoption move
-  a block between domains while a walk may be in flight over it. Design
-  work, and large.
-- **`rc-satb`** — settled 2026-08-03: designed, deliberately unbuilt,
-  triggers named in `rfc/model/gc/satb.md`'s banner. Do not start it
-  without one of those triggers, and not at all until the FFI-root hole
-  recorded there is closed.
-- **Re-derive the TLA+ battery under eager death** — `rc-walk-model.md`
-  and the TLC configs still model the pre-amendment protocol (shared
-  condemned byte, F5 deferral, message acquittals), so the battery
-  currently proves a rule set that was retired 2026-07-27. Cheap, useful,
-  and the protocol has been still for a week. Take it if the appetite is
-  for correctness rather than features.
-- **rc-walk escalation rung 4 and every trigger threshold** — blocked on
-  measurement, which is blocked on real workloads, which are blocked on
-  the vertical slice (Phase D). Do not design further on paper.
+- [ ] **Rename the memory categories**, in the RFC where they are
+  defined, through the documents that refer to them, and in the crate —
+  **deferred 2026-08-06**, reasoning in `dev/DECISIONS.md`. `LongLived`
+  is named after a duration rather than an owner, which is why its
+  reclamation was never decided; `Region` would mark exactly the entities
+  no region owns, a `#[Region]` class owning *arenas*; and `Arena` would
+  make `arenas.md`'s "between two request arenas: forbidden" false before
+  the mechanism justifying it exists. Meanwhile the category is marked
+  out of use on the enum itself.
+- [ ] **The region reset, and the refusal that waits on it.** The
+  mechanism that would make a long-lived category mean something: what a
+  region owns, when it resets, how the owner's O(1) death reaches its
+  entities, and what promotion across a region boundary is.
+  `rfc/model/memory/regions.md` is the starting point. It also gates
+  `ll_string_new_dynamic`'s refusal of that category — today nothing
+  would reclaim such a string. Blocked on design, not scheduled.
 
 ## S18 — `walk`: an optional second behaviour pointer on the class descriptor
 
@@ -1785,283 +214,64 @@ exactly that.
         gate's width in both configurations
       tier: T2 · role: Critic
 
-## Status snapshot (2026-07-24, HEAD `bad9bd6`)
+## What is left of the old phase lists
 
-Done, per RFC:
+The A-chain of the 2026-07-24 status snapshot is finished but for two
+items, and every rc-walk build step of Phase B is built, so both lists
+were deleted with the snapshot that framed them. What survives is below,
+each line verified against the code on 2026-08-13 rather than against its
+own checkbox.
 
-- **Memory manager**, end to end: arenas, the reset/promote fixpoint,
-  immortal region, buffers / buffer-arena, block pool, the size-class
-  heap (mimalloc model), the store-barrier log reserve, the store barrier + remembered set
-  + release-at-reset list, stats layer 1. Audit closed, clean under Miri.
-- **Object model**: `value` (16-byte Box), `intern`, `class` (inline
-  vtable, itables, Cohen display), `object` (`ll_object_new`, three-phase
-  `ll_object_die`, `ll_instanceof`).
-- **GC**: `rc-trace` cycle collector (Bacon–Rajan).
-- **Compact RcHeader flags** (`bad9bd6`) + the `EntityKind` enum +
-  `is_object`; `VALUE_UNDEF` bit reserved.
-- **A1 — new object body + slot kinds** (2026-07-25): machine-typed slots
-  (`SlotKind` scalar / pointer / Box / bool), the three-run link-time
-  layout with `layout_end`/`object_size` and parent tail-padding reuse,
-  and `traced_runs` as two typed lists (`ptr_runs`/`box_runs`). The GC,
-  teardown and promote consume them through one shared walker,
-  `for_each_counted_child`. Factory now zero-fills the body.
-
-The crate still runs the **old** teardown/barrier shape around that body:
-`ll_object_new`/`ll_object_die` are generic runtime routines (A3 replaces
-them), `promote::die` handles objects only, and only `EntityKind::Object`
-is produced (A2). Teardown now dispatches through the descriptor's
-`dispose` pointer (A3), with `ll_default_dispose` the generic stand-in
-until the compiler generates specialized ones; the `factory` half of A3
-still needs generation, so `ll_object_new` stays. The store barrier has
-the slot-kind micro-ops (A4: `store_ptr`/`store_box`/`drop_ref`), though
-the GC/promote test graphs still build through the `ref_store` Box
-composition. The rest of the rewrite is the work below.
-
-## Recommended order
-
-A-first: rewrite the crate to the new layout (Phase A), then close the GC
-tails (B), then build the new subsystems (C). The vertical slice (D) is
-the true north — it validates the central bet and unblocks calibration —
-but it depends on the still-unwritten execution-pipeline RFC and the
-C++/LLVM front end, so it runs as a **parallel, externally-gated track**,
-not in the A chain. Everything downstream (strings, arrays, rc-satb) sits
-on Phase A's new body, barrier, and entity kinds, which is why A goes
-first.
-
-### Phase A — rewrite the object model to the new layout
-
-Dependency order: **A1 → (A2, A4) → A3 → A5 → A6 → A7**.
-
-- [x] **A1. New object body + slot kinds** (2026-07-25) — `RcHeader`(8) +
-  class(8) + machine-typed slots; 16-byte Box only for `mixed`/untyped;
-  `traced_runs` as two typed lists (pointer runs stride-8 skip-NULL, Box
-  runs stride-16 skip-by-flag). Foundation for the rest. `rfc/model/classes.md`,
-  `lowering.md`.
-- [~] **A2. Entity kinds + bare-pointer teardown switch** — *the switch
-  and the first non-object kind landed 2026-07-26*: `ll_entity_die`
-  dispatches every bare-pointer death on the kind field (barrier
-  `drop_ref`, gc un-guard, walk un-guard all go through it), and the
-  **reference box** (kind 3, `RcHeader | Value`, `src/reference.rs`) is
-  produced, traced, severed and collected — the `$a->r = &$a` ring test.
-  Still open: string/array (their layouts are Phase C), Box (FFI),
-  lazy (compiler), and the typed slot-reference variant (type system).
-  WeakRef (kind 5) landed with rc-walk step 4 (`src/weak.rs`, below).
-- [x] **A4. Store-barrier micro-ops** (2026-07-25) — `store_ptr` /
-  `store_box` (publish) + `drop_ref` (release old, slot-kind-independent);
-  `owner_cat` is a compiler parameter, not a load from owner flags, so a
-  headerless static block can be a destination. `ref_store` kept as the
-  `store_box`+`drop_ref` composition for existing callers; ABI
-  `ll_store_ptr` / `ll_store_box` / `ll_drop`. Composition/inlining/
-  specialization stays in lowering (the RFC's §1). `rfc/model/gc/strategies.md`.
-- [~] **A3. Lifecycle family** — *dispose dispatch landed 2026-07-25*: the
-  descriptor carries a `dispose` pointer, teardown dispatches through
-  `obj->class->dispose(obj)` (child releases via A4's `drop_ref`), and
-  `ll_default_dispose` is the generic stand-in a class carries until the
-  compiler generates a specialized one; a test can install its own. Still
-  open: **`factory` in the descriptor** (a `factory(ctx, category)` with
-  no class param needs per-class generation — the generic path stays
-  `ll_object_new(ctx, class, category)`), and **`clone` / `deep_clone` /
-  `thread_clone` / `thread_move`** (multi-threading-future, "reserved" in
-  the RFC). "Only the GC reads `traced_runs` as data" holds once generated
+- [ ] **A3's factory half.** The descriptor carries `dispose`, and
+  `ll_default_dispose` stands in until the compiler generates one.
+  `factory` cannot be stood in for the same way: its signature is
+  `factory(ctx, category)` with no class parameter, so it needs per-class
+  generation, and the generic path stays
+  `ll_object_new(ctx, class, category)`. `clone`, `deep_clone`,
+  `thread_clone` and `thread_move` are reserved for the multi-threading
+  future. "Only the GC reads `traced_runs` as data" holds once generated
   disposes replace the stand-in. `rfc/runtime/object-lifecycle.md`.
-- [x] **A5. `VALUE_UNDEF` semantics + `WRITING` lock bit** — *Box half
-  landed 2026-07-27*: `VALUE_WRITING` pinned (bit 2, mechanism waits for
-  rc-satb), `Value::undef()`/`is_undef()`, the descriptor's `undef_runs`
-  (defaultless Boxes regrouped to the box run's tail) stamped by the
-  factory after the zero-fill, `unset` as the undef-store + `drop_ref`
-  composition — all pinned by tests (undef never traced, any store
-  clears). *Raw half landed 2026-07-27 (commit 2)*: the byte block at
-  the layout tail carries the init bitmap — one bit per defaultless
-  `?T`-pointer/scalar/bool slot (`PropSlot::init_bit`, absolute bit
-  position, declaration-ordered; a subclass appends its own block, so
-  parent bits never move), `Object::init_bit_test/set/clear` as the
-  beside-the-access ops generated code emits, and the factory's
-  zero-fill starting every bit clear for free. Hole-filling the byte
-  block into padding stays deferred (A7 / rfc backlog).
-  `rfc/model/values.md`, `gc/satb.md`.
-- [x] **A6. Static-block teardown at thread exit** (2026-08-03) —
-  `static_block.rs`: a per-thread registry appended in first-touch
-  order, drained in reverse, each reference slot severed and dropped
-  through the barrier's `drop` so the three cases (arena escapee, heap
-  reference, immortal) come out right without a branch. Registration is
-  `ll_static_block_register(block, layout)`; a compiler-emitted
-  straight-line teardown does **not** replace the registry, because
-  which blocks a thread touched and in what order is a runtime fact —
-  statics initialize lazily per thread, exactly as C++ function-local
-  statics do. `PLAN.md` recorded this as closing audit H3; `AUDIT.md` is
-  untracked and was not read here, so that is what the plan says rather
-  than a claim about the audit entry itself. Forced a second change:
-  thread exit runs user code for the first time, so every per-thread
-  structure it can reach lost its drop glue and `ll_thread_exit` now
-  fixes the disposal order (`dev/DECISIONS.md`). `rfc/model/classes.md`
-  "Teardown at thread exit".
-- [ ] **A7. No zeroing by default** — the factory decides which slots need
-  a defined initial state (`rfc/BACKLOG.md` deferred-optimizations).
-
-### Phase B — GC completeness (tails deferred in the old plan)
-
-- [x] **rc-walk build step 1** (2026-07-26) — entity blocks segregated
-  from raw C-ABI allocations (`BLOCK_KIND_ENTITY`, second `Heap` per
-  thread), region registry with stable indices, free-list link moved to
-  slot bytes 8–15, slot headers zeroed at block commissioning, factory
-  publishes the header last as one 8-byte store, kind-dispatched tracer
-  + heap census (`src/walk.rs`). Design machine-checked in the rfc repo
-  (`model/gc/rc-walk.md` + proof docs).
-- [x] **rc-walk build step 2** (2026-07-26) — `walk::collect_cycles`, the
-  synchronous whole-heap collection: Phase 1 walk over entity blocks,
-  computed roots (`RC − IN > 0`), BFS mark, weakly-connected garbage
-  components, and the full Phase 4 drain inline — exact test, guard,
-  destructors once, guard-discounted re-verify (F1), sever
-  (`object::sever_counted_children`) + un-guard through ordinary
-  teardown. A whole-heap leak detector needing no candidate buffer, and
-  the exact test's correctness harness.
-- [~] **rc-walk build step 3** — the concurrent collector, in five
-  commits. *Commit 1 landed 2026-07-26*: the `rc-walk` cargo feature
-  (build-time strategy selection — the collectors share header bits,
-  `dev/DECISIONS.md`), epoch + condemned bytes at header bytes 6–7,
-  the retain/release condemned mask, relaxed-atomic header accesses
-  (asm-verified: no RMW, no call tail in release), and the
-  condemned-never-dies-ordinarily rule (F5). *Commit 2 landed
-  2026-07-26*: the deferred-free queue (`memory/deferred_free.rs`) —
-  the GC activity bit in `ll_free`, all four freeable kinds park on a
-  thread-local intrusive list through their own bytes 8–15, flush on
-  the owning thread between epochs. *Commit 3 landed 2026-07-26*: the
-  epoch protocol's mutator side (`src/epoch.rs`) — soft-handshake ack,
-  verdict queue (confirm + acquit), non-reentrant checkpoint riding
-  `entity_alloc` + `ll_gc_maybe_collect`; per-component drains in
-  `walk.rs` (`drain_confirmed` with the F5 dead-member path,
-  `acquit_condemned` with the duty ordering), F8 reentrancy pinned by
-  test. *Commit 4 landed 2026-07-26*: the collector side
-  (`src/collector.rs`) — the steppable epoch state machine, Phases 1–3
-  end to end (three-way classification by epoch byte, row-lookup edge
-  validation, shared Phase 2 math, condemn + handshake +
-  snapshot-compare re-check, verdict posting), the threaded `run_epoch`
-  driver, post-epoch flush at the checkpoint; F3 maturity latency and
-  the Phase 3 filter pinned by stepped tests. Trigger stays an explicit
-  call (thresholds are unmeasured — rc-walk.md open question 1).
-  *Commit 5 landed 2026-07-26*: the forced-timeline DC tests against
-  the sound gates — DC1's machine-found trace (walk split into
-  count/field passes for the interleave; caught by the Phase 3 count
-  re-read AND independently by the exact test), DC0's `0 = 0` confirm
-  (exactly-once probed through the free list), DC3's premise shown
-  unreachable. Kills of broken variants stay TLC's (a runtime
-  use-after-free has no deterministic observable) — agreed with
-  Edmond, rfc danger-cases note updated. *Commit 6 landed 2026-07-27*:
-  the relaxed-atomic sweep (field stores, header flags, block kinds),
-  the condemned-aware dispose un-guard (a real F5 bypass found and
-  closed — DECISIONS), the byte-preserving deferred-death store, the
-  cursor-free snapshot (an atomic bump measured +14% larson —
-  rejected, BENCHMARKS), a quadratic re-check fixed, and the
-  free-running stress test (Miri-ignored; stepped tests carry Miri).
-  **Step 3 is complete.** Next rungs stay per rc-walk.md build order:
-  the escalation ladder if measurement shows starvation (5); trigger
-  thresholds remain measurements.
-- [x] **rc-walk eager death** (2026-07-27, Edmond's redesign; rfc
-  `c2f91b1`, `model/gc/rc-walk.md`) — every refcount death tears down
-  at the natural point, only the memory parks. Deleted: the condemned
-  byte (bits 24–31 freed), the F5 deferral + marker, `acquit_condemned`
-  and the acquittal message, `Epoch::drop`'s owed acquittals.
-  Condemnation is collector-private; `drain_confirmed` opens with the
-  corpse rule (any `rc 0` member drops the message whole). Two
-  pre-existing BLOCKERs from the adversarial review fixed in the same
-  change: the death-branch checkpoint acks only (pickup rides the
-  outermost dispose's exit — the commit-to-dispose window has a live
-  weak cell), and parking is out-of-band (the in-slot park link
-  overwrote the class word under the walker). Both pinned by
-  verified-failing regressions. The rfc's TLA+ battery models the
-  pre-amendment protocol until re-derived (banner notes).
-- [x] **rc-walk batched-checkpoint split** (2026-07-28; rfc `3faf110`,
-  "Batched releases" amendment) — the run's checkpoint splits:
-  `ll_gc_checkpoint_ack` (new ABI) before the run, full
-  `ll_gc_checkpoint` after it; `ll_release_vector` same; the pickup
-  gate additionally refuses messages while `walk::collect_cycles`
-  runs (drain-class). Four regressions, each verified failing:
-  the ack-only front, the ack-before-first-death position, the
-  phase-lock shape on the vector form, the walk-active gate. Cost
-  within noise (`dev/BENCHMARKS.md`). The
-  forced-verdict machinery and the pressure ladder stay design-only
-  (build order 5, measurement-gated).
-- [x] **rc-walk build step 4 — weak references** (2026-07-27,
-  `src/weak.rs`; design `rfc/model/weak-references.md`). The canonical
-  `WeakReference` entity (kind 5, 16 bytes, always GC-heap) doubles as
-  the weak cell; a per-thread weak table (target address → cell) lets
-  the dying target null it. Notification wired at all death sites:
-  first act of dispose phase 2 (before child releases — the ordering a
-  cascading child `__destruct` needs), pre-destructor passes in
-  `walk::collect_cycles` / `drain_confirmed` / `gc::collect_cycles`
-  (the PEP-442 obligation), and the arena reset weak walk (after the
-  destructor fixpoint; promoted survivors keep their cells). ABI:
-  `ll_weakref_create` / `ll_weakref_get`. `WeakMap` waits for maps;
-  the table row widens to a subscriber list then.
-- ~~Immix-shaped `GcHeap` allocator~~ — **dropped entirely 2026-07-25**
-  (confirmed 2026-07-27): no line recycling, no reuse of retained-block
-  holes. Segregated entity blocks solved what Immix was drafted for;
-  retained blocks stay out of circulation while their survivors live
-  (`arena-reset.md`, Retention). Small future mechanism: return a
-  fully-emptied retained block to the pool. Sparse-block **evacuation**
-  at reset remains a real open item, gated on the escapee-reference
-  fixup (`arena-reset.md`, "Evacuation is now-or-never").
-- [x] **Retained-block walk** (2026-08-03) — the reset keeps its survivor
-  list as each retained block's object index (`memory/retained.rs`), and
-  both enumerators go through it: `heap::for_each_entity_slot` for the
-  synchronous walk, `heap::snapshot_entity_blocks` for the epoch, with
-  the census resolving an address inside a retained block by searching
-  the index after the same single binary search that serves entity
-  blocks. Closes rc-walk.md's "cycles among promoted survivors" limit —
-  a ring living entirely among promoted survivors used to be
-  uncollectable forever. Design and the three settled obligations:
-  `rfc/model/gc/retained-block-walk.md`, `dev/DECISIONS.md` 2026-08-03.
-  A fully emptied retained block returns to the pool since 2026-08-08:
-  the last occupant's death reports through `stdapi::ll_free`'s retained
-  arm (S3.1), and a block held for a payload the reset could not carry
-  waits for that payload's own free (S4.2).
-- [x] Run `__destruct` of cyclically-dead objects (2026-07-25) — Zend-style
-  discipline (`run_cyclic_destructors`): restore the white set's real
-  counts, guard, run each `__destruct` once through the ordinary teardown,
-  then re-collect so a resurrected subgraph survives. No new mechanism (no
-  retain hook, no GC-window flag); reuses `drop_ref`/`ll_object_die`/
-  `forget_candidate`. Tested for the plain cycle, an `unset`-in-destructor
-  (double-free), and resurrection into a live holder (child survival).
-- [ ] `rc-satb` as a second build-time GC strategy (needs the `WRITING`
-  bit from A5). `rfc/model/gc/satb.md`.
-
-### Phase C — new subsystems (each its own RFC + code)
-
-- [x] **Strings** — done 2026-08-05, all sixteen tasks. Both layouts of
-  the string entity, the rapidhash V3 port with its seed and the
-  `hash-folding` option, the interpolated template as its own class
-  (`src/string.rs`, `src/hash/`, `src/template.rs`,
-  `rfc/model/strings.md`).
-- [~] **Arrays** — storage strategy 3 is built (`src/array/`): the
-  ordered hash of `rfc/model/arrays-hashtable.md`, its entry layout, the
-  flood ladder, element references, the generic element write. Strategy 2
-  and the strategy tag are S7 above; strategy 1 has no producer.
-- [ ] Further out, listed in `rfc/BACKLOG.md`: exceptions runtime
-  (table-driven unwind + error-return channel, `runtime/exceptions.md`),
-  actors (`runtime/actors.md`), closures, enums, generators/fibers,
-  resources, generics, stdlib, I/O.
-
-### Phase D — vertical slice (parallel track, externally gated)
-
-- [ ] Minimal hello-world through the whole stack (PHP → IR → executable)
-  on the simplest memory setup. Validates the central bet — that the
-  compiler can prove escape / monomorphism / ARC-pairing on real PHP —
-  and unblocks every calibration item. Requires the minimal
-  execution-pipeline decisions (`rfc/BACKLOG.md`, "the big one") and the
-  C++/LLVM front end; both live outside this crate.
+- [ ] **A7, no zeroing by default.** `ll_object_new` zero-fills the whole
+  body unconditionally; which slots need a defined initial state is the
+  factory's to decide (`rfc/BACKLOG.md`, deferred optimizations).
+- [ ] **Kinds 4 and 6 have no producer.** `ll_entity_die`'s switch serves
+  five; Box waits on the FFI surface and Lazy on the compiler, and each
+  reaches a `debug_assert!` meanwhile. `Lazy` is nevertheless in
+  `CANDIDATE_KINDS`, on the argument recorded in `dev/DECISIONS.md`,
+  2026-08-07.
+- [ ] **The collector's escalation ladder**, build order 5 of
+  `rfc/model/gc/rc-walk.md`, and the trigger thresholds beside it. Both
+  are gated on a starvation measurement that does not exist, which is why
+  a collection is still an explicit call.
+- [ ] **`rc-satb` as a second build-time GC strategy**
+  (`rfc/model/gc/satb.md`). The `WRITING` bit it waited on is pinned and
+  the barrier's hook site is reserved; nothing else of it is built.
+- [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2
+  transition waits on one — `dev/DECISIONS.md`, 2026-08-13, which also
+  says what to confirm against `arrays.md` before opening it.
+- [ ] **The rest of the language runtime**, listed in `rfc/BACKLOG.md`:
+  exceptions, actors, closures, enums, generators and fibers, resources,
+  generics, stdlib, I/O.
+- [ ] **Phase D, the vertical slice** — hello-world through the whole
+  stack, PHP to IR to executable, on the simplest memory setup. It
+  validates the central bet, that the compiler can prove escape,
+  monomorphism and ARC-pairing on real PHP, and it unblocks every
+  calibration item below. It runs as a parallel track rather than in
+  turn, because it waits on the unwritten execution-pipeline decisions
+  (`rfc/BACKLOG.md`, "the big one") and on the C++/LLVM front end, both
+  outside this crate.
 
 ## Residual / carried-over items
 
 Memory manager, still open:
 
 - [ ] **Batch the cross-thread free, once a workload exists** — gated on
-  measurement, and the gate comes first. Today `Heap::free` posts each
-  foreign slot with its own CAS onto the owning block's `remote_free`
-  stack (`heap.rs:967`), and `buffer_arena::post_remote` does the same for
-  a chunk (`buffer_arena.rs:733`), so the cost is linear in items freed.
-  snmalloc gathers the same work into one message queue per owning
-  allocator and pays one atomic operation per batch instead
-  (`dev/RESEARCH.md`, 2026-08-08).
+  measurement, and the gate comes first. Today `Heap::free_remote` posts
+  each foreign slot with its own CAS onto the owning block's
+  `remote_free` stack, and `buffer_arena::post_remote` does the same for
+  a chunk, so the cost is linear in items freed. snmalloc gathers the
+  same work into one message queue per owning allocator and pays one
+  atomic operation per batch instead (`dev/RESEARCH.md`, 2026-08-08).
 
   The shape, if it is ever wanted: stage foreign frees in a bounded
   thread-local buffer with no atomics, group them by block on flush —
@@ -2085,112 +295,86 @@ Memory manager, still open:
   **Why not now.** Our CAS is already spread across blocks, which is
   mimalloc's contention argument, so the win would be in the count of
   atomic operations and not in contention. Nothing today drives the path:
-  the crate is single-mutator, and the only caller is
-  `heap.rs:2532`'s test plus whatever reaches the raw C ABI from another
-  thread. Order: a program that frees another thread's objects in bulk,
-  then a measurement, then this.
+  the crate is single-mutator, and the callers are one test group
+  (`heap::tests::frees_arriving_from_another_thread`) plus whatever
+  reaches the raw C ABI from another thread. Order: a program that frees
+  another thread's objects in bulk, then a measurement, then this.
 
-- [x] **Grow a long-lived buffer in place off the bump top** — done
-  2026-08-05, `3c25db8`. `buffer_ensure_longlived` moves the bump when
-  the payload is still the last chunk taken from it, ahead of hole reuse
-  in every pressure mode. **The clock could not resolve it** and the run
-  was void on its own terms — two runs of the same arm disagreed by 4.6%
-  — so the evidence is a count instead: an append loop moves its payload
-  once now and nine times before
-  (`string::tests::the_payload_and_who_frees_it::an_append_loop_moves_its_payload_once`,
-  `dev/BENCHMARKS.md` 2026-08-05). Accepted on three grounds needing no
-  measurement: less work, no payload free on the growth path and so
-  nothing to park during an epoch, and no chain of holes that never
-  coalesce. `benches/strings.rs` arrived with it and is the harness the
-  next string measurement uses.
-- [x] **Reuse an adopted block, not just reclaim it** — done 2026-08-05.
-  The cursor moved into the block header, so an adopted block's tail is
-  resumable: rotation takes an adopted tail, then any owned tail, then
-  the pool, and `critical` searches the free lists of the whole owned
-  chain under one budget. `resume_owned` is the step that keeps a block
-  adopted for a request its tail cannot serve from being looked at once
-  and never again. The order is the reverse of `heap.rs`, and why is in
-  `dev/DECISIONS.md`, 2026-08-05.
 - [ ] Buffer *K* and memory-pressure mode thresholds — **blocked on D**:
-  need real workloads. Do not design further on paper (`buffers.md`).
-- [ ] Cross-thread free of long-lived buffers — deferred until a consumer
-  needs it (`heap.rs` remote-free is the template).
+  they need real workloads, and designing them further on paper is what
+  the block is for (`rfc/model/memory/buffers.md`).
 - [ ] Per-block dense/sparse reset threshold calibration — **blocked on
-  D** (`arena-reset.md`).
+  D** for the same reason (`rfc/model/memory/arena-reset.md`).
 
 Read from rpmalloc 2.0.1 on 2026-08-10 (`dev/RESEARCH.md`). Material to
 think with, not decisions: none of it is measured here, and each entry
 names what would have to be measured first.
 
 - [ ] **Reallocate in place when the class does not change.**
-  `ll_realloc` (`stdapi.rs:369`) allocates, copies and frees on every
-  call, so 40 bytes to 48 costs a block, a `memcpy` and a free to move
-  inside one 48-byte slot. `ll_usable_size` (`stdapi.rs:349`) already
-  reads the class size out of the block header, so the test is one
-  comparison on a path that is cold anyway. rpmalloc also declines to
-  move a huge block that shrinks by less than half, and overallocates to
-  1.375x on a small growth so that a loop growing a few bytes at a time
-  stops reallocating at every step (`rpmalloc.c:2402`, `2413`, `2429`).
+  `stdapi::ll_realloc` allocates, copies and frees on every call, so 40
+  bytes to 48 costs a block, a `memcpy` and a free to move inside one
+  48-byte slot. `stdapi::ll_usable_size` already reads the class size out
+  of the block header, so the test is one comparison on a path that is
+  cold anyway. rpmalloc also declines to move a huge block that shrinks
+  by less than half, and overallocates to 1.375x on a small growth so
+  that a loop growing a few bytes at a time stops reallocating at every
+  step (`rpmalloc.c:2402`, `2413`, `2429`).
   **What comes first:** a harness. `rptest` in `benches/standard.rs`
   frees and allocates rather than reallocating, so this path has no
   measurement at all, and nothing in the runtime calls it either — it
   serves the raw C surface.
 
 - [ ] **Size classes for the band between 8 KiB and one block.** Classes
-  stop at 8 KiB (`heap.rs:102`) and everything above takes a whole 64 KiB
-  block (`stdapi.rs:154`), so a 9 KiB request holds 64 KiB. Five classes
-  divide the 65280-byte payload without a tail — 10880, 13056, 16320,
-  21760 and 32640, at six slots down to two — and hold the worst case to
-  1.33x at the bottom of the band and 1.5x at the top; past 32 KiB one
-  object per block is already the two-times ceiling. The fast path need
-  not move: `ll_alloc` routes anything past `MAX_SMALL` into a cold
-  function, and the class is chosen there by a short comparison chain, so
-  `CLASS_LUT` stays 514 entries instead of growing to 4082
-  (`heap.rs:130`). Free simplifies, since these become ordinary heap
-  blocks that the existing `BLOCK_KIND_HEAP` arm serves.
+  stop at `heap::MAX_SMALL` and everything above takes a whole 64 KiB
+  block, so a 9 KiB request holds 64 KiB. Five classes divide the
+  65280-byte payload without a tail — 10880, 13056, 16320, 21760 and
+  32640, at six slots down to two — and hold the worst case to 1.33x at
+  the bottom of the band and 1.5x at the top; past 32 KiB one object per
+  block is already the two-times ceiling. The fast path need not move:
+  `ll_alloc` routes anything past `MAX_SMALL` into a cold function, and
+  the class is chosen there by a short comparison chain, so `CLASS_LUT`
+  stays 514 entries instead of growing to 4082. Free simplifies, since
+  these become ordinary heap blocks that the existing `BLOCK_KIND_HEAP`
+  arm serves.
   **What it costs:** five more classes in three per-heap arrays and in
   the abandoned table, about 120 bytes per thread, and a high block
   switch rate on a two-slot class — against today's pool get and put per
-  object, which is worse in every case. The routing list in
-  `stdapi.rs:21` and `docs/memory-manager.md` move with the change.
+  object, which is worse in every case. The routing list at the head of
+  `stdapi.rs` and `docs/memory-manager.md` move with the change.
   **What comes first:** a footprint measurement, and there is none:
-  `benches/alloc.rs` stops at 8192 (`benches/alloc.rs:134`). The metric
-  is `blocks_out` and RSS rather than operations per second.
+  `benches/alloc.rs` stops at 8192. The metric is `blocks_out` and RSS
+  rather than operations per second.
   **Settle separately:** entities past 8 KiB take the same path and live
-  outside the walk on purpose (`heap.rs:1897`); a uniform stride would
-  make them walkable, which `rfc/model/gc/rc-walk.md` decided the other
-  way.
+  outside the walk on purpose; a uniform stride would make them walkable,
+  which `rfc/model/gc/rc-walk.md` decided the other way.
 
 - [ ] **A flag saying the block already reads zero.** `Heap::refill`
-  writes eight bytes into every slot of an entity block unconditionally
-  (`heap.rs:1115`) — up to 4080 stores at the 16-byte class, and at a
-  16-byte stride that dirties every line of the 64 KiB block. The
-  invariant is narrower than the pass: the walker reads only slots below
-  `bump` and tests one field (`heap.rs:2020`). Two sources of the same
-  knowledge exist and neither is used. A region taken with `alloc_zeroed`
-  instead of `alloc` (`block_pool.rs:501`) is untouched kernel memory. A
-  block returned empty from an entity heap already satisfies the
-  invariant, because `FreeSlot` preserves the dead entity's final header
-  (`heap.rs:175`) and an entity dies at refcount 0. What breaks it is a
-  block that served as raw or arena memory in between, or a
-  recommissioning at a different stride, so the flag has to name the
-  stride it holds for.
+  writes eight bytes into every slot of an entity block unconditionally —
+  up to 4080 stores at the 16-byte class, and at a 16-byte stride that
+  dirties every line of the 64 KiB block. The invariant is narrower than
+  the pass: the walker reads only slots below `bump` and tests one field.
+  Two sources of the same knowledge exist and neither is used. A region
+  taken with `alloc_zeroed` instead of `alloc` is untouched kernel
+  memory. A block returned empty from an entity heap already satisfies
+  the invariant, because `FreeSlot` preserves the dead entity's final
+  header and an entity dies at refcount 0. What breaks it is a block that
+  served as raw or arena memory in between, or a recommissioning at a
+  different stride, so the flag has to name the stride it holds for.
   **What comes first:** the case that shows the cost. Amortised over the
   steady-state benchmarks it is small, refill running about 0.00003 times
   per allocation; the workload to measure is a growing one, where the
   pass is one extra store per object created.
 
 - [ ] **Return memory to the OS, and cache huge mappings** — blocked on
-  the prerequisite `stdapi.rs:8` already names: regions come from
-  `std::alloc::alloc`, not from mmap. rpmalloc lets free pages accumulate
-  to 16, 8, 4 or 2 per page type and then decommits down to 4, 2, 1 or 1,
-  keeping the header prefix committed (`rpmalloc.c:712`, `2003`,
-  `1249`), and sends a freed huge mapping to a 32-slot cache bounded by
-  committed bytes and evicted by age rather than straight back to the OS
-  (`rpmalloc.c:1600`). Ours never come back (`block_pool.rs:10`) and
-  `LARGE_RUN` unmaps on every free (`stdapi.rs:24`). Either way the block
-  header line stays committed: the walker reads every block's kind across
-  the region (`heap.rs:2003`).
+  the prerequisite the head of `stdapi.rs` already names: regions come
+  from `std::alloc::alloc`, not from mmap. rpmalloc lets free pages
+  accumulate to 16, 8, 4 or 2 per page type and then decommits down to 4,
+  2, 1 or 1, keeping the header prefix committed (`rpmalloc.c:712`,
+  `2003`, `1249`), and sends a freed huge mapping to a 32-slot cache
+  bounded by committed bytes and evicted by age rather than straight back
+  to the OS (`rpmalloc.c:1600`). Ours never come back, and `LARGE_RUN`
+  unmaps on every free. Either way the block header line stays committed:
+  the walker reads every block's kind across the region.
 
 Object model, deferred by design:
 
@@ -2199,16 +383,11 @@ Object model, deferred by design:
   proxy-mediated movability. Needs a mechanism discussion.
 - [ ] Binary-level class interceptors (vtable-slot patching) — check
   whether this is the same mechanism as the deferred CHA-style optimistic
-  devirtualization (`classes.md` Deferred).
+  devirtualization (`rfc/model/classes.md`, Deferred).
 - [ ] Allocation telemetry layer 2 / debug mode — full design in
-  `dev/design/debug-modes.md`; build order is its section 10. Designed,
-  and its first item is scheduled: the event journal is stage S5 above.
-  The rest of the section is unscheduled.
-- [x] **The opt-in event journal, designed to completion** — design done
-  2026-08-06, `dev/design/debug-modes.md` §9. One ring per thread, 32-byte
-  fixed records, a window marked by a cursor snapshot across the registry,
-  eviction reported as *unknown* rather than *none*. Not built: it is item 1
-  of the build order, and its first customer is the census flake above.
+  `dev/design/debug-modes.md`, and the build order is its section 10.
+  Item 1 of that order, the event journal, is built; the rest of the
+  section is unscheduled.
 
 ## Cross-cutting (every phase)
 

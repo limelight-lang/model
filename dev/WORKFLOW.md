@@ -302,6 +302,16 @@ runs over different trees reported 154.41 s and 154.59 s while each cost
 tens of minutes — so a Miri run is timed by `time` or by the shell, and a
 figure quoted from its output says nothing about how long it took.
 
+**What a whole-suite run costs.** On 2026-08-08, at HEAD `6ab0bcf`:
+rc-walk 384 passed, 0 failed, 7 ignored in 948 s, and rc-trace 373
+passed, 0 failed, 4 ignored in 724 s. Both are Miri's own clock, so the
+wall figure is larger. The suite has grown since, and one test dominating
+a run has taken it from a quarter of an hour to 28 minutes on its own
+(`dev/POSTMORTEM.md`, 2026-08-08). A stage therefore closes on a targeted
+run over the modules it touched, and says which ones; whether a
+whole-suite run belongs at every stage or only before a release is
+Edmond's, and open.
+
 **Run it in slices.** `array::` alone is about an hour at two threads,
 which is longer than any foreground command should hold the box, and a
 background run outlives the session that started it with nobody to stop
