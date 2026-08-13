@@ -79,7 +79,8 @@ pub unsafe extern "C" fn ll_static_block_register(block: *mut u8, layout: *const
     // which strides the body alone; the group's own sever takes an
     // entity, and a block has no header to be one. So a layout carrying
     // the flag would keep cells nothing here severs and nothing here
-    // frees (`dev/DECISIONS.md`, 2026-08-13).
+    // frees (`dev/DECISIONS.md`, "a class with cells outside itself
+    // carries one flag and one group of five").
     debug_assert_eq!(
         unsafe { (*layout).flags } & crate::class::CLASS_OUTSIDE_CELLS,
         0,

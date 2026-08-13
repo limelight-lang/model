@@ -385,7 +385,8 @@ impl Epoch {
         // array keeps it in the head at a fixed offset; a class with
         // cells outside its body is asked through its descriptor,
         // because that offset on an object is the class word
-        // (`dev/DECISIONS.md`, 2026-08-13).
+        // (`dev/DECISIONS.md`, "a class with cells outside itself carries
+        // one flag and one group of five").
         // The kind comes from the snapshot, never from the header: the
         // mutator writes that word as one relaxed atomic store, and a
         // plain load beside it is a data race rather than a stale value.

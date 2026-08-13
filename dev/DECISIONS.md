@@ -8,6 +8,52 @@ never edited or deleted.
 
 ---
 
+## 2026-08-13 — a hooked class draws its storage under its own category, and the arena carry waits
+
+**Decided** by the Sage, on a hole a Critic found while S18.3 was being
+finished, and it tightens rather than reopens "a class with cells outside
+itself carries one flag and one group of five" below.
+
+**The storage of a class with cells outside its body is drawn under the
+instance's own memory category**, through `memory::routing::body_alloc`,
+the way a table's storage already is. The earlier clause said only "from
+the memory manager", which is too weak: it answers the parking question
+and leaves the reclamation one open. The category is what decides who
+frees the storage of an instance that dies without a teardown — an arena
+object gets phase 1 at reset and nothing else, so storage drawn under any
+other category is storage nothing ever gives back.
+
+**A per-corpse free at reset is not the answer, and could not be built.**
+The reset never enumerates the dying: a bump-filled block has no stride,
+and the only inventory it holds is the destructor log, which names
+destructor-bearing objects alone. A free per corpse would need a
+registration of every hooked instance, paid on every allocation, forever,
+for every map.
+
+**The survivor is the array's problem, and it takes the array's answer:**
+a carry, the analogue of `array::entity::carry_storage_out_of`, reached
+from `promote`'s existing kind switch through `Class::outside_cells`.
+That is a sixth member, so it changes the settled group's shape and takes
+a stage of its own — S19 in `PLAN.md`, opened before any map stage, with
+a superseding entry here when it lands. Dispatching on the kind does not
+breach promotion's invariant: the invariant is that promotion learns no
+*layout*, and `external_memory` is its sanctioned kind switch already.
+
+**Until then `ll_object_new` refuses the pairing**, with a
+`debug_assert`: it is the one door that sees the class and the category
+together. Not a returned null, which in this crate means out of memory
+and would lie to the creation site; not a build-time refusal, the
+category being a runtime argument. `Immortal` is not refused — such an
+instance never resets and never tears down — and `LongLived` is already
+marked out of use.
+
+**The refusal is temporary by design.** `rfc/model/maps.md` leans on
+arena-resident maps in load-bearing places, the escape copy and the
+pointer-tag budget among them, so a permanent refusal would refuse the
+RFC.
+
+---
+
 ## 2026-08-13 — a class with cells outside itself carries one flag and one group of five
 
 **Decided:** the descriptor gains a `CLASS_OUTSIDE_CELLS` flag and one

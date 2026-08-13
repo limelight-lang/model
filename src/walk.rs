@@ -73,11 +73,23 @@ pub(crate) enum CellShape {
 /// [`crate::class::CLASS_OUTSIDE_CELLS`] is the predicate: a class
 /// without it loads nothing here.
 ///
-/// **The storage these yield cells from must be parkable.** A block whose
-/// cells the collector recorded may not be freed while an epoch is in
-/// flight, and the parking machinery takes a freeable block kind or a
-/// buffer-arena chunk — an allocation from `std::alloc` cannot be parked
-/// at all, so a hooked class draws its storage from the memory manager.
+/// **The storage these yield cells from is drawn under the instance's own
+/// memory category**, through [`crate::memory::routing::body_alloc`], the
+/// way a table's storage is. Two obligations meet in that one rule. The
+/// storage must be parkable — a block whose cells the collector recorded
+/// may not be freed while an epoch is in flight, and the parking
+/// machinery takes a freeable block kind or a buffer-arena chunk, never an
+/// allocation from `std::alloc`. And the category is what decides who
+/// frees the storage of an instance that dies without a teardown: an
+/// arena object gets phase 1 only at reset, so storage drawn under any
+/// other category is storage nothing ever gives back.
+///
+/// **An arena instance is refused meanwhile**, in `ll_object_new`, because
+/// the category rule covers a corpse and not a survivor: promotion carries
+/// an array's storage and a string's payload out by kind, and the group
+/// owes a carry of its own before a hooked class can live in the arena
+/// (`dev/DECISIONS.md`, "a hooked class draws its storage under its own
+/// category, and the arena carry waits").
 pub(crate) struct OutsideCells {
     /// Yield every cell outside the body, on a quiescent heap. Answers
     /// the storage version the cells were read at, or `None` when no
@@ -537,8 +549,9 @@ pub(crate) unsafe fn sever_cells(
             // A class whose cells lie outside its body empties them
             // itself: a table entry cleared cell-wise loses its collision
             // link to a whole-Box store and reads its key word's null as
-            // an integer key rather than a hole (`dev/DECISIONS.md`,
-            // 2026-08-13).
+            // an integer key rather than a hole (`dev/DECISIONS.md`, "a
+            // class with cells outside itself carries one flag and one
+            // group of five").
             if let Some(group) = crate::class::Class::outside_cells(cls) {
                 (group.sever)(entity, displaced);
             }

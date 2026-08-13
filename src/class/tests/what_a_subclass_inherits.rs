@@ -134,6 +134,7 @@ fn a_subclass_inherits_the_group_and_the_flag_that_finds_it() {
 /// teardown, which strides the runs it inherited rather than only its
 /// parent's.
 #[test]
+#[cfg_attr(miri, ignore = "Miri gives one function several addresses")]
 fn a_subclass_does_not_inherit_a_specialized_dispose() {
     let _g = crate::memory::block_pool::test_guard();
 
@@ -164,6 +165,7 @@ fn a_subclass_does_not_inherit_a_specialized_dispose() {
 
 /// Declaring either keeps it, and neither reaches back up to the parent.
 #[test]
+#[cfg_attr(miri, ignore = "Miri gives one function several addresses")]
 fn a_subclass_that_declares_its_own_keeps_it() {
     let _g = crate::memory::block_pool::test_guard();
 
@@ -202,15 +204,15 @@ fn the_version_a_class_answers_reaches_the_walk() {
         "immortal region refused a class"
     );
 
+    // Heap instances: the factory refuses this flag in the arena until a
+    // hooked class has a carry across the reset (`dev/DECISIONS.md`, "a
+    // hooked class draws its storage under its own category, and the
+    // arena carry waits").
     let mut arena = crate::memory::arena::Arena::new();
     let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
     for (cls, expected) in [(fixed, None), (moving, Some(PROBE_VERSION))] {
         let obj = unsafe {
-            crate::object::ll_object_new(
-                &mut ctx,
-                cls,
-                crate::refcount::MemoryCategory::RequestArena,
-            )
+            crate::object::ll_object_new(&mut ctx, cls, crate::refcount::MemoryCategory::GcHeap)
         };
         assert!(!obj.is_null(), "the factory refused");
         let answered = unsafe {
@@ -224,6 +226,13 @@ fn the_version_a_class_answers_reaches_the_walk() {
             answered, expected,
             "the class's answer did not reach the walk"
         );
+
+        unsafe {
+            assert!(crate::refcount::ll_release(
+                obj as *mut crate::refcount::RcHeader
+            ));
+            crate::object::ll_entity_die(obj as *mut crate::refcount::RcHeader);
+        }
     }
 }
 
@@ -240,7 +249,7 @@ fn a_racing_walk_that_gives_up_answers_no_version() {
     let mut arena = crate::memory::arena::Arena::new();
     let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
     let obj = unsafe {
-        crate::object::ll_object_new(&mut ctx, cls, crate::refcount::MemoryCategory::RequestArena)
+        crate::object::ll_object_new(&mut ctx, cls, crate::refcount::MemoryCategory::GcHeap)
     };
     assert!(!obj.is_null(), "the factory refused");
 
@@ -255,11 +264,19 @@ fn a_racing_walk_that_gives_up_answers_no_version() {
         answered, None,
         "a given-up entity named a version the re-check would then trust"
     );
+
+    unsafe {
+        assert!(crate::refcount::ll_release(
+            obj as *mut crate::refcount::RcHeader
+        ));
+        crate::object::ll_entity_die(obj as *mut crate::refcount::RcHeader);
+    }
 }
 
 /// A class that declares nothing carries the default teardown and no
 /// group, which is every class the compiler emits today.
 #[test]
+#[cfg_attr(miri, ignore = "Miri gives one function several addresses")]
 fn a_class_that_declares_neither_carries_the_default_and_no_group() {
     let _g = crate::memory::block_pool::test_guard();
 

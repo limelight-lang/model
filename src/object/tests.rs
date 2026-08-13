@@ -19,6 +19,7 @@ fn with_ctx<R>(f: impl FnOnce(*mut LLContext) -> R) -> R {
     r
 }
 
+mod cells_outside_the_object_body;
 mod the_three_phases_of_a_death;
 mod the_type_test;
 mod what_the_factory_stamps;

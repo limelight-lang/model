@@ -8,14 +8,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-13 · Active: S18
+Updated: 2026-08-13 · Active: S19
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S17, so
-S18 is the only stage left. A number is never reissued, so a stage added
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S18, so
+S19 is the only stage left. A number is never reissued, so a stage added
 later sits where it is to be done rather than where its number falls, and
 the prose sections after the stages are the backlog they are drawn from.
 
@@ -69,108 +69,41 @@ second gates the first.
   `ll_string_new_dynamic`'s refusal of that category — today nothing
   would reclaim such a string. Blocked on design, not scheduled.
 
-## S18 — cells a class owns outside its own body
+## S19 — a class with outside cells across the arena reset
 
-Raised by `limelight-lang/io` on 2026-08-12 and agreed with Edmond the
-same day. A coroutine there is an ordinary object of a runtime-provided
-class, and it embeds its waker: two wait halves inline, and a raw block
-holding them all when a wait has more than two. The block's cells lie
-**outside** the object, so `ptr_runs` and `box_runs` cannot describe
-them — the runs are offsets within the entity.
+Opened 2026-08-13 by the Sage's ruling on a hole S18.3's Critic found:
+`dev/DECISIONS.md`, "a hooked class draws its storage under its own
+category, and the arena carry waits". Until it lands, `ll_object_new`
+refuses the pairing, so nothing in the crate can build the instance this
+stage serves — which is why the stage waits rather than blocks.
 
-Goal: a class may name counted cells the runs cannot reach, and every
-consumer of an object's cells sees them.
+Goal: an instance of a hooked class may live in a request arena, and its
+storage crosses the reset with it or dies with the pages.
 
-Done when: `Class` carries the flag and the group, every consumer of an
-object's cells honours it, a subclass inherits it, and a test proves a
-class that uses it is traced, collected and torn down correctly in both
-configurations.
+Done when: the refusal in `ll_object_new` is gone, an arena instance that
+survives a reset holds storage the reset did not hand back, and one that
+does not survive leaves nothing behind.
 
-The shape was settled by S18.1 and is wider than the stage was raised
-for: a `CLASS_OUTSIDE_CELLS` flag and one pointer to an immortal group of
-five — a walk per cell reader, a Phase 3 re-check, a sever and a free.
-`dev/DECISIONS.md`, 2026-08-13, "a class with cells outside itself
-carries one flag and one group of five", holds the reasoning, and
-`rfc/model/maps.md` is the second customer that widened it.
+**It comes before any map stage.** `rfc/model/maps.md` leans on
+arena-resident maps in the escape copy, the key barrier and the
+pointer-tag budget, so a map class built while the refusal stands would
+be a class that cannot be instantiated where the RFC puts it.
 
-- [x] S18.1 The hook's signature and its call sites
-      done: `dev/DECISIONS.md` records the signature, why it yields cells
-        through the reader rather than children, and where each member is
-        called from
+- [ ] S19.1 The carry, and promotion's arm for it
+      done: `OutsideCells` gains a `carry` answering carried, refused
+        with the block to pin, or nothing; `promote::External` reaches it
+        for an Object or a Lazy whose class carries the flag; the
+        refusal in `ll_object_new` goes; and a test proves both halves —
+        a survivor's storage outlives the reset and a corpse's does not
+        outlive its pages
       tier: T2 · role: Critic
-      Critic 2026-08-13: seven findings, and the shape changed under
-        them. Phase 3 finds a version by casting the entity to `LLArray`
-        and reading +8, which on an object is the class word, so a
-        re-check member is needed rather than a returned number alone.
-        The object sever the drain runs is `walk::sever_cells`' arm, not
-        `sever_counted_slots`, whose only caller is static-block
-        teardown. rc-trace frees the white set itself without calling
-        `dispose`, so a chunk needs a free member. `dispose` is not
-        inherited today, so "inherited the way `dispose` is" specified
-        "not copied". Three nullable pointers make six incoherent states.
-        A `std::alloc` block cannot be parked at all. And the give-up on
-        an incoherent head is unsafe for `reconcile_cow_counts`, which
-        assigns a count from the edges a trace finds. All accepted.
-      handoff: the decision entry names the flag, the group of five, the
-        call site of each member, and the two documents it corrected —
-        `rfc/model/maps.md`'s inheritance sentence and this stage's own
-        "done when". Two defects of the crate are named in it and fall to
-        S18.2: `ClassBuilder::build` does not seed `dispose` from the
-        parent, and `CellReader` has no constant saying whether it may be
-        raced.
-- [x] S18.2 The flag, the group, the builder, and inheritance
-      done: `Class` carries the flag and the group pointer, `ClassBuilder`
-        installs a group whole or rejects a partial one at build time, a
-        subclass descriptor inherits both the group and `dispose` — which
-        it does not inherit today — and a test fails if either copy is
-        dropped
-      tier: T2 · role: Critic
-      2026-08-13, from S18.1: two crate defects land here. `dispose` is
-        not seeded from the parent, so a subclass declaring none gets
-        `ll_default_dispose` and a map subclass would leak its whole
-        table. And `CellReader` needs the constant saying whether it may
-        be raced, so that a hook's give-up asserts against the plain
-        reader rather than silently under-counting an arena survivor.
-        A static block may not be laid out by a descriptor carrying the
-        flag, and the builder asserts that too.
-      Critic 2026-08-13: eight findings, and the worst was the step's own
-        repair. Inheriting a specialized `dispose` leaks — it releases
-        the slots of the class that declared it, and a subclass has more
-        — so the inheritance goes the other way: the group is inherited,
-        the dispose is not, and `ll_default_dispose` frees the group's
-        storage as its last act, which also closes the hole where `free`
-        had one call site unreachable in the default build.
-        `sever_counted_slots` still went through the whole walk, so a
-        static block laid out by a hooked class would have had its
-        outside cells nulled in a release build. The give-up became a
-        type rather than an assertion: `walk_plain` answers
-        `Option<usize>` and cannot express it. The re-check read the kind
-        out of a live header beside the mutator's atomic store. The white
-        free covered `Object` and not `Lazy`. And the test stand-in for a
-        dispose had the wrong signature. All accepted.
-      handoff: commits `b7552fa` and `960027a`. `Class` carries
-        `CLASS_OUTSIDE_CELLS` and `outside`; the group is
-        `walk::OutsideCells`, five members, installed by
-        `ClassBuilder::outside_cells`. Seven tests in
-        `class::tests::what_a_subclass_inherits`, one of them pinning the
-        free on the ordinary death path. Gate green on 17 legs: 467 and
-        447 three times each, 473 and 453 under `debug-journal`, 467
-        under `hash-folding`, both release builds, `fmt`. Miri not run —
-        S18.3 owes it, and it owes the racing walk an exerciser too:
-        nothing calls `RelaxedCells::walk_outside` yet.
-- [ ] S18.3 A class whose cells lie outside itself, end to end
-      done: a test class with an out-of-object block is traced by
-        rc-walk, collected by rc-trace and released at teardown, its
-        block freed through the deferred path; the suite is green at the
-        gate's width in both configurations
-      tier: T2 · role: Critic
-      2026-08-13, from S18.1: the rc-trace half of this criterion is the
-        group's `free` member rather than its sever — that collector
-        frees the white set itself and does not call `dispose`, so
-        without it the block is never freed and holds its own block's
-        live count up for the life of the process. The test class draws
-        its block from the memory manager, because the parking machinery
-        cannot take a `std::alloc` allocation.
+      2026-08-13, from the Sage: three answers rather than two, because
+        promotion today splits the carry from the address it pins and
+        its own doc guards against the two disagreeing — for a hooked
+        class both belong to the class author, so one call removes the
+        split by construction. Opening it also asks `limelight-lang/io`
+        whether a coroutine is ever arena-allocated, which decides
+        whether that class's carry body is real or answers nothing.
 
 ## What is left of the old phase lists
 

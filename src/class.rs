@@ -831,7 +831,8 @@ impl ClassBuilder {
         // `ll_default_dispose`, which strides the full runs it inherited
         // and frees the group's storage as its last act — so inheriting
         // the group is what makes not inheriting the dispose safe
-        // (`dev/DECISIONS.md`, 2026-08-13).
+        // (`dev/DECISIONS.md`, "a class with cells outside itself carries
+        // one flag and one group of five").
         let dispose = self
             .dispose
             .unwrap_or(crate::object::ll_default_dispose as *const ());

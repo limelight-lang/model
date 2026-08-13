@@ -358,6 +358,18 @@ versions live in `docs/history/`, marked at the top.
   over `memory::heap::for_each_entity_slot`; entity blocks and the
   region registry are in `heap.rs`/`block_pool.rs` (design:
   `rfc/model/gc/rc-walk.md`; decision entry 2026-07-26).
+- Cells a class owns **outside** the object body: `src/walk.rs`'s
+  `OutsideCells`, a group of five behaviours — a walk per reader, the
+  Phase 3 re-check, the sever and the free — reached through
+  `class::Class::outside_cells` when the descriptor carries
+  `CLASS_OUTSIDE_CELLS`. A coroutine's waker block and a map's table
+  chunk are the customers, both outside this crate, so the only class
+  with the flag today is `src/test_support/outside_block.rs`. The
+  storage is drawn under the instance's own category, and
+  `ll_object_new` refuses the arena until the group has a carry across
+  the reset (`dev/DECISIONS.md`, "a class with cells outside itself
+  carries one flag and one group of five" and "a hooked class draws its
+  storage under its own category, and the arena carry waits").
 - Weak references (rc-walk step 4): `src/weak.rs` — the kind-5 weak
   cell, the per-thread weak table, death notification (`notify_death` /
   `notify_members` / `drain_arena_weak_log`) and the
@@ -398,8 +410,9 @@ versions live in `docs/history/`, marked at the top.
   group", where the rest of the layout's price is recorded too). No
   `tests/` directory at the crate root: every test is a unit test and
   reads crate-internal state. A fixture a second module needs is in
-  `src/test_support.rs`, and one only the array modules need is in
-  `src/array/testing.rs`. The two `loom` models are outside this layout
+  `src/test_support.rs` or a submodule of it — `test_support::outside_block`
+  is the class three modules build on — and one only the array modules
+  need is in `src/array/testing.rs`. The two `loom` models are outside this layout
   and stay so: each is a hand-written copy of a protocol rather than a
   group of tests over a module, and each is compiled only under
   `--cfg loom`.

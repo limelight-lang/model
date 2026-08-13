@@ -3,11 +3,13 @@
 //! enumerators read that word as occupancy, and a slot they read as
 //! live has a free-list link where the class pointer was. Everything
 //! an entity holds outside its own slot goes back with it — an
-//! array's table storage, a dynamic string's payload — and an escape
-//! hold-count on an arena object is dropped, or the reset promotes
-//! an escapee nobody holds.
+//! array's table storage, a dynamic string's payload, the block a
+//! class keeps outside its body — and an escape hold-count on an
+//! arena object is dropped, or the reset promotes an escapee nobody
+//! holds.
 
 use super::*;
+use crate::test_support::chunk_from_the_free_list;
 
 /// A freed slot's header word is the enumerators' occupancy test:
 /// `heap::for_each_entity_slot` and the epoch snapshot both read it and
@@ -88,8 +90,6 @@ fn a_collected_member_leaves_a_slot_the_walk_reads_as_free() {
 #[test]
 fn a_collected_array_gives_its_table_storage_back() {
     use crate::array::table::Key;
-    use crate::memory::buffer::{PressureMode, set_pressure_mode};
-    use crate::memory::buffer_arena::with_buffer_arena;
     use crate::refcount::ll_retain;
     let _g = crate::memory::block_pool::test_guard();
 
@@ -131,14 +131,11 @@ fn a_collected_array_gives_its_table_storage_back() {
     let reclaimed = unsafe { collect_cycles() };
     assert!(reclaimed >= 2, "the ring was not collected");
 
-    // In critical mode an allocation searches the block's free list,
-    // so the same address coming back is the storage having been
-    // returned rather than merely forgotten.
-    set_pressure_mode(PressureMode::Critical);
-    let (reused, granted) = with_buffer_arena(|arena| arena.alloc(capacity));
-    set_pressure_mode(PressureMode::Plenty);
-    assert_eq!(reused, storage, "the array's table storage was never freed");
-    with_buffer_arena(|arena| unsafe { arena.free(reused, granted) });
+    assert_eq!(
+        chunk_from_the_free_list(capacity),
+        storage,
+        "the array's table storage was never freed"
+    );
 
     arena.reset(|_| {});
 }
@@ -153,8 +150,6 @@ fn a_collected_array_gives_its_table_storage_back() {
 /// and its string property is white behind it.
 #[test]
 fn a_collected_dynamic_string_gives_its_payload_back() {
-    use crate::memory::buffer::{PressureMode, set_pressure_mode};
-    use crate::memory::buffer_arena::with_buffer_arena;
     use crate::string::ll_string_new_dynamic;
     let _g = crate::memory::block_pool::test_guard();
 
@@ -201,11 +196,65 @@ fn a_collected_dynamic_string_gives_its_payload_back() {
     let reclaimed = unsafe { collect_cycles() };
     assert!(reclaimed >= 2, "the self-ring was not collected");
 
-    set_pressure_mode(PressureMode::Critical);
-    let (reused, granted) = with_buffer_arena(|arena| arena.alloc(capacity));
-    set_pressure_mode(PressureMode::Plenty);
-    assert_eq!(reused, payload, "the string's payload was never freed");
-    with_buffer_arena(|arena| unsafe { arena.free(reused, granted) });
+    assert_eq!(
+        chunk_from_the_free_list(capacity),
+        payload,
+        "the string's payload was never freed"
+    );
+
+    arena.reset(|_| {});
+}
+
+/// The third shape of the same hole, and the one with no kind of its
+/// own: a class may own counted cells outside its body, and the block
+/// behind them is as separate an allocation as a table's storage. This
+/// collector frees the white set itself and calls no `dispose`, so the
+/// teardown's last act never runs and the group's own `free` is all
+/// that reaches the block.
+///
+/// A self-ring through a cell of the block is enough, and it is also
+/// the proof that the cell was traced at all: the object's whole count
+/// is that reference, so a trial deletion blind to it would leave the
+/// object live.
+#[test]
+fn a_collected_object_gives_its_outside_block_back() {
+    use crate::test_support::outside_block;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let cls = outside_block::class("WhiteWaker");
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut ctx = LLContext { arena: arena_ptr };
+    let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+    unsafe { outside_block::install_block(&mut ctx, obj) };
+    let (block, capacity) = unsafe { outside_block::block_and_capacity(obj) };
+    assert!(!block.is_null(), "the object has no block to lose");
+
+    unsafe {
+        assert!(
+            outside_block::store_cell(
+                arena_ptr,
+                obj,
+                0,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Object, obj as *mut RcHeader),
+            ),
+            "the barrier refused the ring this test is built on"
+        );
+        assert!(
+            !ll_release(obj as *mut RcHeader),
+            "the cell holds the object now"
+        );
+    }
+
+    let reclaimed = unsafe { collect_cycles() };
+    assert!(reclaimed >= 1, "the self-ring was not collected");
+
+    assert_eq!(
+        chunk_from_the_free_list(capacity),
+        block,
+        "the collected object's block was never freed"
+    );
 
     arena.reset(|_| {});
 }

@@ -6,6 +6,30 @@
 
 use crate::class::{Class, ClassBuilder};
 
+pub(crate) mod outside_block;
+
+/// What the buffer arena hands out for `capacity` **in critical pressure
+/// mode**, where an allocation searches the free lists of the owned chain
+/// instead of bumping. A chunk a test is following coming back that way is
+/// the free having happened; any other address is that chunk still out,
+/// and a parked one is out.
+///
+/// The chunk is given straight back, so the probe leaves the arena as it
+/// found it. Two probes in a row therefore answer in reverse order of
+/// freeing: a chunk goes to the head of its block's free list and the
+/// critical search is first-fit, so the last one freed is the first one
+/// offered.
+pub(crate) fn chunk_from_the_free_list(capacity: usize) -> *mut u8 {
+    use crate::memory::buffer::{PressureMode, set_pressure_mode};
+    use crate::memory::buffer_arena::with_buffer_arena;
+
+    set_pressure_mode(PressureMode::Critical);
+    let (chunk, granted) = with_buffer_arena(|arena| arena.alloc(capacity));
+    set_pressure_mode(PressureMode::Plenty);
+    with_buffer_arena(|arena| unsafe { arena.free(chunk, granted) });
+    chunk
+}
+
 /// Fillers whose instance no size class serves while one pooled block
 /// still holds it, so the entity is found by the region scan both
 /// process-global enumerators already perform.
