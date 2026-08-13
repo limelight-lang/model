@@ -118,7 +118,7 @@ carries one flag and one group of five", holds the reasoning, and
         S18.2: `ClassBuilder::build` does not seed `dispose` from the
         parent, and `CellReader` has no constant saying whether it may be
         raced.
-- [ ] S18.2 The flag, the group, the builder, and inheritance
+- [x] S18.2 The flag, the group, the builder, and inheritance
       done: `Class` carries the flag and the group pointer, `ClassBuilder`
         installs a group whole or rejects a partial one at build time, a
         subclass descriptor inherits both the group and `dispose` — which
@@ -133,6 +133,31 @@ carries one flag and one group of five", holds the reasoning, and
         reader rather than silently under-counting an arena survivor.
         A static block may not be laid out by a descriptor carrying the
         flag, and the builder asserts that too.
+      Critic 2026-08-13: eight findings, and the worst was the step's own
+        repair. Inheriting a specialized `dispose` leaks — it releases
+        the slots of the class that declared it, and a subclass has more
+        — so the inheritance goes the other way: the group is inherited,
+        the dispose is not, and `ll_default_dispose` frees the group's
+        storage as its last act, which also closes the hole where `free`
+        had one call site unreachable in the default build.
+        `sever_counted_slots` still went through the whole walk, so a
+        static block laid out by a hooked class would have had its
+        outside cells nulled in a release build. The give-up became a
+        type rather than an assertion: `walk_plain` answers
+        `Option<usize>` and cannot express it. The re-check read the kind
+        out of a live header beside the mutator's atomic store. The white
+        free covered `Object` and not `Lazy`. And the test stand-in for a
+        dispose had the wrong signature. All accepted.
+      handoff: commits `b7552fa` and `960027a`. `Class` carries
+        `CLASS_OUTSIDE_CELLS` and `outside`; the group is
+        `walk::OutsideCells`, five members, installed by
+        `ClassBuilder::outside_cells`. Seven tests in
+        `class::tests::what_a_subclass_inherits`, one of them pinning the
+        free on the ordinary death path. Gate green on 17 legs: 467 and
+        447 three times each, 473 and 453 under `debug-journal`, 467
+        under `hash-folding`, both release builds, `fmt`. Miri not run —
+        S18.3 owes it, and it owes the racing walk an exerciser too:
+        nothing calls `RelaxedCells::walk_outside` yet.
 - [ ] S18.3 A class whose cells lie outside itself, end to end
       done: a test class with an out-of-object block is traced by
         rc-walk, collected by rc-trace and released at teardown, its
