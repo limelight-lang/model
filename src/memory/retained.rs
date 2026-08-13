@@ -38,6 +38,13 @@
 //! empty: occupants counted here, payloads counted by [`pin`] and spent by
 //! [`payload_freed`] (`dev/DECISIONS.md`, "a pinned block goes home when
 //! its last payload is freed").
+//!
+//! The reset holds one payload count of its own per block it pins, from
+//! the refusal until it has finished establishing occupant counts,
+//! because a payload freed before then would find no occupant to hold the
+//! block: `live` is zero for every block until [`register`] runs, and for
+//! a block that holds bytes but no survivor it stays zero for good
+//! (`promote::arena_reset_full`).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -115,7 +122,9 @@ pub(crate) unsafe fn register(block: usize, mut occupants: Vec<usize>) -> bool {
 /// these bytes out, so they outlive the arena and the block waits for
 /// them as it waits for a live occupant (module doc). Counted rather than
 /// flagged, because one block can hold the payloads of several survivors
-/// and each is freed on its own.
+/// and each is freed on its own — and because the reset takes one such
+/// count for itself over the window in which its object index does not
+/// exist yet (module doc).
 pub(crate) fn pin(block: usize) {
     let mut map = registry().lock().expect("retained index registry poisoned");
     map.entry(block)
@@ -173,6 +182,33 @@ pub(crate) fn payload_freed(block: usize) -> bool {
 
     index.payloads -= 1;
     empty_now(&mut map, block)
+}
+
+/// Release the count the reset held on `block` past the last moment an
+/// occupant count could still be established for it ([`pin`], module
+/// doc). **True** when nothing else holds the block, and then the index
+/// is left in place rather than dropped, exactly as [`register`] leaves
+/// it: the caller frees the block through `ll_free`, whose retained arm
+/// answers off the index through [`occupant_freed`] and would take a
+/// missing one for a block it knows nothing about.
+///
+/// A zero `live` here reads as **nothing indexed holds this block**,
+/// which covers both shapes it can have: a block whose occupants all died
+/// inside the reset, and one that never held an occupant at all, where
+/// [`register`] was never called and no index was ever built.
+#[must_use = "true means the block is empty and the caller owes it to the pool"]
+pub(crate) fn reset_pin_released(block: usize) -> bool {
+    let mut map = registry().lock().expect("retained index registry poisoned");
+    let Some(index) = map.get_mut(&block) else {
+        return false;
+    };
+
+    // The one door of the three where a miscount ends at the block pool
+    // rather than at `false`: spending a payload's pin here would report
+    // a block with live bytes in it empty.
+    debug_assert!(index.payloads > 0, "the reset released a pin it never took");
+    index.payloads = index.payloads.saturating_sub(1);
+    index.live == 0 && index.payloads == 0
 }
 
 /// Whether `block` is held by nothing any more, dropping its index when

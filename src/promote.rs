@@ -90,6 +90,10 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // the reconciliation keeps it as a delta.
     let mut cow_at_promotion: Vec<(*mut RcHeader, u32)> = Vec::new();
     let mut retained: HashSet<usize> = HashSet::new();
+    // Blocks pinned for bytes this reset could not carry out, each held by
+    // one count of the reset's own until the object index behind it is
+    // real. Released after `finish_reset`, below.
+    let mut pinned: HashSet<usize> = HashSet::new();
     // `survivors[..counted]` have already been counted and retained. New
     // survivors past it are the current round's delta.
     let mut counted = 0usize;
@@ -197,6 +201,19 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     // retained for bytes; `dev/DECISIONS.md`, "a pinned
                     // block goes home when its last payload is freed").
                     crate::memory::retained::pin(payload_block);
+
+                    // A second count, the reset's own, because that death
+                    // event can arrive **here**: a release this reset
+                    // drains can kill the very survivor whose payload was
+                    // refused, and until `index_retained_blocks` runs the
+                    // occupant count that would still hold the block reads
+                    // zero. This count makes the pin unspendable before
+                    // the index is real, which is the property the
+                    // occupant side gets from registering late
+                    // (`retained.rs`, [`register`]).
+                    if pinned.insert(payload_block) {
+                        crate::memory::retained::pin(payload_block);
+                    }
                 }
             }
 
@@ -297,9 +314,23 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // (`rfc/model/gc/retained-block-walk.md`). Registered after the
     // fixpoint has settled and before the blocks are disposed of, so
     // every entry describes a survivor that is staying.
-    let emptied = index_retained_blocks(&survivors);
+    let mut emptied = index_retained_blocks(&survivors);
 
     unsafe { (*arena).finish_reset(|block| retained.contains(&(block as usize))) };
+
+    // The reset's own pins go now: this is past the last point at which
+    // an occupant count could still be established, which is what each
+    // was held for. Not every pinned block gets one — a block holding
+    // bytes but no survivor is never registered — so what the release
+    // reads is "nothing indexed holds this block" rather than "every
+    // occupant died". A block that empties on it had its payload freed
+    // inside the reset, so it joins the vector below rather than waiting
+    // for a death that has already happened.
+    for block in pinned {
+        if crate::memory::retained::reset_pin_released(block) {
+            emptied.push(block);
+        }
+    }
 
     // Blocks whose every survivor died inside this reset — the shape a
     // heap reference box produces, where the element it made an escapee

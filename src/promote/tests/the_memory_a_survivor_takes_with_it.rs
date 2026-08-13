@@ -590,3 +590,193 @@ fn a_refused_hooked_carry_pins_the_block_its_bytes_lie_in() {
         );
     }
 }
+
+/// The pinned block stays out of circulation when the payload's own free
+/// arrives **inside** the reset that pinned it. The pin is spent then,
+/// and the occupant count that would still hold the block does not exist
+/// yet: the index is built after the fixpoint, so a block emptied of
+/// payloads reads as empty of everything.
+///
+/// The shape that frees a payload that early is the heap box behind `&`
+/// (`memory::retained::register`): the box's logged release kills the
+/// promoted survivor during the drain, and that survivor's teardown frees
+/// the very bytes the refusal pinned the block for. Two other survivors
+/// of the same block are what the block must still be held for.
+#[test]
+fn a_pin_spent_inside_the_reset_leaves_the_block_to_its_survivors() {
+    use crate::memory::block_pool::BLOCK_KIND_RETAINED;
+    use crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED;
+    use crate::test_support::outside_block;
+    use std::sync::atomic::Ordering;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let holder_cls = ClassBuilder::new("PinnedNeighbourHolder")
+        .prop("first", true)
+        .prop("second", true)
+        .build();
+    let neighbour_cls = ClassBuilder::new("PinnedNeighbour").build();
+    let corpse_cls = ClassBuilder::new("PinnedCorpse").prop("box", true).build();
+    let waker_cls = outside_block::class("WakerFreedInsideTheReset");
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let holder = unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let first = unsafe {
+        new_constructed(
+            &mut *context_ptr,
+            neighbour_cls,
+            MemoryCategory::RequestArena,
+        )
+    };
+    let second = unsafe {
+        new_constructed(
+            &mut *context_ptr,
+            neighbour_cls,
+            MemoryCategory::RequestArena,
+        )
+    };
+    let waker =
+        unsafe { new_constructed(&mut *context_ptr, waker_cls, MemoryCategory::RequestArena) };
+    let corpse =
+        unsafe { new_constructed(&mut *context_ptr, corpse_cls, MemoryCategory::RequestArena) };
+
+    let block = unsafe { outside_block::install_block(context_ptr, waker) };
+    let block_address = BlockHeader::of_ptr(block) as usize;
+    for (entity, name) in [
+        (first as *const u8, "first"),
+        (second as *const u8, "second"),
+        (waker as *const u8, "the waker"),
+    ] {
+        assert_eq!(
+            BlockHeader::of_ptr(entity) as usize,
+            block_address,
+            "{name} was bumped into another block, so the pin it must \
+             survive holds nothing of it"
+        );
+    }
+
+    unsafe {
+        // The two neighbours escape into a heap holder and are the
+        // survivors the block is still owed to after the pin is spent.
+        store_prop(arena_ptr, holder, 16, first);
+        store_prop(arena_ptr, holder, 32, second);
+
+        // The waker escapes into a heap reference box instead, and the
+        // box goes into an arena slot — which is what logs the box's
+        // release against the reset.
+        let boxed = crate::reference::ll_reference_new();
+        assert!(ref_store(
+            arena_ptr,
+            boxed as *mut RcHeader,
+            &raw mut (*boxed).value,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Object, waker as *mut RcHeader),
+        ));
+        let slot = Object::prop_at(corpse, 16);
+        assert!(ref_store(
+            arena_ptr,
+            corpse as *mut RcHeader,
+            slot,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Reference, boxed as *mut RcHeader),
+        ));
+
+        // The creation reference goes now, so the logged release is the
+        // box's last and the drain is what kills it.
+        assert!(!crate::refcount::ll_release(boxed as *mut RcHeader));
+    }
+
+    FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
+
+    assert_eq!(
+        unsafe { block_kind(block_address as *const u8) },
+        BLOCK_KIND_RETAINED,
+        "the block went home while two survivors were still living in it"
+    );
+    let index = crate::memory::retained::snapshot();
+    let (_, occupants) = index
+        .iter()
+        .find(|(b, _)| *b == block_address)
+        .expect("the block kept no index, so no death of its can return it");
+    for (entity, name) in [(first, "first"), (second, "second")] {
+        assert!(
+            occupants.contains(&(entity as usize)),
+            "{name} survived outside its own block's index"
+        );
+    }
+
+    unsafe {
+        assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+        ll_object_die(holder);
+    }
+}
+
+/// The end of the same case: the pinned block has no survivor left
+/// either, so nobody outside the reset will ever report it empty and the
+/// reset hands it over itself. The count it held until the index was
+/// built is what makes that a reset-time question rather than a leak.
+#[test]
+fn a_block_whose_pin_and_occupants_both_go_inside_the_reset_goes_home() {
+    use crate::memory::block_pool::BLOCK_KIND_FREE;
+    use crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED;
+    use crate::test_support::outside_block;
+    use std::sync::atomic::Ordering;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let corpse_cls = ClassBuilder::new("LonePinCorpse").prop("box", true).build();
+    let waker_cls = outside_block::class("WakerAloneInItsBlock");
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let waker =
+        unsafe { new_constructed(&mut *context_ptr, waker_cls, MemoryCategory::RequestArena) };
+    let corpse =
+        unsafe { new_constructed(&mut *context_ptr, corpse_cls, MemoryCategory::RequestArena) };
+    let block = unsafe { outside_block::install_block(context_ptr, waker) };
+    let block_address = BlockHeader::of_ptr(block) as usize;
+
+    unsafe {
+        let boxed = crate::reference::ll_reference_new();
+        assert!(ref_store(
+            arena_ptr,
+            boxed as *mut RcHeader,
+            &raw mut (*boxed).value,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Object, waker as *mut RcHeader),
+        ));
+        let slot = Object::prop_at(corpse, 16);
+        assert!(ref_store(
+            arena_ptr,
+            corpse as *mut RcHeader,
+            slot,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Reference, boxed as *mut RcHeader),
+        ));
+        assert!(!crate::refcount::ll_release(boxed as *mut RcHeader));
+    }
+
+    FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
+
+    assert_eq!(
+        unsafe { block_kind(block_address as *const u8) },
+        BLOCK_KIND_FREE,
+        "the block is held by nothing and went to neither the pool nor \
+         anybody else"
+    );
+    assert!(
+        !crate::memory::retained::snapshot()
+            .iter()
+            .any(|(b, _)| *b == block_address),
+        "the block went home with its index still naming it"
+    );
+}
