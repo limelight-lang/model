@@ -59,8 +59,9 @@ pub union Storage {
 
 impl Storage {
     /// An empty ordered hash. The tag saying so is written into the head
-    /// by [`new_with_storage`], which is the one place the pair is
-    /// matched.
+    /// by [`new_with_storage`], which is where a *fresh* pair is matched;
+    /// [`migrate_to_hash`] is the only other place, and it matches a
+    /// filled one.
     pub const fn hash() -> Self {
         Storage {
             table: std::mem::ManuallyDrop::new(Table::empty()),
@@ -121,7 +122,7 @@ pub struct LLArray {
 /// Asking a vector for its table is a bug in the caller rather than a
 /// case to handle: the tag decides the call, and a caller that did not
 /// read it has already chosen wrongly. That is what the assertion here
-/// says, and it is the check the union's projections used to carry.
+/// says.
 ///
 /// # Safety
 /// `a` addresses a live array whose storage is the ordered hash.
@@ -538,11 +539,6 @@ unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LL
     match unsafe { (*src).head.tag() } {
         StorageTag::Vector => unsafe { new_vector_array(category) },
         StorageTag::Hash => {
-            // The representation is named here rather than left to
-            // `ll_array_new`. That factory's stamp answers a different
-            // question — which representation a *fresh* array starts in —
-            // and this destination has to be the source's, so the two
-            // named factories are what the copy goes through.
             let dst = unsafe { new_with_storage(category, StorageTag::Hash, Storage::hash()) };
             if dst.is_null() {
                 return std::ptr::null_mut();
@@ -1109,8 +1105,8 @@ pub(crate) unsafe fn publish_key(
 /// holding a reference to each string it keys on.
 ///
 /// An adapter over the one tracing stride rather than a walk of its own:
-/// the array's cells are `walk::trace_cells`' since the coherent read
-/// exists. Kept as a name because the release side
+/// reading the array's cells needs the coherent read of the head, which
+/// `walk::trace_cells` performs. Kept as a name because the release side
 /// reads better for it, and because a caller here has an `LLArray` rather
 /// than a bare header and a kind.
 ///
@@ -1149,15 +1145,18 @@ pub unsafe fn release_children(a: *mut LLArray) {
     };
 }
 
-/// Sever this array's counted children — elements and string keys alike
-/// — collecting them into `displaced` without releasing them. The array's
-/// arm of the drain's Phase 4, and the counterpart of
+/// Sever this array's counted children — every element, and under the
+/// ordered hash every string key beside them — collecting them into
+/// `displaced` without releasing them. The array's arm of the drain's
+/// Phase 4, and the counterpart of
 /// [`crate::object::sever_counted_slots`]: same contract, same reason
 /// for not dropping inline, and the caller owes one drop per entry.
 ///
-/// One line, because every entry the walk yields is the table's and so is
-/// the state that has to replace it: see
-/// [`crate::array::table::Table::sever_entries`].
+/// One call per representation, because the state that replaces a
+/// severed entry is the representation's: a hole in the ordered hash
+/// ([`crate::array::table::Table::sever_entries`]), a null element and
+/// an empty count in the mixed vector
+/// ([`crate::array::vector::Vector::sever_entries`]).
 ///
 /// # Safety
 /// `a` must be a live array entity whose storage is readable and

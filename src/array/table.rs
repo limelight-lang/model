@@ -204,11 +204,8 @@ const TABLE_RESEEDED: u8 = 1 << 1;
 const TABLE_FLOOD_STATE: u8 = TABLE_STRONG | TABLE_RESEEDED;
 
 /// `i64::MAX` has been an integer key, so there is no next append key:
-/// [`Table::append_key`] refuses rather than wrapping. Bit 4, and bits
-/// 2–3 beside it are free again: they were held for the storage-strategy
-/// tag, which the walker reads atomically and so cannot share a byte the
-/// flood ladder writes plainly.
-const TABLE_APPEND_EXHAUSTED: u8 = 1 << 4;
+/// [`Table::append_key`] refuses rather than wrapping.
+const TABLE_APPEND_EXHAUSTED: u8 = 1 << 2;
 
 /// [`Table::next_free`]'s "no integer key yet": the first append is 0.
 /// Unreachable as a real cursor — the lowest one a key can set is
@@ -535,8 +532,8 @@ impl Table {
     /// operation to publish through: it takes the reference for the entry
     /// and answers with the value the entry must name, which is a
     /// different one when the barrier copied an arena value out
-    /// (`array::element::store_into` and `array::entity::fill_from` are
-    /// the worked examples, one per key kind).
+    /// (`array::element::store_into` and `array::entity::fill_table_from`
+    /// are the worked examples).
     ///
     /// Insert or overwrite. Returns `None` when the storage could not
     /// grow — an allocation refusal reports rather than aborting, and the
@@ -1089,20 +1086,16 @@ impl Table {
         }
     }
 
-    /// Visit every live element's `Value`, in insertion order.
+    /// Visit every live element's `Value`, in insertion order. A test
+    /// window: production reaches the entries through the walk's coherent
+    /// read, which is the enumeration the completeness rule is written
+    /// against (`rfc/model/arrays-hashtable.md`, "Complete enumeration").
     ///
-    /// **This enumeration has to be complete rather than conservative.**
-    /// The arena reset's escaped-subgraph trace marks visited *entities*
-    /// in flag bits, and table storage is not an entity and has no
-    /// header, so the tracer enumerates elements from the storage itself;
-    /// an array survivor has its elements' references erased rather than
-    /// ignored (`dev/DECISIONS.md`, "the COW reconciliation carries a
-    /// delta, because promotion is not the end of the reset", and
-    /// `traceable_in_full`).
-    /// Scanning the dense prefix `0..used` and skipping holes satisfies
-    /// that by construction — and the hole marker lives in `key`, outside
-    /// the sixteen bytes the store barrier writes, precisely so that an
-    /// ordinary value store cannot destroy it.
+    /// The dense prefix `0..used` with holes skipped is that enumeration
+    /// here, and the hole marker lives in `key`, outside the sixteen
+    /// bytes the store barrier writes, so an ordinary value store cannot
+    /// destroy it.
+    #[cfg(test)]
     pub fn for_each_value(&self, head: &StorageHead, mut f: impl FnMut(Value)) {
         for k in 0..head.used() {
             let e = self.entry(head, k);
@@ -1121,6 +1114,7 @@ impl Table {
     /// an end of chain, so the corruption would be a self-referencing
     /// entry (`array/entry.rs`). Returning the new Box instead routes
     /// every write through the one store that keeps the link.
+    #[cfg(test)]
     pub fn for_each_value_mut(&mut self, head: &StorageHead, mut f: impl FnMut(Value) -> Value) {
         for k in 0..head.used() {
             if self.entry(head, k).is_hole() {
@@ -1133,7 +1127,9 @@ impl Table {
     }
 
     /// Every string key that is a live entity, in insertion order. Keys
-    /// are counted children too: a table holds a reference to each.
+    /// are counted children too: a table holds a reference to each. A
+    /// test window, like [`Table::for_each_value`].
+    #[cfg(test)]
     pub fn for_each_string_key(&self, head: &StorageHead, mut f: impl FnMut(*mut LLString)) {
         for k in 0..head.used() {
             let e = self.entry(head, k);
@@ -1184,7 +1180,8 @@ impl Table {
 
     /// Iterate live entries in insertion order. This reads no index at
     /// all, which is why the choice of index layer does not affect
-    /// `foreach`.
+    /// `foreach`. A test window, like [`Table::for_each_value`].
+    #[cfg(test)]
     pub fn iter<'a>(&'a self, head: &'a StorageHead) -> impl Iterator<Item = &'a Entry> {
         (0..head.used())
             .map(move |i| self.entry(head, i))

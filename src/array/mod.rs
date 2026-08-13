@@ -1,10 +1,15 @@
-//! The `array` entity's ordered hash: storage strategy 3 of
-//! `rfc/model/arrays.md`, designed in `rfc/model/arrays-hashtable.md`.
+//! The `array` entity and the two storage representations it holds: the
+//! mixed vector, strategy 2 of `rfc/model/arrays.md`, and the ordered
+//! hash, strategy 3, designed in `rfc/model/arrays-hashtable.md`.
 //!
-//! One allocation holds `u32` index slots followed by a dense array of
-//! entries in insertion order. The index slots are the hashtable; the
-//! entry array is the order, so iteration is a stride over it and reads
-//! no index at all.
+//! A fresh array is the vector — the key is the position, and no key is
+//! stored anywhere. The first key a dense range cannot hold migrates it
+//! to the hash: one allocation of `u32` index slots followed by a dense
+//! array of entries in insertion order, where the index slots are the
+//! hashtable and the entry array is the order, so iteration is a stride
+//! over it and reads no index at all. Which of the two an array has is
+//! the tag in its [`head::StorageHead`], the one word the mutator and a
+//! concurrent walker both read.
 
 pub mod element;
 pub mod entity;
@@ -15,10 +20,6 @@ pub mod entry;
 // customers cannot be named by their callers.
 pub mod head;
 pub mod table;
-// Strategy 2 is built one step ahead of its producer: `ll_array_new`
-// stamps the ordered hash until the element layer reads the tag, so until
-// then the vector's own operations are reached by its tests alone.
-#[allow(dead_code, reason = "the producer lands with the factory's stamp")]
 pub mod vector;
 
 // One call per operation for the tests, which cannot destructure the

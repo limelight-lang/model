@@ -285,7 +285,9 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                     for i in 0..used {
                         // No key beside the element: a vector's key is the
                         // position, so every cell here is a Box.
-                        let value_at = unsafe { elements.add(i * 16) as *const u8 };
+                        let value_at = unsafe {
+                            elements.add(i * crate::array::vector::ELEMENT_STRIDE) as *const u8
+                        };
                         if let Some(cell) = unsafe { counted_box_cell::<R>(value_at) } {
                             visit(cell);
                         }

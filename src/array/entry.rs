@@ -37,8 +37,7 @@ pub(crate) const KEY_HOLE: usize = 1;
 
 /// Where the link sits inside the element's second word: the top four
 /// bytes, which is the Box's reserved offset +12 and the entry's +28. The
-/// four below it are the tag, the flags and two bytes still spare — the
-/// room the old `meta` field held, now inside the same atomic word.
+/// four below it are the tag, the flags and two bytes still spare.
 const LINK_SHIFT: u32 = 32;
 /// What a stored second word keeps of the Box: the tag and the flags. The
 /// two spare bytes above them read back as zero, so a Box handed out of an

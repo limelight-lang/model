@@ -24,6 +24,13 @@ use crate::array::head::{CoherentView, StorageHead, StorageTag};
 use crate::refcount::{MemoryCategory, RcHeader};
 use crate::value::Value;
 
+/// One element to the next. The walkers stride the storage by raw
+/// offsets rather than through a `&Value`, because they may be racing a
+/// mutator and must read each word atomically; this is the one place that
+/// says how far apart those words are, as
+/// [`crate::array::entry::ELEMENT_OFFSET`] is for the ordered hash.
+pub const ELEMENT_STRIDE: usize = size_of::<Value>();
+
 /// Elements the first allocation holds. Same as the ordered hash's first
 /// entry capacity, so an array that migrates early does not change the
 /// number of growths it took to get there.
@@ -190,7 +197,7 @@ impl Vector {
     #[inline]
     fn element_ptr(&self, head: &StorageHead, i: usize) -> *mut u8 {
         debug_assert!(i < self.cap);
-        unsafe { head.storage().add(i * size_of::<Value>()) }
+        unsafe { head.storage().add(i * ELEMENT_STRIDE) }
     }
 
     /// The elements and how many there are, taken from a reading
@@ -214,26 +221,6 @@ impl Vector {
         }
 
         (view.storage, view.used)
-    }
-
-    /// Every element in order, for a caller that owns the vector.
-    pub(crate) fn for_each_value(&self, head: &StorageHead, mut f: impl FnMut(Value)) {
-        for i in 0..head.used() {
-            f(unsafe { load_element(self.element_ptr(head, i)) });
-        }
-    }
-
-    /// Replace every element with what `f` answers, in order.
-    pub(crate) fn for_each_value_mut(
-        &mut self,
-        head: &StorageHead,
-        mut f: impl FnMut(Value) -> Value,
-    ) {
-        for i in 0..head.used() {
-            let at = self.element_ptr(head, i);
-            let next = f(unsafe { load_element(at) });
-            unsafe { store_element(at, next) };
-        }
     }
 
     /// Hand every counted child out and leave the vector empty, without

@@ -4,9 +4,9 @@
 //!
 //! Every test here works through an array rather than a bare `Vector`,
 //! and not for the reason the tests in `the_entity_over_a_vector` do:
-//! since the head became the entity's (`array::head`), a `Vector` on
-//! its own has no version, no chunk and no count, so there is nothing
-//! about it to measure without the array in front of it.
+//! the head is the entity's (`array::head`), so a `Vector` on its own
+//! has no version, no chunk and no count, and there is nothing about it
+//! to measure without the array in front of it.
 
 use super::*;
 

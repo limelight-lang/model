@@ -7,11 +7,12 @@ use crate::value::Tag;
 
 /// An array whose storage is a vector, at count one, empty.
 ///
-/// Through `new_with_storage` rather than `ll_array_new`, which stamps
-/// the ordered hash until the element layer reads the tag. That is what
-/// makes these tests the vector's only producer for
-/// one step, and it is why they build the entity rather than the bare
-/// representation: what the criterion asks about is an array.
+/// Through `new_vector_array` rather than `ll_array_new`: the two stamp
+/// the same representation today, and the named door is what keeps these
+/// tests about the vector rather than about what a fresh array happens
+/// to be. They build the entity rather than the bare representation
+/// because the head is the entity's, so a `Vector` alone has no chunk
+/// and no count to measure.
 fn vector_array(category: MemoryCategory) -> *mut LLArray {
     let a = unsafe { new_vector_array(category) };
     assert!(!a.is_null(), "allocation refused in a test");

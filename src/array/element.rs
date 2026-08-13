@@ -492,8 +492,8 @@ pub unsafe fn get(slot: *const Value, key: Key) -> Option<Value> {
 /// The table half of [`set`]: publish the value and the key for `a`,
 /// insert, and settle the key's ownership on every outcome. False on
 /// refusal with everything given back and `a` unchanged. Both
-/// publications are `barrier::publish_child`, which `fill_from` uses for
-/// the same pair.
+/// publications are `barrier::publish_child`, which `fill_table_from`
+/// uses for the same pair.
 ///
 /// **An element already in a reference state is written through its box
 /// instead** ([`store_through_box`]), which is what makes `$r = &$a['x']`
@@ -617,10 +617,10 @@ unsafe fn store_into_vector(
 /// own slot, through `barrier::ref_store`.
 ///
 /// **`ref_store` rather than a plain store**, and the box being reached
-/// through an entry changes nothing about that: `6afd220` moved the
-/// reference sever onto the barrier because the collector's relaxed
-/// loads race a plain write into a published slot, and this box *is*
-/// published — the entry names it. [`box_element`]'s own
+/// through an entry changes nothing about that. The reference sever
+/// writes through the barrier for the same reason: the collector's
+/// relaxed loads race a plain write into a published slot, and this box
+/// *is* published — the entry names it. [`box_element`]'s own
 /// `write_value_slot` into a fresh box is legal only because that box is
 /// not published when it runs, which makes it the pattern an implementer
 /// would copy and the wrong one.

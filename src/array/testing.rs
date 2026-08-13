@@ -1,8 +1,8 @@
 //! Shorthands for reaching an array's storage from a test, one call per
 //! operation.
 //!
-//! **Why these exist.** Since the storage head became the entity's
-//! (`crate::array::head`), every operation over a walker-visible word
+//! **Why these exist.** The storage head is the entity's
+//! (`crate::array::head`), so every operation over a walker-visible word
 //! takes it as a parameter, and production code derives the pair and
 //! destructures it — `let (table, head) = as_table_mut(a)` — so that a
 //! head belonging to another array cannot be passed by accident. An

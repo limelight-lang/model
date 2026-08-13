@@ -198,7 +198,6 @@ impl StorageHead {
     /// is the only caller (`array::entity::migrate_to_hash`), and it
     /// writes 3, which is final.
     #[inline]
-    #[allow(dead_code, reason = "the migration's caller lands with the dispatch")]
     pub(crate) fn set_tag(&self, tag: StorageTag) {
         debug_assert!(
             self.version.load(Ordering::Relaxed) % 2 != 0,
@@ -287,7 +286,7 @@ impl StorageHead {
                 continue;
             }
 
-            // All five, unconditionally and before any branch on the
+            // All four, unconditionally and before any branch on the
             // tag. A walker that read the tag first and then chose what
             // to read would have loaded at one representation's offsets
             // on the strength of the other's tag.
