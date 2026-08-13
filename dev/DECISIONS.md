@@ -8,6 +8,49 @@ never edited or deleted.
 
 ---
 
+## 2026-08-13 — the flood ladder gets kind-dispatched triggers, a third rung, and a key it does not have
+
+**Decided, by the Sage, after two Critic rounds on the map design:** the
+array table's ladder is wrong in its triggers, not only in the bodies the
+map work first narrowed, and the repair is the table's rather than the
+map's. Written in full in `rfc/model/maps.md`, "What the flood ladder
+becomes"; recorded here because it obliges `array/table.rs` before any
+map exists.
+
+**The two triggers measure two failures.** The chain trigger sees
+separable identities sharing a bucket, which a salt answers for any kind.
+The equal-identity trigger sees identity numbers that agree while the
+keys differ, which only a kind whose identity is a lossy hash can
+produce. `insert` counts an entry when `!e.is_int_key()`, which under
+four key kinds admits an array entry, so eight arrays with equal content
+hashes fire the *string* escalation. Both rungs then return early
+forever, and the chain grows without bound with nothing left to rebuild.
+
+**The ladder becomes three rungs.** Rung one, the salt, covers every
+kind. Rung two, the keyed byte hash, is the string's alone in trigger as
+well as body, the string being the one kind with both a colliding
+identity and a re-derivation that allocates nothing. Rung three is
+refusal: the insert declined with the table unchanged, raised as a
+catchable error and distinguishable from an allocation refusal. It fires
+where a trigger trips and no rebuild remains, and it is the structural
+backstop `rfc/model/strings.md` has promised since before the map design.
+
+**It stands on a key the crate does not have** — 32 bytes from the OS
+once per process in every build, outside `STAMP` and exempt from
+`hash-folding`. `strong_hash`'s doc names the slot and stands in for it,
+and `draw_salt` hashes a recyclable storage address under a seed that
+folding turns into a build constant, so today's per-table salt is a
+public function of one address. Until the key exists, every rebuild the
+ladder performs is aimable in a folding build and only rung three is
+real.
+
+**The obligations, in `array/table.rs`:** the trigger becomes a
+tag-equality test; both `slot_hash` and `entry_slot_hash` dispatch on the
+tag with the byte branch asserted unreachable from any other; `draw_salt`
+draws under the per-process key; `strong_hash` becomes the keyed function
+its doc promises; and the early returns in `reseed` and `escalate` are
+replaced by rung three.
+
 ## 2026-08-13 — a map is a runtime class over the generic table, not a new entity kind
 
 **Decided:** `Map` is an ordinary object — entity kind `Object` — of a

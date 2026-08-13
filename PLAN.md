@@ -8,16 +8,16 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-13 · Active: S8, then S18
+Updated: 2026-08-13 · Active: S18
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S7, and S9
-through S17. A number is never reissued, so the stages below sit in work
-order rather than in numerical order, and the prose sections after them
-are the backlog the stages were drawn from.
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S17, so
+S18 is the only stage left. A number is never reissued, so a stage added
+later sits where it is to be done rather than where its number falls, and
+the prose sections after the stages are the backlog they are drawn from.
 
 **`array::` still owes a Miri run in slices.** The module costs about an
 hour at two threads, so it goes as `array::entry`, `array::table`,
@@ -25,46 +25,6 @@ hour at two threads, so it goes as `array::entry`, `array::table`,
 `timeout`. `array::element`, `array::entity` and `array::vector` have had
 theirs; `array::entry` and `array::table` have not. Invocation and thread
 cap: `dev/WORKFLOW.md`, Miri.
-
-## S8 — The Map design, written before it is built
-
-Goal: `Map` and `MapMixed` designed in `rfc`, with every question Edmond
-reserved answered before a line of code.
-
-Done when: the design document exists and its open section is empty or
-explicitly deferred.
-
-- [x] S8.1 The reserved questions put to Edmond, one at a time
-      done: every question in the `Map` section below is answered and
-        recorded in `dev/DECISIONS.md`
-      tier: T2 · role: —
-      Sage 2026-08-13: an array key's content hash lives in the map's
-        entry, in `hash_or_key`, computed once on insert through a work
-        list; nothing invalidates it, because the entry's own reference
-        puts the key's count at two and every write separates first. The
-        lazy cache in the array entity died on the header-bit ledger,
-        there being no free bit in either configuration. Final.
-      handoff: five answers in `dev/DECISIONS.md`, 2026-08-13, five
-        entries. Two of them reshape the stage: a map is a class of the
-        `Object` kind rather than a new entity kind, which makes it the
-        second customer of S18's `walk` hook and puts S18 under S8.2
-        rather than after it; and `Map` takes object keys only while
-        `MapMixed` takes all four, so `Map` has no key kind to dispatch
-        on at all. The plan's own `Map` section below is older than these
-        answers where the two disagree.
-- [ ] S8.2 The design document in `rfc/model`
-      done: it covers the two classes and what each admits as a key, the
-        object key as a counted child through S18's `walk` hook in trace
-        and sever, `MapMixed`'s content hash on a work list rather than
-        the machine stack, and what the COW attribute obliges a class to
-        carry
-      tier: T2 · role: Critic
-      2026-08-13: the five answers of S8.1 are the document's input, and
-        they leave it dependent on S18: a map's entries lie outside the
-        entity, so the walker reaches them only through the class
-        descriptor's hook. The document may be written before S18 is
-        built, naming the hook as its dependency, but it cannot be
-        written around it.
 
 ## Then: arrays as a performance problem
 
@@ -85,91 +45,7 @@ to pick it up: it waits for a machine that can resolve it, and measuring
 here would produce a number indistinguishable from noise and harder to
 retract than to publish.
 
-## Then: `Map`, whose keys may be objects
-
-**Edmond ruled the order on 2026-08-07 — the array is finished first —
-and it is.** A map is strategy 3 with a wider key, so it becomes the
-entry's second customer, and the three entry questions the map would
-otherwise have decided by accident are settled: the entry is 32 bytes
-with the inline hash kept, the reserved room beside the collision link
-went into the element's atomic second word, and the strategy tag lives in
-the head rather than in the table. What is left below is the map's own.
-
-Edmond's, 2026-08-07. A `Map` is the ordered hash again — strategy 3's
-structure unchanged, one chunk of `u32` index slots over a dense array of
-entries in insertion order — with the key widened from "integer or
-string" to "integer, string or object". The design is not written; what
-follows is the list of questions it has to answer, each verified against
-the code as it stands rather than guessed.
-
-**An object key is compared by identity, and the identity already
-exists.** `spl_object_id` is the JVM trick: derived from the address
-while the object stays put, lazily stored in the object and carried with
-it when the arena reset evacuates one (`rfc/model/memory/arena-reset.md`).
-So the hash of an object key is that id, and equality is pointer
-equality — no user code on the lookup path, which is what makes this a
-different type from a `Map` keyed by `__equals`.
-
-**The entry cannot tell an object key from a string key today, and that
-is the first thing to build.** `Entry::key` distinguishes its three
-states by value: `KEY_INT = 0`, `KEY_HOLE = 1`, anything above is a
-string pointer — and that last test is what a *walker* makes on the raw
-word (`array/entry.rs`). An object pointer passes it, so a Map would
-hand the tracer an `LLString` that is an `Object`. The kind has to sit
-somewhere the walker reads, and the `meta` field this entry used to
-name for it no longer exists: the collision link took the element's
-second word and the two spare bytes above the tag and the flags are what
-is left there. Where the kind goes is therefore part of S8.2's design
-rather than a settled answer, and the atomic-width rule decides it —
-every byte the collector reads is written by one store of the width it
-loads.
-
-**An object key is a counted child**, exactly as a string key is: the
-table owes it a reference, `for_each_counted_child` has to yield it, and
-`trace_cells` has to see it, or a ring closing through a key leaks with
-no pass finding it. The sever path owes the same — a cleared entry drops
-its key.
-
-**`MapMixed` takes any key at all** — integer, string, object, array —
-and the array key is the one that changes the shape rather than widening
-it. An object is compared by identity; an array is a *value*, so it is
-compared by content, and a content comparison needs a content hash. Three
-things follow.
-
-The hash of an array key is O(size) and recursive over nested arrays,
-which is the deep copy's problem again in a new place: depth is the
-program's to choose, so the walk that hashes needs the same explicit list
-`array::entity::separate` now uses, not the machine stack. Nothing exists
-to cache it: an array carries no hash field, the way a string carries one
-at +16, and adding one costs eight bytes on every array or a bit saying
-"not computed" in a byte that has room.
-
-**A key that is an array cannot change under the map, and the reason is
-already in the crate.** The map holds a reference, so the key's count is
-at least two, so any write by any holder separates first
-(`refcount::cow_separation_needed`) and leaves the map's key untouched.
-Value keys are therefore sound without freezing anything — but the
-argument rests on count-equals-holders, the same invariant the deep
-copy's termination rests on, and it should be written down where a
-reader of the map finds it.
-
-Equality between two array keys is structural and has to stop early: the
-content hashes differ for almost every pair, so the byte-by-byte walk
-runs only after 64 bits already agree, exactly as a string key's does
-today.
-
-**What is Edmond's to decide**, and none of it is implied by the above:
-whether `Map` and `MapMixed` are one type with a key-kind set or two;
-whether they are a second entity kind or the array kind with another
-storage strategy — kind codes are nearly spent, `7` is reserved and
-`4`–`6` are one family the RFC wants to consolidate; whether an object
-key's id defends against flooding by itself, ASLR being its only
-entropy, or whether it goes through the same salted mix an integer key
-does; whether an array key's content hash is cached and where; and
-whether a map is COW like `array` or a reference type, which decides
-whether copying a map copies its keys.
-
-### Beside the hashtable: the memory categories
+## Beside the hashtable: the memory categories
 
 Opened 2026-08-06, out of the same review chain, and independent of the
 questions above. The routing item of that round is closed
@@ -284,6 +160,31 @@ own checkbox.
   outside this crate.
 
 ## Residual / carried-over items
+
+Owed to the array table by the map design, and owed before either map
+class exists (`dev/DECISIONS.md`, 2026-08-13, "the flood ladder gets
+kind-dispatched triggers"; `rfc/model/maps.md`, "What the flood ladder
+becomes"):
+
+- [ ] **The per-process key**, new work in `src/hash`: 32 bytes from the
+  OS once per process in every build, outside `STAMP` and exempt from
+  `hash-folding`, because nothing compiled may depend on it.
+  `strong_hash`'s doc names the slot and stands in for it. Everything
+  below waits on it, and so does `MapMixed`, whose key identity cannot be
+  defined without it.
+- [ ] **The ladder's repair in `array/table.rs`**: the equal-identity
+  trigger becomes a tag-equality test rather than "not an integer key";
+  `slot_hash` and `entry_slot_hash` dispatch on the tag with the
+  byte-hashing branch asserted unreachable from any other; `draw_salt`
+  draws under the per-process key instead of hashing a recyclable address
+  under a foldable seed; `strong_hash` becomes the keyed function its own
+  doc promises; and rung three, a refusal distinguishable from an
+  allocation refusal, replaces the early returns that today make a spent
+  ladder a dead one.
+- [ ] **The key word's tag**, also `array/table.rs` and `array/entry.rs`,
+  because the trigger above presupposes it: one encoding of the key field
+  for every owner, the readers listed in `rfc/model/maps.md` under "The
+  key word gains a tag, for every owner".
 
 Memory manager, still open:
 
