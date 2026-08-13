@@ -8,6 +8,108 @@ never edited or deleted.
 
 ---
 
+## 2026-08-13 — an arm with no producer is not built, and strategy 1 is the standing case
+
+**Decided:** a representation, a kind arm or a numbered vocabulary entry is
+built when something produces it, and not before. Storage strategy 1, the
+typed vector of `rfc/model/arrays.md`, is the standing case: nothing stamps
+`StorageTag::Typed`, so every site that could meet it answers `unreachable!`
+(`array/element.rs`, `array/entity.rs`) and the walker refuses it by name
+(`walk.rs`). The 1 → 2 transition stays out of the array work for that
+reason, and whoever opens it confirms the state against `arrays.md` first,
+because the document describes a transition the crate has no source for.
+
+**Why:** an arm nothing produces is covered by no test that runs, so it
+rots at the speed of the code around it and is discovered by the first
+caller rather than by the suite. The two earlier applications of the same
+rule are recorded in their own entries — the candidate gate's kind set
+(2026-08-07) and the journal's event kinds, where numbering the whole
+vocabulary ahead of the sites was refused (2026-08-08).
+
+**The boundary is a stage, not a commit.** S7 shipped one step in which
+`Vector` had no producer, deliberately, and paid it inside the same stage;
+the entry below on the factory's stamp says why the order could not be
+reversed.
+
+## 2026-08-13 — a factory's default flips after the layer above it dispatches, not before
+
+**Decided:** when a new representation joins an existing one, the layer
+above it learns to dispatch on the tag first, and the factory's default
+moves second. `ll_array_new` kept stamping the ordered hash while
+`array/element.rs` gained `element_at`, `append_cursor`,
+`representation_for` and `store_into_vector`, and only then stamped the
+mixed vector.
+
+**Why the other order cannot be run:** a fresh array in the new
+representation meets every existing test through a layer that does not yet
+know the tag, so the suite fails wholesale on a shape that is correct — and
+the failures say nothing about the step being made. The cost of the chosen
+order is one step in which the new representation has no producer, which
+contradicts the entry above only in appearance: it is paid and closed inside
+one stage rather than shipped.
+
+**What the flip itself cost:** 137 fixtures, split by the rule in the
+2026-08-12 entry on `hash_array`. Count the factory's test call sites before
+planning a default flip; the production doors are the small half.
+
+## 2026-08-13 — flipping the factory's stamp is how a representation-blind door is found
+
+**Decided:** before a new representation gets its producer, the stamp is
+flipped early on purpose, the suite is run, and the failures are read as the
+inventory of doors that name one representation. The flip is then reverted
+until the step that owns it.
+
+**What it found in S7.2:** `separate` and `fill_from` reached for the table
+through `as_table` and `as_table_mut`, so a vector array meeting either door
+asserted in a debug build and read `Table` fields out of `Vector` bytes in a
+release one. Seventeen `array::element` tests failed and
+`nesting_worked_through_a_list::a_deep_arena_array_is_copied_out_through_the_work_list`
+took the run down with a SIGSEGV, the panic crossing the work list's frame.
+
+**Why it is worth keeping as an instrument:** no static check reports a door
+that names one representation, and the suite stays green until the stamp
+moves, so the defect class is invisible by construction. The next
+representations — `Map`, the typed vector, strategy 1 — meet the same doors.
+The procedure is in `dev/WORKFLOW.md` under Tests.
+
+## 2026-08-13 — the entity-kind renumbering stays rejected, and what would reopen it
+
+**Decided:** the entity kinds keep their codes. A renumbering buys a
+contiguous range that a mask could test, and the candidate gate no longer
+wants one — its policy is a set built from `EntityKind`, so a later
+consolidation moves the constant's value at compile time and leaves its
+meaning alone (2026-08-07). Consolidating the Proxy family reclaims codes
+and not a bit, since seven kinds and five kinds both need three.
+
+**What would reopen it:** the next kind that needs admitting. `7` is
+reserved and `4`–`6` are the family the RFC wants consolidated, so the
+question returns when `resource` needs a code, and the Proxy family is
+priced then rather than now. Until then a renumbering is a change to every
+hardcoded kind code in every consumer, bought for nothing that is wanted.
+
+This entry exists because `dev/DECISIONS.md` cited `PLAN.md` for these
+grounds, and the plan section holding them was deleted when its stage
+closed.
+
+## 2026-08-13 — the deep copy's root exemption rests on a premise the lowering was never asked about
+
+**Decided:** the exemption stands, and the premise is recorded as open
+rather than settled. `array::entity::separate` records every source past the
+root in `CopiesMade` and leaves the root unrecorded, the argument being that
+meeting the root again means a descendant names it, that this is a cycle,
+and that a cycle cannot close inside a pure-COW subgraph — every entity a
+real ring passes through is non-COW and is published by the barrier instead.
+
+**What is not checked:** whether an array whose own entry names the array
+itself can be built at all. That depends on the lowering's retain order,
+which lives outside this repository. If such an edge can form, the root
+re-enters, the debug probe's assertion fires on input a program wrote, and
+a release build finishes with one redundant copy of the root.
+
+**Why it is not closed here:** the answer is another repository's, and the
+cost of being wrong is an assertion in a debug build rather than unsoundness
+in a release one. Whoever asks the lowering closes this entry with a new one.
+
 ## 2026-08-12 — a test asks for the ordered hash, or takes what the factory stamps
 
 **Decided:** with `ll_array_new` stamping the mixed vector, a test whose

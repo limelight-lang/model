@@ -7,6 +7,88 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-13 — an entity nobody named yet is still an entity, and at count 1 nothing reclaims it
+
+**What happened.** Every refusal path out of `array::entity::separate`
+released the copy's children and disposed its storage, and left the
+destination entity itself allocated. It stays a GC-heap entity at
+refcount 1 that no edge names, which by the derived-roots corollary is a
+computed root: no later pass reclaims it, in either configuration. One
+refused escape copy leaked one entity slot for the life of the process.
+
+**Why it was possible.** The refusal path was written from the storage
+outward — release what was retained, free what was allocated — and the
+destination is neither. It was allocated before the loop that the refusal
+unwinds, so it is invisible from inside that loop, and the `rfc`
+sentence describing the unwind stopped at the storage too, so the
+document confirmed the omission instead of catching it (`rfc`, amended
+2026-08-12).
+
+**Why nothing caught it.** Miri runs here with `-Zmiri-ignore-leaks`,
+which is mandatory in this crate, so this class has no automatic
+detector at all. A leaked entity also has no local symptom: the test that
+leaks passes, and the cost surfaces as an unrelated count in an unrelated
+test, or nowhere.
+
+**What changed.** `object::destroy_unpublished` is the one door for an
+entity no slot ever named, and its doc block names its callers. A refusal
+test measures the giveback three ways — a lower bound, an upper bound and
+a positive control — because a slot count cannot say a slot was *taken*.
+
+## 2026-08-13 — the walk was written out per caller, and paid for it twice before it was centralized
+
+**What happened.** Where a kind keeps its counted children was written
+out again in every operation that needed it, so one layout was known in
+five places. Two bills arrived before the strides were merged into
+`object::for_each_counted_cell` and `walk::trace_cells`. The interpolated
+template moved its value count from the class to the instance, and three
+separate walkers had to learn it; the third was found by review rather
+than by the suite, and a walk that strides an object's slots without
+knowing it leaks instead of crashing. The array was wired into the child
+walkers and not into the sever, so a confirmed-garbage ring of two arrays
+was un-freeable in both configurations until `144b318`.
+
+**Why it was possible.** Each copy was correct when written, and a new
+kind or a moved field is a change to the layout rather than to any of the
+callers, so nothing in the type system connects them. The sever is the
+copy that gets forgotten, because it runs only on the collector's path
+and only for garbage, so its absence produces a leak and not a failure.
+
+**Why nothing caught it.** An empty default arm reads as a deliberate
+skip. The suite tested each walker against what it already knew, and the
+one differential test that would have compared them did not exist until
+the strides were merged.
+
+**What changed.** One stride, two zero-sized readers over it, and a
+differential test asserting that on a quiescent heap both readers yield
+the same child set for every walked kind.
+
+## 2026-08-13 — two arenas split by size, and the table asked the one that does not
+
+**What happened.** A request-arena table asked `Arena::alloc` for a
+storage whose size comes from the program. That call asserts above a
+block payload, so the 1025th element of a request array killed the
+process by abort in a release build, the profile not unwinding. Found by
+an independent review, not by a test.
+
+**Why it was possible.** Both arenas split by size, and neither split
+belongs to the table: the buffer arena's is
+`buffer_arena::buffer_alloc_longlived_payload`, and the request arena had
+no counterpart, so the table's call site was the only place the split
+could have been written and the only place nobody would think to write
+it. The two entry points that do exist, `Arena::alloc` and
+`Arena::alloc_large`, each assert against the half of the range the other
+serves, which reads as thoroughness and behaves as a trap for a caller
+holding a program-sized number.
+
+**Why nothing caught it.** No test allocated an array storage over one
+block payload. The threshold is 1024 elements at eight bytes, which is
+larger than every fixture and smaller than any real array.
+
+**What changed.** `Arena::alloc_body` makes the split once, its doc block
+states the failure mode, and `buffer::buffer_ensure` and the routing layer
+go through it.
+
 ## 2026-08-11 — a doc written from a test's name inherits the test's false promise
 
 **What happened.** S9.4 grouped every test in the crate into named

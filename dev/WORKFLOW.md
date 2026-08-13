@@ -256,6 +256,16 @@ passes it by construction. There the Miri run *is* the regression test,
 and the same discipline applies: see it report the violation before the
 fix, and see it silent after.
 
+**A door that names one representation is found by flipping the
+factory's default.** Where two representations sit under one tag — the
+array's vector and ordered hash today, `Map` and the typed vector later —
+the suite stays green while a door reaches for one of them by name,
+because the factory hands out the other. Flip the stamp, run the suite,
+read the failures as the inventory of such doors, and revert the flip
+until the step that owns it. What this found in S7.2, and why no static
+check reports it, is `dev/DECISIONS.md`, "flipping the factory's stamp is
+how a representation-blind door is found".
+
 **A flake that appears only under load is reproduced by making the
 load.** Build the test binary with `--no-run`, pin it to two cores with
 `taskset -c 0,1` at `--test-threads 4`, and run two spinners on the same
