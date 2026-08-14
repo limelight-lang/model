@@ -92,18 +92,22 @@ silent over `promote::` in both, and the gate is green.
         epoch arm. Its own tests cover the nesting and the three answers
         of the absorb question; what it parks is observable only through
         S23.4.
-- [~] S23.2 The escrow, taken at the two doors of death
+- [x] S23.2 The escrow, taken at the promotion pass
       done: `ll_object_die` snapshots the corpse's GcHeap COW children
         before `dispose` and commits them only on the completed-teardown
         arm, so a resurrection earns none; `array_die` does the same per
         dying entry; nothing else escrows
       tier: T2 · role: —
-      Written and withdrawn 2026-08-14: the snapshot at the door of
-        death cannot tell an edge held since promotion from one taken
-        after it, and the escrow does not reach an outer window. Both are
-        in the Critic's line on S23.3. Reopened, and it waits on the
-        Sage's revised arithmetic together with S23.3.
-- [~] S23.3 The corpse skip, and the escrow applied
+      Written at the door of death, withdrawn, and rewritten at the
+        promotion pass on the Sage's revised ruling: the instant decides
+        which column absorbed the retain, and only promotion answers both
+        counterexamples. The snapshot rides `count_children`'s existing
+        walk; a completed teardown pays it into the escrow of the reset
+        that took it, found along the window chain.
+      handoff: `reset_window::snapshot_edge` / `record_death` /
+        `corrections`; the four doors are `ll_object_die`'s dispose-true
+        arm, `array_die` per dying entry, `string_die`, `weakref_die`.
+- [x] S23.3 The corpse skip, and the escrow applied
       done: `retrace_survivors` and both loops of `reconcile_cow_counts`
         skip an entity whose header reads refcount 0 **and** category
         GcHeap — the category half because `mark_one` zeroes a live
@@ -123,12 +127,16 @@ silent over `promote::` in both, and the gate is green.
         accepted from the same round: a panic left the window open
         forever, now a stack guard; and `is_a_corpse` called a survivor
         promoted at refcount 0 a corpse, which the redesign must answer.
-      handoff: what stands is S23.1's window alone, and it is enough for
-        the memory-safety half — Miri is silent over `promote::` with the
-        skip gone, because a parked run stays mapped. The count comes out
-        right today by the cancellation `dev/AUDIT` describes, which is
-        what this step must replace.
-- [~] S23.4 The six tests
+      Sage 2026-08-14 round 2: the corrected expression is
+        `edges_live + (now - at) + D - K`, D the promotion-time snapshot
+        of a dead holder's COW edges and K the compensating retains
+        `count_children` hands an already-promoted COW child in a later
+        round. Death becomes membership, because refcount 0 with a heap
+        category also describes a survivor promoted at zero. Final.
+      handoff: `promote::count_children` records both terms;
+        `reconcile_cow_counts` and `retrace_survivors` skip by
+        `reset_window::has_died`. Commit `f4490a1`.
+- [~] S23.4 The tests
       done: the two Miri regressions (the large corpse under the
         reconcile, and the retrace after a drain death), the arithmetic
         pair that fails at 0 without the escrow and at 2 without the
