@@ -38,6 +38,9 @@
 //! destructor order is unspecified.
 
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
+
+use crate::refcount::RcHeader;
 
 /// One reset in flight on this thread.
 struct ResetWindow {
@@ -47,6 +50,22 @@ struct ResetWindow {
     /// (arena, immortal) or leaves the freed bytes mapped where a
     /// header read still lands (a heap slot, a retained block).
     parked_large: Vec<*mut u8>,
+    /// What each survivor of **this** reset held in COW children at the
+    /// instant it was promoted, which is the instant the child's captured
+    /// count still accounts for. A holder that dies pays its snapshot
+    /// forward into [`ResetWindow::escrow`]; one that lives needs
+    /// nothing, its edges being walked where they are
+    /// (`dev/DECISIONS.md`, "the reset reads no corpse").
+    snapshots: HashMap<usize, Vec<*mut RcHeader>>,
+    /// One entry per edge a dead holder of this reset held at promotion:
+    /// the release that edge earned is inside the child's delta, and
+    /// nothing walks the holder any more, so the count is restored here.
+    escrow: Vec<*mut RcHeader>,
+    /// One entry per compensating retain `promote::count_children` handed
+    /// an **already promoted** COW child in a later round. That retain is
+    /// promote's own hand landing in the delta, while the edge behind it
+    /// is walked as well, so the pair would count twice.
+    credits: Vec<*mut RcHeader>,
     /// The window this one displaced. A destructor run by one reset can
     /// resolve another arena and reset it, so the windows nest and each
     /// close restores its predecessor.
@@ -87,6 +106,9 @@ fn open() {
     let prev = WINDOW.with(|cell| cell.get());
     let window = Box::into_raw(Box::new(ResetWindow {
         parked_large: Vec::new(),
+        snapshots: HashMap::new(),
+        escrow: Vec::new(),
+        credits: Vec::new(),
         prev,
     }));
 
@@ -112,9 +134,120 @@ unsafe fn close_and_flush() {
 
     let window = unsafe { Box::from_raw(window) };
     WINDOW.with(|cell| cell.set(window.prev));
+    if !window.prev.is_null() {
+        // A reset driven by a destructor of an outer one closes first,
+        // and what it parked may be an **outer** survivor: the outer
+        // reset still has passes to run over it, and its weak walk still
+        // reads headers. So the bodies move outward and only the
+        // outermost close frees anything.
+        unsafe { (*window.prev).parked_large.extend(window.parked_large) };
+        return;
+    }
+
     for ptr in window.parked_large {
         unsafe { crate::memory::stdapi::ll_free(ptr) };
     }
+
+    // The deaths are the whole chain's, so they go when the chain does.
+    let died = DIED.with(|cell| cell.replace(std::ptr::null_mut()));
+    if !died.is_null() {
+        drop(unsafe { Box::from_raw(died) });
+    }
+}
+
+thread_local! {
+    /// Every entity whose teardown **completed** while a reset was open
+    /// on this thread. Shared by the whole window chain: a survivor of an
+    /// outer reset can die inside an inner one, and the outer reset's
+    /// passes are the ones that must not walk it.
+    static DIED: Cell<*mut HashSet<usize>> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+fn died_set() -> *mut HashSet<usize> {
+    DIED.with(|cell| {
+        let mut set = cell.get();
+        if set.is_null() {
+            set = Box::into_raw(Box::new(HashSet::new()));
+            cell.set(set);
+        }
+
+        set
+    })
+}
+
+/// Record that `survivor` held `child`, a COW entity, at the instant of
+/// its promotion. Taken by the counting pass, which runs after every
+/// destructor of its round and before the category rewrite — the one
+/// point where a survivor's edges are provably the ones its children's
+/// captured counts were taken against.
+pub(crate) fn snapshot_edge(survivor: *mut RcHeader, child: *mut RcHeader) {
+    let window = WINDOW.with(|cell| cell.get());
+    if window.is_null() {
+        return;
+    }
+
+    unsafe {
+        (*window)
+            .snapshots
+            .entry(survivor as usize)
+            .or_default()
+            .push(child)
+    };
+}
+
+/// Record a compensating retain the counting pass gave an already
+/// promoted COW child ([`ResetWindow::credits`]).
+pub(crate) fn credit(child: *mut RcHeader) {
+    let window = WINDOW.with(|cell| cell.get());
+    if window.is_null() {
+        return;
+    }
+
+    unsafe { (*window).credits.push(child) };
+}
+
+/// Record a completed teardown, and pay the entity's promotion-time
+/// snapshot into the escrow of the reset that took it — which is not
+/// necessarily the reset whose drain is running, a destructor of one
+/// reset being able to drive another.
+///
+/// An entity no open reset promoted records the death and nothing else:
+/// no pass of any open reset walks it.
+pub(crate) fn record_death(entity: *mut RcHeader) {
+    if WINDOW.with(|cell| cell.get()).is_null() {
+        return;
+    }
+
+    unsafe { (*died_set()).insert(entity as usize) };
+
+    let mut window = WINDOW.with(|cell| cell.get());
+    while !window.is_null() {
+        if let Some(edges) = unsafe { (*window).snapshots.remove(&(entity as usize)) } {
+            unsafe { (*window).escrow.extend(edges) };
+            return;
+        }
+
+        window = unsafe { (*window).prev };
+    }
+}
+
+/// Whether this address is one whose teardown completed inside a reset
+/// still open on this thread.
+pub(crate) fn has_died(entity: *mut RcHeader) -> bool {
+    let died = DIED.with(|cell| cell.get());
+    !died.is_null() && unsafe { (*died).contains(&(entity as usize)) }
+}
+
+/// The escrowed edges of this reset's corpses, and the credits its
+/// counting pass handed out — the two correction terms of
+/// `promote::reconcile_cow_counts`.
+pub(crate) fn corrections() -> (Vec<*mut RcHeader>, Vec<*mut RcHeader>) {
+    let window = WINDOW.with(|cell| cell.get());
+    if window.is_null() {
+        return (Vec::new(), Vec::new());
+    }
+
+    unsafe { ((*window).escrow.clone(), (*window).credits.clone()) }
 }
 
 /// Park a large entity's body if a reset is in flight on this thread.

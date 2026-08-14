@@ -832,6 +832,8 @@ pub(crate) unsafe fn carry_payload_out_of(
 /// # Safety
 /// `s` must be a live string entity.
 pub(crate) unsafe fn string_die(s: *mut LLString) {
+    // A death a reset in flight must not walk past (`memory::reset_window`).
+    crate::memory::reset_window::record_death(s as *mut crate::refcount::RcHeader);
     journal_event!(
         crate::journal::kinds::KIND_ENTITY_DEATH,
         s as u64,

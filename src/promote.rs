@@ -572,6 +572,13 @@ unsafe fn retrace_survivors(survivors: &mut Vec<*mut RcHeader>) {
     while i < survivors.len() {
         let s = survivors[i];
         i += 1;
+        // A survivor whose teardown completed inside this reset holds
+        // nothing any more, and nothing may follow what its slots still
+        // name (`memory::reset_window`).
+        if crate::memory::reset_window::has_died(s) {
+            continue;
+        }
+
         unsafe {
             crate::walk::trace_entity(s, |child| {
                 if is_arena_entity(child) && (*child).flags & ARENA_RESET_MARK == 0 {
@@ -646,7 +653,29 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
         settled.insert(s as usize, (0, now - at as i64));
     }
 
+    // The two correction terms of the settled count: one entry per edge
+    // a dead holder of this reset held at promotion, and one per retain
+    // `count_children` handed an already-promoted COW child. The first
+    // restores a count the walk below can no longer see, the second
+    // takes back a retain that walk counts a second time.
+    let (escrowed, credited) = crate::memory::reset_window::corrections();
+    for child in escrowed {
+        if let Some(entry) = settled.get_mut(&(child as usize)) {
+            entry.1 += 1;
+        }
+    }
+
+    for child in credited {
+        if let Some(entry) = settled.get_mut(&(child as usize)) {
+            entry.1 -= 1;
+        }
+    }
+
     for &s in survivors {
+        if crate::memory::reset_window::has_died(s) {
+            continue;
+        }
+
         debug_assert!(
             traceable_in_full(unsafe { (*s).flags }),
             "a survivor of a kind `trace_entity` skips would have its              references erased here, not conservatively ignored"
@@ -698,10 +727,33 @@ fn traceable_in_full(flags: u32) -> bool {
 /// (their release-at-reset record no longer matches a dying holder).
 unsafe fn count_children(surv: *mut RcHeader) {
     unsafe {
-        crate::walk::trace_entity(surv, |child| match (*child).memory_category() {
-            MemoryCategory::RequestArena => (*child).refcount += 1,
-            MemoryCategory::GcHeap => ll_retain(child),
-            _ => {}
+        crate::walk::trace_entity(surv, |child| {
+            // The COW edges of a survivor, recorded at the one instant
+            // they are the edges its children's captured counts were
+            // taken against: after this round's destructors, before the
+            // category rewrite. What the recording is for is
+            // `reconcile_cow_counts`, and why it cannot be taken at the
+            // holder's death instead is `dev/DECISIONS.md`, "the reset
+            // reads no corpse".
+            let cow = (*child).flags & COW != 0;
+            if cow {
+                crate::memory::reset_window::snapshot_edge(surv, child);
+            }
+
+            match (*child).memory_category() {
+                MemoryCategory::RequestArena => (*child).refcount += 1,
+                MemoryCategory::GcHeap => {
+                    ll_retain(child);
+                    // A retain of this pass's own, on a child already
+                    // promoted in an earlier round: it lands in the
+                    // child's delta while the edge behind it is walked
+                    // as well, so the reconciliation takes it back out.
+                    if cow {
+                        crate::memory::reset_window::credit(child);
+                    }
+                }
+                _ => {}
+            }
         });
     }
 }

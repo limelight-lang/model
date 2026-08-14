@@ -705,6 +705,10 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
 
     let dispose: DisposeFn = unsafe { std::mem::transmute((*(*obj).class).dispose) };
     if unsafe { dispose(obj) } {
+        // Teardown completed — the arm a resurrection never reaches — so
+        // this is where a reset in flight learns of the death and takes
+        // over what the entity held (`memory::reset_window`).
+        crate::memory::reset_window::record_death(obj as *mut RcHeader);
         // Leave the candidate buffer before the free, or the buffer
         // keeps a root pointing at memory about to be reused. It has to
         // be *here* rather than before `dispose`, because `__destruct`

@@ -1309,6 +1309,9 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
             EntityKind::Array as u64,
             0
         );
+        // An array has no destructor and cannot resurrect, so the door
+        // is the death (`memory::reset_window`).
+        crate::memory::reset_window::record_death(dying as *mut RcHeader);
         unsafe { release_children_in_order(dying, &mut pending) };
         unsafe { dispose_storage(dying, category_of(dying)) };
         if unsafe { category_of(dying) } == MemoryCategory::GcHeap {

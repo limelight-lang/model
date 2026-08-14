@@ -25,6 +25,22 @@ unsafe fn killed_by_the_drain(
     victim: *mut RcHeader,
     victim_tag: Tag,
 ) {
+    unsafe { killed_by_the_drain_at(arena, corpse_slot_owner, 16, victim, victim_tag) }
+}
+
+/// [`killed_by_the_drain`] with the slot named, for a test that needs two
+/// kills and therefore two records in one owner.
+///
+/// # Safety
+/// As [`killed_by_the_drain`], with `offset` a traced property of the
+/// owner.
+unsafe fn killed_by_the_drain_at(
+    arena: *mut Arena,
+    corpse_slot_owner: *mut Object,
+    offset: u32,
+    victim: *mut RcHeader,
+    victim_tag: Tag,
+) {
     unsafe {
         let boxed = crate::reference::ll_reference_new();
         assert!(ref_store(
@@ -34,7 +50,7 @@ unsafe fn killed_by_the_drain(
             std::ptr::null_mut(),
             Value::entity(victim_tag, victim),
         ));
-        let slot = Object::prop_at(corpse_slot_owner, 16);
+        let slot = Object::prop_at(corpse_slot_owner, offset);
         assert!(ref_store(
             arena,
             corpse_slot_owner as *mut RcHeader,
@@ -208,6 +224,88 @@ fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_reconcile() {
             (*(array as *mut RcHeader)).refcount,
             1,
             "the surviving holder is the array's one holder"
+        );
+        assert!(crate::refcount::ll_release(cache as *mut RcHeader));
+        ll_object_die(cache);
+    }
+}
+
+/// A COW child whose edge is **unset** before its holder dies. The
+/// release the unset performed is inside the child's delta, and the
+/// holder that owed the compensation is gone by the time the count is
+/// settled — so without the promotion-time snapshot the same event is
+/// subtracted twice and the child settles at zero, which
+/// `retained::register` reads as an empty slot under a living holder.
+#[test]
+fn an_edge_unset_before_its_holder_dies_still_settles_its_child() {
+    use crate::array::entity::ll_array_new;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let _g = crate::memory::block_pool::test_guard();
+
+    static DOOMED_HOLDER: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn unset_the_edge(_o: *mut Object) {
+        let holder = DOOMED_HOLDER.load(Ordering::Relaxed) as *mut Object;
+        unsafe {
+            let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
+            store_prop(arena, holder, 16, std::ptr::null_mut());
+        }
+    }
+
+    let holder_cls = ClassBuilder::new("UnsetHolder").prop("items", true).build();
+    let cache_cls = ClassBuilder::new("UnsetCache").prop("kept", true).build();
+    let slots_cls = ClassBuilder::new("UnsetSlots")
+        .prop("first", true)
+        .prop("second", true)
+        .build();
+    let trigger_cls = ClassBuilder::new("UnsetTrigger")
+        .destructor(unset_the_edge as *const ())
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+    set_current_context(context_ptr);
+
+    let cache = unsafe { new_constructed(context_ptr, cache_cls, MemoryCategory::GcHeap) };
+    let slots = unsafe { new_constructed(context_ptr, slots_cls, MemoryCategory::RequestArena) };
+    let doomed = unsafe { new_constructed(context_ptr, holder_cls, MemoryCategory::RequestArena) };
+    let living = unsafe { new_constructed(context_ptr, holder_cls, MemoryCategory::RequestArena) };
+    let trigger =
+        unsafe { new_constructed(context_ptr, trigger_cls, MemoryCategory::RequestArena) };
+    let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+    DOOMED_HOLDER.store(doomed as usize, Ordering::Relaxed);
+
+    unsafe {
+        assert!(crate::array::testing::push(array, Value::int(5)));
+        for holder in [doomed, living] {
+            let slot = Object::prop_at(holder, 16);
+            assert!(ref_store(
+                arena_ptr,
+                holder as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, array as *mut RcHeader),
+            ));
+        }
+
+        store_prop(arena_ptr, cache, 16, living);
+        // The trigger dies first and unsets the edge; the holder dies
+        // after it, holding nothing. Order is the release log's, which is
+        // the order these two records were written in.
+        killed_by_the_drain_at(arena_ptr, slots, 16, trigger as *mut RcHeader, Tag::Object);
+        killed_by_the_drain_at(arena_ptr, slots, 32, doomed as *mut RcHeader, Tag::Object);
+    }
+
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    set_current_context(std::ptr::null_mut());
+
+    unsafe {
+        assert_eq!(
+            (*(array as *mut RcHeader)).refcount,
+            1,
+            "the array is held by the survivor that lived, and by nothing else"
         );
         assert!(crate::refcount::ll_release(cache as *mut RcHeader));
         ll_object_die(cache);

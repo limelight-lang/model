@@ -221,6 +221,8 @@ pub(crate) unsafe fn notify_members(members: &[*mut RcHeader]) {
 /// `cell` must be a weak cell whose count just reached zero (or that a
 /// collector owns).
 pub(crate) unsafe fn weakref_die(cell: *mut LLWeakRef) {
+    // A death a reset in flight must not walk past (`memory::reset_window`).
+    crate::memory::reset_window::record_death(cell as *mut crate::refcount::RcHeader);
     journal_event!(
         crate::journal::kinds::KIND_ENTITY_DEATH,
         cell as u64,
