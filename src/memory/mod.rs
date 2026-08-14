@@ -15,6 +15,7 @@ pub mod heap;
 pub mod immortal;
 pub(crate) mod large_entity;
 pub(crate) mod reserve;
+pub(crate) mod reset_window;
 pub(crate) mod retained;
 pub(crate) mod routing;
 pub mod stats;

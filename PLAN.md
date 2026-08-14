@@ -77,7 +77,7 @@ occupied returns to any allocator before the reset ends. Ruled
 Done when: the six tests below are green in both configurations, Miri is
 silent over `promote::` in both, and the gate is green.
 
-- [ ] S23.1 The reset window, and what it parks
+- [x] S23.1 The reset window, and what it parks
       done: a thread-local window opened at the reset's begin event and
         closed after `finish_reset`, compiled in both builds; `ll_free`
         parks a `BLOCK_KIND_ENTITY_LARGE`/`_RUN` body while it is open,
@@ -86,20 +86,49 @@ silent over `promote::` in both, and the gate is green.
         registered; the flush runs after the window closes, so an epoch
         in flight re-parks it
       tier: T2 · role: —
-- [ ] S23.2 The escrow, taken at the two doors of death
+      handoff: `memory/reset_window.rs`, both builds, a `Cell<*mut _>`
+        with no drop glue and a `prev` link so a destructor that resets a
+        second arena nests. `ll_free`'s two new arms sit **ahead** of the
+        epoch arm. Its own tests cover the nesting and the three answers
+        of the absorb question; what it parks is observable only through
+        S23.4.
+- [~] S23.2 The escrow, taken at the two doors of death
       done: `ll_object_die` snapshots the corpse's GcHeap COW children
         before `dispose` and commits them only on the completed-teardown
         arm, so a resurrection earns none; `array_die` does the same per
         dying entry; nothing else escrows
       tier: T2 · role: —
-- [ ] S23.3 The corpse skip, and the escrow applied
+      Written and withdrawn 2026-08-14: the snapshot at the door of
+        death cannot tell an edge held since promotion from one taken
+        after it, and the escrow does not reach an outer window. Both are
+        in the Critic's line on S23.3. Reopened, and it waits on the
+        Sage's revised arithmetic together with S23.3.
+- [~] S23.3 The corpse skip, and the escrow applied
       done: `retrace_survivors` and both loops of `reconcile_cow_counts`
         skip an entity whose header reads refcount 0 **and** category
         GcHeap — the category half because `mark_one` zeroes a live
         arena survivor — and the escrowed edges are added to the delta
         column, giving `edges_live + (now - at) + escrow`
       tier: T2 · role: Critic
-- [ ] S23.4 The six tests
+      Critic 2026-08-14: two regressions in the escrow as written, both
+        confirmed against the code. It does not nest — `escrow` writes
+        the innermost window and `escrowed` reads it, so a survivor of an
+        outer reset dying inside an inner one settles a live COW child at
+        zero. And it over-counts an edge the corpse took **after**
+        promotion, whose retain is already inside `now`. The mirror case
+        breaks the Critic's own proposed repair: an edge held at
+        promotion and dropped before death would then be escrowed for
+        nothing. Escrow and skip reverted whole; the arithmetic goes back
+        to the Sage with both counterexamples. Two further findings
+        accepted from the same round: a panic left the window open
+        forever, now a stack guard; and `is_a_corpse` called a survivor
+        promoted at refcount 0 a corpse, which the redesign must answer.
+      handoff: what stands is S23.1's window alone, and it is enough for
+        the memory-safety half — Miri is silent over `promote::` with the
+        skip gone, because a parked run stays mapped. The count comes out
+        right today by the cancellation `dev/AUDIT` describes, which is
+        what this step must replace.
+- [~] S23.4 The six tests
       done: the two Miri regressions (the large corpse under the
         reconcile, and the retrace after a drain death), the arithmetic
         pair that fails at 0 without the escrow and at 2 without the

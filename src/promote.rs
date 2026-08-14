@@ -83,6 +83,10 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         0,
         0
     );
+    // Everything below reads survivor memory after the drain that can
+    // kill a survivor, so the window opens first and closes with this
+    // frame — including an unwind out of it (`memory::reset_window`).
+    let _window = crate::memory::reset_window::opened();
     let mut survivors: Vec<*mut RcHeader> = Vec::new();
     // Each COW survivor's count at the instant it was promoted, which is
     // the last instant the reset can attribute it to arena holders. What

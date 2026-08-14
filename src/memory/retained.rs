@@ -256,6 +256,18 @@ unsafe fn is_occupied(address: usize) -> bool {
     header & 0xffff_ffff != 0
 }
 
+/// Whether `block` has an index — whether some reset has finished
+/// establishing what occupies it. A reset in flight asks this about its
+/// own blocks, which have none yet ([`register`] runs at its end), to
+/// tell its own corpse from an occupant an earlier reset counted
+/// (`memory::reset_window::absorbs_retained_free`).
+pub(crate) fn is_registered(block: usize) -> bool {
+    registry()
+        .lock()
+        .expect("retained index registry poisoned")
+        .contains_key(&block)
+}
+
 /// How many payloads the block is pinned for ([`pin`]), and zero for a
 /// block nobody pinned or nobody retained. What a test asks instead of
 /// the block's kind, and why (`dev/DECISIONS.md`, "the arena carry is the
