@@ -405,6 +405,78 @@ fn an_unpromoted_large_arena_entity_is_freed_by_the_reset() {
     );
 }
 
+/// A survivor in a block of its own that dies inside the reset is not
+/// read again by it. Its memory is not the ordinary retained kind, which
+/// stays mapped precisely so a dead occupant's refcount word can be read
+/// as zero: a run comes from `std::alloc` at 128 KiB and up, which glibc
+/// returns to the system, so every later reader of that address is
+/// reading something the process no longer owns.
+///
+/// The reset has two such readers over its survivor list, and both run
+/// after the release drain — `reconcile_cow_counts` on the entity and
+/// `index_retained_blocks` on the entity's block header.
+#[test]
+fn a_large_survivor_that_dies_inside_the_reset_is_read_no_further() {
+    use crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let wide = crate::test_support::wide_class("WideDyingInsideTheReset", RUN_FILLERS, None);
+    let corpse_cls = ClassBuilder::new("WideCorpse").prop("box", true).build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let obj = unsafe { new_constructed(&mut *context_ptr, wide, MemoryCategory::RequestArena) };
+    let corpse =
+        unsafe { new_constructed(&mut *context_ptr, corpse_cls, MemoryCategory::RequestArena) };
+    let block = BlockHeader::of_ptr(obj as *const u8) as usize;
+    assert_eq!(
+        unsafe { block_kind(obj as *const u8) },
+        BLOCK_KIND_ENTITY_LARGE_RUN,
+        "the entity fits in a shared block, so this test proves nothing"
+    );
+
+    unsafe {
+        // The escape is into a heap box, and the box goes into an arena
+        // slot: that is what logs the box's release against the reset,
+        // and the release is what kills the promoted survivor while the
+        // reset is still running.
+        let boxed = crate::reference::ll_reference_new();
+        assert!(ref_store(
+            arena_ptr,
+            boxed as *mut RcHeader,
+            &raw mut (*boxed).value,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Object, obj as *mut RcHeader),
+        ));
+        let slot = Object::prop_at(corpse, 16);
+        assert!(ref_store(
+            arena_ptr,
+            corpse as *mut RcHeader,
+            slot,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Reference, boxed as *mut RcHeader),
+        ));
+        assert!(!crate::refcount::ll_release(boxed as *mut RcHeader));
+    }
+
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+
+    assert!(
+        !crate::memory::large_entity::snapshot().contains(&block),
+        "the run outlived the entity it was allocated for"
+    );
+    assert!(
+        !crate::memory::retained::snapshot()
+            .iter()
+            .any(|(b, _)| *b == block),
+        "a run was entered into the retained index, which ends at the \
+         64 KiB block pool"
+    );
+}
+
 /// A class whose counted cells lie outside the object body owns its
 /// storage the way an array owns its chunk, and the reset reaches that
 /// storage through the group rather than through the entity kind. An

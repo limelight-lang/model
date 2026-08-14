@@ -94,6 +94,15 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // one count of the reset's own until it has finished establishing
     // occupant counts. Released after `finish_reset`, below.
     let mut pinned: HashSet<usize> = HashSet::new();
+    // Retained block → the survivors sharing it, built here rather than
+    // read back off `survivors` at the end. A survivor can die inside
+    // this reset, and the classification that decides whether it even
+    // has a shared block is a load from its block header — sound while
+    // it is alive and a read of returned memory afterwards, a survivor
+    // in a block of its own having handed that block to the system at
+    // its death (`dev/DECISIONS.md`, "the reset classifies a survivor
+    // while it is alive").
+    let mut by_block: HashMap<usize, Vec<usize>> = HashMap::new();
     // `survivors[..counted]` have already been counted and retained. New
     // survivors past it are the current round's delta.
     let mut counted = 0usize;
@@ -249,13 +258,19 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     forgotten,
                     "a promoted large entity was not one of this arena's runs"
                 );
-            } else if retained.insert(block) {
-                unsafe {
-                    crate::memory::block_pool::store_block_kind(
-                        &raw const (*(block as *mut BlockHeader)).kind,
-                        BLOCK_KIND_RETAINED,
-                    )
-                };
+            } else {
+                // The occupant list is taken here, in the one place that
+                // classifies, so the two answers cannot disagree and
+                // neither is asked of a dead entity.
+                by_block.entry(block).or_default().push(surv as usize);
+                if retained.insert(block) {
+                    unsafe {
+                        crate::memory::block_pool::store_block_kind(
+                            &raw const (*(block as *mut BlockHeader)).kind,
+                            BLOCK_KIND_RETAINED,
+                        )
+                    };
+                }
             }
         }
 
@@ -305,14 +320,14 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // user code, so it cannot grow the logs behind the settled fixpoint.
     unsafe { crate::weak::drain_arena_weak_log(arena) };
 
-    // The survivor list becomes the retained blocks' object index. A
-    // bump-filled block has no stride to divide by, so this inventory
-    // is the only way the walk can enumerate its occupants — without it
-    // they are root sources and a ring among them never dies
-    // (`rfc/model/gc/retained-block-walk.md`). Registered after the
-    // fixpoint has settled and before the blocks are disposed of, so
-    // every entry describes a survivor that is staying.
-    let mut emptied = index_retained_blocks(&survivors);
+    // The occupant lists gathered above become the retained blocks'
+    // object indexes. A bump-filled block has no stride to divide by, so
+    // this inventory is the only way the walk can enumerate its
+    // occupants — without it they are root sources and a ring among them
+    // never dies (`rfc/model/gc/retained-block-walk.md`). Registered
+    // after the fixpoint has settled and before the blocks are disposed
+    // of, so no death can arrive behind the counts it establishes.
+    let mut emptied = index_retained_blocks(by_block);
 
     unsafe { (*arena).finish_reset(|block| retained.contains(&(block as usize))) };
 
@@ -457,36 +472,27 @@ unsafe fn external_memory(surv: *mut RcHeader) -> External {
     }
 }
 
-/// Group the settled survivors by the block holding them and hand each
-/// group to the retained-index registry. The blocks that came back empty
-/// — every occupant already dead when the index was built — are returned,
-/// and their disposal is the caller's.
+/// Hand each block's occupants to the retained-index registry. The blocks
+/// that came back empty — every occupant already dead when the index was
+/// built — are returned, and their disposal is the caller's.
+///
+/// The grouping is the caller's because only the promotion loop holds a
+/// survivor at a moment it is certainly alive, and deciding which block a
+/// survivor belongs to is a read of the survivor's memory
+/// (`dev/DECISIONS.md`, "the reset classifies a survivor while it is
+/// alive").
 ///
 /// One index per block rather than one per reset: both enumerators
 /// reach a block first — the census by the 64 KiB alignment mask, the
 /// synchronous walk by scanning the region registry — so an index found
 /// from a block address costs no second mapping (`dev/DECISIONS.md`,
-/// "retained blocks are walked through a per-block object index"). A
-/// survivor whose block was *not* retained cannot occur
-/// here: retention is decided from this same list.
-fn index_retained_blocks(survivors: &[*mut RcHeader]) -> Vec<usize> {
+/// "retained blocks are walked through a per-block object index").
+fn index_retained_blocks(by_block: HashMap<usize, Vec<usize>>) -> Vec<usize> {
     let mut emptied = Vec::new();
-    let mut by_block: HashMap<usize, Vec<usize>> = HashMap::new();
-    for &surv in survivors {
-        // A block with one occupant, whose address is computed from the
-        // block's own, needs no inventory to be walkable — and an entry
-        // here would put it on the path that ends at the block pool.
-        if unsafe { is_in_a_block_of_its_own(surv) } {
-            continue;
-        }
-
-        let block = BlockHeader::of_ptr(surv as *const u8) as usize;
-        by_block.entry(block).or_default().push(surv as usize);
-    }
-
     for (block, occupants) in by_block {
-        // The addresses are this reset's own survivors, so they are
-        // readable, which is what `register` asks of its caller.
+        // A shared retained block keeps every byte it had, so a dead
+        // occupant's address is still readable and `register` reads it —
+        // which is the whole of what it asks of this caller.
         if unsafe { crate::memory::retained::register(block, occupants) } {
             emptied.push(block);
         }

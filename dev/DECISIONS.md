@@ -8,6 +8,107 @@ never edited or deleted.
 
 ---
 
+## 2026-08-14 — the arena keeps its single bump, and two ways of making it walkable are refused
+
+Asked because the arena carries five logs — `escapees`, `destructors`,
+`weak`, `release_at_reset`, `larges` — written during the request and
+drained by the reset, and three of them name an arena entity plus a
+reason that is *also* a flag in that entity's header. The duplication
+looks like something an enumerable arena would remove. It is not.
+
+**A walk cannot replace the escapee log, at any price.** An escape is a
+state change on an already-allocated entity: `barrier::escape_gain` fires
+when a longer-lived container takes the reference, and the entity's
+position in arena memory says nothing about when that happened. The
+fixpoint drains that log once per round because destructor bodies create
+new escapes on old objects, so a walk would have to rescan the whole
+arena every round — arena bytes times rounds, against records today. The
+same holds for `weak`. Position can only carry what is known at
+allocation time.
+
+**A per-allocation tag word is refused with it.** It is the only
+mechanism that would cover all four populations the one bump serves —
+entities, out-of-line bodies, raw C memory from `ll_arena_alloc`, and the
+log segments themselves — because the C ABI door hands out memory with no
+header this crate controls. Eight bytes on every allocation and a store
+on the bump path, to serve events the design makes rare on purpose.
+
+**Size-class blocks for arena entities are refused separately**, and on a
+checked fact rather than on price: `RcHeader::new` writes `refcount: 1`
+into every entity of every category, and nothing releases an arena
+entity, so a former-arena block's holes do not read empty under
+`heap::for_each_entity_slot`'s `refcount != 0` test — a never-escaped
+corpse reads 1 and an escapee whose holders let go reads 0. Handing such
+a block to the heap would present corpses as live and trace their slots
+into blocks already returned to the pool. It could only be handed over
+after a reset-time sweep, and the sweep needs the per-block survivor
+inventory the promotion loop already builds — so segregation moves that
+record's consumer rather than removing it. The one genuine win it offers,
+and the reason to reopen this only with a measurement in hand, is that a
+swept block's holes would re-enter circulation instead of waiting for the
+last survivor to die (`rfc/model/memory/arena-reset.md` accepts that wait
+in writing).
+
+**What stands from this.** A new per-entity obligation of the reset gets
+a flag for the O(1) "is this one?" test *and* a log for the "which ones?"
+enumeration; the pair is the design. The one door that would genuinely
+retire the retention machinery is evacuation, and it is closed by
+decision already (2026-07-24, the movable proxy; 2026-08-03, the index
+over reset-time copying).
+
+## 2026-08-14 — an object owing a destructor is allocated from the far end of its block
+
+**Supersedes** the destructor log's reason for existing. Placement, not a
+record, is what tells the reset which objects owe `__destruct`.
+
+`Arena::alloc_entity` gains a second door for classes carrying
+`CLASS_HAS_DESTRUCTOR`: the block is filled from both ends, ordinary
+allocations bumping up from `bump` and destructor-bearing objects down
+from a floor cursor. The front's "block is full" test compares against
+that floor instead of the block's end — the same load and the same
+comparison against a field that now moves. A retiring block records its
+final floor in its header's private half, read by the reset alone on the
+same thread.
+
+**The reset walks `[floor, block end)` by stride.** Every object carries
+its class pointer at offset 8 and `Class::object_size` gives the stride,
+so a contiguous run of objects needs no record and no link word; strings
+and arrays never land there, having neither a class pointer nor a
+destructor. Per object the walk runs `__destruct` when
+`DESTRUCTOR_PENDING` is set, `DESTRUCTOR_RAN` is clear, and the category
+is still `RequestArena` — a promoted survivor owes its destructor at its
+own death instead. Inside the fixpoint each round remembers the previous
+floor and walks only what grew, which is the take-semantics the log gives
+today; the final pass is O(destructor-bearing population), the semantic
+floor no mechanism escapes.
+
+**An object past `BLOCK_PAYLOAD` lands in neither end**, taking a run of
+its own, and is covered by the `larges` log the reset already visits plus
+the same flag test. That test lands with the change: without it a
+`__destruct` is silently skipped, the failure mode
+`rfc/model/memory/large-entities.md` already flags for the `forget_large`
+arm.
+
+**What dies with it:** the `destructors` log and its drain,
+`Arena::track_destructor`, and `object::object_constructed`'s ability to
+fail — a link needs no memory, so the 2026-07-21 rule that a refused
+destructor record fails the creation loses its subject and the `bool`
+leaves that ABI.
+
+**What was refused in its place.** A singly-linked list threaded through
+the objects: eight bytes per object against zero, a stale link word in
+every promoted survivor, and — deciding it — a chain that walks into a
+large survivor's run already unmapped by a death inside the same reset,
+so the list would be sound only on top of a repair the walk does not
+need. Reference counting for these classes is a separate question, not
+decided here: it changes observable destructor timing, which is the
+RFC's to answer, and it needs the `refcount` word split from the
+`IS_ESCAPEE` hold count.
+
+**Unmeasured, and named as such:** that the front door's swapped limit
+costs nothing is an intention until `cargo bench --bench alloc` says so
+back to back (`dev/BENCHMARKS.md`).
+
 ## 2026-08-13 — the reset holds a pin of its own, and releases it after the index is real
 
 **Supersedes nothing; it completes** "a pinned block goes home when its

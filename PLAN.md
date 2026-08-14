@@ -8,14 +8,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-13 · Active: none — the sections below are the backlog
+Updated: 2026-08-14 · Active: S23, then S22 — the prose sections below are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S20, so no
-stage is open. A number is never reissued, so a stage added later sits
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S20, and
+S21 is closed but for its commit; S23 and S22 below are open. A number is never reissued, so a stage added later sits
 where it is to be done rather than where its number falls, and the prose
 sections below are the backlog stages are drawn from.
 
@@ -24,6 +24,117 @@ feared to cost was `array::entity`'s alone: `array::entry` took 4 seconds
 over 7 tests and `array::table` 92 over 38, both clean, on 2026-08-13 at
 `8d3728d`. A slice is still how the module is run — invocation and thread
 cap in `dev/WORKFLOW.md`, Miri.
+
+## S21 — the reset classifies a survivor while it is alive  [done]
+
+Goal: no step of the reset reads the memory of a survivor that died
+inside that same reset. What the step below reproduces is recorded
+outside this repository (`dev/WORKFLOW.md`, "Files that must stay
+untracked"); the commit closing S21.2 is where it is described.
+
+Done when: S21.1's test fails before S21.2 and passes after, and the gate
+is green in both GC configurations.
+
+- [x] S21.1 The reproduction, in `promote::tests`
+      done: an arena entity past one block payload escapes into a heap
+        reference box and is killed by the box's logged release inside
+        the reset; the test fails today under Miri as a dangling read of
+        the block header. An ordinary run stays green, this being the
+        formal-UB class where the Miri run **is** the regression test
+        (`dev/WORKFLOW.md`, Tests)
+      tier: T1 · role: —
+      handoff: `the_memory_a_survivor_takes_with_it::`
+        `a_large_survivor_that_dies_inside_the_reset_is_read_no_further`.
+        Miri names the whole path: `is_in_a_block_of_its_own`
+        (`promote.rs:511`) from `index_retained_blocks` (`:479`) from
+        `arena_reset_full` (`:315`). Uncommitted until S21.2.
+- [x] S21.2 The classification moves to the promotion loop
+      done: S21.1 green, `promote::` and `memory::retained` green in both
+        configurations, Miri silent over `promote::` in both, and
+        `reconcile_cow_counts` either takes the same treatment or carries
+        the argument for why its read outlives the drain
+      tier: T2 · role: Critic
+      Critic 2026-08-14: the `died` set records the entity the drain
+        released, not the one that died — the kill is transitive through
+        `reference_die` → `drop_ref` → `ll_entity_die` — and completing it
+        would double-subtract against `delta`. Accepted: the set was
+        removed whole, the occupant map kept. The tracing readers become
+        S23.
+      handoff: `by_block` is built in the promotion loop and
+        `index_retained_blocks` takes it ready-made, touching no survivor
+        pointer. `promote::tests::`
+        `a_large_survivor_that_dies_inside_the_reset_is_read_no_further`
+        is the Miri regression. `reconcile_cow_counts` and
+        `retrace_survivors` are untouched and are S23's subject.
+
+## S23 — the reset reads no corpse  [in progress]
+
+Goal: every pointer a post-fixpoint pass dereferences belongs to an
+entity that pass has just read as occupied, and no allocation a survivor
+occupied returns to any allocator before the reset ends. Ruled
+2026-08-14; the argument and the arithmetic are in `dev/DECISIONS.md`.
+
+Done when: the six tests below are green in both configurations, Miri is
+silent over `promote::` in both, and the gate is green.
+
+- [ ] S23.1 The reset window, and what it parks
+      done: a thread-local window opened at the reset's begin event and
+        closed after `finish_reset`, compiled in both builds; `ll_free`
+        parks a `BLOCK_KIND_ENTITY_LARGE`/`_RUN` body while it is open,
+        ahead of the `rc-walk` deferred branch, and absorbs a
+        `BLOCK_KIND_RETAINED` free whose block this reset has not yet
+        registered; the flush runs after the window closes, so an epoch
+        in flight re-parks it
+      tier: T2 · role: —
+- [ ] S23.2 The escrow, taken at the two doors of death
+      done: `ll_object_die` snapshots the corpse's GcHeap COW children
+        before `dispose` and commits them only on the completed-teardown
+        arm, so a resurrection earns none; `array_die` does the same per
+        dying entry; nothing else escrows
+      tier: T2 · role: —
+- [ ] S23.3 The corpse skip, and the escrow applied
+      done: `retrace_survivors` and both loops of `reconcile_cow_counts`
+        skip an entity whose header reads refcount 0 **and** category
+        GcHeap — the category half because `mark_one` zeroes a live
+        arena survivor — and the escrowed edges are added to the delta
+        column, giving `edges_live + (now - at) + escrow`
+      tier: T2 · role: Critic
+- [ ] S23.4 The six tests
+      done: the two Miri regressions (the large corpse under the
+        reconcile, and the retrace after a drain death), the arithmetic
+        pair that fails at 0 without the escrow and at 2 without the
+        skip, the resurrection case, the epoch case where a parked
+        `occupant_freed` replays against an index that never counted the
+        corpse, and the earlier-reset survivor that must not be absorbed
+      tier: T2 · role: —
+
+## S22 — what the store barrier costs, and what the logging costs inside it
+
+Goal: a number for the barrier's two directions, so the arena's logging
+stops being defended by reasoning. Nothing in `dev/BENCHMARKS.md` names
+the barrier, the escape count or the reset logs today; the write path is
+argued from the code and has never been measured.
+
+Done when: both steps are closed and `dev/BENCHMARKS.md` carries the
+reading under its own protocol, arms measured back to back in one
+session on a tree that did not move between them.
+
+- [ ] S22.1 The harness, in `benches/`
+      done: it drives the micro-ops directly — `barrier::store_category_barrier`,
+        `barrier::ref_store` — and never the C ABI symbols, which
+        `PLAN.md`'s cross-cutting rule keeps out of benches; three arms,
+        an arena-to-arena store that logs nothing, a heap-into-arena
+        store that appends one release record per store, and an
+        arena-into-heap store whose first escape appends and whose
+        repeats only increment
+      tier: T2 · role: —
+- [ ] S22.2 The reading, recorded
+      done: the three arms measured back to back per `dev/BENCHMARKS.md`,
+        the per-store cost of a release record stated with its unit and
+        its noise floor, and the segment allocation named separately —
+        one 4 KB segment from the arena's own bump every
+        `LOG_SEG_RECORDS` = 500 records
+      tier: T1 · role: —
 
 ## Then: arrays as a performance problem
 
