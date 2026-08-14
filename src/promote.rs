@@ -579,6 +579,8 @@ unsafe fn retrace_survivors(survivors: &mut Vec<*mut RcHeader>) {
             continue;
         }
 
+        #[cfg(test)]
+        crate::memory::reset_window::note_walk(s);
         unsafe {
             crate::walk::trace_entity(s, |child| {
                 if is_arena_entity(child) && (*child).flags & ARENA_RESET_MARK == 0 {
@@ -676,6 +678,8 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
             continue;
         }
 
+        #[cfg(test)]
+        crate::memory::reset_window::note_walk(s);
         debug_assert!(
             traceable_in_full(unsafe { (*s).flags }),
             "a survivor of a kind `trace_entity` skips would have its              references erased here, not conservatively ignored"

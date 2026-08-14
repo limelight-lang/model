@@ -136,14 +136,35 @@ silent over `promote::` in both, and the gate is green.
       handoff: `promote::count_children` records both terms;
         `reconcile_cow_counts` and `retrace_survivors` skip by
         `reset_window::has_died`. Commit `f4490a1`.
-- [~] S23.4 The tests
+- [x] S23.4 The tests
       done: the two Miri regressions (the large corpse under the
         reconcile, and the retrace after a drain death), the arithmetic
         pair that fails at 0 without the escrow and at 2 without the
         skip, the resurrection case, the epoch case where a parked
         `occupant_freed` replays against an index that never counted the
-        corpse, and the earlier-reset survivor that must not be absorbed
+        corpse, and the earlier-reset survivor that must not be absorbed;
+        and the three the second ruling added — the nested case where an
+        outer survivor dies inside an inner reset, the survivor promoted
+        at refcount zero, and the K term with two holders
       tier: T2 · role: —
+      handoff: seven tests added to
+        `promote::tests::the_reset_reads_no_corpse`, which now holds ten,
+        each new one verified by removing the mechanism it pins: 5 instead
+        of 3 without the credit, 0 instead of 1 with the
+        refcount-and-category corpse test, 0 instead of 1 with the escrow
+        paid into the innermost window, 0 instead of 1 with no death
+        recorded at all, a death recorded for a resurrection, a corpse
+        walked without the retrace's skip, and the block at the pool
+        without the absorb. The earlier-reset survivor is
+        `reset_window::tests::only_an_unindexed_block_inside_a_reset_`
+        `is_absorbed`. Two Miri cases were added and seen red: the weak
+        walk reading a run an inner reset freed, with the parking gone,
+        and the retrace reading a returned run, which needs the skip and
+        the parking both gone because either one alone keeps the read
+        from happening or keeps the address mapped. Three `#[cfg(test)]`
+        probes in `reset_window` carry what no count can see — `depth`,
+        and the two counters `take_counters` answers, deaths recorded and
+        corpses walked.
 
 ## S22 — what the store barrier costs, and what the logging costs inside it
 

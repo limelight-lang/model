@@ -219,6 +219,8 @@ pub(crate) fn record_death(entity: *mut RcHeader) {
     }
 
     unsafe { (*died_set()).insert(entity as usize) };
+    #[cfg(test)]
+    DEATHS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     let mut window = WINDOW.with(|cell| cell.get());
     while !window.is_null() {
@@ -229,6 +231,39 @@ pub(crate) fn record_death(entity: *mut RcHeader) {
 
         window = unsafe { (*window).prev };
     }
+}
+
+/// Deaths recorded and corpses walked since a test last cleared them
+/// ([`take_counters`]). The passes after the fixpoint walk no corpse, and
+/// nothing about that is visible in a count or in an ordinary run — the
+/// memory a corpse leaves behind is readable, so the walk finds a stale
+/// edge whose release is already in the delta and the two cancel. So a
+/// test reads these instead of the memory the walk would have touched.
+///
+/// Plain statics rather than thread-locals: every test that reads them
+/// holds `block_pool::test_guard`, which serializes the suite.
+#[cfg(test)]
+static DEATHS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static CORPSE_WALKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Count `entity` if a pass is about to walk it after its teardown
+/// completed. Called by each post-fixpoint pass past its own skip, so
+/// removing that skip is what makes the count non-zero.
+#[cfg(test)]
+pub(crate) fn note_walk(entity: *mut RcHeader) {
+    if has_died(entity) {
+        CORPSE_WALKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The two counters, cleared by the read: deaths recorded, and corpses
+/// walked by a pass that should have skipped them. A test reads the first
+/// to know its own shape happened at all.
+#[cfg(test)]
+pub(crate) fn take_counters() -> (usize, usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (DEATHS.swap(0, Relaxed), CORPSE_WALKS.swap(0, Relaxed))
 }
 
 /// Whether this address is one whose teardown completed inside a reset
@@ -270,6 +305,22 @@ pub(crate) unsafe fn park_large(ptr: *mut u8) -> bool {
 #[cfg(test)]
 pub(crate) fn is_open() -> bool {
     !WINDOW.with(|cell| cell.get()).is_null()
+}
+
+/// How many resets are in flight on this thread, counting outwards along
+/// the chain. A test of the nesting reads it from inside a destructor:
+/// without it, a death that happened beside the inner reset rather than
+/// inside it produces the same counts and the test proves nothing.
+#[cfg(test)]
+pub(crate) fn depth() -> usize {
+    let mut window = WINDOW.with(|cell| cell.get());
+    let mut depth = 0;
+    while !window.is_null() {
+        depth += 1;
+        window = unsafe { (*window).prev };
+    }
+
+    depth
 }
 
 /// Whether a free of an occupant of retained `block` is this reset's own

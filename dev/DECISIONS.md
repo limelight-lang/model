@@ -8,6 +8,91 @@ never edited or deleted.
 
 ---
 
+## 2026-08-14 — the reset reads no corpse
+
+A survivor of a reset can die inside that same reset: a heap `&` box
+stored into an arena slot is promoted with the entity it holds, and the
+box's logged release tears that entity down while the reset still has
+passes to run. Two passes then read what died — `retrace_survivors` and
+`reconcile_cow_counts`, both through `walk::trace_entity` — and the weak
+walk reads one header word of every entity the arena's weak log names.
+
+**Death becomes membership**, and each pass tests it before it walks an
+entity. `reset_window::record_death` is called on `ll_object_die`'s
+dispose-true arm, which is the one door a resurrection can turn back, and
+at the teardown body of each of the other three kinds, none of which runs
+user code that could resurrect. The set is shared by the whole window
+chain, because a survivor of an outer reset can die inside an inner one
+and it is the outer reset's passes that must not walk it.
+
+**The header was the first test and does not decide this.** Refcount 0
+alone calls every internally-reached survivor a corpse, `mark_one`
+zeroing one before the counting pass rebuilds it, which is what the
+category half was added against. The pair fails too: an escape whose last
+hold is dropped by a destructor inside the fixpoint is promoted reading
+refcount 0 in the GcHeap category while its edges are live.
+
+**The memory stays mapped for the length of the reset.** A shared
+retained block recycles nothing inside itself, so a corpse's header
+survives where it is; a survivor in a block of its own hands a run back
+to the system at its death, and every later reader of that address then
+reads memory the process no longer owns. So the window parks the two
+large-entity kinds and frees them after it closes, ahead of the epoch's
+own parking — parked in `deferred_free` instead, a checkpoint's flush
+could free the body while the reset still runs. An inner close hands its
+parked bodies to the window outside it, and only the outermost close
+frees anything.
+
+**One free is absorbed rather than deferred**: a corpse in a retained
+block this reset has not registered yet. `retained::register` declines to
+count an occupant whose header reads zero, so no count exists for that
+death to spend, and replaying the free after the epoch would take the
+block's live count below its true occupancy and hand it to the pool under
+living survivors.
+
+### The COW count: `edges_live + (now - at) + D - K`
+
+`reconcile_cow_counts` settles each COW survivor from the edges the walk
+finds now, plus what changed since promotion, plus two correction terms.
+The skip and the terms are one repair and neither half stands alone.
+Skipping a corpse without them settles a live entity one too low: the
+corpse's release is already inside `now - at`, and dropping its edge
+removes the same event a second time. Carrying the terms without the skip
+settles it one too high: teardown leaves a slot readable and stale, so
+the walk counts an edge the escrow has already restored.
+
+**The rows themselves are not filtered**, only the walk, because a COW
+survivor cannot become a corpse of the reset that promoted it:
+`count_children` gives it one retain per holder edge it finds, and each
+holder's teardown spends exactly one, so its count never falls below what
+it was before the reset began. A COW entity is also never an escapee —
+the store barrier copies it out of the arena rather than counting it in
+(`barrier::escape_gain`) — so no `&` box can kill one either.
+
+**D is the corpse's promotion-time snapshot**, taken inside
+`count_children`'s existing walk and paid into the escrow of the window
+that took it when the holder's teardown completes. The instant is the
+whole of it, because it decides which column absorbed the retain: an edge
+held since promotion has its retain in the discarded `at` and needs a +1
+back, while an edge taken after promotion has retain and release both
+inside the delta and must not be compensated. A snapshot taken at the
+door of death answers neither case — it sees the edges the corpse holds
+at the end, and both counterexamples turn on the difference between that
+set and the set at promotion.
+
+**K takes back the compensating retain** `count_children` gives an
+already-promoted COW child in a later round. That retain lands in the
+child's delta while the edge behind it is walked as well, so the pair
+would count twice.
+
+**A resurrection earns none of this.** Teardown that does not complete
+records no death, so the passes keep reading the entity and its snapshot
+stays with the window. The count is a poor witness of that: where the
+entity's edges at the would-be death are the edges of its snapshot, an
+escrowed edge replaces exactly the edge a skip removes and the figure
+agrees either way. So the test reads the record, and the two Miri cases
+read the memory.
+
 ## 2026-08-14 — the arena keeps its single bump, and two ways of making it walkable are refused
 
 Asked because the arena carries five logs — `escapees`, `destructors`,
