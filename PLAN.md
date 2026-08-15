@@ -37,7 +37,7 @@ Done when: both steps are closed and `dev/BENCHMARKS.md` carries the
 reading under its own protocol, arms measured back to back in one
 session on a tree that did not move between them.
 
-- [ ] S22.1 The harness, in `benches/`
+- [x] S22.1 The harness, in `benches/`
       done: it drives the micro-ops directly — `barrier::store_category_barrier`,
         `barrier::ref_store` — and never the C ABI symbols, which
         `PLAN.md`'s cross-cutting rule keeps out of benches; three arms,
@@ -46,6 +46,19 @@ session on a tree that did not move between them.
         arena-into-heap store whose first escape appends and whose
         repeats only increment
       tier: T2 · role: —
+      handoff: `benches/barrier.rs`, six arms: the three directions of
+        `store_box`, the heap-into-arena one at two batch sizes so the
+        log's segment can be read out of the difference, `ref_store` on
+        the arena-to-arena direction, and `store_category_barrier` alone
+        on the escape. The four micro-ops are `pub` now — the module was
+        already `pub` and its `extern "C"` twins are exported, so the
+        widening promises nothing new. **The arena is reset between timed
+        regions**, inside `iter_custom` and outside the clock: a log
+        segment comes out of the arena's own bump and only `finish_reset`
+        returns it, so an earlier version that drained the records but
+        kept the memory took the machine down. Boundedness was checked
+        with an RSS guard (`peak 16-25 MB` per arm at `--sample-size 10`);
+        no reading was taken, that being S22.2.
 - [ ] S22.2 The reading, recorded
       done: the three arms measured back to back per `dev/BENCHMARKS.md`,
         the per-store cost of a release record stated with its unit and

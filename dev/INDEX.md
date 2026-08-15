@@ -433,6 +433,10 @@ versions live in `docs/history/`, marked at the top.
   group of tests over a module, and each is compiled only under
   `--cfg loom`.
 - Benches: `benches/alloc.rs`, `benches/standard.rs`,
+  `benches/barrier.rs` (the store barrier's three directions and the
+  arena logging inside them; it resets the arena between timed regions,
+  because a log segment comes out of the arena's own bump and only
+  `finish_reset` gives it back),
   `benches/lifecycle.rs` (object create/release GC-protocol tax, both
   configs), `benches/strings.rs` (hash across the function's branch
   boundaries, create-hash-die, and the append loop in both memory

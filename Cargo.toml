@@ -116,6 +116,10 @@ name = "alloc"
 harness = false
 
 [[bench]]
+name = "barrier"
+harness = false
+
+[[bench]]
 name = "lifecycle"
 harness = false
 

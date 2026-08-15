@@ -32,6 +32,12 @@
 //! Composition in this build (phase 1): RC operations and the category
 //! barrier (`rfc/model/memory/arenas.md`). Strategy hooks (SATB) plug into
 //! `drop_ref` later (A5).
+//!
+//! **The four micro-ops are `pub` for the benchmark**, which is a separate
+//! crate and may not reach the `extern "C"` twins at the foot of this file
+//! (`PLAN.md`, "Cross-cutting (every phase)"). Nothing else outside this
+//! crate calls them: the compiler's code reaches them as bitcode, and a
+//! Rust caller wants `ref_store`.
 
 use crate::memory::arena::Arena;
 use crate::memory::context::{LLContext, resolve_arena};
@@ -128,7 +134,7 @@ pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
 /// # Safety
 /// `new` a live entity; `arena` the live mounted arena.
 #[inline]
-pub(crate) unsafe fn store_category_barrier(
+pub unsafe fn store_category_barrier(
     arena: *mut Arena,
     owner_cat: MemoryCategory,
     new: *mut RcHeader,
@@ -235,7 +241,7 @@ pub(crate) unsafe fn publish_child(
 /// `slot` a live 8-byte pointer slot; `new` null or a live entity; `arena`
 /// the live mounted arena; `owner_cat` the slot owner's category.
 #[must_use]
-pub(crate) unsafe fn store_ptr(
+pub unsafe fn store_ptr(
     arena: *mut Arena,
     owner_cat: MemoryCategory,
     slot: *mut *mut RcHeader,
@@ -313,7 +319,7 @@ pub(crate) unsafe fn write_value_slot(slot: *mut Value, new: Value) {
 /// `slot` a live `Value` slot; `new`'s entity null or live; `arena` the
 /// live mounted arena; `owner_cat` the slot owner's category.
 #[must_use]
-pub(crate) unsafe fn store_box(
+pub unsafe fn store_box(
     arena: *mut Arena,
     owner_cat: MemoryCategory,
     slot: *mut Value,
@@ -363,7 +369,7 @@ pub(crate) unsafe fn store_box(
 /// # Safety
 /// `old` null or the live entity the slot held; `owner_cat` the slot
 /// owner's category.
-pub(crate) unsafe fn drop_ref(owner_cat: MemoryCategory, old: *mut RcHeader) {
+pub unsafe fn drop_ref(owner_cat: MemoryCategory, old: *mut RcHeader) {
     let dead = unsafe { drop_ref_deferred(owner_cat, old) };
     if !dead.is_null() {
         // Last reference gone: tear it down (destructor, release children,
