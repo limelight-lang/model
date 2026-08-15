@@ -100,6 +100,66 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-15 — the barrier's header reads go narrow: a heap store into an arena costs a third of what it did
+
+**`heap → arena` falls from 4.82 to 1.53 ns per store under `rc-walk`, and
+the escape direction loses its working-set effect entirely.** What changed is
+two accessors: `header_flags` and `header_refcount` load four bytes instead
+of the whole word, matching the narrow stores `refcount_store` makes. That is
+the rule already written on `refcount_load`, applied where the store barrier
+reaches it. S24.2.
+
+Both figures came from the probe of S24.1, before → after → before in one
+sitting, medians of five rounds, nanoseconds per store:
+
+| direction | set | A1 before | B after | A2 before |
+|---|---|---|---|---|
+| arena → arena | 1 | 1.115 | 1.109 | 1.107 |
+| arena → arena | 64 | 1.106 | 1.117 | 1.113 |
+| heap → arena | 1 | 4.818 | 1.562 | 4.820 |
+| heap → arena | 64 | 4.816 | 1.566 | 4.815 |
+| arena → heap | 1 | 4.732 | 2.209 | 4.660 |
+| arena → heap | 64 | 3.115 | 2.478 | 2.475 |
+
+The controls agree to 0.1 % on every row but the last, where they disagree by
+26 % — the machine's load was 1.29 when A1 was taken. That row is the one
+this bracket does not resolve; the rest are far outside the floor.
+
+A second bracket, after the change, against the other configuration:
+
+| direction | set | rc-walk A1 | rc-trace B | rc-walk A2 |
+|---|---|---|---|---|
+| arena → arena | 64 | 1.092 | 1.508 | 1.091 |
+| heap → arena | 64 | 1.538 | 2.172 | 1.531 |
+| arena → heap | 64 | 2.193 | 1.992 | 2.406 |
+
+**`rc-walk` is now cheaper than `rc-trace` on both counted directions** — 28 %
+on the plain publish and 29 % on the logged one — where the logged one was
+2.2x dearer this morning. The escape direction is the one the controls leave
+soft: the two A's differ by 10 %, so all that can be said is that the two
+builds are within about that of each other, `rc-trace` ahead.
+
+**Both gaps recorded earlier today were one defect, in two shapes.** The 3.7x
+on the escape arm was a wide load over the *previous* store's narrow write,
+which is why spreading the stores over 64 children removed it. The 2.2x on
+`heap → arena` was the same overlap **inside one store** — `ll_retain` writes
+the counter half, and `store_category_barrier` read all eight bytes
+immediately after — which is why no working set could break it and why the
+narrow read removes it whole.
+
+**`arena → arena` did not move**, as it should not: the retain returns early
+on a non-`GcHeap` category, so that path writes no counter and never had an
+overlap to lose.
+
+What stays wide is `header_pair`, and `ll_cow_separate` moved onto it: its
+verdict is a function of both halves, and reading them separately sampled
+them at two instants — a coherence the code depended on without saying so.
+Nothing narrow precedes it, so it is not in a store-forwarding window.
+
+Verification: the full gate green in both GC configurations, three threaded
+runs each, plus `hash-folding` and both `debug-journal` legs; Miri clean over
+`refcount::`, `memory::barrier::` and the COW paths in both configurations.
+
 ## 2026-08-15 — the store path in the shape lowering emits: the escape's gap is the working set
 
 The escape direction costs **4.68 ns per store over one child and 2.48 over

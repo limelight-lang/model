@@ -92,7 +92,7 @@ says out loud. Accepted. No dispute reached Sage.
         are 13, 12 and 13 instructions and call-free, while the COW copy path
         and `grow_log` stay out of line and are reached by a forward branch.
 
-- [ ] S24.2 `header_flags` and `header_refcount` read narrow
+- [x] S24.2 `header_flags` and `header_refcount` read narrow
       done: both take `flags_load` / `refcount_load` under `rc-walk` on the
         mutator store paths; the suite green in both GC configurations and
         under `debug-journal`; no arm regresses beyond the floor, and the
@@ -114,6 +114,17 @@ says out loud. Accepted. No dispute reached Sage.
         and `ll_string_append`'s guard is the same pair), and today it samples
         them at two instants — safe only because nothing stands between the
         two lines, which no invariant records and no test defends.
+      handoff: `dev/BENCHMARKS.md`, 2026-08-15, "the barrier's header reads go
+        narrow". `heap → arena` fell from 4.82 to 1.53 ns per store under
+        `rc-walk` and is now 29 % cheaper than `rc-trace` where it was 2.2x
+        dearer; the escape direction lost its working-set effect entirely, and
+        `arena → arena` did not move because that path stores no counter. Both
+        gaps of this morning were one defect in two shapes — the overlap
+        between iterations on the escape arm, and inside a single store on
+        `heap → arena`, where `ll_retain` writes the counter half and the
+        category test read all eight bytes after it. Full gate green in both
+        configurations with the two feature legs; Miri clean over `refcount::`,
+        `memory::barrier::` and the COW paths in both.
 
 - [ ] S24.3 One flags load for the whole store path, if the probe resolves it
       done: measured on S24.1's probe under the A→B→A bracket and landed only

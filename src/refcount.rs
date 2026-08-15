@@ -721,32 +721,39 @@ pub unsafe extern "C" fn ll_release_batch(entity: *mut RcHeader) -> bool {
 /// access during an epoch), a plain read otherwise. The one
 /// build-dispatching read helper — teardown paths and the weak
 /// machinery share it rather than owning private copies.
+///
+/// **Four bytes, not the word**, for the reason [`refcount_load`] gives:
+/// the store barrier reaches here right after `ll_retain` has written the
+/// counter half, and a wide load over a fresh narrow store waits for the
+/// store buffer instead of taking the value from it.
 #[inline]
 pub(crate) unsafe fn header_flags(header: *const RcHeader) -> u32 {
     #[cfg(not(feature = "rc-walk"))]
     return unsafe { (*header).flags };
     #[cfg(feature = "rc-walk")]
     unsafe {
-        mutator_load_header(header).1
+        flags_load(header)
     }
 }
 
-/// Read the refcount of a **published** header, same dispatch rule —
-/// the counter twin of [`header_flags`].
+/// Read the refcount of a **published** header, same dispatch rule and
+/// the same width rule — the counter twin of [`header_flags`].
 #[inline]
 pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
     #[cfg(not(feature = "rc-walk"))]
     return unsafe { (*header).refcount };
     #[cfg(feature = "rc-walk")]
     unsafe {
-        mutator_load_header(header).0
+        refcount_load(header)
     }
 }
 
-/// The count and the flags in one read, for a caller that needs both.
-/// Under `rc-walk` they are the halves of one word, so asking
-/// [`header_refcount`] and [`header_flags`] in turn loads that word
-/// twice and the compiler may merge neither, both being atomic.
+/// The count and the flags **from one instant**, for a caller whose
+/// verdict is a function of both — [`cow_separation_needed`] is the one
+/// that is, and reading its two halves separately samples them twice.
+/// Under `rc-walk` that costs one wide load, which is right here and
+/// wrong in the store path: this is reached with no narrow store of its
+/// own in front of it, so nothing is waiting in the store buffer.
 #[inline]
 pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
     #[cfg(not(feature = "rc-walk"))]

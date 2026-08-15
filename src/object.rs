@@ -883,8 +883,9 @@ pub unsafe fn ll_cow_separate(
     entity: *mut RcHeader,
 ) -> *mut RcHeader {
     use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
-    let flags = unsafe { crate::refcount::header_flags(entity) };
-    let count = unsafe { crate::refcount::header_refcount(entity) };
+    // Both halves from one instant: the verdict below is a function of the
+    // pair, and two reads would sample it twice (`refcount::header_pair`).
+    let (count, flags) = unsafe { crate::refcount::header_pair(entity) };
     if !crate::refcount::cow_separation_needed(flags, count) {
         return entity;
     }
