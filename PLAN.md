@@ -178,7 +178,7 @@ because this is where they are done; their numbers say when they were opened.
         to silence. The window is thin — the mutator churns only while four
         epochs run — so a report is strong evidence and a clean run is weak.
 
-- [ ] S24.3 One flags load for the whole store path, if the probe resolves it
+- [x] S24.3 One flags load for the whole store path, if the probe resolves it
       done: measured on S24.1's probe under the A→B→A bracket and landed only
         if the arena→arena and heap→arena directions move by more than 4 % of
         the probe's per-store figure; otherwise refused, with the figure, in
@@ -206,6 +206,16 @@ because this is where they are done; their numbers say when they were opened.
         decides a load's width is which store precedes it. The formal gap in
         mixed-size atomics is a whole-design property and its own stage if it
         is ever reopened.
+      handoff: refused, as predicted, and the branch discarded —
+        `dev/BENCHMARKS.md`, 2026-08-15, "one header read for the store path".
+        The cheap half was measured (one read answering both the category and
+        the COW question inside `store_category_barrier`) and moved nothing:
+        1.115 → 1.116 and 1.562 → 1.602 against controls of 1.115 and 1.536.
+        The reason is structural and the step should have seen it first — the
+        second read lives inside the escape branch, which neither gated
+        direction takes, so only arena→heap could have moved and that row is
+        the one this probe cannot resolve. The invasive half, twins carrying a
+        snapshot through `ll_retain` and `escape_gain`, was never written.
 
 ## Then: arrays as a performance problem
 

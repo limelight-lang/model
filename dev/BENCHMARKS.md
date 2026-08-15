@@ -100,6 +100,36 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-15 — one header read for the store path: refused, and the branch discarded
+
+**Merging the barrier's two flag reads into one moves nothing, so it does not
+land.** S24.3 predicted this before the work and the gate it set — more than
+4 % of the probe's per-store figure on the arena→arena and heap→arena
+directions — is what refused it.
+
+The change was the cheap half only: `store_category_barrier` reading the
+flags once and answering both the category and the COW question from that
+word, with no signature touched. Measured on S24.1's probe, before → merged →
+before, nanoseconds per store at the 64-child working set:
+
+| direction | A1 before | B merged | A2 before |
+|---|---|---|---|
+| arena → arena | 1.115 | 1.116 | 1.115 |
+| heap → arena | 1.562 | 1.602 | 1.536 |
+| arena → heap | 2.438 | 2.260 | 2.392 |
+
+**The reason it cannot move those two rows is structural, and it is what the
+step should have seen first.** The second read sits inside
+`if new_cat == RequestArena && owner_cat != RequestArena` — the escape
+branch — which neither of the gated directions takes. Only arena→heap
+executes both reads, and that is the row this probe cannot resolve: its
+controls disagree by 2 %, and across today's brackets by up to 10 %.
+
+So the merge is left out, with the invasive half — twins carrying a flags
+snapshot through `ll_retain` and `escape_gain` — never written. What would
+justify reopening it is an instrument that resolves the escape direction to
+better than a percent, and none exists on this box.
+
 ## 2026-08-15 — the barrier's header reads go narrow: a heap store into an arena costs a third of what it did
 
 **`heap → arena` falls from 4.82 to 1.53 ns per store under `rc-walk`, and
