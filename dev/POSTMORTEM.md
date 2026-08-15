@@ -7,6 +7,68 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-15 — a hypothesis written where a measurement of ours already stood
+
+**What happened.** A benchmark arm came back 3.7x apart between the two GC
+configurations while the function it measured compiled to the same 38
+instructions in both. The gap went into `dev/BENCHMARKS.md` as an unmeasured
+hypothesis, with the note that `perf` on this kernel has no counters to test
+it. It was not a hypothesis: the mechanism was this crate's own recorded
+trap, measured on 2026-07-27 at 3x on the retain/release pair, with the rule
+drawn from it written on `refcount::refcount_load` — a wide load over a fresh
+narrow store defeats store-to-load forwarding. Two greps would have found
+either.
+
+**Why it was possible.** The disassembly answered the question I asked — are
+the two builds' instructions different — and I stopped at its answer instead
+of asking what the crate already knew. The journals are searched when a
+question is opened, and this question felt closed: I had a mechanism in hand
+that fit the numbers, and a mechanism that fits is what stops the search.
+
+**Why it was not caught.** Nothing catches it. An entry can only be checked
+against the file it sits in by someone who has read the rest of that file,
+and the entry it contradicted was three months back in the same document.
+The review that found it was asked a different question — whether the plan's
+steps were sound.
+
+**What follows.** Before writing "hypothesis" or "unexplained" about a
+performance figure, grep `dev/BENCHMARKS.md` and `dev/POSTMORTEM.md` for the
+mechanism and read the doc comment of the primitive involved; this crate
+keeps its arguments there by rule, so the search is two commands. The cost of
+the omission was not the wrong number alone — it was a stage planned around
+finding an explanation that was already written down.
+
+---
+
+## 2026-08-15 — four header reads that no test could see
+
+**What happened.** `object_constructed`, `ll_default_dispose` twice,
+`array::entity::needs_separation` and a test fixture read a published entity
+header as a plain field while, under `rc-walk`, the collector stamps a byte
+of that same word from its own thread. A data race, formally undefined, and
+harmless in every execution to date because the byte read back lies outside
+every field those callers test.
+
+**Why it was possible.** `RcHeader`'s fields are `pub` — the layout is a
+contract the compiler shares — so nothing in the type system distinguishes
+the helper from the field. The rule lived in doc comments and in the head of
+whoever wrote the line; `object_constructed` reads the category sixteen lines
+above a comment stating that rule for the write on the next line.
+
+**Why it was not caught.** No instrument here could. `cargo test` passes by
+construction. Miri cannot run the only test that pairs a live collector with
+a mutator: that test is ignored under it because the design's mixed-size
+atomics are rejected outright. The class was found by a review reading the
+callers of an accessor that had just changed.
+
+**What follows.** Two instruments, both built the same day.
+`refcount::tests::who_may_read_a_header` reads the crate's sources and fails
+on a direct field read outside `refcount.rs`, which is aimed at inattention
+and says so — a rename or a local evades it. ThreadSanitizer is the real one:
+it reports plain-against-atomic, does not share Miri's model gap, and was
+validated by putting the defect back and watching it report
+(`dev/WORKFLOW.md`, "ThreadSanitizer").
+
 ## 2026-08-13 — a forced-refusal test that never proved the refusal
 
 **What happened.** Both regression tests for the reset's pin were written

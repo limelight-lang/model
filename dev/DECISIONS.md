@@ -8,6 +8,44 @@ never edited or deleted.
 
 ---
 
+## 2026-08-15 — a header is read as narrowly as it is written, and through the helpers only
+
+Under `rc-walk` every mutator access to a published header goes through
+`refcount`'s helpers, and each helper's width matches the width of the store
+that precedes it: `header_flags` and `header_refcount` load four bytes,
+`header_pair` loads eight and is reached where nothing narrow precedes it.
+
+**The width is a performance rule with a measurement behind it, not a
+correctness one.** A load wider than a fresh overlapping store cannot take
+the value out of the store buffer, and the crate paid for that once already
+(`dev/BENCHMARKS.md`, 2026-07-27, retain/release at 10.2 ns against 2.78).
+The same pairing had returned on the store barrier's path, where `ll_retain`
+writes the counter half and the category test read all eight bytes after it;
+narrowing the two accessors took `heap → arena` from 4.82 to 1.53 ns per
+store and put `rc-walk` below `rc-trace` on a direction where it had been
+2.2x above (`dev/BENCHMARKS.md`, 2026-08-15).
+
+**`header_pair` stays wide and keeps its one caller.** A predicate over both
+halves — `cow_separation_needed`, reached from `ll_cow_separate` and
+`array::entity::needs_separation` — takes one load rather than two, because
+neither site has a narrow store in front of it. It buys no coherence the two
+narrow readers lack: the collector's only claim on a published header is the
+epoch byte, which no such predicate reads.
+
+**Reaching past the helpers to the field is what the guard forbids.** Not
+because a plain read gives a wrong value, but because it races the
+collector's byte store and is invisible to every runtime check;
+`refcount::tests::who_may_read_a_header` reads the sources for it, and
+ThreadSanitizer is what exhibits it (`dev/WORKFLOW.md`). The `rc-trace` arm
+of a `#[cfg]` pair is exempt: that build has no concurrent collector.
+
+**Refused with it, and not to be reproposed without an instrument that
+resolves the escape direction to better than a percent:** merging the
+barrier's two flag reads into one snapshot. Measured, moved nothing, and
+could not have — the second read lives inside the escape branch that neither
+measurable direction takes (`dev/BENCHMARKS.md`, 2026-08-15, "one header read
+for the store path").
+
 ## 2026-08-14 — the reset reads no corpse
 
 A survivor of a reset can die inside that same reset: a heap `&` box

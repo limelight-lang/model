@@ -444,6 +444,12 @@ versions live in `docs/history/`, marked at the top.
   on); collector-side epoch cost probe:
   `collector::tests::the_epoch_as_a_whole::measure_epoch_cost` (ignored, run with
   `--ignored`, release mode); external probes in `bench-external/`.
+  Store-side probe, same shape and same reason:
+  `memory::barrier::tests::what_a_store_costs_by_working_set::measure_store_cost`
+  — inside the lib, because a bench is a separate crate and reaches every
+  micro-op through a call the optimizer keeps, and over two working sets,
+  because a loop publishing one child measures a dependency through one
+  header line rather than a store (`dev/BENCHMARKS.md`, 2026-08-15).
 
 `src/memory/reserve.rs` — the per-thread block reserve that keeps the
 store barrier's log growth from failing; drawn in `Arena::grow_log`,
@@ -511,6 +517,11 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
   `header_is_8_bytes_at_offset_zero`.
 - `Value` 16 bytes, fixed offsets: `value::tests::`
   `box_is_16_bytes_with_fixed_offsets`.
+- A published header is read through `refcount`'s helpers and never as a
+  field: `refcount::tests::who_may_read_a_header`, which reads the crate's
+  own sources, the class being invisible to every runtime check
+  (`dev/DECISIONS.md`, "a header is read as narrowly as it is written";
+  the instrument that exhibits it is `dev/WORKFLOW.md`, ThreadSanitizer).
 
 ## Key decisions
 
