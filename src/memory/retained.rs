@@ -62,6 +62,12 @@ struct Index {
     /// owns it (module doc). At zero, with `live` at zero too, the block
     /// goes home.
     payloads: usize,
+    /// Whether [`register`] has run for this block. False for the entry
+    /// [`pin`] creates: a pin is taken during the reset, while the
+    /// occupant index does not exist yet, and the two states are
+    /// different questions to the one caller that asks
+    /// ([`has_occupant_index`]).
+    indexed: bool,
 }
 
 /// Block address (the block header, 64 KiB-aligned) → what is known
@@ -113,6 +119,7 @@ pub(crate) unsafe fn register(block: usize, mut occupants: Vec<usize>) -> bool {
             occupants: occupants.into(),
             live,
             payloads,
+            indexed: true,
         },
     );
     live == 0 && payloads == 0
@@ -132,6 +139,7 @@ pub(crate) fn pin(block: usize) {
             occupants: Vec::new().into(),
             live: 0,
             payloads: 0,
+            indexed: false,
         })
         .payloads += 1;
 }
@@ -256,16 +264,24 @@ unsafe fn is_occupied(address: usize) -> bool {
     header & 0xffff_ffff != 0
 }
 
-/// Whether `block` has an index — whether some reset has finished
-/// establishing what occupies it. A reset in flight asks this about its
-/// own blocks, which have none yet ([`register`] runs at its end), to
-/// tell its own corpse from an occupant an earlier reset counted
+/// Whether some reset has finished establishing what occupies `block`.
+/// A reset in flight asks it about its own blocks, which have no index
+/// yet ([`register`] runs at its end), to tell its own corpse from an
+/// occupant an earlier reset counted
 /// (`memory::reset_window::absorbs_retained_free`).
-pub(crate) fn is_registered(block: usize) -> bool {
+///
+/// **A registry entry is not an index.** [`pin`] creates one for a block
+/// held for bytes alone, and it carries no occupant: a block pinned by
+/// this very reset would otherwise answer for an index that does not
+/// exist, and the corpse freed in it would be counted twice — once by
+/// the free the absorb should have taken, once by the index built
+/// without it.
+pub(crate) fn has_occupant_index(block: usize) -> bool {
     registry()
         .lock()
         .expect("retained index registry poisoned")
-        .contains_key(&block)
+        .get(&block)
+        .is_some_and(|index| index.indexed)
 }
 
 /// How many payloads the block is pinned for ([`pin`]), and zero for a

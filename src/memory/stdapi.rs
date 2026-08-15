@@ -273,20 +273,21 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     }
 
     // A reset in flight on this thread reads one header word of every
-    // survivor it holds after its fixpoint, so a body whose free would
-    // return memory to the system waits for it. Ahead of the epoch arm
-    // below on purpose: parked in `deferred_free` instead, the same body
-    // could be freed by a checkpoint's flush while the reset still runs
-    // (`memory::reset_window`).
+    // survivor it holds after its fixpoint, and one of every child their
+    // slots still name, so a body whose free would return memory to the
+    // system waits for it whether or not this reset ever promoted it.
+    // Ahead of the epoch arm below on purpose: parked in `deferred_free`
+    // instead, the same body could be freed by a checkpoint's flush while
+    // the reset still runs (`memory::reset_window`).
     if crate::memory::large_entity::is_large_entity(kind)
         && unsafe { crate::memory::reset_window::park_large(ptr) }
     {
         return;
     }
 
-    // A corpse of the reset in flight, in a block it has not indexed yet:
-    // the free is absorbed rather than deferred, `register` having
-    // already declined to count it (`memory::reset_window`).
+    // A corpse of the reset in flight, in a block that has no occupant
+    // index yet: the free is absorbed rather than deferred, `register`
+    // having already declined to count it (`memory::reset_window`).
     if kind == crate::memory::block_pool::BLOCK_KIND_RETAINED
         && crate::memory::reset_window::absorbs_retained_free(block as usize)
     {

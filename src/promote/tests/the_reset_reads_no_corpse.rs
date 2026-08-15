@@ -149,15 +149,11 @@ unsafe extern "C" fn reset_the_second_arena(_o: *mut Object) {
 /// them. The array must come out of the reset held by exactly the one
 /// that lived.
 ///
-/// **Today the right answer arrives by a cancellation nothing
-/// guarantees**: the corpse's slot still names the array, because
-/// `ll_default_dispose` releases a child without nulling its slot, so the
-/// edge walk counts it (+1) and the release the same teardown performed
-/// is inside the delta (-1). The two sum to zero by accident of each
-/// kind's teardown leaving slots readable and stale — a property written
-/// nowhere, and a compiler-generated `dispose` may drop it. What pins the
-/// count by construction is the step that replaces the accident, and this
-/// test is what it must keep green.
+/// **The escrow is what makes this 1 rather than 0.** The walk does not
+/// reach the corpse's slot — the skip takes it out — and the release its
+/// teardown performed is inside the delta, so the promotion-time snapshot
+/// is the only thing that puts the edge back
+/// (`dev/DECISIONS.md`, "the reset reads no corpse").
 #[test]
 fn a_cow_child_of_a_holder_the_drain_killed_settles_to_its_live_holders() {
     use crate::array::entity::ll_array_new;
@@ -322,7 +318,6 @@ fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_reconcile() {
 #[test]
 fn a_survivor_promoted_at_refcount_zero_is_not_read_as_a_corpse() {
     use crate::array::entity::ll_array_new;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     let _g = crate::memory::block_pool::test_guard();
 
     static CACHE: AtomicUsize = AtomicUsize::new(0);
@@ -410,7 +405,6 @@ fn a_survivor_promoted_at_refcount_zero_is_not_read_as_a_corpse() {
 #[test]
 fn a_cow_child_counted_again_in_a_later_round_credits_each_retain() {
     use crate::array::entity::ll_array_new;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     let _g = crate::memory::block_pool::test_guard();
 
     static CACHE: AtomicUsize = AtomicUsize::new(0);
@@ -525,7 +519,6 @@ fn a_cow_child_counted_again_in_a_later_round_credits_each_retain() {
 #[test]
 fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_retrace() {
     use crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     let _g = crate::memory::block_pool::test_guard();
 
     static TAIL_CLASS: AtomicUsize = AtomicUsize::new(0);
@@ -767,7 +760,6 @@ fn a_survivor_dying_inside_a_nested_reset_pays_its_edges_to_the_outer_one() {
 #[test]
 fn a_survivor_that_resurrects_itself_records_no_death() {
     use crate::array::entity::ll_array_new;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     let _g = crate::memory::block_pool::test_guard();
 
     static CACHE: AtomicUsize = AtomicUsize::new(0);
@@ -1028,7 +1020,7 @@ fn a_corpse_freed_under_an_epoch_is_absorbed_rather_than_parked() {
         "the block went back to the pool under a living survivor"
     );
     assert!(
-        crate::memory::retained::is_registered(block),
+        crate::memory::retained::has_occupant_index(block),
         "the block's occupant index is gone while an occupant is alive"
     );
 
@@ -1046,8 +1038,122 @@ fn a_corpse_freed_under_an_epoch_is_absorbed_rather_than_parked() {
     }
 
     assert!(
-        !crate::memory::retained::is_registered(block),
+        !crate::memory::retained::has_occupant_index(block),
         "the index outlived the last occupant it was built for"
+    );
+}
+
+/// The same absorb, in the block a refused carry pinned. The pin makes
+/// the block known to the registry before any index exists, so a corpse
+/// of this reset can be freed in a block the registry already answers
+/// for — and the answer the absorb needs is whether the block has an
+/// occupant index, not whether it has a registry entry.
+///
+/// Under an epoch the difference is the block: the free parks, the index
+/// is built without the corpse, and the flush spends a count the index
+/// never took, leaving the block one short of its true occupancy and
+/// ready to go home under the two survivors still living in it.
+#[cfg(feature = "rc-walk")]
+#[test]
+fn a_corpse_in_a_block_pinned_for_bytes_is_absorbed_like_any_other() {
+    use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED};
+    use crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED;
+    use crate::memory::deferred_free;
+    use crate::test_support::outside_block;
+    use std::sync::atomic::Ordering;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let holder_cls = ClassBuilder::new("PinnedAbsorbHolder")
+        .prop("kept", true)
+        .build();
+    let neighbour_cls = ClassBuilder::new("PinnedAbsorbNeighbour").build();
+    let corpse_cls = ClassBuilder::new("PinnedAbsorbSlot")
+        .prop("box", true)
+        .build();
+    let waker_cls = outside_block::class("WakerFreedUnderAnEpoch");
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+    set_current_context(context_ptr);
+
+    // Two heap holders rather than one, so the two survivors of the
+    // block can be killed one at a time: what a spent count costs is a
+    // block handed over while the **second** of them is still alive.
+    let holder = unsafe { new_constructed(context_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let keeper = unsafe { new_constructed(context_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let first =
+        unsafe { new_constructed(context_ptr, neighbour_cls, MemoryCategory::RequestArena) };
+    let second =
+        unsafe { new_constructed(context_ptr, neighbour_cls, MemoryCategory::RequestArena) };
+    let waker = unsafe { new_constructed(context_ptr, waker_cls, MemoryCategory::RequestArena) };
+    let corpse = unsafe { new_constructed(context_ptr, corpse_cls, MemoryCategory::RequestArena) };
+
+    let storage = unsafe { outside_block::install_block(context_ptr, waker) };
+    let block = BlockHeader::of_ptr(storage) as usize;
+    for (entity, name) in [
+        (first as *const u8, "first"),
+        (second as *const u8, "second"),
+        (waker as *const u8, "the waker"),
+    ] {
+        assert_eq!(
+            BlockHeader::of_ptr(entity) as usize,
+            block,
+            "{name} was bumped into another block, so the pin and the \
+             corpse do not meet in one block"
+        );
+    }
+
+    unsafe {
+        // The two neighbours are what the block must still be held for.
+        store_prop(arena_ptr, holder, 16, first);
+        store_prop(arena_ptr, keeper, 16, second);
+        killed_by_the_drain(arena_ptr, corpse, waker as *mut RcHeader, Tag::Object);
+    }
+
+    let refusals_before = crate::memory::buffer_arena::refusals();
+    FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
+    deferred_free::begin_epoch();
+    unsafe { arena_reset_full(arena_ptr) };
+    deferred_free::end_epoch();
+    unsafe { deferred_free::flush() };
+    FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
+    set_current_context(std::ptr::null_mut());
+
+    assert_eq!(
+        crate::memory::buffer_arena::refusals() - refusals_before,
+        1,
+        "the carry was not refused, so nothing pinned this block and the \
+         test proves nothing"
+    );
+    assert_eq!(
+        unsafe { block_kind(block as *const u8) },
+        BLOCK_KIND_RETAINED,
+        "the block went home while two survivors were still living in it"
+    );
+
+    unsafe {
+        assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+        ll_object_die(holder);
+    }
+
+    assert_eq!(
+        unsafe { block_kind(block as *const u8) },
+        BLOCK_KIND_RETAINED,
+        "the first occupant's death emptied the block, so a count was \
+         spent that the index never took"
+    );
+
+    unsafe {
+        assert!(crate::refcount::ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+    }
+
+    assert_eq!(
+        unsafe { *(block as *const u32) },
+        BLOCK_KIND_FREE,
+        "the block outlived the last of its occupants"
     );
 }
 
@@ -1060,7 +1166,6 @@ fn a_corpse_freed_under_an_epoch_is_absorbed_rather_than_parked() {
 #[test]
 fn an_edge_unset_before_its_holder_dies_still_settles_its_child() {
     use crate::array::entity::ll_array_new;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     let _g = crate::memory::block_pool::test_guard();
 
     static DOOMED_HOLDER: AtomicUsize = AtomicUsize::new(0);

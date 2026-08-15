@@ -324,6 +324,15 @@ versions live in `docs/history/`, marked at the top.
   would send a multi-megabyte run to the 64 KiB block pool at the
   entity's death, and the omission is silent, which is why that rule
   carries a test of its own.
+- The window a reset holds over its own frees: `src/memory/reset_window.rs`
+  — per-thread, both builds, opened by `promote::arena_reset_full` and
+  closed by a stack guard. It parks both large-entity kinds until the
+  outermost close, absorbs the free of a corpse in a block with no
+  occupant index yet, records every completed teardown so the passes
+  after the fixpoint skip what died, and holds the COW
+  reconciliation's two correction terms. Windows nest, because a
+  destructor of one reset can resolve a second arena and reset it
+  (`dev/DECISIONS.md`, "the reset reads no corpse").
 - Retained-block object indexes: `src/memory/retained.rs` — block
   address → its occupants, sorted, and how many of them are still
   alive. Registered by `promote` at reset, read by both of `heap`'s

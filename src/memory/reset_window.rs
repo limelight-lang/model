@@ -5,9 +5,10 @@
 //! release-log drain can kill a survivor — the shape is a heap `&` box
 //! stored into an arena slot, whose logged release tears the promoted
 //! entity down. The passes that follow must still be able to read one
-//! word of every address they hold, which is how they tell a corpse from
-//! a live entity (`retained::is_occupied`, and the skip in
-//! `promote::reconcile_cow_counts`).
+//! word of every address they hold — the weak walk and
+//! `retained::is_occupied` both do — while whether an entity is a corpse
+//! is decided by the death recorded here rather than by that word
+//! (`dev/DECISIONS.md`, "the reset reads no corpse").
 //!
 //! For a survivor in a shared retained block that costs nothing: such a
 //! block recycles nothing inside itself, so the corpse's header stays
@@ -26,9 +27,9 @@
 //! outer window, which frees it at its own close.
 //!
 //! The window also **absorbs** one free rather than deferring it: a
-//! corpse in a retained block this reset has not registered yet. Its
-//! death is already accounted for, because `retained::register` declines
-//! to count an occupant whose header reads zero, and replaying that free
+//! corpse in a retained block that has no occupant index yet. Its death
+//! is already accounted for, because `retained::register` declines to
+//! count an occupant whose header reads zero, and replaying that free
 //! afterwards would take the block's live count below its true occupancy
 //! and hand it to the pool under living survivors.
 //!
@@ -44,11 +45,13 @@ use crate::refcount::RcHeader;
 
 /// One reset in flight on this thread.
 struct ResetWindow {
-    /// Bodies whose free would return memory to the system, held until
-    /// the reset's last reader is done with them. Only the two
-    /// large-entity kinds: every other kind either recycles nothing
-    /// (arena, immortal) or leaves the freed bytes mapped where a
-    /// header read still lands (a heap slot, a retained block).
+    /// Bodies held until the reset's last reader is done with them. Both
+    /// large-entity kinds, which `large_entity::is_large_entity` treats
+    /// as one: the run form returns 128 KiB and up to the system, and the
+    /// pooled form's block can be reissued mid-reset. Every other kind
+    /// either recycles nothing (arena, immortal) or leaves the freed
+    /// bytes mapped where a header read still lands (a heap slot, a
+    /// retained block).
     parked_large: Vec<*mut u8>,
     /// What each survivor of **this** reset held in COW children at the
     /// instant it was promoted, which is the instant the child's captured
@@ -57,14 +60,15 @@ struct ResetWindow {
     /// nothing, its edges being walked where they are
     /// (`dev/DECISIONS.md`, "the reset reads no corpse").
     snapshots: HashMap<usize, Vec<*mut RcHeader>>,
-    /// One entry per edge a dead holder of this reset held at promotion:
-    /// the release that edge earned is inside the child's delta, and
-    /// nothing walks the holder any more, so the count is restored here.
+    /// The edges of this reset's corpses, paid in from their snapshots at
+    /// death, and the compensating retains `promote::count_children`
+    /// handed a COW child. Both are recorded for every child that reaches
+    /// the recorder, including one this reset never promoted; what
+    /// narrows them to the entities the arithmetic is about is the
+    /// consumer, `promote::reconcile_cow_counts`, which drops a
+    /// correction naming no row of its own
+    /// (`dev/DECISIONS.md`, "the reset reads no corpse").
     escrow: Vec<*mut RcHeader>,
-    /// One entry per compensating retain `promote::count_children` handed
-    /// an **already promoted** COW child in a later round. That retain is
-    /// promote's own hand landing in the delta, while the edge behind it
-    /// is walked as well, so the pair would count twice.
     credits: Vec<*mut RcHeader>,
     /// The window this one displaced. A destructor run by one reset can
     /// resolve another arena and reset it, so the windows nest and each
@@ -97,12 +101,6 @@ impl Drop for Guard {
 /// guard leaves scope.
 #[must_use = "the window closes when the guard drops, so it must be held"]
 pub(crate) fn opened() -> Guard {
-    open();
-    Guard(())
-}
-
-/// Open a window for a reset about to run on this thread.
-fn open() {
     let prev = WINDOW.with(|cell| cell.get());
     let window = Box::into_raw(Box::new(ResetWindow {
         parked_large: Vec::new(),
@@ -113,6 +111,7 @@ fn open() {
     }));
 
     WINDOW.with(|cell| cell.set(window));
+    Guard(())
 }
 
 /// Close the innermost window and free what it parked.
@@ -176,10 +175,8 @@ fn died_set() -> *mut HashSet<usize> {
 }
 
 /// Record that `survivor` held `child`, a COW entity, at the instant of
-/// its promotion. Taken by the counting pass, which runs after every
-/// destructor of its round and before the category rewrite — the one
-/// point where a survivor's edges are provably the ones its children's
-/// captured counts were taken against.
+/// its promotion ([`ResetWindow::snapshots`]). The caller is the counting
+/// pass, which is where that instant is.
 pub(crate) fn snapshot_edge(survivor: *mut RcHeader, child: *mut RcHeader) {
     let window = WINDOW.with(|cell| cell.get());
     if window.is_null() {
@@ -240,8 +237,9 @@ pub(crate) fn record_death(entity: *mut RcHeader) {
 /// edge whose release is already in the delta and the two cancel. So a
 /// test reads these instead of the memory the walk would have touched.
 ///
-/// Plain statics rather than thread-locals: every test that reads them
-/// holds `block_pool::test_guard`, which serializes the suite.
+/// Plain statics rather than thread-locals: every test that runs a reset
+/// holds `block_pool::test_guard`, which serializes the suite, so no
+/// unguarded thread writes these behind a reader.
 #[cfg(test)]
 static DEATHS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
@@ -273,16 +271,39 @@ pub(crate) fn has_died(entity: *mut RcHeader) -> bool {
     !died.is_null() && unsafe { (*died).contains(&(entity as usize)) }
 }
 
-/// The escrowed edges of this reset's corpses, and the credits its
-/// counting pass handed out — the two correction terms of
-/// `promote::reconcile_cow_counts`.
-pub(crate) fn corrections() -> (Vec<*mut RcHeader>, Vec<*mut RcHeader>) {
+/// The two correction terms of `promote::reconcile_cow_counts`, named
+/// rather than paired: they carry opposite signs at the call site, and a
+/// swapped destructuring of two vectors of the same type would compile
+/// and turn every +1 into a -1.
+pub(crate) struct Corrections {
+    /// One entry per edge a dead holder of this reset held at promotion:
+    /// the release that edge earned is inside the child's delta, and
+    /// nothing walks the holder any more, so the count is restored. **+1
+    /// each.**
+    pub(crate) escrowed: Vec<*mut RcHeader>,
+    /// One entry per compensating retain the counting pass gave an
+    /// already-promoted COW child: it lands in the child's delta while
+    /// the edge behind it is walked as well. **-1 each.**
+    pub(crate) credited: Vec<*mut RcHeader>,
+}
+
+/// What this reset owes its COW survivors' counts beyond the edges the
+/// walk finds. Empty outside a reset.
+pub(crate) fn corrections() -> Corrections {
     let window = WINDOW.with(|cell| cell.get());
     if window.is_null() {
-        return (Vec::new(), Vec::new());
+        return Corrections {
+            escrowed: Vec::new(),
+            credited: Vec::new(),
+        };
     }
 
-    unsafe { ((*window).escrow.clone(), (*window).credits.clone()) }
+    unsafe {
+        Corrections {
+            escrowed: (*window).escrow.clone(),
+            credited: (*window).credits.clone(),
+        }
+    }
 }
 
 /// Park a large entity's body if a reset is in flight on this thread.
@@ -336,7 +357,7 @@ pub(crate) fn absorbs_retained_free(block: usize) -> bool {
         return false;
     }
 
-    !crate::memory::retained::is_registered(block)
+    !crate::memory::retained::has_occupant_index(block)
 }
 
 #[cfg(test)]

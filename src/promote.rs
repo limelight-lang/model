@@ -15,13 +15,15 @@
 //!    a holder that died before now cannot dangle the reset.
 //! 2. **Count.** External references are already each root's `refcount`,
 //!    its `IS_ESCAPEE` hold-count kept live by the barrier and by holder
-//!    teardown, so this pass adds only internal edges between survivors
-//!    and one compensating retain per heap entity a survivor holds: that
+//!    teardown, so this pass adds internal edges between survivors and
+//!    one compensating retain per heap entity a survivor holds: that
 //!    entity's release-at-reset record assumed the holder would die, and
-//!    the survivor now owes its own release at its real death. A **COW**
-//!    survivor is counted apart, in [`reconcile_cow_counts`] after the
-//!    fixpoint, its count being a value the mutator reads and destructors
-//!    being mutator code.
+//!    the survivor now owes its own release at its real death. The same
+//!    walk records what [`reconcile_cow_counts`] needs of it — each
+//!    survivor's COW edges at that instant, and each compensating retain
+//!    given to an already-promoted COW child. A **COW** survivor is
+//!    counted apart, after the fixpoint, its count being a value the
+//!    mutator reads and destructors being mutator code.
 //! 3. **Retain blocks** carrying survivors: rewrite each survivor's
 //!    category to GcHeap in place, stamp the blocks `BLOCK_KIND_RETAINED`
 //!    and keep them out of the pool. The pointer-tag alternative was
@@ -624,7 +626,8 @@ unsafe fn mark_one(
 /// Settle every COW survivor's count now that the fixpoint is over and
 /// no user code can run again.
 ///
-/// Two contributions, and the split is the whole design. **Edges** — the
+/// Four terms, and the split of the first two is the whole design.
+/// **Edges** — the
 /// references surviving entities hold — replace what the count said at
 /// promotion time, because the holders that died with the arena never
 /// released and there is no list of them to subtract. **The delta** —
@@ -636,13 +639,19 @@ unsafe fn mark_one(
 /// (`dev/DECISIONS.md`, "the COW reconciliation carries a delta, because
 /// promotion is not the end of the reset").
 ///
+/// The remaining two are corrections the window kept, `D` and `K`, and
+/// the whole expression is `edges_live + (now - at) + D - K`
+/// (`dev/DECISIONS.md`, "the reset reads no corpse").
+///
 /// `at_promotion` is each COW survivor's count at the instant its
 /// category was rewritten — the last instant the reset can attribute it
 /// to arena holders.
 ///
 /// # Safety
-/// Every survivor is live, the fixpoint has settled, and no user code can
-/// run again before the blocks are disposed of.
+/// The fixpoint has settled and no user code can run again before the
+/// blocks are disposed of. A survivor may already be a corpse of this
+/// reset: the walk skips one rather than requiring it live
+/// (`memory::reset_window::has_died`).
 unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mut RcHeader, u32)]) {
     if at_promotion.is_empty() {
         return;
@@ -655,19 +664,18 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
         settled.insert(s as usize, (0, now - at as i64));
     }
 
-    // The two correction terms of the settled count: one entry per edge
-    // a dead holder of this reset held at promotion, and one per retain
-    // `count_children` handed an already-promoted COW child. The first
-    // restores a count the walk below can no longer see, the second
-    // takes back a retain that walk counts a second time.
-    let (escrowed, credited) = crate::memory::reset_window::corrections();
-    for child in escrowed {
+    // A correction naming no row of its own is dropped here, which is
+    // what narrows the window's two lists — recorded for every COW child
+    // the counting pass met — to this reset's own COW survivors
+    // (`memory::reset_window::Corrections`).
+    let corrections = crate::memory::reset_window::corrections();
+    for child in corrections.escrowed {
         if let Some(entry) = settled.get_mut(&(child as usize)) {
             entry.1 += 1;
         }
     }
 
-    for child in credited {
+    for child in corrections.credited {
         if let Some(entry) = settled.get_mut(&(child as usize)) {
             entry.1 -= 1;
         }
@@ -693,6 +701,10 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
         }
     }
 
+    // The rows are not filtered by death, unlike the walk above: a COW
+    // survivor cannot become a corpse of the reset that promoted it, and
+    // a row skipped here would leave a live entity's count unsettled
+    // (`dev/DECISIONS.md`, "the reset reads no corpse").
     for &(s, _) in at_promotion {
         let (edges, delta) = settled[&(s as usize)];
         let settled_count = edges as i64 + delta;
@@ -728,17 +740,16 @@ fn traceable_in_full(flags: u32) -> bool {
 
 /// One counting pass over a survivor's reference slots: +1 to arena
 /// children (internal edges), a compensating retain to heap entities
-/// (their release-at-reset record no longer matches a dying holder).
+/// (their release-at-reset record no longer matches a dying holder), and
+/// both of the reconciliation's correction terms recorded on the way
+/// (`memory::reset_window::snapshot_edge`, `credit`).
 unsafe fn count_children(surv: *mut RcHeader) {
     unsafe {
         crate::walk::trace_entity(surv, |child| {
-            // The COW edges of a survivor, recorded at the one instant
-            // they are the edges its children's captured counts were
-            // taken against: after this round's destructors, before the
-            // category rewrite. What the recording is for is
-            // `reconcile_cow_counts`, and why it cannot be taken at the
-            // holder's death instead is `dev/DECISIONS.md`, "the reset
-            // reads no corpse".
+            // This pass is the instant the snapshot has to be taken at:
+            // after this round's destructors, before the category
+            // rewrite. Why not the holder's death instead —
+            // `dev/DECISIONS.md`, "the reset reads no corpse".
             let cow = (*child).flags & COW != 0;
             if cow {
                 crate::memory::reset_window::snapshot_edge(surv, child);
@@ -748,10 +759,8 @@ unsafe fn count_children(surv: *mut RcHeader) {
                 MemoryCategory::RequestArena => (*child).refcount += 1,
                 MemoryCategory::GcHeap => {
                     ll_retain(child);
-                    // A retain of this pass's own, on a child already
-                    // promoted in an earlier round: it lands in the
-                    // child's delta while the edge behind it is walked
-                    // as well, so the reconciliation takes it back out.
+                    // A retain of this pass's own, taken back by the
+                    // reconciliation's K term.
                     if cow {
                         crate::memory::reset_window::credit(child);
                     }

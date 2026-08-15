@@ -239,7 +239,10 @@ epoch-only.
 
 **What rides.** Every block kind that reaches `ll_free` and can put
 memory back in circulation: heap raw buffers, entity slots, pooled
-large, OS-direct runs and retained blocks. Buffer-arena chunks never
+large, OS-direct runs and retained blocks. A reset in flight takes two
+of those before this test is reached: a large-entity body parks in the
+reset's own window instead, and the free of a corpse in a block that has
+no occupant index yet is dropped entirely (below, "Arena reset"). Buffer-arena chunks never
 reach `ll_free` at all, `buffer_free_longlived_payload` calling
 `BufferArena::free` directly, so that branch makes the test itself and
 parks the whole call: `free` is size-carrying and can hand an emptied
@@ -518,6 +521,21 @@ Each pass:
    and stamp its block `RETAINED` so it stays out of the pool.
 4. **Release.** Drain the deferred-release log, collecting the round
    first and releasing after, because teardown here runs user code.
+
+The drain of step 4 can kill a survivor of step 3, so the reset holds a
+**window** over its own frees for as long as it runs
+(`memory/reset_window.rs`). Three things ride on it. A large-entity
+body parks until the window closes, because its free returns memory to
+the system and the passes after the fixpoint still read one header word
+of every address they hold; an inner window hands what it parked to the
+window outside it, so only the outermost close frees anything. The free
+of a corpse in a block that has no occupant index yet is absorbed, since
+the index built at the end of the reset declines to count an occupant
+whose header reads zero and there is no count for that death to spend.
+And every completed teardown is recorded, which is how the passes after
+the fixpoint tell a corpse from a live survivor — and how the COW
+reconciliation of step 2 gets the two correction terms that replace a
+dead holder's edges (`dev/DECISIONS.md`, "the reset reads no corpse").
 
 Repeat until a pass releases nothing. A recursion bound is the only
 backstop; hitting it is an error rather than a silent drop, since
