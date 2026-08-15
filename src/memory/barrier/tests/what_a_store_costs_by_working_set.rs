@@ -16,6 +16,66 @@
 //! lines. What differs between the two is the chain; what they share is the
 //! store.
 //!
+//! ## What prices the release-at-reset record
+//!
+//! The record is the arena's write-side log, appended when a heap child
+//! enters an arena container. Two shapes price it, and neither subtracts one
+//! direction from another:
+//!
+//! - [`heap_into_heap`] against [`heap_into_arena`]. Both take the same
+//!   counted retain from the same allocator, both read the child's category
+//!   out of the same header, and only the second appends a record. The
+//!   category of the *child* cannot separate them — `ll_retain` returns early
+//!   exactly where the log stays silent — so what varies is the owner.
+//! - [`sweep_round`]. It holds both loops fixed inside one timed region and
+//!   varies only `k`, the number of stores that go to the arena owner, so
+//!   `d(ns)/dk` is the record's marginal cost with no arm-to-arm subtraction
+//!   at all. Two directions are two rounds at two layouts, and the sweep
+//!   absorbs that term because its own layout is constant across the five
+//!   points.
+//!
+//! Neither is authoritative over the other. They agree under `rc-walk` and
+//! disagree by 2x under `rc-trace`, where the sweep is the half the log's
+//! cross-build identity refuses (`dev/BENCHMARKS.md`, 2026-08-15, "what the
+//! release-at-reset record costs, and the statistic that decides the
+//! answer").
+//!
+//! **A per-record figure carries a fraction of a segment carve.** A log
+//! segment holds `LOG_SEG_RECORDS` = 500 records and is carved from the
+//! arena's own bump, so `k` records cost `1 + (k - 1) / 500` carves and the
+//! sweep's five points stand at 0, 1, 1, 2 and 2 of them. The term is a step
+//! rather than a slope, which is what the reported residual exposes, and it
+//! moves with `STORES`.
+//!
+//! **Every timed loop is bounded at run time.** The directions would bound
+//! theirs by a constant and the sweep bounds its two by `k`, and a constant
+//! trip count is a different compilation: with `STORES` visible, `sweep_k=0`
+//! and `heap_into_heap` ran the same thousand publishes into the same slot
+//! and disagreed by 0.11 ns per store. Hiding both bounds behind [`trip`] is
+//! what makes the sweep and its cross-check one shape, and a run-time bound
+//! is also what a loop filling slots in compiled PHP has.
+//!
+//! ## Hot and cold
+//!
+//! Every figure is taken twice. The reset's own drain reads exactly the log
+//! lines the next round writes, and there are more of them as `k` grows, so
+//! a round following a round measures a record landing in a warm line. That
+//! is not what a request pays: it writes a record into a line it never
+//! revisits. The cold half walks [`SCRATCH_BYTES`] untimed between rounds,
+//! and the difference between the two halves is how much of a record is
+//! instructions and how much is a cache line.
+//!
+//! The walk evicts everything, not only the log, so a cold *direction* also
+//! carries cold child headers, which cost more than the record does. The
+//! sweep does not: its children are the same across all five points, so what
+//! varies with `k` is the record's line alone.
+//!
+//! The two halves cannot be interleaved arm by arm, an arm's cache state
+//! being made by whatever ran before its round, so each working set is
+//! reported three times: `hot`, `cold`, `hot_again`. The two hot passes
+//! bracket the cold one and bound the drift the difference between them has
+//! to clear (`dev/BENCHMARKS.md`, Method).
+//!
 //! ```
 //! cargo test --release --lib -- --ignored measure_store_cost --nocapture
 //! cargo test --release --lib --no-default-features -- --ignored measure_store_cost --nocapture
@@ -26,11 +86,13 @@
 //! different profile. What may be compared is one shape against another
 //! inside one run.
 
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use super::*;
 use crate::object::{Object, new_constructed};
 use crate::promote::arena_reset_full;
+use crate::refcount::header_refcount;
 use crate::value::Tag;
 use crate::{Class, ClassBuilder};
 
@@ -44,9 +106,35 @@ const STORES: usize = 1_000;
 const WIDE: usize = 64;
 
 /// Timed rounds per shape, taken after one warm-up round whose time is
-/// discarded; the median of the timed rounds is reported
-/// (`dev/BENCHMARKS.md`, Method).
-const ROUNDS: usize = 5;
+/// discarded; the median of them is reported (`dev/BENCHMARKS.md`, Method,
+/// and [`median_ns_per_store`]).
+///
+/// Fifteen rather than the five the directions alone would want, because
+/// what the sweep is read for is a slope, and a slope over `k` is the
+/// difference of two of these figures: it carries the noise of both, and
+/// more rounds is what brings that difference above it.
+const ROUNDS: usize = 15;
+
+/// The sweep's points: how many of a region's `STORES` publishes go to the
+/// arena owner. Five, spanning the whole region, so the slope has a lever
+/// arm and the residual has something to show.
+const SWEEP: [usize; 5] = [0, 250, 500, 750, 1_000];
+
+/// Scratch walked untimed between rounds to take the round before out of
+/// cache. It has to exceed the last level, which is 16 MiB on this box; a
+/// machine with a larger one needs a larger figure here, and the hot and
+/// cold figures coming out equal is what that would look like.
+const SCRATCH_BYTES: usize = 32 << 20;
+
+/// Cache line, the stride the eviction walk stores at.
+const LINE_BYTES: usize = 64;
+
+/// The trip count of a timed loop, hidden from the optimizer — see the
+/// module doc, "Every timed loop is bounded at run time".
+#[inline]
+fn trip(count: usize) -> usize {
+    std::hint::black_box(count)
+}
 
 /// A class with one Box property at offset 16 — the slot every shape
 /// publishes into.
@@ -77,19 +165,44 @@ unsafe fn children(
         .collect()
 }
 
-/// Median nanoseconds per store over `ROUNDS` timed rounds, run after one
-/// warm-up round whose time is discarded.
-fn median_ns_per_store(mut round: impl FnMut() -> Duration) -> f64 {
-    let mut taken: Vec<f64> = Vec::with_capacity(ROUNDS);
-    for r in 0..=ROUNDS {
-        let elapsed = round();
-        if r > 0 {
-            taken.push(elapsed.as_nanos() as f64 / STORES as f64);
+/// How many of the publishes `range` makes land on child `index`, the cursor
+/// over the children being `i & mask`.
+///
+/// A round's owed count is read from this rather than from
+/// `range.len() / (mask + 1)`: `WIDE` does not divide `STORES`, so the first
+/// children take one publish more than the last.
+fn stores_hitting(index: usize, mask: usize, range: Range<usize>) -> u32 {
+    range.filter(|i| i & mask == index).count() as u32
+}
+
+/// Check every child against the count its round owes it, then give each
+/// reference back — the last one tears the child down.
+///
+/// `owed` is the references a child holds **beyond** its creation one.
+///
+/// The check is an `assert_eq!` and not a `debug_assert!` because the probe
+/// is a release-mode run, where the debug form is gone and `panic = "abort"`
+/// is the failure mode: an over-count leaks and reads as drift, an
+/// under-count frees a child a slot still names and the next round stores
+/// through it.
+///
+/// # Safety
+/// `values` are live GC-heap entities, each holding its creation reference
+/// plus `owed(index)` more, and named by no slot any longer.
+unsafe fn drain_children(values: &[Value], owed: impl Fn(usize) -> u32) {
+    for (index, value) in values.iter().enumerate() {
+        let entity = value.entity_ptr();
+        let expected = owed(index) + 1;
+        assert_eq!(
+            unsafe { header_refcount(entity) },
+            expected,
+            "child {index} was left holding a count the round did not intend"
+        );
+
+        for _ in 0..expected {
+            unsafe { drop_ref(MemoryCategory::GcHeap, entity) };
         }
     }
-
-    taken.sort_by(|a, b| a.partial_cmp(b).expect("a duration is never NaN"));
-    taken[taken.len() / 2]
 }
 
 /// One round of the arena→arena publish: the retain returns early on the
@@ -110,7 +223,7 @@ unsafe fn arena_into_arena(
         let values = children(ctx, leaf, MemoryCategory::RequestArena, mask + 1);
 
         let start = Instant::now();
-        for i in 0..STORES {
+        for i in 0..trip(STORES) {
             assert!(store_box(
                 arena,
                 MemoryCategory::RequestArena,
@@ -130,6 +243,11 @@ unsafe fn arena_into_arena(
 /// One round of the heap→arena publish: one release-at-reset record per
 /// store, and the retain each record owes.
 ///
+/// The slot is **not** cleared before the owner dies, where
+/// [`heap_into_heap`] must clear it: an arena owner's death is the reset,
+/// which drops pages and disposes nothing, so nothing here reads the slot
+/// back.
+///
 /// # Safety
 /// As [`arena_into_arena`].
 unsafe fn heap_into_arena(
@@ -145,7 +263,7 @@ unsafe fn heap_into_arena(
         let slot = Object::prop_at(owner, 16);
 
         let start = Instant::now();
-        for i in 0..STORES {
+        for i in 0..trip(STORES) {
             assert!(store_box(
                 arena,
                 MemoryCategory::RequestArena,
@@ -158,10 +276,60 @@ unsafe fn heap_into_arena(
         // The reset owns one release per record it logged, which returns
         // each child to the creation reference this round holds.
         arena_reset_full(arena);
-        for value in &values {
-            drop_ref(MemoryCategory::GcHeap, value.entity_ptr());
+        drain_children(&values, |_| 0);
+        elapsed
+    }
+}
+
+/// One round of the heap→heap publish: the same counted retain from the
+/// same allocator as [`heap_into_arena`], the child's category read out of
+/// the same header, and no record. The direction that holds the retain
+/// constant while the log varies.
+///
+/// # Safety
+/// As [`arena_into_arena`].
+unsafe fn heap_into_heap(
+    ctx: *mut LLContext,
+    arena: *mut Arena,
+    holder: *const Class,
+    leaf: *const Class,
+    mask: usize,
+) -> Duration {
+    unsafe {
+        let values = children(ctx, leaf, MemoryCategory::GcHeap, mask + 1);
+        let owner = new_constructed(ctx, holder, MemoryCategory::GcHeap);
+        let slot = Object::prop_at(owner, 16);
+
+        let start = Instant::now();
+        for i in 0..trip(STORES) {
+            assert!(store_box(
+                arena,
+                MemoryCategory::GcHeap,
+                slot,
+                values[i & mask]
+            ));
         }
 
+        let elapsed = start.elapsed();
+        // Nothing this round allocated is the arena's. The reset runs all
+        // the same, so that the untimed half of the two directions is the
+        // same work and the block pool reaches the next round in the same
+        // state.
+        arena_reset_full(arena);
+
+        // The owner's dispose releases whatever its slot names
+        // (`ll_default_dispose`), so the slot is cleared before the drain
+        // frees the child it holds. The clear moves no count: a publish of
+        // null retains nothing, and releasing the displaced entity is
+        // `drop_ref`'s job, which the drain does.
+        assert!(store_box(
+            arena,
+            MemoryCategory::GcHeap,
+            slot,
+            Value::null()
+        ));
+        drain_children(&values, |index| stores_hitting(index, mask, 0..STORES));
+        drop_ref(MemoryCategory::GcHeap, owner as *mut RcHeader);
         elapsed
     }
 }
@@ -184,7 +352,7 @@ unsafe fn arena_into_heap(
         let values = children(ctx, leaf, MemoryCategory::RequestArena, mask + 1);
 
         let start = Instant::now();
-        for i in 0..STORES {
+        for i in 0..trip(STORES) {
             assert!(store_box(
                 arena,
                 MemoryCategory::GcHeap,
@@ -214,6 +382,201 @@ unsafe fn arena_into_heap(
     }
 }
 
+/// One round of the sweep: of the region's `STORES` publishes, the first `k`
+/// name an arena owner and the rest a heap owner, out of the same children
+/// throughout. What varies across `k` is the record and nothing else.
+///
+/// Two loops rather than one branching loop, because `owner_cat` is the
+/// compile-time constant this whole probe exists to measure the shape of;
+/// they share one timed region, so the region's time is
+/// `k · heap→arena + (STORES - k) · heap→heap` plus a constant.
+///
+/// # Safety
+/// As [`arena_into_arena`].
+unsafe fn sweep_round(
+    ctx: *mut LLContext,
+    arena: *mut Arena,
+    holder: *const Class,
+    leaf: *const Class,
+    mask: usize,
+    k: usize,
+) -> Duration {
+    unsafe {
+        let values = children(ctx, leaf, MemoryCategory::GcHeap, mask + 1);
+        let arena_owner = new_constructed(ctx, holder, MemoryCategory::RequestArena);
+        let arena_slot = Object::prop_at(arena_owner, 16);
+        let heap_owner = new_constructed(ctx, holder, MemoryCategory::GcHeap);
+        let heap_slot = Object::prop_at(heap_owner, 16);
+
+        let k = trip(k);
+        let start = Instant::now();
+        for i in 0..k {
+            assert!(store_box(
+                arena,
+                MemoryCategory::RequestArena,
+                arena_slot,
+                values[i & mask]
+            ));
+        }
+
+        for i in k..trip(STORES) {
+            assert!(store_box(
+                arena,
+                MemoryCategory::GcHeap,
+                heap_slot,
+                values[i & mask]
+            ));
+        }
+
+        let elapsed = start.elapsed();
+        // The reset releases one reference per record and takes the arena
+        // owner with it, so what the children are left owing is the heap
+        // half of the region — `STORES - k`, an error in which is linear in
+        // `k` and would read as slope.
+        arena_reset_full(arena);
+        assert!(store_box(
+            arena,
+            MemoryCategory::GcHeap,
+            heap_slot,
+            Value::null()
+        ));
+        drain_children(&values, |index| stores_hitting(index, mask, k..STORES));
+        drop_ref(MemoryCategory::GcHeap, heap_owner as *mut RcHeader);
+        elapsed
+    }
+}
+
+/// One measured shape: the name it is reported under, and the round that
+/// times it.
+struct Arm {
+    label: String,
+    round: Box<dyn FnMut() -> Duration>,
+}
+
+/// Store into every cache line of `scratch`, so that what the round before
+/// it touched is out of cache. An empty slice is the hot mode and evicts
+/// nothing.
+fn evict(scratch: &mut [u8]) {
+    for line in scratch.chunks_mut(LINE_BYTES) {
+        line[0] = line[0].wrapping_add(1);
+    }
+
+    std::hint::black_box(scratch);
+}
+
+/// The **median** of `ROUNDS` timed rounds for each arm, in nanoseconds per
+/// store, taken after one warm-up round whose time is discarded
+/// (`dev/BENCHMARKS.md`, Method).
+///
+/// The median and not the fastest round, although the rounds of one arm run
+/// the same instructions over the same shape. They do not run over the same
+/// **addresses**: each round allocates its children and its log segments
+/// afresh, so each meets a different layout, and the record's cost moves with
+/// it. The fastest round is therefore the luckiest layout rather than the
+/// least-disturbed one, and it reports about half of what a program pays —
+/// the two statistics, measured against each other in one session, put the
+/// wide-set record at 0.38 and 0.72 ns hot (`dev/BENCHMARKS.md`, 2026-08-15,
+/// "the statistic decides the answer").
+///
+/// The arms are interleaved round by round rather than run one arm's rounds
+/// and then the next arm's: the block pool hands blocks back in LIFO order
+/// and the machine drifts over a run, and both are common mode only if every
+/// arm meets them at the same point of it.
+///
+/// `scratch` is walked untimed after each round, empty for the hot half.
+fn median_ns_per_store(arms: &mut [Arm], scratch: &mut [u8]) -> Vec<f64> {
+    let mut taken: Vec<Vec<f64>> = vec![Vec::with_capacity(ROUNDS); arms.len()];
+    for round in 0..=ROUNDS {
+        for (arm, samples) in arms.iter_mut().zip(taken.iter_mut()) {
+            let elapsed = (arm.round)();
+            if round > 0 {
+                samples.push(elapsed.as_nanos() as f64 / STORES as f64);
+            }
+
+            evict(scratch);
+        }
+    }
+
+    taken
+        .iter_mut()
+        .map(|samples| {
+            samples.sort_by(|a, b| a.partial_cmp(b).expect("a duration is never NaN"));
+            samples[samples.len() / 2]
+        })
+        .collect()
+}
+
+/// Every shape measured at one working set, in the order they are reported.
+/// The sweep's points come last, so that a report is read as three
+/// directions and then the instrument that prices the record.
+fn arms_for(
+    ctx: *mut LLContext,
+    arena: *mut Arena,
+    holder: *const Class,
+    leaf: *const Class,
+    mask: usize,
+) -> Vec<Arm> {
+    let mut arms = vec![
+        Arm {
+            label: "arena_into_arena".to_string(),
+            round: Box::new(move || unsafe { arena_into_arena(ctx, arena, holder, leaf, mask) }),
+        },
+        Arm {
+            label: "heap_into_arena".to_string(),
+            round: Box::new(move || unsafe { heap_into_arena(ctx, arena, holder, leaf, mask) }),
+        },
+        Arm {
+            label: "heap_into_heap".to_string(),
+            round: Box::new(move || unsafe { heap_into_heap(ctx, arena, holder, leaf, mask) }),
+        },
+        Arm {
+            label: "arena_into_heap".to_string(),
+            round: Box::new(move || unsafe { arena_into_heap(ctx, arena, holder, leaf, mask) }),
+        },
+    ];
+
+    for k in SWEEP {
+        arms.push(Arm {
+            label: format!("sweep_k={k}"),
+            round: Box::new(move || unsafe { sweep_round(ctx, arena, holder, leaf, mask, k) }),
+        });
+    }
+
+    arms
+}
+
+/// Least-squares slope of the sweep in nanoseconds **per record**, and the
+/// largest distance of a point from that line.
+///
+/// The figures arrive as nanoseconds per store over a region of `STORES`
+/// stores, so the region's time is `STORES` times each and the slope against
+/// `k` is one record. The residual is the reading the slope alone hides: a
+/// segment carve is a step at `k` = 1 and `k` = 501, not a slope, and a
+/// count error in the teardown would be a slope and show none.
+fn sweep_slope(figures: &[f64]) -> (f64, f64) {
+    let n = SWEEP.len() as f64;
+    let mean_k = SWEEP.iter().sum::<usize>() as f64 / n;
+    let mean_ns = figures.iter().sum::<f64>() * STORES as f64 / n;
+
+    let mut covariance = 0.0;
+    let mut variance = 0.0;
+    for (k, figure) in SWEEP.iter().zip(figures) {
+        let dk = *k as f64 - mean_k;
+        covariance += dk * (figure * STORES as f64 - mean_ns);
+        variance += dk * dk;
+    }
+
+    let slope = covariance / variance;
+    let intercept = mean_ns - slope * mean_k;
+    let residual = SWEEP
+        .iter()
+        .zip(figures)
+        .map(|(k, figure)| (figure * STORES as f64 - (intercept + slope * *k as f64)).abs())
+        .fold(0.0f64, f64::max);
+
+    (slope, residual)
+}
+
 #[test]
 #[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
 fn measure_store_cost() {
@@ -224,21 +587,47 @@ fn measure_store_cost() {
     let arena_ptr: *mut Arena = &mut arena;
     let mut context = LLContext { arena: arena_ptr };
     let context_ptr: *mut LLContext = &mut context;
+    let mut scratch = vec![0u8; SCRATCH_BYTES];
+
+    // The first measurement a process takes is systematically slow — cold
+    // caches, cold predictors, a cold frequency state, and here also a
+    // scratch buffer whose pages are not faulted in yet
+    // (`dev/BENCHMARKS.md`, Method, "Throw away the first run"). The per-arm
+    // warm-up round inside `median_ns_per_store` cannot cover that: it sits
+    // inside the interleaving and warms one arm at a time. This pass runs the
+    // whole probe once and drops the answer.
+    let mut warm_up = arms_for(context_ptr, arena_ptr, holder, leaf, WIDE - 1);
+    median_ns_per_store(&mut warm_up, &mut scratch);
 
     for set in [1usize, WIDE] {
         let mask = set - 1;
-        let into_arena = median_ns_per_store(|| unsafe {
-            arena_into_arena(context_ptr, arena_ptr, holder, leaf, mask)
-        });
-        let heap_in = median_ns_per_store(|| unsafe {
-            heap_into_arena(context_ptr, arena_ptr, holder, leaf, mask)
-        });
-        let escape = median_ns_per_store(|| unsafe {
-            arena_into_heap(context_ptr, arena_ptr, holder, leaf, mask)
-        });
-        println!(
-            "store_cost working_set={set}: arena_into_arena={into_arena:.3} \
-             heap_into_arena={heap_in:.3} arena_into_heap={escape:.3} ns/store"
-        );
+        let mut arms = arms_for(context_ptr, arena_ptr, holder, leaf, mask);
+        // Hot, cold, hot again: the cache mode cannot be interleaved into
+        // the arms — an arm's cache state is made by whatever ran before its
+        // round, so a mixed round would leave every hot arm cold. What
+        // separates the hot/cold difference from drift across a block is
+        // therefore the Method's other control, A then B then A again
+        // (`dev/BENCHMARKS.md`, Method): the two hot passes bracket the cold
+        // one, and a disagreement between them is the size of the drift the
+        // difference has to clear.
+        let hot = median_ns_per_store(&mut arms, &mut []);
+        let cold = median_ns_per_store(&mut arms, &mut scratch);
+        let hot_again = median_ns_per_store(&mut arms, &mut []);
+
+        for (log, figures) in [("hot", &hot), ("cold", &cold), ("hot_again", &hot_again)] {
+            for (arm, figure) in arms.iter().zip(figures.iter()) {
+                println!(
+                    "store_cost working_set={set} log={log} {}={figure:.3} ns/store",
+                    arm.label
+                );
+            }
+
+            let sweep = &figures[figures.len() - SWEEP.len()..];
+            let (slope, residual) = sweep_slope(sweep);
+            println!(
+                "store_cost working_set={set} log={log} sweep_slope={slope:.3} ns/record \
+                 residual={residual:.1} ns/region"
+            );
+        }
     }
 }

@@ -61,7 +61,7 @@ interaction of three arms, one outcome of which supports the framing it was
 preparing to retract. Accepted, all folded into the steps. No dispute reached
 Sage.
 
-- [ ] S25.1 The direction that holds the retain constant, and the sweep that
+- [~] S25.1 The direction that holds the retain constant, and the sweep that
       prices the record
       done: two things in
         `memory::barrier::tests::what_a_store_costs_by_working_set` — a

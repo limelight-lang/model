@@ -100,6 +100,133 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-15 — what the release-at-reset record costs, and the statistic that decides the answer
+
+**One record costs about 0.5 ns with the log cache-hot and about 1.2 ns with
+it cold**, under `rc-walk` at the 64-child working set. Both instruments of
+S25.1 place it there and neither resolves it better than ±0.3: over two
+sittings the sweep's slope reads 0.72 and 0.44 hot, 1.42 and 1.47 cold, and
+`heap → arena` minus `heap → heap` reads 0.54 and 0.48 hot, 1.13 and 0.96
+cold. S25.1.
+
+**What the record is:** `Arena::log_release_at_reset` appends the child's
+address to the arena's release-at-reset log when a `GcHeap` child is
+published into a `RequestArena` owner, and the reset owns one release per
+record. The child's own category cannot isolate it — `ll_retain` returns
+early exactly where the log stays silent — so both instruments vary the
+owner. The new `heap → heap` direction takes the same counted retain from the
+same allocator and appends nothing; the sweep varies only `k`, how many of a
+region's 1000 stores name an arena owner rather than a heap one, inside one
+timed region. Neither figure is a subtraction across arms that differ in the
+retain, which is what the 0.45 ns of S24.2 was.
+
+The probe is
+`memory::barrier::tests::what_a_store_costs_by_working_set::measure_store_cost`,
+`#[ignore]`d and run explicitly. The library is unchanged; only the probe
+moved.
+
+```
+cargo test --release --lib --no-run                         # rc-walk
+cargo test --release --lib --no-default-features --no-run   # rc-trace
+<each binary> --ignored --nocapture measure_store_cost      # five runs, alternating
+```
+
+Median of fifteen rounds per shape after one discarded round, 1000 publishes
+per round, nanoseconds per store, median over the surviving runs of five:
+
+| shape | set | walk hot | walk cold | trace hot | trace cold |
+|---|---|---|---|---|---|
+| arena → arena | 1 | 3.00 | 3.60 | 3.54 | 4.46 |
+| arena → arena | 64 | 2.82 | 3.49 | 3.69 | 4.29 |
+| heap → arena | 1 | 3.57 | 5.33 | 5.17 | 6.69 |
+| heap → arena | 64 | 3.57 | 5.58 | 5.26 | 6.92 |
+| heap → heap | 1 | 3.27 | 3.96 | 4.67 | 5.65 |
+| heap → heap | 64 | 2.99 | 5.09 | 4.68 | 5.55 |
+| arena → heap | 1 | 3.54 | 4.80 | 4.26 | 5.98 |
+| arena → heap | 64 | 3.46 | 5.00 | 4.23 | 6.58 |
+| sweep k=0 | 64 | 3.04 | 3.87 | 4.17 | 5.32 |
+| sweep k=250 | 64 | 3.12 | 4.48 | 4.32 | 5.71 |
+| sweep k=500 | 64 | 3.25 | 5.47 | 4.66 | 6.37 |
+| sweep k=750 | 64 | 3.25 | 5.48 | 4.85 | 6.39 |
+| sweep k=1000 | 64 | 3.42 | 5.19 | 5.07 | 6.88 |
+
+**The statistic decides the answer, and it decides it by a factor of two.**
+Taking the fastest of an arm's fifteen rounds instead of their median halves
+the record: measured against each other in one sitting, five runs each and
+the binaries alternated, the wide-set hot figure is 0.38 ns per record from
+the minimum and 0.72 from the median, and the cold figure 0.65 against 1.42.
+The minimum is the tighter statistic — its slope spans 0.105 ns across five
+runs where the median spans 0.276 — and it is the wrong one, because the
+rounds of an arm do not differ only by interference. Each round allocates its
+children and its log segments afresh, so each meets a different layout, and
+the fastest round is the luckiest layout rather than the least-disturbed one.
+A program pays the typical layout.
+
+**Hot against cold is 0.7 ns per record**, and cold is what a request pays:
+it writes a record into a line it never revisits, whereas a second timed
+round of the same shape finds the line the reset's own drain has just read.
+The cold half walks 32 MiB of scratch untimed between rounds — larger than
+this box's 16 MiB L3 — which takes the child headers out of cache along with
+the log. That costs 0.67 ns per store on `arena → arena`, whose retain
+returns early and writes no header at all, and 2.10 on `heap → heap`, which
+writes one; the record's line is what `heap → arena` adds on top. The sweep
+does not carry that term: its children are the same across all five points,
+so what varies with `k` is the record's line alone.
+
+**Under `rc-trace` the sweep and the direction difference disagree by about
+2x**, 1.12 against 0.67 ns hot and 1.56 against 0.89 cold, where under
+`rc-walk` they agree. The log's code is the same in both builds, so at most
+one of the two `rc-trace` readings can be the record. The endpoints say which
+half is out of line: under `rc-walk` the sweep at `k` = 0 sits within 0.02 ns
+of `heap → heap` and at `k` = 1000 within 0.01 of `heap → arena`, while under
+`rc-trace` the same endpoints sit 0.61 and 0.19 below them. What differs
+between the two instruments is one allocation — the sweep and `heap → heap`
+each draw a holder from the GC heap and `heap → arena` draws its owner from
+the arena instead, so the children of that one arm meet a different heap
+layout. Why that costs 0.6 ns under one build and 0.02 under the other is
+unresolved. S25.2 measures the same two directions and will meet it again.
+
+This overrides the tie-break S25 registered in advance, which named the slope
+the answer whenever the two instruments disagree. That rule was written
+before either had been run against the other; the cross-build identity of the
+log's code outranks it, and here it is the `rc-trace` slope that the identity
+refuses.
+
+**A per-record figure carries a fraction of a segment carve.** A log segment
+holds `LOG_SEG_RECORDS` = 500 records and is carved from the arena's own
+bump, so `k` records cost `1 + (k - 1) / 500` carves and the sweep's five
+points stand at 0, 1, 1, 2 and 2 of them. That is a step and not a slope, and
+it is part of the probe's reported residual: 64 ns per region hot and 578
+cold at the wide set under `rc-walk`, against a 380 to 1320 ns effect across
+the sweep. The term moves with `STORES`.
+
+**This probe's floor is far worse than the S24 brackets' 0.1 to 1.7 %, and
+the run count went from three to five.** One run in five arrived grossly
+contaminated — every figure of a block 1.8x to 2.7x high, the box being
+shared with interactive work — and those blocks are voided by the Method's
+gross-contamination test rather than averaged in. What survives still spans
+0.22 to 0.98 ns on the wide-set hot slope of five runs. The two hot passes
+that bracket the cold one, which are the Method's A-B-A control, agree to
+20 % on that slope and to 4 % on the direction difference. Nothing here is
+resolvable below ±0.3 ns per record, and a quieter machine would settle both
+the `rc-trace` disagreement and the sweep's curvature.
+
+**Three changes to the probe were forced by the measurement.** The arms are
+interleaved round by round, so the block pool's LIFO state and any drift are
+common mode across shapes. Every timed loop is bounded at run time through
+`black_box`: with `STORES` visible to the optimizer, `sweep k=0` and
+`heap → heap` ran the same thousand publishes into the same slot and
+disagreed by 0.11 ns per store. And each working set is reported three times,
+hot, cold and hot again, because the cache mode cannot be interleaved into
+the arms — an arm's cache state is made by whatever ran before its round.
+
+**What it corrects.** The premise S25 opened on — that the record is a
+minority of S24.2's 0.45 ns and the rest is retain and codegen — is refused:
+the record alone is 0.5 ns hot, which is that whole figure, and 1.2 cold.
+The `rc-trace` subtractions of 0.66 and 0.71 ns from the S24.2 entry are
+within the range the direction difference reads there, 0.67 hot and 0.89
+cold, so those two were not the contaminated pair the stage assumed.
+
 ## 2026-08-15 — one header read for the store path: refused, and the branch discarded
 
 **Merging the barrier's two flag reads into one moves nothing, so it does not

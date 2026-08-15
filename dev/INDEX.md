@@ -449,7 +449,13 @@ versions live in `docs/history/`, marked at the top.
   — inside the lib, because a bench is a separate crate and reaches every
   micro-op through a call the optimizer keeps, and over two working sets,
   because a loop publishing one child measures a dependency through one
-  header line rather than a store (`dev/BENCHMARKS.md`, 2026-08-15).
+  header line rather than a store (`dev/BENCHMARKS.md`, 2026-08-15). It
+  carries four directions and a sweep over how many of a region's stores
+  name an arena owner, which is what prices the release-at-reset record
+  without subtracting one direction from another, and every figure twice,
+  with the log cache-hot and with it evicted (`dev/BENCHMARKS.md`,
+  2026-08-15, "what the release-at-reset record costs, and the statistic
+  that decides the answer").
 
 `src/memory/reserve.rs` — the per-thread block reserve that keeps the
 store barrier's log growth from failing; drawn in `Arena::grow_log`,
