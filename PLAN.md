@@ -55,7 +55,7 @@ and needs `header_pair`; `header_pair`'s own justification inverts after
 this stage; and S24.3's arithmetic predicts refusal, which the step now
 says out loud. Accepted. No dispute reached Sage.
 
-- [ ] S24.1 A probe over a working set, shaped like lowering
+- [x] S24.1 A probe over a working set, shaped like lowering
       done: an `#[ignore]`d release-mode probe inside the lib, the shape of
         `collector::tests::the_epoch_as_a_whole::measure_epoch_cost`, whose
         timed loop holds **no call instruction at all** (`objdump`) and takes
@@ -79,6 +79,18 @@ says out loud. Accepted. No dispute reached Sage.
         `ll_retain`, which changes the shipped artifact to serve a
         measurement; `lto = "fat"` on the bench profile, which moves every
         other arm in `benches/barrier.rs`.
+      handoff: `memory::barrier::tests::what_a_store_costs_by_working_set`,
+        and the figures in `dev/BENCHMARKS.md`, 2026-08-15, "the store path
+        in the shape lowering emits". The control fired where it was aimed:
+        the escape direction costs 4.68 ns per store over one child and 2.48
+        over 64 under `rc-walk`, flat under `rc-trace`, so the harness's
+        unexplained 3.7x was the chain through one header line and S24.3 has
+        its gate. `heap → arena` is 2.2x dearer under `rc-walk` and **flat
+        across working sets**, so that gap is the counted retain and the log
+        rather than the stall — it is what S24.2 has to move. The criterion
+        was read as "no call on the path the loop takes": the innermost loops
+        are 13, 12 and 13 instructions and call-free, while the COW copy path
+        and `grow_log` stay out of line and are reached by a forward branch.
 
 - [ ] S24.2 `header_flags` and `header_refcount` read narrow
       done: both take `flags_load` / `refcount_load` under `rc-walk` on the

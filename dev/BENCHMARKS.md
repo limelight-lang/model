@@ -100,6 +100,80 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-15 — the store path in the shape lowering emits: the escape's gap is the working set
+
+The escape direction costs **4.68 ns per store over one child and 2.48 over
+64** under `rc-walk`, which is the whole of what the harness's unexplained
+3.7x was: a chain through one header line, not a cost a program pays. The
+other two directions are flat across the same working sets, and `rc-trace`
+is flat everywhere. S24.1.
+
+The instrument is a probe inside the lib rather than a bench, because a
+bench is a separate crate and reaches every micro-op through a call:
+`memory::barrier::tests::what_a_store_costs_by_working_set::measure_store_cost`,
+`#[ignore]`d, run explicitly. The library is unchanged from `8062713`; the
+probe lands with this entry.
+
+```
+cargo test --release --lib --no-run                         # rc-walk
+cargo test --release --lib --no-default-features --no-run   # rc-trace
+cp <each test binary> <dir>/probe_walk , <dir>/probe_trace
+<dir>/probe_walk  --ignored measure_store_cost --nocapture   # discarded, then A1
+<dir>/probe_trace --ignored measure_store_cost --nocapture   # B
+<dir>/probe_walk  --ignored measure_store_cost --nocapture   # A2
+```
+
+Median of five rounds per shape, the first round discarded inside the probe,
+1000 publishes per round, nanoseconds per store:
+
+| direction | set | A1 rc-walk | B rc-trace | A2 rc-walk |
+|---|---|---|---|---|
+| arena → arena | 1 | 1.110 | 1.544 | 1.109 |
+| arena → arena | 64 | 1.110 | 1.540 | 1.112 |
+| heap → arena | 1 | 4.811 | 2.217 | 4.815 |
+| heap → arena | 64 | 4.816 | 2.247 | 4.815 |
+| arena → heap | 1 | 4.647 | 1.995 | 4.704 |
+| arena → heap | 64 | 2.487 | 2.244 | 2.470 |
+
+The two controls agree to 1.2 % on the worst row and to 0.3 % on the rest,
+which is tighter than the criterion harness reaches on this box.
+
+**The escape's working-set effect is the reading.** One child against 64
+costs 1.88x under `rc-walk` and nothing at all under `rc-trace` (1.995
+against 2.244, the wide set marginally dearer). That is the signature the
+narrow-store trap predicts: `escape_gain` increments the counter half with a
+4-byte store, and the next store's `header_category` reads all eight bytes,
+which cannot take the value out of the store buffer. Spread the stores over
+64 children and consecutive stores touch different lines, so nothing waits.
+A program filling a thousand slots with a thousand children is the second
+shape, and there `rc-walk` is 10 % dearer than `rc-trace` on this direction
+rather than 2.3x.
+
+**`arena → arena` has no such effect in either build, and that is a check on
+the explanation rather than a null result:** the retain returns early on a
+non-`GcHeap` category, so that path writes no counter at all and has nothing
+for a wide load to overlap.
+
+**`heap → arena` is 2.2x dearer under `rc-walk` and flat across working
+sets**, so this gap is not the stall. What it prices is the counted retain
+of a heap child plus the release-at-reset record, both of which `rc-trace`
+pays more cheaply. This is the figure S24.2 has to move, and the one that
+says what the arena's logging costs in the shape compiled code has: 3.7 ns
+per store over the cheapest publish, against the 3.85 the harness reported
+through a call boundary.
+
+**The loops carry no call on the path they take.** The innermost timed loop
+is 13, 12 and 13 instructions under `rc-walk` and 25, 25 and 27 under
+`rc-trace`, none of them containing a `call`. What remains in the enclosing
+region is cold and reached by a forward branch that returns into the loop:
+`store_category_barrier`'s COW copy path and the log's `grow_log`.
+
+**Not comparable with the harness table below.** A different binary out of a
+different profile, so no delta is drawn between the two, and the figures are
+not tabulated together. What the shapes differ by is structural: the harness
+pays an indirect call per store and publishes into one child, and this probe
+does neither.
+
 ## 2026-08-15 — the store barrier's three directions, and the arena's logging inside them
 
 A release-at-reset record costs **3.9 ns per store** under `rc-walk` and
