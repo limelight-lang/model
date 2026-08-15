@@ -78,6 +78,27 @@ Sage.
         instructions and how much is a cache line, and a request pays the
         cold one: it writes a record into a line it never revisits.
       tier: T2 · role: Critic
+      Critic 2026-08-15 round 3, on the built step: the probe's own null pair
+        — `sweep k=0` against `heap → heap`, the same publishes into the same
+        slot — reads 0.05 ns per store hot and 1.22 cold, and the entry quoted
+        it only in the half where it passes; the `rc-trace` override is
+        contradicted by the endpoint it was built on, `sweep k=0` sitting
+        0.61 below `heap → heap` there where the offered mechanism requires
+        equality; the carve term is nearly collinear with `k`, so it biases
+        the slope and the residual is blind to it; and the eviction runs after
+        a round, so the next round's `children` re-warms every header before
+        its timer starts. Checked against the run data and accepted. The cold
+        figure and the override are retracted in `dev/BENCHMARKS.md`; two
+        design findings are the step's remaining work, below.
+      what the step still owes, both from that round: a `null_sweep_round`
+        with both owners on the GC heap, whose slope is zero by construction
+        and is the only thing that bounds the two-loops-two-slots term the
+        sweep's slope currently carries; and an arm order rotated by the round
+        index, because the arms run in a fixed order monotone in `k` with no
+        eviction between them in the hot half, so each sweep point inherits
+        the cache state of the point below it. Printing each arm's minimum,
+        median and maximum decides the statistic question the same round
+        opened.
       the sweep is the primary instrument and `heap → heap` the cross-check.
         Two directions are two loops at two alignments, and that layout term
         — 0.02 to 0.05 ns against an effect of 0.2 to 0.45 — is invisible to

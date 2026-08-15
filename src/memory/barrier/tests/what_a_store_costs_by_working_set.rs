@@ -29,23 +29,30 @@
 //!   exactly where the log stays silent — so what varies is the owner.
 //! - [`sweep_round`]. It holds both loops fixed inside one timed region and
 //!   varies only `k`, the number of stores that go to the arena owner, so
-//!   `d(ns)/dk` is the record's marginal cost with no arm-to-arm subtraction
-//!   at all. Two directions are two rounds at two layouts, and the sweep
-//!   absorbs that term because its own layout is constant across the five
-//!   points.
+//!   `d(ns)/dk` is the record's marginal cost without subtracting one round
+//!   from another. The subtraction moves rather than disappears: the two
+//!   loops are two code bodies at two alignments writing two slots in two
+//!   allocators, and **nothing here bounds what they differ by apart from the
+//!   log**. The control that would is a null sweep, both owners on the GC
+//!   heap, whose slope is zero by construction; it is not built.
 //!
-//! Neither is authoritative over the other. They agree under `rc-walk` and
-//! disagree by 2x under `rc-trace`, where the sweep is the half the log's
-//! cross-build identity refuses (`dev/BENCHMARKS.md`, 2026-08-15, "what the
-//! release-at-reset record costs, and the statistic that decides the
-//! answer").
+//! Neither instrument is authoritative over the other, and the probe carries
+//! a null pair that says how far either can be trusted: `sweep k=0` and
+//! [`heap_into_heap`] run the same publishes into the same slot, so their
+//! difference is the instrument's zero. It reads 0.05 ns per store hot and
+//! 1.22 cold, which is why only the hot figure stands
+//! (`dev/BENCHMARKS.md`, 2026-08-15, "what the release-at-reset record costs,
+//! and the statistic that decides the answer", and the retraction at its
+//! head).
 //!
-//! **A per-record figure carries a fraction of a segment carve.** A log
-//! segment holds `LOG_SEG_RECORDS` = 500 records and is carved from the
-//! arena's own bump, so `k` records cost `1 + (k - 1) / 500` carves and the
-//! sweep's five points stand at 0, 1, 1, 2 and 2 of them. The term is a step
-//! rather than a slope, which is what the reported residual exposes, and it
-//! moves with `STORES`.
+//! **A per-record figure carries a fraction of a segment carve, and it lands
+//! in the slope.** A log segment holds `LOG_SEG_RECORDS` = 500 records and is
+//! carved from the arena's own bump, so `k` records cost `1 + (k - 1) / 500`
+//! carves and the sweep's five points stand at 0, 1, 1, 2 and 2 of them. That
+//! step is nearly collinear with `k`: regressed against it, a carve of `c`
+//! contributes `0.002 * c` per record to the slope and leaves only `0.2 * c`
+//! for the residual. The residual is therefore blind to it and measures
+//! something else. Both terms move with `STORES`.
 //!
 //! **Every timed loop is bounded at run time.** The directions would bound
 //! theirs by a constant and the sweep bounds its two by `k`, and a constant
@@ -61,14 +68,13 @@
 //! lines the next round writes, and there are more of them as `k` grows, so
 //! a round following a round measures a record landing in a warm line. That
 //! is not what a request pays: it writes a record into a line it never
-//! revisits. The cold half walks [`SCRATCH_BYTES`] untimed between rounds,
-//! and the difference between the two halves is how much of a record is
-//! instructions and how much is a cache line.
+//! revisits. The cold half walks [`SCRATCH_BYTES`] untimed between rounds.
 //!
-//! The walk evicts everything, not only the log, so a cold *direction* also
-//! carries cold child headers, which cost more than the record does. The
-//! sweep does not: its children are the same across all five points, so what
-//! varies with `k` is the record's line alone.
+//! **What the walk reaches is narrower than the whole round.** It runs after
+//! a round rather than before one, and the next round's [`children`] writes
+//! all `mask + 1` headers before its timer starts, so the child headers are
+//! warm in both halves. The log's own pages, the TLB and the instruction
+//! lines are what the walk takes out.
 //!
 //! The two halves cannot be interleaved arm by arm, an arm's cache state
 //! being made by whatever ran before its round, so each working set is
@@ -468,15 +474,17 @@ fn evict(scratch: &mut [u8]) {
 /// store, taken after one warm-up round whose time is discarded
 /// (`dev/BENCHMARKS.md`, Method).
 ///
-/// The median and not the fastest round, although the rounds of one arm run
-/// the same instructions over the same shape. They do not run over the same
-/// **addresses**: each round allocates its children and its log segments
-/// afresh, so each meets a different layout, and the record's cost moves with
-/// it. The fastest round is therefore the luckiest layout rather than the
-/// least-disturbed one, and it reports about half of what a program pays —
-/// the two statistics, measured against each other in one session, put the
-/// wide-set record at 0.38 and 0.72 ns hot (`dev/BENCHMARKS.md`, 2026-08-15,
-/// "the statistic decides the answer").
+/// The median and not the fastest round. What is measured is that the choice
+/// halves the answer: the two statistics, run against each other in one
+/// session, put the wide-set record at 0.38 and 0.72 ns hot
+/// (`dev/BENCHMARKS.md`, 2026-08-15). What is **not** measured is why, and
+/// the median is taken on the weaker of the two accounts of it. If the rounds
+/// of an arm differ only by interference the fastest is right; if they differ
+/// by layout — each round allocating its children and log segments afresh —
+/// the fastest is the luckiest layout rather than the least-disturbed one.
+/// The block pool hands blocks back LIFO, which argues for the first account.
+/// Printing each arm's minimum, median and maximum would decide it: a tight
+/// floor with a right tail is interference, a spread is layout.
 ///
 /// The arms are interleaved round by round rather than run one arm's rounds
 /// and then the next arm's: the block pool hands blocks back in LIFO order
@@ -550,9 +558,10 @@ fn arms_for(
 ///
 /// The figures arrive as nanoseconds per store over a region of `STORES`
 /// stores, so the region's time is `STORES` times each and the slope against
-/// `k` is one record. The residual is the reading the slope alone hides: a
-/// segment carve is a step at `k` = 1 and `k` = 501, not a slope, and a
-/// count error in the teardown would be a slope and show none.
+/// `k` is one record. The residual reads what the line cannot: curvature, and
+/// a sweep that is not monotone at all, which the cold half has been. It does
+/// **not** read the segment carve, which is nearly collinear with `k` and so
+/// lands in the slope — see the module doc.
 fn sweep_slope(figures: &[f64]) -> (f64, f64) {
     let n = SWEEP.len() as f64;
     let mean_k = SWEEP.iter().sum::<usize>() as f64 / n;

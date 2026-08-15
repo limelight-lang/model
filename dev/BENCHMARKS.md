@@ -102,12 +102,53 @@ no number, because the next person will trust it.
 
 ## 2026-08-15 — what the release-at-reset record costs, and the statistic that decides the answer
 
-**One record costs about 0.5 ns with the log cache-hot and about 1.2 ns with
-it cold**, under `rc-walk` at the 64-child working set. Both instruments of
-S25.1 place it there and neither resolves it better than ±0.3: over two
-sittings the sweep's slope reads 0.72 and 0.44 hot, 1.42 and 1.47 cold, and
-`heap → arena` minus `heap → heap` reads 0.54 and 0.48 hot, 1.13 and 0.96
-cold. S25.1.
+**Retracted in part the same day, by the Critic round on S25.1, and the
+retraction was checked against the run data rather than taken on the word of
+the review.** Four of the paragraphs below are wrong, and the reader who
+needs a number today should take only the hot one, 0.5 ns, and take it as
+bounded rather than measured:
+
+- **The cold figure, 1.2 ns, is withdrawn.** `sweep k=0` and `heap → heap`
+  run the same thousand publishes into the same slot of the same holder, so
+  their difference is the instrument's zero. Hot it reads 0.05 ns per store;
+  **cold it reads 1.22**, which is the whole of the figure the entry claimed.
+  The paragraph below quotes that control only in the half where it passes.
+- **The `rc-trace` override is withdrawn**, and with it the ground for
+  rejecting the tie-break S25 registered in advance. The explanation offered
+  — a layout term attaching to `heap → arena` alone, which draws its owner
+  from the arena where the other two draw a holder from the heap — requires
+  `sweep k=0` to equal `heap → heap` there. It sits 0.61 ns below it. The
+  mechanism is contradicted by the larger of the two gaps it was invented for.
+- **The carve term biases the slope, not the residual.** A step of 0, c, c,
+  2c, 2c against k regresses to a slope of 0.002·c per record and leaves only
+  ±0.2·c behind, so the paragraph that puts the carve in the residual has it
+  backwards. The residual — 578 ns cold at the wide set, against a fitted
+  1456 — is unexplained, and the cold sweep it comes from is not monotone:
+  3.87, 4.48, 5.47, 5.48, 5.19 ns per store, with `k` = 1000 cheaper than
+  `k` = 500. A least-squares slope over that series is not a marginal cost.
+- **The cold half does not evict the child headers.** `median_ns_per_store`
+  walks the scratch *after* a round, and the next round's `children()` writes
+  all 64 headers before its timer starts, so they are warm in both halves.
+  The decomposition below — 0.67 ns on `arena → arena` against 2.10 on
+  `heap → heap`, "which writes one" — attributes the cold penalty to a cause
+  the order of operations rules out. What the walk does reach is the log's own
+  pages, the TLB and the instruction lines.
+
+Two more findings stand against the design rather than against a number, and
+both are S25.1's remaining work. The sweep has **no null arm**: its two loops
+are two code bodies at two alignments writing two slots in two allocators, so
+nothing in the probe bounds what they differ by apart from the log, and a
+`null_sweep_round` with both owners on the GC heap would read that term
+directly. And the arms run in a **fixed order monotone in k**, with no
+eviction between them in the hot half, so each sweep point inherits the cache
+state left by the point below it and the pollution grows along the axis being
+measured; rotating the arm order by the round index closes it.
+
+**One record costs about 0.5 ns with the log cache-hot**, under `rc-walk` at
+the 64-child working set, and the two instruments bound rather than resolve
+it: over two sittings the sweep's slope reads 0.72 and 0.44 and
+`heap → arena` minus `heap → heap` reads 0.54 and 0.48, against a null-pair
+error of 0.05 in the same half. The cold figure is withdrawn above. S25.1.
 
 **What the record is:** `Arena::log_release_at_reset` appends the child's
 address to the arena's release-at-reset log when a `GcHeap` child is
