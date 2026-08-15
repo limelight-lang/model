@@ -8,14 +8,15 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-15 · Active: S24 — the prose sections after it are the backlog
+Updated: 2026-08-15 · Active: none — the prose sections below are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S23, so S24
-below is the one open stage. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S24, which is
+every stage this file has carried, so no stage is open and the next one is
+opened from the backlog. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -26,196 +27,21 @@ over 7 tests and `array::table` 92 over 38, both clean, on 2026-08-13 at
 `8d3728d`. A slice is still how the module is run — invocation and thread
 cap in `dev/WORKFLOW.md`, Miri.
 
-## S24 — the barrier's header reads: narrow where the writes are narrow
+## What the arena's write-side log actually costs
 
-Goal: the rule this crate already states on `refcount::refcount_load` —
-narrow stores demand narrow loads — holds on the barrier's path too, and
-whether merging the remaining reads is worth anything is decided on an
-instrument that does not manufacture the effect it measures.
-
-Done when: the accessors read narrow, the merge has landed or been refused
-with the figure that refused it, and every number here was taken on the
-probe of S24.1 rather than on the single-entity arms of 2026-08-15.
-
-What opened it: that entry, and the disassembly beside it. `escape_gain`
-writes both halves of the header with plain 4-byte stores while
-`header_flags` and `header_refcount` load the whole word through
-`mutator_load_header` and discard the half they did not want — the pairing
-that cost 3x on retain/release in the 2026-07-27 entry, sitting on the
-escape path today.
-
-Critic 2026-08-15 round 1: the draft ordered the merge ahead of the step
-that decides its own trade-off, gated it on a load count whose payoff is
-under the floor, and closed a door — a 4-byte atomic read of the flags
-half — that `flags_load` walks through on every retain. Accepted, rewritten
-around the rule that door was hiding.
-Critic 2026-08-15 round 2: the instrument precedes the reading, so the
-probe moved first; `ll_cow_separate` samples the two halves at two instants
-and needs `header_pair`; `header_pair`'s own justification inverts after
-this stage; and S24.3's arithmetic predicts refusal, which the step now
-says out loud. Accepted. No dispute reached Sage.
-
-- [x] S24.1 A probe over a working set, shaped like lowering
-      done: an `#[ignore]`d release-mode probe inside the lib, the shape of
-        `collector::tests::the_epoch_as_a_whole::measure_epoch_cost`, whose
-        timed loop holds **no call instruction at all** (`objdump`) and takes
-        `owner_cat` as a constant; it stores into one entity and into N ≥ 64
-        distinct ones, each escaped before the clock, and both figures are
-        recorded as their own baseline
-      done also: the control, taken **before** S24.2 changes anything — under
-        `rc-walk` the two working sets differ beyond the floor. They do not,
-        the probe does not resolve the stall, and that is what it reports;
-        S24.3 then has no gate and is dropped rather than guessed at
-      tier: T2 · role: Critic
-      why first: an instrument comes before a reading. The arms of 2026-08-15
-        call across a crate boundary and hammer one entity, so they carry an
-        indirect call per store and a loop-carried dependency through one
-        header line that compiled code storing into a thousand slots has not.
-      not comparable: a different binary from a different profile, so its
-        figures are never tabulated beside the 2026-08-15 harness numbers
-        (`dev/BENCHMARKS.md`, Method). Comparisons are drawn between probe
-        variants inside one A→B→A bracket.
-      rejected, recorded rather than retried: `#[inline]` on `store_box` or
-        `ll_retain`, which changes the shipped artifact to serve a
-        measurement; `lto = "fat"` on the bench profile, which moves every
-        other arm in `benches/barrier.rs`.
-      handoff: `memory::barrier::tests::what_a_store_costs_by_working_set`,
-        and the figures in `dev/BENCHMARKS.md`, 2026-08-15, "the store path
-        in the shape lowering emits". The control fired where it was aimed:
-        the escape direction costs 4.68 ns per store over one child and 2.48
-        over 64 under `rc-walk`, flat under `rc-trace`, so the harness's
-        unexplained 3.7x was the chain through one header line and S24.3 has
-        its gate. `heap → arena` is 2.2x dearer under `rc-walk` and **flat
-        across working sets**, so that gap is the counted retain and the log
-        rather than the stall — it is what S24.2 has to move. The criterion
-        was read as "no call on the path the loop takes": the innermost loops
-        are 13, 12 and 13 instructions and call-free, while the COW copy path
-        and `grow_log` stay out of line and are reached by a forward branch.
-
-- [x] S24.2 `header_flags` and `header_refcount` read narrow
-      done: both take `flags_load` / `refcount_load` under `rc-walk` on the
-        mutator store paths; the suite green in both GC configurations and
-        under `debug-journal`; no arm regresses beyond the floor, and the
-        improvement is recorded as a single-entity figure with its
-        working-set counterpart from S24.1 beside it
-      tier: T2 · role: Critic
-      what stays wide, each with its reason in the code: `header_pair`, whose
-        one caller (`array::entity::element_for_destination`) has no
-        overlapping narrow store on the line it loads — and whose doc
-        comment argues from load count and needs rewriting, the narrow pair
-        being the preferred shape after this step; `object.rs`'s two direct
-        `mutator_load_header` callers, each followed within a few lines by
-        `mutator_update_flags`, which loads and stores the whole word anyway.
-      outside the rule, and named so in the entry: `walk.rs`'s drain sites,
-        which run once per component per epoch and sit in no forwarding
-        window. Narrowing them would prove nothing.
-      carried with it: `ll_cow_separate` moves to `header_pair`. It is the one
-        predicate needing both halves (`cow_separation_needed(flags, count)`,
-        and `ll_string_append`'s guard is the same pair), and today it samples
-        them at two instants — safe only because nothing stands between the
-        two lines, which no invariant records and no test defends.
-      handoff: `dev/BENCHMARKS.md`, 2026-08-15, "the barrier's header reads go
-        narrow". `heap → arena` fell from 4.82 to 1.53 ns per store under
-        `rc-walk` and is now 29 % cheaper than `rc-trace` where it was 2.2x
-        dearer; the escape direction lost its working-set effect entirely, and
-        `arena → arena` did not move because that path stores no counter. Both
-        gaps of this morning were one defect in two shapes — the overlap
-        between iterations on the escape arm, and inside a single store on
-        `heap → arena`, where `ll_retain` writes the counter half and the
-        category test read all eight bytes after it. Full gate green in both
-        configurations with the two feature legs; Miri clean over `refcount::`,
-        `memory::barrier::` and the COW paths in both.
-
-The two steps below were opened after S24.2, when the critic found four
-header reads that bypassed the helpers (fixed in `6e5d137`). They sit here
-because this is where they are done; their numbers say when they were opened.
-
-- [x] S24.4 A guard against a header read that bypasses the helpers
-      done: a test that reads this crate's own sources and fails on a direct
-        read of `rc.flags` or `rc.refcount` outside `refcount.rs`, green on
-        the current tree, and shown to fail when one of `6e5d137`'s four
-        sites is put back
-      tier: T1 · role: —
-      why a source-reading test and not a lint: the defect is textual — a
-        caller reached past the helper — and no type or visibility rule can
-        express it while `RcHeader`'s fields stay `pub` for the layout
-        contract. Its weakness is worth writing into the test: a rename or a
-        read through a local evades it, so it defends against inattention
-        and not against intent.
-      what it would have caught: `object_constructed`'s category read,
-        `ll_default_dispose`'s two, and `array::entity::needs_separation`.
-      handoff: `refcount::tests::who_may_read_a_header`, two tests — the
-        guard itself and one that feeds it `object_constructed`'s old shape
-        beside an `rc-trace` block, so a guard that finds nothing anywhere
-        fails instead of passing. It found a fifth site the review had not:
-        `test_support::outside_block::install_block`, now on
-        `object::header_category`. Exempt are `refcount.rs`, everything
-        under a `tests/` directory, and any block opened by
-        `#[cfg(not(feature = "rc-walk"))]`, which is found by brace counting
-        from the attribute — sound only because `rustfmt` governs the file.
-
-- [x] S24.5 ThreadSanitizer, the instrument this class actually needs
-      done: `-Zsanitizer=thread` builds this crate and runs
-        `collector::tests::the_epoch_as_a_whole::a_free_running_mutator_survives_concurrent_epochs`
-        on this box, and one of `6e5d137`'s four sites, put back, is reported
-        by it — or the attempt is recorded in `dev/POSTMORTEM.md` as refused,
-        with what stopped it
-      tier: T2 · role: Critic
-      why: Miri cannot serve here. The only test that pairs a live collector
-        with a mutator is ignored under it because the design's mixed-size
-        atomics are rejected outright — a gap in the formal model rather than
-        in the tool, and one ThreadSanitizer does not share: it reports a
-        plain read against an atomic store, which is exactly this class.
-      the risk that decides it: the crate brings its own allocator, and
-        whether it runs under TSan at all is the first question the step
-        answers rather than assumes.
-      handoff: it runs, and the recipe is in `dev/WORKFLOW.md`,
-        "ThreadSanitizer". `-Zbuild-std` is the part that is not optional —
-        without it the build fails on an ABI mismatch against the prebuilt
-        `core`. Validated both ways on 2026-08-15: `object_constructed`'s
-        pre-`6e5d137` read was reported with the collector's
-        `atomic_store::<u8>` on the other side, and the fix returned the run
-        to silence. The window is thin — the mutator churns only while four
-        epochs run — so a report is strong evidence and a clean run is weak.
-
-- [x] S24.3 One flags load for the whole store path, if the probe resolves it
-      done: measured on S24.1's probe under the A→B→A bracket and landed only
-        if the arena→arena and heap→arena directions move by more than 4 % of
-        the probe's per-store figure; otherwise refused, with the figure, in
-        `dev/BENCHMARKS.md`
-      tier: T2 · role: Critic
-      the prediction, stated before the work: refusal. After S24.2 the path's
-        flags reads are a few independent narrow loads of one L1-resident
-        line, on the order of 0.1 ns against a store of a few, so the branch
-        is written to be measured and discarded unless it surprises.
-      shape, if it does surprise: the snapshot is the **flags half only and
-        never the count** — a twin carrying the count lets a caller decrement
-        a stale value, and `drop_ref_deferred` → `escape_lose` → `ll_release`
-        is where that lands first. `store_box` only; `store_ptr`,
-        `publish_child`, `array::element::box_element` and `ref_store`'s owner
-        read follow in a step of their own.
-      what must hold: the snapshot answers what precedes any write to that
-        header — counted, category, COW, and `IS_ESCAPEE` inside
-        `escape_gain`, which is where one load per store has to reach — and
-        dies at the first such write: `escape_gain` sets bit 11, and
-        `escape_copy` republishes children through the barrier before it
-        returns.
-      not a door to close: narrowing an atomic read of the flags half is not
-        forbidden here. `flags_load` does it on every retain and
-        `collector_stamp_epoch` stores one byte into the same word; what
-        decides a load's width is which store precedes it. The formal gap in
-        mixed-size atomics is a whole-design property and its own stage if it
-        is ever reopened.
-      handoff: refused, as predicted, and the branch discarded —
-        `dev/BENCHMARKS.md`, 2026-08-15, "one header read for the store path".
-        The cheap half was measured (one read answering both the category and
-        the COW question inside `store_category_barrier`) and moved nothing:
-        1.115 → 1.116 and 1.562 → 1.602 against controls of 1.115 and 1.536.
-        The reason is structural and the step should have seen it first — the
-        second read lives inside the escape branch, which neither gated
-        direction takes, so only arena→heap could have moved and that row is
-        the one this probe cannot resolve. The invasive half, twins carrying a
-        snapshot through `ll_retain` and `escape_gain`, was never written.
+Owed by S24, which closed without settling it. The 0.45 ns a
+release-at-reset record costs today (`dev/BENCHMARKS.md`, 2026-08-15, "the
+barrier's header reads go narrow") is a subtraction between two arms, and the
+same entry names two cheap arms that would turn it into a measurement: one
+that keeps the wide header load but moves `ll_retain`'s counter store after
+the barrier's read, and one with an `Immortal` heap child, whose retain
+writes nothing while the log append stays. The first says whether a failed
+store-forward is a latency cost or a throughput one — which decides whether
+this file's account of the 2026-07-27 trap is right in general — and the
+second isolates the log's own cursor, a read-modify-write of one location on
+every iteration and the only loop-carried chain that direction has. The
+instrument for both exists:
+`memory::barrier::tests::what_a_store_costs_by_working_set`.
 
 ## Then: arrays as a performance problem
 

@@ -2,14 +2,17 @@
 //! module and nowhere else, because the collector writes a byte of that
 //! same word from its own thread: a plain field read beside that store is a
 //! data race, and one that misbehaves nowhere — the byte read back lies
-//! outside every field a caller tests. Nothing at runtime can catch it, so
-//! this reads the sources instead.
+//! outside every field a caller tests. Behaviour is the same with the plain
+//! read and with the helper, so no `cargo test` run separates them and this
+//! reads the sources instead; ThreadSanitizer reports the race itself
+//! (`dev/WORKFLOW.md`, "ThreadSanitizer"), on the sites a running test
+//! reaches.
 //!
-//! What it costs to evade is the measure of what it defends: a rename, a
-//! read through a local, or a pointer typed `*mut RcHeader` rather than an
-//! entity struct all pass it. It is aimed at inattention — four such reads
-//! stood in `object.rs` and `array/entity.rs` until a review of 2026-08-15
-//! found them, and each was written by someone who knew the rule.
+//! It is cheap to evade: a rename, a read through a local, or a pointer
+//! typed `*mut RcHeader` rather than an entity struct all pass it. It is
+//! aimed at inattention — four such reads stood in `object.rs` and
+//! `array/entity.rs` until a review of 2026-08-15 found them, and each was
+//! written by someone who knew the rule.
 //!
 //! The `rc-trace` arm of a `#[cfg]` pair is exempt and has to be: that build
 //! has no concurrent collector, and its half of every dispatching helper

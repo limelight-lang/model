@@ -12,7 +12,7 @@
 //! barrier's three directions, and the arena's logging inside them").
 //!
 //! Two working sets separate them: one child, which is the harness's shape,
-//! and `WIDE` children, which spreads consecutive stores over as many header
+//! and `WIDE` children, which spread consecutive stores over as many header
 //! lines. What differs between the two is the chain; what they share is the
 //! store.
 //!
@@ -43,8 +43,9 @@ const STORES: usize = 1_000;
 /// none, and the difference between the shapes stays the header lines.
 const WIDE: usize = 64;
 
-/// Timed rounds per shape. The first is warm-up and is discarded, the
-/// median of the rest is reported (`dev/BENCHMARKS.md`, Method).
+/// Timed rounds per shape, taken after one warm-up round whose time is
+/// discarded; the median of the timed rounds is reported
+/// (`dev/BENCHMARKS.md`, Method).
 const ROUNDS: usize = 5;
 
 /// A class with one Box property at offset 16 — the slot every shape
@@ -76,8 +77,8 @@ unsafe fn children(
         .collect()
 }
 
-/// Median nanoseconds per store over `ROUNDS` timed rounds, the first
-/// round discarded.
+/// Median nanoseconds per store over `ROUNDS` timed rounds, run after one
+/// warm-up round whose time is discarded.
 fn median_ns_per_store(mut round: impl FnMut() -> Duration) -> f64 {
     let mut taken: Vec<f64> = Vec::with_capacity(ROUNDS);
     for r in 0..=ROUNDS {
