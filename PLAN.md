@@ -8,163 +8,23 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-14 · Active: S23, then S22 — the prose sections below are the backlog
+Updated: 2026-08-15 · Active: S22 — the prose sections below are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S20, and
-S21 is closed but for its commit; S23 and S22 below are open. A number is never reissued, so a stage added later sits
-where it is to be done rather than where its number falls, and the prose
-sections below are the backlog stages are drawn from.
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S21 and
+S23; S22 below is the one open stage. A number is never reissued, so a
+stage added later sits where it is to be done rather than where its
+number falls, and the prose sections below are the backlog stages are
+drawn from.
 
 **`array::` has had its Miri run, in slices**, and the hour the module was
 feared to cost was `array::entity`'s alone: `array::entry` took 4 seconds
 over 7 tests and `array::table` 92 over 38, both clean, on 2026-08-13 at
 `8d3728d`. A slice is still how the module is run — invocation and thread
 cap in `dev/WORKFLOW.md`, Miri.
-
-## S21 — the reset classifies a survivor while it is alive  [done]
-
-Goal: no step of the reset reads the memory of a survivor that died
-inside that same reset. What the step below reproduces is recorded
-outside this repository (`dev/WORKFLOW.md`, "Files that must stay
-untracked"); the commit closing S21.2 is where it is described.
-
-Done when: S21.1's test fails before S21.2 and passes after, and the gate
-is green in both GC configurations.
-
-- [x] S21.1 The reproduction, in `promote::tests`
-      done: an arena entity past one block payload escapes into a heap
-        reference box and is killed by the box's logged release inside
-        the reset; the test fails today under Miri as a dangling read of
-        the block header. An ordinary run stays green, this being the
-        formal-UB class where the Miri run **is** the regression test
-        (`dev/WORKFLOW.md`, Tests)
-      tier: T1 · role: —
-      handoff: `the_memory_a_survivor_takes_with_it::`
-        `a_large_survivor_that_dies_inside_the_reset_is_read_no_further`.
-        Miri names the whole path: `is_in_a_block_of_its_own`
-        (`promote.rs:511`) from `index_retained_blocks` (`:479`) from
-        `arena_reset_full` (`:315`). Uncommitted until S21.2.
-- [x] S21.2 The classification moves to the promotion loop
-      done: S21.1 green, `promote::` and `memory::retained` green in both
-        configurations, Miri silent over `promote::` in both, and
-        `reconcile_cow_counts` either takes the same treatment or carries
-        the argument for why its read outlives the drain
-      tier: T2 · role: Critic
-      Critic 2026-08-14: the `died` set records the entity the drain
-        released, not the one that died — the kill is transitive through
-        `reference_die` → `drop_ref` → `ll_entity_die` — and completing it
-        would double-subtract against `delta`. Accepted: the set was
-        removed whole, the occupant map kept. The tracing readers become
-        S23.
-      handoff: `by_block` is built in the promotion loop and
-        `index_retained_blocks` takes it ready-made, touching no survivor
-        pointer. `promote::tests::`
-        `a_large_survivor_that_dies_inside_the_reset_is_read_no_further`
-        is the Miri regression. `reconcile_cow_counts` and
-        `retrace_survivors` are untouched and are S23's subject.
-
-## S23 — the reset reads no corpse  [in progress]
-
-Goal: every pointer a post-fixpoint pass dereferences belongs to an
-entity that pass has just read as occupied, and no allocation a survivor
-occupied returns to any allocator before the reset ends. Ruled
-2026-08-14; the argument and the arithmetic are in `dev/DECISIONS.md`.
-
-Done when: the six tests below are green in both configurations, Miri is
-silent over `promote::` in both, and the gate is green.
-
-- [x] S23.1 The reset window, and what it parks
-      done: a thread-local window opened at the reset's begin event and
-        closed after `finish_reset`, compiled in both builds; `ll_free`
-        parks a `BLOCK_KIND_ENTITY_LARGE`/`_RUN` body while it is open,
-        ahead of the `rc-walk` deferred branch, and absorbs a
-        `BLOCK_KIND_RETAINED` free whose block this reset has not yet
-        registered; the flush runs after the window closes, so an epoch
-        in flight re-parks it
-      tier: T2 · role: —
-      handoff: `memory/reset_window.rs`, both builds, a `Cell<*mut _>`
-        with no drop glue and a `prev` link so a destructor that resets a
-        second arena nests. `ll_free`'s two new arms sit **ahead** of the
-        epoch arm. Its own tests cover the nesting and the three answers
-        of the absorb question; what it parks is observable only through
-        S23.4.
-- [x] S23.2 The escrow, taken at the promotion pass
-      done: `ll_object_die` snapshots the corpse's GcHeap COW children
-        before `dispose` and commits them only on the completed-teardown
-        arm, so a resurrection earns none; `array_die` does the same per
-        dying entry; nothing else escrows
-      tier: T2 · role: —
-      Written at the door of death, withdrawn, and rewritten at the
-        promotion pass on the Sage's revised ruling: the instant decides
-        which column absorbed the retain, and only promotion answers both
-        counterexamples. The snapshot rides `count_children`'s existing
-        walk; a completed teardown pays it into the escrow of the reset
-        that took it, found along the window chain.
-      handoff: `reset_window::snapshot_edge` / `record_death` /
-        `corrections`; the four doors are `ll_object_die`'s dispose-true
-        arm, `array_die` per dying entry, `string_die`, `weakref_die`.
-- [x] S23.3 The corpse skip, and the escrow applied
-      done: `retrace_survivors` and both loops of `reconcile_cow_counts`
-        skip an entity whose header reads refcount 0 **and** category
-        GcHeap — the category half because `mark_one` zeroes a live
-        arena survivor — and the escrowed edges are added to the delta
-        column, giving `edges_live + (now - at) + escrow`
-      tier: T2 · role: Critic
-      Critic 2026-08-14: two regressions in the escrow as written, both
-        confirmed against the code. It does not nest — `escrow` writes
-        the innermost window and `escrowed` reads it, so a survivor of an
-        outer reset dying inside an inner one settles a live COW child at
-        zero. And it over-counts an edge the corpse took **after**
-        promotion, whose retain is already inside `now`. The mirror case
-        breaks the Critic's own proposed repair: an edge held at
-        promotion and dropped before death would then be escrowed for
-        nothing. Escrow and skip reverted whole; the arithmetic goes back
-        to the Sage with both counterexamples. Two further findings
-        accepted from the same round: a panic left the window open
-        forever, now a stack guard; and `is_a_corpse` called a survivor
-        promoted at refcount 0 a corpse, which the redesign must answer.
-      Sage 2026-08-14 round 2: the corrected expression is
-        `edges_live + (now - at) + D - K`, D the promotion-time snapshot
-        of a dead holder's COW edges and K the compensating retains
-        `count_children` hands an already-promoted COW child in a later
-        round. Death becomes membership, because refcount 0 with a heap
-        category also describes a survivor promoted at zero. Final.
-      handoff: `promote::count_children` records both terms;
-        `reconcile_cow_counts` and `retrace_survivors` skip by
-        `reset_window::has_died`. Commit `f4490a1`.
-- [x] S23.4 The tests
-      done: the two Miri regressions (the large corpse under the
-        reconcile, and the retrace after a drain death), the arithmetic
-        pair that fails at 0 without the escrow and at 2 without the
-        skip, the resurrection case, the epoch case where a parked
-        `occupant_freed` replays against an index that never counted the
-        corpse, and the earlier-reset survivor that must not be absorbed;
-        and the three the second ruling added — the nested case where an
-        outer survivor dies inside an inner reset, the survivor promoted
-        at refcount zero, and the K term with two holders
-      tier: T2 · role: —
-      handoff: seven tests added to
-        `promote::tests::the_reset_reads_no_corpse`, which now holds ten,
-        each new one verified by removing the mechanism it pins: 5 instead
-        of 3 without the credit, 0 instead of 1 with the
-        refcount-and-category corpse test, 0 instead of 1 with the escrow
-        paid into the innermost window, 0 instead of 1 with no death
-        recorded at all, a death recorded for a resurrection, a corpse
-        walked without the retrace's skip, and the block at the pool
-        without the absorb. The earlier-reset survivor is
-        `reset_window::tests::only_an_unindexed_block_inside_a_reset_`
-        `is_absorbed`. Two Miri cases were added and seen red: the weak
-        walk reading a run an inner reset freed, with the parking gone,
-        and the retrace reading a returned run, which needs the skip and
-        the parking both gone because either one alone keeps the read
-        from happening or keeps the address mapped. Three `#[cfg(test)]`
-        probes in `reset_window` carry what no count can see — `depth`,
-        and the two counters `take_counters` answers, deaths recorded and
-        corpses walked.
 
 ## S22 — what the store barrier costs, and what the logging costs inside it
 
