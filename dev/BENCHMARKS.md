@@ -194,16 +194,40 @@ only difference being the absolute address of identical relative targets
 atomic load of the whole 8-byte word, twice, since an atomic load is not
 common-subexpression-eliminated, while `rc-trace` reads the 4-byte flags
 half once and reuses it for both tests. Two extra loads from a hot line do
-not cost 3.8 ns. **Hypothesis, unmeasured:** the 8-byte load overlaps the
-4-byte `incl (%rsi)` that the previous iteration's `escape_gain` stored into
-the counter half, a load wider than an overlapping store cannot be forwarded
-from the store buffer, and the resulting stall — 10 to 15 cycles, 2.8 to
-4.2 ns at this clock — is the size of the gap. Nothing here forces the
-question: `perf` on this WSL2 kernel has no counters, so
-`ld_blocks.store_forward` cannot be read. Until it is, the `rc-trace` figure
-in that row must not be quoted as "the escape is four times cheaper without
-`rc-walk`", and the same suspicion covers every `rc-walk` header read that
-follows a narrow counter store on the same line.
+not cost 3.8 ns.
+
+**The mechanism is this crate's own recorded trap, not a new guess.** The
+8-byte load overlaps the 4-byte `incl (%rsi)` that the previous iteration's
+`escape_gain` stored into the counter half, and a load wider than an
+overlapping store cannot be forwarded from the store buffer. That is the
+trap of 2026-07-27 in this file ("the narrow mutator lands"): keeping the
+word load over a fresh narrow store measured the retain/release pair at
+10.2 ns against 2.78, three times worse, and the rule drawn from it — narrow
+stores demand narrow loads — is written on `refcount::refcount_load`.
+
+**The barrier breaks that rule today.** `escape_gain` writes both halves of
+the header with plain 4-byte stores, while `header_flags` and
+`header_refcount` load the whole word through `mutator_load_header` and
+throw the half they did not want away; `header_pair` is the one caller that
+needs both. `ll_retain` already reads narrow (`flags_load`, `refcount_load`),
+which is why the retain/release path is fast and the escape bookkeeping
+beside it is not.
+
+What stays unmeasured is only whether that stall is the whole of this
+particular gap: `perf` on this WSL2 kernel exposes no counters, so
+`ld_blocks.store_forward` cannot be read, and the answer comes from making
+the loads narrow and re-measuring rather than from a probe. Until then the
+`rc-trace` figure in that row must not be quoted as "the escape is four
+times cheaper without `rc-walk`".
+
+**A second caveat on that row, and it applies to every arm here.** Each
+timed region hammers one entity, so the counter store and the header load
+of consecutive stores fall on the same line and form a loop-carried
+dependency. Compiled PHP storing a thousand different children into a
+thousand slots has no such chain, and the stall pipelines away behind
+independent work. The row therefore bounds what the mixed widths can cost
+in the worst shape, and a probe over a working set of many entities is what
+would say what they cost in an ordinary one.
 
 **What these numbers are not:** the cost of a store in compiled PHP. Lowering
 emits these micro-ops specialized to the slot's kind and to a constant
