@@ -126,6 +126,41 @@ says out loud. Accepted. No dispute reached Sage.
         configurations with the two feature legs; Miri clean over `refcount::`,
         `memory::barrier::` and the COW paths in both.
 
+The two steps below were opened after S24.2, when the critic found four
+header reads that bypassed the helpers (fixed in `6e5d137`). They sit here
+because this is where they are done; their numbers say when they were opened.
+
+- [ ] S24.4 A guard against a header read that bypasses the helpers
+      done: a test that reads this crate's own sources and fails on a direct
+        read of `rc.flags` or `rc.refcount` outside `refcount.rs`, green on
+        the current tree, and shown to fail when one of `6e5d137`'s four
+        sites is put back
+      tier: T1 · role: —
+      why a source-reading test and not a lint: the defect is textual — a
+        caller reached past the helper — and no type or visibility rule can
+        express it while `RcHeader`'s fields stay `pub` for the layout
+        contract. Its weakness is worth writing into the test: a rename or a
+        read through a local evades it, so it defends against inattention
+        and not against intent.
+      what it would have caught: `object_constructed`'s category read,
+        `ll_default_dispose`'s two, and `array::entity::needs_separation`.
+
+- [ ] S24.5 ThreadSanitizer, the instrument this class actually needs
+      done: `-Zsanitizer=thread` builds this crate and runs
+        `collector::tests::the_epoch_as_a_whole::a_free_running_mutator_survives_concurrent_epochs`
+        on this box, and one of `6e5d137`'s four sites, put back, is reported
+        by it — or the attempt is recorded in `dev/POSTMORTEM.md` as refused,
+        with what stopped it
+      tier: T2 · role: Critic
+      why: Miri cannot serve here. The only test that pairs a live collector
+        with a mutator is ignored under it because the design's mixed-size
+        atomics are rejected outright — a gap in the formal model rather than
+        in the tool, and one ThreadSanitizer does not share: it reports a
+        plain read against an atomic store, which is exactly this class.
+      the risk that decides it: the crate brings its own allocator, and
+        whether it runs under TSan at all is the first question the step
+        answers rather than assumes.
+
 - [ ] S24.3 One flags load for the whole store path, if the probe resolves it
       done: measured on S24.1's probe under the A→B→A bracket and landed only
         if the arena→arena and heap→arena directions move by more than 4 % of
