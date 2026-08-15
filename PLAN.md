@@ -8,14 +8,15 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-15 · Active: S22 — the prose sections below are the backlog
+Updated: 2026-08-15 · Active: none — the prose sections below are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S21 and
-S23; S22 below is the one open stage. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S23, which
+is every stage this file has carried, so no stage is open and the next one
+is opened from the backlog. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -25,47 +26,6 @@ feared to cost was `array::entity`'s alone: `array::entry` took 4 seconds
 over 7 tests and `array::table` 92 over 38, both clean, on 2026-08-13 at
 `8d3728d`. A slice is still how the module is run — invocation and thread
 cap in `dev/WORKFLOW.md`, Miri.
-
-## S22 — what the store barrier costs, and what the logging costs inside it
-
-Goal: a number for the barrier's two directions, so the arena's logging
-stops being defended by reasoning. Nothing in `dev/BENCHMARKS.md` names
-the barrier, the escape count or the reset logs today; the write path is
-argued from the code and has never been measured.
-
-Done when: both steps are closed and `dev/BENCHMARKS.md` carries the
-reading under its own protocol, arms measured back to back in one
-session on a tree that did not move between them.
-
-- [x] S22.1 The harness, in `benches/`
-      done: it drives the micro-ops directly — `barrier::store_category_barrier`,
-        `barrier::ref_store` — and never the C ABI symbols, which
-        `PLAN.md`'s cross-cutting rule keeps out of benches; three arms,
-        an arena-to-arena store that logs nothing, a heap-into-arena
-        store that appends one release record per store, and an
-        arena-into-heap store whose first escape appends and whose
-        repeats only increment
-      tier: T2 · role: —
-      handoff: `benches/barrier.rs`, six arms: the three directions of
-        `store_box`, the heap-into-arena one at two batch sizes so the
-        log's segment can be read out of the difference, `ref_store` on
-        the arena-to-arena direction, and `store_category_barrier` alone
-        on the escape. The four micro-ops are `pub` now — the module was
-        already `pub` and its `extern "C"` twins are exported, so the
-        widening promises nothing new. **The arena is reset between timed
-        regions**, inside `iter_custom` and outside the clock: a log
-        segment comes out of the arena's own bump and only `finish_reset`
-        returns it, so an earlier version that drained the records but
-        kept the memory took the machine down. Boundedness was checked
-        with an RSS guard (`peak 16-25 MB` per arm at `--sample-size 10`);
-        no reading was taken, that being S22.2.
-- [ ] S22.2 The reading, recorded
-      done: the three arms measured back to back per `dev/BENCHMARKS.md`,
-        the per-store cost of a release record stated with its unit and
-        its noise floor, and the segment allocation named separately —
-        one 4 KB segment from the arena's own bump every
-        `LOG_SEG_RECORDS` = 500 records
-      tier: T1 · role: —
 
 ## Then: arrays as a performance problem
 

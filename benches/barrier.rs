@@ -1,37 +1,38 @@
 //! What a reference store costs, and what the arena's logging costs
 //! inside it.
 //!
-//! What the numbers answer (session 2026-08-15, `dev/BENCHMARKS.md`): the
-//! write path has been argued from the code and never measured, so the
-//! arena's two logs are defended by reasoning alone. Three directions of
-//! one micro-op price them apart, because the direction is what decides
+//! What the numbers answer (`dev/BENCHMARKS.md`, "the store barrier's
+//! three directions, and the arena's logging inside them"): what the
+//! arena's two write-side logs cost per store. Three directions of one
+//! micro-op price them apart, because the direction is what decides
 //! whether anything is logged:
 //!
-//! - **arena into arena** — the barrier's cheapest path: a retain that
-//!   returns early on a non-`GcHeap` category, a category comparison,
-//!   and the write. Nothing is logged.
+//! - **arena into arena** — the least work the barrier can do: a retain
+//!   that returns early on a non-`GcHeap` category, a category
+//!   comparison, and the write. Nothing is logged.
 //! - **heap into arena** — one release-at-reset record appended per
 //!   store, plus the retain the record owes.
 //! - **arena into heap** — the escape: the first store sets `IS_ESCAPEE`
 //!   and appends one escapee record, and every later store only
 //!   increments the hold-count in the entity's own header.
 //!
-//! Two more arms take the escape apart. One prices
-//! `store_category_barrier` alone, which is the escape bookkeeping
-//! without the slot write, so the difference from the publish above is
-//! what the write costs. The other prices `ref_store`, the composition of
-//! `store_box` and `drop_ref` that a Rust caller uses, against the bare
-//! publish on the same direction.
+//! Two more arms split those costs further. One prices
+//! `store_category_barrier` alone on the escape direction, which is the
+//! bookkeeping without the slot write, so the difference from the publish
+//! above is the rest of `store_box`: the retain and the write. The other
+//! prices `ref_store`, the composition of `store_box` and `drop_ref` that
+//! a Rust caller uses, against the bare publish on the arena→arena
+//! direction.
 //!
 //! **The arena is reset between timed regions, and that is not optional.**
 //! A log segment is carved out of the arena's own bump and is given back
 //! only by `finish_reset`, so a harness that merely drains the records
 //! keeps every segment: at one segment per 500 records, a criterion run
 //! of a logging arm would take gigabytes and measure a condition no
-//! program produces (`dev/BENCHMARKS.md`). The reset and the rebuilding
-//! of each arm's arena-side objects therefore sit inside `iter_custom`
-//! and outside the clock. The arena starts each region young, which is
-//! also the shape a request arena has.
+//! program produces. The reset and the rebuilding of each arm's
+//! arena-side objects therefore sit inside `iter_custom` and outside the
+//! clock. The arena starts each region young, which is also the shape a
+//! request arena has.
 //!
 //! **What these numbers are not.** They are not the cost of a store in
 //! compiled PHP: lowering emits the micro-ops specialized to the slot's
@@ -40,15 +41,15 @@
 //! cost of the work inside the barrier, and the comparison between arms
 //! is what they are for.
 //!
-//! **The two batch sizes are what the segment can be read from**, there
+//! **The two batch sizes vary the segment's amortised share**, there
 //! being no arm of its own: the release-at-reset log takes one segment
 //! every 500 records, so a per-store figure at 100 stores carries a
 //! different share of that allocation than one at 1000. Whether the
 //! difference rises above the noise floor is the reading's answer, not a
 //! promise of this file.
 //!
-//! Numbers live in `dev/BENCHMARKS.md`; this file is the code only, and
-//! the protocol there decides what a reading has to carry. Both
+//! The numbers are in `dev/BENCHMARKS.md`, whose "Method" decides what a
+//! reading has to carry; this file is the code only. Both
 //! configurations:
 //!
 //! ```
@@ -225,6 +226,9 @@ fn ref_store_arena_into_arena(c: &mut Criterion, ctx: *mut LLContext, arena: *mu
 /// retain that record owes. The heap child outlives the arena, so it is
 /// built once here; the reset between regions is what pays its records
 /// back.
+///
+/// The only arm run at two batch sizes, so the stores per region and the
+/// criterion `id` are the caller's (module doc).
 fn heap_into_arena(
     c: &mut Criterion,
     ctx: *mut LLContext,

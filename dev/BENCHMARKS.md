@@ -100,6 +100,117 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-15 — the store barrier's three directions, and the arena's logging inside them
+
+A release-at-reset record costs **3.9 ns per store** under `rc-walk` and
+under 1 ns under `rc-trace`, which is the first measured figure the arena's
+write-side logging has ever had (S22). The log's segment allocation stays
+below this box's noise floor at both batch sizes, so it is bounded rather
+than priced.
+
+Commit `598706c`, harness `benches/barrier.rs`, both GC configurations,
+i7-11700K (16 threads, 7.9 GB, WSL2), idle at load 0.24 when the session
+started. Both binaries were built and copied out before either was
+measured, so no compile sits between two arms:
+
+```
+cargo bench --bench barrier --no-run                        # rc-walk
+cargo bench --bench barrier --no-default-features --no-run  # rc-trace
+cp target/release/deps/barrier-<hash> <dir>/barrier_walk    # and barrier_trace
+<dir>/barrier_walk  --bench --save-baseline discard   # first of the session, thrown away
+<dir>/barrier_walk  --bench --save-baseline A1
+<dir>/barrier_trace --bench --save-baseline B
+<dir>/barrier_walk  --bench --save-baseline A2
+<dir>/barrier_trace --bench --save-baseline B2        # repeat, outside the control bracket
+```
+
+Every run went through an RSS guard that kills at 1200 MB; the peak was
+24–26 MB, which is the harness's per-region arena reset holding (S22.1,
+and the machine it took down before that reset existed).
+
+Criterion's median per timed region, in µs:
+
+| arm | A1 rc-walk | B rc-trace | A2 rc-walk | B2 rc-trace |
+|---|---|---|---|---|
+| `store_arena_into_arena_x1000` | 6.1640 | 7.0834 | 6.1487 | 7.5451 |
+| `ref_store_arena_into_arena_x1000` | 7.0349 | 8.0677 | 6.9874 | 8.1058 |
+| `store_heap_into_arena_x1000` | 10.157 | 7.7191 | 9.8715 | 7.6793 |
+| `store_heap_into_arena_x100` | 1.0151 | 0.78913 | 1.0033 | 0.79438 |
+| `store_arena_into_heap_x1000` | 6.3440 | 7.0295 | 6.3602 | 7.7217 |
+| `category_barrier_arena_into_heap_x1000` | 5.1920 | 1.4011 | 5.2218 | 1.4194 |
+
+**The control holds:** the two A's differ by 0.25 % to 2.8 %, inside the
+1.5–3 % floor of this box (Method), so the run is not void. B2 was taken
+after the disassembly below, with the load at 0.86, and it repeats B to
+within 1.3 % on the four arms that log or escape while the two
+arena-source publish arms drifted 6.5 % and 9.8 %. Every cross-configuration
+statement here is therefore made only where the two B runs agree.
+
+Per store, rc-walk being the two A's averaged and rc-trace the B run, in ns:
+
+| what the arm prices | rc-walk | rc-trace |
+|---|---|---|
+| `store_box`, arena into arena: retain's early return, category test, write | 6.16 | 7.08 |
+| `ref_store`, same direction: the publish plus `drop_ref` of the displaced entity | 7.01 | 8.07 |
+| `store_box`, heap into arena, 1000 per region: one release record per store | 10.01 | 7.72 |
+| `store_box`, heap into arena, 100 per region | 10.09 | 7.89 |
+| `store_box`, arena into heap: the first store logs the escapee, the rest count it | 6.35 | 7.03 |
+| `store_category_barrier` alone on that direction: the bookkeeping, no slot written | 5.21 | 1.40 |
+
+**What the release-at-reset record costs is the heap→arena arm minus the
+arena→arena one: 3.85 ns per store under `rc-walk`, 39 % of that store.**
+The difference prices the record together with the retain it owes, because
+the arena→arena arm's retain returns early on a non-`GcHeap` category and
+the heap→arena one does not (the harness's module doc says the same). Under
+`rc-trace` the same difference is 0.64 ns in B and 0.13 ns in B2, so
+nothing tighter than "under 1 ns" is claimed there.
+
+**The escape direction costs 0.19 ns per store over the cheapest publish**,
+which is inside the floor and is what the design predicts: only the first
+store of a region appends an escapee record, and the other 999 increment the
+hold-count in the entity's own header. `ref_store` costs 0.85 ns more than
+the bare publish under `rc-walk` and 0.99 under `rc-trace` — the `drop_ref`
+of the entity the slot displaced.
+
+**The log's segment is not resolvable by these two batch sizes.** One
+4016-byte segment is carved out of the arena's own bump every
+`LOG_SEG_RECORDS` = 500 records (`memory/arena.rs`), and the harness resets
+the arena per region, so a 1000-store region draws two segments and a
+100-store region one: 0.002 against 0.01 segments per store, a factor of
+five in the amortised share. The per-store cost differs by +0.006 ns and
++0.16 ns across the two `rc-walk` runs — a sign change between them — and by
++0.17 ns and +0.26 ns across the two `rc-trace` runs. All four sit at or
+under the floor, so what follows is a bound and not a cost: at 100 stores
+the segment adds at most about 0.3 ns per store, under 3 % of the store.
+Resolving it would need an arm that draws a segment per store, and no such
+arm exists — the growth branch is `#[cold]` behind a count of 500 by
+construction.
+
+**The two configurations disagree on the escape bookkeeping by a factor of
+3.7, and the emitted code does not explain it.** `escape_gain` is the same
+sequence of 38 instructions in both binaries up to its refusal tail, the
+only difference being the absolute address of identical relative targets
+(`objdump`), and the calling loops differ in one place: under `rc-walk` the header is read as a relaxed
+atomic load of the whole 8-byte word, twice, since an atomic load is not
+common-subexpression-eliminated, while `rc-trace` reads the 4-byte flags
+half once and reuses it for both tests. Two extra loads from a hot line do
+not cost 3.8 ns. **Hypothesis, unmeasured:** the 8-byte load overlaps the
+4-byte `incl (%rsi)` that the previous iteration's `escape_gain` stored into
+the counter half, a load wider than an overlapping store cannot be forwarded
+from the store buffer, and the resulting stall — 10 to 15 cycles, 2.8 to
+4.2 ns at this clock — is the size of the gap. Nothing here forces the
+question: `perf` on this WSL2 kernel has no counters, so
+`ld_blocks.store_forward` cannot be read. Until it is, the `rc-trace` figure
+in that row must not be quoted as "the escape is four times cheaper without
+`rc-walk`", and the same suspicion covers every `rc-walk` header read that
+follows a narrow counter store on the same line.
+
+**What these numbers are not:** the cost of a store in compiled PHP. Lowering
+emits these micro-ops specialized to the slot's kind and to a constant
+`owner_cat` and inlines them, while the harness calls them across a boundary
+the optimizer keeps — visible in the disassembly above as an indirect call
+per store. The comparison between arms is what the reading is for.
+
 ## 2026-08-10 — the block kind becomes an atomic: the clock cannot resolve it, the disassembly can
 
 The word at offset 0 of every block header took an atomic type and left
