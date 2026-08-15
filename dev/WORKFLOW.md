@@ -343,6 +343,42 @@ actually has. Taking a fresh `&mut` per call retags and invalidates the
 pointer `set_current_context` parked in TLS, producing a failure that
 is an artefact of the test, not of the runtime.
 
+## ThreadSanitizer
+
+ThreadSanitizer sees the one class Miri cannot reach here: a plain field
+read beside the collector's atomic store into the same header. Miri is out
+because the only test that pairs a live collector with a mutator —
+`collector::tests::the_epoch_as_a_whole::a_free_running_mutator_survives_concurrent_epochs`
+— is ignored under it, the design's mixed-size atomics being rejected
+outright. TSan does not share that gap: it reports plain-against-atomic and
+says nothing about two atomics of different widths.
+
+```
+RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -Zbuild-std \
+    --lib --target x86_64-unknown-linux-gnu -- --test-threads=1 a_free_running
+```
+
+**`-Zbuild-std` is not optional.** Without it the build fails outright on an
+ABI mismatch — the flag changes the ABI, and `core` in the prebuilt sysroot
+was compiled without it. `rust-src` must be installed for the nightly
+toolchain.
+
+What a report looks like, from the run that validated this on 2026-08-15:
+the write side is `atomic_store::<u8>` (`collector_stamp_epoch`) and the
+read side is `RcHeader::memory_category` under `object::object_constructed`,
+which is the defect `6e5d137` fixed, put back for the occasion. Restoring the
+fix returned the run to silence. Both halves are the discipline this file
+asks of every fix: see the instrument report it before, and be silent after.
+
+Two things about the run itself. A clean run of that test takes under a
+second, and a run that reports takes a minute and a half — nearly all of it
+symbolization, so a slow run means a finding rather than a slow test. And the
+window is thin: the mutator churns only while four epochs run, so a clean run
+is weak evidence and a report is strong evidence, the same asymmetry loom has.
+
+It is outside the commit gate. Run it when a change touches header access,
+the collector's own writes, or anything else two threads reach.
+
 ## Loom
 
 Loom explores the executions the C11 model permits, which is how an

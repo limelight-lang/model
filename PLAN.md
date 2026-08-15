@@ -154,7 +154,7 @@ because this is where they are done; their numbers say when they were opened.
         `#[cfg(not(feature = "rc-walk"))]`, which is found by brace counting
         from the attribute — sound only because `rustfmt` governs the file.
 
-- [ ] S24.5 ThreadSanitizer, the instrument this class actually needs
+- [x] S24.5 ThreadSanitizer, the instrument this class actually needs
       done: `-Zsanitizer=thread` builds this crate and runs
         `collector::tests::the_epoch_as_a_whole::a_free_running_mutator_survives_concurrent_epochs`
         on this box, and one of `6e5d137`'s four sites, put back, is reported
@@ -169,6 +169,14 @@ because this is where they are done; their numbers say when they were opened.
       the risk that decides it: the crate brings its own allocator, and
         whether it runs under TSan at all is the first question the step
         answers rather than assumes.
+      handoff: it runs, and the recipe is in `dev/WORKFLOW.md`,
+        "ThreadSanitizer". `-Zbuild-std` is the part that is not optional —
+        without it the build fails on an ABI mismatch against the prebuilt
+        `core`. Validated both ways on 2026-08-15: `object_constructed`'s
+        pre-`6e5d137` read was reported with the collector's
+        `atomic_store::<u8>` on the other side, and the fix returned the run
+        to silence. The window is thin — the mutator churns only while four
+        epochs run — so a report is strong evidence and a clean run is weak.
 
 - [ ] S24.3 One flags load for the whole store path, if the probe resolves it
       done: measured on S24.1's probe under the A→B→A bracket and landed only
