@@ -722,10 +722,14 @@ pub unsafe extern "C" fn ll_release_batch(entity: *mut RcHeader) -> bool {
 /// build-dispatching read helper — teardown paths and the weak
 /// machinery share it rather than owning private copies.
 ///
-/// **Four bytes, not the word**, for the reason [`refcount_load`] gives:
-/// the store barrier reaches here right after `ll_retain` has written the
-/// counter half, and a wide load over a fresh narrow store waits for the
-/// store buffer instead of taking the value from it.
+/// **Four bytes, not the word.** The store barrier reaches here right after
+/// `ll_retain` has written the counter half, and an 8-byte load spanning
+/// that fresh 4-byte store waits for the store buffer. Bytes 4-7 do not
+/// overlap the counter at all, so nothing has to be forwarded — which is
+/// the other half of [`refcount_load`]'s discipline rather than the same
+/// case: there the load covers exactly the bytes the store wrote and
+/// forwarding succeeds (`dev/BENCHMARKS.md`, "the barrier's header reads
+/// go narrow").
 #[inline]
 pub(crate) unsafe fn header_flags(header: *const RcHeader) -> u32 {
     #[cfg(not(feature = "rc-walk"))]
@@ -748,12 +752,14 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
     }
 }
 
-/// The count and the flags **from one instant**, for a caller whose
-/// verdict is a function of both — [`cow_separation_needed`] is the one
-/// that is, and reading its two halves separately samples them twice.
-/// Under `rc-walk` that costs one wide load, which is right here and
-/// wrong in the store path: this is reached with no narrow store of its
-/// own in front of it, so nothing is waiting in the store buffer.
+/// The count and the flags in **one** load, for a caller that wants both —
+/// [`cow_separation_needed`] is the predicate over the pair. One wide load
+/// beats two narrow ones where nothing narrow precedes it, which is the
+/// case here and is not the case in the store path.
+///
+/// It buys no coherence the two readers above lack: the only concurrent
+/// writer of a published header is the collector, and its one claim is the
+/// epoch byte ([`collector_stamp_epoch`]), which no caller of this reads.
 #[inline]
 pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
     #[cfg(not(feature = "rc-walk"))]

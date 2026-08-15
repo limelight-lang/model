@@ -267,7 +267,7 @@ pub unsafe fn object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool 
         return true;
     }
 
-    if unsafe { (*obj).rc.memory_category() } == MemoryCategory::RequestArena
+    if unsafe { header_category(obj as *const RcHeader) } == MemoryCategory::RequestArena
         && !unsafe { (*resolve_arena(ctx)).track_destructor(obj as *mut RcHeader) }
     {
         return false;
@@ -614,7 +614,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
             if ran && refcount > 0 {
                 return false; // resurrected
             }
-        } else if ran && unsafe { (*obj).rc.refcount } > 0 {
+        } else if ran && unsafe { crate::refcount::header_refcount(obj as *const RcHeader) } > 0 {
             return false;
         }
     }
@@ -640,7 +640,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
     // this path (only GcHeap objects reach full teardown; arena objects get
     // phase 1 only at reset), and passing it makes teardown's drop identical
     // to the store barrier's.
-    let owner_cat = unsafe { (*obj).rc.memory_category() };
+    let owner_cat = unsafe { header_category(obj as *const RcHeader) };
     unsafe {
         for_each_counted_child(obj, |child| {
             crate::memory::barrier::drop_ref(owner_cat, child);
@@ -883,8 +883,8 @@ pub unsafe fn ll_cow_separate(
     entity: *mut RcHeader,
 ) -> *mut RcHeader {
     use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
-    // Both halves from one instant: the verdict below is a function of the
-    // pair, and two reads would sample it twice (`refcount::header_pair`).
+    // One load for both halves: nothing narrow precedes this call, so the
+    // wide read is cheaper than two narrow ones (`refcount::header_pair`).
     let (count, flags) = unsafe { crate::refcount::header_pair(entity) };
     if !crate::refcount::cow_separation_needed(flags, count) {
         return entity;

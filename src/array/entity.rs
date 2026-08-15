@@ -386,8 +386,7 @@ pub(crate) unsafe fn category_of(a: *const LLArray) -> MemoryCategory {
 /// `a` is a live array entity.
 #[inline]
 pub unsafe fn needs_separation(a: *const LLArray) -> bool {
-    let flags = unsafe { (*a).rc.flags };
-    let refcount = unsafe { (*a).rc.refcount };
+    let (refcount, flags) = unsafe { crate::refcount::header_pair(a as *const RcHeader) };
     crate::refcount::cow_separation_needed(flags, refcount)
 }
 

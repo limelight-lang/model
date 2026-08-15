@@ -139,22 +139,40 @@ on the plain publish and 29 % on the logged one — where the logged one was
 soft: the two A's differ by 10 %, so all that can be said is that the two
 builds are within about that of each other, `rc-trace` ahead.
 
-**Both gaps recorded earlier today were one defect, in two shapes.** The 3.7x
-on the escape arm was a wide load over the *previous* store's narrow write,
-which is why spreading the stores over 64 children removed it. The 2.2x on
-`heap → arena` was the same overlap **inside one store** — `ll_retain` writes
-the counter half, and `store_category_barrier` read all eight bytes
-immediately after — which is why no working set could break it and why the
-narrow read removes it whole.
+**One defect in two shapes is the best explanation of both gaps, and it is
+not an established one.** The 3.7x on the escape arm was a wide load over the
+*previous* store's narrow write, which is why spreading the stores over 64
+children removed it. On `heap → arena` the same overlap sits **inside one
+store** — `ll_retain` writes the counter half and `store_category_barrier`
+read all eight bytes immediately after — so no working set can break it, and
+the narrow read removes the whole 3.3 ns.
+
+What the figures do not settle is why that intra-iteration stall was not
+hidden. Sixty-four independent iterations of a 13-instruction loop should
+absorb a latency of ten-odd cycles behind each other, and they absorbed none
+of it: 4.818 at one child and 4.816 at 64. Two readings survive that. Either
+a failed forward is a throughput cost rather than a latency one, replayed and
+consuming issue slots, in which case this file's latency framing of the
+2026-07-27 trap is the wrong picture in general; or something else in that
+arm was the limiter and the wide load stood in series with it — the log's
+cursor is a read-modify-write of one location on every iteration, and it is
+the one loop-carried chain `heap → arena` has that the escape arm has not.
+
+Two cheap arms discriminate, and both are owed: one that keeps the wide load
+but moves `ll_retain`'s counter store after the barrier's read, and one with
+an `Immortal` heap child, whose retain writes nothing at all while the log
+append stays. Until one of them exists, the mechanism above is the leading
+explanation and the numbers are the fact.
 
 **`arena → arena` did not move**, as it should not: the retain returns early
 on a non-`GcHeap` category, so that path writes no counter and never had an
 overlap to lose.
 
-What stays wide is `header_pair`, and `ll_cow_separate` moved onto it: its
-verdict is a function of both halves, and reading them separately sampled
-them at two instants — a coherence the code depended on without saying so.
-Nothing narrow precedes it, so it is not in a store-forwarding window.
+What stays wide is `header_pair`, and `ll_cow_separate` moved onto it,
+because one load beats the two it was making and nothing narrow precedes it
+there. It buys no coherence the split reads lacked: the collector's one claim
+on a published header is the epoch byte, which that predicate does not read,
+so both shapes answer identically in every execution.
 
 Verification: the full gate green in both GC configurations, three threaded
 runs each, plus `hash-folding` and both `debug-journal` legs; Miri clean over
@@ -222,6 +240,11 @@ says what the arena's logging costs in the shape compiled code has: 3.7 ns
 per store over the cheapest publish, against the 3.85 the harness reported
 through a call boundary.
 
+**Corrected by S24.2, the entry above:** those 3.7 ns were the header's own
+stall and not the log. With the accessors reading narrow, the same
+subtraction is 1.538 − 1.092 = 0.45 ns, and the sentence above stands only as
+a description of the code as it was on this date.
+
 **The loops carry no call on the path they take.** The innermost timed loop
 is 13, 12 and 13 instructions under `rc-walk` and 25, 25 and 27 under
 `rc-trace`, none of them containing a `call`. What remains in the enclosing
@@ -241,6 +264,14 @@ under 1 ns under `rc-trace`, which is the first measured figure the arena's
 write-side logging has ever had (S22). The log's segment allocation stays
 below this box's noise floor at both batch sizes, so it is bounded rather
 than priced.
+
+**Corrected the same day by S24.2:** the 3.9 ns was almost all the header's
+own stall — a wide load over the counter half `ll_retain` had just written —
+and not the record. Read narrow, the same difference is 0.45 ns, which is
+what agrees with the 0.64 and 0.13 this entry measured under `rc-trace`,
+a build that changes nothing about the log. **Do not quote the 3.9.** The
+rest of this entry stands: it describes the code of that hour and the harness
+it was taken on.
 
 Commit `598706c`, harness `benches/barrier.rs`, both GC configurations,
 i7-11700K (16 threads, 7.9 GB, WSL2), idle at load 0.24 when the session
@@ -297,7 +328,11 @@ The difference prices the record together with the retain it owes, because
 the arena→arena arm's retain returns early on a non-`GcHeap` category and
 the heap→arena one does not (the harness's module doc says the same). Under
 `rc-trace` the same difference is 0.64 ns in B and 0.13 ns in B2, so
-nothing tighter than "under 1 ns" is claimed there.
+nothing tighter than "under 1 ns" is claimed there. **The 3.85 was corrected
+by S24.2 the same day: it was the header stall the retain left in front of
+the category test, and the record's own cost is 0.45 ns — which is why the
+`rc-trace` figures beside it were an order out and should have been read as
+the warning they were.**
 
 **The escape direction costs 0.19 ns per store over the cheapest publish**,
 which is inside the floor and is what the design predicts: only the first
