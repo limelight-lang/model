@@ -130,7 +130,7 @@ The two steps below were opened after S24.2, when the critic found four
 header reads that bypassed the helpers (fixed in `6e5d137`). They sit here
 because this is where they are done; their numbers say when they were opened.
 
-- [ ] S24.4 A guard against a header read that bypasses the helpers
+- [x] S24.4 A guard against a header read that bypasses the helpers
       done: a test that reads this crate's own sources and fails on a direct
         read of `rc.flags` or `rc.refcount` outside `refcount.rs`, green on
         the current tree, and shown to fail when one of `6e5d137`'s four
@@ -144,6 +144,15 @@ because this is where they are done; their numbers say when they were opened.
         and not against intent.
       what it would have caught: `object_constructed`'s category read,
         `ll_default_dispose`'s two, and `array::entity::needs_separation`.
+      handoff: `refcount::tests::who_may_read_a_header`, two tests — the
+        guard itself and one that feeds it `object_constructed`'s old shape
+        beside an `rc-trace` block, so a guard that finds nothing anywhere
+        fails instead of passing. It found a fifth site the review had not:
+        `test_support::outside_block::install_block`, now on
+        `object::header_category`. Exempt are `refcount.rs`, everything
+        under a `tests/` directory, and any block opened by
+        `#[cfg(not(feature = "rc-walk"))]`, which is found by brace counting
+        from the attribute — sound only because `rustfmt` governs the file.
 
 - [ ] S24.5 ThreadSanitizer, the instrument this class actually needs
       done: `-Zsanitizer=thread` builds this crate and runs

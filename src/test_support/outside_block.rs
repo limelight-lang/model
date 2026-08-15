@@ -115,7 +115,7 @@ pub(crate) fn class(name: &str) -> *const Class {
 /// walking the instance.
 pub(crate) unsafe fn install_block(ctx: *mut LLContext, obj: *mut Object) -> *mut u8 {
     let base = obj as *mut u8;
-    let category = unsafe { (*obj).rc.memory_category() };
+    let category = unsafe { crate::object::header_category(obj as *const RcHeader) };
     let (fresh, granted) = unsafe { crate::memory::routing::body_alloc(ctx, category, BLOCK_SIZE) };
     assert!(!fresh.is_null(), "the memory manager refused a block");
 

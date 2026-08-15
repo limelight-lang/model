@@ -12,3 +12,4 @@ fn release(header: &mut RcHeader) -> bool {
 mod the_half_of_the_header_the_collector_claims;
 mod the_header_the_compiler_shares;
 mod what_the_category_decides;
+mod who_may_read_a_header;
