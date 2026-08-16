@@ -401,6 +401,66 @@ review:
   arena-to-heap stores must pass the appeal discipline; the parent
   document's coverage questions apply verbatim.
 
+## Review history
+
+Two critic rounds ran on 2026-08-16, per the project rule; both rounds'
+defects are fixed in the text above, and no third round is owed.
+
+**Round 1, eight findings** against the initial sketch: storeless
+materialization (weak upgrade handed out references the barrier never
+saw); the drain cited count-based Phase 4 machinery that does not survive
+RC removal, with no ordering of frees against acquittals; "mature" was
+undefined and its two candidate readings disagreed in the fatal direction;
+concurrent stack scanning was unsound and "one synchronization point" was
+false; sticky appeal bits accumulated into spurious acquittals; nothing
+cleared an acquitted survivor's condemned bit; the arena variant reused
+count-based promotion, had no survivor-set transport, and returned a block
+under a live resurrected entity; the barrier's cost accounting charged its
+old-value load to a decrement the design deletes. The fixes became the
+materialization rule, the D1–D5 drain, the walk-stamp maturity predicate
+with the grace rule, mutator-side root enumeration, the appeal epoch
+stamp, the acquitted report, the parked-arena drain integration, and the
+full-barrier cost paragraph.
+
+**Round 2, ten findings, the two worst inside round 1's fixes**: the D1
+retrace pruned at COW values and freed a live entity behind a sole-held
+array (fixed: retrace crosses COW transparently); parked entities carried
+stamp 0, so no barrier half fired for them (fixed: the category term in
+the predicate); the barrier stamped appeal bytes into live COW counts —
+data corruption, not retention (fixed: the COW term); the collector's D5
+clear could be buried by a mutator whole-word store, reinstating the bit
+forever (fixed: bit-ownership handoff, drain-side clearing, two abort
+rules); the condemnation predicate was unsatisfiable as written (fixed:
+recorded pre-census stamps and the explicit happens-before argument);
+handle-table insertion was not a gate and D3 exploited it (fixed: both
+doors barriered); the idle path was not "one test" while the arena
+category barrier survives (fixed: both readings priced); deleting entity
+releases guts the checkpoint network that acks and drains ride (fixed:
+compiler polls made part of the design); D4's COW-child releases and
+checkpoint masking were unspecified and step 6 contradicted D4 on who
+reclaims (fixed); D3's loop was two readings deep (fixed: one destructor
+pass plus one repeat).
+
+**What both rounds left standing:** the arming order over the existing
+soft handshake, the store-time appeal argument against clear-only
+variants, the appeal epoch stamp end to end, the hybrid-barrier root
+argument under the register contract, and the retention-only direction of
+every header-byte burial.
+
+## Current verdict (2026-08-16)
+
+As research the design has paid for itself: it is cheaper than the
+V8-shaped leader it replaced (no discovery, no termination protocol, no
+shared marking state) and it gives arenas a no-RC story the parent
+document did not have. As a replacement for rc-walk it is not funded. The
+benefit is bounded by two unmeasured numbers: the share of publications
+whose targets are entities rather than COW values (COW keeps its counts
+either way), and the epoch duty cycle (the armed barrier costs roughly
+what the RC pair costs; the win is the idle path). rc-walk's known
+weaknesses are shell, not mathematics, and cost less to fix than a new
+collector. First real step: measure those two numbers and the hot-path
+triple; the decision gate below does not open on anything less.
+
 ## Decision gate
 
 Inherited from the parent document minus the discovery and termination
