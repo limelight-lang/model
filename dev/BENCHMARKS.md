@@ -100,6 +100,39 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-16 — what an epoch parks, in counts that repeat exactly
+
+S26.5: `collector::tests::the_epoch_as_a_whole::measure_parked_memory`,
+a count instrument — the stepped epoch runs no collector thread, and
+debug and release print identical figures, so the clock's noise floor
+does not apply. One 16-byte class, deaths landed in two arms: victims
+born before the epoch, killed after the snapshot; victims born and
+killed mid-epoch, after the walk.
+
+| deaths per arm | parked after arm 1 | after arm 2 | at close, before the flush checkpoint | after it |
+|---|---|---|---|---|
+| 100 | 100 | 200 | 200 | 0 |
+| 1 000 | 1 000 | 2 000 | 2 000 | 0 |
+| 10 000 | 10 000 | 20 000 | 20 000 | 0 |
+
+The formula is read directly: **parked records = deaths while the
+epoch is in flight, one for one, regardless of when the victim was
+born** — the churn-times-duration bound of the 2026-07-27 correction,
+with the live heap nowhere in it. Bytes are records times the class's
+slot (16 here), by the probe's construction rather than by header
+reads. The memory returns not at `close` but at the owning thread's
+next checkpoint, which the table's last two columns exhibit — and
+which is what the design means by "the memory returns at the thread's
+first death or poll". The wall-time translation stays the reader's
+arithmetic: records/ms at an assumed churn rate times the epoch
+figures of "fresh brackets on one HEAD".
+
+The mid-born arm parking one-for-one is also the measured case for the
+unbuilt young-free exemption (`rfc/BACKLOG.md` via `rfc/model/gc/rc-walk.md`,
+"Deferred physical release"): an entity born and dead inside one epoch
+is in no snapshot row, and every record the second arm adds is a
+record that exemption would remove.
+
 ## 2026-08-16 — AArch64 reads the header with plain loads and stores
 
 S26.6, an inspection rather than a measurement: `rustup target add

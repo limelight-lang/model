@@ -313,3 +313,71 @@ fn measure_epoch_cost() {
         }
     }
 }
+
+/// Measurement probe, counts rather than clocks: what an epoch parks
+/// as a function of deaths landed inside it. The design's bound is
+/// churn times epoch duration, not live heap (`rfc/model/gc/rc-walk.md`,
+/// "Deferred physical release, and when an epoch ends"), and the two
+/// arms exhibit both halves of that correction: victims born before
+/// the epoch and victims born inside it park alike. The stepped epoch
+/// runs no collector thread, so the figures repeat exactly and the
+/// clock's noise floor does not apply.
+///
+/// ```
+/// cargo test --lib -- --ignored measure_parked_memory --nocapture
+/// ```
+#[test]
+#[ignore = "measurement probe; run explicitly with --ignored"]
+fn measure_parked_memory() {
+    use crate::memory::deferred_free::parked_count;
+    use crate::object::ll_object_die;
+
+    let _g = crate::memory::block_pool::test_guard();
+    let cls = ClassBuilder::new("ParkedMemory").build();
+    let slot_bytes = unsafe { (*cls).object_size } as usize;
+    let mut arena = Arena::new();
+    let mut ctx = LLContext { arena: &mut arena };
+
+    for &k in &[0usize, 100, 1_000, 10_000] {
+        let pre: Vec<*mut Object> = (0..k)
+            .map(|_| unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) })
+            .collect();
+
+        let mut e = Epoch::open();
+        checkpoint();
+        e.snapshot();
+        for &obj in &pre {
+            unsafe {
+                assert!(ll_release(obj as *mut RcHeader));
+                ll_object_die(obj);
+            }
+        }
+
+        let pre_born = parked_count();
+        e.walk();
+        // The half the 2026-07-27 correction added: entities allocated
+        // after the epoch opened park exactly like the snapshot's.
+        for _ in 0..k {
+            let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+            unsafe {
+                assert!(ll_release(obj as *mut RcHeader));
+                ll_object_die(obj);
+            }
+        }
+
+        let with_mid_born = parked_count();
+        e.judge();
+        e.condemn();
+        checkpoint();
+        e.recheck_and_post();
+        let _ = e.close();
+        let at_close = parked_count();
+        checkpoint();
+        let after_flush = parked_count();
+        assert_eq!(after_flush, 0, "the post-epoch flush returns everything");
+        println!(
+            "parked_memory k={k} slot_bytes={slot_bytes} pre_born={pre_born} \
+             with_mid_born={with_mid_born} at_close={at_close} after_flush={after_flush}"
+        );
+    }
+}

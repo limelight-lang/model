@@ -135,14 +135,40 @@ deletes a naive loop first.
         destructor registration, no arena logging — because that delta
         is what the row prices
       tier: T2 · role: —
-- [ ] S26.4 Disassembly-anchored decompositions
+- [x] S26.4 Disassembly-anchored decompositions
       done: for the pair, the counted publish and the death branch, an
         objdump listing in which every instruction is tied to a named
         contract sentence in the rfc or listed as residue with its
         lead; Critic reviews the listings against the disassembly, not
         prose summaries
       tier: T2 · role: Critic
-- [ ] S26.5 What an epoch parks, in counts
+      Critic 2026-08-16 round 1: the ll_release listing missed three
+        instructions its own claim requires named; the register-ride
+        dec row blamed the death test where rc-trace's decl [mem]
+        disproves it — the relaxed-atomic demand is the real contract;
+        a citation named the wrong README; the specialized-store
+        inlining was promised as fact beyond the one observed case;
+        the free-path parking test sat in no scope line. Accepted, all
+        fixed.
+      Critic 2026-08-16 round 2, on the fixes: the store_ptr listing
+        repeated the omission class on two labels (refusal and null
+        paths unplaced); the dec row hung a general LLVM fusion claim
+        on a citation that lacks it — softened to the observed fact;
+        the early xor sat after the branches its comment says it
+        precedes; the fused-gate row and the closing census disagreed;
+        the observed-inlining anchor gained its toolchain and OS. All
+        fixed. No dispute reached Sage.
+      handoff: `docs/performance-case-decompositions.md` — three
+        listings, contract table each, residue split into observed and
+        designed halves; the case document cites it rather than
+        re-deriving.
+- [x] S26.5 What an epoch parks, in counts
+      handoff: probe `measure_parked_memory` beside the epoch-cost one;
+        entry "what an epoch parks, in counts that repeat exactly"
+        (`dev/BENCHMARKS.md`, 2026-08-16). One record per death while
+        the epoch is in flight, birth time irrelevant; debug and
+        release print identical figures. The mid-born arm is the
+        measured case for the unbuilt young-free exemption.
       done: the stepped harness reports parked bytes and parked records
         as a function of deaths landed inside an epoch's phases —
         deterministic counts, no wall clock in the deliverable; the
