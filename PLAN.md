@@ -149,7 +149,13 @@ deletes a naive loop first.
         wall-time reading is left as arithmetic on whatever epoch
         duration the reader assumes
       tier: T2 · role: —
-- [ ] S26.6 AArch64 instruction identity
+- [x] S26.6 AArch64 instruction identity
+      handoff: confirmed — plain ldr/str on both header paths, no
+        exclusive pair, no LSE atomic, no fence; the crate's 84 atomic
+        sites all sit in the concurrent structures. Entry: "AArch64
+        reads the header with plain loads and stores"
+        (`dev/BENCHMARKS.md`, 2026-08-16); rc-walk.md open question 2
+        amended in the rfc repo, cost half explicitly still open.
       done: the aarch64 target's generated code for retain, release and
         the header accesses is read and recorded as plain ldr/str with
         no read-modify-write and no fence; the cost half of

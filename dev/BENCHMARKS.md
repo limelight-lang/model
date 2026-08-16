@@ -100,6 +100,30 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-16 — AArch64 reads the header with plain loads and stores
+
+S26.6, an inspection rather than a measurement: `rustup target add
+aarch64-unknown-linux-gnu`, `cargo rustc --release --target
+aarch64-unknown-linux-gnu -- --emit asm`, and the generated code read.
+`ll_retain` is `ldr w8,[x0,#4]` (the 4-byte flags half), a branchless
+gate through `ands`/`tst`/`ccmp`, and the counter as
+`ldr`/`add`/`str` — three plain accesses where x86-64 has one `incl`,
+which is the architecture's memory model, not a cost claim.
+`ll_release` matches, with the death test fused through `orr`/`cbz`
+and the handshake byte an `ldrb`. No `ldxr`/`stxr` pair, no LSE
+atomic, no `dmb` anywhere on either path.
+
+The crate's 84 atomic sites all live where the design puts them: the
+collector (`walk`, `epoch`'s ack and attend), the block pool's
+cross-thread structures, the buffer arena's remote free, the intern
+table, and `Arc` — none on the counted hot path.
+
+**The cost half of `rfc/model/gc/rc-walk.md` open question 2 stays
+open**: instruction identity is confirmed, but no ARM hardware exists
+here to pair the instructions with a clock, and the x86 lesson of
+2026-07-27 (a 3x effect invisible in instruction choice) is exactly
+why identity is not a cost claim.
+
 ## 2026-08-16 — store and lifecycle canaries: the slot allocator beats malloc on its own cycle
 
 S26.3, in the same canary binary and under the same protocol (three
