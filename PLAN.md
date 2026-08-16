@@ -8,14 +8,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-16 · Active: S25 — S26 waits behind it; the prose sections after are the backlog
+Updated: 2026-08-16 · Active: S26 — the prose sections after it are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S24, so S25
-and S26 below are the open stages. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S25, so S26
+below is the one open stage. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -25,151 +25,6 @@ feared to cost was `array::entity`'s alone: `array::entry` took 4 seconds
 over 7 tests and `array::table` 92 over 38, both clean, on 2026-08-13 at
 `8d3728d`. A slice is still how the module is run — invocation and thread
 cap in `dev/WORKFLOW.md`, Miri.
-
-## S25 — what the arena's write-side log costs, measured rather than subtracted
-
-Goal: the release-at-reset record gets a figure of its own, taken with the
-counted retain held constant instead of subtracted away.
-
-Why today's number is not one: 0.45 ns is `heap → arena` minus
-`arena → arena`, and those two arms differ in the retain as well as in the
-log. How much that matters is already in the file — under `rc-trace`, where
-the log code is byte-identical, the same subtraction is 0.66 and 0.71 ns
-(`dev/BENCHMARKS.md`, 2026-08-15, the S24.1 and S24.2 brackets). A log cannot
-differ by 0.2 ns between two builds that do not touch it, so the record is a
-minority of the 0.45 and the rest is retain and codegen.
-
-Done when: the probe carries the `heap → heap` direction and the sweep,
-`dev/BENCHMARKS.md` states the record's marginal cost twice — with the log
-hot and with it cold — and the latency-or-throughput question is answered by
-the rule S25.2 registers in advance or reported unresolved with the figures
-that failed to decide it.
-
-Critic 2026-08-15 round 1: the drafted arm was impossible. The log fires on
-`new_cat == GcHeap && owner_cat == RequestArena` while `ll_retain` returns
-early exactly when the category is not `GcHeap`, so every store that logs has
-taken a counted retain and no child category separates them; an `Immortal`
-child is instruction-for-instruction `arena → arena`. Vary the owner instead,
-and prefer a sweep to any subtraction. Accepted, rewritten.
-Critic 2026-08-15 round 2: the timed loops are clean and the rounds are not —
-a `GcHeap` owner's death releases its own slot, so `heap → heap` needs the
-slot cleared where `heap → arena` must not, and the release build catches
-neither the double release nor the drift; the reset's own drain warms exactly
-the lines the next round's log writes, growing with k and flattening the
-curvature the sweep is read for; and S25.2's rule has to stand on the
-interaction of three arms, one outcome of which supports the framing it was
-preparing to retract. Accepted, all folded into the steps. No dispute reached
-Sage.
-
-- [x] S25.1 The direction that holds the retain constant, and the sweep that
-      prices the record
-      handoff: null sweep, rotated arm order and per-arm min/median/max are
-        in the probe; the record is ≈ 0.45 ns hot net of a measured
-        null ≤ 0.04, and the 0.38-vs-0.72 statistic split was the fixed
-        arm order (`dev/BENCHMARKS.md`, 2026-08-16). The rc-trace
-        anomaly sharpened and is S25.2's to meet: slope 1.12–1.32
-        there, `sweep k=0` still 0.25–0.43 below `heap → heap`.
-      done: two things in
-        `memory::barrier::tests::what_a_store_costs_by_working_set` — a
-        `heap → heap` direction (a `GcHeap` child into a `GcHeap` owner),
-        which takes the same counted retain from the same allocator as
-        `heap → arena` and appends no record; and a sweep in one timed region
-        over k ∈ {0, 250, 500, 750, 1000} stores into an arena-category owner
-        with the rest into a heap-category one, the same children throughout,
-        so that d(ns)/d(k) is the record's marginal cost with no arm-to-arm
-        subtraction at all
-      done also: every figure taken twice, with the log cache-hot and with a
-        few megabytes of scratch walked untimed between rounds to evict it.
-        The difference between the two is how much of a record is
-        instructions and how much is a cache line, and a request pays the
-        cold one: it writes a record into a line it never revisits.
-      tier: T2 · role: Critic
-      Critic 2026-08-15 round 3, on the built step: the probe's own null pair
-        — `sweep k=0` against `heap → heap`, the same publishes into the same
-        slot — reads 0.05 ns per store hot and 1.22 cold, and the entry quoted
-        it only in the half where it passes; the `rc-trace` override is
-        contradicted by the endpoint it was built on, `sweep k=0` sitting
-        0.61 below `heap → heap` there where the offered mechanism requires
-        equality; the carve term is nearly collinear with `k`, so it biases
-        the slope and the residual is blind to it; and the eviction runs after
-        a round, so the next round's `children` re-warms every header before
-        its timer starts. Checked against the run data and accepted. The cold
-        figure and the override are retracted in `dev/BENCHMARKS.md`; two
-        design findings are the step's remaining work, below.
-      what the step still owes, both from that round: a `null_sweep_round`
-        with both owners on the GC heap, whose slope is zero by construction
-        and is the only thing that bounds the two-loops-two-slots term the
-        sweep's slope currently carries; and an arm order rotated by the round
-        index, because the arms run in a fixed order monotone in `k` with no
-        eviction between them in the hot half, so each sweep point inherits
-        the cache state of the point below it. Printing each arm's minimum,
-        median and maximum decides the statistic question the same round
-        opened.
-      the sweep is the primary instrument and `heap → heap` the cross-check.
-        Two directions are two loops at two alignments, and that layout term
-        — 0.02 to 0.05 ns against an effect of 0.2 to 0.45 — is invisible to
-        the repetition control, being constant across runs of one binary. The
-        sweep holds both loops fixed and varies only k, so it absorbs the
-        term; when the two disagree, the slope is what the entry calls the
-        record's cost.
-      the teardown is by measured count, not by arithmetic: a `GcHeap`
-        owner's death releases what its slot holds (`ll_default_dispose`) and
-        an arena owner's never does, so `heap → heap` clears the slot before
-        the owner dies and `heap → arena` must not. Reset the arena first,
-        then read each child's `header_refcount` and `assert_eq!` it before
-        draining — an assert that survives the release build, where
-        `debug_assert!` is gone and `panic = "abort"` turns a wrong count
-        into a silent write through a freed slot. In the sweep the owed count
-        is `1000 - k`, so an error there is linear in k and would pass the
-        residual check as slope.
-      and the untimed half stays symmetric: keep `arena_reset_full` in the
-        `heap → heap` round although that direction never touches the arena,
-        and interleave the arms round by round rather than running one arm's
-        rounds and then the other's, so the block pool's LIFO state is common
-        mode.
-      the segment, to be stated with the number: at 1000 stores per region
-        the cold `grow_log` fires twice (`LOG_SEG_RECORDS` = 500), so a
-        per-record figure carries 1/500 of a segment carve and moves with
-        `STORES`.
-
-- [ ] S25.2 Whether a failed store-forward is latency or throughput
-      done: the wide accessors of before-S24.2 — a two-line revert in
-        `header_flags` / `header_refcount` on a scratch branch that is
-        discarded — measured against the shipped narrow ones on both the
-        `heap → heap` and `heap → arena` directions, and the entry answering
-        by the rule below rather than by whichever account looks likelier
-        afterwards
-      tier: T2 · role: Critic
-      the rule, registered before the run, on Δ = wide − narrow per direction,
-        with Δ(`heap → arena`) = 3.28 ns already in the file: Δ(`heap → heap`)
-        near 3.3 means the stall is intrinsic to the failed forward and
-        `dev/BENCHMARKS.md`'s latency framing of the 2026-07-27 trap is wrong
-        in general and gets corrected; near 0 means it was serialized with
-        the log's cursor read-modify-write, the alternative the S24.2 entry
-        names; meaningfully above 3.28 means the log's work ran in the shadow
-        of the stall, which supports the latency framing rather than
-        retracting it and yields a second estimate of the record from the
-        latency budget. The cells come from two binaries, so the layout term
-        cancels only if it is additive: the repetition control bounds it and
-        nothing makes it zero.
-      what is not the instrument, and why: moving `ll_retain`'s counter store
-        after the barrier's read removes the failed forward instead of
-        pricing it, so both accounts predict the same figure. It would also
-        need the flags snapshot threaded through `ll_retain` — the invasive
-        half the 2026-08-15 refusal deliberately never wrote — and would
-        measure a shadow copy of the store path rather than the path.
-
-Both steps: run the probe once in a **debug** build before any figure is
-believed, and take the control by repetition rather than by a cross-binary
-bracket — the arms live in one binary and one process, so the whole probe
-runs three times and every arm must repeat within the floor this probe
-reaches on these directions, 0.1 to 1.7 % across the three brackets of
-2026-08-15. No arm of this stage sits on `arena → heap`, whose controls
-differ there by up to 26 %.
-
-Every row of the new entry comes from the post-change binary, and the S24
-rows are not to be crossed with it: adding directions moves the pool and
-arena state each round starts from.
 
 ## S26 — The mutator-cost case: fresh brackets, canary baselines, and the claims not made
 

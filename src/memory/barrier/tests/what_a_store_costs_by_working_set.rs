@@ -114,8 +114,8 @@ const STORES: usize = 1_000;
 const WIDE: usize = 64;
 
 /// Timed rounds per shape, taken after one warm-up round whose time is
-/// discarded; the median of them is reported (`dev/BENCHMARKS.md`, Method,
-/// and [`median_ns_per_store`]).
+/// discarded; the median of them is the quoted figure (`dev/BENCHMARKS.md`,
+/// Method, and [`stats_ns_per_store`]).
 ///
 /// Fifteen rather than the five the directions alone would want, because
 /// what the sweep is read for is a slope, and a slope over `k` is the
@@ -563,9 +563,9 @@ struct ArmStats {
 /// and then the next arm's: the block pool hands blocks back in LIFO order
 /// and the machine drifts over a run, and both are common mode only if every
 /// arm meets them at the same point of it. Within a round the starting arm
-/// rotates with the round index; at a fixed order every arm inherits the
+/// rotates with the round index: at a fixed order every arm inherits the
 /// cache and pool state of the same neighbour every time — the sweep's
-/// points ran monotone in `k` with nothing evicted between them in the hot
+/// points run monotone in `k` with nothing evicted between them in the hot
 /// half — where rotation spreads that inheritance over every neighbour.
 ///
 /// `scratch` is walked untimed after each round, empty for the hot half.
@@ -599,6 +599,10 @@ fn stats_ns_per_store(arms: &mut [Arm], scratch: &mut [u8]) -> Vec<ArmStats> {
 /// Every shape measured at one working set, in the order they are reported:
 /// the four directions, then the sweep that prices the record, then the null
 /// sweep that bounds the sweep's own instrument term.
+///
+/// The round bodies share a publish-reset-drain skeleton and stay three
+/// copies on purpose: a shared parameterized body would change the compiled
+/// shape of the timed loops, which is the thing the probe measures.
 fn arms_for(
     ctx: *mut LLContext,
     arena: *mut Arena,
@@ -691,7 +695,7 @@ fn measure_store_cost() {
     // caches, cold predictors, a cold frequency state, and here also a
     // scratch buffer whose pages are not faulted in yet
     // (`dev/BENCHMARKS.md`, Method, "Throw away the first run"). The per-arm
-    // warm-up round inside `median_ns_per_store` cannot cover that: it sits
+    // warm-up round inside `stats_ns_per_store` cannot cover that: it sits
     // inside the interleaving and warms one arm at a time. This pass runs the
     // whole probe once and drops the answer.
     let mut warm_up = arms_for(context_ptr, arena_ptr, holder, leaf, WIDE - 1);

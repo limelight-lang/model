@@ -100,6 +100,40 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-16 — the failed store-forward is the stall itself, not the log serialized behind it
+
+S25.2, answered by the rule the plan registered before the run, on
+Δ = wide − narrow per direction. The wide binary is the two-line revert
+of `e9e43b2`'s accessors — `header_flags` and `header_refcount` back on
+`mutator_load_header` — built on a scratch branch and discarded; the
+narrow binary is HEAD `b18f6d2`. One debug run of the wide probe first
+(asserts held), then three runs per binary, alternated in one session.
+Wide set, hot passes, medians per pass:
+
+| direction | wide | narrow | Δ per pass |
+|---|---|---|---|
+| `heap → heap` | 5.50–5.93 ns | 2.63–2.93 ns | **2.77–3.19, ≈ 3.0** |
+| `heap → arena` | 5.52–6.27 ns | 3.29–3.81 ns | 2.08–2.77, ≈ 2.45 |
+| `arena → arena` (control) | 2.69–2.97 ns | 2.53–2.87 ns | −0.01–0.18 |
+
+The control writes and reads no counter, so its Δ bounds the
+cross-binary layout term at ≤ 0.18 ns — fifteen times under the effect.
+
+**The verdict, by the rule's first arm.** Δ(`heap → heap`) ≈ 3.0 sits at
+the 3.28 anchor on a direction with no log at all: the stall costs its
+full price with nothing serialized behind it, so it is intrinsic to the
+failed forward, and the latency account of the 2026-07-27 trap — a
+stall that hides under independent work and costs only on the critical
+path — is wrong in general. The wide load over a fresh narrow store
+behaves as a throughput penalty of ≈ 3 ns per store on this box. What
+survives of the latency account is a residue: Δ(`heap → arena`) runs
+≈ 0.6 ns under Δ(`heap → heap`) in the same session, so about a fifth
+of the stall does overlap the log's independent work — a minority, not
+the mechanism. The 2026-07-27 and S24.2 figures (10.2 ns on the pair,
+4.82 → 1.53 on `heap → arena`) stand; their account moves from
+"latency exposed by the dependent chain" to "penalty paid per
+occurrence, partially maskable".
+
 ## 2026-08-16 — the null sweep bounds the instrument, and rotation settles the statistic
 
 The probe gained the two controls the S25.1 Critic round demanded: a
