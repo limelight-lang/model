@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-16 · Active: none — the next stage is drawn from the backlog below
+Updated: 2026-08-16 · Active: S27
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
@@ -24,6 +24,203 @@ feared to cost was `array::entity`'s alone: `array::entry` took 4 seconds
 over 7 tests and `array::table` 92 over 38, both clean, on 2026-08-13 at
 `8d3728d`. A slice is still how the module is run — invocation and thread
 cap in `dev/WORKFLOW.md`, Miri.
+
+## S27 — the per-process key, the key word's tag, and the ladder's terminal rung  [in progress]
+
+Goal: the crate's debt to the map design is paid — `rfc/model/maps.md`,
+"What the crate owes before either class exists" and "The key word gains
+a tag, for every owner" — so no map class waits on this crate and a spent
+ladder refuses instead of degrading. `reseed` and `escalate` both return
+early once `TABLE_STRONG` is set, so today a chain grows without bound
+after two firings.
+
+Done when, six items, none of them true today:
+
+1. Two tables holding distinct storage at the same time hold different
+   salts — simultaneity is the claim, because an address recycles across
+   a reset — and a source-reading test shows `draw_salt` derives from the
+   key module rather than from the foldable seed.
+2. The per-process key reads the same twice in one process, two draws
+   differ, and the module carries no `hash-folding` arm.
+3. A ring closing through a string-keyed array is collected in a new
+   collector test, and the two tracer tests
+   (`walk/tests/the_children_a_kind_has.rs:62` and `:118`) go red if the
+   child is left tagged.
+4. An insert whose trigger trips with no rebuild left is refused with
+   every entry unchanged, on an outcome the caller tells apart from an
+   allocation refusal.
+5. A copy of a table whose ladder is spent still copies, and no chain in
+   a copy exceeds `CHAIN_LIMIT`.
+6. The `dev/WORKFLOW.md` gate is green, plus Miri slices over
+   `array::entry` and `array::table` for the new integer-to-pointer mask.
+
+Plan reviewed by Critic twice before it was written here; the five
+questions the second round left open were ruled by Sage and the rulings
+sit on the steps they bind.
+
+- [ ] S27.1 The per-process key: 32 bytes from the OS, once per process,
+      in every build, outside `STAMP` and exempt from `hash-folding`
+      done: two draws differ, the memoized accessor is equal across calls
+        and threads, and a source-reading test in the idiom of
+        `refcount::tests::who_may_read_a_header` shows the module carries
+        no `hash-folding` arm and that `STAMP` names it nowhere
+      tier: T2 · role: Critic
+      Sage 2026-08-16: the 32 bytes come from `/dev/urandom` through safe
+        `std::fs`, and `#[cfg(not(unix))]` is a `compile_error!` naming
+        the missing door. `RandomState` cannot serve — it caches one
+        `(k0, k1)` per thread and afterwards increments `k0`, so any
+        number of words carries 128 bits, and they would share the master
+        the string seed is drawn from, which `rfc/model/strings.md`
+        forbids for this key. Final.
+      Shape: `src/hash/process_key.rs`, four `u64` words, drawn lazily
+      behind a one-time check and forced at startup by
+      `ll_hash_seed_init`, which stops being a no-op under
+      `hash-folding`. Which words a consumer takes is fixed in that
+      module's doc, once, for every consumer. The per-process guarantee
+      is per-deployment under a pre-forking master, by citation to the
+      seed's fork paragraph.
+- [ ] S27.2 One encoding of the `key` word, tagged in its low three bits,
+      for every owner
+      done: a new collector test puts a string-keyed array in a ring and
+        sees it collected, written first and seen failing against a
+        tracer that masks the recorded raw word; the two tracer tests
+        hold the child half; every reader `rfc/model/maps.md` ("What
+        moves with it") names dispatches on the tag
+      tier: T2 · role: Critic
+      The invariant, stated before the work: `word < 8` is tested first
+      and keeps its sentinels — `KEY_INT = 0`, `KEY_HOLE = 1`,
+      `is_hole()` stays `word == 1` — and the tag test is reached only
+      for `word >= 8`, the design's table giving `word == 1` to both the
+      hole and the string tag. The order is imposable at every site,
+      `walk.rs:502` included: it takes one relaxed load and makes its own
+      test. The tag goes on in `Entry::set_string_key` and comes off in
+      `Entry::string_key`, nowhere else, and `Key::Str` stays untagged at
+      the API edge. Two readers see the word untranslated today and both
+      are wrong the moment the tag lands: `entry_slot_hash`'s
+      `string_bytes(e.key)` (`table.rs:464`) and the tracer
+      (`walk.rs:501`), where the child is masked and the recorded raw
+      word is not. `set_string_key` gains a `debug_assert` that a string
+      key is 8-aligned — otherwise the mask hands `string_bytes` a header
+      four bytes early, an out-of-bounds read rather than a crash.
+      Falsified in place, so they move in the commit:
+      `rfc/model/arrays-hashtable.md:31` and `entry.rs:8`, `entry.rs:35`,
+      and `entry/tests/the_key_word_as_a_discriminant.rs`.
+      One AND on the key accessor is a cost the design accepted in "A
+      fifth word was refused"; this box cannot resolve it and no speed
+      claim is made.
+- [ ] S27.3 The ladder draws under the key, and its slots are salted for
+      strings as well as integers
+      done: two tables holding distinct storage hold different salts;
+        `draw_salt` derives from the storage address and the per-process
+        key; a reseeded table's string slot is the salted mix of the
+        cached hash in `slot_hash` and `entry_slot_hash` both;
+        `strong_hash` takes the key together with the salt; both
+        functions dispatch on the tag with the byte-hashing branch
+        `debug_assert`ed unreachable from any other; the equal-identity
+        counter tests tag equality rather than "not an integer key"
+      tier: T2 · role: Critic
+      Sage 2026-08-16: rung one's string half lands here rather than in
+        the map stage — under `hash-folding` a cached string hash is a
+        build constant, so today's rung one rebuilds an offline-built
+        chain into the same chain. The object and array halves stay with
+        the map stage under the no-producer rule. Final.
+      Rule 4 falls due here: the string half turns
+      `a_long_chain_draws_the_salt_once_and_then_escalates` red, because
+      a scattered chain no longer escalates on the next key. Rewritten
+      rather than weakened — it reads the drawn salt through the
+      `#[cfg(test)]` window and forges the second set under the salted
+      mix — and the sign-off is Edmond's, asked at the step.
+      `strong_hash` keeps its construction: it is re-keyed, and the
+      long-key slot it stands in for stays owed, recorded as a dated
+      `dev/DECISIONS.md` entry amending 2026-08-13 and a backlog line
+      below. The tag-equality change is verified by reading rather than
+      by the suite — in an array "not an integer key" and "the tag equals
+      the incoming string's" name the same set — and a test for it is
+      owed to the map stage.
+      Falsified in place: `draw_salt`'s block and `reseed`'s "the two
+      rungs defend different key kinds, this one integer keys".
+- [ ] S27.4 `Table::insert` answers a three-valued outcome, and knows a
+      replay from an admission
+      done: the outcome carries admitted, refused-for-memory and
+        refused-by-the-ladder, the call takes which kind of insert it is,
+        and all five non-test callers plus the two test harnesses answer
+        it with the suite green and the third variant unreachable
+      tier: T2 · role: Critic
+      The callers: `element.rs:550`, `element.rs:732`,
+      `entity::migrate_to_hash`, `entity::fill_table_from`,
+      `entity::CopiesMade::record`, and the harnesses
+      `array/testing.rs:73`, `array/table/tests.rs:38`. The two channels
+      with no room for a fourth value keep their null and are named here
+      rather than discovered later: `fill_table_from` unwinds into
+      `ll_cow_separate`, whose refusal is a null `*mut RcHeader`, and
+      `element::make_ref` refuses with a null `*mut LLReference` over
+      four causes already. `CopiesMade::record` is genuine admission and
+      not a replay, being a table keyed by entity address. Nothing
+      observable changes here; the worth of the step is that S27.5 lands
+      as one behaviour change, which holds only because the replay
+      channel is part of the same signature pass.
+- [ ] S27.5 Rung three, and the copy that must survive it
+      done: a table whose ladder is spent refuses an insert that trips a
+        trigger, with every entry unchanged, on S27.4's third outcome; a
+        copy of that table still copies; no chain in a copy exceeds
+        `CHAIN_LIMIT`, pinned by the dense-then-unset scenario; the copy
+        tests are written first and seen failing against rung three
+        alone, which is the order the commits land in
+      tier: T2 · role: Critic
+      Sage 2026-08-16, three rulings. The rung state is the two flags
+        with no counter: neither flag — draw the salt and rebuild;
+        `TABLE_RESEEDED` alone — escalate; `TABLE_STRONG` — refuse; and
+        the equal-identity trigger escalates an unescalated table and
+        refuses on an escalated one. A table escalated through that
+        trigger has both rebuilds spent, `escalate` drawing the salt on
+        its way, so refusing its first chain trip is the principle rather
+        than a stricter reading of it, and `rfc/model/maps.md`'s
+        enumeration gains the fourth case to match. The copy keeps the
+        rung bits and redraws the salt from its own storage address under
+        the per-process key, inside `new_empty_copy` once the presized
+        storage exists: nothing in an entry depends on the salt, the
+        replay re-derives every slot, and a fresh salt scatters the set
+        built against the source. Rungs one and two stay armed on the
+        replay and only the refusal is exempt — a key admitted once
+        cannot be refused on re-admission — and `new_empty_copy` presizes
+        the copy to the source's `nslots`, so no bucket merges. Blanket
+        exemption was refused: it leaves a copy of a dense-then-unset
+        array with one chain of 64 and no flags, permanently and
+        heritably. `migrate_to_hash` is out of the rule entirely, dense
+        positions on an unsalted staging table being unable to fire a
+        trigger, and a `debug_assert` records the proof. Final.
+      Cost named because it is a behaviour change of its own: a copy of
+      an unset-shrunk source carries the source's slot array until its
+      next `grow` — 1 MB of slots in the scenario above.
+      Rule 4 falls due again:
+      `a_copy_of_a_reseeded_table_inherits_the_drawn_salt` inverts its
+      assertion, an intentional change and Edmond's to sign off.
+      Falsified in place: `reseed`'s "a second firing escalates instead"
+      and its "a COW copy inherits the drawn salt", `escalate`'s "once
+      and one way", `adopt_flood_state`'s block, `new_empty_copy`'s doc,
+      `Table::insert`'s "Returns `None` when the storage could not grow",
+      `element::set`'s "Three refusals report `false`",
+      `CopiesMade::record`'s doc, and the stated rationale of
+      `entity/tests/the_flood_state_a_copy_inherits.rs`. The `maps.md`
+      amendment goes to the `rfc` repo in the same push.
+- [ ] S27.6 `sever_entries` unlinks the holes it makes
+      done: after a sever no chain reaches a hole, pinned by a test that
+        inserts into a severed table
+      tier: T1 · role: —
+      Found in passing while the plan was written (rule 3). `remove`
+      unlinks and `sever_entries` does not, so a severed table's chains
+      still run through its holes and an insert's `chain_len` counts
+      them. Inert today, because nothing inserts into a severed table;
+      with rung three it becomes a refusal of a legal insert the day a
+      map's teardown leaves one insertable. Fixed rather than recorded:
+      `dev/WORKFLOW.md` forbids a note about an unfixed defect anywhere
+      in `dev/`, this repository being public.
+
+What the stage does not do: no map class and no array-key content hash;
+no error raise, the crate having no error channel, so the third outcome
+dead-ends inside the crate until the exceptions work; no long-key slot,
+`strong_hash` being re-keyed rather than replaced; and no measurement, so
+no figure in `dev/BENCHMARKS.md` moves.
 
 ## Then: arrays as a performance problem
 
@@ -117,30 +314,21 @@ own checkbox.
 
 ## Residual / carried-over items
 
-Owed to the array table by the map design, and owed before either map
-class exists (`dev/DECISIONS.md`, 2026-08-13, "the flood ladder gets
-kind-dispatched triggers"; `rfc/model/maps.md`, "What the flood ladder
-becomes"):
+What the map design owed by the array table — the per-process key, the
+ladder's repair and the key word's tag — **is S27 above**, taken as one
+stage on 2026-08-16 because the three are one dependency chain.
 
-- [ ] **The per-process key**, new work in `src/hash`: 32 bytes from the
-  OS once per process in every build, outside `STAMP` and exempt from
-  `hash-folding`, because nothing compiled may depend on it.
-  `strong_hash`'s doc names the slot and stands in for it. Everything
-  below waits on it, and so does `MapMixed`, whose key identity cannot be
-  defined without it.
-- [ ] **The ladder's repair in `array/table.rs`**: the equal-identity
-  trigger becomes a tag-equality test rather than "not an integer key";
-  `slot_hash` and `entry_slot_hash` dispatch on the tag with the
-  byte-hashing branch asserted unreachable from any other; `draw_salt`
-  draws under the per-process key instead of hashing a recyclable address
-  under a foldable seed; `strong_hash` becomes the keyed function its own
-  doc promises; and rung three, a refusal distinguishable from an
-  allocation refusal, replaces the early returns that today make a spent
-  ladder a dead one.
-- [ ] **The key word's tag**, also `array/table.rs` and `array/entry.rs`,
-  because the trigger above presupposes it: one encoding of the key field
-  for every owner, the readers listed in `rfc/model/maps.md` under "The
-  key word gains a tag, for every owner".
+- [ ] **The long-key slot itself.** S27 re-keys `strong_hash`; it does
+  not fill the slot `strong_hash`'s doc stands in for, which is
+  HighwayHash-64 behind a length threshold `rfc/model/strings.md` says is
+  unmeasured. Blocked on that measurement, and it belongs with the
+  strings work rather than the table's.
+- [ ] **No ABI entry creates or mounts an arena.** `LLContext` is
+  `#[repr(C)]` with one public pointer and a null context is legal, so an
+  external caller can build one and reach the store barrier; what it
+  cannot obtain is an `*mut Arena`, every arena in the crate being made
+  by Rust code inside tests. An embedder needs that door before anything
+  outside this crate exercises the arena paths.
 
 Memory manager, still open:
 
