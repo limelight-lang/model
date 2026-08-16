@@ -1,6 +1,6 @@
 # appeal-walk: a collector without mutator reference counts
 
-**Status:** design sketch, not a decided design
+**Status:** design sketch, revised after the first critic round; not decided
 **Recorded:** 2026-08-16, from a design conversation
 **Predecessors:** `NO_RC_PUBLISHED_EPOCH_GC.md` (the research frame and the
 alternatives it compares), `RC_WALK_CRITICAL_REVIEW.md` (findings carried
@@ -8,74 +8,99 @@ below), `rfc/model/gc/rc-walk.md` (the epoch protocol this design reuses)
 
 ## Definition
 
-appeal-walk is a collection scheme for the single-mutator model in which
-the mutator keeps no reference counts. The collector traces one snapshot of
-the heap, condemns what the snapshot calls unreachable, and posts the
-condemned list to the mutator. The mutator corrects the verdict at its
-drain checkpoint: a condemned object whose appeal bit is set was referenced
-again after the snapshot and is acquitted, together with everything
-reachable from it inside the condemned set; the rest is freed.
+appeal-walk is a collection scheme for the single-mutator model in which the
+mutator keeps no reference counts on entities. The collector traces one
+snapshot of the heap, condemns what the snapshot calls unreachable, and
+posts the condemned list to the mutator. The mutator corrects the verdict at
+its drain checkpoint: a condemned object carrying a current-epoch appeal was
+referenced again after the snapshot and is acquitted, together with
+everything reachable from it inside the condemned set; the rest is freed.
 
 The name extends rc-walk's court vocabulary. rc-walk already has verdicts,
 acquittals, and a drain; here the verdict is provisional, and the drain
 hears the appeal: the case is retried on current evidence, then upheld or
 overturned.
 
-## What replaces the reference count
+## Header fields and their single writers
 
-In rc-walk, a publication changes a count, and the Phase 3 recheck acquits
-any candidate whose count moved. Without counts that evidence is gone;
-appeal-walk compresses it to one bit: not "how many references", but
-"referenced again since the snapshot".
+Epoch numbers run 1..255 and wrap; 0 is reserved as "never". Removing
+entity reference counts frees the header's count half
+(`src/refcount.rs::RcHeader.refcount`); COW values keep their counts and
+their own death path, so every field below concerns entities only.
 
-Two header bits, each with exactly one writer:
+| Field | Place | Writer | Reader | Meaning |
+|---|---|---|---|---|
+| walk stamp | flags byte 6 (today's epoch byte) | collector | both | epoch that last met the entity; 0 = never met |
+| condemned | one bit of flags byte 7 | collector | mutator, at the drain | member of the posted death list |
+| appeal | one byte of the freed count half | mutator | mutator, at the drain | epoch of the last publication; current means "referenced after the snapshot" |
 
-| Bit | Writer | Reader | Meaning |
-|---|---|---|---|
-| condemned | collector | mutator, at the drain | member of the posted death list |
-| appeal | mutator | mutator, at the drain | published or overwritten after the snapshot |
-
-The condemned bit sits in the collector's header byte (byte 6, today the
-epoch stamp: `src/refcount.rs`, `EPOCH_BYTE_SHIFT`). The appeal bit sits
-among the mutator's flag bits. The mutator's whole-word header stores can
-bury a concurrent condemned store, exactly as they bury the epoch stamp
-today; a buried condemned bit makes the drain ignore the object, which
-retains it for one epoch and frees nothing early. The collector writes only
-its own byte, so an appeal bit cannot be buried. Every lost update in this
-scheme errs toward retention.
+The mutator's whole-word header stores can bury a concurrent collector byte
+store, exactly as they bury the walk stamp today; a buried stamp delays
+condemnation by an epoch, and a buried condemned bit makes the drain ignore
+the entry. The collector writes only its two bytes, so an appeal cannot be
+buried. Every lost update in this scheme errs toward retention.
 
 The condemned bit is a membership test, not the verdict itself: the posted
 list already names the objects, and the drain uses the bit for an O(1)
 "inside the condemned set" answer during the acquittal retrace. The
-free/ignore contract stays conservative: free only on condemned set and
-appeal clear.
+free/ignore contract stays conservative: free only on condemned set and no
+current-epoch appeal.
+
+## Maturity: the walk stamp and the grace epoch
+
+The barrier's maturity test is `walk stamp != 0`, and it is sound only
+paired with a condemnation rule: **epoch `E` may condemn only entities
+stamped by an epoch earlier than `E`**. The census stamps every entity it
+passes, so an entity born after the previous census carries 0, is stamped
+on first meeting, and becomes condemnable one epoch later. This is
+allocate-black stretched to the first meeting: young garbage lives one
+extra epoch, and in exchange the two populations — what the barrier calls
+mature and what the collector may condemn — derive from the same byte and
+cannot disagree.
+
+Both concurrent readings of the byte err safely. The mutator reads 0 while
+the census is stamping: no appeal is filed, but the entity was stamped by
+this epoch and is condemnable only in the next, where the byte already
+reads non-zero. The mutator reads non-zero on an entity stamped this epoch:
+a spurious appeal, which retains. The read itself is the relaxed whole-word
+load the header already compiles to under rc-walk; no ordering is required,
+only the atomic annotation that keeps the race defined. Stamp wraparound
+aliases an entity last met 254 epochs ago with the current epoch, which
+defers its condemnation by one epoch; retention again.
 
 ## The write barrier
 
-Armed from the mutator's epoch acknowledgement until the drain completes.
-On every reference store inside that window the mutator:
+Armed from the mutator's epoch acknowledgement until the drain completes;
+the acknowledgement also hands the mutator the epoch number `E` for the
+appeal stamp. Outside an epoch the barrier costs the armed test alone.
 
-1. sets the appeal bit of the new target, if the target is mature —
-   allocated before the epoch (allocate-black already keeps younger
-   objects outside the reclamation set);
-2. sets the appeal bit of the overwritten target, under the same maturity
-   test. The store path reads the old slot value today to decrement it, so
-   this load is already paid.
+While armed, the mutator writes `appeal := E` (test-first: skip when the
+stamp already reads `E`) on the mature side of three operations:
 
-Half 1 is a Dijkstra insertion barrier and answers republication. Half 2 is
-a Yuasa deletion barrier and answers the reference that survives only in a
-root: load the sole reference to an object into a register, null the slot,
-and half 1 never fires — the trace misses the object and the drain frees it
-live. With half 2 the nulling itself files the appeal. The pair is Go's
-hybrid barrier, and its published property carries over: stacks are scanned
-once per epoch, never rescanned.
+1. **Publication** — the stored reference's target (the Dijkstra half).
+2. **Overwrite** — the replaced slot value's target (the Yuasa half). It
+   answers the reference that survives only in a root: load the sole
+   reference into a register, null the slot, and half 1 never fires; the
+   nulling itself files the appeal. The pair is Go's hybrid barrier, and
+   its published property carries over: roots are captured once per epoch,
+   never recaptured.
+3. **Materialization** — any operation that mints a strong reference from
+   outside the strong graph: a weak-cell upgrade (`ll_weakref_get`), an FFI
+   handle fetch, and any future gate of the same kind. Without this rule
+   the upgrade hands out a raw pointer with no store and no appeal, and the
+   drain frees the target under a live VM temp. Ordinary field loads need
+   no barrier: a loaded reference matters to the drain only if its source
+   slot dies (half 2 fires) or it is republished (half 1 fires).
 
-The set is test-first and idempotent. The header word is already loaded for
-the maturity test, so the barrier costs one read on the hot path and at
-most one appeal write per mature object per epoch; outside an epoch it
-costs the armed test alone. The barrier arms at the existing
-acknowledgement (`src/epoch.rs`) before the collector takes its snapshot,
-so no store inside the epoch can precede the armed barrier.
+Conditioning the materialization rule on the condemned bit would reopen the
+clear-only window below; while armed, the appeal is unconditional.
+
+Cost, honestly: the old-value load of half 2 was paid by the RC decrement
+this design removes, so the full barrier is two header loads and up to two
+stamp writes per store — close to the cache profile of the RC pair it
+replaces. The win is the idle path, where RC keeps paying and appeal-walk
+pays one test; the benchmark rows below price the armed path against the
+full barrier, not the Dijkstra half alone.
 
 ## Why the appeal is recorded at the store, not at the verdict
 
@@ -87,61 +112,108 @@ clears it on publication — frees a live object through this window:
 2. The mutator republishes `B` into a live object. No condemned bit exists
    yet, there is nothing to clear, and the store leaves no record.
 3. The collector condemns `B` and posts it.
-4. The drain sees condemned set and appeal clear, and frees a reachable
+4. The drain sees condemned set and no appeal, and frees a reachable
    object.
 
 The store-time appeal closes the window: the evidence exists for the whole
 epoch instead of beginning at condemnation.
 
+## Appeal freshness: why a stamp and not a bit
+
+A sticky appeal bit needs clearing, and the approaches were weighed:
+
+- **Sticky bit, drain clears processed members only.** Safe; each
+  object published in `E` and condemned in a later epoch is spuriously
+  acquitted once and floats one extra epoch. Under steady churn a fraction
+  of every condemned list arrives pre-appealed.
+- **Parity pair.** Halves the rate and keeps the failure: a death at even
+  epoch distance still meets its stale bit.
+- **Collector clears stale bits during the trace.** Rejected outright:
+  a clear racing a same-epoch set can lose the set, and a lost appeal
+  frees a live object — the only variant whose error direction is fatal.
+- **Epoch stamp** — chosen. `appeal == E` is the only reading the drain
+  trusts, so stale appeals expire by themselves, nothing is cleared, and
+  no publication log exists. The byte costs nothing: the count half is
+  free, and `E` reaches the mutator in the acknowledgement it already
+  receives. Aliasing needs the same object published in `E` and condemned
+  in `E+254` exactly; the price is one spurious acquittal, retention.
+
+## Roots
+
+At the acknowledgement the mutator enumerates its own roots and posts them;
+the collector never scans a running stack, because a reference in a
+register, or in a frame pushed behind the scanner, is invisible to it and
+would be freed live. The enumeration is a real safepoint: it runs inside
+the checkpoint, costs a pause proportional to stack depth, and needs no
+native stack maps — the roots of this runtime are VM frames, which the
+runtime walks itself. Native code reaches entities only through the handle
+table, which is both a root source and a materialization gate (barrier
+rule 3). One compiler contract remains: across a checkpoint, no strong
+reference lives only in registers.
+
+The scheme therefore has two synchronization points, the acknowledgement
+and the drain, both on the mutator's own checkpoints.
+
 ## The drain
 
-At its checkpoint the mutator walks the posted list:
+The drain runs on the mutator at one checkpoint and touches user code only
+in phase D3. `L` is the posted list; membership tests use the condemned
+bit.
 
-- condemned bit missing: ignore — a buried store or a stale entry;
-- appeal bit set: acquit, then retrace from the object through the
-  condemned set and acquit every member reached. An appeal on `B` says
-  nothing about `C` reachable from `B`; acquittal is transitive or it
-  frees live children.
-- condemned set, appeal clear: free through the existing Phase 4 machinery
-  — weak cells nulled, destructors run, resurrection recheck, then
-  release.
+- **D1, acquittal fixpoint.** Seed: members of `L` whose appeal reads `E`.
+  Retrace from the seeds through strong slots inside `L`, acquitting every
+  member reached. No user code, no frees; terminates because acquittal is
+  monotone over a finite set.
+- **D2, weak severing.** Null every weak cell whose target is still
+  doomed. A later resurrection does not restore the cell: a weak reference
+  to an object that reached D2 reports dead, as in rc-walk today.
+- **D3, destructors.** Run destructors of the doomed, once per object, as
+  in rc-walk. No memory has been released, so a destructor reading a
+  doomed sibling's slot reads valid memory. The barrier is still armed, so
+  a destructor that publishes a doomed object stamps its appeal — **the
+  appeal is the resurrection detector**. After the destructors, repeat D1
+  seeded by the fresh appeals, then D2 for newly created weak cells, and
+  loop; each round either shrinks the doomed set or is the last, so the
+  loop is bounded by `|L|` rounds.
+- **D4, release.** No user code runs past this point, so no reference to a
+  doomed object can appear. Free in any order.
+- **D5, report.** Post the acquitted list back to the collector; the
+  collector clears their condemned bits before closing the epoch, while no
+  drain is in flight. Without the report an acquitted survivor keeps its
+  bit forever, and a later epoch's retrace, using the bit as its
+  membership test, walks out of the posted list into the live graph.
 
-Appeal bits of acquitted members are cleared before the drain returns, by
-their only writer. The whole drain runs on the mutator at one checkpoint,
-which is the single synchronization point of the scheme.
+Appeal stamps are not cleared: next epoch they are stale by construction.
 
 ## Epoch shape
 
-1. The collector opens epoch `E` through the existing soft handshake; the
-   acknowledgement arms the barrier.
-2. The collector obtains a root snapshot. Without counts there is no
-   `RC − IN` derivation; the root cost is open, see below.
-3. The collector traces the snapshot once. Publications during the trace
-   are not discovered and need not be: the appeal answers them at the
-   drain. There is no worklist, no fixpoint, and no termination protocol.
-4. The collector sets condemned bits on the dead set and posts the list.
-5. The mutator drains at a checkpoint: acquit on appeal, free the rest.
-6. Appeal bits are cleared, the epoch closes, slots return to the
-   allocator.
+1. The collector opens epoch `E` through the existing soft handshake.
+2. Inside the acknowledgement the mutator arms the barrier, takes `E` for
+   the appeal stamp, and enumerates its roots.
+3. The collector traces the snapshot once, stamping every entity the
+   census passes. Publications during the trace are not discovered and
+   need not be: the appeal answers them at the drain. There is no
+   worklist, no fixpoint, and no termination protocol.
+4. The collector condemns entities stamped before `E` and unreached, sets
+   their condemned bits, and posts the list.
+5. The mutator drains at a checkpoint: D1 to D5 above.
+6. The collector clears the reported acquittals' condemned bits, closes
+   the epoch, and returns slots to the allocator.
 
 ```mermaid
 sequenceDiagram
     participant C as Collector
     participant M as Mutator
     C->>M: open epoch E (soft handshake)
-    M-->>C: ack, barrier armed
-    C->>C: root snapshot
-    C->>C: trace the snapshot once, no fixpoint
-    Note over M: store a.f = B, B mature: set appeal(B)
-    Note over M: overwrite slot holding D: set appeal(D)
-    C->>C: condemn: set bit on the dead set
+    M->>M: ack: arm barrier, take E, enumerate roots
+    M-->>C: ack + root set
+    C->>C: trace once, stamp met entities
+    Note over M: publish B / overwrite D / weak-get W: appeal := E
+    C->>C: condemn: stamped before E, unreached
     C->>M: post the condemned list
-    Note over M: drain checkpoint
-    M->>M: appeal set: acquit, retrace inside the set
-    M->>M: condemned and no appeal: destructors, free
-    M->>M: clear appeal bits of the acquitted
-    M-->>C: drain done
-    C->>C: close epoch E
+    Note over M: drain: D1 acquit fixpoint, D2 weaken,<br/>D3 destructors + repeat, D4 free
+    M-->>C: D5: acquitted report
+    C->>C: clear their condemned bits, close E
 ```
 
 ## What this removes, relative to the V8-shaped leader
@@ -150,59 +222,51 @@ The parent document's leading candidate — target shading with a marking
 worklist — obliges the collector to discover every publication during the
 epoch and to prove that discovery terminates. appeal-walk removes the
 obligation: the trace is one pass over a stale snapshot, and staleness is
-repaired at the drain. The marking worklists, the side bitmap, the mutator
-CAS on shared marking state, and the mixed-size atomic access to the header
-word are removed with it; the appeal bit is written by the thread that owns
-the word.
+repaired at the drain. The marking worklists, the side bitmap, and the
+mutator CAS on shared marking state are removed with it; the appeal lives
+in a mutator-owned byte, and the collector's writes stay confined to its
+two header bytes, the same byte-store pattern the code tolerates today.
 
-## Arenas: the escapee log against one dirty bit
+## Arenas: parked resets inside the common drain
 
 Today the write barrier records each first escape in an arena-owned log
 (`src/memory/arena.rs`, `log_escapee`) and keeps the escapee's `refcount`
-as an escape hold-count (`IS_ESCAPEE`, `src/refcount.rs`); holder teardown
-decrements it, and the reset runs a fixpoint over the log
-(`rfc/model/memory/arena-reset.md`). The proposal replaces the log with one
-arena bit, "has escapees". Three variants:
+as an escape hold-count (`IS_ESCAPEE`); holder teardown decrements it, and
+the reset runs a count-driven fixpoint (`src/promote.rs`,
+`rfc/model/memory/arena-reset.md`). Under rc-walk this stays the default:
+the log fires only on escaping stores, which the arena design assumes
+rare, and a clean arena's reset is already cheap. A "scan at reset on the
+mutator" replacement loses at both ends — rare escapes make the saving
+negligible, frequent escapes make every reset pay a whole-heap scan — and
+is not pursued.
 
-1. **Keep the log.** The log action fires only on escaping stores, which
-   the arena design assumes rare, and a clean arena's reset is already
-   cheap. Under rc-walk this stays the default: no measurement shows the
-   log on a hot path.
-2. **Bit, then scan at reset on the mutator.** A dirty reset must find
-   inbound references without a log, and they can sit anywhere in the heap
-   or the roots: the reset pays a whole-heap scan on the mutator. The
-   saving is a log append and hold-count upkeep, both on rare paths, so
-   the trade loses at both ends: rare escapes make the saving negligible,
-   frequent escapes make every reset pay the scan.
-3. **Bit, then discovery in the collector's trace — the appeal-walk
-   variant.** The epoch already traces the whole live graph; one region
-   test per traced slot also finds every reference into a parked arena. A
-   dirty arena's reset parks its blocks instead of scanning; the next
-   epoch's trace computes the surviving subgraph, the drain promotes
-   survivors and runs the destructors of the dead, and the blocks return
-   with the epoch's other reclamation. A clean arena resets immediately,
-   as today.
+Under appeal-walk the log cannot stay: the hold-count is a reference
+count. The replacement folds arenas into the epoch:
 
-Variant 3 is a replacement forced by appeal-walk rather than an
-optimization of the log: the escape hold-count is a reference count and is
-removed with the rest of RC, so appeal-walk needs a new escape story
-regardless. Its costs repeat the appeal-walk costs in miniature — a dirty
-arena's memory floats until the next epoch, and its destructors run at the
-drain, which the 2026-08-16 destructor ruling permits. The parked-block
-machinery already exists (`src/memory/deferred_free.rs`).
+- The barrier keeps one arena bit, "has escapees". A clean arena resets
+  immediately, as today. A dirty arena's reset parks its blocks instead of
+  scanning; the bit's writer and reader are both the mutator.
+- The next epoch's trace, which walks the live graph anyway, records every
+  reference into parked blocks and posts, next to the condemned list, the
+  **survivor set** of each parked arena. Survivors are computed by the
+  trace, not by counts.
+- The drain runs parked entities through D1–D4 with everything else. A
+  destructor that resurrects a parked entity stamps its appeal, and the
+  D3 loop adds it to the survivor set.
+- Promotion happens in the drain, on the mutator, after the D3 loop
+  settles: rewrite each survivor's category to `GcHeap` and retain every
+  block that carries at least one survivor (`BLOCK_KIND_RETAINED`).
+  Retention is block-granular, so a resurrected entity keeps its block by
+  construction; the pool sees only blocks with no survivors at all.
 
-Open questions for variant 3:
-
-- an escapee inside a parked arena stays live and writable, so the trace
-  reads its slots under the same relaxed-atomic obligation as heap slots;
-- promotion rewrites survivor headers (`src/promote.rs`, the category
-  rewrite), and under appeal-walk that rewrite belongs to the drain on the
-  mutator, never to the collector thread;
-- the arena bit is written by the mutator's barrier and read at reset by
-  the same thread — single writer, no synchronization;
-- reset cadence against epoch cadence decides the floating memory: a
-  request-scoped arena that is dirty on every request floats every
-  request's memory for a whole epoch.
+The old reset fixpoint existed because destructors create new escapes; its
+work is now the D3 loop, and the compensating-retain and COW-count
+reconciliation die with the counts they maintained. The costs repeat the
+appeal-walk costs in miniature: a dirty arena's memory floats until the
+next epoch, and its destructors run at the drain, which the 2026-08-16
+destructor ruling permits. The decisive metric is reset cadence against
+epoch cadence: a request-scoped arena dirty on every request floats every
+request's memory for a whole epoch.
 
 ## Benchmark plan across strategies
 
@@ -211,37 +275,44 @@ parent document's experiment matrix (items 1–8 and the end-to-end metrics)
 applies to all three under one workload and one machine. This design adds
 its own rows:
 
-- hot-path triple: current RC publish, maturity test plus appeal write,
-  card mark;
-- drain time split into acquittal retrace, destructors, and release;
+- hot-path triple, armed: current RC publish against the **full** hybrid
+  barrier — both maturity loads, both stamp writes — against a card mark;
+- idle path: RC publish against the disarmed test, since the idle path is
+  where the design claims its win;
+- share of publications whose target is COW-valued rather than an entity:
+  COW values keep RC either way, so this share bounds the whole benefit;
+- drain time split into acquittal retrace, destructors, and release, with
+  D3 round counts;
 - share of arena resets with the dirty bit set, escapees per dirty reset,
   and floating bytes a parked arena adds per epoch;
 - appeals per epoch against condemned-list size: how often the verdict is
-  overturned.
+  overturned, and how often by a stale-alias appeal.
 
 ## What this does not solve
 
 Carried open costs, unchanged from the parent document and the rc-walk
 review:
 
-- **Roots.** `RC − IN` is unavailable without counts. One root enumeration
-  per epoch remains: exact stack maps, or a conservative scan at the
-  acknowledgement checkpoint. This is the largest unfunded item.
 - **Slot atomicity.** The trace reads reference slots the mutator is
   writing. Every reference field the trace can reach must be accessed as a
   relaxed atomic, or the concurrent read is undefined behaviour; V8 pays
   exactly this price.
 - **COW uniqueness.** Strings and arrays answer "unique?" with the count
-  today; the options stay as listed in the parent document.
+  today and keep their counts here; how counted values and traced entities
+  share cycles is unresolved, and the options stay as listed in the parent
+  document.
 - **Destructors.** Ruling 2026-08-16: determinism at the last release is
-  not required. Timing and thread remain to be specified.
+  not required. The drain fixes the place; the latency remains unbounded
+  by anything but epoch cadence.
 - **Floating garbage.** Everything published or appealed during the epoch
-  survives it; the transient bound is churn × epoch duration (review,
-  finding 3).
-- **Progress.** The epoch still opens and drains at mutator checkpoints;
-  finding 2 of the review applies unchanged.
-- **Barrier coverage.** Bulk copies, movable-storage moves, arena-to-heap
-  and FFI stores must all pass the appeal discipline; the parent
+  survives it, young garbage waits out the grace epoch, and parked arenas
+  wait for the next epoch; the transient bound is churn × epoch duration
+  (review, finding 3).
+- **Progress.** The epoch opens, captures roots, and drains at mutator
+  checkpoints; finding 2 of the review applies unchanged, and now to root
+  capture too.
+- **Barrier coverage.** Bulk copies, movable-storage moves, and
+  arena-to-heap stores must pass the appeal discipline; the parent
   document's coverage questions apply verbatim.
 
 ## Decision gate
@@ -252,10 +323,14 @@ items, plus:
 1. Prove the barrier window: armed at the acknowledgement, disarmed after
    the drain, and no store outside the window can touch a condemned
    candidate.
-2. Prove that transitive acquittal terminates, and measure its drain cost
-   on large components — the drain already is the pause (review, finding
-   6).
-3. Measure the hot path against current RC publication and against card
-   marking (parent document, experiments 1–8).
-4. Design and cost the root enumeration; the gate does not open on
-   benchmarks alone.
+2. Audit the materialization gates: enumerate every runtime operation that
+   mints a strong entity reference without a store, and show each one
+   stamps the appeal.
+3. Prove the drain loop's bound and measure its cost on large components —
+   the drain already is the pause (review, finding 6).
+4. Measure the hot path against current RC publication and card marking,
+   full barrier and idle path both, and measure the COW share that bounds
+   the benefit.
+5. Write the root contract: VM-frame enumeration at the acknowledgement
+   and the compiler rule that no strong reference lives only in registers
+   across a checkpoint. The gate does not open on benchmarks alone.
