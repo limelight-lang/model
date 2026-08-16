@@ -8,14 +8,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-15 · Active: S25 — the prose sections after it are the backlog
+Updated: 2026-08-16 · Active: S25 — S26 waits behind it; the prose sections after are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
 `dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S24, so S25
-below is the one open stage. A number is never reissued, so a
+and S26 below are the open stages. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -164,6 +164,112 @@ differ there by up to 26 %.
 Every row of the new entry comes from the post-change binary, and the S24
 rows are not to be crossed with it: adding directions moves the pool and
 arena state each round starts from.
+
+## S26 — The mutator-cost case: fresh brackets, canary baselines, and the claims not made
+
+Goal: a reader gets, per mutator hot path, the measured cost, its
+decomposition into contract-mandated work and residue, the instrument
+behind each figure with that instrument's measured resolution, and the
+cost of a naive C or C++ canary doing the same job in the same binary.
+The canary is the case's external comparand; the Zend comparison waits
+on Phase D. The stage claims "no known avoidable work on the mutator's
+hot paths, within stated resolution" and nothing stronger; the
+end-to-end claim is named in the document as the missing half.
+
+Critic 2026-08-16 round 1, on the first draft (a floor arm per path):
+the floors were authored by the party they grade and pinned by nothing;
+the gaps to be read are under 1 ns, below the instrument's own
+unexplained terms; the mimalloc re-take is unquotable at this box's
+32 % larson variance; and the Goal line promised the end-to-end claim
+the stage cannot ground. Accepted, rewritten.
+Critic 2026-08-16 round 2, on the rewrite: the comparative table mixed
+sessions and HEADs, which this file's first rule forbids; the pair step
+named an instrument that does not exist — the published 2.78 ns is a
+criterion bench while the in-lib probe measures stores; 0.6 ns was one
+instrument pair's disagreement under rc-trace, promoted to a universal
+threshold; pre-registration cannot blind an author who knows every
+published figure; the parked-memory sentence welded a count to a wall
+clock; figures recorded without a protocol were owed resolution lines
+they could not have; black_box plumbing sits inside any floor arm; and
+the weakened claim is a substitution Edmond must rule on, not a Goal
+line. Accepted, all folded below; the substitution was put to Edmond
+and approved 2026-08-16. No dispute reached Sage.
+
+The canary strategy is Edmond's (2026-08-16): a naive, clean C or C++
+loop does the same job as fast as the machine allows, compiled into the
+same probe binary against the staticlib — the `bench-external/larson`
+arrangement. It replaces the self-authored floor, because the comparand
+is written in another language against no contract of ours. Two facts
+travel with every canary figure: an ABI call is a real call in the
+probe while the production route inlines through merged bitcode
+(`README.md`, "LLVM IR export"), so the bias runs against our arms and
+a "within X of C" reading is conservative; and a canary arm passes the
+same disassembly acceptance as every other arm, since an optimizer
+deletes a naive loop first.
+
+- [ ] S26.1 The pair, its canaries, and the instrument's zero
+      done: one bench-external probe binary carries the shipped pair
+        through `ll_retain`/`ll_release`, a bare non-atomic inc/dec
+        canary, a `std::shared_ptr` copy/drop canary, an empty skeleton
+        arm bounding the harness term, and a duplicate of the shipped
+        arm whose difference from itself is the instrument's measured
+        zero — the threshold below which a row prints "unresolved",
+        replacing the borrowed 0.6 ns; every arm disassembly-accepted,
+        figures A/B/A in one session
+      tier: T2 · role: Critic
+- [ ] S26.2 Fresh brackets on one HEAD
+      done: the pair (rc-walk vs rc-trace), the store directions and
+        create+die re-measured on the case's HEAD in per-bracket
+        sessions, and the epoch probe re-run under a stated repetition
+        protocol, so every figure the document quotes has a resolution
+        line measured for it rather than inherited; the July figures
+        stay in `dev/BENCHMARKS.md` as history and enter no new
+        subtraction
+      tier: T2 · role: —
+- [ ] S26.3 Store and lifecycle canaries
+      done: the same probe binary gains a plain-pointer-store canary
+        against the counted publish and a malloc-init-free canary
+        against create+die, under the same acceptance rules; each row
+        names the semantics the canary does not carry — no COW, no
+        destructor registration, no arena logging — because that delta
+        is what the row prices
+      tier: T2 · role: —
+- [ ] S26.4 Disassembly-anchored decompositions
+      done: for the pair, the counted publish and the death branch, an
+        objdump listing in which every instruction is tied to a named
+        contract sentence in the rfc or listed as residue with its
+        lead; Critic reviews the listings against the disassembly, not
+        prose summaries
+      tier: T2 · role: Critic
+- [ ] S26.5 What an epoch parks, in counts
+      done: the stepped harness reports parked bytes and parked records
+        as a function of deaths landed inside an epoch's phases —
+        deterministic counts, no wall clock in the deliverable; the
+        wall-time reading is left as arithmetic on whatever epoch
+        duration the reader assumes
+      tier: T2 · role: —
+- [ ] S26.6 AArch64 instruction identity
+      done: the aarch64 target's generated code for retain, release and
+        the header accesses is read and recorded as plain ldr/str with
+        no read-modify-write and no fence; the cost half of
+        `rfc/model/gc/rc-walk.md` open question 2 stays open for want
+        of hardware, and the entry says so
+      tier: T1 · role: —
+- [ ] S26.7 docs/performance-case.md
+      done: the document opens with what is not claimed before Phase D
+        — end-to-end speed, counted-op density, the Zend comparison;
+        every figure is a dated citation into `dev/BENCHMARKS.md`,
+        which stays normative on conflict, and the header says so;
+        rows below the measured zero print "unresolved at this
+        instrument's zero"; the collector section pairs the off-thread
+        epoch cost with S26.5's parked-memory figures
+      tier: T2 · role: Critic
+
+The mimalloc re-take moved to the quiet-machine list beside the four
+array constants: identical code varied 32 % across four larson runs
+here (`dev/BENCHMARKS.md`, 2026-08-10), and a 10–20 % allocator delta
+cannot be read through that. The collector's dense-census lead stays
+unscheduled until a workload prices epoch duration.
 
 ## Then: arrays as a performance problem
 
