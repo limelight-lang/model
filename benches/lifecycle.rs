@@ -111,6 +111,19 @@ fn retain_release(c: &mut Criterion, cls: *const Class) {
             ll_release(black_box(obj) as *mut RcHeader);
         })
     });
+
+    // The pair bench's harness alone: the same two black_box calls and
+    // the same iter machinery with no header operation between them.
+    // What the pair figure carries beyond the pair is this arm, and a
+    // comparison against a probe with a leaner harness — the canary's
+    // 1.98 against this bench's 2.78 (`dev/BENCHMARKS.md`, 2026-08-16,
+    // "the pair against its canaries") — is unreadable without it.
+    c.bench_function("lifecycle/harness_skeleton", |b| {
+        b.iter(|| {
+            black_box(obj);
+            black_box(obj);
+        })
+    });
 }
 
 /// The bulk-operations 2x2 (`rfc/model/memory/bulk-operations.md`):

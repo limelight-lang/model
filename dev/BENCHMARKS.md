@@ -100,6 +100,45 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-16 — fresh brackets on one HEAD, and the 2.78 contradiction dies of staleness
+
+S26.2: every figure the case document will quote, re-taken on this
+HEAD in per-bracket sessions, each with its own resolution line. And
+the cross-instrument contradiction S26.1 held its pair row on — 1.98
+through a real call against 2.78 in-crate — resolves the way
+`dev/POSTMORTEM.md`'s oldest entry warns: **the 2.78 was July's figure
+of July's code.** S24.2's narrow accessors landed in between. On
+today's HEAD the criterion pair reads 1.84–1.87, and the canary's 1.98
+sits 0.11–0.14 *above* it — the ABI call, in the direction the
+declared bias requires. The pair row is unblocked for the case.
+
+The criterion bracket (`benches/lifecycle.rs`, A → B → A2 with both
+binaries built first; A/A2 are the resolution lines):
+
+| bench | rc-walk (A / A2) | rc-trace (B) |
+|---|---|---|
+| retain_release_nonfinal | 1.867 / 1.838 ns (1.6 %) | 2.252 ns |
+| create_release_die | 16.93 / 16.45 ns (2.9 %) | 14.27 ns |
+| harness_skeleton (new arm) | 0.330 / 0.340 ns | 0.335 ns |
+
+The pair under rc-walk now measures 18 % below rc-trace — in July it
+was 4 % — and the create+die tax holds at +15–18 %, the July band. The
+new `harness_skeleton` arm prices the bench's own iter-and-black_box
+machinery at 0.33 ns, refuting the harness-term account of the
+contradiction before the stale-baseline account settled it: net of
+each instrument's skeleton the two pairs sit at ≈ 1.52 (in-crate) and
+≈ 1.63 (through the call).
+
+The store-direction bracket on this HEAD is this file's entry "the
+null sweep bounds the instrument" (same day, five rc-walk and three
+rc-trace runs). The epoch probe, three runs, 100 000 entities, steady
+rounds 1–3 per run: singletons 3.23–4.06 ms (32–41 ns per entity),
+chain 7.2–10.8 ms (72–108 ns per entity), the third run reading
+systematically high on chain — the machine, not the shape, since its
+singleton rounds sit inside the band. Resolution on this instrument is
+the range, roughly ±15 % around the middle, and the July "45–78 ns"
+generalized two shapes this grid keeps apart.
+
 ## 2026-08-16 — the pair against its canaries: 1.8–2.2 through the ABI, 0.55 bare, 11.6 atomic
 
 S26.1: `bench-external/canary/pair_canary.cpp`, the first canary probe —

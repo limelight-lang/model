@@ -102,7 +102,7 @@ deletes a naive loop first.
         1.98-vs-2.78 cross-instrument contradiction; the ll-arm mode
         (three states ≈ 0.21 apart) is the open instrument question
         S26.4's disassembly work should not chase into code alone.
-- [ ] S26.2 Fresh brackets on one HEAD
+- [x] S26.2 Fresh brackets on one HEAD
       done: the pair (rc-walk vs rc-trace), the store directions and
         create+die re-measured on the case's HEAD in per-bracket
         sessions, and the epoch probe re-run under a stated repetition
@@ -111,6 +111,14 @@ deletes a naive loop first.
         stay in `dev/BENCHMARKS.md` as history and enter no new
         subtraction
       tier: T2 · role: —
+      handoff: entry "fresh brackets on one HEAD, and the 2.78
+        contradiction dies of staleness" (`dev/BENCHMARKS.md`,
+        2026-08-16): pair 1.84–1.87 rc-walk / 2.25 rc-trace, the
+        canary's 1.98 is the ABI call above it, pair row unblocked;
+        create+die tax +15–18 % holds; epoch 32–41 ns singletons,
+        72–108 chain per entity, resolution is the range. The
+        `harness_skeleton` arm added to `benches/lifecycle.rs` is the
+        bench's own machinery priced at 0.33 ns.
 - [ ] S26.3 Store and lifecycle canaries
       done: the same probe binary gains a plain-pointer-store canary
         against the counted publish and a malloc-init-free canary
