@@ -100,6 +100,41 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-16 — store and lifecycle canaries: the slot allocator beats malloc on its own cycle
+
+S26.3, in the same canary binary and under the same protocol (three
+passes by three process runs, rotation, acceptance re-run). Wide set,
+hot, and one finding before any figure: **no canary arm can reach the
+store barrier, because every barrier ABI entry resolves a context and
+the C ABI has no door that constructs one.** The counted-publish
+comparand therefore stays with the in-lib probe, cross-instrument,
+which both instruments' measured zeros now permit for effects this
+size.
+
+| arm | figure | spread |
+|---|---|---|
+| plain 8-byte pointer store | 0.33 ns | 0.326–0.341 across nine cells |
+| `ll_create_die` (ReferenceBox, 24 B, full factory + teardown) | 3.4–4.0 ns steady | first printed pass of every process 14.2–15.3; spikes to 44–52 in later passes |
+| `malloc` + three-word init + `free` (24 B, glibc) | 6.4–6.9 ns | run-to-run drift 6.37 → 6.93 |
+
+**The counted publish costs ≈ 2.4 ns over a plain store** — in-lib
+`heap → heap` hot reads 2.74–2.82 on this HEAD against the canary's
+0.33, and what that buys is the retain, the category test and the COW
+door: the semantics, not overhead looking for a cure.
+
+**The entity lifecycle in its steady mode runs ≈ 2x under glibc's
+malloc/free on the same 24 bytes** — 3.4–4.0 against 6.4–6.9 — with
+the factory contract, kind-dispatched teardown and slot recycling
+inside the figure. Two honest asterisks. The first printed pass of
+every process reads 14–15 ns and settles to 3.4–4.0 from the second
+pass on, a per-process warm-in the unprinted warm-up pass does not
+absorb, cause unresolved — and the criterion `create_release_die`
+(16.5 ns, a classed object with the constructed hook, not a box) sits
+suspiciously near that slow mode, so the two entities' paths should
+not be conflated until someone separates entity kind from mode. And
+1–2 rounds in 15 spike to 44–52 ns in every pass, an excursion the
+median absorbs and the maxima report.
+
 ## 2026-08-16 — fresh brackets on one HEAD, and the 2.78 contradiction dies of staleness
 
 S26.2: every figure the case document will quote, re-taken on this

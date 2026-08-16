@@ -58,4 +58,20 @@ done
 extract shared_pair_body
 grep -q 'lock' "$body_file" || fail "shared_ptr arm lost its atomic operation"
 
-echo "ACCEPTED: all five arms keep their compiled shape"
+extract plain_store_body
+grep -q 'mov.*%r.*,(' "$body_file" || fail "plain store arm lost its store"
+if grep -q 'call' "$body_file"; then
+    fail "plain store arm grew a call"
+fi
+
+extract ll_create_die_body
+grep -q 'call.*<ll_reference_new>' "$body_file" \
+    || fail "ll_create_die arm lost its factory call"
+grep -q 'call.*<ll_release>' "$body_file" \
+    || fail "ll_create_die arm lost its release call"
+
+extract malloc_free_body
+grep -q 'call.*malloc' "$body_file" || fail "malloc arm lost its malloc"
+grep -q 'call.*free' "$body_file" || fail "malloc arm lost its free"
+
+echo "ACCEPTED: all eight arms keep their compiled shape"

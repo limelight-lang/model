@@ -2,8 +2,8 @@
 // in one binary. What it measured and with which caveats:
 // dev/BENCHMARKS.md, 2026-08-16, "the pair against its canaries"; the
 // strategy behind it: dev/DECISIONS.md, "the performance case's
-// external comparand is a canary, not a self-authored floor". Five
-// arms:
+// external comparand is a canary, not a self-authored floor". The
+// pair arms:
 //
 //   ll_pair       — the shipped pair through ll_retain/ll_release on a
 //                   live ReferenceBox, count never reaching zero.
@@ -23,6 +23,12 @@
 //   skeleton      — the loop with the cursor and the laundered pointer
 //                   and no header op: bounds the harness term inside
 //                   every figure above.
+//
+// A second group prices the entity lifecycle the same way —
+// ll_create_die against malloc-init-free — and carries the plain-store
+// canary whose counted comparand lives in the in-lib probe: the
+// barrier cannot be reached from here, and the comment above the
+// group says why.
 //
 // The ll arms cross the C ABI, so each half is a real call here while
 // the production route inlines through merged bitcode (../../README.md,
@@ -62,6 +68,14 @@ void* ll_reference_new();
 void ll_retain(void* entity);
 bool ll_release(void* entity);
 }
+
+// No arm calls the store barrier, and the omission is a finding, not a
+// choice: every barrier entry resolves a context and panics without
+// one, and the C ABI has no door that constructs a context or an
+// arena. Until it does, the counted publish is priced by the in-lib
+// probe and the plain-store canary below pairs with it across
+// instruments, both instruments' zeros being measured
+// (dev/BENCHMARKS.md, 2026-08-16, "store and lifecycle canaries").
 
 namespace {
 
@@ -161,6 +175,48 @@ void skeleton_body(size_t pairs) {
     }
 }
 
+// ---- Store and lifecycle arms (the S26.3 additions; figures:
+// dev/BENCHMARKS.md, 2026-08-16, "store and lifecycle canaries").
+// What the canaries do not carry, and therefore what the deltas price:
+// no COW test, no destructor registration, no arena logging, no
+// category test.
+
+void* plain_store_slot;
+
+// The counted store with the semantics stripped: one 8-byte write. The
+// destination is laundered per iteration, or the compiler keeps only
+// the last store of the region.
+void plain_store_body(size_t stores) {
+    for (size_t i = 0; i < stores; i++) {
+        void** slot = launder_ptr(&plain_store_slot);
+        *slot = naive_children[i & g_mask];
+    }
+}
+
+// Create and kill a 24-byte entity through the factory and the full
+// teardown path (kind-3 ReferenceBox: no destructor body, slot freed
+// into the entity heap).
+void ll_create_die_body(size_t cycles) {
+    for (size_t i = 0; i < cycles; i++) {
+        void* e = ll_reference_new();
+        ll_release(e);
+    }
+}
+
+// The lifecycle stripped to allocator work: same 24 bytes from glibc,
+// a three-word init standing in for header, class and slot, and the
+// free. No factory contract, no kind dispatch, no teardown order.
+void malloc_free_body(size_t cycles) {
+    for (size_t i = 0; i < cycles; i++) {
+        uint64_t* p = static_cast<uint64_t*>(std::malloc(24));
+        p = launder_ptr(p);
+        p[0] = 1;
+        p[1] = 0;
+        p[2] = 0;
+        std::free(p);
+    }
+}
+
 struct Arm {
     const char* label;
     void (*body)(size_t);
@@ -172,6 +228,9 @@ Arm arms[] = {
     {"naive_pair", naive_pair_body},
     {"shared_pair", shared_pair_body},
     {"skeleton", skeleton_body},
+    {"plain_store", plain_store_body},
+    {"ll_create_die", ll_create_die_body},
+    {"malloc_free", malloc_free_body},
 };
 constexpr size_t kArms = sizeof(arms) / sizeof(arms[0]);
 

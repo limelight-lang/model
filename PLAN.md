@@ -119,7 +119,15 @@ deletes a naive loop first.
         72–108 chain per entity, resolution is the range. The
         `harness_skeleton` arm added to `benches/lifecycle.rs` is the
         bench's own machinery priced at 0.33 ns.
-- [ ] S26.3 Store and lifecycle canaries
+- [x] S26.3 Store and lifecycle canaries
+      handoff: entry "store and lifecycle canaries" (`dev/BENCHMARKS.md`,
+        2026-08-16): counted publish ≈ 2.4 ns over a plain store;
+        ll_create_die steady 3.4–4.0 against glibc's 6.4–6.9 on the
+        same 24 bytes, with an unresolved 14–15 ns first-pass mode near
+        the criterion object figure. Found in passing: the C ABI has no
+        context constructor, so no external caller can reach the store
+        barrier — the probe records it, and an embedder will need the
+        door before any canary does.
       done: the same probe binary gains a plain-pointer-store canary
         against the counted publish and a malloc-init-free canary
         against create+die, under the same acceptance rules; each row
