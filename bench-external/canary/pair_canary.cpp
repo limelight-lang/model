@@ -12,14 +12,19 @@
 //                   instrument's measured zero: the threshold below
 //                   which any other arm-to-arm difference in this
 //                   binary is layout, not effect.
-//   naive_pair    — what a naive non-atomic refcount costs: increment,
-//                   decrement, branch to a never-taken cold death. The
-//                   pointer is laundered before each half so the
-//                   compiler cannot fuse the pair — the shipped pair is
-//                   two opaque calls, and the canary mirrors that shape
-//                   rather than letting the optimizer delete it.
-//   shared_pair   — std::shared_ptr copy/drop: the atomic version of
-//                   the same pair, which is what Swift-style ARC pays.
+//   naive_pair    — a bare non-atomic pair: increment, decrement,
+//                   branch to a never-taken cold death. A bound, not a
+//                   runtime — it carries no flags test, no immortality
+//                   gate, no null path. The pointer is laundered before
+//                   each half so the compiler cannot fuse the pair —
+//                   the shipped pair is two opaque calls, and the
+//                   canary mirrors that shape rather than letting the
+//                   optimizer delete it.
+//   shared_pair   — the std::shared_ptr scope pattern a multi-threaded
+//                   ARC pays: two locked counter operations plus the
+//                   arm's own null-check destructor branch and
+//                   dispatch, so the row prices the pattern, not
+//                   atomics alone.
 //   skeleton      — the loop with the cursor and the laundered pointer
 //                   and no header op: bounds the harness term inside
 //                   every figure above.
@@ -43,15 +48,17 @@
 //       -o bench-external/canary/pair_canary \
 //       target/release/libll_model.a -lpthread -ldl -lm
 //
-// Acceptance is by disassembly, per arm (objdump -d pair_canary): the
-// naive arm keeps its inc, dec and branch; the skeleton keeps no header
-// op; the ll arms keep both calls. A canary that lost its body to the
-// optimizer reads as a floor and prices nothing.
+// Acceptance is by disassembly, per arm — accept.sh beside this file,
+// re-run after every rebuild: the naive arm keeps its inc, dec and
+// branch; the skeleton keeps no header op; the ll arms keep both
+// calls. A canary that lost its body to the optimizer reads as a
+// floor and prices nothing.
 //
 // The harness copies src/memory/barrier/tests/
 // what_a_store_costs_by_working_set.rs: 1000 pairs per timed region,
 // 15 rounds after a discarded warm-up, arm order rotated by round
-// index, min/median/max per arm, three passes bracketing drift.
+// index, min/median/max per arm, three passes bracketing drift. A
+// harness rule changed there changes here too.
 
 #include <algorithm>
 #include <chrono>
@@ -175,8 +182,8 @@ void skeleton_body(size_t pairs) {
     }
 }
 
-// ---- Store and lifecycle arms (the S26.3 additions; figures:
-// dev/BENCHMARKS.md, 2026-08-16, "store and lifecycle canaries").
+// ---- Store and lifecycle arms (figures: dev/BENCHMARKS.md,
+// 2026-08-16, "store and lifecycle canaries").
 // What the canaries do not carry, and therefore what the deltas price:
 // no COW test, no destructor registration, no arena logging, no
 // category test.

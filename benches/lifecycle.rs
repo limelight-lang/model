@@ -114,10 +114,11 @@ fn retain_release(c: &mut Criterion, cls: *const Class) {
 
     // The pair bench's harness alone: the same two black_box calls and
     // the same iter machinery with no header operation between them.
-    // What the pair figure carries beyond the pair is this arm, and a
-    // comparison against a probe with a leaner harness — the canary's
-    // 1.98 against this bench's 2.78 (`dev/BENCHMARKS.md`, 2026-08-16,
-    // "the pair against its canaries") — is unreadable without it.
+    // What the pair figure carries beyond the pair is this arm — the
+    // term to subtract before comparing the pair across instruments
+    // whose harnesses differ (`dev/BENCHMARKS.md`, 2026-08-16, "fresh
+    // brackets on one HEAD, and the 2.78 contradiction dies of
+    // staleness").
     c.bench_function("lifecycle/harness_skeleton", |b| {
         b.iter(|| {
             black_box(obj);

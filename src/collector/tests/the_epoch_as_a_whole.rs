@@ -320,7 +320,9 @@ fn measure_epoch_cost() {
 /// "Deferred physical release, and when an epoch ends"), and the two
 /// arms exhibit both halves of that correction: victims born before
 /// the epoch and victims born inside it park alike. The stepped epoch
-/// runs no collector thread, so the figures repeat exactly and the
+/// runs no collector thread, so the figures repeat exactly — debug and
+/// release printed identical tables (`dev/BENCHMARKS.md`, 2026-08-16,
+/// "what an epoch parks, in counts that repeat exactly") — and the
 /// clock's noise floor does not apply.
 ///
 /// ```

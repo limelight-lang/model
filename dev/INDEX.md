@@ -432,6 +432,20 @@ versions live in `docs/history/`, marked at the top.
   and stay so: each is a hand-written copy of a protocol rather than a
   group of tests over a module, and each is compiled only under
   `--cfg loom`.
+- The performance case: `docs/performance-case.md` — the claim ("no
+  known avoidable work on the mutator's hot paths, within stated
+  resolution"), the canary bracket, and the list of claims not made
+  before Phase D; figures are dated citations into `dev/BENCHMARKS.md`,
+  which stays normative on conflict. Its instruction-level companion is
+  `docs/performance-case-decompositions.md` — the pair, the counted
+  publish and the death branch, every instruction tied to a contract
+  sentence or listed as residue with its lead. The external comparand
+  is `bench-external/canary/` (`pair_canary.cpp` + `accept.sh`, the
+  disassembly acceptance re-run per rebuild); the strategy's record is
+  `dev/DECISIONS.md`, "the performance case's external comparand is a
+  canary, not a self-authored floor". Collector-side counts:
+  `collector::tests::the_epoch_as_a_whole::measure_parked_memory`
+  (parked records per death, deterministic).
 - Benches: `benches/alloc.rs`, `benches/standard.rs`,
   `benches/barrier.rs` (the store barrier's three directions and the
   arena logging inside them; it resets the arena between timed regions,
