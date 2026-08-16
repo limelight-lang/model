@@ -7,3 +7,7 @@
 # is how both of these once reached a public commit.
 /AUDIT.md
 /.idea/
+
+# Built canary probes: rebuilt from source and re-accepted per run;
+# a stale committed binary would be measured instead of the code beside it.
+bench-external/canary/pair_canary
