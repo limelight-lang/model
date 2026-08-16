@@ -32,9 +32,11 @@
 //!   `d(ns)/dk` is the record's marginal cost without subtracting one round
 //!   from another. The subtraction moves rather than disappears: the two
 //!   loops are two code bodies at two alignments writing two slots in two
-//!   allocators, and **nothing here bounds what they differ by apart from the
-//!   log**. The control that would is a null sweep, both owners on the GC
-//!   heap, whose slope is zero by construction; it is not built.
+//!   allocators, and **nothing in the sweep itself bounds what they differ by
+//!   apart from the log**. The control that does is [`null_sweep_round`]: the
+//!   same two loops at the same `k` with both owners on the GC heap, so its
+//!   slope is zero by construction and whatever slope it reads is the
+//!   two-loops-two-slots term the sweep's slope has to clear.
 //!
 //! Neither instrument is authoritative over the other, and the probe carries
 //! a null pair that says how far either can be trusted: `sweep k=0` and
@@ -388,6 +390,74 @@ unsafe fn arena_into_heap(
     }
 }
 
+/// One round of the null sweep: the same two loops as [`sweep_round`] at the
+/// same `k`, with **both** owners on the GC heap. No store appends a record,
+/// so the slope over `k` is zero by construction, and the slope actually
+/// measured is the two-loops-two-slots term — the bound the sweep's slope is
+/// read against.
+///
+/// # Safety
+/// As [`arena_into_arena`].
+unsafe fn null_sweep_round(
+    ctx: *mut LLContext,
+    arena: *mut Arena,
+    holder: *const Class,
+    leaf: *const Class,
+    mask: usize,
+    k: usize,
+) -> Duration {
+    unsafe {
+        let values = children(ctx, leaf, MemoryCategory::GcHeap, mask + 1);
+        let first_owner = new_constructed(ctx, holder, MemoryCategory::GcHeap);
+        let first_slot = Object::prop_at(first_owner, 16);
+        let second_owner = new_constructed(ctx, holder, MemoryCategory::GcHeap);
+        let second_slot = Object::prop_at(second_owner, 16);
+
+        let k = trip(k);
+        let start = Instant::now();
+        for i in 0..k {
+            assert!(store_box(
+                arena,
+                MemoryCategory::GcHeap,
+                first_slot,
+                values[i & mask]
+            ));
+        }
+
+        for i in k..trip(STORES) {
+            assert!(store_box(
+                arena,
+                MemoryCategory::GcHeap,
+                second_slot,
+                values[i & mask]
+            ));
+        }
+
+        let elapsed = start.elapsed();
+        // No record was appended, so the reset releases nothing here; it
+        // runs so that the untimed half stays the same work as in every
+        // other arm and the block pool reaches the next round in the same
+        // state.
+        arena_reset_full(arena);
+        assert!(store_box(
+            arena,
+            MemoryCategory::GcHeap,
+            first_slot,
+            Value::null()
+        ));
+        assert!(store_box(
+            arena,
+            MemoryCategory::GcHeap,
+            second_slot,
+            Value::null()
+        ));
+        drain_children(&values, |index| stores_hitting(index, mask, 0..STORES));
+        drop_ref(MemoryCategory::GcHeap, first_owner as *mut RcHeader);
+        drop_ref(MemoryCategory::GcHeap, second_owner as *mut RcHeader);
+        elapsed
+    }
+}
+
 /// One round of the sweep: of the region's `STORES` publishes, the first `k`
 /// name an arena owner and the rest a heap owner, out of the same children
 /// throughout. What varies across `k` is the record and nothing else.
@@ -470,35 +540,43 @@ fn evict(scratch: &mut [u8]) {
     std::hint::black_box(scratch);
 }
 
-/// The **median** of `ROUNDS` timed rounds for each arm, in nanoseconds per
-/// store, taken after one warm-up round whose time is discarded
-/// (`dev/BENCHMARKS.md`, Method).
-///
-/// The median and not the fastest round. What is measured is that the choice
-/// halves the answer: the two statistics, run against each other in one
-/// session, put the wide-set record at 0.38 and 0.72 ns hot
-/// (`dev/BENCHMARKS.md`, 2026-08-15). What is **not** measured is why, and
-/// the median is taken on the weaker of the two accounts of it. If the rounds
-/// of an arm differ only by interference the fastest is right; if they differ
-/// by layout — each round allocating its children and log segments afresh —
-/// the fastest is the luckiest layout rather than the least-disturbed one.
-/// The block pool hands blocks back LIFO, which argues for the first account.
-/// Printing each arm's minimum, median and maximum would decide it: a tight
-/// floor with a right tail is interference, a spread is layout.
+/// One arm's `ROUNDS` figures reduced to the order statistics the report
+/// prints. The median is the quoted figure; the minimum and maximum decide
+/// between the two accounts of round-to-round spread — a tight floor with a
+/// right tail is interference, a wide spread is layout, each round
+/// allocating its children and log segments afresh. Under the rotated arm
+/// order the two statistics agree — the fixed order was what held them
+/// 0.38 against 0.72 ns apart on the wide-set record
+/// (`dev/BENCHMARKS.md`, 2026-08-16, "the null sweep bounds the
+/// instrument, and rotation settles the statistic").
+struct ArmStats {
+    minimum: f64,
+    median: f64,
+    maximum: f64,
+}
+
+/// `ROUNDS` timed rounds for each arm, in nanoseconds per store, taken after
+/// one warm-up round whose time is discarded (`dev/BENCHMARKS.md`, Method),
+/// reduced per arm to [`ArmStats`].
 ///
 /// The arms are interleaved round by round rather than run one arm's rounds
 /// and then the next arm's: the block pool hands blocks back in LIFO order
 /// and the machine drifts over a run, and both are common mode only if every
-/// arm meets them at the same point of it.
+/// arm meets them at the same point of it. Within a round the starting arm
+/// rotates with the round index; at a fixed order every arm inherits the
+/// cache and pool state of the same neighbour every time — the sweep's
+/// points ran monotone in `k` with nothing evicted between them in the hot
+/// half — where rotation spreads that inheritance over every neighbour.
 ///
 /// `scratch` is walked untimed after each round, empty for the hot half.
-fn median_ns_per_store(arms: &mut [Arm], scratch: &mut [u8]) -> Vec<f64> {
+fn stats_ns_per_store(arms: &mut [Arm], scratch: &mut [u8]) -> Vec<ArmStats> {
     let mut taken: Vec<Vec<f64>> = vec![Vec::with_capacity(ROUNDS); arms.len()];
     for round in 0..=ROUNDS {
-        for (arm, samples) in arms.iter_mut().zip(taken.iter_mut()) {
-            let elapsed = (arm.round)();
+        for position in 0..arms.len() {
+            let index = (round + position) % arms.len();
+            let elapsed = (arms[index].round)();
             if round > 0 {
-                samples.push(elapsed.as_nanos() as f64 / STORES as f64);
+                taken[index].push(elapsed.as_nanos() as f64 / STORES as f64);
             }
 
             evict(scratch);
@@ -509,14 +587,18 @@ fn median_ns_per_store(arms: &mut [Arm], scratch: &mut [u8]) -> Vec<f64> {
         .iter_mut()
         .map(|samples| {
             samples.sort_by(|a, b| a.partial_cmp(b).expect("a duration is never NaN"));
-            samples[samples.len() / 2]
+            ArmStats {
+                minimum: samples[0],
+                median: samples[samples.len() / 2],
+                maximum: samples[samples.len() - 1],
+            }
         })
         .collect()
 }
 
-/// Every shape measured at one working set, in the order they are reported.
-/// The sweep's points come last, so that a report is read as three
-/// directions and then the instrument that prices the record.
+/// Every shape measured at one working set, in the order they are reported:
+/// the four directions, then the sweep that prices the record, then the null
+/// sweep that bounds the sweep's own instrument term.
 fn arms_for(
     ctx: *mut LLContext,
     arena: *mut Arena,
@@ -547,6 +629,13 @@ fn arms_for(
         arms.push(Arm {
             label: format!("sweep_k={k}"),
             round: Box::new(move || unsafe { sweep_round(ctx, arena, holder, leaf, mask, k) }),
+        });
+    }
+
+    for k in SWEEP {
+        arms.push(Arm {
+            label: format!("null_k={k}"),
+            round: Box::new(move || unsafe { null_sweep_round(ctx, arena, holder, leaf, mask, k) }),
         });
     }
 
@@ -606,7 +695,7 @@ fn measure_store_cost() {
     // inside the interleaving and warms one arm at a time. This pass runs the
     // whole probe once and drops the answer.
     let mut warm_up = arms_for(context_ptr, arena_ptr, holder, leaf, WIDE - 1);
-    median_ns_per_store(&mut warm_up, &mut scratch);
+    stats_ns_per_store(&mut warm_up, &mut scratch);
 
     for set in [1usize, WIDE] {
         let mask = set - 1;
@@ -619,23 +708,32 @@ fn measure_store_cost() {
         // (`dev/BENCHMARKS.md`, Method): the two hot passes bracket the cold
         // one, and a disagreement between them is the size of the drift the
         // difference has to clear.
-        let hot = median_ns_per_store(&mut arms, &mut []);
-        let cold = median_ns_per_store(&mut arms, &mut scratch);
-        let hot_again = median_ns_per_store(&mut arms, &mut []);
+        let hot = stats_ns_per_store(&mut arms, &mut []);
+        let cold = stats_ns_per_store(&mut arms, &mut scratch);
+        let hot_again = stats_ns_per_store(&mut arms, &mut []);
 
         for (log, figures) in [("hot", &hot), ("cold", &cold), ("hot_again", &hot_again)] {
-            for (arm, figure) in arms.iter().zip(figures.iter()) {
+            for (arm, stats) in arms.iter().zip(figures.iter()) {
                 println!(
-                    "store_cost working_set={set} log={log} {}={figure:.3} ns/store",
-                    arm.label
+                    "store_cost working_set={set} log={log} {}={:.3} ns/store \
+                     min={:.3} max={:.3}",
+                    arm.label, stats.median, stats.minimum, stats.maximum
                 );
             }
 
-            let sweep = &figures[figures.len() - SWEEP.len()..];
+            let medians: Vec<f64> = figures.iter().map(|stats| stats.median).collect();
+            let sweep = &medians[medians.len() - 2 * SWEEP.len()..medians.len() - SWEEP.len()];
             let (slope, residual) = sweep_slope(sweep);
             println!(
                 "store_cost working_set={set} log={log} sweep_slope={slope:.3} ns/record \
                  residual={residual:.1} ns/region"
+            );
+
+            let null = &medians[medians.len() - SWEEP.len()..];
+            let (null_slope, null_residual) = sweep_slope(null);
+            println!(
+                "store_cost working_set={set} log={log} null_slope={null_slope:.3} ns/record \
+                 residual={null_residual:.1} ns/region"
             );
         }
     }

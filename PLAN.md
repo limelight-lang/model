@@ -61,8 +61,14 @@ interaction of three arms, one outcome of which supports the framing it was
 preparing to retract. Accepted, all folded into the steps. No dispute reached
 Sage.
 
-- [~] S25.1 The direction that holds the retain constant, and the sweep that
+- [x] S25.1 The direction that holds the retain constant, and the sweep that
       prices the record
+      handoff: null sweep, rotated arm order and per-arm min/median/max are
+        in the probe; the record is ≈ 0.45 ns hot net of a measured
+        null ≤ 0.04, and the 0.38-vs-0.72 statistic split was the fixed
+        arm order (`dev/BENCHMARKS.md`, 2026-08-16). The rc-trace
+        anomaly sharpened and is S25.2's to meet: slope 1.12–1.32
+        there, `sweep k=0` still 0.25–0.43 below `heap → heap`.
       done: two things in
         `memory::barrier::tests::what_a_store_costs_by_working_set` — a
         `heap → heap` direction (a `GcHeap` child into a `GcHeap` owner),

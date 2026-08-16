@@ -100,6 +100,64 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-16 — the null sweep bounds the instrument, and rotation settles the statistic
+
+The probe gained the two controls the S25.1 Critic round demanded: a
+null sweep — the sweep's two loops at the same `k` with both owners on
+the GC heap, whose slope is zero by construction — and an arm order that
+rotates with the round index, so no arm inherits the cache and pool
+state of the same neighbour every round. Each arm now prints its
+minimum, median and maximum. Protocol: one debug run first (the drain
+asserts all held), both release binaries built before any run, three
+runs per build alternating rc-walk and rc-trace, then two more rc-walk
+runs to separate drift from spread. HEAD `acddfd0` plus the probe
+change; nothing below is comparable with the 2026-08-15 table — the
+instrument changed.
+
+**The instrument's zero is measured now, not argued.** At the wide set,
+hot, the null slope reads −0.036 to +0.027 ns per record across five
+runs: the two-loops-two-slots term the sweep was suspected of carrying
+is absent where the record is priced. It is real elsewhere — 0.05–0.20
+cold, and 0.08–0.39 at the single-child set, where the dependency chain
+is longest — so the record's figure is quoted from the wide hot point
+and nowhere else.
+
+**One record costs ≈ 0.45 ns with the log cache-hot** — the sweep's
+median-based slope over five runs reads 0.36–0.52, median 0.45, net of
+a null within ±0.04. Cold the slope reads 0.64–0.71 against a null of
+0.05–0.20, so ≈ 0.5–0.6 net. The direction difference
+`heap → arena` − `heap → heap` reads 0.61–0.79 and still disagrees with
+the sweep; the rule registered on 2026-08-15 stands and the slope is
+the answer.
+
+**The statistic question is closed: the fixed order was the
+inflation.** Under rotation the median-based hot slope lands at
+0.36–0.52 — where the *minimum* statistic sat on 2026-08-15 (0.38,
+against the median's 0.72). Per-arm minima sit 2–7 % under their
+medians with occasional right-tail maxima, which is the interference
+account of spread, not the layout one: the old medians were inflated by
+each sweep point warming its successor in a fixed, `k`-monotone order.
+Medians stay the quoted statistic; under rotation they and the minima
+agree.
+
+**The rc-trace anomaly persists and grew.** On log code that is
+byte-identical, the rc-trace build's hot sweep slope reads 1.12–1.32
+(one pass read 0.50), its null 0.08–0.13; its `sweep k=0` sits
+0.25–0.43 ns *below* its `heap → heap`, where the instrument's zero
+requires equality and the rc-walk build delivers it within 0.03; and
+its `heap → heap` itself reads 3.9–4.3 ns against rc-walk's 2.74–2.82.
+Unresolved, as on 2026-08-15; S25.2's wide-accessor arm measures the
+mechanism that could explain it and meets these figures again.
+
+**This session's repetition floor is wider than the last one's.**
+`heap → arena` warmed monotonically, 3.35 → 3.58 ns over the first
+three runs, and held 3.55–3.58 for the last two; a session's early
+runs carry the machine's warm-up, so the directions repeat within
+0.5–3.3 % across all five runs and within ~1 % after the plateau. The
+S25 criterion quotes 0.1–1.7 % from the previous session; this session
+did not reach that floor, and the slope's own spread (±0.08 around
+0.45) is the honest uncertainty on the headline figure.
+
 ## 2026-08-15 — what the release-at-reset record costs, and the statistic that decides the answer
 
 **Retracted in part the same day, by the Critic round on S25.1, and the
