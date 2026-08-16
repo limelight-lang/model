@@ -68,7 +68,7 @@ a "within X of C" reading is conservative; and a canary arm passes the
 same disassembly acceptance as every other arm, since an optimizer
 deletes a naive loop first.
 
-- [ ] S26.1 The pair, its canaries, and the instrument's zero
+- [x] S26.1 The pair, its canaries, and the instrument's zero
       done: one bench-external probe binary carries the shipped pair
         through `ll_retain`/`ll_release`, a bare non-atomic inc/dec
         canary, a `std::shared_ptr` copy/drop canary, an empty skeleton
@@ -78,6 +78,30 @@ deletes a naive loop first.
         replacing the borrowed 0.6 ns; every arm disassembly-accepted,
         figures A/B/A in one session
       tier: T2 · role: Critic
+      Critic 2026-08-16 round 1: the zero is 0.22 bimodal and can sit
+        under any arm unseen; 1.98-through-ABI against 2.78-in-crate
+        inverts the bias story, pair row unquotable until S26.2
+        explains it; one process run is no repetition control; the
+        shared_ptr figure may be glibc's single-threaded fast path;
+        0.55 is this loop, not naive RC; acceptance lived in
+        scrollback. Accepted: thread spawn added (4.59 → 11.57, the
+        fast path was indeed what was priced), accept.sh written,
+        three process runs taken, claims relabeled.
+      Critic 2026-08-16 round 2: accept.sh's je test was satisfied by
+        the loop's entry guard, its extraction leaked past the cold
+        clone, and its negative check passed on an empty body; the
+        mode claim exceeded the data; 11.6 is the scope pattern, not
+        pure atomics; two "everywhere" claims had a counterexample
+        cell; three files cited a PLAN stage against the citation
+        rule. Accepted, all fixed; the canary strategy moved to
+        `dev/DECISIONS.md`. No dispute reached Sage.
+      handoff: probe, accept.sh and figures are in
+        `bench-external/canary/`; entry "the pair against its
+        canaries" (`dev/BENCHMARKS.md`, 2026-08-16). The pair row does
+        not enter the case document until S26.2 closes the
+        1.98-vs-2.78 cross-instrument contradiction; the ll-arm mode
+        (three states ≈ 0.21 apart) is the open instrument question
+        S26.4's disassembly work should not chase into code alone.
 - [ ] S26.2 Fresh brackets on one HEAD
       done: the pair (rc-walk vs rc-trace), the store directions and
         create+die re-measured on the case's HEAD in per-bracket

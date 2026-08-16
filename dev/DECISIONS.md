@@ -8,6 +8,33 @@ never edited or deleted.
 
 ---
 
+## 2026-08-16 — the performance case's external comparand is a canary, not a self-authored floor
+
+The strategy is Edmond's: a naive, clean C or C++ loop does the same
+job as fast as the machine allows, compiled into one binary with the
+same operation through the real C ABI — `bench-external/canary/` — and
+the case's claims are stated against that bracket rather than against a
+floor derived from our own contracts. Two Critic rounds on the S26 plan
+draft forced the substitution: a floor authored by the party it grades
+is pinned by nothing, and every gap it would read on these paths sits
+under the instruments' own unexplained terms.
+
+Three rules travel with every canary figure. The ABI call is a real
+call in the probe while the production route inlines through merged
+bitcode (`README.md`, "LLVM IR export"), so the bias runs against our
+arms and a "within X of C" reading is conservative. Every arm passes
+disassembly acceptance re-run after every rebuild (`accept.sh` beside
+the probe), because an optimizer deletes a naive loop first, and a
+deleted canary reads as a floor while pricing nothing. And a bare
+canary prices *its loop*, never "naive RC": it carries no flags test,
+no immortality gate and no null path, so it is quoted as a bound, not
+as a runtime.
+
+The first probe and what it measured: `dev/BENCHMARKS.md`, 2026-08-16,
+"the pair against its canaries". The Zend comparison stays out of the
+case until Phase D exists; the end-to-end claim is recorded there as
+the missing half, not delivered by canaries.
+
 ## 2026-08-15 — a header is read as narrowly as it is written, and through the helpers only
 
 Under `rc-walk` every mutator access to a published header goes through

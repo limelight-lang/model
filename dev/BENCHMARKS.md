@@ -100,6 +100,70 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-16 — the pair against its canaries: 1.8–2.2 through the ABI, 0.55 bare, 11.6 atomic
+
+S26.1: `bench-external/canary/pair_canary.cpp`, the first canary probe —
+naive C++ loops beside the same operation through the real C ABI, one
+binary, five arms, acceptance by `accept.sh` re-run after every rebuild.
+Protocol: an unprinted warm-up pass, three printed passes of 15 rotated
+rounds, and three runs of the process, because passes inside one process
+share one draw of page placement. Staticlib from HEAD `6c733c5`,
+rc-walk, rebuilt immediately before linking. Hot figures only — the
+probe has no eviction mode — and the working-set axis varied nothing
+here: both sets are L1-resident, and the arms read the same at 1 and
+at 64 children, one disturbed set-1 cell aside (naive at 0.63, 14 %
+over its band). The grid below is the wide set, nine cells (three
+passes by three runs).
+
+| arm | figure | spread across the grid |
+|---|---|---|
+| shipped pair, `ll_retain`/`ll_release` | 1.77–2.20 ns | three modes ≈ 0.21 apart; 1.98 the most common |
+| its duplicate (instrument zero) | 1.98 ns | 1.979–1.984 in eight cells, 1.77 once |
+| bare non-atomic inc/dec + branch | 0.55 ns | 0.552–0.560 |
+| `std::shared_ptr` copy/drop | 11.57 ns | 11.566–11.586 |
+| loop skeleton | 0.35 ns | 0.352–0.359 |
+
+**The instrument's zero is a mode, not a jitter band.** An ll-shaped
+arm sits a whole pass in one of three states about 0.21 ns apart —
+same binary, same data, the mode flipping between passes and between
+process runs while the bare arms never move. Worst same-arm spread
+across cells is 0.43 ns, worst arm-to-arm disagreement inside one pass
+0.22, so a difference under ≈ 0.4 ns between ll-shaped arms is
+unresolved on this instrument. The bare arms' repeatability (0.01 over
+nine passes in three processes) places the mode in the ll arms; whether
+it sits in their code or in the boxes' cache placement — data the bare
+arms never touch — this probe does not decide.
+
+**The atomic figure was a mislabel until review caught it.** The first
+build read `shared_pair` at 4.59 ns; the disassembly showed `lock addl`,
+and the number still was not the atomic pair — glibc branches the
+counter ops on `__libc_single_threaded`, and a process that never
+spawned a thread priced the fast path. One spawned-and-joined thread at
+startup moved the arm to 11.57. Both figures are real and both are
+worth having: 4.6 is the scope pattern in a process glibc knows is
+single-threaded, and 11.6 is the same arm once a second thread exists.
+Neither is pure atomics — the arm carries its own null-check destructor
+branch and `_Sp_counted_base` dispatch — so the row prices the
+`shared_ptr` scope pattern, and 11.57 − 1.98 is not "what atomics
+cost". What separates either figure from the shipped pair is what
+`rc-walk`'s single-mutator, non-atomic counter refuses to pay.
+
+**The bracket, stated with its biases.** The counted pair through a
+real ABI call sits at ≈ 3.6x a bare inc/dec that no shipping runtime is
+(the bare arm has no flags test, no immortality gate, no null path —
+it is "what this loop costs", not "what naive RC costs") and at ≈ 0.17x
+the atomic scope pattern a multi-threaded ARC pays. The call bias runs
+against our arms — the production route inlines through merged bitcode —
+so the first ratio is an upper bound on this box.
+
+**One contradiction is open, and the pair row stays out of the case
+document until it closes.** The in-crate criterion bench put the pair at
+2.78 ns (2026-07-27, another HEAD and another harness); this probe reads
+1.98 through a call the criterion figure does not cross. Same nominal
+operation, inverted by more than the ABI bias story allows — so one of
+the two instruments is mismeasuring the pair, and S26.2's fresh
+same-HEAD bracket owns the answer.
+
 ## 2026-08-16 — the failed store-forward is the stall itself, not the log serialized behind it
 
 S25.2, answered by the rule the plan registered before the run, on

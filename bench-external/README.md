@@ -13,6 +13,24 @@ command-line tools, run manually. Build `ll_model.lib` first
 symbol-resolved profiling), then compile against
 `target/release/ll_model.lib`.
 
+## canary/
+
+Naive-but-clean C++ reference loops beside the same operation through
+the real C ABI, in one binary — the external comparand of the
+performance case (`dev/DECISIONS.md`, "the performance case's external
+comparand is a canary, not a self-authored floor"). The larson tooling
+above is MSVC-era; these build on Linux with `g++`, the command at the
+head of each probe. The staticlib must be the rc-walk build: a
+`--no-default-features` build overwrites the same `libll_model.a`.
+
+- **`pair_canary.cpp`** — the retain/release pair: the shipped pair on
+  a live ReferenceBox, its duplicate as the instrument's measured
+  zero, a bare non-atomic inc/dec canary, a `std::shared_ptr`
+  copy/drop canary, and an empty skeleton bounding the harness term.
+  Figures: `dev/BENCHMARKS.md`, 2026-08-16, "the pair against its
+  canaries". Acceptance is by disassembly, per arm — `accept.sh`,
+  re-run after every rebuild.
+
 ## larson/
 
 - **`larson.cpp`** — real, unmodified benchmark from
