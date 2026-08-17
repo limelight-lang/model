@@ -31,6 +31,7 @@ mod vectors;
 /// compiler-folded hashes have to match runtime-computed ones.
 pub const ZERO_REPLACEMENT: u64 = 1;
 
+pub(crate) mod process_key;
 pub mod seed;
 
 /// The hash of `bytes`, never zero.

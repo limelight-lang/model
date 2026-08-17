@@ -83,8 +83,14 @@ and the one price outside the crate — the Windows build S27.1's
       map's teardown leaves one insertable. Fixed rather than recorded:
       `dev/WORKFLOW.md` forbids a note about an unfixed defect anywhere
       in `dev/`, this repository being public.
-- [ ] S27.1 The per-process key: 32 bytes from the OS, once per process,
-      in every build, outside `STAMP` and exempt from `hash-folding`
+- [x] S27.1 The per-process key: 32 bytes from the OS, once per process,
+      in every build, outside `STAMP` and exempt from `hash-folding` —
+      closed 2026-08-17: whole gate green, Critic round run, its four
+      findings fixed in place; one amendment against the Shape below,
+      named in the module doc: consumers take the key whole as a keyed
+      hash's key rather than by words, because `rfc/model/maps.md`
+      ("What the flood ladder becomes") derives every ladder secret from
+      the key and `draw_salt`'s doc refutes the bijective word mix
       done: the underlying draw, called twice through a `#[cfg(test)]`
         window, returns different words — fresh OS bytes rather than a
         cached constant; the memoized accessor is equal across calls

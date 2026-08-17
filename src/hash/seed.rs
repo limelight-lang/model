@@ -121,10 +121,13 @@ pub extern "C" fn ll_hash_stamp() -> u64 {
 /// that denies the syscall and has no `/dev/urandom`, the standard library
 /// aborts, and it is better to abort at startup than on the first request.
 ///
-/// A no-op under `hash-folding`, where the seed is a constant.
+/// The per-process key is forced here too, in every build: under
+/// `hash-folding` the seed half is a constant and only the key draw
+/// remains, so this stops being a no-op there.
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_hash_seed_init() {
     let _ = expanded();
+    let _ = super::process_key::words();
 }
 
 /// The seed, expanded once by [`rapidhash::expand_seed`], which is the form
