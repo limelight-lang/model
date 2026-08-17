@@ -157,7 +157,7 @@ fn the_storage_holds_no_pointer_into_itself() {
     let bytes = super::storage_bytes(m.nslots(), m.cap).unwrap();
     for k in 0..m.used() {
         let e = m.entry(k);
-        for word in [e.hash_or_key, e.key as u64, e.value().as_int() as u64] {
+        for word in [e.hash_or_key, e.key_word as u64, e.value().as_int() as u64] {
             let w = word as usize;
             assert!(
                 w < base || w >= base + bytes,

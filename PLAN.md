@@ -117,8 +117,16 @@ and the one price outside the crate — the Windows build S27.1's
       module's doc, once, for every consumer. The per-process guarantee
       is per-deployment under a pre-forking master, by citation to the
       seed's fork paragraph.
-- [ ] S27.2 One encoding of the `key` word, tagged in its low three bits,
-      for every owner
+- [x] S27.2 One encoding of the `key` word, tagged in its low three bits,
+      for every owner — closed 2026-08-17: ring test written first and
+      seen red against a raw-masking tracer mutant, the two tracer tests
+      seen red against a child-left-tagged mutant, whole gate green,
+      Miri slice entry+table+tracer+ring 52/0 clean; Critic round run,
+      its findings fixed in place — the alignment the encoding rests on
+      is pinned in the discriminant test, the entry's key field is
+      retyped `key_word: usize` so the pointer edge is the accessor
+      alone, and `head.rs`'s phantom-in-edge comment cites the sentinel
+      limit
       done: a new collector test puts a string-keyed array in a ring and
         sees it collected, written first and seen failing against a
         tracer that masks the recorded raw word; the two tracer tests

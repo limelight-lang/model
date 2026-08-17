@@ -461,7 +461,7 @@ impl Table {
                 e.hash_or_key
             }
         } else if self.flags & TABLE_STRONG != 0 {
-            strong_hash(unsafe { string_bytes(e.key) }, self.salt)
+            strong_hash(unsafe { string_bytes(e.string_key()) }, self.salt)
         } else {
             e.hash_or_key
         }

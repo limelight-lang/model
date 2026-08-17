@@ -48,6 +48,7 @@ fn stepped_epoch() -> EpochStats {
     stats
 }
 
+mod a_ring_through_a_string_keyed_array;
 mod an_edge_the_walk_may_not_record;
 mod cells_a_class_keeps_outside_itself;
 mod the_epoch_as_a_whole;
