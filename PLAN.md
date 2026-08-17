@@ -65,7 +65,9 @@ code at `b79b6ec`; its findings are folded into the steps and the gate,
 and the one price outside the crate — the Windows build S27.1's
 `compile_error!` refuses — is a backlog item for a Windows session.
 
-- [ ] S27.6 `sever_entries` unlinks the holes it makes
+- [x] S27.6 `sever_entries` unlinks the holes it makes — closed
+      2026-08-17: test seen red on the kept chains first, whole gate
+      green, Miri slice `array::table` 39/0 clean
       done: after a sever no chain reaches a hole, pinned by a test that
         inserts into a severed table
       tier: T1 · role: —

@@ -947,7 +947,9 @@ impl Table {
     /// The counters are settled here rather than left stale: the table
     /// outlives this call by the width of the drain, and a `live` above
     /// zero over an entry array of holes is a contradiction anything
-    /// reading it would act on.
+    /// reading it would act on. The index is settled the same way —
+    /// every bucket reads `NONE` and every hole's link is cut, so no
+    /// chain reaches a hole and an insert after the sever walks nothing.
     pub(crate) fn sever_entries(&mut self, head: &StorageHead, displaced: &mut Vec<*mut RcHeader>) {
         for i in 0..head.used() {
             let e = self.entry(head, i);
@@ -960,10 +962,12 @@ impl Table {
             // The table's own store rather than the barrier's: a barrier
             // write publishes a whole Box, zeroed reserved bytes and all,
             // which would set this entry's chain link to 0 — a legal entry
-            // index rather than an end of chain (`array/entry.rs`).
+            // index where the unlink needs an end of chain
+            // (`array/entry.rs`). One composed store keeps the word whole
+            // for the collector.
             let at = Self::entry_ptr(head, i);
             unsafe {
-                Entry::store_element(at, Value::null());
+                Entry::store_element_and_link(at, Value::null(), NONE);
                 Entry::make_hole(at);
             }
 
@@ -974,6 +978,14 @@ impl Table {
             if !key.is_null() {
                 displaced.push(key as *mut RcHeader);
             }
+        }
+
+        // The index goes with the entries, for the reason the counters
+        // do: a bucket left in place would chain through nothing but
+        // holes, and the next insert's walk would read its trigger
+        // counters off entries that no longer exist.
+        if !head.storage().is_null() {
+            unsafe { std::ptr::write_bytes(Self::slots(head), 0xFF, head.nslots()) };
         }
 
         self.live = 0;
