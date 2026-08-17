@@ -23,10 +23,6 @@ versions live in `docs/history/`, marked at the top.
 
 ## Entry points
 
-- Selective RC research: `dev/SELECTIVE_RC_WALK.md` — an rc-walk extension
-  that omits target counts for compiler-proven, anchor-dominated objects;
-  includes the mixed root equation, sealed-topology rule, edge-cost matrix,
-  escape copying, counterexamples, implementation stages, and decision gate.
 - rc-walk collector side (`rc-walk` builds): `src/collector.rs` — the
   epoch state machine (Phases 1–3: snapshot, walk with the three-way
   classification, judge, condemn, snapshot-compare re-check, verdict

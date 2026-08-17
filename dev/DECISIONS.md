@@ -8,6 +8,30 @@ never edited or deleted.
 
 ---
 
+## 2026-08-17 — the no-RC research round closes: unique ownership survives it
+
+Edmond's ruling on the 2026-08-16/17 GC research round. What survives
+is in `rfc/model/gc/rc-walk.md`, "The birth count" and "Unique
+ownership": a statically known in-degree written by the factory, and a
+one-owning-slot policy with no count, eager death, and COW
+eligibility. What is rejected: appeal-walk and the published-epoch
+barrier as replacements for rc-walk — the armed barrier costs about
+what the RC pair it removes costs, the win is confined to the idle
+path, and the benefit is bounded by the COW share of publications and
+the epoch duty cycle, both unmeasured; the shared-anchor
+generalization — superseded by the strict unique-owner form, since
+sharing keeps the sealed-topology proof while forfeiting eager death
+and COW eligibility; and the deferred-count window — a missed release
+is unrecoverable by any later scan, because the overwritten value is
+gone, and an understated count lets eager death and the COW uniqueness
+test fire on live shared data. The three sketches
+(`SELECTIVE_RC_WALK.md`, `APPEAL_WALK_GC.md`,
+`NO_RC_PUBLISHED_EPOCH_GC.md`) are deleted with this entry;
+`RC_WALK_CRITICAL_REVIEW.md` stays, its findings being implementation
+debts rather than rejected ideas. Implementation of the surviving pair
+is gated on a Phase D measurement of the provable-target share
+(`PLAN.md`, backlog).
+
 ## 2026-08-16 — the performance case's external comparand is a canary, not a self-authored floor
 
 The strategy is Edmond's: a naive, clean C or C++ loop does the same

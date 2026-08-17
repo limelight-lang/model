@@ -297,6 +297,11 @@ own checkbox.
 - [ ] **`rc-satb` as a second build-time GC strategy**
   (`rfc/model/gc/satb.md`). The `WRITING` bit it waited on is pinned and
   the barrier's hook site is reserved; nothing else of it is built.
+- [ ] **The birth count and the unique-owner policy**
+  (`rfc/model/gc/rc-walk.md`, "The birth count" and "Unique ownership",
+  designed 2026-08-17) — gated on a Phase D measurement of the share of
+  dynamic publications with compiler-provable targets; the move rule
+  (copy, barrier, or a never-moved proof) is the open design question.
 - [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2
   transition waits on one — `dev/DECISIONS.md`, 2026-08-13, which also
   says what to confirm against `arrays.md` before opening it.
