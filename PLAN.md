@@ -36,12 +36,14 @@ after two firings.
 
 Done when, six items, none of them true today:
 
-1. Two tables holding distinct storage at the same time hold different
-   salts — simultaneity is the claim, because an address recycles across
-   a reset — and a source-reading test shows `draw_salt` derives from the
-   key module rather than from the foldable seed.
-2. The per-process key reads the same twice in one process, two draws
-   differ, and the module carries no `hash-folding` arm.
+1. The drawn salt differs from `hash_bytes` of the bare storage
+   address — the pre-change derivation, which distinct addresses
+   already satisfied, so only this form can go red on the defect — and
+   a source-reading test shows `draw_salt` derives from the key module
+   rather than from the foldable seed.
+2. The per-process key reads the same twice in one process, the
+   underlying draw seen through the test window yields fresh bytes,
+   and the module carries no `hash-folding` arm.
 3. A ring closing through a string-keyed array is collected in a new
    collector test, and the two tracer tests
    (`walk/tests/the_children_a_kind_has.rs:62` and `:118`) go red if the
@@ -52,22 +54,50 @@ Done when, six items, none of them true today:
 5. A copy of a table whose ladder is spent still copies, and no chain in
    a copy exceeds `CHAIN_LIMIT`.
 6. The `dev/WORKFLOW.md` gate is green, plus Miri slices over
-   `array::entry` and `array::table` for the new integer-to-pointer mask.
+   `array::entry` and `array::table` for the new integer-to-pointer
+   mask, and over the walk tests that carry the tracer's masked read —
+   the ring test and the two tracer tests.
 
 Plan reviewed by Critic twice before it was written here; the five
 questions the second round left open were ruled by Sage and the rulings
-sit on the steps they bind.
+sit on the steps they bind. A third round ran on 2026-08-17 against the
+code at `b79b6ec`; its findings are folded into the steps and the gate,
+and the one price outside the crate — the Windows build S27.1's
+`compile_error!` refuses — is a backlog item for a Windows session.
 
+- [ ] S27.6 `sever_entries` unlinks the holes it makes
+      done: after a sever no chain reaches a hole, pinned by a test that
+        inserts into a severed table
+      tier: T1 · role: —
+      Found in passing while the plan was written (rule 3). Runs first:
+      a known defect precedes new work (`dev/WORKFLOW.md`, "Bugs
+      first"), and the 2026-08-17 round noted that S27.5's rung three
+      would otherwise make these hole-counting chains refusal-capable
+      before the fix. The number stays where it was issued. `remove`
+      unlinks and `sever_entries` does not, so a severed table's chains
+      still run through its holes and an insert's `chain_len` counts
+      them. Inert today, because nothing inserts into a severed table;
+      with rung three it becomes a refusal of a legal insert the day a
+      map's teardown leaves one insertable. Fixed rather than recorded:
+      `dev/WORKFLOW.md` forbids a note about an unfixed defect anywhere
+      in `dev/`, this repository being public.
 - [ ] S27.1 The per-process key: 32 bytes from the OS, once per process,
       in every build, outside `STAMP` and exempt from `hash-folding`
-      done: two draws differ, the memoized accessor is equal across calls
-        and threads, and a source-reading test in the idiom of
+      done: the underlying draw, called twice through a `#[cfg(test)]`
+        window, returns different words — fresh OS bytes rather than a
+        cached constant; the memoized accessor is equal across calls
+        and threads; and a source-reading test in the idiom of
         `refcount::tests::who_may_read_a_header` shows the module carries
         no `hash-folding` arm and that `STAMP` names it nowhere
       tier: T2 · role: Critic
       Sage 2026-08-16: the 32 bytes come from `/dev/urandom` through safe
         `std::fs`, and `#[cfg(not(unix))]` is a `compile_error!` naming
-        the missing door. `RandomState` cannot serve — it caches one
+        the missing door.
+      Critic 2026-08-17, price the ruling had not named: the crate keeps
+        a Windows build on purpose (`heap.rs`'s `#[cfg(windows)]` doors,
+        the TLS fast path), and it refuses from this step until the
+        Windows door lands. Edmond defers the door to a session on the
+        Windows box — backlog, "The per-process key's Windows door". `RandomState` cannot serve — it caches one
         `(k0, k1)` per thread and afterwards increments `k0`, so any
         number of words carries 128 bits, and they would share the master
         the string seed is drawn from, which `rfc/model/strings.md`
@@ -110,9 +140,9 @@ sit on the steps they bind.
       claim is made.
 - [ ] S27.3 The ladder draws under the key, and its slots are salted for
       strings as well as integers
-      done: two tables holding distinct storage hold different salts;
-        `draw_salt` derives from the storage address and the per-process
-        key; a reseeded table's string slot is the salted mix of the
+      done: the drawn salt differs from `hash_bytes` of the bare storage
+        address in both hash builds; `draw_salt` derives from the storage
+        address and the per-process key; a reseeded table's string slot is the salted mix of the
         cached hash in `slot_hash` and `entry_slot_hash` both;
         `strong_hash` takes the key together with the salt; both
         functions dispatch on the tag with the byte-hashing branch
@@ -203,19 +233,6 @@ sit on the steps they bind.
       `CopiesMade::record`'s doc, and the stated rationale of
       `entity/tests/the_flood_state_a_copy_inherits.rs`. The `maps.md`
       amendment goes to the `rfc` repo in the same push.
-- [ ] S27.6 `sever_entries` unlinks the holes it makes
-      done: after a sever no chain reaches a hole, pinned by a test that
-        inserts into a severed table
-      tier: T1 · role: —
-      Found in passing while the plan was written (rule 3). `remove`
-      unlinks and `sever_entries` does not, so a severed table's chains
-      still run through its holes and an insert's `chain_len` counts
-      them. Inert today, because nothing inserts into a severed table;
-      with rung three it becomes a refusal of a legal insert the day a
-      map's teardown leaves one insertable. Fixed rather than recorded:
-      `dev/WORKFLOW.md` forbids a note about an unfixed defect anywhere
-      in `dev/`, this repository being public.
-
 What the stage does not do: no map class and no array-key content hash;
 no error raise, the crate having no error channel, so the third outcome
 dead-ends inside the crate until the exceptions work; no long-key slot,
@@ -328,6 +345,11 @@ stage on 2026-08-16 because the three are one dependency chain.
   HighwayHash-64 behind a length threshold `rfc/model/strings.md` says is
   unmeasured. Blocked on that measurement, and it belongs with the
   strings work rather than the table's.
+- [ ] **The per-process key's Windows door.** S27.1 lands unix-only,
+  `#[cfg(not(unix))]` a `compile_error!` naming this gap, so the
+  Windows build refuses until a session on the Windows box adds the
+  door (`BCryptGenRandom` or an equivalent OS draw) and runs the gate
+  there. Deferred by Edmond, 2026-08-17.
 - [ ] **No ABI entry creates or mounts an arena.** `LLContext` is
   `#[repr(C)]` with one public pointer and a null context is legal, so an
   external caller can build one and reach the store barrier; what it
