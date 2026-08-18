@@ -415,9 +415,13 @@ both arms are measured back to back in one session.
 ## Files that must stay untracked
 
 - `AUDIT.md` — the audit findings report. **This repository is
-  public**; a list of unpatched defects must not be published. Nothing
-  in `dev/` may reference an unfixed finding either. Fixed ones are
-  fine, and are described in commit messages.
+  public**; a list of unpatched exploitable defects must not be
+  published, and nothing in `dev/` may reference an unfixed audit
+  finding. Fixed ones are fine, and are described in commit messages.
+  The boundary (ruled 2026-08-18, over `dev/RC_WALK_CRITICAL_REVIEW.md`):
+  an architectural debt the code already names in its own comments — a
+  missing driver, an unbounded backlog — may be tracked and cited; what
+  stays out is any finding the code does not admit to openly.
 - `.idea/`
 
 ## Related repository
