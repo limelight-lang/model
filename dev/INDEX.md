@@ -608,6 +608,14 @@ diagrams, the grouping algorithm, and every collector structure with
 its per-row and per-edge cost, including what stage S28 changes. The
 RFC stays normative; these two describe, dated 2026-08-18.
 
+`dev/design/pure-destructors.md` — Edmond's pure-destructor proposal
+analyzed, 2026-08-18: the purity ladder, what the runtime already
+banks, the five owner-bound races, and the hand-off drain the
+proposal soundly buys. `dev/design/owned-slots-and-the-walk.md` maps
+the designed birth-count and unique-ownership pair and the
+compositions between all three. Analysis, not design; the RFC stays
+normative, and the backlog line in `PLAN.md` is the owner.
+
 ## Traps
 
 `dev/POSTMORTEM.md` — benchmarking against a stale baseline

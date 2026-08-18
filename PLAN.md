@@ -213,6 +213,16 @@ own checkbox.
   designed 2026-08-17) — gated on a Phase D measurement of the share of
   dynamic publications with compiler-provable targets; the move rule
   (copy, barrier, or a never-moved proof) is the open design question.
+- [ ] **Pure destructors, and the hand-off drain** — proposed by
+  Edmond 2026-08-18, analyzed the same day in
+  `dev/design/pure-destructors.md` through three lenses and two Critic
+  rounds. The runtime-only step (the specialized P0 dispose and the
+  raw-sever drain arm) needs no ruling and no compiler; the hand-off
+  drain waits on the residual-duties and tail-bound questions the
+  analysis names; the compiler tiers wait on the child-release-order
+  ruling. The composition with the ownership pair — including the
+  fast class that can block its own memory return — is
+  `dev/design/owned-slots-and-the-walk.md`.
 - [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2
   transition waits on one — `dev/DECISIONS.md`, 2026-08-13, which also
   says what to confirm against `arrays.md` before opening it.
