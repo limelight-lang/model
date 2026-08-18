@@ -621,6 +621,12 @@ granularity ruling landed the same day (`dev/DECISIONS.md`).
 Status: closed, and no pre-D step can change the design's closed
 status — pre-D work is instrument preparation (the graded corpus
 scan, the census channel list, the summary-language question).
+Reading aids, dated 2026-08-18: `dev/design/proof-horizon-lowering.md`
+— the lattice cascade, a borrow's life, the horizon table, one
+function lowered both ways — and
+`dev/design/proof-horizon-structures.md` — the compiler-side and
+instrument structures, the runtime non-change table, the chain
+invariant and shadow lowering drawn.
 
 `dev/design/pure-destructors.md` — Edmond's pure-destructor proposal
 analyzed, 2026-08-18: the purity ladder, what the runtime already
