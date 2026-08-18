@@ -608,14 +608,17 @@ diagrams, the grouping algorithm, and every collector structure with
 its per-row and per-edge cost, including what stage S28 changes. The
 RFC stays normative; these two describe, dated 2026-08-18.
 
-`dev/design/proof-horizon.md` — Edmond's algorithm, 2026-08-18: local
-references pay nothing where compiler proofs hold (anchored borrows,
-Lean-style call summaries) and pay wholesale only at proof horizons —
-in form A the payment is an ordinary retain, so the runtime and the
-walk are untouched and the whole cost is compiler-side. Successor to
-the stack-exit epoch model (`docs/history/stack-exit-epoch-gc-2026-08-18.md`,
-superseded; its five-axis review is `dev/STACK_EXIT_EPOCH_GC_REVIEW.md`).
-A Critic round is owed before any step exists.
+`dev/design/proof-horizon.md` — Edmond's algorithm, 2026-08-18: a
+local is owned (counted, today's pair) or an anchored borrow paying
+nothing while compiler proofs hold, promoted to owned by an ordinary
+retain at proof horizons; the collector code is untouched and the
+cost is compiler-side, with the ack-budget dependency named in the
+document. Successor to the stack-exit epoch model
+(`docs/history/stack-exit-epoch-gc-2026-08-18.md`, superseded; its
+five-axis review is `dev/STACK_EXIT_EPOCH_GC_REVIEW.md`). Critic
+rounds 1 and 2 ran 2026-08-18 and are recorded in the document;
+status: closed pending the Phase D census channels it names, pre-D
+work limited to the corpus scan and the summary language.
 
 `dev/design/pure-destructors.md` — Edmond's pure-destructor proposal
 analyzed, 2026-08-18: the purity ladder, what the runtime already

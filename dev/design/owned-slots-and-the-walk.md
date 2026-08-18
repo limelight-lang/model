@@ -66,6 +66,14 @@ discriminant that keeps the collector from reading the sentinel as a
 count (a bit of the retired condemned byte, or a reserved value;
 undecided).
 
+A cross-design constraint from `proof-horizon.md` ("At the horizon"):
+a proof-horizon borrow of a unique entity cannot be promoted, because
+the promotion retain would write into the occupancy sentinel and
+protect nothing. A horizon-reaching borrow therefore demotes the
+uniqueness proof — the entity compiles as counted — or the borrow is
+owned from birth; the summary language carries the constraint across
+compilation units.
+
 ## Composition with purity
 
 | Combination | What it yields |
