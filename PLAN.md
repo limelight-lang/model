@@ -234,7 +234,22 @@ and the one price outside the crate — the Windows build S27.1's
       observable changes here; the worth of the step is that S27.5 lands
       as one behaviour change, which holds only because the replay
       channel is part of the same signature pass.
-- [ ] S27.5 Rung three, and the copy that must survive it
+- [x] S27.5 Rung three, and the copy that must survive it — closed
+      2026-08-18 in two commits, `45c2781` (the rung) and `74719db` (the
+      copy). Each copy test was seen red first: the salt inversion and
+      the chain bound against the tree without the redraw, the sizing
+      against a copy taking the source's slot count, the reseeded-empty
+      arm against a copy that presizes nothing. Whole gate green at four
+      threads — 514 rc-walk, 489 rc-trace, 514 folding, 520 and 495 with
+      the journal, both release builds, `fmt --check` clean.
+      handoff: the copy path is `new_empty_copy` → `adopt_flood_state` →
+        `presize_for_replay` → `redraw_salt`, in that order, because a
+        salt is drawn from a storage address. Miri clean on what the
+        commit touched: `array::table` without the flood ladder 32/0 and
+        the copy tests 25/0. The ladder's own module is the stage's debt
+        below — it outran a 50-minute and a 90-minute slice, and its
+        per-test run is what says whether that is one test or all of
+        them.
       done: a table whose ladder is spent refuses an insert that trips a
         trigger, with every entry unchanged, on S27.4's third outcome; a
         copy of that table still copies; no chain in a copy exceeds
@@ -303,6 +318,20 @@ and the one price outside the crate — the Windows build S27.1's
       `CopiesMade::record`'s doc, and the stated rationale of
       `entity/tests/the_flood_state_a_copy_inherits.rs`. The `maps.md`
       amendment goes to the `rfc` repo in the same push.
+- [ ] S27.7 The flood ladder's module under Miri, or the reason it is
+      not run there
+      done: `array::table::tests::the_flood_ladder` reports a result
+        under Miri and the wall time is recorded here, or the tests that
+        cannot be afforded there carry `#[cfg_attr(miri, ignore)]` with
+        the measured cost as the reason and the rest of the module runs
+      tier: T1 · role: —
+      Raised by the stage's own gate. The module was written for S27.5's
+      first half and never run under Miri; a whole-module slice outran
+      50 minutes and then 90 at two threads, both killed, so no number
+      exists yet. The suspect is the fixture rather than the subject:
+      `strong_slot_family` searches for keys whose keyed byte hash
+      agrees in the mask, and every candidate is a string entity
+      allocated and hashed through the interpreter.
 What the stage does not do: no map class and no array-key content hash;
 no error raise, the crate having no error channel, so the third outcome
 dead-ends inside the crate until the exceptions work; no long-key slot,
@@ -415,6 +444,14 @@ stage on 2026-08-16 because the three are one dependency chain.
   HighwayHash-64 behind a length threshold `rfc/model/strings.md` says is
   unmeasured. Blocked on that measurement, and it belongs with the
   strings work rather than the table's.
+- [ ] **Doc links that point at private items.** Public documentation
+  links `pub(crate)` and private names — `Table::empty` to
+  `Table::reseed`, `InsertOutcome::RefusedByLadder` to `CHAIN_LIMIT` —
+  which `rustdoc` warns about unless private items are documented too.
+  Crate-wide practice rather than one site, so it is a ruling and not a
+  fix: either the links stay and `--document-private-items` becomes how
+  the crate's documentation is built, or they become plain names. Raised
+  by S27's Code Reviewer, 2026-08-18.
 - [ ] **The per-process key's Windows door.** S27.1 lands unix-only,
   `#[cfg(not(unix))]` a `compile_error!` naming this gap, so the
   Windows build refuses until a session on the Windows box adds the

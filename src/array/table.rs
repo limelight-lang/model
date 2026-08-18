@@ -72,8 +72,9 @@ pub enum InsertOutcome {
     /// The storage could not grow.
     RefusedForMemory,
     /// The ladder's terminal rung: a trigger tripped with no rebuild
-    /// left — the table is escalated, and the walk met either a chain
-    /// past [`CHAIN_LIMIT`] or [`EQUAL_HASH_LIMIT`] equal identities.
+    /// left — the table is escalated, and the walk met either
+    /// [`CHAIN_LIMIT`] chained entries or [`EQUAL_HASH_LIMIT`] equal
+    /// identities.
     /// Only an admission is answered this; a replay is admitted
     /// ([`InsertKind`]).
     RefusedByLadder,
@@ -199,9 +200,9 @@ fn entries_offset(nslots: usize) -> usize {
 /// The salt a table's storage address yields under the per-process key,
 /// remapped away from zero so that a drawn salt cannot read as the
 /// unsalted state. [`Table::draw_salt`] and [`Table::redraw_salt`]
-/// differ in when they call this and in nothing else, which is what
-/// keeps the derivation one place: the argument for it, and what it
-/// does not buy, is on `draw_salt`.
+/// differ in when they call this, never in what it computes, which is
+/// what keeps the derivation one place: the argument for it, and what
+/// it does not buy, is on `draw_salt`.
 #[inline]
 fn salt_from(head: &StorageHead) -> u64 {
     let drawn = strong_hash(
@@ -450,7 +451,7 @@ impl Table {
         self.flags = (self.flags & !TABLE_FLOOD_STATE) | (source.flags & TABLE_FLOOD_STATE);
     }
 
-    /// Live entries: holes are excluded, unlike in [`used`](Self::used).
+    /// Live entries: holes are excluded, unlike in [`StorageHead::used`].
     #[inline]
     pub fn len(&self) -> usize {
         self.live
@@ -954,7 +955,7 @@ impl Table {
     fn rebuild_index(&mut self, head: &StorageHead) {
         unsafe { std::ptr::write_bytes(Self::slots(head), 0xFF, head.nslots()) };
         for k in 0..head.used() {
-            // Holes are skipped rather than linked: a hole's `key` field
+            // Holes are skipped rather than linked: a hole's `key_word`
             // is a sentinel, not a string, so reading bytes through it in
             // strong mode would dereference 1.
             if self.entry(head, k).is_hole() {
@@ -1392,7 +1393,7 @@ impl Table {
     /// against (`rfc/model/arrays-hashtable.md`, "Complete enumeration").
     ///
     /// The dense prefix `0..used` with holes skipped is that enumeration
-    /// here, and the hole marker lives in `key`, outside the sixteen
+    /// here, and the hole marker lives in `key_word`, outside the sixteen
     /// bytes the store barrier writes, so an ordinary value store cannot
     /// destroy it.
     #[cfg(test)]

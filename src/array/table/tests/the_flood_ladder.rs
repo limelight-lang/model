@@ -118,9 +118,9 @@ fn an_integer_flood_fires_the_first_rung_and_the_drawn_salt_scatters_it() {
 
 /// The salt is a secret, not a checksum: derived from the storage
 /// address under the per-process key, so holding the artifact — which
-/// under `hash-folding` contains the seed — prices no salt. The bare
-/// address hash is exactly what the old derivation produced, so this
-/// is the one comparison that can go red on the defect.
+/// under `hash-folding` contains the seed — prices no salt. The seed's
+/// hash of the bare address is the number an artifact-holder computes,
+/// so it is the one comparison that can go red on the defect.
 #[test]
 fn the_drawn_salt_is_not_the_bare_address_hash() {
     let _g = crate::memory::block_pool::test_guard();
@@ -403,13 +403,10 @@ fn strong_slot_family(m: &Owned, n: usize, tag: &str) -> Vec<String> {
     found
 }
 
-/// Insert an admission directly, bypassing the harness: the harness
-/// panics on [`InsertOutcome::RefusedByLadder`] by design, and these
-/// tests are about that outcome.
+/// The shared raw insert (`array::testing::raw_insert`) over the
+/// wrapper these tests hold, so a call reads like every other one here.
 fn raw_insert(m: &mut Owned, kind: InsertKind, key: Key, value: Value) -> InsertOutcome {
-    let category = m.category();
-    let (table, head) = unsafe { crate::array::entity::as_table_mut(m.0) };
-    table.insert(head, category, kind, key, value)
+    unsafe { crate::array::testing::raw_insert(m.0, kind, key, value) }
 }
 
 /// A table with both rebuilds spent and one forged chain standing one
@@ -440,10 +437,11 @@ fn spent_ladder_with_a_chain(m: &mut Owned) -> (Vec<*mut LLString>, String) {
 
 /// Rung three: a chain trip on a table whose ladder is spent refuses
 /// the admission, with every entry, count and key exactly as it was —
-/// including the rung state, which a refusal spends nothing of. This
-/// replaces the state the code had before, where `reseed` and
-/// `escalate` both returned early once the table was strong and the
-/// chain grew without bound forever.
+/// including the rung state, which a refusal spends nothing of.
+///
+/// Without the terminal rung `reseed` and `escalate` both return early
+/// on a strong table, the admission is taken, and the chain grows
+/// without bound.
 #[test]
 fn a_spent_ladders_chain_trip_refuses_the_admission_and_changes_nothing() {
     let _g = crate::memory::block_pool::test_guard();

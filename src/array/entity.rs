@@ -236,10 +236,6 @@ pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) 
                 return false;
             }
             InsertOutcome::RefusedByLadder => {
-                // The ruling's proof that migration is out of the
-                // terminal rung's reach: dense positions on an unsalted
-                // staging table index by value into distinct slots, so
-                // no trigger can fire — and a replay is exempt besides.
                 debug_assert!(
                     false,
                     "dense positions on an unsalted staging table cannot fire a trigger"

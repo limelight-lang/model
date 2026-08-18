@@ -22,11 +22,12 @@
 //! bijectively** (`rfc/model/maps.md`, "What the flood ladder becomes":
 //! every secret the ladder draws comes from this key):
 //!
-//! | consumer | use |
-//! |---|---|
-//! | `array/table.rs`, `draw_salt` | the salt: a keyed hash of the storage address under this key |
-//! | `array/table.rs`, `strong_hash` | the escalated hash: keyed by this key together with the table's salt |
-//! | the long-key function, when it arrives | all 32 bytes as its 256-bit key (`rfc/model/strings.md`, "Seeding") |
+//! - `array/table.rs`, `salt_from` — the salt: a keyed hash of the
+//!   storage address under this key, taken by both draws;
+//! - `array/table.rs`, `strong_hash` — the escalated hash: keyed by
+//!   this key together with the table's salt;
+//! - the long-key function, when it arrives — all 32 bytes as its
+//!   256-bit key (`rfc/model/strings.md`, "Seeding").
 //!
 //! Consumers take the key through [`folded`] — the whole key compressed
 //! to the 64-bit width their keyed primitive takes — rather than picking
@@ -34,7 +35,7 @@
 //! recovered `folded` does not hand back the 256-bit key the long
 //! function will own (folding is a 256→64 compression). This is not a
 //! claim of one-wayness: the short function's keyed primitive
-//! ([`array/table.rs`], `strong_hash`) is a placeholder invertible in
+//! (`array/table.rs`, `strong_hash`) is a placeholder invertible in
 //! its key, so a timing oracle recovers the salt and through it
 //! `folded`. `rfc/model/strings.md` ("Neither position is a defence")
 //! concedes exactly that — a per-process key raises hash flooding from

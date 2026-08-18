@@ -26,7 +26,7 @@ fn enumeration_is_complete_over_the_dense_prefix_and_skips_holes() {
     assert_eq!(seen.len(), m.len());
 }
 
-/// The reason the hole marker lives in `key`: a store barrier writes
+/// The reason the hole marker lives in `key_word`: a store barrier writes
 /// all sixteen bytes of a `Value`, so a marker inside it would be
 /// erased and the tracer would then walk a dead element.
 #[test]

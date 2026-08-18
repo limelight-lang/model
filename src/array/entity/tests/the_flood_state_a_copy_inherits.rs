@@ -10,17 +10,6 @@
 
 use super::*;
 
-/// `Table::insert` reached without the harness, which the terminal
-/// rung's tests need for two reasons: the harness panics on a ladder
-/// refusal rather than reporting it, and a fixture builds its forged
-/// chain as a replay so that the build cannot spring the trigger it is
-/// about to test (`array/table/tests/the_flood_ladder.rs`).
-fn raw_insert(a: *mut LLArray, kind: InsertKind, key: Key, value: Value) -> InsertOutcome {
-    let category = unsafe { category_of(a) };
-    let (table, head) = unsafe { as_table_mut(a) };
-    table.insert(head, category, kind, key, value)
-}
-
 /// Spend both rebuilds: string keys whose *full* hashes agree fire the
 /// equal-hash trigger, and escalation draws the salt on its way, so
 /// the table comes back strong and salted. Forged rather than found —
@@ -329,20 +318,28 @@ fn a_copy_of_a_table_that_refuses_an_admission_still_copies() {
         // As replays: the build must not spring the rung it is here to
         // observe, and a stray collider sharing the slot would put the
         // last of them over the trigger.
-        assert!(matches!(
-            raw_insert(src, InsertKind::Replay, Key::Int(*k), Value::int(i as i64)),
-            InsertOutcome::Added
-        ));
+        let outcome = unsafe {
+            crate::array::testing::raw_insert(
+                src,
+                InsertKind::Replay,
+                Key::Int(*k),
+                Value::int(i as i64),
+            )
+        };
+
+        assert!(matches!(outcome, InsertOutcome::Added));
     }
 
     assert!(
         matches!(
-            raw_insert(
-                src,
-                InsertKind::Admission,
-                Key::Int(tripper[0]),
-                Value::int(-1)
-            ),
+            unsafe {
+                crate::array::testing::raw_insert(
+                    src,
+                    InsertKind::Admission,
+                    Key::Int(tripper[0]),
+                    Value::int(-1),
+                )
+            },
             InsertOutcome::RefusedByLadder
         ),
         "a chain trigger met past both rebuilds refuses an admission"
@@ -399,13 +396,15 @@ fn a_copy_of_a_table_that_refuses_an_admission_still_copies() {
 ///
 /// The source here holds 64 forged keys agreeing in eight bits of
 /// their slot, scattered across the 131072 slots a 40000-entry table
-/// grew, and those 40000 are then unset. A copy sized to the live
-/// count alone brings the eight agreeing bits down to its whole mask
-/// and merges the 64 into one chain; both rung bits arrive spent and
-/// the replay is exempt from the refusal, so nothing rebuilds it, and
-/// the chain is heritable one copy to the next. Two things answer it,
-/// and this test cannot tell them apart: the copy presizes to the
-/// source's slot count, and it redraws the salt.
+/// grew, and those 40000 are then unset. The copy is sized by what it
+/// replays, so those eight bits cover its whole mask: under the
+/// source's number the 64 would arrive as one chain, with both rung
+/// bits spent by inheritance and the replay exempt from the refusal,
+/// so nothing rebuilds it and the chain is heritable one copy to the
+/// next. The redraw is what answers that, the copy's salt coming from
+/// its own storage address and re-deriving every slot. The assertion
+/// on the mask below is what keeps a scatter from being the mask's own
+/// doing.
 ///
 /// Seen failing on a chain of 64.
 #[test]
@@ -438,10 +437,16 @@ fn no_chain_in_a_copy_of_a_dense_then_unset_table_reaches_the_trigger() {
     let colliders = escalate_with_equal_hashes(src);
     let family = family_sharing_a_slot(src, FILLER, FORGED);
     for (i, k) in family.iter().enumerate() {
-        assert!(matches!(
-            raw_insert(src, InsertKind::Replay, Key::Int(*k), Value::int(i as i64)),
-            InsertOutcome::Added
-        ));
+        let outcome = unsafe {
+            crate::array::testing::raw_insert(
+                src,
+                InsertKind::Replay,
+                Key::Int(*k),
+                Value::int(i as i64),
+            )
+        };
+
+        assert!(matches!(outcome, InsertOutcome::Added));
     }
 
     for i in 0..FILLER {

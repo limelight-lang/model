@@ -5,14 +5,14 @@
 //!
 //! ```text
 //! +0   hash_or_key  u64   full hash of a string key, or the integer key
-//! +8   key          ptr   string key, tagged in its low three bits;
+//! +8   key_word     usize string key, tagged in its low three bits;
 //!                         0 = integer key, 1 = hole
 //! +16  element      Box   the value; its reserved bytes carry the entry's
 //!                         collision link, a u32 at +28
 //! ```
 //!
 //! Two rules the code here exists to hold. Every write to the element's
-//! second word, and to `key`, is one relaxed atomic store of the width
+//! second word, and to `key_word`, is one relaxed atomic store of the width
 //! the collector loads (`walk::trace_cells`): change one width and change
 //! the other. And every link is an index rather than a pointer, so
 //! promotion copies the storage without fixing anything up.
@@ -29,9 +29,11 @@ pub const NONE: u32 = u32::MAX;
 /// string cap, and checked through one gate rather than cast at each use.
 pub const MAX_ENTRIES: usize = (NONE - 1) as usize;
 
-/// `key` values that are not a pointer. Both sit below
-/// [`KEY_SENTINEL_LIMIT`], where no tagged pointer can land.
+/// An integer key, whose value is in `hash_or_key`. It and
+/// [`KEY_HOLE`] are the key words that are not a pointer, and both sit
+/// below [`KEY_SENTINEL_LIMIT`], where no tagged pointer can land.
 pub(crate) const KEY_INT: usize = 0;
+/// A removed entry; the state it stands for is on [`Entry::is_hole`].
 pub(crate) const KEY_HOLE: usize = 1;
 
 /// The key word's encoding, one for every owner (`rfc/model/maps.md`,

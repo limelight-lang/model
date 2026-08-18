@@ -160,7 +160,8 @@ versions live in `docs/history/`, marked at the top.
   trips is refused rather than chained (`rfc/model/maps.md`, "Rung three,
   refusal"). Every secret it draws comes from `hash/process_key.rs`. A
   COW copy takes the rung bits, draws a salt of its own from its own
-  storage, and is presized to the entries it replays. It allocates no entity and calls no store
+  storage, and is presized to the entries it replays. It allocates no
+  entity and calls no store
   barrier: both are `element.rs`'s, and `Table::insert` hands the
   displaced element back for that layer to release (S6.1).
   Storage is a **buffer-arena** chunk in the two long-lived categories,

@@ -162,6 +162,26 @@ pub(crate) unsafe fn at(a: *mut LLArray, i: usize) -> Option<Value> {
     vector.get(head, i)
 }
 
+/// `Table::insert` with the kind named and the outcome handed back
+/// whole, for the tests [`insert`] cannot serve: the ladder's refusal,
+/// which that harness turns into a panic, and a fixture that has to
+/// build its forged chain as a replay so the build cannot spring the
+/// trigger it is about to test.
+///
+/// # Safety
+/// As [`table`].
+#[inline]
+pub(crate) unsafe fn raw_insert(
+    a: *mut LLArray,
+    kind: InsertKind,
+    key: Key,
+    value: Value,
+) -> InsertOutcome {
+    let category = unsafe { category_of(a) };
+    let (table, head) = unsafe { as_table_mut(a) };
+    table.insert(head, category, kind, key, value)
+}
+
 /// Append to a mixed vector.
 ///
 /// # Safety
