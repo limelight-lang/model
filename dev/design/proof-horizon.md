@@ -316,17 +316,26 @@ summary-friendly types in provable scopes; counted classes are the
 ones crossing reflection, callbacks and suspensions, where analysis
 costs more than the pairs it removes.
 
-Granularity — open question 4, narrowed by rounds 1–3. Per-site
-deviation from the class default is unauditable until two
-instruments exist together, neither sufficient alone: a **per-site
-certificate** — anchor chain, summary IDs, horizon set per entry —
-whose independent checker soundly warrants the checkable surface
-(chain well-formedness, syntactic-horizon coverage, summary-version
-freshness) and cannot warrant may-alias completeness, which any
-checker would inherit from the shared oracle; and the shadow-count
-lowering, whose dynamic cross-check is the only detector for what
-the certificate cannot see. The recommendation on record: class-only
-until both exist. The ruling is Edmond's.
+Granularity — **ruled by Edmond, 2026-08-18** (`dev/DECISIONS.md`,
+"proof-horizon granularity"). The class bit stays the emitter's
+default; on top of it, a closed set of **always-provable elision
+rules** applies at any site in either regime, the way Swift ARC's
+guaranteed optimizations do — rules whose soundness follows from the
+language semantics alone, with no summary, no heuristic and no
+cross-unit assumption, a redundant pair inside a proven horizon-free
+region being the model case. A counted class's local may lose its
+pair under such a rule. Summary-driven or heuristic per-site
+deviation stays barred until two instruments exist together, neither
+sufficient alone: a **per-site certificate** — anchor chain, summary
+IDs, horizon set per entry — whose independent checker soundly
+warrants the checkable surface (chain well-formedness,
+syntactic-horizon coverage, summary-version freshness) and cannot
+warrant may-alias completeness, which any checker would inherit from
+the shared oracle; and the shadow-count lowering, whose dynamic
+cross-check is the only detector for what the certificate cannot
+see. The ruling's standing constraint: no rule of either kind
+introduces a write barrier or any other mutator work beyond the
+program's own code.
 
 ## The two forms
 
@@ -552,10 +561,12 @@ until then.
    — one question, and it shapes the IR early.
 3. The corpus names for the scan, owed by Edmond; the criterion —
    deployed applications with their vendor trees — is recorded.
-4. The hybrid's granularity: class-only, or per-site deviation
-   behind the certificate-plus-shadow-lowering gate. The
-   recommendation on record is class-only until both instruments
-   exist; the ruling is Edmond's.
+4. ~~The hybrid's granularity~~ — ruled by Edmond, 2026-08-18: the
+   class bit is the default, always-provable Swift-style elision is
+   lawful per site in both regimes, fallible per-site deviation
+   stays behind the certificate-plus-shadow-lowering gate, and no
+   rule introduces a write barrier (`dev/DECISIONS.md`,
+   "proof-horizon granularity"; the hybrid section carries it).
 5. The family-wide borrow-analysis ruling: one IR-level borrow
    analysis parameterized by the invalidation set, serving unique
    ownership and this design — asked by the five-axis review, not

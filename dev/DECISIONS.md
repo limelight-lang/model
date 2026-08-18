@@ -4319,3 +4319,30 @@ Re-open only if the Phase D publish census — the instrument that also
 prices the birth count and unique ownership — shows post-construction
 publishes into multiply-referenced, transitively pure object classes
 dominating the barrier bill.
+
+## 2026-08-18 — proof-horizon granularity: the class bit is policy, always-provable elision is lawful in both regimes, and nothing introduces a write barrier
+
+Ruled by Edmond, closing open question 4 of
+`dev/design/proof-horizon.md` after three Critic rounds attacked both
+readings.
+
+**Decided:** whether a class's locals are counted or enter the borrow
+lattice stays a class property — the emitter's default. On top of it,
+a closed set of **always-provable elision rules** applies at any site
+in either regime, the way Swift ARC's guaranteed optimizations do:
+rules whose soundness follows from the language semantics alone, with
+no summary, no heuristic and no cross-unit assumption — a redundant
+pair inside a region the analysis proves horizon-free is the model
+case. A counted class's local may lose its pair under such a rule; a
+horizon class works as designed. Summary-driven or heuristic per-site
+deviation stays barred until the certificate-plus-shadow-lowering
+audit exists (the document's hybrid section).
+
+**The standing constraint:** no rule of either kind may introduce a
+write barrier or any other mutator work beyond the program's own
+code — the GC philosophy applied to the compiler's output.
+
+**Why:** the Critic rounds showed unaudited per-site deviation is
+indistinguishable from a miscompile at runtime; Edmond's cut is that
+the danger lives in *fallible* proofs, so the lawful per-site class
+is exactly the infallible ones.

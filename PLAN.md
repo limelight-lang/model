@@ -231,7 +231,8 @@ own checkbox.
   graded corpus scan, the census channel list owed to
   `dev/DECISIONS.md` before the census is specified, the
   summary-language question. Three Critic rounds are recorded in
-  the document; the corpus names and the granularity,
+  the document; the granularity ruling landed 2026-08-18
+  (`dev/DECISIONS.md`), and the corpus names and the
   family-borrow-analysis and summary-language rulings are Edmond's.
 - [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2
   transition waits on one — `dev/DECISIONS.md`, 2026-08-13, which also
