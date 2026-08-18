@@ -452,3 +452,47 @@ php-src `zend_alloc.c`, `zend_alloc_sizes.h`, `zend_gc.c`,
 `zend_object_handlers.c`; ruby `gc/default/default.c`; LuaJIT
 `lj_alloc.c`, `lj_gc.c`; CPython `pycore_obmalloc.h` and the garbage
 collector's internal docs.
+
+## 2026-08-18 — the uncounted-partition literature, swept for the stack-bit question
+
+Not a repository reading: a web sweep over papers and system
+documentation, done while ruling on the uncounted-bit proposal (the
+ruling is `dev/DECISIONS.md`, same date). Nothing here was read at a
+pinned revision; every claim keeps its source and is re-verified before
+it steers a design.
+
+- Deutsch & Bobrow 1976, deferred RC: stack references uncounted, a
+  zero-count table, and the stack question answered by scanning every
+  frame at reconciliation — never by per-object mutator state.
+- Wise & Friedman 1977, and MRB in KL1 (1987–1992): the published
+  one-bit counts mean unique-versus-shared and are deliberately
+  sticky — the bit is never cleared, because a clearable bit cannot
+  survive aliasing; freeing the shared falls to backup tracing.
+- Free-threaded CPython, PEP 703: the closest industrial match to the
+  hybrid — a permanent per-object deferred-refcount flag, stack
+  references skipped, reclamation only by the tracing GC, which walks
+  every thread's frames at collection start.
+- Ulterior RC (Blackburn & McKinley, OOPSLA 2003), RC Immix (2013),
+  LXR (PLDI 2022): counted/traced hybrids partitioned by age or
+  region; stack roots come from the VM's precise enumeration or a
+  conservative scan, never from object bits.
+- Chrome Oilpan and JSC Riptide: a traced heap cohabiting with a
+  counted world; stack roots of the traced side by conservative scan;
+  cross-world edges by tracing through, or by constraint re-marking.
+- Hazard pointers (Michael 2004), epoch reclamation (Fraser 2004,
+  crossbeam), V8 HandleScope, JNI local tables: mutator-announced
+  possession is always per-slot, per-frame or per-thread —
+  single-writer state — precisely because a shared per-object flag
+  collides with multi-frame aliasing.
+- The static family — Joisha ISMM 2007, Rust borrows (RustBelt, POPL
+  2018), Perceus with borrowing, Lobster, Nim ARC/ORC — removes
+  counting where an owner provably covers every borrow: the road
+  `rc-walk.md`'s birth count and unique ownership already walk, with
+  Nim's `.acyclic` partition as the spiritual match for a purity-gated
+  class split.
+
+What targeted searching did not find: any published system using a
+compiler-maintained clearable per-object "a local may hold me" bit as
+the collector's root oracle, under any language restriction. That is
+absence of publication, not proof of impossibility — the impossibility
+argument is the ruling's, in `dev/DECISIONS.md`.

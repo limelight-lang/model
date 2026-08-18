@@ -5,13 +5,14 @@
 //!
 //! ```text
 //! +0   hash_or_key  u64   full hash of a string key, or the integer key
-//! +8   key          ptr   string key; 0 = integer key, 1 = hole
+//! +8   key_word     usize string key, tagged in its low three bits;
+//!                         0 = integer key, 1 = hole
 //! +16  element      Box   the value; its reserved bytes carry the entry's
 //!                         collision link, a u32 at +28
 //! ```
 //!
 //! Two rules the code here exists to hold. Every write to the element's
-//! second word, and to `key`, is one relaxed atomic store of the width
+//! second word, and to `key_word`, is one relaxed atomic store of the width
 //! the collector loads (`walk::trace_cells`): change one width and change
 //! the other. And every link is an index rather than a pointer, so
 //! promotion copies the storage without fixing anything up.
@@ -28,12 +29,25 @@ pub const NONE: u32 = u32::MAX;
 /// string cap, and checked through one gate rather than cast at each use.
 pub const MAX_ENTRIES: usize = (NONE - 1) as usize;
 
-/// `key` values that are not a string pointer. Both are below the
-/// alignment of any real `LLString`, so a pointer can never collide.
+/// An integer key, whose value is in `hash_or_key`. It and
+/// [`KEY_HOLE`] are the key words that are not a pointer, and both sit
+/// below [`KEY_SENTINEL_LIMIT`], where no tagged pointer can land.
 pub(crate) const KEY_INT: usize = 0;
-/// Anything above this in the `key` field is a real string pointer, which
-/// is the test a walker makes on the raw word it read.
+/// A removed entry; the state it stands for is on [`Entry::is_hole`].
 pub(crate) const KEY_HOLE: usize = 1;
+
+/// The key word's encoding, one for every owner (`rfc/model/maps.md`,
+/// "The key word gains a tag, for every owner"): a word below this
+/// limit is a sentinel and is tested first; at or above it, the low
+/// three bits carry the key's kind and the pointer is the word with
+/// them off. A reader — the walker included — makes the sentinel test
+/// on the raw word it loaded and masks only what passes it.
+pub(crate) const KEY_SENTINEL_LIMIT: usize = 8;
+/// The low three bits of a tagged key word.
+pub(crate) const KEY_TAG_MASK: usize = 7;
+/// The string kind — the one kind an array produces; a map adds object
+/// `2` and array `3` when it arrives.
+pub(crate) const KEY_TAG_STRING: usize = 1;
 
 /// Where the link sits inside the element's second word: the top four
 /// bytes, which is the Box's reserved offset +12 and the entry's +28. The
@@ -57,10 +71,12 @@ pub struct Entry {
     /// The full 64-bit hash for a string key, or the integer key itself.
     /// The collector never reads it, so it is written plainly.
     pub hash_or_key: u64,
-    /// String key, or [`KEY_INT`] / [`KEY_HOLE`]. Raw rather than
-    /// `Option<NonNull<…>>` because the two sentinels carry state that an
-    /// `Option` cannot.
-    pub key: *mut LLString,
+    /// The key word: a tagged string pointer, or [`KEY_INT`] /
+    /// [`KEY_HOLE`]. An integer rather than a pointer type, because the
+    /// word is never a dereferenceable address — the tag is in it — and
+    /// the sentinels carry state no `Option` could; the pointer edge is
+    /// [`string_key`](Self::string_key) alone.
+    pub key_word: usize,
     /// The element, and the chain link in its reserved bytes. Private:
     /// a flat assignment would publish zeroed reserved bytes over the
     /// link, and zero is a legal entry index rather than an end of chain,
@@ -74,22 +90,30 @@ impl Entry {
     /// compaction. Iteration, the tracer and every lookup skip it.
     #[inline]
     pub fn is_hole(&self) -> bool {
-        self.key as usize == KEY_HOLE
+        self.key_word == KEY_HOLE
     }
 
     /// True when the key is an integer, whose value is in `hash_or_key`.
     #[inline]
     pub fn is_int_key(&self) -> bool {
-        self.key as usize == KEY_INT
+        self.key_word == KEY_INT
     }
 
-    /// The string key, or null for an integer key or a hole.
+    /// The string key, or null for an integer key or a hole. The tag
+    /// comes off here and goes on in
+    /// [`set_string_key`](Self::set_string_key), nowhere else.
     #[inline]
     pub fn string_key(&self) -> *mut LLString {
-        if (self.key as usize) <= KEY_HOLE {
+        let word = self.key_word;
+        if word < KEY_SENTINEL_LIMIT {
             std::ptr::null_mut()
         } else {
-            self.key
+            debug_assert_eq!(
+                word & KEY_TAG_MASK,
+                KEY_TAG_STRING,
+                "an array produces string keys only"
+            );
+            (word & !KEY_TAG_MASK) as *mut LLString
         }
     }
 
@@ -123,7 +147,7 @@ impl Entry {
     #[inline]
     pub fn set_int_key(&mut self, k: i64) {
         self.hash_or_key = k as u64;
-        self.key = KEY_INT as *mut LLString;
+        self.key_word = KEY_INT;
     }
 
     /// Set a string key. `hash` is the string's **own cached hash**, never
@@ -136,9 +160,13 @@ impl Entry {
     /// caller's ([`Table::insert`](crate::array::table::Table::insert)).
     #[inline]
     pub fn set_string_key(&mut self, s: *mut LLString, hash: u64) {
-        debug_assert!(s as usize > KEY_HOLE, "a string key is a real pointer");
+        debug_assert!(
+            s as usize >= KEY_SENTINEL_LIMIT && s as usize & KEY_TAG_MASK == 0,
+            "a string key is a real 8-aligned pointer: the mask would \
+             otherwise hand back an address inside the previous slot"
+        );
         self.hash_or_key = hash;
-        self.key = s;
+        self.key_word = s as usize | KEY_TAG_STRING;
     }
 
     /// Publish `v` as the element, keeping the chain link this entry
@@ -201,7 +229,7 @@ impl Entry {
     #[inline]
     pub unsafe fn store_key_word(e: *mut Entry, word: u64) {
         unsafe {
-            let at = (&raw mut (*e).key) as *const AtomicU64;
+            let at = (&raw mut (*e).key_word) as *const AtomicU64;
             (*at).store(word, Ordering::Relaxed);
         }
     }

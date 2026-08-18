@@ -13,7 +13,7 @@ use super::*;
 fn an_element_store_keeps_the_link_and_the_key() {
     let mut e = Entry {
         hash_or_key: 0xDEAD_BEEF,
-        key: KEY_INT as *mut LLString,
+        key_word: KEY_INT,
         element: Value::int(1),
     };
 
@@ -40,7 +40,7 @@ fn an_element_store_keeps_the_link_and_the_key() {
 fn a_value_read_out_of_an_entry_has_no_link_in_it() {
     let mut e = Entry {
         hash_or_key: 0,
-        key: KEY_INT as *mut LLString,
+        key_word: KEY_INT,
         element: Value::int(0),
     };
 
@@ -56,7 +56,7 @@ fn a_value_read_out_of_an_entry_has_no_link_in_it() {
 fn making_a_hole_leaves_the_element_and_the_link_alone() {
     let mut e = Entry {
         hash_or_key: 0,
-        key: 0x1000 as *mut LLString,
+        key_word: 0x1000 | KEY_TAG_STRING,
         element: Value::int(0),
     };
 

@@ -23,7 +23,7 @@ use crate::array::entity::{
     LLArray, as_table, as_table_mut, as_vector_mut, category_of, storage_head,
 };
 use crate::array::entry::Entry;
-use crate::array::table::Key;
+use crate::array::table::{InsertKind, InsertOutcome, Key};
 use crate::string::LLString;
 use crate::value::Value;
 
@@ -60,6 +60,12 @@ pub(crate) unsafe fn table<'a>(a: *mut LLArray) -> &'a crate::array::table::Tabl
     unsafe { as_table(a) }.0
 }
 
+/// An admission, answered in the pair shape the assertions were written
+/// against: `None` is the memory refusal, `(added, displaced)` the rest.
+/// A ladder refusal panics rather than folding into `None`: a fixture
+/// that trips the terminal rung must not read as out of memory. A test
+/// about that refusal calls `Table::insert` raw.
+///
 /// # Safety
 /// As [`table`].
 #[inline]
@@ -70,7 +76,12 @@ pub(crate) unsafe fn insert(
 ) -> Option<(bool, Option<Value>)> {
     let category = unsafe { category_of(a) };
     let (table, head) = unsafe { as_table_mut(a) };
-    table.insert(head, category, key, value)
+    match table.insert(head, category, InsertKind::Admission, key, value) {
+        InsertOutcome::Added => Some((true, None)),
+        InsertOutcome::Replaced(old) => Some((false, Some(old))),
+        InsertOutcome::RefusedForMemory => None,
+        InsertOutcome::RefusedByLadder => panic!("the ladder refused an insert in a fixture"),
+    }
 }
 
 /// # Safety
@@ -149,6 +160,26 @@ pub(crate) unsafe fn storage_and_capacity(a: *mut LLArray) -> (*mut u8, usize) {
 pub(crate) unsafe fn at(a: *mut LLArray, i: usize) -> Option<Value> {
     let (vector, head) = unsafe { crate::array::entity::as_vector(a) };
     vector.get(head, i)
+}
+
+/// `Table::insert` with the kind named and the outcome handed back
+/// whole, for the tests [`insert`] cannot serve: the ladder's refusal,
+/// which that harness turns into a panic, and a fixture that has to
+/// build its forged chain as a replay so the build cannot spring the
+/// trigger it is about to test.
+///
+/// # Safety
+/// As [`table`].
+#[inline]
+pub(crate) unsafe fn raw_insert(
+    a: *mut LLArray,
+    kind: InsertKind,
+    key: Key,
+    value: Value,
+) -> InsertOutcome {
+    let category = unsafe { category_of(a) };
+    let (table, head) = unsafe { as_table_mut(a) };
+    table.insert(head, category, kind, key, value)
 }
 
 /// Append to a mixed vector.

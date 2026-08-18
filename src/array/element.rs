@@ -22,7 +22,7 @@ use crate::array::entity::{
     migrate_to_hash, publish_key, storage_head,
 };
 use crate::array::head::StorageTag;
-use crate::array::table::Key;
+use crate::array::table::{InsertKind, InsertOutcome, Key};
 use crate::array::vector::Vector;
 use crate::memory::context::LLContext;
 use crate::refcount::{MemoryCategory, RcHeader};
@@ -230,10 +230,14 @@ unsafe fn write_through(
 /// comes last, so a `__destruct` body it runs finds the slot already
 /// naming the copy.
 ///
-/// **Three refusals report `false`**, each an allocation no reserve
+/// **Four refusals report `false`**. Three are allocations no reserve
 /// funds: the separation's copy, the publication of an arena COW value
 /// or key into a longer-lived array (`escape_copy`, inside
-/// `store_category_barrier`), and the table's growth. All three leave
+/// `store_category_barrier`), and the table's growth. The fourth is the
+/// flood ladder's terminal rung — a trigger tripping with no rebuild
+/// left (`array::table::InsertOutcome`) — and it dead-ends in this
+/// `false` because the crate has no error channel; the catchable error
+/// the design owes it waits on the exceptions work. All four leave
 /// every array unchanged — the slot names the original at its old count,
 /// every table holds the entries it held, and every reference the caller
 /// brought is still the caller's. One state does move on a refused
@@ -301,7 +305,7 @@ pub unsafe fn set(
 /// key, and reading first means an exhausted cursor refuses without
 /// paying for a copy first.
 ///
-/// `false` for [`set`]'s three refusals, and for a fourth that is not an
+/// `false` for [`set`]'s four refusals, and for one more that is not an
 /// allocation: `i64::MAX` has been a key, so no successor exists and the
 /// append refuses rather than wrapping onto a live entry. Every array is
 /// unchanged either way.
@@ -547,8 +551,8 @@ unsafe fn store_into(
     };
 
     let (table, head) = unsafe { as_table_mut(a) };
-    match table.insert(head, category, published_key, v) {
-        None => {
+    match table.insert(head, category, InsertKind::Admission, published_key, v) {
+        InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder => {
             unsafe { give_value_back(category, &v) };
             if let Key::Str(k) = published_key {
                 unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
@@ -556,17 +560,13 @@ unsafe fn store_into(
 
             false
         }
-        Some((added, displaced)) => {
-            if let Some(old) = displaced {
-                unsafe { give_value_back(category, &old) };
-            }
-
-            if !added {
-                // Key ownership: the overwrite arm kept the entry's original key,
-                // so the reference published above goes back.
-                if let Key::Str(k) = published_key {
-                    unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
-                }
+        InsertOutcome::Added => true,
+        InsertOutcome::Replaced(old) => {
+            unsafe { give_value_back(category, &old) };
+            // Key ownership: the overwrite arm kept the entry's original key,
+            // so the reference published above goes back.
+            if let Key::Str(k) = published_key {
+                unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
             }
 
             true
@@ -729,9 +729,10 @@ unsafe fn box_element(
         vector.set(head, position, element)
     } else {
         let (table, head) = unsafe { as_table_mut(a) };
-        match table.insert(head, category, key, element) {
-            Some((_, displaced)) => displaced,
-            None => {
+        match table.insert(head, category, InsertKind::Admission, key, element) {
+            InsertOutcome::Added => None,
+            InsertOutcome::Replaced(old) => Some(old),
+            InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder => {
                 debug_assert!(false, "an overwrite of a present key cannot be refused");
                 // Not `destroy_unpublished`: the barrier above published
                 // this box, and for an arena array that publication is a

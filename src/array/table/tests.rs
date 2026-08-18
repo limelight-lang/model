@@ -32,10 +32,10 @@ impl Owned {
         unsafe { &*crate::array::entity::storage_head(self.0) }
     }
 
+    /// [`crate::array::testing::insert`]'s pair shape, and its panic on a
+    /// ladder refusal.
     fn insert(&mut self, key: Key, value: Value) -> Option<(bool, Option<Value>)> {
-        let category = self.category();
-        let (table, head) = unsafe { crate::array::entity::as_table_mut(self.0) };
-        table.insert(head, category, key, value)
+        unsafe { crate::array::testing::insert(self.0, key, value) }
     }
 
     fn get(&self, key: Key) -> Option<Value> {
@@ -108,6 +108,14 @@ impl Owned {
         let category = self.category();
         unsafe { crate::array::entity::dispose_storage(self.0, category) };
     }
+
+    #[must_use = "the displaced list carries the table's references; dropping it leaks them"]
+    fn sever(&mut self) -> Vec<*mut RcHeader> {
+        let (table, head) = unsafe { crate::array::entity::as_table_mut(self.0) };
+        let mut displaced = Vec::new();
+        table.sever_entries(head, &mut displaced);
+        displaced
+    }
 }
 
 impl std::ops::Deref for Owned {
@@ -177,9 +185,11 @@ mod keys_that_are_strings;
 mod the_append_cursor;
 mod the_flood_ladder;
 mod the_ordered_hash_itself;
+mod what_a_sever_leaves_behind;
 mod what_a_walker_is_shown;
 #[cfg(feature = "rc-walk")]
 mod what_a_walker_reads_during_a_move;
 mod what_a_walker_reads_while_the_storage_is_released;
 mod what_moves_the_entries;
+mod where_the_salt_comes_from;
 mod where_the_storage_comes_from;

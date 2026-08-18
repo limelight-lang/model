@@ -36,11 +36,11 @@
 //! reading and strides `0..used` in that chunk, while an insert writes a
 //! fresh entry's key word plainly, no reader being able to reach an index
 //! above the published count. A count that fell in place would put those
-//! plain writes under the walker, where a half-written key word above
-//! `KEY_HOLE` is a phantom in-edge: the one direction that frees a live
-//! entity. So every operation that lowers the count publishes a different
-//! chunk with it, `Table::move_entries` a fresh one and both `dispose`
-//! bodies a null one.
+//! plain writes under the walker, where a half-written key word at or
+//! above `KEY_SENTINEL_LIMIT` is a phantom in-edge: the one direction
+//! that frees a live entity. So every operation that lowers the count
+//! publishes a different chunk with it, `Table::move_entries` a fresh
+//! one and both `dispose` bodies a null one.
 //!
 //! `Vector::sever_entries` is the one exemption, and it does not
 //! generalise: it empties a component the drain has already confirmed

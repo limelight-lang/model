@@ -8,6 +8,113 @@ never edited or deleted.
 
 ---
 
+## 2026-08-18 — the per-process key is drawn from the OS, in every build, and is not the hash seed
+
+The crate now holds two secrets and they answer different questions.
+`hash/seed.rs`'s seed keys the string hash and is a build constant under
+`hash-folding`, where the compiler needs it while it compiles.
+`hash/process_key.rs` holds 32 bytes drawn from `/dev/urandom` through
+safe `std::fs` at first use, in every build, outside `STAMP` and exempt
+from folding: every secret the flood ladder draws comes from it, and a
+ladder whose salt an artifact-holder can compute defends nothing
+(`rfc/model/maps.md`, "What the flood ladder becomes").
+
+Refused, and recorded because both come back: deriving the ladder's salt
+from the foldable seed, which is what the crate did until 2026-08-17 and
+which `rfc/model/strings.md` forbids for this key; and
+`std::collections::hash_map::RandomState`, which caches one `(k0, k1)`
+per thread and then increments `k0`, so any number of words carries 128
+bits, and those words share the master the string seed is drawn from.
+
+A consumer takes the key whole, as a keyed hash's key, rather than
+slicing words out of it — fixed once in that module's doc for every
+consumer, because `draw_salt`'s own doc refutes the bijective word mix
+the alternative rests on.
+
+The price, paid knowingly: `#[cfg(not(unix))]` is a `compile_error!`, so
+the Windows build refuses until a session on that box adds the door
+(`PLAN.md` backlog). Edmond deferred it 2026-08-17.
+
+## 2026-08-18 — a copy sizes its storage by its own replay
+
+Amends the 2026-08-16 ruling recorded in `PLAN.md` S27.5, which had a
+COW copy presize to the *source's* slot count so that no bucket the
+source kept apart would merge under the copy's narrower mask. The
+copy now takes the chunk its own live count reaches through the growth
+schedule — `cap = pow2ge(live).max(8)`, `nslots = cap * 2`
+(`Table::presize_for_replay`) — and a copy with no live entry takes no
+chunk unless it inherited a drawn rung bit, which needs an address to
+draw a salt from.
+
+The source-width form was withdrawn because a mask cannot supply the
+defence it was bought for. Four families can share a slot, and none of
+them is answered by width: an integer key and a string key in a
+reseeded-but-weak table are scattered by the copy's own drawn salt, a
+string key in an escalated table is re-keyed by it, equal cached hashes
+collide at every width and are the equal-identity trigger's business,
+and a copy with no rung bit has both rebuilds in hand. Where the salt is
+recovered — the timing oracle `rfc/model/strings.md` concedes, or the
+address recycling `Table::draw_salt` names — a colliding set is forged
+against a wide mask as cheaply as against a narrow one, so the two fall
+together there too.
+
+What the withdrawn form cost: a copy of a source grown to 40000 entries
+and then emptied carried 512 KiB of slots behind a handful of live ones;
+`cap` set to exactly the live count made the first insert after every
+copy grow and rebuild; and in the request arena, where nothing is
+reclaimed until the reset, the wide ask was a refusal of the program's
+write rather than a cost. Sizing by the replay inverts the last of those
+— one right-sized chunk instead of every chunk of a doubling replay, all
+of which the arena keeps.
+
+Kept from the withdrawn form: the presize itself. It saves the
+intermediate chunks, and it is what gives a reseeded copy of an emptied
+source the address its salt is drawn from.
+
+## 2026-08-17 — rung one salts every kind's slot, under the per-process key
+
+Amends 2026-08-13, "the flood ladder's two rungs answer different key
+kinds": the rungs still answer different failures — differing
+identities against equal identities — but the first rung's mix now
+covers string slots as well as integer ones, and the salt is drawn as
+a keyed hash of the storage address under the per-process key
+(`src/hash/process_key.rs`) instead of through the foldable seed. Two
+reasons forced it. Under `hash-folding` a cached string hash is a
+build constant, so the old rung rebuilt an offline-built string chain
+into exactly the same chain; and a salt derived from the foldable
+seed is computable by anyone holding a folding artifact. `strong_hash`
+keeps its placeholder construction, now keyed by the process key
+mixed with the table's salt; the HighwayHash long-key slot stays owed
+(`PLAN.md` backlog, "The long-key slot itself"). Rejected: salting
+only at escalation — it leaves the chain rung a no-op for strings.
+Cost: one extra splitmix on a reseeded table's string path,
+unmeasured, and this box cannot resolve an effect that size
+(`dev/BENCHMARKS.md`, noise floor).
+
+## 2026-08-17 — the no-RC research round closes: unique ownership survives it
+
+Edmond's ruling on the 2026-08-16/17 GC research round. What survives
+is in `rfc/model/gc/rc-walk.md`, "The birth count" and "Unique
+ownership": a statically known in-degree written by the factory, and a
+one-owning-slot policy with no count, eager death, and COW
+eligibility. What is rejected: appeal-walk and the published-epoch
+barrier as replacements for rc-walk — the armed barrier costs about
+what the RC pair it removes costs, the win is confined to the idle
+path, and the benefit is bounded by the COW share of publications and
+the epoch duty cycle, both unmeasured; the shared-anchor
+generalization — superseded by the strict unique-owner form, since
+sharing keeps the sealed-topology proof while forfeiting eager death
+and COW eligibility; and the deferred-count window — a missed release
+is unrecoverable by any later scan, because the overwritten value is
+gone, and an understated count lets eager death and the COW uniqueness
+test fire on live shared data. The three sketches
+(`SELECTIVE_RC_WALK.md`, `APPEAL_WALK_GC.md`,
+`NO_RC_PUBLISHED_EPOCH_GC.md`) are deleted with this entry;
+`RC_WALK_CRITICAL_REVIEW.md` stays, its findings being implementation
+debts rather than rejected ideas. Implementation of the surviving pair
+is gated on a Phase D measurement of the provable-target share
+(`PLAN.md`, backlog).
+
 ## 2026-08-16 — the performance case's external comparand is a canary, not a self-authored floor
 
 The strategy is Edmond's: a naive, clean C or C++ loop does the same
@@ -4174,3 +4281,41 @@ no gain over choosing the target.
 **Cost:** Miri never exercises the Windows TLS path, which is the one
 that actually ships here. `-Zmiri-ignore-leaks` is also required, so
 Miri is blind to the leak-shaped findings.
+
+## 2026-08-18 — uncounted objects under a compiler-cleared stack-presence bit: refused
+
+Edmond's proposal, ruled by Sage at full depth the same day, with the
+literature sweep of `dev/RESEARCH.md` (same date) beside it.
+
+One header bit meaning "a stack slot may hold me" cannot be kept sound
+by compiler set and clear alone: clearing requires knowing whether
+another live frame still holds the object, and two independent heap
+loads of one object in sibling frames with adversarial exit order
+defeat every static duty assignment — "some frame holds me" is a
+disjunction, and a disjunction is not cancellative, so removal needs
+the other operands: a per-object holder count, holder enumeration
+(stack maps, a shadow stack, or re-assertion at checkpoints — against
+the central bet that roots are derived, never enumerated), or a static
+at-most-one proof, which is unique ownership and is already designed.
+The counter floor costs exactly today's narrow retain and release (a
+header load plus a 4-byte relaxed store, no RMW — `refcount.rs`), so
+the stack side can never undercut the current scheme.
+
+The heap side falls to a second fact: in rc-walk the refcount **is**
+the write barrier — Phase 3 sees a moved reference only through the
+count, and the exact test balances counts — so an uncounted partition
+must fund a replacement per-publish trace, capping its saving below
+the counted publish while adding a second judgement mode, a hand-back
+channel, weak-nulling round-trips and a promotion rule.
+
+The literature agrees from the other side: every published system that
+lets a mutator announce stack possession uses per-slot, per-frame or
+per-thread state, a scan, or a sticky one-way bit; no clearable
+per-object stack bit is published, and the closest industrial hybrid
+(free-threaded CPython's deferred-refcount flag) pays with whole-frame
+scans at every collection.
+
+Re-open only if the Phase D publish census — the instrument that also
+prices the birth count and unique ownership — shows post-construction
+publishes into multiply-referenced, transitively pure object classes
+dominating the barrier bill.

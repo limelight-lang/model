@@ -424,7 +424,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
     const LAZY: u32 = EntityKind::Lazy as u32;
     const REFERENCE: u32 = EntityKind::Reference as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
-    const KEY_OFFSET: usize = std::mem::offset_of!(crate::array::entry::Entry, key);
+    const KEY_OFFSET: usize = std::mem::offset_of!(crate::array::entry::Entry, key_word);
     const VALUE_OFFSET: usize = crate::array::entry::ELEMENT_OFFSET;
     match kind {
         OBJECT | LAZY => {
@@ -496,14 +496,19 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
 
             for i in 0..used {
                 let at = unsafe { entries.add(i) as *const u8 };
-                // A string key is a counted child; the two sentinels below
-                // it are an integer key and a hole, and neither is a cell.
+                // A string key is a counted child behind a tagged word;
+                // the sentinels below the limit are an integer key and a
+                // hole, and neither is a cell. The child is the masked
+                // pointer, because the collector looks an edge up by the
+                // entity's true address — while `raw` keeps the tag: the
+                // recheck compares this word against a re-read of the
+                // same cell (`array/entry.rs`, the key word's encoding).
                 let key = unsafe { R::ptr(at.add(KEY_OFFSET)) };
-                if key as usize > crate::array::entry::KEY_HOLE {
+                if key as usize >= crate::array::entry::KEY_SENTINEL_LIMIT {
                     visit(Cell {
                         addr: at as usize + KEY_OFFSET,
                         raw: key as u64,
-                        child: key as *mut RcHeader,
+                        child: (key as usize & !crate::array::entry::KEY_TAG_MASK) as *mut RcHeader,
                         shape: CellShape::Pointer,
                     });
                 }

@@ -861,8 +861,7 @@ pub fn buffer_alloc_longlived_payload(size: usize) -> (*mut u8, usize) {
     // The other half of the fault injection at `buffer_ensure_longlived`,
     // and the half a carried array storage takes.
     #[cfg(test)]
-    if FORCE_REFUSE_LONGLIVED.load(std::sync::atomic::Ordering::Relaxed) {
-        REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if longlived_refusal_takes_this_one() {
         return (std::ptr::null_mut(), 0);
     }
 
@@ -887,8 +886,7 @@ pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usiz
     // in 40 before this existed). Named for the one allocation it
     // refuses, so a test using it says which.
     #[cfg(test)]
-    if FORCE_REFUSE_LONGLIVED.load(std::sync::atomic::Ordering::Relaxed) {
-        REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if longlived_refusal_takes_this_one() {
         return std::ptr::null_mut();
     }
 
@@ -990,8 +988,10 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
 /// Makes both long-lived allocations — [`buffer_ensure_longlived`] and
 /// [`buffer_alloc_longlived_payload`] — report exhaustion, which is every
 /// body allocation a `GcHeap` or `LongLived` owner can make
-/// (`memory/routing.rs`). Test-only, and the only deterministic way to
-/// reach a refused carry: see the note at the first of the two.
+/// (`memory/routing.rs`), from the first request on unless
+/// [`SERVE_BEFORE_REFUSING`] holds some back. Test-only, and the only
+/// deterministic way to reach a refused carry: see the note at the first
+/// of the two.
 #[cfg(test)]
 pub(crate) static FORCE_REFUSE_LONGLIVED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -1011,6 +1011,50 @@ pub(crate) static REFUSALS: std::sync::atomic::AtomicUsize = std::sync::atomic::
 #[cfg(test)]
 pub(crate) fn refusals() -> usize {
     REFUSALS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How many long-lived requests the flag serves before it begins
+/// refusing, spent one per request. Zero — the default — refuses the
+/// first, which is what a test aiming at the first allocation of a path
+/// wants.
+///
+/// A test whose subject is a later allocation sets it, so that the
+/// refusal it studies is the one it names. The array copy is why it
+/// exists: it asks for its destination's storage before it asks for its
+/// work list, and a test about the work list stops at the storage
+/// otherwise — passing on assertions that hold either way, which is the
+/// shape `dev/POSTMORTEM.md` records as "a forced-refusal test that
+/// never proved the refusal".
+///
+/// The unit is the injection point rather than the growth: a
+/// [`buffer_ensure_longlived`] that reallocates consults this on its own
+/// way in and again through [`buffer_alloc_longlived_payload`], so it
+/// spends two. A test aiming past an `ensure` counts accordingly.
+///
+/// The test that sets it lowers it again, the count being global to the
+/// process like the flag it qualifies.
+#[cfg(test)]
+pub(crate) static SERVE_BEFORE_REFUSING: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether the injected refusal takes this request, spending one of the
+/// grace count when it does not. Single-threaded by construction: a test
+/// raising the flag owns the process for its scope.
+#[cfg(test)]
+fn longlived_refusal_takes_this_one() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    if !FORCE_REFUSE_LONGLIVED.load(Relaxed) {
+        return false;
+    }
+
+    let grace = SERVE_BEFORE_REFUSING.load(Relaxed);
+    if grace > 0 {
+        SERVE_BEFORE_REFUSING.store(grace - 1, Relaxed);
+        return false;
+    }
+
+    REFUSALS.fetch_add(1, Relaxed);
+    true
 }
 
 /// Free a chunk without building this thread's arena to do it.

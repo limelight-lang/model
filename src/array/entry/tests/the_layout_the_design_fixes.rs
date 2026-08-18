@@ -12,7 +12,7 @@ fn entry_layout_is_the_one_the_design_fixes() {
     assert_eq!(std::mem::size_of::<Entry>(), 32);
     assert_eq!(std::mem::align_of::<Entry>(), 8);
     assert_eq!(std::mem::offset_of!(Entry, hash_or_key), 0);
-    assert_eq!(std::mem::offset_of!(Entry, key), 8);
+    assert_eq!(std::mem::offset_of!(Entry, key_word), 8);
     assert_eq!(std::mem::offset_of!(Entry, element), 16);
     assert_eq!(ELEMENT_OFFSET, std::mem::offset_of!(Entry, element));
 }

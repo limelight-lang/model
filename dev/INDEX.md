@@ -31,10 +31,6 @@ versions live in `docs/history/`, marked at the top.
   indegree baseline, the recommended tracing backend, and its model and
   measurement gates.
 
-- Selective RC research: `dev/SELECTIVE_RC_WALK.md` — an rc-walk extension
-  that omits target counts for compiler-proven, anchor-dominated objects;
-  includes the mixed root equation, sealed-topology rule, edge-cost matrix,
-  escape copying, counterexamples, implementation stages, and decision gate.
 - rc-walk collector side (`rc-walk` builds): `src/collector.rs` — the
   epoch state machine (Phases 1–3: snapshot, walk with the three-way
   classification, judge, condemn, snapshot-compare re-check, verdict
@@ -113,6 +109,15 @@ versions live in `docs/history/`, marked at the top.
   still hashes well and fails nothing else. Zero is never returned —
   it is the string field's "not computed" sentinel.
 
+  `hash/process_key.rs` holds the other secret, and the two must not be
+  confused: 32 bytes drawn from the OS once per process **in every
+  build**, outside `STAMP` and exempt from `hash-folding`, because
+  nothing compiled may depend on them. Every secret the flood ladder
+  draws comes from here (`rfc/model/maps.md`, "What the flood ladder
+  becomes"), and a consumer takes the key whole as a keyed hash's key
+  rather than by words. Unix only so far — the backlog carries the
+  Windows door.
+
   `hash/seed.rs` holds the seed and the `hash-folding` cargo feature.
   Off (the default): the seed is drawn from the OS per process and the
   compiler folds nothing. On: the seed is fixed from `LL_HASH_SEED`,
@@ -165,8 +170,15 @@ versions live in `docs/history/`, marked at the top.
   `table.rs` is the core — lookup, insert, remove, growth by doubling or by
   dropping the holes (one body, `move_entries`, and both into a freshly
   allocated chunk since S13.1: sliding entries inside the published one
-  raced the collector's relaxed loads), and the flood backstop that
-  escalates a table once to a keyed hash over the key bytes. It allocates no entity and calls no store
+  raced the collector's relaxed loads), and the flood backstop, which is
+  a three-rung ladder: a long chain draws the table's salt and rebuilds
+  the index, a second long chain or eight equal identities escalates to a
+  keyed hash over the key bytes, and past both an admission whose trigger
+  trips is refused rather than chained (`rfc/model/maps.md`, "Rung three,
+  refusal"). Every secret it draws comes from `hash/process_key.rs`. A
+  COW copy takes the rung bits, draws a salt of its own from its own
+  storage, and is presized to the entries it replays. It allocates no
+  entity and calls no store
   barrier: both are `element.rs`'s, and `Table::insert` hands the
   displaced element back for that layer to release (S6.1).
   Storage is a **buffer-arena** chunk in the two long-lived categories,
@@ -597,6 +609,20 @@ demand; no images committed.
 `dev/design/debug-modes.md` — observability and debug levels: object
 registry, lifetimes, shadow metadata, integrity checks, metrics export.
 Design only, nothing implemented.
+
+`dev/design/epoch-walk.md` and `dev/design/epoch-walk-structures.md` —
+the rc-walk epoch as a reading aid: the phase machine, both protocol
+diagrams, the grouping algorithm, and every collector structure with
+its per-row and per-edge cost, including what stage S28 changes. The
+RFC stays normative; these two describe, dated 2026-08-18.
+
+`dev/design/pure-destructors.md` — Edmond's pure-destructor proposal
+analyzed, 2026-08-18: the purity ladder, what the runtime already
+banks, the five owner-bound races, and the hand-off drain the
+proposal soundly buys. `dev/design/owned-slots-and-the-walk.md` maps
+the designed birth-count and unique-ownership pair and the
+compositions between all three. Analysis, not design; the RFC stays
+normative, and the backlog line in `PLAN.md` is the owner.
 
 ## Traps
 

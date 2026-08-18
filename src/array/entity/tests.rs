@@ -163,6 +163,40 @@ fn hash_arr() -> *mut LLArray {
     unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) }
 }
 
+/// Two buffer-arena chunks, one of them given back: the block stays live
+/// and keeps a hole and its bump cursor, so a longlived payload asked for
+/// while the pool refuses is served without a new block.
+///
+/// Every refusal test of the copy needs this, because the copy's first
+/// ask of that allocator is its own destination's presized storage
+/// (`Table::presize_for_replay`): without a hole to serve it, the refusal
+/// lands there and the test's own subject is never reached.
+///
+/// The chunk still held comes back with the guard, the way out a panic
+/// takes included: a test that fails while holding one leaves a chunk
+/// behind, and what reports that is the buffer arena's own leak
+/// detector rather than the failing test
+/// (`memory::buffer_arena::tests::what_adoption_recovers`).
+fn warm_the_buffer_arena() -> Warmed {
+    let held = crate::memory::buffer_arena::buffer_alloc_longlived_payload(8192);
+    let spare = crate::memory::buffer_arena::buffer_alloc_longlived_payload(8192);
+    assert!(
+        !held.0.is_null() && !spare.0.is_null(),
+        "the buffer arena served nothing"
+    );
+    unsafe { crate::memory::buffer_arena::buffer_free_longlived_payload(spare.0, spare.1) };
+    Warmed(held)
+}
+
+/// The held half of [`warm_the_buffer_arena`], freed on drop.
+struct Warmed((*mut u8, usize));
+
+impl Drop for Warmed {
+    fn drop(&mut self) {
+        unsafe { crate::memory::buffer_arena::buffer_free_longlived_payload(self.0.0, self.0.1) };
+    }
+}
+
 mod nesting_worked_through_a_list;
 mod the_entity_around_the_table;
 mod the_flood_state_a_copy_inherits;

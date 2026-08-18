@@ -45,6 +45,24 @@ impl Drop for Refusing {
     }
 }
 
+/// Long-lived requests the raised flag serves before it refuses, lowered
+/// to none on the way out of the scope. What a test spends the grace on
+/// it names at the call.
+struct Serving;
+
+impl Serving {
+    fn first(n: usize) -> Self {
+        crate::memory::buffer_arena::SERVE_BEFORE_REFUSING.store(n, Ordering::Relaxed);
+        Serving
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        crate::memory::buffer_arena::SERVE_BEFORE_REFUSING.store(0, Ordering::Relaxed);
+    }
+}
+
 /// Take every heap array slot the thread can still serve. Call with the
 /// pool already refusing, or this runs until the machine is out of memory
 /// rather than until the pool says no.
@@ -101,25 +119,6 @@ unsafe fn arena_source_with_nested_arrays(n: i64) -> *mut LLArray {
     src
 }
 
-/// Two buffer-arena chunks, one of them given back: the block stays live
-/// and keeps a hole and its bump cursor, so a longlived payload asked for
-/// while the pool refuses is served without a new block. Without this the
-/// copy cannot get past its own storage or its work list, and every
-/// refusal lands on the destination's first insert rather than where the
-/// test aims it — which is what the positive control below is for.
-///
-/// Returns the chunk still held, for the caller to give back afterwards.
-fn warm_the_buffer_arena() -> (*mut u8, usize) {
-    let held = crate::memory::buffer_arena::buffer_alloc_longlived_payload(8192);
-    let spare = crate::memory::buffer_arena::buffer_alloc_longlived_payload(8192);
-    assert!(
-        !held.0.is_null() && !spare.0.is_null(),
-        "the buffer arena served nothing"
-    );
-    unsafe { crate::memory::buffer_arena::buffer_free_longlived_payload(spare.0, spare.1) };
-    held
-}
-
 /// The refused nested destination arrives as null, and the branch that
 /// unwinds it tests that before it reads it: `ll_release` opens on
 /// `&mut *entity` in one configuration and on a flags load in the other,
@@ -140,6 +139,10 @@ fn a_refused_nested_destination_is_not_read() {
     // Arena memory throughout, so building the source takes no heap slot
     // and the exhaustion below cannot refuse it.
     let src = unsafe { arena_source_with_nested_arrays(1) };
+    // The hole the root destination's storage is served from, without
+    // which the refusal never reaches the nested destination this test is
+    // about.
+    let _held = warm_the_buffer_arena();
     let warm = arr();
 
     {
@@ -175,7 +178,7 @@ fn a_refusal_gives_back_the_root_and_the_copy_it_published() {
     crate::memory::context::set_current_context(context_ptr);
 
     let src = unsafe { arena_source_with_nested_arrays(2) };
-    let held = warm_the_buffer_arena();
+    let _held = warm_the_buffer_arena();
     let first = arr();
     let second = arr();
 
@@ -213,7 +216,6 @@ fn a_refusal_gives_back_the_root_and_the_copy_it_published() {
         }
     }
 
-    unsafe { crate::memory::buffer_arena::buffer_free_longlived_payload(held.0, held.1) };
     crate::memory::context::set_current_context(std::ptr::null_mut());
     arena.reset(|_| {});
 }
@@ -234,7 +236,7 @@ fn a_third_slot_is_the_difference_between_a_refusal_and_a_copy() {
     crate::memory::context::set_current_context(context_ptr);
 
     let src = unsafe { arena_source_with_nested_arrays(2) };
-    let held = warm_the_buffer_arena();
+    let _held = warm_the_buffer_arena();
     let spare = [arr(), arr(), arr()];
 
     {
@@ -256,7 +258,6 @@ fn a_third_slot_is_the_difference_between_a_refusal_and_a_copy() {
         }
     }
 
-    unsafe { crate::memory::buffer_arena::buffer_free_longlived_payload(held.0, held.1) };
     crate::memory::context::set_current_context(std::ptr::null_mut());
     arena.reset(|_| {});
 }
@@ -265,6 +266,16 @@ fn a_third_slot_is_the_difference_between_a_refusal_and_a_copy() {
 /// cannot record, and the child's destination is already built when it
 /// comes. `FORCE_REFUSE_LONGLIVED` is what drives it: the entity heap
 /// serves the root and the copy while the buffer arena refuses the list.
+///
+/// **The first long-lived request is served on purpose.** The copy asks
+/// the same allocator for the root destination's presized storage before
+/// it asks for the list, so a refusal from the first request stops there
+/// — and stops with the slot accounting below unchanged, one slot never
+/// taken standing in for one given back. The two counts asserted at the
+/// end say one request was served and one refused; which of them is
+/// which follows from the order of the asks in `new_empty_copy` and
+/// `element_for_destination`, and the slot accounting is what rules out
+/// the pairing where the copy never got past its own storage.
 #[test]
 fn a_refused_work_list_gives_the_nested_copy_back() {
     let _g = crate::memory::block_pool::test_guard();
@@ -275,12 +286,18 @@ fn a_refused_work_list_gives_the_nested_copy_back() {
     crate::memory::context::set_current_context(context_ptr);
 
     let src = unsafe { arena_source_with_nested_arrays(1) };
+    // The hole the root destination's storage is served from: the grace
+    // below only stops the injection, and the pool refuses a fresh block.
+    let _held = warm_the_buffer_arena();
     let first = arr();
     let second = arr();
 
     {
         let _pool = Refusing::raise(&FORCE_OOM);
         let _buffers = Refusing::raise(&FORCE_REFUSE_LONGLIVED);
+        // The one request spent on the root destination's storage.
+        let _served = Serving::first(1);
+        let refusals_before = crate::memory::buffer_arena::refusals();
         let fillers = unsafe { exhaust_heap_arrays() };
         // Two slots: the root takes one and the nested copy the other,
         // and the list is refused with that copy already built.
@@ -305,6 +322,16 @@ fn a_refused_work_list_gives_the_nested_copy_back() {
             third.is_null(),
             "the refusal gave back more slots than the copy took"
         );
+        assert_eq!(
+            crate::memory::buffer_arena::SERVE_BEFORE_REFUSING.load(Ordering::Relaxed),
+            0,
+            "the destination's storage was never asked for, so what refused is not the list"
+        );
+        assert_eq!(
+            crate::memory::buffer_arena::refusals() - refusals_before,
+            1,
+            "one long-lived request refused, and it is the second one: the work list"
+        );
 
         unsafe {
             give_one_back(a);
@@ -327,9 +354,12 @@ fn a_refused_work_list_gives_the_nested_copy_back() {
 /// the allocator: both refusals draw the same buffer-arena payload under
 /// the same flag, and which fires first is the order of the two calls in
 /// `element_for_destination`. Swap that order and this test passes on the
-/// list's branch, saying nothing. Discriminating on the allocator would
-/// need the arena warmed to serve exactly one payload, which is state no
-/// test here owns.
+/// list's branch, saying nothing.
+///
+/// The grace below buys the other half of the aim: the root
+/// destination's storage is the copy's first request to that allocator,
+/// so without it the refusal lands there and never reaches this child at
+/// all.
 #[test]
 fn a_refused_association_gives_the_nested_copy_back() {
     let _g = crate::memory::block_pool::test_guard();
@@ -354,12 +384,16 @@ fn a_refused_association_gives_the_nested_copy_back() {
         crate::refcount::ll_release(shared as *mut RcHeader);
     }
 
+    let _held = warm_the_buffer_arena();
     let first = arr();
     let second = arr();
 
     {
         let _pool = Refusing::raise(&FORCE_OOM);
         let _buffers = Refusing::raise(&FORCE_REFUSE_LONGLIVED);
+        // The one request spent on the root destination's storage.
+        let _served = Serving::first(1);
+        let refusals_before = crate::memory::buffer_arena::refusals();
         let fillers = unsafe { exhaust_heap_arrays() };
         unsafe { give_one_back(first) };
         unsafe { give_one_back(second) };
@@ -381,6 +415,16 @@ fn a_refused_association_gives_the_nested_copy_back() {
         assert!(
             third.is_null(),
             "the refusal gave back more slots than the copy took"
+        );
+        assert_eq!(
+            crate::memory::buffer_arena::SERVE_BEFORE_REFUSING.load(Ordering::Relaxed),
+            0,
+            "the destination's storage was never asked for, so what refused is not the association"
+        );
+        assert_eq!(
+            crate::memory::buffer_arena::refusals() - refusals_before,
+            1,
+            "one long-lived request refused, and it is the second one: the association"
         );
 
         unsafe {

@@ -9,7 +9,9 @@
 //! [ u32 x nslots ][ padding to 8 ][ Entry x cap ]
 //! ```
 
-use crate::array::entry::{Entry, MAX_ENTRIES, NONE};
+use crate::array::entry::{
+    Entry, KEY_SENTINEL_LIMIT, KEY_TAG_MASK, KEY_TAG_STRING, MAX_ENTRIES, NONE,
+};
 use crate::array::head::{StorageHead, StorageTag};
 use crate::refcount::{MemoryCategory, RcHeader};
 use crate::string::{LLString, string_bytes};
@@ -24,6 +26,58 @@ pub enum Key {
     /// A live string entity. Its hash is read through
     /// `LLString::hash`, which computes and caches on first use.
     Str(*mut LLString),
+}
+
+/// Which kind of insert the caller is performing. The table's policy
+/// dispatches on it; the caller only states what it is doing.
+///
+/// The reader is the ladder's terminal rung, the refusal of an
+/// admission whose trigger trips with no rebuild left
+/// (`rfc/model/maps.md`, "Rung three, refusal"). A replay is exempt
+/// from that refusal alone, because a key admitted once cannot be
+/// refused on re-admission; rungs one and two stay armed on both. What
+/// the exemption costs and what returns it is the copy rule in the same
+/// section: the chain a replay carries past the limit is scattered by
+/// the copy's own salt.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InsertKind {
+    /// A key from outside the table's history: a user store, or a new
+    /// association.
+    Admission,
+    /// An entry admitted once, re-derived: the copy's entry replay,
+    /// and the migration re-inserting the vector's positions.
+    Replay,
+}
+
+/// What [`Table::insert`] did, or the refusal it answered instead.
+/// A refusal leaves every entry, count and key unchanged. The ladder's
+/// state is outside that promise: the triggers fire on the insert's
+/// walk, before the outcome is decided, so a refused insert may have
+/// spent a rung.
+///
+/// The two refusal causes are distinct variants because the runtime
+/// owes them different answers: memory pressure is the environment's,
+/// while the terminal rung is a property of the keys and is raised as
+/// a catchable error once an error channel exists (`rfc/model/maps.md`,
+/// "Rung three, refusal").
+#[must_use = "a replaced element carries the table's reference; dropping it leaks the entity"]
+pub enum InsertOutcome {
+    /// A new key entered the table. A string key's reference, published
+    /// before the call, is now the table's.
+    Added,
+    /// The key was present; the old element is handed back for the
+    /// owner to release. The entry keeps its original key, so the key
+    /// reference published for this call stays the caller's.
+    Replaced(Value),
+    /// The storage could not grow.
+    RefusedForMemory,
+    /// The ladder's terminal rung: a trigger tripped with no rebuild
+    /// left — the table is escalated, and the walk met either
+    /// [`CHAIN_LIMIT`] chained entries or [`EQUAL_HASH_LIMIT`] equal
+    /// identities.
+    /// Only an admission is answered this; a replay is admitted
+    /// ([`InsertKind`]).
+    RefusedByLadder,
 }
 
 /// Avalanche mix for an integer key, salted per table. Runs only once
@@ -41,7 +95,16 @@ pub enum Key {
 /// predict where that is).
 #[inline]
 fn mix_int(k: i64, salt: u64) -> u64 {
-    let mut x = (k as u64) ^ salt;
+    mix_word(k as u64, salt)
+}
+
+/// The salted mix behind every reseeded slot path — the integer's value
+/// through [`mix_int`], a string's cached hash directly: splitmix64's
+/// finalizer over the identity word XOR the salt, full avalanche, so a
+/// family agreeing in its low bits scatters once the salt is drawn.
+#[inline]
+fn mix_word(word: u64, salt: u64) -> u64 {
+    let mut x = word ^ salt;
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     x ^ (x >> 31)
@@ -54,9 +117,11 @@ fn mix_int(k: i64, salt: u64) -> u64 {
 /// every other table holding that string, so escalation must not touch
 /// it — a table that has been attacked hashes bytes itself instead.
 ///
-/// This is a placeholder shape rather than the final function: the design
-/// names the long-key slot (`rfc/model/strings.md`) with a per-process key
-/// that is never folded, and this stands in until that slot is filled.
+/// The key it takes is the per-process key folded to word width, mixed
+/// with the table's salt ([`Table::strong_key`]); the salt draw keys the
+/// same way. This is a placeholder shape rather than the final function:
+/// the design names the long-key slot (`rfc/model/strings.md`), whose
+/// arrival replaces the construction, not the keying.
 #[inline]
 fn strong_hash(bytes: &[u8], key: u64) -> u64 {
     let mut h = key ^ 0x9E37_79B9_7F4A_7C15;
@@ -104,6 +169,12 @@ enum EntryMove {
     DroppingHoles,
 }
 
+/// Entries in the chunk a first growth takes, and the floor of every
+/// later size: the growth schedule is this doubled, and a table presized
+/// for a replay lands on the same ladder rather than beside it
+/// ([`Table::presize_for_replay`]).
+const FIRST_CAP: usize = 8;
+
 /// Round up to a power of two, saturating rather than wrapping.
 #[inline]
 fn pow2ge(n: usize) -> usize {
@@ -124,6 +195,21 @@ fn pow2ge(n: usize) -> usize {
 #[inline]
 fn entries_offset(nslots: usize) -> usize {
     nslots * size_of::<u32>()
+}
+
+/// The salt a table's storage address yields under the per-process key,
+/// remapped away from zero so that a drawn salt cannot read as the
+/// unsalted state. [`Table::draw_salt`] and [`Table::redraw_salt`]
+/// differ in when they call this, never in what it computes, which is
+/// what keeps the derivation one place: the argument for it, and what
+/// it does not buy, is on `draw_salt`.
+#[inline]
+fn salt_from(head: &StorageHead) -> u64 {
+    let drawn = strong_hash(
+        &(head.storage() as u64).to_le_bytes(),
+        crate::hash::process_key::folded(),
+    );
+    if drawn == 0 { 1 } else { drawn }
 }
 
 /// Total storage bytes for `nslots` slots and `cap` entries, or `None` on
@@ -168,7 +254,11 @@ pub struct Table {
     live: usize,
     holes: usize,
     /// Zero from birth. Meaningful only while [`TABLE_RESEEDED`] is set:
-    /// the ladder's first rung draws it, and nothing else writes it.
+    /// the ladder's first rung draws it ([`Table::draw_salt`]) and a
+    /// copy that took the bit draws its own before its first insert
+    /// ([`Table::redraw_salt`]). Nothing else writes it — a salt
+    /// rewritten under live entries would leave every one of them
+    /// indexed under the old number.
     salt: u64,
     /// The next append key: one past the highest integer key ever
     /// inserted, [`NEXT_FREE_NONE`] while none has been. Removal never
@@ -278,17 +368,14 @@ impl Table {
         }
     }
 
-    /// The per-table salt, which a COW copy inherits through
-    /// [`Table::adopt_flood_state`] so that a copied table indexes its
-    /// keys exactly as the original did. [`TABLE_RESEEDED`] is the
-    /// authority on whether one has been drawn; zero happens to mean
-    /// "not drawn" as well, because the draw never yields it.
+    /// The per-table salt, drawn from this table's own storage address
+    /// under the per-process key. [`TABLE_RESEEDED`] is the authority on
+    /// whether one has been drawn; zero happens to mean "not drawn" as
+    /// well, because the draw never yields it.
     ///
     /// A test window on purpose: on an escalated table the salt keys
     /// `strong_hash`, and an accessor exported past the crate would hand
-    /// that key to anything linking against the runtime. The inheritance
-    /// itself runs through [`Table::adopt_flood_state`], which reads the
-    /// field directly.
+    /// that key to anything linking against the runtime.
     #[cfg(test)]
     pub(crate) fn salt(&self) -> u64 {
         self.salt
@@ -302,20 +389,53 @@ impl Table {
         self.flags & TABLE_RESEEDED != 0
     }
 
+    /// The slot derivation, read through a test window: the copy tests
+    /// forge colliding families from outside this module, and an
+    /// integer key costs the search no entity.
+    #[cfg(test)]
+    pub(crate) fn slot_hash_of(&self, key: Key) -> u64 {
+        self.slot_hash(key)
+    }
+
+    /// The longest index chain, walked slot by slot — the copy tests
+    /// assert the trigger's bound from outside this module.
+    #[cfg(test)]
+    pub(crate) fn longest_chain(&self, head: &StorageHead) -> usize {
+        let mut longest = 0usize;
+        for slot in 0..head.nslots() {
+            let mut n = 0usize;
+            let mut i = unsafe { *Self::slots(head).add(slot) };
+            while i != NONE {
+                n += 1;
+                i = self.entry(head, i as usize).link();
+            }
+
+            longest = longest.max(n);
+        }
+
+        longest
+    }
+
     /// True once the table has escalated to the keyed byte hash.
     #[inline]
     pub fn is_strong(&self) -> bool {
         self.flags & TABLE_STRONG != 0
     }
 
-    /// Take `source`'s flood state — the salt and both rung bits, which
-    /// is what a copy of an attacked table owes: an escalated table
-    /// copied through a fresh [`Table::empty`] would otherwise re-insert
-    /// the attacker's whole collision set under the hash it escalated
-    /// away from, and copying an array is the ordinary thing the
-    /// language does. The salt travels with [`TABLE_RESEEDED`], because
-    /// a copy that kept the bit and not the number would index through
-    /// `mix_int(k, 0)` — a mix every attacker can compute offline.
+    /// Take `source`'s flood state — both rung bits and, as a number to
+    /// stand on until the storage exists, its salt. The bits are what a
+    /// copy of an attacked table owes: an escalated table copied through
+    /// a fresh [`Table::empty`] would otherwise re-insert the attacker's
+    /// whole collision set under the hash it escalated away from, and
+    /// copying an array is the ordinary thing the language does.
+    ///
+    /// **The number does not stay.** [`Table::redraw_salt`] replaces it
+    /// once the copy has storage of its own, and the two calls bracket
+    /// [`Table::presize_for_replay`] because a salt is drawn from a
+    /// storage address — which is also why that call takes a chunk for a
+    /// copy holding a rung bit over no entries. What carrying the number
+    /// here buys is the state in between: a bit standing over a zero salt
+    /// would mean `mix_int(k, 0)`, a mix every attacker computes offline.
     ///
     /// **Call it before the first insert.** The mode decides how a key is
     /// hashed, so a table that adopts it afterwards has already indexed
@@ -331,7 +451,7 @@ impl Table {
         self.flags = (self.flags & !TABLE_FLOOD_STATE) | (source.flags & TABLE_FLOOD_STATE);
     }
 
-    /// Live entries: holes are excluded, unlike in [`used`](Self::used).
+    /// Live entries: holes are excluded, unlike in [`StorageHead::used`].
     #[inline]
     pub fn len(&self) -> usize {
         self.live
@@ -442,12 +562,24 @@ impl Table {
             }
             Key::Str(s) => {
                 if self.flags & TABLE_STRONG != 0 {
-                    strong_hash(unsafe { string_bytes(s) }, self.salt)
+                    strong_hash(unsafe { string_bytes(s) }, self.strong_key())
+                } else if self.flags & TABLE_RESEEDED != 0 {
+                    mix_word(unsafe { LLString::hash(s) }, self.salt)
                 } else {
                     unsafe { LLString::hash(s) }
                 }
             }
         }
+    }
+
+    /// The keyed hash's key: the per-process key folded to word width,
+    /// mixed with the table's salt — rung two hashes bytes under the
+    /// key *together with* the salt (`rfc/model/maps.md`, "What the
+    /// flood ladder becomes"), so two escalated tables scatter one
+    /// colliding set differently.
+    #[inline]
+    fn strong_key(&self) -> u64 {
+        mix_word(crate::hash::process_key::folded(), self.salt)
     }
 
     /// The same, derived from an entry rather than from a key — what the
@@ -461,7 +593,9 @@ impl Table {
                 e.hash_or_key
             }
         } else if self.flags & TABLE_STRONG != 0 {
-            strong_hash(unsafe { string_bytes(e.key) }, self.salt)
+            strong_hash(unsafe { string_bytes(e.string_key()) }, self.strong_key())
+        } else if self.flags & TABLE_RESEEDED != 0 {
+            mix_word(e.hash_or_key, self.salt)
         } else {
             e.hash_or_key
         }
@@ -535,9 +669,19 @@ impl Table {
     /// (`array::element::store_into` and `array::entity::fill_table_from`
     /// are the worked examples).
     ///
-    /// Insert or overwrite. Returns `None` when the storage could not
-    /// grow — an allocation refusal reports rather than aborting, and the
-    /// table is unchanged. `Some(true)` means a new key was added.
+    /// Insert or overwrite. The outcome says which, or names the cause
+    /// of a refusal — [`InsertOutcome`] is the contract, refusal causes
+    /// included. `kind` states whether the key is the caller's own
+    /// admission or a replay of one admitted before ([`InsertKind`]);
+    /// the ladder's terminal rung refuses an admission and admits a
+    /// replay, and nothing below it reads the kind.
+    ///
+    /// **Presence is decided ahead of every refusal**: the walk answers
+    /// [`InsertOutcome::Replaced`] the moment it meets the key, so an
+    /// overwrite of a present key is never refused.
+    /// `array::element::box_element` re-inserts a key it proved present
+    /// on that guarantee — a refusal check moved ahead of the walk
+    /// breaks a caller, not a convenience.
     ///
     /// **`category` is the owner's, as it stands at this call.** Growth
     /// allocates from it and teardown frees to it, and promotion rewrites
@@ -555,17 +699,18 @@ impl Table {
     /// consumes the caller's reference — the retain published before this
     /// call becomes the table's one reference per stored key, given back
     /// by [`Table::remove`] or by teardown. The overwrite arm keeps the
-    /// entry's original key and never stores the caller's, so there
-    /// `added == false` also says the key reference stays the caller's:
-    /// give it back through the barrier's `drop_ref` or reuse it, but do
-    /// not count it as stored.
+    /// entry's original key and never stores the caller's, so
+    /// [`InsertOutcome::Replaced`] also says the key reference stays the
+    /// caller's: give it back through the barrier's `drop_ref` or reuse
+    /// it, but do not count it as stored.
     pub fn insert(
         &mut self,
         head: &StorageHead,
         category: MemoryCategory,
+        kind: InsertKind,
         key: Key,
         value: Value,
-    ) -> Option<(bool, Option<Value>)> {
+    ) -> InsertOutcome {
         let sh = self.slot_hash(key);
         // Counted during the insert's own walk, against current state:
         // nothing is stored between operations, so deletion cannot leave a
@@ -588,12 +733,21 @@ impl Table {
                     // be reading this very word.
                     let old = self.entry(head, i as usize).value();
                     unsafe { Entry::store_element(Self::entry_ptr(head, i as usize), value) };
-                    return Some((false, Some(old)));
+                    return InsertOutcome::Replaced(old);
                 }
 
                 chain_len += 1;
                 let e = self.entry(head, i as usize);
-                if !e.is_int_key() && e.hash_or_key == stored_hash {
+                // The counter counts an entry only when its tag equals
+                // the incoming key's: an integer's identity is its
+                // value, so equal identity is an overwrite and never a
+                // chain entry (`rfc/model/maps.md`, "What the flood
+                // ladder becomes").
+                if matches!(key, Key::Str(_))
+                    && e.key_word >= KEY_SENTINEL_LIMIT
+                    && e.key_word & KEY_TAG_MASK == KEY_TAG_STRING
+                    && e.hash_or_key == stored_hash
+                {
                     equal_hashes += 1;
                 }
 
@@ -605,15 +759,34 @@ impl Table {
         // ownership, may allocate and may raise, while a lookup may do
         // none of those under a live iterator on a shared table.
         if equal_hashes >= EQUAL_HASH_LIMIT {
-            self.escalate(head);
+            if self.flags & TABLE_STRONG != 0 {
+                // The terminal rung: equal identities met past
+                // escalation have no rebuild left to take. A replay is
+                // exempt from the refusal alone ([`InsertKind`]), and
+                // its chain then grows past the trigger's limit — the
+                // price of honouring the earlier admission.
+                if kind == InsertKind::Admission {
+                    return InsertOutcome::RefusedByLadder;
+                }
+            } else {
+                self.escalate(head);
+            }
         } else if chain_len >= CHAIN_LIMIT {
-            self.reseed(head);
+            if self.flags & TABLE_STRONG != 0 {
+                // The chain trigger's firing past both rebuilds — the
+                // terminal rung again, same exemption.
+                if kind == InsertKind::Admission {
+                    return InsertOutcome::RefusedByLadder;
+                }
+            } else {
+                self.reseed(head);
+            }
         }
 
         let sh = self.slot_hash(key);
 
         if head.used() == self.cap && !self.grow(head, category) {
-            return None;
+            return InsertOutcome::RefusedForMemory;
         }
 
         let slot = sh as usize & self.mask;
@@ -645,7 +818,7 @@ impl Table {
             self.note_int_key(v);
         }
 
-        Some((true, None))
+        InsertOutcome::Added
     }
 
     /// Remove `key`, returning its value **and its key entity** for the
@@ -726,7 +899,7 @@ impl Table {
     /// owed with the iterator rather than before it.
     fn grow(&mut self, head: &StorageHead, category: MemoryCategory) -> bool {
         if head.storage().is_null() {
-            return self.realloc_storage(head, category, 8);
+            return self.realloc_storage(head, category, FIRST_CAP);
         }
 
         // Zend's rule: reclaim holes rather than doubling when they are
@@ -782,7 +955,7 @@ impl Table {
     fn rebuild_index(&mut self, head: &StorageHead) {
         unsafe { std::ptr::write_bytes(Self::slots(head), 0xFF, head.nslots()) };
         for k in 0..head.used() {
-            // Holes are skipped rather than linked: a hole's `key` field
+            // Holes are skipped rather than linked: a hole's `key_word`
             // is a sentinel, not a string, so reading bytes through it in
             // strong mode would dereference 1.
             if self.entry(head, k).is_hole() {
@@ -915,6 +1088,76 @@ impl Table {
         Some(old_used - written)
     }
 
+    /// Give an empty table the chunk a replay of `live` entries ends on,
+    /// in one allocation instead of the doubling schedule that reaches
+    /// the same place. False on refusal, with the table exactly as empty
+    /// as it was.
+    ///
+    /// The copy path is the caller (`array::entity::new_empty_copy`), and
+    /// what it saves is the intermediate chunks: in the request arena
+    /// nothing is reclaimed until the reset, so every chunk a doubling
+    /// replay outgrows is headroom lost for the rest of the request.
+    /// The end state is the schedule's own — `cap` a power of two of at
+    /// least 8, `nslots` twice it — so a copy grows afterwards exactly
+    /// where a filled table does.
+    ///
+    /// **The slot count is derived and not the source's.** Taking the
+    /// source's would keep buckets apart that the copy's narrower mask
+    /// merges, which is a defence the mask cannot supply: identities that
+    /// differ are scattered by the copy's own salt, and identities that
+    /// agree collide at every width and are what the equal-identity
+    /// trigger is for (`rfc/model/maps.md`, "Rung three, refusal", and
+    /// `dev/DECISIONS.md`, "a copy sizes its storage by its own replay").
+    ///
+    /// **A copy with nothing to replay takes no chunk, unless it holds a
+    /// drawn rung bit**, in which case it takes the schedule's first one
+    /// for [`Table::redraw_salt`] to draw an address from.
+    pub(crate) fn presize_for_replay(
+        &mut self,
+        head: &StorageHead,
+        category: MemoryCategory,
+        live: usize,
+    ) -> bool {
+        debug_assert!(head.storage().is_null(), "the table already holds a chunk");
+        debug_assert_eq!(head.used(), 0, "presizing a table that holds entries");
+        debug_assert!(
+            self.cap == 0 && self.live == 0 && self.holes == 0,
+            "the counters of a table with no chunk are zero"
+        );
+        if live == 0 && self.flags & TABLE_RESEEDED == 0 {
+            return true;
+        }
+
+        let cap = pow2ge(live).max(FIRST_CAP);
+        if cap > MAX_ENTRIES {
+            return false;
+        }
+
+        let nslots = cap * 2;
+        let Some(bytes) = storage_bytes(nslots, cap) else {
+            return false;
+        };
+
+        let (mem, granted) = self.alloc(category, bytes);
+        if mem.is_null() {
+            return false;
+        }
+
+        // Before publication rather than inside the window: until
+        // `set_storage` the chunk is reachable from this thread alone,
+        // which is what keeps this write plain.
+        unsafe { std::ptr::write_bytes(mem as *mut u32, 0xFF, nslots) };
+        head.begin_move();
+        head.set_storage(mem);
+        head.set_nslots(nslots);
+        head.set_used(0);
+        self.storage_capacity = granted;
+        self.mask = nslots - 1;
+        self.cap = cap;
+        head.end_move();
+        true
+    }
+
     /// The storage, routed by `category` (`memory::routing::body_alloc`),
     /// with the bytes really granted reported alongside the pointer.
     ///
@@ -947,7 +1190,9 @@ impl Table {
     /// The counters are settled here rather than left stale: the table
     /// outlives this call by the width of the drain, and a `live` above
     /// zero over an entry array of holes is a contradiction anything
-    /// reading it would act on.
+    /// reading it would act on. The index is settled the same way —
+    /// every bucket reads `NONE` and every hole's link is cut, so no
+    /// chain reaches a hole and an insert after the sever walks nothing.
     pub(crate) fn sever_entries(&mut self, head: &StorageHead, displaced: &mut Vec<*mut RcHeader>) {
         for i in 0..head.used() {
             let e = self.entry(head, i);
@@ -960,10 +1205,12 @@ impl Table {
             // The table's own store rather than the barrier's: a barrier
             // write publishes a whole Box, zeroed reserved bytes and all,
             // which would set this entry's chain link to 0 — a legal entry
-            // index rather than an end of chain (`array/entry.rs`).
+            // index where the unlink needs an end of chain
+            // (`array/entry.rs`). One composed store keeps the word whole
+            // for the collector.
             let at = Self::entry_ptr(head, i);
             unsafe {
-                Entry::store_element(at, Value::null());
+                Entry::store_element_and_link(at, Value::null(), NONE);
                 Entry::make_hole(at);
             }
 
@@ -974,6 +1221,14 @@ impl Table {
             if !key.is_null() {
                 displaced.push(key as *mut RcHeader);
             }
+        }
+
+        // The index goes with the entries, for the reason the counters
+        // do: a bucket left in place would chain through nothing but
+        // holes, and the next insert's walk would read its trigger
+        // counters off entries that no longer exist.
+        if !head.storage().is_null() {
+            unsafe { std::ptr::write_bytes(Self::slots(head), 0xFF, head.nslots()) };
         }
 
         self.live = 0;
@@ -997,21 +1252,26 @@ impl Table {
     }
 
     /// The one draw of the per-table salt: the storage address run
-    /// through `hash_bytes`, and the flag saying the table has one.
+    /// through the keyed hash under the per-process key
+    /// (`hash::process_key`), and the flag saying the table has one.
     /// Idempotent by the flag, so whichever rung fires first draws and
-    /// the other inherits. Never zero — `hash_bytes` remaps zero away —
-    /// so a drawn salt cannot masquerade as the unsalted state.
+    /// the other inherits. Never zero — a zero draw is remapped — so a
+    /// drawn salt cannot masquerade as the unsalted state.
     ///
-    /// `hash_bytes` rather than an avalanche of `address ^ seed`: the
-    /// avalanche is a bijection, so one recovered salt would hand back
-    /// `address ^ seed` exactly, and one leaked address the seed itself.
-    /// Behind rapidhash the seed sits where every cached string hash
-    /// already puts it. What this does not buy: storage addresses
-    /// recycle across arena resets, so a salt can repeat, and under
-    /// `hash-folding` the seed is a build constant — the durable key for
-    /// an escalated table is the long-key slot's per-process never-folded
-    /// key (`rfc/model/strings.md`), which `strong_hash`'s own doc names
-    /// as the unfilled slot this stands in for.
+    /// Keyed under the per-process key so that a static reading of the
+    /// artifact cannot compute the salt: the foldable seed enters
+    /// nowhere — under `hash-folding` it travels inside the artifact,
+    /// where an attacker holding the binary would read it
+    /// (`rfc/model/maps.md`, "What the flood ladder becomes": every
+    /// secret the ladder draws comes from the per-process key). It is
+    /// not one-way: `strong_hash` is a placeholder invertible in its
+    /// key, so a timing oracle recovers the salt, and `rfc/model/strings.md`
+    /// ("Neither position is a defence") concedes that — the backstop is
+    /// the ladder's bounded rebuilds, not the salt. What this still does
+    /// not buy: storage addresses recycle across arena resets, so a salt
+    /// can repeat within one process, and the long-key slot
+    /// (`rfc/model/strings.md`) stays the unfilled function `strong_hash`
+    /// stands in for.
     ///
     /// The triggers fire during an insert's chain walk, which needs
     /// entries, so the storage is never null here — asserted, because a
@@ -1026,7 +1286,36 @@ impl Table {
             "a draw before the first entry would salt every table alike"
         );
         self.flags |= TABLE_RESEEDED;
-        self.salt = crate::hash::hash_bytes(&(head.storage() as u64).to_le_bytes());
+        self.salt = salt_from(head);
+    }
+
+    /// Draw again, over a table that took its rung bits from a source
+    /// ([`Table::adopt_flood_state`]) — a copy indexes under a salt of
+    /// its own. The bits are what bound the ladder, so the copy keeps
+    /// them; the number is what a forged set is built against, and the
+    /// copy's replay puts that set back key by key, so an inherited
+    /// number would reproduce the source's chains slot for slot with
+    /// both rebuilds already spent (`rfc/model/maps.md`, "Rung three,
+    /// refusal").
+    ///
+    /// A no-op on a table with no salt drawn: the flag is the
+    /// authority, and an unsalted copy indexes integer keys by value
+    /// exactly as its source does.
+    ///
+    /// **Call it before the first insert**, for the reason
+    /// [`Table::adopt_flood_state`] carries: the number decides which
+    /// slot a key takes.
+    pub(crate) fn redraw_salt(&mut self, head: &StorageHead) {
+        if self.flags & TABLE_RESEEDED == 0 {
+            return;
+        }
+
+        debug_assert_eq!(head.used(), 0, "the salt decides where a key is indexed");
+        debug_assert!(
+            !head.storage().is_null(),
+            "a table holding a drawn salt holds the storage it was drawn from"
+        );
+        self.salt = salt_from(head);
     }
 
     /// Escalate to the keyed byte hash, once and one way. The response
@@ -1035,16 +1324,22 @@ impl Table {
     /// REHASH exploitable (CVE-2013-1667).
     ///
     /// Firing from an unsalted table draws the salt on the way, because
-    /// the keyed hash's key *is* the salt: left at zero it would be a
-    /// key every attacker knows, and the design's residual assumption —
-    /// a new colliding set costs a break of a keyed PRF — needs the key
-    /// unpredictable. That is a draw, not the redraw the Perl defect is
+    /// the salt enters the keyed hash's key ([`Table::strong_key`]):
+    /// without a draw every escalated table would scatter one colliding
+    /// set identically, and per-table diversity is what the draw buys —
+    /// the design's residual assumption, a new colliding set costing a
+    /// break of a keyed PRF, wants the key per-table as well as
+    /// per-process. That is a draw, not the redraw the Perl defect is
     /// about: a salt already drawn is left exactly as it was.
     fn escalate(&mut self, head: &StorageHead) {
-        if self.flags & TABLE_STRONG != 0 {
-            return;
-        }
-
+        // Unreachable past escalation rather than a no-op there: the
+        // trigger block refuses on a strong table instead of calling
+        // down, and a silent return here would hide a caller that
+        // stopped making that test.
+        debug_assert!(
+            self.flags & TABLE_STRONG == 0,
+            "past escalation a trigger refuses instead of escalating"
+        );
         self.draw_salt(head);
         self.flags |= TABLE_STRONG;
         if !head.storage().is_null() {
@@ -1062,19 +1357,25 @@ impl Table {
     /// fires on every insert an attacker chooses, each firing an
     /// O(`used`) rebuild, and the promised O(n) is O(n²).
     ///
-    /// **The two rungs defend different key kinds**, this one integer
-    /// keys and escalation string ones (`dev/DECISIONS.md`, "the flood
-    /// ladder's two rungs answer different key kinds").
+    /// **The two rungs answer different failures**: this one, keys whose
+    /// identities differ while their buckets coincide — its mix covers
+    /// every kind's slot, the integer's value through [`mix_int`] and a
+    /// string's cached hash through [`mix_word`] — and escalation, keys
+    /// whose identity numbers agree while the keys differ
+    /// (`dev/DECISIONS.md`, "rung one salts every kind's slot, under the
+    /// per-process key", amending "the flood ladder's two rungs answer
+    /// different key kinds").
     ///
     /// The salt is drawn at most once per table ([`Table::draw_salt`]),
-    /// so there is no orbit to learn and no redraw to aim. A COW copy
-    /// inherits the drawn salt rather than drawing again
-    /// ([`Table::adopt_flood_state`]): its second long chain escalates.
+    /// so there is no orbit to learn and no redraw to aim. A COW copy is
+    /// a new table by that reckoning and draws its own before its first
+    /// insert ([`Table::redraw_salt`]); what it inherits is the rung
+    /// bits, so its second long chain escalates rather than rebuilding.
     fn reseed(&mut self, head: &StorageHead) {
-        if self.flags & TABLE_STRONG != 0 {
-            return;
-        }
-
+        debug_assert!(
+            self.flags & TABLE_STRONG == 0,
+            "past escalation a trigger refuses instead of rebuilding"
+        );
         if self.flags & TABLE_RESEEDED != 0 {
             self.escalate(head);
             return;
@@ -1092,7 +1393,7 @@ impl Table {
     /// against (`rfc/model/arrays-hashtable.md`, "Complete enumeration").
     ///
     /// The dense prefix `0..used` with holes skipped is that enumeration
-    /// here, and the hole marker lives in `key`, outside the sixteen
+    /// here, and the hole marker lives in `key_word`, outside the sixteen
     /// bytes the store barrier writes, so an ordinary value store cannot
     /// destroy it.
     #[cfg(test)]

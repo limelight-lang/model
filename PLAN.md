@@ -8,219 +8,125 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-16 · Active: S27
+Updated: 2026-08-18 · Active: S28 — the sections below it are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S26. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S27. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
 
-**`array::` has had its Miri run, in slices**, and the hour the module was
-feared to cost was `array::entity`'s alone: `array::entry` took 4 seconds
-over 7 tests and `array::table` 92 over 38, both clean, on 2026-08-13 at
-`8d3728d`. A slice is still how the module is run — invocation and thread
-cap in `dev/WORKFLOW.md`, Miri.
+**`array::` is run under Miri in slices**, never whole — invocation and
+thread cap in `dev/WORKFLOW.md`, Miri. What each slice costs, measured
+2026-08-18 at two threads and quoted on Miri's own clock: `array::table`
+without the flood ladder 32 tests in 79 s, the ladder's own module 14 in
+273, and `array::entry` with the tracer and ring tests 13 in 179. All
+clean. `array::entity` is the expensive one and is taken by test rather
+than whole; the copy tests of that module ran 25 in 59 s.
 
-## S27 — the per-process key, the key word's tag, and the ladder's terminal rung  [in progress]
+## S28 — Epoch metadata: flat per-row words only
 
-Goal: the crate's debt to the map design is paid — `rfc/model/maps.md`,
-"What the crate owes before either class exists" and "The key word gains
-a tag, for every owner" — so no map class waits on this crate and a spent
-ladder refuses instead of degrading. `reseed` and `escalate` both return
-early once `TABLE_STRONG` is set, so today a chain grows without bound
-after two firings.
+Goal: the collector's grouping keeps no nested per-row vectors, the
+judge copies no edge list, and the walk's per-row storage version fits
+one word — the weight `dev/RC_WALK_CRITICAL_REVIEW.md`, "Per-epoch
+graph metadata is heavy", prices at 24 bytes of empty vector shells per
+walked row before any content, plus 16 bytes per row of `Option<usize>`.
+Flat n-sized word arrays stay: marking over `RC − IN` is per-row by
+nature. The stage claims no per-edge saving either — the 32-byte `Edge`
+layout is a recorded decision (`collector.rs`, the `shape` field's
+comment), and only the judge-time copy of the list goes.
+Done when: the S28.1 harness stands with its by-construction shapes;
+`garbage_components` builds its adjacency as flat arrays and the
+probe's per-row byte budget holds, the probe re-run by hand at stage
+close; `judge` hands the recorded edges over without a copy — closed by
+reading the new signature, a pair copy having no site left;
+`Epoch::storage_versions` holds 8 bytes per row; both GC configurations
+are green, the rc-trace run being a regression sweep for the
+collector-only steps (`collector` and `epoch` compile under `rc-walk`
+alone).
 
-Done when, six items, none of them true today:
+Out of scope, named rather than implied: `recheck_and_post`'s
+`component_edges` is sized by candidates and stays; the epoch arena has
+its own backlog line below ("A budgeted epoch arena for the collector's
+metadata"); and nothing here touches a clock — the box's noise floor
+(`dev/BENCHMARKS.md`, 1.5–3 %) is wider than any expected effect, so
+every criterion is a layout, an allocation shape or a suite.
 
-1. Two tables holding distinct storage at the same time hold different
-   salts — simultaneity is the claim, because an address recycles across
-   a reset — and a source-reading test shows `draw_salt` derives from the
-   key module rather than from the foldable seed.
-2. The per-process key reads the same twice in one process, two draws
-   differ, and the module carries no `hash-folding` arm.
-3. A ring closing through a string-keyed array is collected in a new
-   collector test, and the two tracer tests
-   (`walk/tests/the_children_a_kind_has.rs:62` and `:118`) go red if the
-   child is left tagged.
-4. An insert whose trigger trips with no rebuild left is refused with
-   every entry unchanged, on an outcome the caller tells apart from an
-   allocation refusal.
-5. A copy of a table whose ladder is spent still copies, and no chain in
-   a copy exceeds `CHAIN_LIMIT`.
-6. The `dev/WORKFLOW.md` gate is green, plus Miri slices over
-   `array::entry` and `array::table` for the new integer-to-pointer mask.
+Critic 2026-08-18 round 1, three lenses (technical, plan,
+  verification): the cheap `Option<NonZeroUsize>` packing collides with
+  version 0 in the fail-open direction; the original S28.1/S28.2 pair
+  cut through `garbage_components`' signature; the source-shape
+  criteria had nothing runnable behind them. Accepted — harness-first
+  re-cut, sentinel and contract named, allocation probe added.
+Critic 2026-08-18 round 2, on the fixes: the 28-byte budget forgot the
+  mark bitmap and the unsized root stack; the first seeded mutation was
+  inexpressible before the rewrite; the `Some(0)` hand-collapse was a
+  no-op over every reachable state (an edge source's version is ≥ 2);
+  the arena deferral cited a backlog line that did not exist. Accepted
+  — budget re-derived at 32 with exact pre-sizing, mutations
+  reassigned per step, seen-red retargeted at the stale-version
+  comparison, the backlog line added. Disputes ruled in-session by
+  Edmond's standing instruction; no Sage round.
 
-Plan reviewed by Critic twice before it was written here; the five
-questions the second round left open were ruled by Sage and the rulings
-sit on the steps they bind.
-
-- [ ] S27.1 The per-process key: 32 bytes from the OS, once per process,
-      in every build, outside `STAMP` and exempt from `hash-folding`
-      done: two draws differ, the memoized accessor is equal across calls
-        and threads, and a source-reading test in the idiom of
-        `refcount::tests::who_may_read_a_header` shows the module carries
-        no `hash-folding` arm and that `STAMP` names it nowhere
+- [ ] S28.1 The grouping harness: a direct test of `garbage_components`
+      done: a partition-equality test (members sorted, components keyed
+        by their minimum member — no caller depends on order, verified
+        by reading both consumers, `recheck_and_post` and `walk.rs`'s
+        `collect_cycles_inner`) holds a pasted textual copy of the
+        current implementation as its frozen oracle and covers, by
+        construction rather than by chance: n = 0, an empty candidate
+        edge set, an isolated single-row candidate, a self-edge amid
+        other candidates, duplicate parallel edges, a marked/unmarked
+        mix, a garland of rings, and fixed-seed random graphs on top;
+        two seeded mutations of the live implementation turned it red
+        and were reverted — self-edges skipped in the `in_degree` pass
+        (a pure self-loop reads live and leaves the partition), and the
+        reverse push dropped from the undirected adjacency (a ring
+        closed high-to-low splits). The test lives in `walk`'s test
+        tree, compiled under both GC features.
+      tier: T1 · role: Critic
+- [ ] S28.2 The rewrite: edges read in place, adjacency in flat CSR
+      done: `garbage_components` takes the epoch's edges without an
+        intermediate `(u32, u32)` copy, and both callers compile
+        against the new shape — `walk.rs`'s `collect_cycles_inner`
+        supplies its native pairs. The mark walk's forward CSR still
+        covers every recorded edge; only the undirected component CSR
+        is restricted to candidate (both-ends-unmarked) edges, and
+        component enumeration stays the `0..n` scan over `!marked`, so
+        an isolated candidate is still a singleton. The S28.1 test is
+        green unchanged, and one further seeded mutation — a self-edge
+        contributing 1 instead of 2 to the undirected degree pass —
+        turned it red and was reverted. An ignored probe, summing
+        allocation requests on a thread-local counter toggled around
+        the call (a `cfg(miri)` bypass in the wrapper, run
+        name-filtered), asserts the grouping's allocated bytes grow by
+        at most 32 per added row at fixed candidates and edges — every
+        internal vector pre-sized exactly, the root stack included —
+        and was red against the pre-rewrite code first. The `Edge`
+        width comment is re-worded to the new reading pattern rather
+        than moved: "walked twice" stops being true.
       tier: T2 · role: Critic
-      Sage 2026-08-16: the 32 bytes come from `/dev/urandom` through safe
-        `std::fs`, and `#[cfg(not(unix))]` is a `compile_error!` naming
-        the missing door. `RandomState` cannot serve — it caches one
-        `(k0, k1)` per thread and afterwards increments `k0`, so any
-        number of words carries 128 bits, and they would share the master
-        the string seed is drawn from, which `rfc/model/strings.md`
-        forbids for this key. Final.
-      Shape: `src/hash/process_key.rs`, four `u64` words, drawn lazily
-      behind a one-time check and forced at startup by
-      `ll_hash_seed_init`, which stops being a no-op under
-      `hash-folding`. Which words a consumer takes is fixed in that
-      module's doc, once, for every consumer. The per-process guarantee
-      is per-deployment under a pre-forking master, by citation to the
-      seed's fork paragraph.
-- [ ] S27.2 One encoding of the `key` word, tagged in its low three bits,
-      for every owner
-      done: a new collector test puts a string-keyed array in a ring and
-        sees it collected, written first and seen failing against a
-        tracer that masks the recorded raw word; the two tracer tests
-        hold the child half; every reader `rfc/model/maps.md` ("What
-        moves with it") names dispatches on the tag
+- [ ] S28.3 One word per row for the walked storage version
+      done: `Epoch::storage_versions` holds 8-byte elements, pinned by
+        an element-size helper over the live field, red against today's
+        `Option<usize>` first. The sentinel is `usize::MAX`, and the
+        invariant is parity rather than one value: an array version is
+        even (`StorageHead::coherent` answers even only), the
+        `OutsideCells` walk contract gains the clause that a group's
+        coherent version is even too, and a `debug_assert` on evenness
+        guards the one recording site in `walk_edges`. The sentinel
+        test in `row_still_has_its_cells` stays ahead of the kind
+        dispatch, replacing today's `let Some` verbatim — a Reference
+        row must keep returning early, its `+8` being a Value payload
+        and not a class word. Seen red: the version comparison mutated
+        to accept a stale reading (`== walked || == walked + 2`) turns
+        `a_component_whose_array_moved_its_entries_is_acquitted` red,
+        and was reverted. The `storage_versions` doc moves with the
+        encoding.
       tier: T2 · role: Critic
-      The invariant, stated before the work: `word < 8` is tested first
-      and keeps its sentinels — `KEY_INT = 0`, `KEY_HOLE = 1`,
-      `is_hole()` stays `word == 1` — and the tag test is reached only
-      for `word >= 8`, the design's table giving `word == 1` to both the
-      hole and the string tag. The order is imposable at every site,
-      `walk.rs:502` included: it takes one relaxed load and makes its own
-      test. The tag goes on in `Entry::set_string_key` and comes off in
-      `Entry::string_key`, nowhere else, and `Key::Str` stays untagged at
-      the API edge. Two readers see the word untranslated today and both
-      are wrong the moment the tag lands: `entry_slot_hash`'s
-      `string_bytes(e.key)` (`table.rs:464`) and the tracer
-      (`walk.rs:501`), where the child is masked and the recorded raw
-      word is not. `set_string_key` gains a `debug_assert` that a string
-      key is 8-aligned — otherwise the mask hands `string_bytes` a header
-      four bytes early, an out-of-bounds read rather than a crash.
-      Falsified in place, so they move in the commit:
-      `rfc/model/arrays-hashtable.md:31` and `entry.rs:8`, `entry.rs:35`,
-      and `entry/tests/the_key_word_as_a_discriminant.rs`.
-      One AND on the key accessor is a cost the design accepted in "A
-      fifth word was refused"; this box cannot resolve it and no speed
-      claim is made.
-- [ ] S27.3 The ladder draws under the key, and its slots are salted for
-      strings as well as integers
-      done: two tables holding distinct storage hold different salts;
-        `draw_salt` derives from the storage address and the per-process
-        key; a reseeded table's string slot is the salted mix of the
-        cached hash in `slot_hash` and `entry_slot_hash` both;
-        `strong_hash` takes the key together with the salt; both
-        functions dispatch on the tag with the byte-hashing branch
-        `debug_assert`ed unreachable from any other; the equal-identity
-        counter tests tag equality rather than "not an integer key"
-      tier: T2 · role: Critic
-      Sage 2026-08-16: rung one's string half lands here rather than in
-        the map stage — under `hash-folding` a cached string hash is a
-        build constant, so today's rung one rebuilds an offline-built
-        chain into the same chain. The object and array halves stay with
-        the map stage under the no-producer rule. Final.
-      Rule 4 falls due here: the string half turns
-      `a_long_chain_draws_the_salt_once_and_then_escalates` red, because
-      a scattered chain no longer escalates on the next key. Rewritten
-      rather than weakened — it reads the drawn salt through the
-      `#[cfg(test)]` window and forges the second set under the salted
-      mix — and the sign-off is Edmond's, asked at the step.
-      `strong_hash` keeps its construction: it is re-keyed, and the
-      long-key slot it stands in for stays owed, recorded as a dated
-      `dev/DECISIONS.md` entry amending 2026-08-13 and a backlog line
-      below. The tag-equality change is verified by reading rather than
-      by the suite — in an array "not an integer key" and "the tag equals
-      the incoming string's" name the same set — and a test for it is
-      owed to the map stage.
-      Falsified in place: `draw_salt`'s block and `reseed`'s "the two
-      rungs defend different key kinds, this one integer keys".
-- [ ] S27.4 `Table::insert` answers a three-valued outcome, and knows a
-      replay from an admission
-      done: the outcome carries admitted, refused-for-memory and
-        refused-by-the-ladder, the call takes which kind of insert it is,
-        and all five non-test callers plus the two test harnesses answer
-        it with the suite green and the third variant unreachable
-      tier: T2 · role: Critic
-      The callers: `element.rs:550`, `element.rs:732`,
-      `entity::migrate_to_hash`, `entity::fill_table_from`,
-      `entity::CopiesMade::record`, and the harnesses
-      `array/testing.rs:73`, `array/table/tests.rs:38`. The two channels
-      with no room for a fourth value keep their null and are named here
-      rather than discovered later: `fill_table_from` unwinds into
-      `ll_cow_separate`, whose refusal is a null `*mut RcHeader`, and
-      `element::make_ref` refuses with a null `*mut LLReference` over
-      four causes already. `CopiesMade::record` is genuine admission and
-      not a replay, being a table keyed by entity address. Nothing
-      observable changes here; the worth of the step is that S27.5 lands
-      as one behaviour change, which holds only because the replay
-      channel is part of the same signature pass.
-- [ ] S27.5 Rung three, and the copy that must survive it
-      done: a table whose ladder is spent refuses an insert that trips a
-        trigger, with every entry unchanged, on S27.4's third outcome; a
-        copy of that table still copies; no chain in a copy exceeds
-        `CHAIN_LIMIT`, pinned by the dense-then-unset scenario; the copy
-        tests are written first and seen failing against rung three
-        alone, which is the order the commits land in
-      tier: T2 · role: Critic
-      Sage 2026-08-16, three rulings. The rung state is the two flags
-        with no counter: neither flag — draw the salt and rebuild;
-        `TABLE_RESEEDED` alone — escalate; `TABLE_STRONG` — refuse; and
-        the equal-identity trigger escalates an unescalated table and
-        refuses on an escalated one. A table escalated through that
-        trigger has both rebuilds spent, `escalate` drawing the salt on
-        its way, so refusing its first chain trip is the principle rather
-        than a stricter reading of it, and `rfc/model/maps.md`'s
-        enumeration gains the fourth case to match. The copy keeps the
-        rung bits and redraws the salt from its own storage address under
-        the per-process key, inside `new_empty_copy` once the presized
-        storage exists: nothing in an entry depends on the salt, the
-        replay re-derives every slot, and a fresh salt scatters the set
-        built against the source. Rungs one and two stay armed on the
-        replay and only the refusal is exempt — a key admitted once
-        cannot be refused on re-admission — and `new_empty_copy` presizes
-        the copy to the source's `nslots`, so no bucket merges. Blanket
-        exemption was refused: it leaves a copy of a dense-then-unset
-        array with one chain of 64 and no flags, permanently and
-        heritably. `migrate_to_hash` is out of the rule entirely, dense
-        positions on an unsalted staging table being unable to fire a
-        trigger, and a `debug_assert` records the proof. Final.
-      Cost named because it is a behaviour change of its own: a copy of
-      an unset-shrunk source carries the source's slot array until its
-      next `grow` — 1 MB of slots in the scenario above.
-      Rule 4 falls due again:
-      `a_copy_of_a_reseeded_table_inherits_the_drawn_salt` inverts its
-      assertion, an intentional change and Edmond's to sign off.
-      Falsified in place: `reseed`'s "a second firing escalates instead"
-      and its "a COW copy inherits the drawn salt", `escalate`'s "once
-      and one way", `adopt_flood_state`'s block, `new_empty_copy`'s doc,
-      `Table::insert`'s "Returns `None` when the storage could not grow",
-      `element::set`'s "Three refusals report `false`",
-      `CopiesMade::record`'s doc, and the stated rationale of
-      `entity/tests/the_flood_state_a_copy_inherits.rs`. The `maps.md`
-      amendment goes to the `rfc` repo in the same push.
-- [ ] S27.6 `sever_entries` unlinks the holes it makes
-      done: after a sever no chain reaches a hole, pinned by a test that
-        inserts into a severed table
-      tier: T1 · role: —
-      Found in passing while the plan was written (rule 3). `remove`
-      unlinks and `sever_entries` does not, so a severed table's chains
-      still run through its holes and an insert's `chain_len` counts
-      them. Inert today, because nothing inserts into a severed table;
-      with rung three it becomes a refusal of a legal insert the day a
-      map's teardown leaves one insertable. Fixed rather than recorded:
-      `dev/WORKFLOW.md` forbids a note about an unfixed defect anywhere
-      in `dev/`, this repository being public.
-
-What the stage does not do: no map class and no array-key content hash;
-no error raise, the crate having no error channel, so the third outcome
-dead-ends inside the crate until the exceptions work; no long-key slot,
-`strong_hash` being re-keyed rather than replaced; and no measurement, so
-no figure in `dev/BENCHMARKS.md` moves.
 
 ## Then: arrays as a performance problem
 
@@ -294,9 +200,29 @@ own checkbox.
   `rfc/model/gc/rc-walk.md`, and the trigger thresholds beside it. Both
   are gated on a starvation measurement that does not exist, which is why
   a collection is still an explicit call.
+- [ ] **A budgeted epoch arena for the collector's metadata**, reused
+  across collections (`dev/RC_WALK_CRITICAL_REVIEW.md`, "Per-epoch graph
+  metadata is heavy") — gated, like the escalation ladder above, on a
+  production driver and a starvation measurement that do not exist yet.
+  S28 flattens the metadata; it does not fund its reuse.
 - [ ] **`rc-satb` as a second build-time GC strategy**
   (`rfc/model/gc/satb.md`). The `WRITING` bit it waited on is pinned and
   the barrier's hook site is reserved; nothing else of it is built.
+- [ ] **The birth count and the unique-owner policy**
+  (`rfc/model/gc/rc-walk.md`, "The birth count" and "Unique ownership",
+  designed 2026-08-17) — gated on a Phase D measurement of the share of
+  dynamic publications with compiler-provable targets; the move rule
+  (copy, barrier, or a never-moved proof) is the open design question.
+- [ ] **Pure destructors, and the hand-off drain** — proposed by
+  Edmond 2026-08-18, analyzed the same day in
+  `dev/design/pure-destructors.md` through three lenses and two Critic
+  rounds. The runtime-only step (the specialized P0 dispose and the
+  raw-sever drain arm) needs no ruling and no compiler; the hand-off
+  drain waits on the residual-duties and tail-bound questions the
+  analysis names; the compiler tiers wait on the child-release-order
+  ruling. The composition with the ownership pair — including the
+  fast class that can block its own memory return — is
+  `dev/design/owned-slots-and-the-walk.md`.
 - [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2
   transition waits on one — `dev/DECISIONS.md`, 2026-08-13, which also
   says what to confirm against `arrays.md` before opening it.
@@ -315,14 +241,43 @@ own checkbox.
 ## Residual / carried-over items
 
 What the map design owed by the array table — the per-process key, the
-ladder's repair and the key word's tag — **is S27 above**, taken as one
-stage on 2026-08-16 because the three are one dependency chain.
+ladder's repair and the key word's tag — was S27, closed 2026-08-18 and
+deleted with its steps; the decisions it leaves are in `dev/DECISIONS.md`
+(2026-08-17 and 2026-08-18), the traps in `dev/POSTMORTEM.md` and the map
+in `dev/INDEX.md`. What it did not do is below.
+
+- [ ] **The ladder's refusal has nowhere to go.**
+  `InsertOutcome::RefusedByLadder` is answered inside the crate — a null
+  from `ll_cow_separate`, a `false` from `element::set` — because the
+  crate has no error channel. `rfc/model/maps.md`, "Rung three,
+  refusal", says the runtime raises it as a catchable error, and that
+  waits on the exceptions work (`rfc/BACKLOG.md`). Until then a refused
+  insert is indistinguishable from memory pressure to the program, which
+  is the one thing the two-variant outcome exists to prevent.
+- [ ] **The equal-identity trigger's tag test has no test of its own.**
+  S27.3 changed the counter from "not an integer key" to "the tag equals
+  the incoming string's", which in an array names the same set, so the
+  change was verified by reading. `Map` is where the two sets differ —
+  an object key is neither — and the test is owed there.
 
 - [ ] **The long-key slot itself.** S27 re-keys `strong_hash`; it does
   not fill the slot `strong_hash`'s doc stands in for, which is
   HighwayHash-64 behind a length threshold `rfc/model/strings.md` says is
   unmeasured. Blocked on that measurement, and it belongs with the
   strings work rather than the table's.
+- [ ] **Doc links that point at private items.** Public documentation
+  links `pub(crate)` and private names — `Table::empty` to
+  `Table::reseed`, `InsertOutcome::RefusedByLadder` to `CHAIN_LIMIT` —
+  which `rustdoc` warns about unless private items are documented too.
+  Crate-wide practice rather than one site, so it is a ruling and not a
+  fix: either the links stay and `--document-private-items` becomes how
+  the crate's documentation is built, or they become plain names. Raised
+  by S27's Code Reviewer, 2026-08-18.
+- [ ] **The per-process key's Windows door.** S27.1 lands unix-only,
+  `#[cfg(not(unix))]` a `compile_error!` naming this gap, so the
+  Windows build refuses until a session on the Windows box adds the
+  door (`BCryptGenRandom` or an equivalent OS draw) and runs the gate
+  there. Deferred by Edmond, 2026-08-17.
 - [ ] **No ABI entry creates or mounts an arena.** `LLContext` is
   `#[repr(C)]` with one public pointer and a null context is legal, so an
   external caller can build one and reach the store barrier; what it
