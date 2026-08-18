@@ -1,11 +1,85 @@
 //! A copy takes the source's rung before its first insert, the mode
 //! deciding how a key is hashed and a table that adopts it later
-//! having already indexed its entries the other way. All three
-//! states carry: escalated stays escalated, a drawn salt is
-//! inherited rather than redrawn, and an unsalted copy stays a full
-//! citizen of the ladder.
+//! having already indexed its entries the other way. The two rung
+//! bits carry; the salt does not, because the copy draws its own from
+//! its own storage address, and a set forged against the source
+//! scatters instead of arriving slot for slot. The terminal rung is
+//! here too: a source that refuses an admission is still copyable,
+//! the replay being exempt from that refusal, and no chain in a copy
+//! reaches the trigger.
 
 use super::*;
+
+/// `Table::insert` reached without the harness, which the terminal
+/// rung's tests need for two reasons: the harness panics on a ladder
+/// refusal rather than reporting it, and a fixture builds its forged
+/// chain as a replay so that the build cannot spring the trigger it is
+/// about to test (`array/table/tests/the_flood_ladder.rs`).
+fn raw_insert(a: *mut LLArray, kind: InsertKind, key: Key, value: Value) -> InsertOutcome {
+    let category = unsafe { category_of(a) };
+    let (table, head) = unsafe { as_table_mut(a) };
+    table.insert(head, category, kind, key, value)
+}
+
+/// Spend both rebuilds: string keys whose *full* hashes agree fire the
+/// equal-hash trigger, and escalation draws the salt on its way, so
+/// the table comes back strong and salted. Forged rather than found —
+/// a real such set needs a break of the hash — and the same path the
+/// attack would reach.
+///
+/// The keys stay in the table, which holds one reference to each; the
+/// caller keeps the creation reference and owes each key a release.
+fn escalate_with_equal_hashes(a: *mut LLArray) -> Vec<*mut LLString> {
+    use crate::array::table::EQUAL_HASH_LIMIT;
+    let keys: Vec<*mut LLString> = (0..EQUAL_HASH_LIMIT as usize + 1)
+        .map(|i| {
+            let s = mk(format!("collider-{i}").as_bytes());
+            unsafe { (*s).hash = 0x0BAD_C0DE_0BAD_C0DE };
+            unsafe {
+                crate::refcount::ll_retain(s as *mut RcHeader);
+                crate::array::testing::insert(a, Key::Str(s), Value::int(i as i64));
+            }
+
+            s
+        })
+        .collect();
+    assert!(
+        unsafe { crate::array::testing::table(a).is_strong() },
+        "the forged set did not escalate the table, so nothing below proves anything"
+    );
+    keys
+}
+
+/// How far a forged family agrees, and therefore the widest mask that
+/// still puts the whole of it in one slot: a table of more slots than
+/// this scatters it, and a test whose subject is one chain has to say so
+/// where its table can reach that width.
+const AGREEING_BITS: u64 = 8;
+
+/// `n` integer keys whose slots agree in the low [`AGREEING_BITS`] bits
+/// of the table's own derivation, found by search because an escalated
+/// table's integer slot is a keyed mix and cannot be forged.
+///
+/// The bits are fixed rather than taken from the current mask: the keys
+/// have to share a slot at every slot count the table passes through as
+/// it grows, and agreement in eight bits is agreement at every count up
+/// to 256. `from` starts the search above whatever integer keys the
+/// table already holds.
+fn family_sharing_a_slot(a: *mut LLArray, from: i64, n: usize) -> Vec<i64> {
+    let low = (1u64 << AGREEING_BITS) - 1;
+    let table = unsafe { crate::array::testing::table(a) };
+    let target = table.slot_hash_of(Key::Int(from)) & low;
+    let mut keys = vec![from];
+    let mut k = from;
+    while keys.len() < n {
+        k += 1;
+        if table.slot_hash_of(Key::Int(k)) & low == target {
+            keys.push(k);
+        }
+    }
+
+    keys
+}
 
 /// A copy of an attacked table is attacked. The mode is one-way on
 /// the source and `$b = $a` is the ordinary thing the language does,
@@ -98,14 +172,23 @@ fn a_copy_of_an_escalated_table_is_escalated() {
     }
 }
 
-/// A copy of a table whose salt the first rung drew indexes exactly
-/// as the source does. The bit without the number would mean
-/// `mix_int(k, 0)` — a mix every attacker computes offline — and a
-/// fresh draw would break the ladder's bound: a copy's second long
-/// chain must escalate, not rebuild again. Seen failing on the salt
-/// equality.
+/// A copy of a table whose salt the first rung drew indexes under a
+/// salt of its own, drawn from the copy's own storage address. The
+/// number is what an attacker's set is built against, and the replay
+/// puts every one of its keys back by hand, so a copy keeping the
+/// source's number would reproduce the source's chains slot for slot
+/// — and reproduce them past the point where the ladder can answer,
+/// both rung bits being spent by inheritance.
+///
+/// The ladder's bound is carried by those bits rather than by the
+/// number: the copy's next long chain escalates because it arrives
+/// already reseeded. What the bit without a number would mean is
+/// `mix_int(k, 0)`, a mix every attacker computes offline, so the
+/// redraw is what the inherited bit stands on.
+///
+/// Seen failing on the salt inequality.
 #[test]
-fn a_copy_of_a_reseeded_table_inherits_the_drawn_salt() {
+fn a_copy_of_a_reseeded_table_redraws_its_salt() {
     use crate::array::table::CHAIN_LIMIT;
     let _g = crate::memory::block_pool::test_guard();
     let mut arena = crate::memory::arena::Arena::new();
@@ -134,11 +217,14 @@ fn a_copy_of_a_reseeded_table_inherits_the_drawn_salt() {
     };
 
     assert!(!copy.is_null());
-    assert!(unsafe { crate::array::testing::table(copy).is_reseeded() });
-    assert_eq!(
+    assert!(
+        unsafe { crate::array::testing::table(copy).is_reseeded() },
+        "the rung bit is inherited: the copy's next long chain escalates"
+    );
+    assert_ne!(
         unsafe { crate::array::testing::table(copy).salt() },
         drawn,
-        "the copy indexes under a salt of its own"
+        "the copy indexes under the source's number, so a forged set arrives intact"
     );
     for i in 0..(CHAIN_LIMIT as i64 + 1) {
         assert_eq!(
@@ -210,6 +296,279 @@ fn a_copy_of_an_unsalted_table_is_unsalted_and_climbs_its_own_ladder() {
             i
         );
     }
+
+    unsafe {
+        assert!(ll_release(copy as *mut RcHeader));
+        crate::object::ll_entity_die(copy as *mut RcHeader);
+        assert!(ll_release(src as *mut RcHeader));
+        crate::object::ll_entity_die(src as *mut RcHeader);
+    }
+}
+
+/// A source whose ladder refuses an admission is still copyable. The
+/// terminal rung answers a trigger met past both rebuilds, and only an
+/// admission: the copy replays keys the source admitted once, so every
+/// entry arrives and the copy holds what the source held.
+///
+/// Green before the copy's own change, and pinned here rather than
+/// left to the table's tests: the exemption is `Table::insert`'s, and
+/// what this says is that the copy path reaches it — `fill_table_from`
+/// replays.
+#[test]
+fn a_copy_of_a_table_that_refuses_an_admission_still_copies() {
+    use crate::array::table::CHAIN_LIMIT;
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = crate::memory::arena::Arena::new();
+    let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+
+    let src = hash_arr();
+    let colliders = escalate_with_equal_hashes(src);
+    let family = family_sharing_a_slot(src, 1, CHAIN_LIMIT as usize + 1);
+    let (chain, tripper) = family.split_at(CHAIN_LIMIT as usize);
+    for (i, k) in chain.iter().enumerate() {
+        // As replays: the build must not spring the rung it is here to
+        // observe, and a stray collider sharing the slot would put the
+        // last of them over the trigger.
+        assert!(matches!(
+            raw_insert(src, InsertKind::Replay, Key::Int(*k), Value::int(i as i64)),
+            InsertOutcome::Added
+        ));
+    }
+
+    assert!(
+        matches!(
+            raw_insert(
+                src,
+                InsertKind::Admission,
+                Key::Int(tripper[0]),
+                Value::int(-1)
+            ),
+            InsertOutcome::RefusedByLadder
+        ),
+        "a chain trigger met past both rebuilds refuses an admission"
+    );
+    assert!(
+        !unsafe { crate::array::testing::contains(src, Key::Int(tripper[0])) },
+        "a refused key is not in the table"
+    );
+
+    let copy = unsafe {
+        separate(
+            src,
+            MemoryCategory::GcHeap,
+            arena_ptr,
+            CopyReason::Duplication,
+        )
+    };
+
+    assert!(!copy.is_null(), "the copy's replay was refused");
+    for (i, k) in chain.iter().enumerate() {
+        assert_eq!(
+            unsafe { crate::array::testing::get(copy, Key::Int(*k)) }
+                .unwrap()
+                .as_int(),
+            i as i64,
+            "the forged chain did not survive the copy"
+        );
+    }
+
+    for (i, s) in colliders.iter().enumerate() {
+        assert_eq!(
+            unsafe { crate::array::testing::get(copy, Key::Str(*s)) }
+                .unwrap()
+                .as_int(),
+            i as i64,
+            "the escalating set did not survive the copy"
+        );
+    }
+
+    unsafe {
+        assert!(ll_release(copy as *mut RcHeader));
+        crate::object::ll_entity_die(copy as *mut RcHeader);
+        assert!(ll_release(src as *mut RcHeader));
+        crate::object::ll_entity_die(src as *mut RcHeader);
+        for s in &colliders {
+            assert!(ll_release(*s as *mut RcHeader), "the test's own reference");
+            crate::object::ll_entity_die(*s as *mut RcHeader);
+        }
+    }
+}
+
+/// No chain in a copy reaches the trigger, even where the source's own
+/// slot array is wide enough to hide the set that would make one.
+///
+/// The source here holds 64 forged keys agreeing in eight bits of
+/// their slot, scattered across the 131072 slots a 40000-entry table
+/// grew, and those 40000 are then unset. A copy sized to the live
+/// count alone brings the eight agreeing bits down to its whole mask
+/// and merges the 64 into one chain; both rung bits arrive spent and
+/// the replay is exempt from the refusal, so nothing rebuilds it, and
+/// the chain is heritable one copy to the next. Two things answer it,
+/// and this test cannot tell them apart: the copy presizes to the
+/// source's slot count, and it redraws the salt.
+///
+/// Seen failing on a chain of 64.
+#[test]
+#[cfg_attr(miri, ignore = "40000 inserts and their removal")]
+fn no_chain_in_a_copy_of_a_dense_then_unset_table_reaches_the_trigger() {
+    use crate::array::table::CHAIN_LIMIT;
+    const FILLER: i64 = 40_000;
+    const FORGED: usize = 64;
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = crate::memory::arena::Arena::new();
+    let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+
+    let src = hash_arr();
+    for i in 0..FILLER {
+        unsafe {
+            crate::array::testing::insert(src, Key::Int(i), Value::int(i));
+        }
+    }
+
+    assert!(
+        unsafe { !crate::array::testing::table(src).is_reseeded() },
+        "dense by-value keys form no chain, so the ladder is untouched here"
+    );
+    assert_eq!(
+        unsafe { as_table(src) }.1.nslots(),
+        131072,
+        "the scenario is a wide slot array, and the copy's cost is stated in it"
+    );
+
+    let colliders = escalate_with_equal_hashes(src);
+    let family = family_sharing_a_slot(src, FILLER, FORGED);
+    for (i, k) in family.iter().enumerate() {
+        assert!(matches!(
+            raw_insert(src, InsertKind::Replay, Key::Int(*k), Value::int(i as i64)),
+            InsertOutcome::Added
+        ));
+    }
+
+    for i in 0..FILLER {
+        let (_, key) = unsafe { crate::array::testing::remove(src, Key::Int(i)) }.unwrap();
+        assert!(key.is_null(), "an integer key owes the caller no reference");
+    }
+
+    let copy = unsafe {
+        separate(
+            src,
+            MemoryCategory::GcHeap,
+            arena_ptr,
+            CopyReason::Duplication,
+        )
+    };
+
+    assert!(!copy.is_null());
+    let (copy_table, copy_head) = unsafe { as_table(copy) };
+    assert!(
+        copy_head.nslots() <= 1 << AGREEING_BITS,
+        "the copy's mask is wider than the family agrees, so the family \
+         would scatter under any salt and the chain below proves nothing"
+    );
+    let longest = copy_table.longest_chain(copy_head);
+    assert!(
+        longest <= CHAIN_LIMIT as usize,
+        "a copy holds a chain of {longest}: the forged set arrived slot for slot, \
+         and the replay is exempt from the rung that would answer it"
+    );
+    for (i, k) in family.iter().enumerate() {
+        assert_eq!(
+            unsafe { crate::array::testing::get(copy, Key::Int(*k)) }
+                .unwrap()
+                .as_int(),
+            i as i64
+        );
+    }
+
+    unsafe {
+        assert!(ll_release(copy as *mut RcHeader));
+        crate::object::ll_entity_die(copy as *mut RcHeader);
+        assert!(ll_release(src as *mut RcHeader));
+        crate::object::ll_entity_die(src as *mut RcHeader);
+        for s in &colliders {
+            assert!(ll_release(*s as *mut RcHeader), "the test's own reference");
+            crate::object::ll_entity_die(*s as *mut RcHeader);
+        }
+    }
+}
+
+/// A copy of a reseeded source that holds no entries still owns a chunk
+/// and a salt of its own. The rung bit travels whatever the entry count
+/// is — the source is one `unset` away from being flooded again, and its
+/// copy is the same table — while the draw takes a storage address, so
+/// the copy takes the growth schedule's first chunk to be drawn from
+/// rather than starting with none.
+///
+/// Seen failing against a copy that presizes nothing: the draw meets a
+/// null chunk and the debug assertion in `redraw_salt` fires.
+#[test]
+fn a_copy_of_a_reseeded_but_emptied_source_owns_a_chunk_and_a_salt() {
+    use crate::array::table::CHAIN_LIMIT;
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = crate::memory::arena::Arena::new();
+    let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+
+    let src = hash_arr();
+    for i in 0..(CHAIN_LIMIT as i64 + 1) {
+        unsafe {
+            crate::array::testing::insert(src, Key::Int(i * 1024), Value::int(i));
+        }
+    }
+
+    assert!(
+        unsafe { crate::array::testing::table(src).is_reseeded() },
+        "the stride flood did not fire the rung, so this proves nothing"
+    );
+    let drawn = unsafe { crate::array::testing::table(src).salt() };
+    for i in 0..(CHAIN_LIMIT as i64 + 1) {
+        let (_, key) = unsafe { crate::array::testing::remove(src, Key::Int(i * 1024)) }.unwrap();
+        assert!(key.is_null(), "an integer key owes the caller no reference");
+    }
+
+    assert_eq!(
+        unsafe { crate::array::testing::table(src) }.len(),
+        0,
+        "the source must be empty for the copy to have nothing to replay"
+    );
+
+    let copy = unsafe {
+        separate(
+            src,
+            MemoryCategory::GcHeap,
+            arena_ptr,
+            CopyReason::Duplication,
+        )
+    };
+
+    assert!(!copy.is_null());
+    let (copy_table, copy_head) = unsafe { as_table(copy) };
+    assert!(copy_table.is_reseeded(), "the rung bit did not travel");
+    assert!(
+        !copy_head.storage().is_null(),
+        "the salt was drawn from an address the copy does not own"
+    );
+    assert_eq!(
+        copy_head.nslots(),
+        16,
+        "the chunk is the schedule's first, taken for the draw alone"
+    );
+    assert_ne!(
+        copy_table.salt(),
+        drawn,
+        "the copy indexes under the source's number"
+    );
+
+    unsafe {
+        crate::array::testing::insert(copy, Key::Int(1), Value::int(7));
+    }
+
+    assert_eq!(
+        unsafe { crate::array::testing::get(copy, Key::Int(1)) }
+            .unwrap()
+            .as_int(),
+        7,
+        "the presized chunk does not take an entry"
+    );
 
     unsafe {
         assert!(ll_release(copy as *mut RcHeader));

@@ -130,6 +130,16 @@ fn an_arena_tables_key_release_is_owed_by_the_reset_log() {
 /// `escape_lose` it — a bare `ll_release` no-ops on an arena entity
 /// and leaves the count stuck, and the reset then treats a child
 /// nobody holds as an escapee. Seen failing on the escapee flag.
+///
+/// **The entry's key is what the refusal lands on**, because the copy's
+/// element goes across before its key does (`fill_table_from`) and the
+/// giveback under test is the one that follows a published element. The
+/// key is a COW arena string, which crossing into a heap destination is
+/// copied and therefore refusable; the element is a dynamic one, which
+/// is counted rather than copied and is the escapee the assertion reads.
+/// The copy's own two allocations are served ahead of it — its entity
+/// slot from the warmed block, its presized storage from the warmed
+/// buffer arena — so neither of them is what refuses.
 #[test]
 fn a_refused_heap_copy_gives_an_escaped_child_back_through_the_barrier() {
     use crate::memory::block_pool::FORCE_OOM;
@@ -142,26 +152,46 @@ fn a_refused_heap_copy_gives_an_escaped_child_back_through_the_barrier() {
     crate::memory::context::set_current_context(context_ptr);
 
     // Warm a heap entity block, so the forced refusal below lands on
-    // the copy's table storage and not on the copy's own slot.
+    // the key's crossing and not on the copy's own slot.
     let warm = arr();
+    let _held = warm_the_buffer_arena();
 
     let src = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let d = unsafe {
         crate::string::ll_string_new_dynamic(context_ptr, MemoryCategory::RequestArena, b"p", 0)
     };
 
-    assert!(!d.is_null());
+    let k =
+        unsafe { crate::string::ll_string_new(context_ptr, MemoryCategory::RequestArena, b"key") };
+
+    assert!(!d.is_null() && !k.is_null());
     unsafe {
         crate::refcount::ll_retain(d as *mut RcHeader);
+        crate::refcount::ll_retain(k as *mut RcHeader);
         crate::array::testing::insert(
             src,
-            Key::Int(0),
+            Key::Str(k),
             Value::entity(crate::value::Tag::String, d as *mut RcHeader),
         );
         crate::refcount::ll_retain(src as *mut RcHeader);
     }
 
     FORCE_OOM.store(true, Ordering::Relaxed);
+    // Every heap string slot the thread can still serve. The flag refuses
+    // the pool a fresh block; a block this thread already holds would
+    // serve the key's crossing in silence, and whether it holds one
+    // depends on what ran on this thread before.
+    let mut fillers: Vec<*mut crate::string::LLString> = Vec::new();
+    loop {
+        let s =
+            unsafe { crate::string::ll_string_new(context_ptr, MemoryCategory::GcHeap, b"filler") };
+        if s.is_null() {
+            break;
+        }
+
+        fillers.push(s);
+    }
+
     let copy = unsafe {
         separate(
             src,
@@ -172,6 +202,13 @@ fn a_refused_heap_copy_gives_an_escaped_child_back_through_the_barrier() {
     };
 
     FORCE_OOM.store(false, Ordering::Relaxed);
+    for s in fillers {
+        unsafe {
+            assert!(ll_release(s as *mut RcHeader));
+            crate::object::ll_entity_die(s as *mut RcHeader);
+        }
+    }
+
     assert!(
         copy.is_null(),
         "the copy was meant to be refused and was not"

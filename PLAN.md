@@ -264,9 +264,34 @@ and the one price outside the crate — the Windows build S27.1's
         heritably. `migrate_to_hash` is out of the rule entirely, dense
         positions on an unsalted staging table being unable to fire a
         trigger, and a `debug_assert` records the proof. Final.
-      Cost named because it is a behaviour change of its own: a copy of
-      an unset-shrunk source carries the source's slot array until its
-      next `grow` — 1 MB of slots in the scenario above.
+      Critic 2026-08-18, eleven findings against the implementation. Two
+        of a kind and both fixed: the presize moved the copy's first
+        allocation ahead of its first element, so two refusal tests
+        (`a_refused_work_list_gives_the_nested_copy_back` and the
+        escapee giveback in `who_owns_a_key_reference.rs`) began passing
+        on a branch they were not written for — the fault injection
+        gained `SERVE_BEFORE_REFUSING`, and each test now names and
+        counts the allocation it refuses. The rest are mechanical and
+        fixed in place: the tail written outside the move window, the
+        missing empty-table assertions, `redraw_salt`'s storage
+        assertion armed on a path that skipped the presize, and the
+        forged family's agreement coupled to a mask nothing asserted.
+        Finding 3 — the presize is load-bearing in no case the Critic
+        could construct — went to Sage.
+      Sage 2026-08-18: the presize to the source's `nslots` is
+        withdrawn. A mask cannot supply the defence it was bought for:
+        differing identities are scattered by the copy's own salt,
+        equal ones collide at every width and belong to the
+        equal-identity trigger, and where the salt is recovered a
+        colliding set is forged against any mask alike. The copy sizes
+        by its own replay instead —
+        `cap = pow2ge(live).max(8)`, `nslots = cap * 2`, the growth
+        schedule's own end state — which also retires the price below,
+        the first-insert rebuild `cap == live` would have cost, and the
+        arena refusal a 512 KiB ask would have been. A copy with no live
+        entry takes no chunk unless it holds a drawn rung bit, the draw
+        needing an address. Recorded in `dev/DECISIONS.md`, "a copy
+        sizes its storage by its own replay". Final.
       Rule 4 falls due again:
       `a_copy_of_a_reseeded_table_inherits_the_drawn_salt` inverts its
       assertion, an intentional change and Edmond's to sign off.

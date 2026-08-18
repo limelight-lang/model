@@ -629,3 +629,69 @@ fn an_arena_vector_taken_by_a_heap_holder_is_copied_out_with_its_children() {
     crate::memory::context::set_current_context(std::ptr::null_mut());
     arena.reset(|_| {});
 }
+
+/// The copy's storage is sized by what it replays rather than by the
+/// chunk the source happens to hold. A source grown wide and then unset
+/// keeps a slot array its live entries no longer justify — nothing
+/// shrinks a table but a growth — and a copy that took it over would
+/// hand every copy of a once-large array the wide array behind a handful
+/// of entries, in the request arena out of headroom nothing reclaims
+/// until the reset.
+///
+/// Seen failing against a copy presized to the source's slot count.
+#[test]
+fn a_copy_of_a_shrunk_source_is_sized_by_what_it_replays() {
+    const GREW: i64 = 200;
+    const KEPT: i64 = 3;
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = crate::memory::arena::Arena::new();
+    let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
+
+    let src = hash_arr();
+    for i in 0..GREW {
+        unsafe {
+            crate::array::testing::insert(src, Key::Int(i), Value::int(i));
+        }
+    }
+
+    assert_eq!(
+        unsafe { crate::array::entity::as_table(src) }.1.nslots(),
+        512,
+        "the growth schedule reached a chunk of 256 entries over twice as many slots"
+    );
+    for i in KEPT..GREW {
+        let (_, key) = unsafe { crate::array::testing::remove(src, Key::Int(i)) }.unwrap();
+        assert!(key.is_null(), "an integer key owes the caller no reference");
+    }
+
+    let copy = unsafe {
+        separate(
+            src,
+            MemoryCategory::GcHeap,
+            arena_ptr,
+            CopyReason::Duplication,
+        )
+    };
+
+    assert!(!copy.is_null());
+    assert_eq!(
+        unsafe { crate::array::entity::as_table(copy) }.1.nslots(),
+        16,
+        "the copy took the source's slots instead of the three entries' own"
+    );
+    for i in 0..KEPT {
+        assert_eq!(
+            unsafe { crate::array::testing::get(copy, Key::Int(i)) }
+                .unwrap()
+                .as_int(),
+            i
+        );
+    }
+
+    unsafe {
+        assert!(ll_release(copy as *mut RcHeader));
+        crate::object::ll_entity_die(copy as *mut RcHeader);
+        assert!(ll_release(src as *mut RcHeader));
+        crate::object::ll_entity_die(src as *mut RcHeader);
+    }
+}

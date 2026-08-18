@@ -550,13 +550,27 @@ pub unsafe fn separate(
 /// bytes for it, and a hash copied into a vector could not hold what it
 /// held.
 ///
-/// For the ordered hash the state is the salt, the flood rung and the
-/// append cursor. The flood state goes in before the first insert,
-/// because it decides how a key is hashed: a copy that starts weak
-/// re-installs an attacker's whole collision set under the hash the
-/// source escalated away from. A vector carries none of the three — it
-/// hashes nothing, and its cursor is its length, which the copy reaches
-/// by taking the same elements.
+/// For the ordered hash the state is the two flood rung bits and the
+/// append cursor. Both go in before the first insert, the rung deciding
+/// how a key is hashed: a copy that starts weak re-installs an
+/// attacker's whole collision set under the hash the source escalated
+/// away from. A vector carries neither — it hashes nothing, and its
+/// cursor is its length, which the copy reaches by taking the same
+/// elements.
+///
+/// **The salt is drawn here rather than inherited.** The copy replays
+/// the source's keys, so under the source's number the source's chains
+/// would be reproduced slot for slot, with both rungs spent and the
+/// replay exempt from the terminal refusal — nothing left to rebuild
+/// them away (`rfc/model/maps.md`, "Rung three, refusal"). The draw
+/// takes the copy's storage address, so it follows the presize.
+///
+/// **The storage is presized to the replay**, which is one allocation
+/// where the doubling schedule takes several and lands on the same
+/// chunk; in the request arena the ones it skips are headroom nothing
+/// reclaims until the reset. A copy of an empty source takes no chunk at
+/// all unless it inherited a drawn rung bit, the draw needing an address
+/// ([`Table::presize_for_replay`]).
 ///
 /// # Safety
 /// `src` is a live array entity.
@@ -573,6 +587,12 @@ unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LL
             let (copy, copy_head) = unsafe { as_table_mut(dst) };
             copy.adopt_flood_state(copy_head, source);
             copy.adopt_append_state(source);
+            if !copy.presize_for_replay(copy_head, category, source.len()) {
+                unsafe { crate::object::destroy_unpublished(dst as *mut RcHeader) };
+                return std::ptr::null_mut();
+            }
+
+            copy.redraw_salt(copy_head);
             dst
         }
         StorageTag::Typed => unreachable!("no producer stamps the typed vector"),

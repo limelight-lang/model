@@ -153,8 +153,14 @@ versions live in `docs/history/`, marked at the top.
   `table.rs` is the core — lookup, insert, remove, growth by doubling or by
   dropping the holes (one body, `move_entries`, and both into a freshly
   allocated chunk since S13.1: sliding entries inside the published one
-  raced the collector's relaxed loads), and the flood backstop that
-  escalates a table once to a keyed hash over the key bytes. It allocates no entity and calls no store
+  raced the collector's relaxed loads), and the flood backstop, which is
+  a three-rung ladder: a long chain draws the table's salt and rebuilds
+  the index, a second long chain or eight equal identities escalates to a
+  keyed hash over the key bytes, and past both an admission whose trigger
+  trips is refused rather than chained (`rfc/model/maps.md`, "Rung three,
+  refusal"). Every secret it draws comes from `hash/process_key.rs`. A
+  COW copy takes the rung bits, draws a salt of its own from its own
+  storage, and is presized to the entries it replays. It allocates no entity and calls no store
   barrier: both are `element.rs`'s, and `Table::insert` hands the
   displaced element back for that layer to release (S6.1).
   Storage is a **buffer-arena** chunk in the two long-lived categories,

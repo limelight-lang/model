@@ -8,6 +8,42 @@ never edited or deleted.
 
 ---
 
+## 2026-08-18 — a copy sizes its storage by its own replay
+
+Amends the 2026-08-16 ruling recorded in `PLAN.md` S27.5, which had a
+COW copy presize to the *source's* slot count so that no bucket the
+source kept apart would merge under the copy's narrower mask. The
+copy now takes the chunk its own live count reaches through the growth
+schedule — `cap = pow2ge(live).max(8)`, `nslots = cap * 2`
+(`Table::presize_for_replay`) — and a copy with no live entry takes no
+chunk unless it inherited a drawn rung bit, which needs an address to
+draw a salt from.
+
+The source-width form was withdrawn because a mask cannot supply the
+defence it was bought for. Four families can share a slot, and none of
+them is answered by width: an integer key and a string key in a
+reseeded-but-weak table are scattered by the copy's own drawn salt, a
+string key in an escalated table is re-keyed by it, equal cached hashes
+collide at every width and are the equal-identity trigger's business,
+and a copy with no rung bit has both rebuilds in hand. Where the salt is
+recovered — the timing oracle `rfc/model/strings.md` concedes, or the
+address recycling `Table::draw_salt` names — a colliding set is forged
+against a wide mask as cheaply as against a narrow one, so the two fall
+together there too.
+
+What the withdrawn form cost: a copy of a source grown to 40000 entries
+and then emptied carried 512 KiB of slots behind a handful of live ones;
+`cap` set to exactly the live count made the first insert after every
+copy grow and rebuild; and in the request arena, where nothing is
+reclaimed until the reset, the wide ask was a refusal of the program's
+write rather than a cost. Sizing by the replay inverts the last of those
+— one right-sized chunk instead of every chunk of a doubling replay, all
+of which the arena keeps.
+
+Kept from the withdrawn form: the presize itself. It saves the
+intermediate chunks, and it is what gives a reseeded copy of an emptied
+source the address its salt is drawn from.
+
 ## 2026-08-17 — rung one salts every kind's slot, under the per-process key
 
 Amends 2026-08-13, "the flood ladder's two rungs answer different key
