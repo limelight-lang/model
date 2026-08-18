@@ -234,6 +234,15 @@ mutator-reachable entities whose counts only the owner may touch, so
 the collector posts the displaced list back and the owner releases it
 as an ordinary batch.
 
+Edmond's clarified intent (2026-08-18) confirms this shape and settles
+the memory route: the collector runs the dispose-side work — the
+sever, never a user destructor — on its own thread and posts the
+physical frees to the memory manager's queues instead of freeing in
+place. `Heap::free_remote`'s per-block remote stacks are that queue;
+while the epoch is still open the collector's own frees park like
+anyone's, the slot-identity rule knowing no exceptions, and the
+parked backlog goes to the queues after close.
+
 What the mutator still pays, and why each piece stays:
 
 | Mutator work | Why irreducible |
