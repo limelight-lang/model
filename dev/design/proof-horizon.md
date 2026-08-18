@@ -780,3 +780,45 @@ pair-cost dispersion; the channel list was owed too late ("if
 accepted"); the certificate overclaimed alias completeness; the
 blast radius had no instrument. Accepted in full; this revision is
 the fix, with the corpus names still open with Edmond.
+
+## A simpler first economics
+
+The first economic reading does not need a complete compiler cost
+model.  A borrow lifetime has only a small, explicit set of events
+that can end its proof:
+
+- `unset`, displacement of its anchor, or a store that may sever its
+  anchor path;
+- an unsummarized call, including a call whose transitive callees are
+  not proved safe;
+- suspension through a coroutine, `yield` or a fibre;
+- reflection, callback or by-reference escape;
+- an impure-destructor release or an unsafe checkpoint.
+
+Classify each lifetime by its first such event.  A lifetime with no
+event removes one retain/release pair; for a deliberately conservative
+lower bound, every lifetime with an event may be credited with zero
+saving.  Recording the event class, the position of the first event
+and its execution frequency is enough to refine that bound later.
+This finite case table should precede a more elaborate census: it can
+say whether the free population is material without waiting for full
+lowering or trying to price every secondary compiler effect.
+
+The comparison with a runtime write barrier is asymmetric.  A write
+barrier charges every relevant store, including stores made while no
+borrow needs protection, and puts a check, branch and metadata traffic
+on the store path.  Proof horizons add no runtime write barrier; they
+charge one ordinary retain/release pair only to a live borrow that
+actually crosses a potentially severing store.  The primary comparison
+is therefore:
+
+```text
+runtime barrier cost = relevant dynamic stores * barrier unit cost
+proof-horizon cost   = live borrows crossing dangerous stores * RC pair cost
+```
+
+The barrier's unit cost is expected to be high enough that avoiding it
+is a design constraint, not a marginal detail.  Measurement is still
+owed for the magnitude, but the first question is the simple event
+count above: how often a dangerous store coincides with a live borrow,
+not how often stores occur in general.
