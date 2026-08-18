@@ -602,6 +602,12 @@ demand; no images committed.
 registry, lifetimes, shadow metadata, integrity checks, metrics export.
 Design only, nothing implemented.
 
+`dev/design/epoch-walk.md` and `dev/design/epoch-walk-structures.md` —
+the rc-walk epoch as a reading aid: the phase machine, both protocol
+diagrams, the grouping algorithm, and every collector structure with
+its per-row and per-edge cost, including what stage S28 changes. The
+RFC stays normative; these two describe, dated 2026-08-18.
+
 ## Traps
 
 `dev/POSTMORTEM.md` — benchmarking against a stale baseline

@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-18 · Active: none — the sections below are the backlog
+Updated: 2026-08-18 · Active: S28 — the sections below it are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
@@ -26,6 +26,107 @@ without the flood ladder 32 tests in 79 s, the ladder's own module 14 in
 273, and `array::entry` with the tracer and ring tests 13 in 179. All
 clean. `array::entity` is the expensive one and is taken by test rather
 than whole; the copy tests of that module ran 25 in 59 s.
+
+## S28 — Epoch metadata: flat per-row words only
+
+Goal: the collector's grouping keeps no nested per-row vectors, the
+judge copies no edge list, and the walk's per-row storage version fits
+one word — the weight `dev/RC_WALK_CRITICAL_REVIEW.md`, "Per-epoch
+graph metadata is heavy", prices at 24 bytes of empty vector shells per
+walked row before any content, plus 16 bytes per row of `Option<usize>`.
+Flat n-sized word arrays stay: marking over `RC − IN` is per-row by
+nature. The stage claims no per-edge saving either — the 32-byte `Edge`
+layout is a recorded decision (`collector.rs`, the `shape` field's
+comment), and only the judge-time copy of the list goes.
+Done when: the S28.1 harness stands with its by-construction shapes;
+`garbage_components` builds its adjacency as flat arrays and the
+probe's per-row byte budget holds, the probe re-run by hand at stage
+close; `judge` hands the recorded edges over without a copy — closed by
+reading the new signature, a pair copy having no site left;
+`Epoch::storage_versions` holds 8 bytes per row; both GC configurations
+are green, the rc-trace run being a regression sweep for the
+collector-only steps (`collector` and `epoch` compile under `rc-walk`
+alone).
+
+Out of scope, named rather than implied: `recheck_and_post`'s
+`component_edges` is sized by candidates and stays; the epoch arena has
+its own backlog line below ("A budgeted epoch arena for the collector's
+metadata"); and nothing here touches a clock — the box's noise floor
+(`dev/BENCHMARKS.md`, 1.5–3 %) is wider than any expected effect, so
+every criterion is a layout, an allocation shape or a suite.
+
+Critic 2026-08-18 round 1, three lenses (technical, plan,
+  verification): the cheap `Option<NonZeroUsize>` packing collides with
+  version 0 in the fail-open direction; the original S28.1/S28.2 pair
+  cut through `garbage_components`' signature; the source-shape
+  criteria had nothing runnable behind them. Accepted — harness-first
+  re-cut, sentinel and contract named, allocation probe added.
+Critic 2026-08-18 round 2, on the fixes: the 28-byte budget forgot the
+  mark bitmap and the unsized root stack; the first seeded mutation was
+  inexpressible before the rewrite; the `Some(0)` hand-collapse was a
+  no-op over every reachable state (an edge source's version is ≥ 2);
+  the arena deferral cited a backlog line that did not exist. Accepted
+  — budget re-derived at 32 with exact pre-sizing, mutations
+  reassigned per step, seen-red retargeted at the stale-version
+  comparison, the backlog line added. Disputes ruled in-session by
+  Edmond's standing instruction; no Sage round.
+
+- [ ] S28.1 The grouping harness: a direct test of `garbage_components`
+      done: a partition-equality test (members sorted, components keyed
+        by their minimum member — no caller depends on order, verified
+        by reading both consumers, `recheck_and_post` and `walk.rs`'s
+        `collect_cycles_inner`) holds a pasted textual copy of the
+        current implementation as its frozen oracle and covers, by
+        construction rather than by chance: n = 0, an empty candidate
+        edge set, an isolated single-row candidate, a self-edge amid
+        other candidates, duplicate parallel edges, a marked/unmarked
+        mix, a garland of rings, and fixed-seed random graphs on top;
+        two seeded mutations of the live implementation turned it red
+        and were reverted — self-edges skipped in the `in_degree` pass
+        (a pure self-loop reads live and leaves the partition), and the
+        reverse push dropped from the undirected adjacency (a ring
+        closed high-to-low splits). The test lives in `walk`'s test
+        tree, compiled under both GC features.
+      tier: T1 · role: Critic
+- [ ] S28.2 The rewrite: edges read in place, adjacency in flat CSR
+      done: `garbage_components` takes the epoch's edges without an
+        intermediate `(u32, u32)` copy, and both callers compile
+        against the new shape — `walk.rs`'s `collect_cycles_inner`
+        supplies its native pairs. The mark walk's forward CSR still
+        covers every recorded edge; only the undirected component CSR
+        is restricted to candidate (both-ends-unmarked) edges, and
+        component enumeration stays the `0..n` scan over `!marked`, so
+        an isolated candidate is still a singleton. The S28.1 test is
+        green unchanged, and one further seeded mutation — a self-edge
+        contributing 1 instead of 2 to the undirected degree pass —
+        turned it red and was reverted. An ignored probe, summing
+        allocation requests on a thread-local counter toggled around
+        the call (a `cfg(miri)` bypass in the wrapper, run
+        name-filtered), asserts the grouping's allocated bytes grow by
+        at most 32 per added row at fixed candidates and edges — every
+        internal vector pre-sized exactly, the root stack included —
+        and was red against the pre-rewrite code first. The `Edge`
+        width comment is re-worded to the new reading pattern rather
+        than moved: "walked twice" stops being true.
+      tier: T2 · role: Critic
+- [ ] S28.3 One word per row for the walked storage version
+      done: `Epoch::storage_versions` holds 8-byte elements, pinned by
+        an element-size helper over the live field, red against today's
+        `Option<usize>` first. The sentinel is `usize::MAX`, and the
+        invariant is parity rather than one value: an array version is
+        even (`StorageHead::coherent` answers even only), the
+        `OutsideCells` walk contract gains the clause that a group's
+        coherent version is even too, and a `debug_assert` on evenness
+        guards the one recording site in `walk_edges`. The sentinel
+        test in `row_still_has_its_cells` stays ahead of the kind
+        dispatch, replacing today's `let Some` verbatim — a Reference
+        row must keep returning early, its `+8` being a Value payload
+        and not a class word. Seen red: the version comparison mutated
+        to accept a stale reading (`== walked || == walked + 2`) turns
+        `a_component_whose_array_moved_its_entries_is_acquitted` red,
+        and was reverted. The `storage_versions` doc moves with the
+        encoding.
+      tier: T2 · role: Critic
 
 ## Then: arrays as a performance problem
 
@@ -99,6 +200,11 @@ own checkbox.
   `rfc/model/gc/rc-walk.md`, and the trigger thresholds beside it. Both
   are gated on a starvation measurement that does not exist, which is why
   a collection is still an explicit call.
+- [ ] **A budgeted epoch arena for the collector's metadata**, reused
+  across collections (`dev/RC_WALK_CRITICAL_REVIEW.md`, "Per-epoch graph
+  metadata is heavy") — gated, like the escalation ladder above, on a
+  production driver and a starvation measurement that do not exist yet.
+  S28 flattens the metadata; it does not fund its reuse.
 - [ ] **`rc-satb` as a second build-time GC strategy**
   (`rfc/model/gc/satb.md`). The `WRITING` bit it waited on is pinned and
   the barrier's hook site is reserved; nothing else of it is built.
