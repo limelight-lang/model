@@ -4281,3 +4281,41 @@ no gain over choosing the target.
 **Cost:** Miri never exercises the Windows TLS path, which is the one
 that actually ships here. `-Zmiri-ignore-leaks` is also required, so
 Miri is blind to the leak-shaped findings.
+
+## 2026-08-18 — uncounted objects under a compiler-cleared stack-presence bit: refused
+
+Edmond's proposal, ruled by Sage at full depth the same day, with the
+literature sweep of `dev/RESEARCH.md` (same date) beside it.
+
+One header bit meaning "a stack slot may hold me" cannot be kept sound
+by compiler set and clear alone: clearing requires knowing whether
+another live frame still holds the object, and two independent heap
+loads of one object in sibling frames with adversarial exit order
+defeat every static duty assignment — "some frame holds me" is a
+disjunction, and a disjunction is not cancellative, so removal needs
+the other operands: a per-object holder count, holder enumeration
+(stack maps, a shadow stack, or re-assertion at checkpoints — against
+the central bet that roots are derived, never enumerated), or a static
+at-most-one proof, which is unique ownership and is already designed.
+The counter floor costs exactly today's narrow retain and release (a
+header load plus a 4-byte relaxed store, no RMW — `refcount.rs`), so
+the stack side can never undercut the current scheme.
+
+The heap side falls to a second fact: in rc-walk the refcount **is**
+the write barrier — Phase 3 sees a moved reference only through the
+count, and the exact test balances counts — so an uncounted partition
+must fund a replacement per-publish trace, capping its saving below
+the counted publish while adding a second judgement mode, a hand-back
+channel, weak-nulling round-trips and a promotion rule.
+
+The literature agrees from the other side: every published system that
+lets a mutator announce stack possession uses per-slot, per-frame or
+per-thread state, a scan, or a sticky one-way bit; no clearable
+per-object stack bit is published, and the closest industrial hybrid
+(free-threaded CPython's deferred-refcount flag) pays with whole-frame
+scans at every collection.
+
+Re-open only if the Phase D publish census — the instrument that also
+prices the birth count and unique ownership — shows post-construction
+publishes into multiply-referenced, transitively pure object classes
+dominating the barrier bill.
