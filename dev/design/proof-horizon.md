@@ -88,6 +88,39 @@ for), and no walk-side changes at all — rc-walk does not learn this
 feature exists. The compiler alone decides where the pairs go; the
 runtime is unchanged.
 
+## The hybrid: the regime is a class property
+
+Counting is not all-or-nothing (Edmond, 2026-08-18): whether local
+references to a class's instances are counted is a property of the
+class, chosen by the compiler and carried where the other compiler-owed
+class facts live (the acyclic and purity bits' delivery channel).
+
+- **A counted class**: locals pay the classic pair at acquisition and
+  release, exactly today's code. No proofs, no summaries, no horizon
+  bookkeeping — a counted local is its own protection, so horizons do
+  not publish it.
+- **A horizon class**: locals are free inside the proof horizon and
+  are published (retained) only at a horizon they cross, as above.
+
+Mixing is sound by construction in form A: both regimes resolve to
+counts wherever liveness is decided, differing only in *when* the
+count is taken. The regime is decidable at a site exactly where the
+static class is — a slot whose class the compiler cannot narrow
+(`mixed`, an open hierarchy) is treated as counted, the conservative
+default, and regime A is likewise the mandatory answer at every
+analysis failure: the superseded model's own rule, "analysis failure
+must select owned, never guess". The selection heuristic is economic:
+horizon classes are the closed, summary-friendly types that live in
+provable scopes (value objects, DTOs, the acyclic-and-pure
+population); counted classes are the ones that habitually cross
+reflection, callbacks or coroutine suspensions, where the analysis
+would cost more than the pairs it removes.
+
+The hybrid also changes what the measurement decides: the corpus scan
+below no longer gates the whole design on one global coverage number —
+it prices the horizon regime class by class, and the design pays for
+summaries only where they buy something.
+
 ## What this is, named against the literature
 
 Proof-driven deferred stack counting: Deutsch–Bobrow's deferral with
