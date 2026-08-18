@@ -77,6 +77,27 @@ most candidate tiers.
 | **NR** | impure (I/O, external writes) but no address reachable through `$this` — `$this` itself or any member it can name — escapes into anything outliving the call; no throw | escape analysis of every address reachable through `$this`, through every callee | the resurrection machinery: the guard pair on ordinary death and the Phase 4 re-verify — never timing or thread freedom |
 | P3 "reads external, writes none" | — | — | collapses: pure reads are unobservable, so P3 is P1; any output channel makes it NR |
 
+**Purity is transitive — Edmond's ruling, 2026-08-18.** The rows above
+grade one destructor body; the class-level verdict joins the body's
+tier with a closure. A destructor is pure only when its own body
+qualifies and every destructor reachable through the death cascade
+qualifies too: the classes every counted field can hold, their fields'
+classes, and so on to the closure. One impure destructor anywhere in
+it makes the holder impure — there is no partially pure variant. What
+the transitive guarantee buys is categorical: no resurrection can
+occur anywhere in the cascade, so the guard-discounted re-verify is
+unnecessary for the whole teardown, and every child destructor runs
+unconditionally to completion. The compiler obligation is a
+closed-world closure over the field-type graph — the same discipline,
+and the same failure modes (a subclass opening the set, `mixed`, an
+array of unknown element class), as the acyclic flag; any edge the
+analysis cannot close makes the class impure. A consequence for the
+hand-off: the external children of a pure component are inside the
+closure, so the owner's release batch runs no user code — it stays on
+the owner for the counts, but it is mechanical and bounded. NR sits
+outside this definition: it is not purity, gains none of the
+transitive guarantees, and keeps only its ordinary-death payoff.
+
 The no-throw obligation is hard for P1, P2 and NR: an exception leaving
 `__destruct` carries `$this` in its backtrace — an escape channel the
 resurrection audit cannot otherwise close. PHP 8 arithmetic and typed
@@ -96,7 +117,9 @@ own-slot stores preserve the exact-test equality term by term:
 displacing an in-component child moves `rc` and `indeg` together, and
 an external store touches no member row. So for a component of ≤ P2/NR
 members, `rc` cannot come to exceed `indeg + guard`, and the re-verify
-is redundant by construction.
+is redundant by construction. Under the transitive ruling the same
+holds for the whole cascade, not only the component's members: nothing
+a pure teardown reaches can resurrect anything.
 
 ## What is already built
 
