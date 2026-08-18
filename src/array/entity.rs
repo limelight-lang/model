@@ -231,7 +231,19 @@ pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) 
                 // nothing a release build could settle here.
                 debug_assert!(false, "vector positions are distinct keys");
             }
-            InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder => {
+            InsertOutcome::RefusedForMemory => {
+                table.dispose(&staging, category);
+                return false;
+            }
+            InsertOutcome::RefusedByLadder => {
+                // The ruling's proof that migration is out of the
+                // terminal rung's reach: dense positions on an unsalted
+                // staging table index by value into distinct slots, so
+                // no trigger can fire — and a replay is exempt besides.
+                debug_assert!(
+                    false,
+                    "dense positions on an unsalted staging table cannot fire a trigger"
+                );
                 table.dispose(&staging, category);
                 return false;
             }
@@ -917,8 +929,9 @@ impl CopiesMade {
             .map(|v| v.entity_ptr() as *mut LLArray)
     }
 
-    /// False when the association cannot grow, which the caller unwinds
-    /// like any other refusal: the channel keeps meaning out of memory.
+    /// False when the table refuses — the growth's allocation, or the
+    /// terminal rung after an address-keyed flood spent both rebuilds —
+    /// and the caller unwinds either like any other refusal.
     ///
     /// An admission, not a replay: the keys are entity addresses this
     /// table has never seen, whatever their history in the arrays.

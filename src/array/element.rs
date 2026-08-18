@@ -230,10 +230,14 @@ unsafe fn write_through(
 /// comes last, so a `__destruct` body it runs finds the slot already
 /// naming the copy.
 ///
-/// **Three refusals report `false`**, each an allocation no reserve
+/// **Four refusals report `false`**. Three are allocations no reserve
 /// funds: the separation's copy, the publication of an arena COW value
 /// or key into a longer-lived array (`escape_copy`, inside
-/// `store_category_barrier`), and the table's growth. All three leave
+/// `store_category_barrier`), and the table's growth. The fourth is the
+/// flood ladder's terminal rung — a trigger tripping with no rebuild
+/// left (`array::table::InsertOutcome`) — and it dead-ends in this
+/// `false` because the crate has no error channel; the catchable error
+/// the design owes it waits on the exceptions work. All four leave
 /// every array unchanged — the slot names the original at its old count,
 /// every table holds the entries it held, and every reference the caller
 /// brought is still the caller's. One state does move on a refused
@@ -301,7 +305,7 @@ pub unsafe fn set(
 /// key, and reading first means an exhausted cursor refuses without
 /// paying for a copy first.
 ///
-/// `false` for [`set`]'s three refusals, and for a fourth that is not an
+/// `false` for [`set`]'s four refusals, and for one more that is not an
 /// allocation: `i64::MAX` has been a key, so no successor exists and the
 /// append refuses rather than wrapping onto a live entry. Every array is
 /// unchanged either way.

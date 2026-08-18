@@ -71,8 +71,10 @@ pub enum InsertOutcome {
     /// The storage could not grow.
     RefusedForMemory,
     /// The ladder's terminal rung: a trigger tripped with no rebuild
-    /// left for the offending kind. Constructed by no path yet — the
-    /// outcome precedes the rung, so the rung lands as one change.
+    /// left — the table is escalated, and the walk met either a chain
+    /// past [`CHAIN_LIMIT`] or [`EQUAL_HASH_LIMIT`] equal identities.
+    /// Only an admission is answered this; a replay is admitted
+    /// ([`InsertKind`]).
     RefusedByLadder,
 }
 
@@ -614,7 +616,8 @@ impl Table {
     /// of a refusal — [`InsertOutcome`] is the contract, refusal causes
     /// included. `kind` states whether the key is the caller's own
     /// admission or a replay of one admitted before ([`InsertKind`]);
-    /// nothing dispatches on it yet, the rung that will being unbuilt.
+    /// the ladder's terminal rung refuses an admission and admits a
+    /// replay, and nothing below it reads the kind.
     ///
     /// **Presence is decided ahead of every refusal**: the walk answers
     /// [`InsertOutcome::Replaced`] the moment it meets the key, so an
@@ -647,10 +650,6 @@ impl Table {
         &mut self,
         head: &StorageHead,
         category: MemoryCategory,
-        #[expect(
-            unused_variables,
-            reason = "read by the terminal rung, threaded ahead of it"
-        )]
         kind: InsertKind,
         key: Key,
         value: Value,
@@ -703,9 +702,28 @@ impl Table {
         // ownership, may allocate and may raise, while a lookup may do
         // none of those under a live iterator on a shared table.
         if equal_hashes >= EQUAL_HASH_LIMIT {
-            self.escalate(head);
+            if self.flags & TABLE_STRONG != 0 {
+                // The terminal rung: equal identities met past
+                // escalation have no rebuild left to take. A replay is
+                // exempt from the refusal alone ([`InsertKind`]), and
+                // its chain then grows past the trigger's limit — the
+                // price of honouring the earlier admission.
+                if kind == InsertKind::Admission {
+                    return InsertOutcome::RefusedByLadder;
+                }
+            } else {
+                self.escalate(head);
+            }
         } else if chain_len >= CHAIN_LIMIT {
-            self.reseed(head);
+            if self.flags & TABLE_STRONG != 0 {
+                // The chain trigger's firing past both rebuilds — the
+                // terminal rung again, same exemption.
+                if kind == InsertKind::Admission {
+                    return InsertOutcome::RefusedByLadder;
+                }
+            } else {
+                self.reseed(head);
+            }
         }
 
         let sh = self.slot_hash(key);
@@ -1162,10 +1180,14 @@ impl Table {
     /// per-process. That is a draw, not the redraw the Perl defect is
     /// about: a salt already drawn is left exactly as it was.
     fn escalate(&mut self, head: &StorageHead) {
-        if self.flags & TABLE_STRONG != 0 {
-            return;
-        }
-
+        // Unreachable past escalation rather than a no-op there: the
+        // trigger block refuses on a strong table instead of calling
+        // down, and a silent return here would hide a caller that
+        // stopped making that test.
+        debug_assert!(
+            self.flags & TABLE_STRONG == 0,
+            "past escalation a trigger refuses instead of escalating"
+        );
         self.draw_salt(head);
         self.flags |= TABLE_STRONG;
         if !head.storage().is_null() {
@@ -1197,10 +1219,10 @@ impl Table {
     /// inherits the drawn salt rather than drawing again
     /// ([`Table::adopt_flood_state`]): its second long chain escalates.
     fn reseed(&mut self, head: &StorageHead) {
-        if self.flags & TABLE_STRONG != 0 {
-            return;
-        }
-
+        debug_assert!(
+            self.flags & TABLE_STRONG == 0,
+            "past escalation a trigger refuses instead of rebuilding"
+        );
         if self.flags & TABLE_RESEEDED != 0 {
             self.escalate(head);
             return;

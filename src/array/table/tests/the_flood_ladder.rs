@@ -375,6 +375,203 @@ fn escalation_happens_once_and_a_drawn_salt_is_not_redrawn_on_equal_hashes() {
     );
 }
 
+/// Names whose *strong* slots agree in their low 13 bits, so the family
+/// shares one index slot at any table size up to 8192 — the escalated
+/// counterpart of [`extend_one_chain_salted`]. The search stands in for
+/// the break of the keyed PRF the design's residual assumption prices
+/// (`Table::draw_salt`): the test window reads the key, an attacker
+/// would have to recover it.
+///
+/// Names only, no entities: the caller decides which are inserted and
+/// which one springs the trigger.
+fn strong_slot_family(m: &Owned, n: usize, tag: &str) -> Vec<String> {
+    let strong_key = {
+        let (table, _) = unsafe { crate::array::entity::as_table(m.0) };
+        table.strong_key()
+    };
+    let mut found = Vec::new();
+    let mut i = 0usize;
+    while found.len() < n {
+        let name = format!("{tag}-{i}");
+        if strong_hash(name.as_bytes(), strong_key) & 0x1FFF == 0x0AB5 {
+            found.push(name);
+        }
+
+        i += 1;
+    }
+
+    found
+}
+
+/// Insert an admission directly, bypassing the harness: the harness
+/// panics on [`InsertOutcome::RefusedByLadder`] by design, and these
+/// tests are about that outcome.
+fn raw_insert(m: &mut Owned, kind: InsertKind, key: Key, value: Value) -> InsertOutcome {
+    let category = m.category();
+    let (table, head) = unsafe { crate::array::entity::as_table_mut(m.0) };
+    table.insert(head, category, kind, key, value)
+}
+
+/// A table with both rebuilds spent and one forged chain standing one
+/// short of the trigger, plus the name that would spring it: the state
+/// every terminal-rung test starts from.
+fn spent_ladder_with_a_chain(m: &mut Owned) -> (Vec<*mut LLString>, String) {
+    force_equal_hashes(m, EQUAL_HASH_LIMIT as usize + 1);
+    assert!(m.is_strong(), "the ladder must be spent before the trip");
+    let mut names = strong_slot_family(m, CHAIN_LIMIT as usize + 1, "strong-chain");
+    let tripper = names.pop().expect("the family holds the tripper");
+    let chain = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let s = mk(name.as_bytes());
+            // As a replay, so the build cannot trip the rung itself: a
+            // stray collider sharing the family's slot would otherwise
+            // put the last additions over the trigger — whether it does
+            // depends on the drawn salt, which varies with the storage
+            // address, and a fixture must not.
+            let outcome = raw_insert(m, InsertKind::Replay, Key::Str(s), Value::int(i as i64));
+            assert!(matches!(outcome, InsertOutcome::Added));
+            s
+        })
+        .collect();
+    (chain, tripper)
+}
+
+/// Rung three: a chain trip on a table whose ladder is spent refuses
+/// the admission, with every entry, count and key exactly as it was —
+/// including the rung state, which a refusal spends nothing of. This
+/// replaces the state the code had before, where `reseed` and
+/// `escalate` both returned early once the table was strong and the
+/// chain grew without bound forever.
+#[test]
+fn a_spent_ladders_chain_trip_refuses_the_admission_and_changes_nothing() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    let (chain, tripper) = spent_ladder_with_a_chain(&mut m);
+    let len_before = m.len();
+    let used_before = m.used();
+    let salt_before = m.salt;
+
+    let s = mk(tripper.as_bytes());
+    let outcome = raw_insert(&mut m, InsertKind::Admission, Key::Str(s), Value::int(999));
+    assert!(
+        matches!(outcome, InsertOutcome::RefusedByLadder),
+        "a trigger tripped with no rebuild left must refuse the admission"
+    );
+    assert_eq!(
+        m.len(),
+        len_before,
+        "a refused insert changed the live count"
+    );
+    assert_eq!(m.used(), used_before, "a refused insert wrote an entry");
+    assert_eq!(m.salt, salt_before, "a refusal spends nothing");
+    assert!(m.is_strong(), "a refusal clears no rung state");
+    assert!(
+        m.get(Key::Str(s)).is_none(),
+        "the refused key entered the table anyway"
+    );
+    for (i, c) in chain.iter().enumerate() {
+        assert_eq!(
+            m.get(Key::Str(*c)).unwrap().as_int(),
+            i as i64,
+            "a refusal disturbed a stored key"
+        );
+    }
+
+    // The refusal consumed nothing, so the key reference is still the
+    // test's to give back.
+    unsafe {
+        assert!(crate::refcount::ll_release(s as *mut RcHeader));
+        crate::object::ll_entity_die(s as *mut RcHeader);
+    }
+}
+
+/// The fourth terminal case: the equal-identity trigger over string
+/// entries on a table that is already escalated. Equal full hashes are
+/// what escalation answers; met again past it, there is no rebuild
+/// left and the admission is refused.
+#[test]
+fn equal_hashes_on_an_escalated_table_refuse_instead_of_rebuilding() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    force_equal_hashes(&mut m, EQUAL_HASH_LIMIT as usize + 1);
+    assert!(m.is_strong());
+
+    // A second forged family: one strong slot, so the walk meets them
+    // as one chain, and one forged full hash, so the equal-identity
+    // counter counts every one of them.
+    let names = strong_slot_family(&m, EQUAL_HASH_LIMIT as usize + 1, "equal-on-strong");
+    let (tripper_name, stored) = names.split_last().expect("the family holds the tripper");
+    for (i, name) in stored.iter().enumerate() {
+        let s = mk(name.as_bytes());
+        unsafe { (*s).hash = 0x0E0_0E0_0E0 };
+        m.insert(Key::Str(s), Value::int(i as i64));
+    }
+
+    let len_before = m.len();
+    let s = mk(tripper_name.as_bytes());
+    unsafe { (*s).hash = 0x0E0_0E0_0E0 };
+    let outcome = raw_insert(&mut m, InsertKind::Admission, Key::Str(s), Value::int(999));
+    assert!(
+        matches!(outcome, InsertOutcome::RefusedByLadder),
+        "equal identities on an escalated table have no rebuild to take"
+    );
+    assert_eq!(m.len(), len_before);
+    unsafe {
+        assert!(crate::refcount::ll_release(s as *mut RcHeader));
+        crate::object::ll_entity_die(s as *mut RcHeader);
+    }
+}
+
+/// The exemption: the same trip that refuses an admission admits a
+/// replay, because a key admitted once cannot be refused on
+/// re-admission — the chain grows past the trigger's limit, which is
+/// the price of honouring the earlier admission.
+#[test]
+fn a_replay_is_admitted_past_a_spent_ladder() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    let (_, tripper) = spent_ladder_with_a_chain(&mut m);
+    let len_before = m.len();
+
+    let s = mk(tripper.as_bytes());
+    let outcome = raw_insert(&mut m, InsertKind::Replay, Key::Str(s), Value::int(999));
+    assert!(
+        matches!(outcome, InsertOutcome::Added),
+        "a replay may not be refused by the ladder"
+    );
+    assert_eq!(m.len(), len_before + 1);
+    assert_eq!(m.get(Key::Str(s)).unwrap().as_int(), 999);
+}
+
+/// Only the refusal is exempt: a replay tripping the chain trigger on
+/// a fresh table fires rung one exactly as an admission does, so a
+/// replayed flood is scattered rather than rebuilt verbatim.
+#[test]
+fn a_replay_still_fires_the_rungs_below_the_terminal_one() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    for i in 0..(CHAIN_LIMIT as i64 + 1) {
+        let outcome = raw_insert(
+            &mut m,
+            InsertKind::Replay,
+            Key::Int(i * 1024),
+            Value::int(i),
+        );
+        assert!(matches!(outcome, InsertOutcome::Added));
+    }
+
+    assert!(
+        m.is_reseeded(),
+        "a replayed flood left rung one unfired: the exemption leaked \
+         below the terminal rung"
+    );
+    for i in 0..(CHAIN_LIMIT as i64 + 1) {
+        assert_eq!(m.get(Key::Int(i * 1024)).unwrap().as_int(), i);
+    }
+}
+
 #[test]
 fn the_cached_string_hash_is_not_touched_by_escalation() {
     let _g = crate::memory::block_pool::test_guard();

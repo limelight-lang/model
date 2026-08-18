@@ -62,9 +62,9 @@ pub(crate) unsafe fn table<'a>(a: *mut LLArray) -> &'a crate::array::table::Tabl
 
 /// An admission, answered in the pair shape the assertions were written
 /// against: `None` is the memory refusal, `(added, displaced)` the rest.
-/// A ladder refusal panics rather than folding into `None` — no path
-/// constructs it, and a fixture that reaches it must not read as out of
-/// memory. A test about that refusal calls `Table::insert` raw.
+/// A ladder refusal panics rather than folding into `None`: a fixture
+/// that trips the terminal rung must not read as out of memory. A test
+/// about that refusal calls `Table::insert` raw.
 ///
 /// # Safety
 /// As [`table`].
