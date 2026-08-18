@@ -43,11 +43,10 @@ oracle — that residue is what the shadow lowering exists to catch.
 
 ```mermaid
 flowchart LR
-    F[frame slot
-counted root] -->|counted edge| A[anchor object]
-    A -->|counted heap edge| M[mid-path object]
-    M -->|counted heap edge| T[borrow's target]
-    B[uncounted local] -. plain load .-> T
+    F["frame slot — counted root"] -->|counted edge| A["anchor object"]
+    A -->|counted heap edge| M["mid-path object"]
+    M -->|counted heap edge| T["borrow's target"]
+    B["uncounted local"] -. plain load .-> T
 ```
 
 Every solid edge is counted, so at any drain a condemned component
@@ -63,16 +62,9 @@ base, ends the borrow's coverage.
 
 ```mermaid
 flowchart TD
-    RS[real header count
-classic pairs, classic
-release schedule] --> DEATH[death, walk, COW, asserts:
-classic behaviour exactly]
-    SW[shadow word
-elided stream, elided schedule
-with borrow-is-use extensions] --> SIG{shadow zero while
-real count nonzero?}
-    SIG -->|yes| LOG[per-object journal names the
-elided site IDs owing a retain]
+    RS["real header count:<br/>classic pairs, classic release schedule"] --> DEATH["death, walk, COW, asserts:<br/>classic behaviour exactly"]
+    SW["shadow word:<br/>elided stream, elided schedule<br/>with borrow-is-use extensions"] --> SIG{"shadow zero while<br/>real count nonzero?"}
+    SIG -->|yes| LOG["per-object journal names the<br/>elided site IDs owing a retain"]
 ```
 
 One binary, two release schedules — with one schedule for both

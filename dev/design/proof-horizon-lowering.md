@@ -26,25 +26,17 @@ mistake costs a pair and never a proof.
 
 ```mermaid
 flowchart TD
-    L[IR local, SSA value] --> N{result of new, call result,
-receiver or by-value parameter?}
-    N -->|yes| O[OWNED
-today's pair]
-    N -->|no| C{COW-eligible value?
-array, string, reference box}
+    L["IR local, SSA value"] --> N{"new result, call result,<br/>receiver or by-value parameter?"}
+    N -->|yes| O["OWNED — today's pair"]
+    N -->|no| C{"COW-eligible value?<br/>array, string, reference box"}
     C -->|yes| O
-    C -->|no| D{target class transitively
-destructor-free under the
-closed-world closure?}
+    C -->|no| D{"target class transitively destructor-free<br/>under the closed-world closure?"}
     D -->|no or unresolved| O
-    D -->|yes| U{anchor path crosses a
-unique-ownership entity?}
+    D -->|yes| U{"anchor path crosses a<br/>unique-ownership entity?"}
     U -->|yes| O
-    U -->|no| B{birth dominates every horizon
-and every exit of the live range?}
+    U -->|no| B{"birth dominates every horizon<br/>and every exit of the live range?"}
     B -->|no| O
-    B -->|yes| A[ANCHORED
-free until a horizon]
+    B -->|yes| A["ANCHORED — free until a horizon"]
 ```
 
 The base cases exist for four different reasons, and none of them is
@@ -97,19 +89,11 @@ it displaces.
 
 ```mermaid
 flowchart LR
-    CP[checkpoint that can
-drain a verdict] --> R{reclamation:
-can the drain free the path?}
-    R -->|chain ends in a counted root,
-the exact test acquits the path| OK1[discharged by construction,
-at every checkpoint]
-    CP --> S{path severing:
-can a drained destructor
-store into the path?}
-    S -->|condemned set's downward
-closure is pure| OK2[checkpoint proven safe]
-    S -->|otherwise| H[the checkpoint
-is a horizon]
+    CP["checkpoint that can<br/>drain a verdict"] --> R{"reclamation: can the<br/>drain free the path?"}
+    R -->|"chain ends in a counted root —<br/>the exact test acquits the path"| OK1["discharged by construction,<br/>at every checkpoint"]
+    CP --> S{"path severing: can a drained<br/>destructor store into the path?"}
+    S -->|"condemned set's downward<br/>closure is pure"| OK2["checkpoint proven safe"]
+    S -->|otherwise| H["the checkpoint is a horizon"]
 ```
 
 Reclamation needs no condition because the exact test balances
