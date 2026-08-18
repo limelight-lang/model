@@ -4331,16 +4331,34 @@ lattice stays a class property — the emitter's default. On top of it,
 a closed set of **always-provable elision rules** applies at any site
 in either regime, the way Swift ARC's guaranteed optimizations do:
 rules whose soundness follows from the language semantics alone, with
-no summary, no heuristic and no cross-unit assumption — a redundant
-pair inside a region the analysis proves horizon-free is the model
-case. A counted class's local may lose its pair under such a rule; a
-horizon class works as designed. Summary-driven or heuristic per-site
-deviation stays barred until the certificate-plus-shadow-lowering
-audit exists (the document's hybrid section).
+no summary, no heuristic and no cross-unit assumption. A counted
+class's local may lose its pair under such a rule; a horizon class
+works as designed. Summary-driven or heuristic per-site deviation
+stays barred until the certificate-plus-shadow-lowering audit exists
+(the document's hybrid section).
 
-**The standing constraint:** no rule of either kind may introduce a
-write barrier or any other mutator work beyond the program's own
-code — the GC philosophy applied to the compiler's output.
+**The set's bound** (Critic round 4, same day — the bound follows
+from the criterion above rather than weakening it): a rule qualifies
+only when it is decidable from IR shape alone — the enclosed region
+contains no call, no store, no release and no checkpoint — because a
+"horizon-free" proof that consults the may-alias oracle is fallible
+by the document's own certificate analysis; the lattice's owned base
+cases are preconditions (non-COW-eligible, transitively
+destructor-free, non-unique target); every rule preserves the
+Zend-observable destructor timing, a constraint Swift's optimizations
+are not under, so the Swift precedent covers the mechanism and not
+the contract; each admitted rule gets its own entry here — statement,
+proof sketch, reviewer, date — and its elisions enter the shadow
+lowering's journal.
+
+**The standing constraint:** no elision rule of either kind may
+introduce a write barrier or any other mutator work beyond the
+program's own code — the GC philosophy applied to the compiler's
+output. The constraint's scope is the per-site elision rules: the
+family's checkpoint-progress compensation
+(`dev/design/owned-slots-and-the-walk.md`, open question 3) and the
+unique-move rule keep their own open questions outside it, and the
+economics' measurement counter is exempt by name as instrument work.
 
 **Why:** the Critic rounds showed unaudited per-site deviation is
 indistinguishable from a miscompile at runtime; Edmond's cut is that

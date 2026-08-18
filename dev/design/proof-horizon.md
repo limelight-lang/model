@@ -1,11 +1,12 @@
 # Proof Horizon: borrow protection paid where proof ends
 
-**Status:** design sketch, not implemented. Revision 4: Critic round 3
-(2026-08-18, same three lenses) attacked round 2's fixes and found
-the drop-point policy killing anchors under live borrows, the
-uniqueness demotion without a sound local lowering, the shadow
-counters wired backwards, and the scan's kill gate unable to fire;
-this revision closes each. All three rounds' records are at the end.
+**Status:** design sketch, not implemented. Revision 5: Critic round 4
+(2026-08-18, same three lenses) attacked round 3's fixes and the
+granularity ruling's recorded form, and found the explicit
+displacement of a pure-class anchor outside every horizon kind, the
+convention retains colliding with the unique sentinel, and the
+ruling's model case resting on the alias oracle it exempts; this
+revision closes each. All four rounds' records are at the end.
 **Author of the algorithm:** Edmond, 2026-08-18. Successor to the
 stack-exit epoch model (`docs/history/stack-exit-epoch-gc-2026-08-18.md`,
 superseded the day it was recorded); shaped by that model's five-axis
@@ -118,8 +119,13 @@ release that reaches it. Owned by construction:
   store between the borrow's last use and the scope's end reach
   zero early, moving `__destruct` off the drop-point policy's
   scope-end pin — a Zend-observable timing change. Owned from birth
-  keeps the pin; the corpus scan prices the exclusion by its own
-  channel;
+  keeps the pin. "Transitively destructor-free" is computed by the
+  same closed-world closure purity uses (`dev/design/pure-destructors.md`,
+  "Purity is transitive"): an open hierarchy under the static class,
+  or an unresolvable field, defaults to not destructor-free and the
+  borrow to owned — a destructor-free base with a destructor-bearing
+  subclass must not pass. The corpus scan prices the exclusion by
+  its own channel;
 - **every borrow whose path crosses a unique-ownership entity**: the
   chain invariant's premise is that every path edge is a counted
   heap edge, and a unique entity's owning slot pays no count — the
@@ -139,10 +145,11 @@ load. The chain invariant: the anchor is a counted root — an owned
 local, and equally any root category rc-walk names: an arena slot, a
 static, an immortal, an FFI handle — or a borrow whose own chain ends
 in one. **Every point of a live borrow is a use of its transitive
-anchor for the drop-point policy**: the anchor's release site is
+anchor for every last-use consumer** — the drop-point policy's
+release sites and the move rule's transfer sites alike: both are
 computed over the borrow's live range, not the anchor's own last
-syntactic use, otherwise the policy frees the anchor under the
-borrow it covers.
+syntactic use, otherwise either one frees or moves the anchor under
+the borrow it covers.
 
 The invariant **extends** rc-walk's legality rule for uncounted
 borrows rather than restating it. The rule ("Uncounted borrows";
@@ -155,18 +162,27 @@ component intersecting the path has an external counted in-edge
 traceable to the root, the exact test acquits it whole, and the walk
 reaches the target through the live chain — an incoherent-array skip
 on the path only inflates `RC − IN` toward roothood, conservative in
-the safe direction (`src/walk.rs`, the version-bracket skip). On
-acceptance the extension and this argument are owed to the two RFC
-sections above and to the DC5 scenario notes of
-`rfc/model/gc/rc-walk-proof.md` — the debt is recorded here per the
-repo's design-stage practice.
+the safe direction (`src/walk.rs`, the incoherent-head give-up
+through `StorageHead::coherent`). On acceptance the extension and
+this argument are owed to the two RFC sections above, to the DC5
+scenario notes of `rfc/model/gc/rc-walk-proof.md`, to "Drop Point
+Policy" and the move rule (the borrow-is-use amendment), and to
+"Unique ownership" (the session condition below strengthens its
+published obligations) — the debt is recorded here per the repo's
+design-stage practice.
 
 Anchor identity survives representation changes: the anchor is the
 owned local itself, not the entity it referenced at borrow time, and
 `stable_path` means counted reachability from the anchor's current
 referent — a COW separation re-seating the anchor's array, or a
 `sort()` that keeps every element counted, does not invalidate the
-borrow, while any mutation through the anchor local is a horizon.
+borrow, while any mutation through the anchor local is a horizon —
+and so is **any store to a local on the anchor chain**: assignment
+and `unset` of the anchor end `live(anchor)` regardless of the
+released class's purity, the anchor local being a path base for
+stores *to* it and not only through it. Without this, `$a = null`
+on a pure-class anchor is a release the purity gate exempts, and
+the borrow dangles at a site no other horizon kind names.
 
 ## Inside the horizon: what the borrow must prove
 
@@ -212,9 +228,15 @@ A horizon is any of:
   is never dischargeable without count-value analysis nobody plans,
   so every such release is a horizon. The lemma that keeps the rule
   from swallowing pure cascades: an object that reaches zero is off
-  every live anchor chain (severing a chain edge is itself an
-  own-code horizon before the cascade begins), so the own-slot
-  stores of a dying pure cascade never sever a live path;
+  every live anchor chain, so the own-slot stores of a dying pure
+  cascade never sever a live path. The lemma holds because every
+  cascade entry point is itself some horizon: a summarized callee's
+  internal release cannot zero a path member (each keeps a counted
+  in-edge from its path predecessor, the root live by
+  borrow-is-use), scope-exit batches fail the same way, checkpoint
+  drains are acquitted by the chain invariant, and the one formerly
+  unguarded door — explicit displacement of a pure-class anchor —
+  is closed by the store-to-anchor rule above;
 - a checkpoint that fails the condition below;
 - an own-code store that severs a borrowed path, under the may-alias
   rule above.
@@ -269,15 +291,23 @@ lowering of the same borrow. Placement rules:
   set static per site.
 - **A borrow of a unique-ownership entity cannot be promoted**: the
   count word holds the occupancy sentinel and a retain written into
-  it protects nothing. A horizon-reaching borrow demotes the
-  uniqueness proof — and demotion is a **whole-program fixpoint**,
-  not a local lowering: the owner's unit compiled the plain-store
-  overwrite and the sentinel factory, so a later-compiled borrower
-  forces the owner's recompile, an upstream blast radius the
-  economics prices. The conservative default until the fixpoint
-  exists: uniqueness is lawful only for entities whose every access
-  site compiles in the same session, and a foreign-unit borrow of a
-  unique entity is forbidden by summary. Recorded also in
+  it protects nothing. And the convention retains are the same
+  hazard: the all-returns-transfer retain and the parameter pair
+  are counted references, so **the uniqueness prover counts every
+  convention retain site — return transfer, receiver, by-value
+  parameter — as a second counted reference**, and an entity that
+  is ever returned or passed is by proof never unique; otherwise
+  `getE() { return $this->e; }` writes the sentinel in the owner's
+  own unit with no horizon in sight. A horizon-reaching borrow
+  demotes the uniqueness proof — and demotion is a **whole-program
+  fixpoint**, not a local lowering: the owner's unit compiled the
+  plain-store overwrite and the sentinel factory, so a
+  later-compiled borrower forces the owner's recompile, an upstream
+  blast radius the economics prices; the fixpoint's trigger set is
+  the convention sites plus the horizon-reaching borrows. The
+  conservative default until the fixpoint exists: uniqueness is
+  lawful only for entities whose every access site compiles in the
+  same session. Recorded also in
   `dev/design/owned-slots-and-the-walk.md`, with the corollary that
   demotion revives the COW check for the entity's writers.
 
@@ -301,7 +331,8 @@ compiler emits pairs, so the class bit is the default the emitter
 follows, and every anchored site still owes its site-local proof.
 
 - **A counted class**: locals are owned, today's code, no proofs and
-  no horizon bookkeeping.
+  no horizon bookkeeping by default; the always-provable rules below
+  may still take a pair at any site.
 - **A horizon class**: locals enter the lattice — anchored where the
   proofs hold, promoted at horizons.
 
@@ -317,15 +348,30 @@ ones crossing reflection, callbacks and suspensions, where analysis
 costs more than the pairs it removes.
 
 Granularity — **ruled by Edmond, 2026-08-18** (`dev/DECISIONS.md`,
-"proof-horizon granularity"). The class bit stays the emitter's
-default; on top of it, a closed set of **always-provable elision
-rules** applies at any site in either regime, the way Swift ARC's
-guaranteed optimizations do — rules whose soundness follows from the
-language semantics alone, with no summary, no heuristic and no
-cross-unit assumption, a redundant pair inside a proven horizon-free
-region being the model case. A counted class's local may lose its
-pair under such a rule. Summary-driven or heuristic per-site
-deviation stays barred until two instruments exist together, neither
+"proof-horizon granularity", bounded after round 4). The class bit
+stays the emitter's default; on top of it, a closed set of
+**always-provable elision rules** applies at any site in either
+regime. Round 4 bounded what qualifies, and the bound follows from
+Edmond's own criterion rather than weakening it: a rule is in the
+set only when it is decidable from IR shape alone — the enclosed
+region contains no call, no store, no release and no checkpoint —
+because a "horizon-free" proof that consults the may-alias oracle
+is exactly the fallible class the ruling bars; and the lattice's
+owned base cases are preconditions, not competitors — the elided
+pair's target is non-COW-eligible, transitively destructor-free and
+non-unique, since horizon-freedom was never the predicate that
+protects COW, timing or the sentinel. What Swift's precedent
+licenses here is the mechanism — semantics-licensed, unconditional
+elision — and not the contract: Swift bought its elisions by
+guaranteeing lifetimes only to last use, while this design keeps
+the Zend-observable destructor timing pinned, so every rule in the
+set must preserve it. Each admitted rule gets its own
+`dev/DECISIONS.md` entry — statement, proof sketch, reviewer, date
+— and its elisions enter the shadow lowering's journal like any
+lattice elision, so no elision class is uninstrumented. A counted
+class's local may lose its pair under such a rule. Summary-driven
+or heuristic per-site deviation stays barred until two instruments
+exist together, neither
 sufficient alone: a **per-site certificate** — anchor chain, summary
 IDs, horizon set per entry — whose independent checker soundly
 warrants the checkable surface (chain well-formedness,
@@ -390,10 +436,15 @@ saved = (borrow acquisitions whose lifetime reaches no horizon) × pair cost
 
 with the pair at 1.84–1.87 ns (`docs/performance-case.md`, "The
 pair: retain and release") as a **unit** cost; the in-situ marginal
-cost of a pair disperses by context (the crate has recorded 10.2 ns
-under a wide-load pairing and partial masking behind independent
-work), so the product carries the pair-cost dispersion as its error
-bar — a factor-band, not "exact". The population excludes the owned
+cost of a pair disperses by context, and **the band is unmeasured**
+— the 10.2 ns figure an earlier revision cited is the cost of a
+banned lowering shape, not of the pair in a context — so the
+product's error bar is unknown until the pair-cost-over-contexts
+sweep runs. That sweep is pre-D buildable in a shape the crate
+already owns: the store probe's skeleton
+(`memory::barrier::tests::what_a_store_costs_by_working_set` — two
+working sets, hot and cold halves, a null-sweep control) pointed at
+`ll_retain`/`ll_release` with an independent-work interleave axis. The population excludes the owned
 base cases — `new` results, call results, parameters, COW-eligible
 values, destructor-bearing targets, unique-crossing paths — and the
 horizon list prices releases and may-alias stores; every exclusion
@@ -401,11 +452,17 @@ has a scan channel.
 
 The counting instrument is an **elision-site counter in the release
 lowering behind a build flag**: the compiler statically knows the
-elided sites, counting their executions perturbs less than the debug
-journal, and the count is taken from the build that ships. The
-shadow build's count is a verification by-product, not the
-economics' number — its lowering can flip lattice outcomes the
-release build would not.
+elided sites, and counting their executions perturbs less than the
+debug journal. Three disciplines keep the instrument honest: the
+counter is measurement work, exempted by name in the granularity
+ruling's scope from the no-mutator-work constraint; the counting
+build is never clocked — an increment per elided pair is a 15–30 %
+perturbation of the very effect, so the wall-clock cross-check runs
+on the unflagged build; and the flag's effect on the elision set is
+checked, not assumed — the two builds' static elision site lists
+are compared, both being compiler outputs. The shadow build's count
+is a verification by-product, not the economics' number — its
+lowering can flip lattice outcomes the release build would not.
 
 Three costs sit outside the formula and are named rather than
 implied away. Compile time and code size: the borrow analysis,
@@ -426,7 +483,10 @@ epoch-progress budget, and the compensating-poll rule (that
 document's open question 3) is the shared dependency.
 
 The baseline is marginal, not gross, and the rule is asymmetric: **a
-gross number may only kill, only the marginal number may open.**
+gross number may only kill, only the marginal number may open.** The
+kill and open bars carry no values yet, deliberately: they are owed
+to the census specification alongside the channel list, and no
+verdict is readable until both are recorded.
 Unique ownership's borrow clause and the birth count elide
 overlapping slices of the same traffic, so the census carries
 **per-acquisition coverage flags** from each family analysis —
@@ -457,19 +517,28 @@ Measurement order, and what each can decide:
    free-fraction bracket over the graded classification; the
    unresolved-receiver share; the severing-store share; the
    per-release purity tier (P0-syntactic / closure-unresolved /
-   provably-impure, computed under both readings of the pending
-   child-release-order ruling); the destructor-bearing-target share;
-   the referent's static class where known; and the
-   **summary-dependency channel** — per stdlib or vendor class, the
-   transitive share of corpus functions whose summaries reach it,
-   which sizes the downstream blast radius from data the lifetime
-   walk already holds. The kill rule reads the graded optimistic
-   bound — unresolved sites resolved favourably, provable horizons
-   kept — and a corpus where one stdlib class change invalidates
-   most compiled functions is kill evidence of its own. The corpus
-   is deployed PHP applications with their vendor trees; the
-   concrete names are owed by Edmond (open question 3) and recorded
-   before the scan runs.
+   provably-impure, under the ruled reading of the child-release
+   order — specified, P2 keeps its call — with a P2-share
+   sub-channel); the destructor-bearing-target share; the referent's
+   static class where known; and the **summary-dependency channel**
+   — per stdlib or vendor class, the transitive share of corpus
+   functions whose call graph reaches it, reported as its own
+   bracket under an under-approximate and an over-approximate
+   receiver resolution, because transitivity amplifies every proxy
+   error to corpus scale; **only the under-approximate number
+   carries kill authority**, matching the gross-may-only-kill
+   asymmetry. Two structural limits are stated rather than
+   discovered later: compiler-placed checkpoints do not exist in
+   source, so checkpoint horizons are absent from both bounds; and
+   "provably-free" is near-empty for calls without receiver
+   resolution, so the kill rule reads the **bracket**, not one
+   bound — kill when the graded optimistic bound is low, or when
+   the unresolved mass exceeds a share recorded with the census
+   bars, at which point the scan proves nothing and the closed
+   status simply persists. The corpus is deployed PHP applications
+   with their vendor trees — the working choice, Edmond's veto
+   open: WordPress, one Laravel application (Monica) and one
+   Symfony application (Sylius) — recorded before the scan runs.
 2. **The Phase D publish census** — with the channels this design
    needs: borrow-acquisition density per class, horizon crossings
    per borrow lifetime, live borrows per horizon, and the family
@@ -500,13 +569,23 @@ until then.
   header count** — so the walk's occupancy test, COW's uniqueness
   read, the release asserts and death itself behave exactly as the
   classic build — and the elided stream feeds a shadow word. The
-  divergence signal is the shadow reaching zero while the real count
-  is nonzero, logged with the per-object journal of
+  two streams run **two release schedules in one binary**: the
+  shadow's decrements at the elided build's sites, borrow-is-use
+  extensions included, the real count's at the classic sites — with
+  one schedule for both, a sound elision fires the signal and the
+  diagnostic is dead on arrival. Under the dual schedule the
+  false-positive rate is provably zero: shadow(target) equals
+  real(target) minus the live elided borrows, and a shadow zero
+  under a live borrow means no counted holder exists in the elided
+  stream, which a sound elision's intact chain forbids. The
+  divergence signal is the shadow reaching zero while the real
+  count is nonzero, logged with the per-object journal of
   elided-acquisition site IDs that names the sites whose retains
-  are missing. (The reverse wiring, elided-authoritative, breaks
-  the debug runtime it instruments: a real count of zero on a live
-  object reads as a free slot to the walker and as "unique" to
-  COW.)
+  are missing — always-provable-rule elisions in both regimes enter
+  the same journal, so no elision class is uninstrumented. (The
+  reverse wiring, elided-authoritative, breaks the debug runtime it
+  instruments: a real count of zero on a live object reads as a
+  free slot to the walker and as "unique" to COW.)
 - **Differential lowering.** The same program built with horizons
   off and on. The oracle is **the destructor sequence and the death
   set per checkpoint batch** — not "timing": an elided borrow of a
@@ -559,8 +638,9 @@ until then.
    summary system learns resumption points, and a fiber suspended
    across an arena reset carries frame borrows the reset cannot see
    — one question, and it shapes the IR early.
-3. The corpus names for the scan, owed by Edmond; the criterion —
-   deployed applications with their vendor trees — is recorded.
+3. ~~The corpus names for the scan~~ — working choice recorded
+   2026-08-18 with Edmond's veto open: WordPress, Monica (Laravel),
+   Sylius (Symfony), each with its vendor tree.
 4. ~~The hybrid's granularity~~ — ruled by Edmond, 2026-08-18: the
    class bit is the default, always-provable Swift-style elision is
    lawful per site in both regimes, fallible per-site deviation
@@ -569,8 +649,9 @@ until then.
    "proof-horizon granularity"; the hybrid section carries it).
 5. The family-wide borrow-analysis ruling: one IR-level borrow
    analysis parameterized by the invalidation set, serving unique
-   ownership and this design — asked by the five-axis review, not
-   yet ruled; the ruling is Edmond's.
+   ownership and this design — asked by the five-axis review. The
+   working default, recorded 2026-08-18 with Edmond's veto open:
+   one analysis, two invalidation sets.
 6. Anchored parameters: whether caller-guarantee summaries can lift
    the receiver and by-value parameters out of the owned default,
    and what the re-entrancy obligation costs there.
@@ -630,6 +711,43 @@ channels; the density gate demanded the clock where the crate's
 method counts; the shadow count detects only if death defers to it;
 the decision log graded itself. Accepted in full; revision 3 was
 the fix.
+
+Critic round 4, 2026-08-18, on revision 3's fixes and the recorded
+granularity ruling. **Soundness:** explicit displacement of a
+pure-class anchor (`$a = null`) fell under no horizon kind — a
+store *to* the anchor is not a store *through* a path base, and the
+purity gate exempts the release (critical); the ruling's model case
+re-created round 1's COW critical and the heap-field cover, because
+horizon-freedom was never the predicate protecting COW or ownership
+(critical); the all-returns-transfer retain wrote the unique
+sentinel inside the owner's own unit, with the demotion trigger
+blind to convention sites; the destructor-free exclusion read the
+static class and readmitted the timing bug through a subclass; the
+shadow lowering's zero-false-positive property needed the
+dual-schedule statement. Survived a third consecutive round: the
+chain invariant's reclamation discharge, borrow-is-use for
+scheduled releases, destructor-bearing targets owned from birth,
+the shadow swap direction, the owned base cases, promotion as a
+plain retain. **Composition:** the ruling's "always-provable" class
+was defined by an example resting on the may-alias oracle; the
+Swift analogy imported a precedent whose lawfulness comes from the
+timing-weakening this design refused; the counted-class bullet
+contradicted the ruling three paragraphs below; the no-mutator-work
+constraint collided with the compensating poll without a scope
+sentence; the borrow-is-use amendment owed a debt line to "Drop
+Point Policy" and the move rule; the session condition owed one to
+"Unique ownership"; a citation named a mechanism ("version-bracket
+skip") by a phrase absent from its source. **Verification:** the
+always-provable set had no registry, and its counted-class elisions
+escaped the shadow journal; the graded optimistic bound still could
+not fire the kill on call-shaped horizons, and checkpoint horizons
+were structurally absent from both bounds unstated; the
+summary-dependency channel's kill authority stood on an
+unbracketed proxy graph; the dispersion band's sole citation was a
+banned lowering shape; the release-build counter was unexempted
+mutator work whose build must not be clocked; the asymmetric gate
+carried no bars. Accepted in full; this revision is the fix, the
+ruling's entry bounded in place with Edmond's criterion kept.
 
 Critic round 3, 2026-08-18, on revision 3's fixes. **Soundness:**
 the drop-point policy released an anchor at its last syntactic use

@@ -78,7 +78,12 @@ overwrite, so a later-compiled borrower forces its recompile, and
 demotion revives the COW check for the entity's writers. The summary
 language carries the constraint across compilation units; until the
 fixpoint exists, uniqueness is lawful only for entities whose every
-access site compiles in the same session.
+access site compiles in the same session. The convention retains are
+the same hazard as promotion: proof-horizon's calling convention
+retains every returned value and every by-value parameter, so the
+uniqueness prover counts each such site as a second counted
+reference — an entity that is ever returned or passed is by proof
+never unique.
 
 ## Composition with purity
 
