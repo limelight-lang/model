@@ -23,14 +23,6 @@ versions live in `docs/history/`, marked at the top.
 
 ## Entry points
 
-- Stack-exit epoch GC model: `dev/STACK_EXIT_EPOCH_GC.md` — no mutator-side
-  RC; zero means logically local, leaving the last local use stamps the
-  acknowledged GC epoch, and a target touched during a walk survives through
-  the next walk. Defines the missed-edge invariant, start/end handshakes,
-  hazard-based safe acquisition, `LIVE -> RETIRING -> DEAD`, the temporary
-  indegree baseline, the recommended tracing backend, and its model and
-  measurement gates.
-
 - rc-walk collector side (`rc-walk` builds): `src/collector.rs` — the
   epoch state machine (Phases 1–3: snapshot, walk with the three-way
   classification, judge, condemn, snapshot-compare re-check, verdict
@@ -615,6 +607,15 @@ the rc-walk epoch as a reading aid: the phase machine, both protocol
 diagrams, the grouping algorithm, and every collector structure with
 its per-row and per-edge cost, including what stage S28 changes. The
 RFC stays normative; these two describe, dated 2026-08-18.
+
+`dev/design/proof-horizon.md` — Edmond's algorithm, 2026-08-18: local
+references pay nothing where compiler proofs hold (anchored borrows,
+Lean-style call summaries) and pay wholesale only at proof horizons —
+in form A the payment is an ordinary retain, so the runtime and the
+walk are untouched and the whole cost is compiler-side. Successor to
+the stack-exit epoch model (`docs/history/stack-exit-epoch-gc-2026-08-18.md`,
+superseded; its five-axis review is `dev/STACK_EXIT_EPOCH_GC_REVIEW.md`).
+A Critic round is owed before any step exists.
 
 `dev/design/pure-destructors.md` — Edmond's pure-destructor proposal
 analyzed, 2026-08-18: the purity ladder, what the runtime already

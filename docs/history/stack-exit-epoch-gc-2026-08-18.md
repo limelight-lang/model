@@ -1,3 +1,14 @@
+> **HISTORICAL — superseded, do not rely on this.**
+>
+> Superseded 2026-08-18, the same day it was recorded, by
+> `dev/design/proof-horizon.md`. The five-axis review that decided the
+> supersession is `dev/STACK_EXIT_EPOCH_GC_REVIEW.md`: a critical
+> untouch/retirement race, a load path that dominates the RC pair it
+> replaces, and the loss of deterministic destruction. What survives —
+> the anchored borrow and payment at proof boundaries, the author's
+> original idea — is the successor's core, over maintained RC instead
+> of in place of it.
+
 # GC without mutator-side RC: stack-exit epoch protection
 
 **Status:** model design; central safety invariant accepted, production protocol unproved
