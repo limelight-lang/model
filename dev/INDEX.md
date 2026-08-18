@@ -23,6 +23,14 @@ versions live in `docs/history/`, marked at the top.
 
 ## Entry points
 
+- Stack-exit epoch GC model: `dev/STACK_EXIT_EPOCH_GC.md` — no mutator-side
+  RC; zero means logically local, leaving the last local use stamps the
+  acknowledged GC epoch, and a target touched during a walk survives through
+  the next walk. Defines the missed-edge invariant, start/end handshakes,
+  hazard-based safe acquisition, `LIVE -> RETIRING -> DEAD`, the temporary
+  indegree baseline, the recommended tracing backend, and its model and
+  measurement gates.
+
 - Selective RC research: `dev/SELECTIVE_RC_WALK.md` — an rc-walk extension
   that omits target counts for compiler-proven, anchor-dominated objects;
   includes the mixed root equation, sealed-topology rule, edge-cost matrix,
