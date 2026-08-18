@@ -8,6 +8,26 @@ never edited or deleted.
 
 ---
 
+## 2026-08-17 — rung one salts every kind's slot, under the per-process key
+
+Amends 2026-08-13, "the flood ladder's two rungs answer different key
+kinds": the rungs still answer different failures — differing
+identities against equal identities — but the first rung's mix now
+covers string slots as well as integer ones, and the salt is drawn as
+a keyed hash of the storage address under the per-process key
+(`src/hash/process_key.rs`) instead of through the foldable seed. Two
+reasons forced it. Under `hash-folding` a cached string hash is a
+build constant, so the old rung rebuilt an offline-built string chain
+into exactly the same chain; and a salt derived from the foldable
+seed is computable by anyone holding a folding artifact. `strong_hash`
+keeps its placeholder construction, now keyed by the process key
+mixed with the table's salt; the HighwayHash long-key slot stays owed
+(`PLAN.md` backlog, "The long-key slot itself"). Rejected: salting
+only at escalation — it leaves the chain rung a no-op for strings.
+Cost: one extra splitmix on a reseeded table's string path,
+unmeasured, and this box cannot resolve an effect that size
+(`dev/BENCHMARKS.md`, noise floor).
+
 ## 2026-08-17 — the no-RC research round closes: unique ownership survives it
 
 Edmond's ruling on the 2026-08-16/17 GC research round. What survives

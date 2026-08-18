@@ -9,6 +9,10 @@ use std::fs;
 use std::path::Path;
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "the draw opens /dev/urandom, which Miri's isolation forbids; under Miri the key is a constant"
+)]
 fn two_draws_of_the_underlying_key_differ() {
     assert_ne!(
         super::draw_for_tests(),
@@ -49,6 +53,7 @@ fn source(name: &str) -> String {
 /// The key exists in every build, so the module may not grow a folding
 /// arm. The doc prose names the option; only a `cfg` test of it counts.
 #[test]
+#[cfg_attr(miri, ignore = "reads a source file, which Miri's isolation forbids")]
 fn the_key_module_carries_no_folding_arm() {
     let text = source("src/hash/process_key.rs");
     assert!(
@@ -100,6 +105,7 @@ fn stray_key_mentions(text: &str) -> Vec<(usize, String)> {
 /// key module only to force its draw at startup, never in the constant
 /// chain the stamp is built from.
 #[test]
+#[cfg_attr(miri, ignore = "reads a source file, which Miri's isolation forbids")]
 fn seed_names_the_key_only_to_force_it_at_startup() {
     let strays = stray_key_mentions(&source("src/hash/seed.rs"));
     assert!(

@@ -28,11 +28,19 @@
 //! | `array/table.rs`, `strong_hash` | the escalated hash: keyed by this key together with the table's salt |
 //! | the long-key function, when it arrives | all 32 bytes as its 256-bit key (`rfc/model/strings.md`, "Seeding") |
 //!
-//! The keyed hash is the only sanctioned derivation because an avalanche
-//! of `value ^ word` is a bijection: one recovered output beside one
-//! known input hands the word back (`array/table.rs`, `draw_salt`'s
-//! doc). Splitting words would also leave the long function less than
-//! the 256 bits `rfc/model/strings.md` names for it.
+//! Consumers take the key through [`folded`] — the whole key compressed
+//! to the 64-bit width their keyed primitive takes — rather than picking
+//! a word, so no single word is exposed through a derived value and a
+//! recovered `folded` does not hand back the 256-bit key the long
+//! function will own (folding is a 256→64 compression). This is not a
+//! claim of one-wayness: the short function's keyed primitive
+//! ([`array/table.rs`], `strong_hash`) is a placeholder invertible in
+//! its key, so a timing oracle recovers the salt and through it
+//! `folded`. `rfc/model/strings.md` ("Neither position is a defence")
+//! concedes exactly that — a per-process key raises hash flooding from
+//! reading a constant to mounting a timing attack and no further, and
+//! the structural backstop is the flood ladder's bounded rebuilds, not
+//! the secrecy of this key.
 //!
 //! A zero word stays as drawn: unlike the seed, no field stores a key
 //! word to mean "not installed", so zero carries no sentinel meaning and
@@ -70,6 +78,26 @@ pub(crate) fn words() -> &'static [u64; 4] {
     &WORDS
 }
 
+/// The whole key compressed to 64 bits, for the short function's
+/// consumers in the module-doc table — their keyed primitive takes a
+/// 64-bit key until the long-key function arrives. A mix chain over all
+/// four words rather than a word pick, so no single word is exposed
+/// through any derived value.
+#[inline]
+pub(crate) fn folded() -> u64 {
+    let words = words();
+    let mut folded = words[0];
+    for word in &words[1..] {
+        // The splitmix64 finalizer: full avalanche per absorbed word.
+        let mut x = folded ^ *word;
+        x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        folded = x ^ (x >> 31);
+    }
+
+    folded
+}
+
 /// 32 fresh bytes from `/dev/urandom`, as four little-endian words.
 ///
 /// A refused read aborts the process here, at the draw: on a host with
@@ -80,6 +108,22 @@ pub(crate) fn words() -> &'static [u64; 4] {
 /// refusal — a full descriptor table, say — into every later `words`
 /// call failing forever.
 fn draw() -> [u64; 4] {
+    // Miri's isolation forbids `open`, so under it the key is a
+    // non-zero constant: every property but freshness holds, and the
+    // freshness test is ignored there for exactly this reason
+    // (`dev/WORKFLOW.md`, the sanctioned narrow exception).
+    #[cfg(miri)]
+    return [0xA5A5_A5A5_A5A5_A5A5; 4];
+
+    #[cfg(not(miri))]
+    {
+        draw_from_os()
+    }
+}
+
+/// The real draw, behind [`draw`]'s Miri exemption.
+#[cfg(not(miri))]
+fn draw_from_os() -> [u64; 4] {
     use std::io::Read;
 
     let mut bytes = [0u8; 32];

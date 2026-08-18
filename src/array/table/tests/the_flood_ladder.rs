@@ -116,17 +116,126 @@ fn an_integer_flood_fires_the_first_rung_and_the_drawn_salt_scatters_it() {
     }
 }
 
+/// The salt is a secret, not a checksum: derived from the storage
+/// address under the per-process key, so holding the artifact — which
+/// under `hash-folding` contains the seed — prices no salt. The bare
+/// address hash is exactly what the old derivation produced, so this
+/// is the one comparison that can go red on the defect.
+#[test]
+fn the_drawn_salt_is_not_the_bare_address_hash() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    // The honest phase pushes the capacity ahead of the flood, so the
+    // tripping insert does not also grow: a grow moves the storage in
+    // the same call that drew the salt, and the address below would
+    // then be one the salt was never derived from.
+    // 70, not 64: at exactly 64 the honest phase ends with used == cap,
+    // and the first forged insert grows — moving the storage mid-test.
+    for i in 0..70i64 {
+        m.insert(Key::Int(i), Value::int(i));
+    }
+
+    let storage_before = m.storage();
+    extend_one_chain(&mut m, 0, CHAIN_LIMIT as usize + 1);
+    assert!(m.is_reseeded(), "the forged chain draws the salt");
+    assert_eq!(
+        m.storage(),
+        storage_before,
+        "the draw and the assert see one storage, or the test is void"
+    );
+    assert_ne!(
+        m.salt,
+        crate::hash::hash_bytes(&(m.storage() as u64).to_le_bytes()),
+        "the salt reads as the seed's hash of the bare address, which \
+         anyone holding a folding artifact can compute"
+    );
+}
+
+/// Rung one mixes string slots as well as integer ones: under
+/// `hash-folding` a cached string hash is a build constant, so a rung
+/// that salts only integers rebuilds an offline-built string chain
+/// into the same chain. The probe side and the rebuild side must move
+/// together, or the salted kind's entries are present, iterable and
+/// unfindable.
+#[test]
+fn a_reseeded_tables_string_slot_is_salted_on_both_sides() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut m = t();
+    let s = mk(b"salted");
+    m.insert(Key::Str(s), Value::int(7));
+    for i in 0..512i64 {
+        m.insert(Key::Int(i * 1024), Value::int(i));
+    }
+
+    assert!(m.is_reseeded());
+    assert!(!m.is_strong(), "differing hashes stay below strong");
+    let cached = unsafe { LLString::hash(s) };
+    let probe = {
+        let (table, _) = unsafe { crate::array::entity::as_table(m.0) };
+        table.slot_hash(Key::Str(s))
+    };
+    assert_ne!(
+        probe, cached,
+        "a reseeded table still slots a string by its cached hash, \
+         which no salt enters"
+    );
+
+    let (table, head) = unsafe { crate::array::entity::as_table(m.0) };
+    let of_entry = (0..head.used())
+        .map(|i| table.entry(head, i))
+        .find(|e| e.string_key() == s)
+        .map(|e| table.entry_slot_hash(e))
+        .expect("the string's entry is present");
+    assert_eq!(
+        probe, of_entry,
+        "the probe side and the rebuild side disagree on a string slot"
+    );
+    assert_eq!(m.get(Key::Str(s)).unwrap().as_int(), 7);
+}
+
+/// Forge a chain against a drawn salt: hashes whose *salted mixes*
+/// agree in their low 13 bits, so the family shares one slot at any
+/// table size up to 8192 — the post-draw counterpart of
+/// [`extend_one_chain`], which forges against the cached hash an
+/// unsalted table slots by.
+fn extend_one_chain_salted(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LLString> {
+    let salt = m.salt;
+    assert_ne!(salt, 0, "forging against no salt forges the wrong rung");
+    let mut forged = Vec::new();
+    let mut h: u64 = 1;
+    while forged.len() < to - from {
+        if mix_word(h, salt) & 0x1FFF == 0x0AB5 {
+            forged.push(h);
+        }
+
+        h += 1;
+    }
+
+    forged
+        .into_iter()
+        .enumerate()
+        .map(|(i, hash)| {
+            let s = mk(format!("salted-chain-{}", from + i).as_bytes());
+            unsafe { (*s).hash = hash };
+            m.insert(Key::Str(s), Value::int((from + i) as i64));
+            s
+        })
+        .collect()
+}
+
 /// The ladder's rungs above the zeroth, in order and each once. A
 /// long chain of keys whose hashes differ draws the salt a fresh
-/// table does not have; the next one escalates instead of drawing
-/// again, which is what bounds the attacker at one rebuild and one
+/// table does not have; a second chain forged against the *drawn*
+/// salt — read through the test window, as an attacker with a timing
+/// oracle would recover it — escalates instead of drawing again,
+/// which is what bounds the attacker at one rebuild and one
 /// escalation per table.
 ///
 /// Seen failing at the escalation: without the reseed counter the
-/// chain trigger redraws forever, and for string keys it cannot even
-/// separate them — below `strong` a string's slot is its cached hash,
-/// which no salt enters — so every later insert pays another O(used)
-/// rebuild and the chain stays exactly as long.
+/// chain trigger redraws forever. The second family is forged under
+/// the salted mix because the mix covers string slots: an unsalted
+/// forge scatters at the draw's own rebuild and never trips again —
+/// the rung doing its work, not a way to reach the next one.
 #[test]
 fn a_long_chain_draws_the_salt_once_and_then_escalates() {
     let _g = crate::memory::block_pool::test_guard();
@@ -139,11 +248,19 @@ fn a_long_chain_draws_the_salt_once_and_then_escalates() {
     assert!(!m.is_strong(), "and does not escalate on the first firing");
     let redrawn = m.salt;
 
-    let second = extend_one_chain(&mut m, CHAIN_LIMIT as usize + 1, CHAIN_LIMIT as usize + 2);
+    let second = extend_one_chain_salted(
+        &mut m,
+        CHAIN_LIMIT as usize + 1,
+        2 * (CHAIN_LIMIT as usize + 1),
+    );
     assert!(m.is_strong(), "the second firing escalates");
     assert_eq!(
         m.salt, redrawn,
         "escalation redraws nothing: that is the Perl REHASH defect"
+    );
+    assert!(
+        m.nslots() <= 1 << 13,
+        "the forge's low-13 agreement no longer covers this table"
     );
 
     for (i, s) in first.iter().chain(second.iter()).enumerate() {

@@ -154,8 +154,22 @@ and the one price outside the crate — the Windows build S27.1's
       One AND on the key accessor is a cost the design accepted in "A
       fifth word was refused"; this box cannot resolve it and no speed
       claim is made.
-- [ ] S27.3 The ladder draws under the key, and its slots are salted for
-      strings as well as integers
+- [x] S27.3 The ladder draws under the key, and its slots are salted for
+      strings as well as integers — closed 2026-08-17: both new tests
+      seen red first (salt differs from the bare address hash; string
+      slot salted on both probe and rebuild), the rule-4 rewrite forges
+      its second family under the drawn salt read through the test
+      window (Edmond signed off), whole gate green, Miri slice
+      table+process_key 44/0 clean. Critic round run: finding 1 — the
+      placeholder `strong_hash` is invertible in its key — is out of the
+      stage's scope by the plan ("`strong_hash` re-keyed rather than
+      replaced") and conceded by `rfc/model/strings.md` ("Neither
+      position is a defence"); the false one-wayness claim my own doc
+      made is corrected. Findings 2 (a copy inherits the salt) and 3
+      (the equal-hash trigger is string-shaped) are already scheduled —
+      S27.5 redraws the copy's salt, the map stage revisits the trigger.
+      Finding 4 (the source guard's positive check was comment-evadable)
+      is fixed: the guard strips comments before matching.
       done: the drawn salt differs from `hash_bytes` of the bare storage
         address in both hash builds; `draw_salt` derives from the storage
         address and the per-process key; a reseeded table's string slot is the salted mix of the

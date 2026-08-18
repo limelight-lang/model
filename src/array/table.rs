@@ -9,7 +9,9 @@
 //! [ u32 x nslots ][ padding to 8 ][ Entry x cap ]
 //! ```
 
-use crate::array::entry::{Entry, MAX_ENTRIES, NONE};
+use crate::array::entry::{
+    Entry, KEY_SENTINEL_LIMIT, KEY_TAG_MASK, KEY_TAG_STRING, MAX_ENTRIES, NONE,
+};
 use crate::array::head::{StorageHead, StorageTag};
 use crate::refcount::{MemoryCategory, RcHeader};
 use crate::string::{LLString, string_bytes};
@@ -41,7 +43,16 @@ pub enum Key {
 /// predict where that is).
 #[inline]
 fn mix_int(k: i64, salt: u64) -> u64 {
-    let mut x = (k as u64) ^ salt;
+    mix_word(k as u64, salt)
+}
+
+/// The salted mix behind every reseeded slot path — the integer's value
+/// through [`mix_int`], a string's cached hash directly: splitmix64's
+/// finalizer over the identity word XOR the salt, full avalanche, so a
+/// family agreeing in its low bits scatters once the salt is drawn.
+#[inline]
+fn mix_word(word: u64, salt: u64) -> u64 {
+    let mut x = word ^ salt;
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     x ^ (x >> 31)
@@ -54,9 +65,11 @@ fn mix_int(k: i64, salt: u64) -> u64 {
 /// every other table holding that string, so escalation must not touch
 /// it — a table that has been attacked hashes bytes itself instead.
 ///
-/// This is a placeholder shape rather than the final function: the design
-/// names the long-key slot (`rfc/model/strings.md`) with a per-process key
-/// that is never folded, and this stands in until that slot is filled.
+/// The key it takes is the per-process key folded to word width, mixed
+/// with the table's salt ([`Table::strong_key`]); the salt draw keys the
+/// same way. This is a placeholder shape rather than the final function:
+/// the design names the long-key slot (`rfc/model/strings.md`), whose
+/// arrival replaces the construction, not the keying.
 #[inline]
 fn strong_hash(bytes: &[u8], key: u64) -> u64 {
     let mut h = key ^ 0x9E37_79B9_7F4A_7C15;
@@ -442,12 +455,24 @@ impl Table {
             }
             Key::Str(s) => {
                 if self.flags & TABLE_STRONG != 0 {
-                    strong_hash(unsafe { string_bytes(s) }, self.salt)
+                    strong_hash(unsafe { string_bytes(s) }, self.strong_key())
+                } else if self.flags & TABLE_RESEEDED != 0 {
+                    mix_word(unsafe { LLString::hash(s) }, self.salt)
                 } else {
                     unsafe { LLString::hash(s) }
                 }
             }
         }
+    }
+
+    /// The keyed hash's key: the per-process key folded to word width,
+    /// mixed with the table's salt — rung two hashes bytes under the
+    /// key *together with* the salt (`rfc/model/maps.md`, "What the
+    /// flood ladder becomes"), so two escalated tables scatter one
+    /// colliding set differently.
+    #[inline]
+    fn strong_key(&self) -> u64 {
+        mix_word(crate::hash::process_key::folded(), self.salt)
     }
 
     /// The same, derived from an entry rather than from a key — what the
@@ -461,7 +486,9 @@ impl Table {
                 e.hash_or_key
             }
         } else if self.flags & TABLE_STRONG != 0 {
-            strong_hash(unsafe { string_bytes(e.string_key()) }, self.salt)
+            strong_hash(unsafe { string_bytes(e.string_key()) }, self.strong_key())
+        } else if self.flags & TABLE_RESEEDED != 0 {
+            mix_word(e.hash_or_key, self.salt)
         } else {
             e.hash_or_key
         }
@@ -593,7 +620,16 @@ impl Table {
 
                 chain_len += 1;
                 let e = self.entry(head, i as usize);
-                if !e.is_int_key() && e.hash_or_key == stored_hash {
+                // The counter counts an entry only when its tag equals
+                // the incoming key's: an integer's identity is its
+                // value, so equal identity is an overwrite and never a
+                // chain entry (`rfc/model/maps.md`, "What the flood
+                // ladder becomes").
+                if matches!(key, Key::Str(_))
+                    && e.key_word >= KEY_SENTINEL_LIMIT
+                    && e.key_word & KEY_TAG_MASK == KEY_TAG_STRING
+                    && e.hash_or_key == stored_hash
+                {
                     equal_hashes += 1;
                 }
 
@@ -1009,21 +1045,26 @@ impl Table {
     }
 
     /// The one draw of the per-table salt: the storage address run
-    /// through `hash_bytes`, and the flag saying the table has one.
+    /// through the keyed hash under the per-process key
+    /// (`hash::process_key`), and the flag saying the table has one.
     /// Idempotent by the flag, so whichever rung fires first draws and
-    /// the other inherits. Never zero — `hash_bytes` remaps zero away —
-    /// so a drawn salt cannot masquerade as the unsalted state.
+    /// the other inherits. Never zero — a zero draw is remapped — so a
+    /// drawn salt cannot masquerade as the unsalted state.
     ///
-    /// `hash_bytes` rather than an avalanche of `address ^ seed`: the
-    /// avalanche is a bijection, so one recovered salt would hand back
-    /// `address ^ seed` exactly, and one leaked address the seed itself.
-    /// Behind rapidhash the seed sits where every cached string hash
-    /// already puts it. What this does not buy: storage addresses
-    /// recycle across arena resets, so a salt can repeat, and under
-    /// `hash-folding` the seed is a build constant — the durable key for
-    /// an escalated table is the long-key slot's per-process never-folded
-    /// key (`rfc/model/strings.md`), which `strong_hash`'s own doc names
-    /// as the unfilled slot this stands in for.
+    /// Keyed under the per-process key so that a static reading of the
+    /// artifact cannot compute the salt: the foldable seed enters
+    /// nowhere — under `hash-folding` it travels inside the artifact,
+    /// where an attacker holding the binary would read it
+    /// (`rfc/model/maps.md`, "What the flood ladder becomes": every
+    /// secret the ladder draws comes from the per-process key). It is
+    /// not one-way: `strong_hash` is a placeholder invertible in its
+    /// key, so a timing oracle recovers the salt, and `rfc/model/strings.md`
+    /// ("Neither position is a defence") concedes that — the backstop is
+    /// the ladder's bounded rebuilds, not the salt. What this still does
+    /// not buy: storage addresses recycle across arena resets, so a salt
+    /// can repeat within one process, and the long-key slot
+    /// (`rfc/model/strings.md`) stays the unfilled function `strong_hash`
+    /// stands in for.
     ///
     /// The triggers fire during an insert's chain walk, which needs
     /// entries, so the storage is never null here — asserted, because a
@@ -1038,7 +1079,11 @@ impl Table {
             "a draw before the first entry would salt every table alike"
         );
         self.flags |= TABLE_RESEEDED;
-        self.salt = crate::hash::hash_bytes(&(head.storage() as u64).to_le_bytes());
+        let drawn = strong_hash(
+            &(head.storage() as u64).to_le_bytes(),
+            crate::hash::process_key::folded(),
+        );
+        self.salt = if drawn == 0 { 1 } else { drawn };
     }
 
     /// Escalate to the keyed byte hash, once and one way. The response
@@ -1047,10 +1092,12 @@ impl Table {
     /// REHASH exploitable (CVE-2013-1667).
     ///
     /// Firing from an unsalted table draws the salt on the way, because
-    /// the keyed hash's key *is* the salt: left at zero it would be a
-    /// key every attacker knows, and the design's residual assumption —
-    /// a new colliding set costs a break of a keyed PRF — needs the key
-    /// unpredictable. That is a draw, not the redraw the Perl defect is
+    /// the salt enters the keyed hash's key ([`Table::strong_key`]):
+    /// without a draw every escalated table would scatter one colliding
+    /// set identically, and per-table diversity is what the draw buys —
+    /// the design's residual assumption, a new colliding set costing a
+    /// break of a keyed PRF, wants the key per-table as well as
+    /// per-process. That is a draw, not the redraw the Perl defect is
     /// about: a salt already drawn is left exactly as it was.
     fn escalate(&mut self, head: &StorageHead) {
         if self.flags & TABLE_STRONG != 0 {
@@ -1074,9 +1121,14 @@ impl Table {
     /// fires on every insert an attacker chooses, each firing an
     /// O(`used`) rebuild, and the promised O(n) is O(n²).
     ///
-    /// **The two rungs defend different key kinds**, this one integer
-    /// keys and escalation string ones (`dev/DECISIONS.md`, "the flood
-    /// ladder's two rungs answer different key kinds").
+    /// **The two rungs answer different failures**: this one, keys whose
+    /// identities differ while their buckets coincide — its mix covers
+    /// every kind's slot, the integer's value through [`mix_int`] and a
+    /// string's cached hash through [`mix_word`] — and escalation, keys
+    /// whose identity numbers agree while the keys differ
+    /// (`dev/DECISIONS.md`, "rung one salts every kind's slot, under the
+    /// per-process key", amending "the flood ladder's two rungs answer
+    /// different key kinds").
     ///
     /// The salt is drawn at most once per table ([`Table::draw_salt`]),
     /// so there is no orbit to learn and no redraw to aim. A COW copy
