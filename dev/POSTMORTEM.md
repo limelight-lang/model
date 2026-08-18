@@ -7,6 +7,81 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-18 — an allocation moved earlier re-aimed four refusal tests, and their counters could not see it
+
+**What happened.** The COW copy gained a presized storage chunk in
+`array::entity::new_empty_copy`, which made it the copy's first request
+to the buffer arena. Every test that forces a refusal on that path now
+stopped there instead of where it aimed: the work list, the association,
+the nested destination and the escapee giveback in
+`who_owns_a_key_reference.rs`. All four stayed green. Their instrument is
+a count of heap slots taken and given back, and a copy that takes one
+slot and returns it leaves the free list looking exactly like a copy that
+takes two and returns two. The branch each was written for — a teardown
+handing back a child the copy had already published — had no test at all
+for the length of that change, and the suite said nothing.
+
+**Root cause.** A forced-refusal test names its branch in prose and
+proves it with a resource count, and the count is blind to *which*
+allocation was refused. The two facts are independent, so the prose can
+go stale while the assertion still passes. `dev/POSTMORTEM.md`,
+2026-08-13, records the same class from the other side — a test that
+never proved a refusal happened at all — and the answer there, a refusal
+counter, does not separate two refusals on one path either.
+
+**Why it was not caught.** Nothing reads the pairing of a test's stated
+branch to the allocation it actually refuses; only a mutant does. The
+Critic round on the change found it by instrumenting the refusal branch
+and printing which call site fired.
+
+**The repair.** `buffer_arena::SERVE_BEFORE_REFUSING` — a grace count the
+injection spends before it starts refusing, so a test serves the
+allocations that precede its subject and refuses the one it names. Each
+of the four tests now asserts both numbers, one served and one refused,
+and each was re-verified by a mutant that reddens it. Where the refusal
+had to follow a publication, the fixture moved it onto the entry's key
+rather than its element, the key's crossing being the one that still
+allocates. The unit of the grace is the injection point rather than the
+request, because `buffer_ensure_longlived` consults it and then calls
+`buffer_alloc_longlived_payload`, which consults it again; that is
+stated at the flag.
+
+**The rule.** When an allocation moves earlier on a path, list every test
+that forces a refusal on that path and re-verify each by mutant. Reading
+them is not enough: they are green either way.
+
+## 2026-08-18 — a fixture's search width, paid once natively and thirty-two times over under Miri
+
+**What happened.** The flood ladder's tests forge families of keys whose
+index slots agree, by searching candidate names until enough of them
+land in one slot. The width was thirteen bits — one slot in 8192 — so
+33 names cost about 270,000 candidates, each formatted and hashed. That
+is milliseconds natively and the module runs in 0.01 s. Under Miri the
+same module outran a 50-minute slice at two threads, then a 90-minute
+one, then a per-test run of an hour and a half that reached six tests of
+fourteen. Three runs were killed and produced no evidence at all.
+
+**Root cause.** The width was chosen as a round number rather than from
+the table the fixture builds. Those tables hold about 40 entries over
+128 slots, so eight bits carry the family with a doubling to spare, and
+every bit above that doubles the search for nothing.
+
+**Why it was not caught.** The module was written and run natively,
+where the cost is invisible, and its Miri slice was owed at the stage
+close rather than run beside it. A cost that only an interpreter can
+feel is not felt by the author.
+
+**The repair.** Eight bits, named `AGREEING_BITS`, with the table's slot
+count asserted against it in both forging fixtures — a family that no
+longer shares a slot now fails loudly instead of silently proving
+nothing. The module then ran under Miri in 272.84 s of its own clock,
+four minutes of wall, 14 tests clean.
+
+**The rule.** A fixture that searches states the width it needs and
+asserts it against the structure it builds. Constants like `0x1FFF`
+chosen for roundness are paid by every environment that reads them
+slowly.
+
 ## 2026-08-15 — a hypothesis written where a measurement of ours already stood
 
 **What happened.** A benchmark arm came back 3.7x apart between the two GC

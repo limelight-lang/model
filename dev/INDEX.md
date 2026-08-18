@@ -101,6 +101,15 @@ versions live in `docs/history/`, marked at the top.
   still hashes well and fails nothing else. Zero is never returned —
   it is the string field's "not computed" sentinel.
 
+  `hash/process_key.rs` holds the other secret, and the two must not be
+  confused: 32 bytes drawn from the OS once per process **in every
+  build**, outside `STAMP` and exempt from `hash-folding`, because
+  nothing compiled may depend on them. Every secret the flood ladder
+  draws comes from here (`rfc/model/maps.md`, "What the flood ladder
+  becomes"), and a consumer takes the key whole as a keyed hash's key
+  rather than by words. Unix only so far — the backlog carries the
+  Windows door.
+
   `hash/seed.rs` holds the seed and the `hash-folding` cargo feature.
   Off (the default): the seed is drawn from the OS per process and the
   compiler folds nothing. On: the seed is fixed from `LL_HASH_SEED`,

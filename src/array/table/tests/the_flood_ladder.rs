@@ -201,10 +201,14 @@ fn a_reseeded_tables_string_slot_is_salted_on_both_sides() {
 fn extend_one_chain_salted(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LLString> {
     let salt = m.salt;
     assert_ne!(salt, 0, "forging against no salt forges the wrong rung");
+    assert!(
+        m.head().nslots() <= 1 << AGREEING_BITS,
+        "the table outgrew the family's agreement, so it no longer shares a slot"
+    );
     let mut forged = Vec::new();
     let mut h: u64 = 1;
     while forged.len() < to - from {
-        if mix_word(h, salt) & 0x1FFF == 0x0AB5 {
+        if mix_word(h, salt) & AGREEING_MASK == AGREEING_TARGET {
             forged.push(h);
         }
 
@@ -375,16 +379,37 @@ fn escalation_happens_once_and_a_drawn_salt_is_not_redrawn_on_equal_hashes() {
     );
 }
 
-/// Names whose *strong* slots agree in their low 13 bits, so the family
-/// shares one index slot at any table size up to 8192 — the escalated
-/// counterpart of [`extend_one_chain_salted`]. The search stands in for
-/// the break of the keyed PRF the design's residual assumption prices
+/// Names whose *strong* slots agree in their low [`AGREEING_BITS`] bits,
+/// so the family shares one index slot at any table size up to twice
+/// what these fixtures reach — the escalated counterpart of
+/// [`extend_one_chain_salted`]. The search stands in for the break of
+/// the keyed PRF the design's residual assumption prices
 /// (`Table::draw_salt`): the test window reads the key, an attacker
 /// would have to recover it.
 ///
+/// **The width is the table's and not a round number.** One bit more
+/// doubles the candidates the search reads, and it reads them under
+/// Miri too, where a thirteen-bit family put this module past an hour;
+/// one bit less and the family scatters, so the caller's slot count is
+/// asserted rather than assumed.
+///
 /// Names only, no entities: the caller decides which are inserted and
 /// which one springs the trigger.
+/// How far a forged strong family agrees, and so the widest index that
+/// still holds the whole of it in one slot: these fixtures fill a table
+/// of 64 entries over 128 slots, and eight bits carry that with a
+/// doubling to spare.
+const AGREEING_BITS: u32 = 8;
+const AGREEING_MASK: u64 = (1 << AGREEING_BITS) - 1;
+/// Which of the agreeing slots the family lands in — any value under
+/// the mask does, and a fixed one keeps the search reproducible.
+const AGREEING_TARGET: u64 = 0xB5;
+
 fn strong_slot_family(m: &Owned, n: usize, tag: &str) -> Vec<String> {
+    assert!(
+        m.head().nslots() <= 1 << AGREEING_BITS,
+        "the table outgrew the family's agreement, so it no longer shares a slot"
+    );
     let strong_key = {
         let (table, _) = unsafe { crate::array::entity::as_table(m.0) };
         table.strong_key()
@@ -393,7 +418,7 @@ fn strong_slot_family(m: &Owned, n: usize, tag: &str) -> Vec<String> {
     let mut i = 0usize;
     while found.len() < n {
         let name = format!("{tag}-{i}");
-        if strong_hash(name.as_bytes(), strong_key) & 0x1FFF == 0x0AB5 {
+        if strong_hash(name.as_bytes(), strong_key) & AGREEING_MASK == AGREEING_TARGET {
             found.push(name);
         }
 

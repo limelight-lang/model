@@ -8,6 +8,33 @@ never edited or deleted.
 
 ---
 
+## 2026-08-18 — the per-process key is drawn from the OS, in every build, and is not the hash seed
+
+The crate now holds two secrets and they answer different questions.
+`hash/seed.rs`'s seed keys the string hash and is a build constant under
+`hash-folding`, where the compiler needs it while it compiles.
+`hash/process_key.rs` holds 32 bytes drawn from `/dev/urandom` through
+safe `std::fs` at first use, in every build, outside `STAMP` and exempt
+from folding: every secret the flood ladder draws comes from it, and a
+ladder whose salt an artifact-holder can compute defends nothing
+(`rfc/model/maps.md`, "What the flood ladder becomes").
+
+Refused, and recorded because both come back: deriving the ladder's salt
+from the foldable seed, which is what the crate did until 2026-08-17 and
+which `rfc/model/strings.md` forbids for this key; and
+`std::collections::hash_map::RandomState`, which caches one `(k0, k1)`
+per thread and then increments `k0`, so any number of words carries 128
+bits, and those words share the master the string seed is drawn from.
+
+A consumer takes the key whole, as a keyed hash's key, rather than
+slicing words out of it — fixed once in that module's doc for every
+consumer, because `draw_salt`'s own doc refutes the bijective word mix
+the alternative rests on.
+
+The price, paid knowingly: `#[cfg(not(unix))]` is a `compile_error!`, so
+the Windows build refuses until a session on that box adds the door
+(`PLAN.md` backlog). Edmond deferred it 2026-08-17.
+
 ## 2026-08-18 — a copy sizes its storage by its own replay
 
 Amends the 2026-08-16 ruling recorded in `PLAN.md` S27.5, which had a
