@@ -116,6 +116,14 @@ population); counted classes are the ones that habitually cross
 reflection, callbacks or coroutine suspensions, where the analysis
 would cost more than the pairs it removes.
 
+The granularity is debatable and stands open (question 4 below). The
+argument for finer-than-class: in form A the regime is invisible to
+the runtime — both regimes are only a choice of where the compiler
+emits pairs — so per-site deviation is technically lawful in either
+direction. The argument for class-only: one carrier, one policy, no
+per-site metadata, and the bit hardens into a runtime property if a
+form B is ever pursued. Neither is ruled.
+
 The hybrid also changes what the measurement decides: the corpus scan
 below no longer gates the whole design on one global coverage number —
 it prices the horizon regime class by class, and the design pays for
@@ -190,6 +198,10 @@ and unique ownership already spend.
    the answer shapes the IR.
 3. Whether the corpus scan's upper bound justifies summaries at all —
    the gate before any design deepens.
+4. The hybrid's granularity — the regime strictly a class property, or
+   a class-level policy with lawful per-site deviation. Debatable by
+   both of us on 2026-08-18; the Critic round should attack both
+   readings before it is ruled.
 
 ## The record
 
