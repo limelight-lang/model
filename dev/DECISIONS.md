@@ -4346,3 +4346,26 @@ code — the GC philosophy applied to the compiler's output.
 indistinguishable from a miscompile at runtime; Edmond's cut is that
 the danger lives in *fallible* proofs, so the lawful per-site class
 is exactly the infallible ones.
+
+## 2026-08-18 — child-release order is language surface, and the hand-off's external-child delay stands
+
+Ruled by Edmond ("да, это сохраняется"), closing the two questions
+`dev/design/pure-destructors.md` left with him.
+
+**Decided:** the order in which a teardown releases an object's
+children is **specified** — today's order is part of the language
+surface and no tier of the purity ladder may reorder it. By the
+ladder's own table that settles P2's shape: a P2 destructor keeps its
+call and sheds only the resurrection machinery; erasing P2 to P0
+would hand the release order to the raw sever, which the ruling
+forbids. The ladder stays three-tier plus NR.
+
+**And:** the hand-off drain's external-child delay — the release
+batch of a drained component's external children running at a later
+checkpoint than the prologue — is accepted as the design's cost, not
+a defect to engineer away.
+
+**Why:** PHP code observes teardown through `__destruct` bodies, and
+an order that changes under an optimization tier is the timing class
+this family has consistently refused to trade (the drop-point pin,
+the destructor-bearing exclusion in `proof-horizon.md`).

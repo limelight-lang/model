@@ -376,10 +376,13 @@ this runtime already honours and must keep for everything impure.
 
 ## Open questions, each with its owner
 
-1. **Is child-release order inside one teardown specified?** (Edmond —
-   language surface.) Unspecified: P2 erases to P0 and the ladder is
-   two-tier. Specified: P2 keeps its call and sheds only resurrection
-   machinery.
+1. ~~**Is child-release order inside one teardown specified?**~~ —
+   ruled by Edmond, 2026-08-18: **specified** — today's order is
+   language surface and no tier may reorder it, so P2 keeps its call
+   and sheds only resurrection machinery; the ladder stays
+   three-tier plus NR (`dev/DECISIONS.md`, "child-release order is
+   language surface"). The same entry accepts the hand-off's
+   external-child delay as the design's cost.
 2. **The hand-off tail's residual duties.** (Design.) Three must be
    resolved before the collector may finish a component: the owner's
    reset-window record (`ll_entity_die` reports completed teardowns

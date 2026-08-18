@@ -219,8 +219,11 @@ own checkbox.
   rounds. The runtime-only step (the specialized P0 dispose and the
   raw-sever drain arm) needs no ruling and no compiler; the hand-off
   drain waits on the residual-duties and tail-bound questions the
-  analysis names; the compiler tiers wait on the child-release-order
-  ruling. The composition with the ownership pair — including the
+  analysis names, its external-child delay accepted by ruling
+  2026-08-18; the child-release-order ruling landed the same day —
+  specified, P2 keeps its call (`dev/DECISIONS.md`) — so the
+  compiler tiers wait only on the compiler. The composition with the
+  ownership pair — including the
   fast class that can block its own memory return — is
   `dev/design/owned-slots-and-the-walk.md`.
 - [ ] **Proof horizon, the borrow elision**
