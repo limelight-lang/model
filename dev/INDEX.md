@@ -23,6 +23,14 @@ versions live in `docs/history/`, marked at the top.
 
 ## Entry points
 
+- Stack-exit epoch GC model: `dev/STACK_EXIT_EPOCH_GC.md` — no mutator-side
+  RC; zero means logically local, leaving the last local use stamps the
+  acknowledged GC epoch, and a target touched during a walk survives through
+  the next walk. Defines the missed-edge invariant, start/end handshakes,
+  hazard-based safe acquisition, `LIVE -> RETIRING -> DEAD`, the temporary
+  indegree baseline, the recommended tracing backend, and its model and
+  measurement gates.
+
 - rc-walk collector side (`rc-walk` builds): `src/collector.rs` — the
   epoch state machine (Phases 1–3: snapshot, walk with the three-way
   classification, judge, condemn, snapshot-compare re-check, verdict
