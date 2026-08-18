@@ -8,7 +8,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
-Updated: 2026-08-16 · Active: S27
+Updated: 2026-08-18 · Active: S27
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
@@ -199,12 +199,27 @@ and the one price outside the crate — the Windows build S27.1's
       owed to the map stage.
       Falsified in place: `draw_salt`'s block and `reseed`'s "the two
       rungs defend different key kinds, this one integer keys".
-- [ ] S27.4 `Table::insert` answers a three-valued outcome, and knows a
-      replay from an admission
+- [x] S27.4 `Table::insert` answers a three-valued outcome, and knows a
+      replay from an admission — closed 2026-08-18: whole gate green,
+      Miri slice table+element 74/0 clean on the final tree, Critic
+      round run and its four findings fixed in place (the
+      unchanged-on-refusal promise narrowed to entries, counts and keys,
+      a refused insert being able to spend a rung; the replay exemption
+      stated as the table's contract until S27.5 amends `maps.md`;
+      presence-before-refusal named at `insert` as the contract
+      `box_element` stands on; the copy's impossible `Replaced` arm
+      settles its two references instead of leaking). The admitted half
+      is two variants, `Added` and `Replaced(Value)`, the pair's
+      impossible states being unrepresentable that way; the unread
+      `kind` carries an `#[expect]` that expires when S27.5 reads it,
+      and no path constructs the third variant.
       done: the outcome carries admitted, refused-for-memory and
         refused-by-the-ladder, the call takes which kind of insert it is,
         and all five non-test callers plus the two test harnesses answer
-        it with the suite green and the third variant unreachable
+        it with the suite green and the third variant unreachable — the
+        harnesses keep the pair shape the assertions were written
+        against and panic on a ladder refusal rather than folding it
+        into out-of-memory
       tier: T2 · role: Critic
       The callers: `element.rs:550`, `element.rs:732`,
       `entity::migrate_to_hash`, `entity::fill_table_from`,

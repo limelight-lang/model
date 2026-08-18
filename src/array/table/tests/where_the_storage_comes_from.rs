@@ -107,11 +107,18 @@ fn a_request_arena_storage_over_a_block_takes_the_large_run_path() {
     let a = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let (m, head) = unsafe { crate::array::entity::as_table_mut(a) };
     for i in 0..1100i64 {
-        m.insert(
-            head,
-            unsafe { crate::array::entity::category_of(a) },
-            Key::Int(i),
-            Value::int(i),
+        assert!(
+            matches!(
+                m.insert(
+                    head,
+                    unsafe { crate::array::entity::category_of(a) },
+                    InsertKind::Admission,
+                    Key::Int(i),
+                    Value::int(i),
+                ),
+                InsertOutcome::Added
+            ),
+            "an insert this test's storage depends on did not add"
         );
     }
 
@@ -210,11 +217,18 @@ fn a_refused_carry_leaves_the_category_where_it_was() {
     let a = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let (m, head) = unsafe { crate::array::entity::as_table_mut(a) };
     for i in 0..8i64 {
-        m.insert(
-            head,
-            unsafe { crate::array::entity::category_of(a) },
-            Key::Int(i),
-            Value::int(i),
+        assert!(
+            matches!(
+                m.insert(
+                    head,
+                    unsafe { crate::array::entity::category_of(a) },
+                    InsertKind::Admission,
+                    Key::Int(i),
+                    Value::int(i),
+                ),
+                InsertOutcome::Added
+            ),
+            "an insert this test's storage depends on did not add"
         );
     }
 

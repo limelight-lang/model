@@ -22,7 +22,7 @@ use crate::array::entity::{
     migrate_to_hash, publish_key, storage_head,
 };
 use crate::array::head::StorageTag;
-use crate::array::table::Key;
+use crate::array::table::{InsertKind, InsertOutcome, Key};
 use crate::array::vector::Vector;
 use crate::memory::context::LLContext;
 use crate::refcount::{MemoryCategory, RcHeader};
@@ -547,8 +547,8 @@ unsafe fn store_into(
     };
 
     let (table, head) = unsafe { as_table_mut(a) };
-    match table.insert(head, category, published_key, v) {
-        None => {
+    match table.insert(head, category, InsertKind::Admission, published_key, v) {
+        InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder => {
             unsafe { give_value_back(category, &v) };
             if let Key::Str(k) = published_key {
                 unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
@@ -556,17 +556,13 @@ unsafe fn store_into(
 
             false
         }
-        Some((added, displaced)) => {
-            if let Some(old) = displaced {
-                unsafe { give_value_back(category, &old) };
-            }
-
-            if !added {
-                // Key ownership: the overwrite arm kept the entry's original key,
-                // so the reference published above goes back.
-                if let Key::Str(k) = published_key {
-                    unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
-                }
+        InsertOutcome::Added => true,
+        InsertOutcome::Replaced(old) => {
+            unsafe { give_value_back(category, &old) };
+            // Key ownership: the overwrite arm kept the entry's original key,
+            // so the reference published above goes back.
+            if let Key::Str(k) = published_key {
+                unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
             }
 
             true
@@ -729,9 +725,10 @@ unsafe fn box_element(
         vector.set(head, position, element)
     } else {
         let (table, head) = unsafe { as_table_mut(a) };
-        match table.insert(head, category, key, element) {
-            Some((_, displaced)) => displaced,
-            None => {
+        match table.insert(head, category, InsertKind::Admission, key, element) {
+            InsertOutcome::Added => None,
+            InsertOutcome::Replaced(old) => Some(old),
+            InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder => {
                 debug_assert!(false, "an overwrite of a present key cannot be refused");
                 // Not `destroy_unpublished`: the barrier above published
                 // this box, and for an arena array that publication is a

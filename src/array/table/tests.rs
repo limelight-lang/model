@@ -32,10 +32,10 @@ impl Owned {
         unsafe { &*crate::array::entity::storage_head(self.0) }
     }
 
+    /// [`crate::array::testing::insert`]'s pair shape, and its panic on a
+    /// ladder refusal.
     fn insert(&mut self, key: Key, value: Value) -> Option<(bool, Option<Value>)> {
-        let category = self.category();
-        let (table, head) = unsafe { crate::array::entity::as_table_mut(self.0) };
-        table.insert(head, category, key, value)
+        unsafe { crate::array::testing::insert(self.0, key, value) }
     }
 
     fn get(&self, key: Key) -> Option<Value> {

@@ -27,7 +27,7 @@
 //! entity, and separation is the shallow copy").
 
 use crate::array::head::{StorageHead, StorageTag};
-use crate::array::table::{Key, Table};
+use crate::array::table::{InsertKind, InsertOutcome, Key, Table};
 use crate::array::vector::Vector;
 use crate::journal::kinds::journal_event;
 use crate::refcount::{COW, EntityKind, MemoryCategory, RcHeader, publish_header};
@@ -215,12 +215,26 @@ pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) 
         // vector's bytes, so no reference to them may outlive the loop.
         let (vector, head) = unsafe { as_vector(a) };
         let element = vector.get(head, i).expect("a position below the count");
-        if table
-            .insert(&staging, category, Key::Int(i as i64), element)
-            .is_none()
-        {
-            table.dispose(&staging, category);
-            return false;
+        // A replay: every position was admitted into the vector once.
+        // Inert here either way — dense positions on an unsalted staging
+        // table cannot fire a trigger.
+        match table.insert(
+            &staging,
+            category,
+            InsertKind::Replay,
+            Key::Int(i as i64),
+            element,
+        ) {
+            InsertOutcome::Added => {}
+            InsertOutcome::Replaced(_) => {
+                // No reference moves in a migration, so there is
+                // nothing a release build could settle here.
+                debug_assert!(false, "vector positions are distinct keys");
+            }
+            InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder => {
+                table.dispose(&staging, category);
+                return false;
+            }
         }
     }
 
@@ -679,16 +693,35 @@ unsafe fn fill_table_from(
         };
 
         let (copy, copy_head) = unsafe { as_table_mut(dst) };
-        if copy.insert(copy_head, category, published_key, v).is_none() {
-            // Out of memory part-way. Give back what this element took —
-            // through the barrier, key and value alike; the source is
-            // untouched.
-            unsafe { give_value_back(category, &v) };
-            if let Key::Str(k) = published_key {
-                unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
+        // The copy's entry replay: every key here was admitted into the
+        // source once.
+        match copy.insert(copy_head, category, InsertKind::Replay, published_key, v) {
+            InsertOutcome::Added => {}
+            InsertOutcome::Replaced(old) => {
+                debug_assert!(
+                    false,
+                    "the source's keys are distinct and the copy starts empty"
+                );
+                // Settled all the same, so a release build that reaches
+                // this leaks nothing: the old element comes back to this
+                // side, and the overwrite arm keeps the entry's original
+                // key, so the reference published above does too.
+                unsafe { give_value_back(category, &old) };
+                if let Key::Str(k) = published_key {
+                    unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
+                }
             }
+            InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder => {
+                // Refused part-way. Give back what this element took —
+                // through the barrier, key and value alike; the source is
+                // untouched.
+                unsafe { give_value_back(category, &v) };
+                if let Key::Str(k) = published_key {
+                    unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
+                }
 
-            return false;
+                return false;
+            }
         }
     }
 
@@ -886,15 +919,20 @@ impl CopiesMade {
 
     /// False when the association cannot grow, which the caller unwinds
     /// like any other refusal: the channel keeps meaning out of memory.
+    ///
+    /// An admission, not a replay: the keys are entity addresses this
+    /// table has never seen, whatever their history in the arrays.
     fn record(&mut self, source: *mut LLArray, copy: *mut LLArray) -> bool {
-        self.table
-            .insert(
+        !matches!(
+            self.table.insert(
                 &self.head,
                 Self::CATEGORY,
+                InsertKind::Admission,
                 Key::Int(source as i64),
                 Value::entity(Tag::Array, copy as *mut RcHeader),
-            )
-            .is_some()
+            ),
+            InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder
+        )
     }
 
     /// Read by nobody: every refusal path unwinds without popping, so a

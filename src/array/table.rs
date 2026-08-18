@@ -28,6 +28,54 @@ pub enum Key {
     Str(*mut LLString),
 }
 
+/// Which kind of insert the caller is performing. The table's policy
+/// dispatches on it; the caller only states what it is doing.
+///
+/// The reader is the ladder's terminal rung, the refusal of an
+/// admission whose trigger trips with no rebuild left
+/// (`rfc/model/maps.md`, "Rung three, refusal"). A replay is exempt
+/// from that refusal alone, because a key admitted once cannot be
+/// refused on re-admission; rungs one and two stay armed on both. The
+/// exemption is this table's contract — the design text still states
+/// the rung without it, and moves with the rung's own change.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InsertKind {
+    /// A key from outside the table's history: a user store, or a new
+    /// association.
+    Admission,
+    /// An entry admitted once, re-derived: the copy's entry replay,
+    /// and the migration re-inserting the vector's positions.
+    Replay,
+}
+
+/// What [`Table::insert`] did, or the refusal it answered instead.
+/// A refusal leaves every entry, count and key unchanged. The ladder's
+/// state is outside that promise: the triggers fire on the insert's
+/// walk, before the outcome is decided, so a refused insert may have
+/// spent a rung.
+///
+/// The two refusal causes are distinct variants because the runtime
+/// owes them different answers: memory pressure is the environment's,
+/// while the terminal rung is a property of the keys and is raised as
+/// a catchable error once an error channel exists (`rfc/model/maps.md`,
+/// "Rung three, refusal").
+#[must_use = "a replaced element carries the table's reference; dropping it leaks the entity"]
+pub enum InsertOutcome {
+    /// A new key entered the table. A string key's reference, published
+    /// before the call, is now the table's.
+    Added,
+    /// The key was present; the old element is handed back for the
+    /// owner to release. The entry keeps its original key, so the key
+    /// reference published for this call stays the caller's.
+    Replaced(Value),
+    /// The storage could not grow.
+    RefusedForMemory,
+    /// The ladder's terminal rung: a trigger tripped with no rebuild
+    /// left for the offending kind. Constructed by no path yet — the
+    /// outcome precedes the rung, so the rung lands as one change.
+    RefusedByLadder,
+}
+
 /// Avalanche mix for an integer key, salted per table. Runs only once
 /// the flood ladder has drawn the table's salt ([`TABLE_RESEEDED`]);
 /// an unsalted table indexes an integer key by its value, as Zend does.
@@ -562,9 +610,18 @@ impl Table {
     /// (`array::element::store_into` and `array::entity::fill_table_from`
     /// are the worked examples).
     ///
-    /// Insert or overwrite. Returns `None` when the storage could not
-    /// grow — an allocation refusal reports rather than aborting, and the
-    /// table is unchanged. `Some(true)` means a new key was added.
+    /// Insert or overwrite. The outcome says which, or names the cause
+    /// of a refusal — [`InsertOutcome`] is the contract, refusal causes
+    /// included. `kind` states whether the key is the caller's own
+    /// admission or a replay of one admitted before ([`InsertKind`]);
+    /// nothing dispatches on it yet, the rung that will being unbuilt.
+    ///
+    /// **Presence is decided ahead of every refusal**: the walk answers
+    /// [`InsertOutcome::Replaced`] the moment it meets the key, so an
+    /// overwrite of a present key is never refused.
+    /// `array::element::box_element` re-inserts a key it proved present
+    /// on that guarantee — a refusal check moved ahead of the walk
+    /// breaks a caller, not a convenience.
     ///
     /// **`category` is the owner's, as it stands at this call.** Growth
     /// allocates from it and teardown frees to it, and promotion rewrites
@@ -582,17 +639,22 @@ impl Table {
     /// consumes the caller's reference — the retain published before this
     /// call becomes the table's one reference per stored key, given back
     /// by [`Table::remove`] or by teardown. The overwrite arm keeps the
-    /// entry's original key and never stores the caller's, so there
-    /// `added == false` also says the key reference stays the caller's:
-    /// give it back through the barrier's `drop_ref` or reuse it, but do
-    /// not count it as stored.
+    /// entry's original key and never stores the caller's, so
+    /// [`InsertOutcome::Replaced`] also says the key reference stays the
+    /// caller's: give it back through the barrier's `drop_ref` or reuse
+    /// it, but do not count it as stored.
     pub fn insert(
         &mut self,
         head: &StorageHead,
         category: MemoryCategory,
+        #[expect(
+            unused_variables,
+            reason = "read by the terminal rung, threaded ahead of it"
+        )]
+        kind: InsertKind,
         key: Key,
         value: Value,
-    ) -> Option<(bool, Option<Value>)> {
+    ) -> InsertOutcome {
         let sh = self.slot_hash(key);
         // Counted during the insert's own walk, against current state:
         // nothing is stored between operations, so deletion cannot leave a
@@ -615,7 +677,7 @@ impl Table {
                     // be reading this very word.
                     let old = self.entry(head, i as usize).value();
                     unsafe { Entry::store_element(Self::entry_ptr(head, i as usize), value) };
-                    return Some((false, Some(old)));
+                    return InsertOutcome::Replaced(old);
                 }
 
                 chain_len += 1;
@@ -649,7 +711,7 @@ impl Table {
         let sh = self.slot_hash(key);
 
         if head.used() == self.cap && !self.grow(head, category) {
-            return None;
+            return InsertOutcome::RefusedForMemory;
         }
 
         let slot = sh as usize & self.mask;
@@ -681,7 +743,7 @@ impl Table {
             self.note_int_key(v);
         }
 
-        Some((true, None))
+        InsertOutcome::Added
     }
 
     /// Remove `key`, returning its value **and its key entity** for the
