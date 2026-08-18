@@ -616,9 +616,10 @@ cost is compiler-side, with the ack-budget dependency named in the
 document. Successor to the stack-exit epoch model
 (`docs/history/stack-exit-epoch-gc-2026-08-18.md`, superseded; its
 five-axis review is `dev/STACK_EXIT_EPOCH_GC_REVIEW.md`). Critic
-rounds 1 and 2 ran 2026-08-18 and are recorded in the document;
-status: closed pending the Phase D census channels it names, pre-D
-work limited to the corpus scan and the summary language.
+rounds 1–3 ran 2026-08-18 and are recorded in the document; status:
+closed, no pre-D step can change it — pre-D work is instrument
+preparation (the graded corpus scan, the census channel list, the
+summary-language question).
 
 `dev/design/pure-destructors.md` — Edmond's pure-destructor proposal
 analyzed, 2026-08-18: the purity ladder, what the runtime already

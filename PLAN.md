@@ -225,11 +225,14 @@ own checkbox.
   `dev/design/owned-slots-and-the-walk.md`.
 - [ ] **Proof horizon, the borrow elision**
   (`dev/design/proof-horizon.md`, Edmond's algorithm, 2026-08-18) —
-  closed pending the Phase D census channels the document names;
-  pre-D work is the kill-only corpus scan and the summary-language
-  question. Two Critic rounds are recorded in the document; the
-  corpus names and the granularity and family-borrow-analysis
-  rulings are Edmond's.
+  closed, and no pre-D step can change that status: the scan is
+  kill-only, the census is undated, every verification artifact
+  needs the compiler. Pre-D work is instrument preparation: the
+  graded corpus scan, the census channel list owed to
+  `dev/DECISIONS.md` before the census is specified, the
+  summary-language question. Three Critic rounds are recorded in
+  the document; the corpus names and the granularity,
+  family-borrow-analysis and summary-language rulings are Edmond's.
 - [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2
   transition waits on one — `dev/DECISIONS.md`, 2026-08-13, which also
   says what to confirm against `arrays.md` before opening it.

@@ -70,9 +70,15 @@ A cross-design constraint from `proof-horizon.md` ("At the horizon"):
 a proof-horizon borrow of a unique entity cannot be promoted, because
 the promotion retain would write into the occupancy sentinel and
 protect nothing. A horizon-reaching borrow therefore demotes the
-uniqueness proof — the entity compiles as counted — or the borrow is
-owned from birth; the summary language carries the constraint across
-compilation units.
+uniqueness proof — the entity compiles as counted, and the borrow is
+owned from birth **against that counted entity**; a retain against a
+still-unique entity is unsound in either form. Demotion is a
+whole-program fixpoint: the owner's unit compiled the plain-store
+overwrite, so a later-compiled borrower forces its recompile, and
+demotion revives the COW check for the entity's writers. The summary
+language carries the constraint across compilation units; until the
+fixpoint exists, uniqueness is lawful only for entities whose every
+access site compiles in the same session.
 
 ## Composition with purity
 
