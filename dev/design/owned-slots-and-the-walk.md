@@ -66,8 +66,9 @@ discriminant that keeps the collector from reading the sentinel as a
 count (a bit of the retired condemned byte, or a reserved value;
 undecided).
 
-A cross-design constraint from `proof-horizon.md` ("At the horizon"):
-a proof-horizon borrow of a unique entity cannot be promoted, because
+A cross-design constraint from `rfc/model/gc/gc-horizon.md` ("At the
+horizon"):
+a GC-horizon borrow of a unique entity cannot be promoted, because
 the promotion retain would write into the occupancy sentinel and
 protect nothing. A horizon-reaching borrow therefore demotes the
 uniqueness proof — the entity compiles as counted, and the borrow is
@@ -79,7 +80,7 @@ demotion revives the COW check for the entity's writers. The summary
 language carries the constraint across compilation units; until the
 fixpoint exists, uniqueness is lawful only for entities whose every
 access site compiles in the same session. The convention retains are
-the same hazard as promotion: proof-horizon's calling convention
+the same hazard as promotion: GC horizon's calling convention
 retains every returned value and every by-value parameter, so the
 uniqueness prover counts each such site as a second counted
 reference — an entity that is ever returned or passed is by proof

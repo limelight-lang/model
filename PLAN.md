@@ -8,6 +8,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/strategies.md`, `model/gc/satb.md`, `model/memory/ffi.md`,
 `runtime/object-lifecycle.md`.
 
+The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
+in the specification rather than in this crate; the GC-horizon case book runs
+there.
+
 Updated: 2026-08-18 · Active: S28 — the sections below it are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
@@ -226,8 +230,9 @@ own checkbox.
   ownership pair — including the
   fast class that can block its own memory return — is
   `dev/design/owned-slots-and-the-walk.md`.
-- [ ] **Proof horizon, the borrow elision**
-  (`dev/design/proof-horizon.md`, Edmond's algorithm, 2026-08-18) —
+- [ ] **GC horizon, the borrow elision** (`rfc/model/gc/gc-horizon.md`,
+  Edmond's algorithm, 2026-08-18, named `proof-horizon` until
+  2026-08-20) —
   closed, and no pre-D step can change that status: the scan is
   kill-only, the census is undated, every verification artifact
   needs the compiler. Pre-D work is instrument preparation: the
@@ -237,6 +242,11 @@ own checkbox.
   the document; the granularity ruling landed 2026-08-18
   (`dev/DECISIONS.md`), and the corpus names and the
   family-borrow-analysis and summary-language rulings are Edmond's.
+  The case book (`rfc/model/gc/gc-horizon-cases/`, 2026-08-20) opened
+  five further questions in the algorithm — the weak cell's uncounted
+  edge, promotion in the arena and immortal categories, raise sites in
+  the placement rule, the COW-unique intersection, and runtime entries
+  read as calls.
 - [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2
   transition waits on one — `dev/DECISIONS.md`, 2026-08-13, which also
   says what to confirm against `arrays.md` before opening it.

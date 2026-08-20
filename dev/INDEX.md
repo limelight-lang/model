@@ -608,12 +608,13 @@ diagrams, the grouping algorithm, and every collector structure with
 its per-row and per-edge cost, including what stage S28 changes. The
 RFC stays normative; these two describe, dated 2026-08-18.
 
-`dev/design/proof-horizon.md` — Edmond's algorithm, 2026-08-18: a
-local is owned (counted, today's pair) or an anchored borrow paying
-nothing while compiler proofs hold, promoted to owned by an ordinary
-retain at proof horizons; the collector code is untouched and the
-cost is compiler-side, with the ack-budget dependency named in the
-document. Successor to the stack-exit epoch model
+`rfc/model/gc/gc-horizon.md` — Edmond's algorithm, 2026-08-18, named
+`proof-horizon` until it moved to the RFC on 2026-08-20: a local is
+owned (counted, today's pair) or an anchored borrow paying nothing
+while compiler proofs hold, promoted to owned by an ordinary retain at
+a horizon; the collector code is untouched and the cost is
+compiler-side, with the ack-budget dependency named in the document.
+Successor to the stack-exit epoch model
 (`docs/history/stack-exit-epoch-gc-2026-08-18.md`, superseded; its
 five-axis review is `dev/STACK_EXIT_EPOCH_GC_REVIEW.md`). Critic
 rounds 1–4 ran 2026-08-18 and are recorded in the document; the
@@ -621,12 +622,11 @@ granularity ruling landed the same day (`dev/DECISIONS.md`).
 Status: closed, and no pre-D step can change the design's closed
 status — pre-D work is instrument preparation (the graded corpus
 scan, the census channel list, the summary-language question).
-Reading aids, dated 2026-08-18: `dev/design/proof-horizon-lowering.md`
-— the lattice cascade, a borrow's life, the horizon table, one
-function lowered both ways — and
-`dev/design/proof-horizon-structures.md` — the compiler-side and
-instrument structures, the runtime non-change table, the chain
-invariant and shadow lowering drawn.
+The three files under `dev/design/proof-horizon*.md` are banner stubs:
+the reading aids were absorbed into `rfc/model/gc/gc-horizon-states.md`
+and `rfc/model/gc/gc-horizon-cases/README.md`. The case book
+(`rfc/model/gc/gc-horizon-cases/`, sixteen cases, 2026-08-20) opened
+five further questions in the algorithm, numbered 7 to 11 there.
 
 `dev/design/pure-destructors.md` — Edmond's pure-destructor proposal
 analyzed, 2026-08-18: the purity ladder, what the runtime already

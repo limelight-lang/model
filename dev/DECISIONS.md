@@ -8,6 +8,34 @@ never edited or deleted.
 
 ---
 
+## 2026-08-20 — proof-horizon is renamed GC horizon and moves to the RFC
+
+**Decided (Edmond):** the name is `gc-horizon`; the design's normative
+text is `rfc/model/gc/gc-horizon.md`, and the three files under
+`dev/design/proof-horizon*.md` are banner stubs. The two reading aids
+were absorbed rather than moved — the structure catalogue and the
+lowering overview into `rfc/model/gc/gc-horizon-states.md`, the worked
+`total(Cart)` example into `rfc/model/gc/gc-horizon-cases/README.md`.
+
+**Why:** the design contradicted two normative RFC sections that no
+design note could amend, and its case book has to cite the entity RFCs
+that live there. The RFC already carries designed-but-unbuilt work
+behind status banners (`satb.md`), so "closed pending Phase D" is an
+admissible status there.
+
+**The old name is not rewritten.** Entries in this file and files under
+`docs/history/` keep `proof-horizon` verbatim: the record describes what
+was decided on the day it was decided.
+
+**What the move produced:** a sixteen-case book, and five further open
+questions in the algorithm, numbered 7 to 11 in the moved document — the
+weak cell's uncounted `target` edge, promotion being a no-op in the
+immortal and request-arena categories, raise sites missing from the
+placement rule, the inconsistent COW-unique intersection, and runtime
+entry points read literally as unsummarized calls.
+
+---
+
 ## 2026-08-18 — the per-process key is drawn from the OS, in every build, and is not the hash seed
 
 The crate now holds two secrets and they answer different questions.
