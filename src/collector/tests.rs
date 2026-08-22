@@ -57,3 +57,4 @@ mod what_a_leaf_row_costs_the_walk;
 mod what_an_array_row_costs_the_walk;
 mod the_three_way_judgement;
 mod what_the_snapshot_reaches;
+mod what_the_young_free_exemption_removes;

@@ -100,6 +100,59 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-22 — the young-free exemption's share is the workload's lifetime distribution, not a constant
+
+Node C2 of `rfc/model/gc/walk/questions.md`.
+`collector::tests::what_the_young_free_exemption_removes::measure_young_free_exemption`,
+`cargo test --release --lib -- --ignored measure_young_free_exemption --nocapture`,
+11th Gen Intel i7-11700K, WSL2. Counting rather than timing: release and debug
+print the same table, so one run.
+
+The exemption recycles a dying entity's slot instead of parking it when the
+epoch byte reads zero or the current number, which is the walk's skip
+predicate read backwards. What it removes is therefore the parked records of
+entities that died younger than the epoch they died in, and that share is set
+by the workload rather than by the collector. The population is 10 000 leaf
+objects and stays constant: a churn step kills one live entity and allocates
+one, and the arms differ only in which entity the step kills.
+
+| deaths in the epoch | oldest: exempt | share | predicted | uniform: exempt | share | predicted |
+|---|---|---|---|---|---|---|
+| 100 | 0 | 0.000 | 0.000 | 1 | 0.010 | 0.005 |
+| 1 000 | 0 | 0.000 | 0.000 | 53 | 0.053 | 0.048 |
+| 10 000 | 0 | 0.000 | 0.000 | 3 716 | 0.372 | 0.368 |
+| 40 000 | 30 000 | 0.750 | 0.750 | 30 184 | 0.755 | 0.755 |
+
+Parked records equal deaths in every cell, one for one, which reproduces the
+2026-08-16 table on a different workload.
+
+**Killing the oldest gives every entity a lifetime of exactly the population,
+and the exemption removes nothing until the epoch outlives one.** At 40 000
+deaths the epoch has outlived four, and the 30 000 exempt records are the
+replacements born inside it. **Killing a uniformly chosen victim makes
+lifetimes geometric with the same mean, so young deaths appear from the first
+step**, and at an epoch as long as the mean lifetime the share is 0.372
+against the distribution's own 1/e.
+
+The prediction column is the control. Both curves are computed from the arms'
+lifetime distributions with nothing measured in them, and the counts follow
+both, so the instrument reads the predicate rather than the loop bound that
+fed it.
+
+**What the table does not cover.** Only an entity slot carries a header, so
+only an entity's record can be exempt at all: a dying out-of-line string parks
+its payload and a dying array parks its table storage as headerless records
+whatever the entity's age. This class holds no payload, so the table is the
+exemption's ceiling, and the corpus figure that lowers it is payload records
+per entity (node A6).
+
+**A correction this measurement forces.** The 2026-08-16 entry below and
+`docs/performance-case.md` both say the exemption would remove "exactly the
+mid-born half" of that table. Both halves are young by the predicate: the
+pre-born arm allocates fresh objects and kills them before `walk()` runs, so
+they carry epoch byte zero and were never enrolled. That table has no mature
+arm, and the exemption would remove all of it.
+
 ## 2026-08-22 — negative: counting ring-capable entities per block buys nothing, because no block comes out uniform
 
 Node B6 of `rfc/model/gc/walk/questions.md`.
@@ -441,11 +494,14 @@ first death or poll". The wall-time translation stays the reader's
 arithmetic: records/ms at an assumed churn rate times the epoch
 figures of "fresh brackets on one HEAD".
 
-The mid-born arm parking one-for-one is also the measured case for the
-unbuilt young-free exemption (`rfc/BACKLOG.md` via `rfc/model/gc/rc-walk.md`,
-"Deferred physical release"): an entity born and dead inside one epoch
-is in no snapshot row, and every record the second arm adds is a
-record that exemption would remove.
+Both arms are the measured case for the unbuilt young-free exemption
+(`rfc/BACKLOG.md` via `rfc/model/gc/rc-walk.md`, "Deferred physical
+release"), corrected 2026-08-22: the second arm's entities are born and dead
+inside one epoch, and the first arm's are allocated fresh and killed before
+`walk()` reaches them, so both read epoch byte zero at free time and neither
+was ever enrolled. The exemption would remove the whole table. A mature arm
+needs a population walked in an earlier epoch, which the exemption's own probe
+supplies ("the young-free exemption's share", above).
 
 ## 2026-08-16 — AArch64 reads the header with plain loads and stores
 

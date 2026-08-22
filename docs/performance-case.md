@@ -161,8 +161,11 @@ its entries of 2026-08-16:
   ("what an epoch parks, in counts that repeat exactly"). The
   wall-time reading is the reader's arithmetic: an epoch's duration at
   an assumed churn rate times one record per death. The unbuilt
-  young-free exemption would remove exactly the mid-born half of that
-  table.
+  young-free exemption would remove all of that table, both of its arms
+  being young by the exemption's predicate; against a population that
+  outlives the epoch it removes nothing, and between those two the share is
+  the workload's lifetime distribution ("the young-free exemption's
+  share").
 - **Portability of the zero-cost claim**: on AArch64 both header paths
   compile to plain `ldr`/`str` — no exclusive pair, no LSE atomic, no
   fence ("AArch64 reads the header with plain loads and stores"). The
