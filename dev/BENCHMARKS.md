@@ -100,62 +100,74 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
-## 2026-08-22 — the counted pair against its working set: 4 ns hot, 88 ns at a million entities, and a spread of seven
+## 2026-08-22 — the counted pair against its working set, corrected: 2.9 ns hot, 33 ns at a million entities
 
-S5.4b of `rfc/dev/PLAN.md`:
+S5.4b of `rfc/dev/PLAN.md`, second measurement.
 `memory::barrier::tests::what_a_counted_pair_costs_when_headers_miss::measure_cold_pair_cost`,
 `cargo test --release --lib -- --ignored measure_cold_pair_cost --nocapture`,
-11th Gen Intel i7-11700K, 8 cores, L2 4 MiB, L3 16 MiB, WSL2. Eight runs of
-the whole probe, each run 15 timed rounds per arm after a discarded warm-up,
-median of the rounds.
+11th Gen Intel i7-11700K, L2 4 MiB, L3 16 MiB, WSL2. Six runs, 15 timed
+rounds per arm after a discarded warm-up set, median of the rounds.
 
-The question is what a store costs when the two foreign headers the pair
-touches are out of cache. `what_a_store_costs_by_working_set` does not answer
-it and says so: its cold half warms every child header before the timer
-starts. This probe varies the child population instead and subtracts a plain
-arm that makes the same scattered read of the value vector and the same slot
-write without touching a count, so the difference is the pair.
+**This supersedes the entry taken earlier the same day**, which is retracted
+below rather than deleted.
 
-| children | pair, ns/store, eight runs | median |
+| children | pair, ns/store, six runs | median |
 |---|---|---|
-| 1 | 3.5 3.6 3.9 4.1 4.2 4.3 5.8 6.4 | **4.1** |
-| 64 | 3.7 3.8 3.9 4.2 5.5 6.0 6.2 7.1 | **4.9** |
-| 4 096 | 4.0 4.0 4.2 5.0 5.8 5.9 7.1 7.8 | **5.4** |
-| 65 536 | 13.0 18.8 27.6 28.4 43.1 54.6 66.5 91.1 | **35.8** |
-| 1 048 576 | 27.2 48.9 57.7 76.8 99.8 115.3 182.5 185.4 | **88.3** |
+| 1 | 2.85 2.87 2.87 2.89 2.90 3.08 | **2.9** |
+| 64 | 2.16 2.85 2.90 3.05 3.06 3.24 | **3.0** |
+| 4 096 | 3.34 3.39 3.42 3.44 3.46 3.48 | **3.4** |
+| 65 536 | 8.7 8.8 9.8 11.4 13.8 44.3 | **10.6** |
+| 1 048 576 | 31.0 31.9 33.1 33.7 34.0 34.9 | **33.4** |
 
-**The instrument agrees with the one already here at the narrow end.** The
-existing figures put the counted publish at 2.74–2.82 ns and `drop_ref` of
-the displaced value at 0.85, so an overwriting store costs 3.6–3.7 ns where
-the headers are warm. The narrow end of this probe reads 4.1. The bare
-`retain_release_nonfinal` bench at 1.84–1.87 is not the comparable figure:
-it carries neither the category test nor the slot write.
+**What the first measurement got wrong.** It published every store into one
+slot, so the value each store displaced was the value the store before it had
+retained — a warm header — and the plain arm it subtracted wrote into that
+same one slot. Two errors in one shape: the release half was warm where the
+retain half was cold, and the scattered owner traffic the counted arm paid
+had no counterpart in the plain arm, so it landed in the difference. The
+probe now gives every owner its own slot, pre-filled at setup, and gives the
+plain arm a population of owners of its own, so the two arms differ in the
+counting alone.
 
-**The direction is settled and the magnitude is not.** Every run is monotone
-in the working set, and the pair at a million entities is an order above the
-pair at a thousand. The spread at that end is a factor of seven run to run,
-so 88 is a median over a heavy tail, not a figure to plan against. Fifteen
-rounds do not resolve a distribution this shape; a run that wants the
-magnitude needs more rounds, pinned frequency, and pre-faulted pages.
+**The correction runs the other way from the prediction.** The earlier entry
+read 88 ns at a million and a spread of seven; the corrected probe reads 33
+and a spread of 12 %. Most of the 88 was the owner-slot traffic the plain arm
+did not pay, and the instability came with it.
 
-**What it decides.** `rfc/model/gc/gc-horizon-v2/questions.md` node N puts
-the crossover of the deferred regime against today's counted lowering at 1 to
-40 elided stores per live entity per pass, and says the answer turns on the
-share of counted stores whose headers miss, estimated there at ~80 ns and
-marked unmeasured. The estimate is inside the measured range and near its
-median. The store path therefore carries real money at large working sets,
-and node N's low end of the crossover is the one in force for a heap that
-does not fit cache.
+**The instrument against a known answer, honestly.** At one child both
+headers are the same warm line, and the nearest recorded figure for the same
+pair is 3.6-3.7 ns — a counted publish at 2.74-2.82 plus the displaced
+`drop_ref` at 0.85. This probe reads 2.9, about 20 % under. The two halves of
+the comparand were taken in a different harness against a 0.33 ns plain
+store, where this probe's plain arm also pays a scattered owner lookup and a
+scattered vector read; the difference is what each harness holds constant,
+and the figures are the same order but not the same measurement. Read as
+agreement in order of magnitude, not as a reproduction.
 
-**What it does not decide.** The population here is one class of empty
-objects allocated consecutively and addressed by a scattered cursor, which is
-the worst case for the header, not an observed PHP heap. The plain arm also
-degrades — 0.45 to 15.6 ns — because its own read of the value vector misses,
-and real code has the value in a register from a previous load, so the
-absolute store cost at the wide end is above what a program pays. Only the
-difference is read here. The horizon's elisions apply on top of all of it:
-what a proven owned slot never pays does not appear in any of these figures.
+**What it decides.** `rfc/model/gc/gc-horizon-v2/questions.md` node N
+estimated the both-miss pair at about 80 ns and marked the figure unmeasured.
+The measurement is 33 — the estimate is high by a factor of about 2.4. The
+store path still carries an order of magnitude between a warm heap and a cold
+one, so eliding a publication is worth up to 33 ns rather than 2.4, and every
+compiler-owed elision is worth roughly eleven times what the hot figure
+suggested. Node N's crossover against today's lowering moves with it and must
+be re-derived on 33, not on 80.
 
+**What it does not decide.** The population is one class of empty objects
+allocated consecutively and addressed by a scattered cursor: the worst case
+for the header, not an observed PHP heap. The 65 536 row carries one run at
+44 ns against five between 8.7 and 13.8, so that row is a median over a
+bimodal sample and should not be read as a point. And the horizon's elisions
+sit on top of all of it — what a proven owned slot never pays appears in no
+figure here.
+
+### Retracted: the first measurement of the same day
+
+Reported 4.1 ns hot and 88.3 ns at a million entities with a spread of seven,
+from a probe whose displaced header was warm and whose plain arm did not pay
+the counted arm's scattered owner write. Kept as a record of the shape that
+produced it: a single publication slot makes the release half of a pair
+measure something other than the retain half.
 
 ## 2026-08-16 — what an epoch parks, in counts that repeat exactly
 

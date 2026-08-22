@@ -15,6 +15,13 @@
 //! `children` writes all `mask + 1` headers before its timer starts, so the
 //! child headers are warm in both halves".
 //!
+//! **Both headers, not one.** A first version of this probe published into a
+//! single slot, so the value each store displaced was the value the store
+//! before it had just retained — warm by construction, and the figure it
+//! produced was one cold retain against a warm release. Here every owner has
+//! its own slot, pre-filled at setup and not touched since, so the displaced
+//! header is as cold as the retained one.
+//!
 //! ## Method
 //!
 //! One shape, two arms, and the working set the only variable.
@@ -23,15 +30,20 @@
 //!   overwriting store: read the displaced value, `store_box` the new one,
 //!   `drop_ref` the displaced one. `store_box` publishes only — "the
 //!   displaced value is released by `drop_ref`" (`src/memory/barrier.rs`) —
-//!   so the pair is both calls, and only both touch two foreign headers.
-//! - [`plain_round`] reads the same `Value` out of the same slot of the same
-//!   vector and writes the same sixteen bytes into the same property, with no
+//!   so the pair is both calls, and both touch a foreign header.
+//! - [`plain_round`] makes the same scattered read out of the value vector
+//!   and the same sixteen-byte write into a scattered owner's slot, with no
 //!   count touched.
 //!
-//! Both arms therefore pay the same scattered read of the value vector and
-//! the same warm slot write. What only the counted arm pays is the two
-//! foreign headers, so the difference between the arms at one working set is
-//! the pair — measured by subtraction inside one run, never across runs.
+//! Both arms therefore pay the same scattered vector read and the same
+//! scattered slot write. What only the counted arm pays is the two foreign
+//! headers, so the difference between the arms at one working set is the
+//! pair — measured by subtraction inside one run, never across runs.
+//!
+//! The two arms write into two populations of owners. A plain write into a
+//! counted slot would leave a reference the setup counted and nothing
+//! released, so the counted arm owns the counted slots and the plain arm
+//! owns slots that were never counted at all.
 //!
 //! The working set is the population of children, from one to `1 << 20`. At
 //! the narrow end both arms hit the same header every store; at the wide end
@@ -44,20 +56,22 @@
 //! round before it warmed — without that the second round of every arm reads
 //! a warm set and the wide end reads like the narrow one.
 //!
-//! **Counts telescope back to zero.** Publishing `v1 … vN` into one slot and
-//! then publishing null gives every `vi` one retain and one release,
-//! whatever the order and however often a child repeats, so a round leaves
-//! every child holding exactly its creation reference and the next round
-//! starts from the state this one did.
+//! **The slot population conserves the counts.** Every counted owner slot
+//! holds one child from setup to teardown: a store retains the arriving child
+//! and releases the departing one, so the number of slot-held references is
+//! the number of owners throughout, and no child can reach zero — each keeps
+//! its creation reference besides. Teardown walks the slots once, releases
+//! what each holds and nulls it, after which every child reads exactly one.
 //!
 //! ## Checking the instrument against one whose answer is known
 //!
-//! At working set 1 the two headers are the same line every store and that
-//! line is warm, so the difference between the arms must land near the
-//! overwriting-store figure `dev/BENCHMARKS.md` already records: a counted
-//! publish at 2.74-2.82 ns plus the displaced `drop_ref` at 0.85. A narrow
-//! end that disagrees with that reads something other than the pair, and
-//! nothing wider is then worth reading (`dev/BENCHMARKS.md`, Method).
+//! At working set 1 there is one owner and one child, so both headers are
+//! the same warm line every store, and the difference between the arms must
+//! land near the overwriting-store figure `dev/BENCHMARKS.md` already
+//! records: a counted publish at 2.74-2.82 ns plus the displaced `drop_ref`
+//! at 0.85. A narrow end that disagrees with that reads something other than
+//! the pair, and nothing wider is then worth reading (`dev/BENCHMARKS.md`,
+//! Method).
 //!
 //! ```
 //! cargo test --release --lib -- --ignored measure_cold_pair_cost --nocapture
@@ -131,18 +145,45 @@ unsafe fn children(ctx: *mut LLContext, class: *const Class, n: usize) -> Vec<Va
         .collect()
 }
 
-/// One round of the counted publish: `store_box` retains the value and
-/// releases the one it displaces, two foreign headers per store.
-///
-/// Returns the time of the publishes alone; the closing null publish that
-/// balances the counts is outside the timed region.
+/// `n` owners of one class, each with its own Box property at offset 16.
 ///
 /// # Safety
-/// `slot` is a Box property of a live GC-heap owner, `values` are live
-/// GC-heap entities, and `mask + 1` is `values.len()` and a power of two.
+/// `ctx` is a mounted context and `class` outlives every entity built here.
+unsafe fn owners(ctx: *mut LLContext, class: *const Class, n: usize) -> Vec<*mut Object> {
+    (0..n)
+        .map(|_| unsafe { new_constructed(ctx, class, MemoryCategory::GcHeap) })
+        .collect()
+}
+
+/// Fill each counted owner's slot with the child of the same index, taking
+/// the reference the slot holds.
+///
+/// After this every child reads two: its creation reference and the slot's.
+/// The stores are sequential and untimed, so nothing they warm survives the
+/// scattered rounds that follow at any population that does not fit cache.
+///
+/// # Safety
+/// `owners` and `values` have the same length; both are live GC-heap
+/// entities; no slot holds anything yet.
+unsafe fn prefill(arena: *mut Arena, owners: &[*mut Object], values: &[Value]) {
+    for (owner, value) in owners.iter().zip(values) {
+        unsafe {
+            let slot = Object::prop_at(*owner, 16);
+            assert!(store_box(arena, MemoryCategory::GcHeap, slot, *value));
+        }
+    }
+}
+
+/// One round of the counted publish: per store one scattered owner, one
+/// scattered arriving child, and the child the slot held since setup —
+/// three foreign lines, of which two are headers the pair reads and writes.
+///
+/// # Safety
+/// `owners` and `values` are live, `mask + 1` is their common length and a
+/// power of two, and every owner's slot holds a counted reference.
 unsafe fn counted_round(
     arena: *mut Arena,
-    slot: *mut Value,
+    owners: &[*mut Object],
     values: &[Value],
     mask: usize,
     round: usize,
@@ -150,48 +191,48 @@ unsafe fn counted_round(
     unsafe {
         let start = Instant::now();
         for i in 0..trip(STORES) {
+            let slot = Object::prop_at(owners[cursor(round, i, mask)], 16);
             let old = std::ptr::read(slot);
             assert!(store_box(
                 arena,
                 MemoryCategory::GcHeap,
                 slot,
-                values[cursor(round, i, mask)]
+                values[cursor(round, i + STORES, mask)]
             ));
             if old.is_refcounted() {
                 drop_ref(MemoryCategory::GcHeap, old.entity_ptr());
             }
         }
 
-        let elapsed = start.elapsed();
-        let last = std::ptr::read(slot);
-        std::ptr::write(slot, Value::null());
-        if last.is_refcounted() {
-            drop_ref(MemoryCategory::GcHeap, last.entity_ptr());
-        }
-
-        elapsed
+        start.elapsed()
     }
 }
 
-/// One round of the plain store: the same scattered read out of `values` and
-/// the same sixteen bytes into the same slot, with no count touched.
+/// One round of the plain store: the same scattered owner and the same
+/// scattered read out of `values`, writing the same sixteen bytes with no
+/// count touched.
 ///
-/// The slot is left null, so the owner's dispose finds nothing to release.
-/// A barrier-free write into a counted slot is sound only under that
-/// closing write.
+/// Its owners are a population of their own whose slots were never counted,
+/// so a barrier-free write leaves nothing owed. They are nulled at teardown
+/// without a release.
 ///
 /// # Safety
-/// As [`counted_round`].
-unsafe fn plain_round(slot: *mut Value, values: &[Value], mask: usize, round: usize) -> Duration {
+/// `owners` are live GC-heap entities whose slots hold no counted
+/// reference; `values` are live; `mask + 1` is the common length.
+unsafe fn plain_round(
+    owners: &[*mut Object],
+    values: &[Value],
+    mask: usize,
+    round: usize,
+) -> Duration {
     unsafe {
         let start = Instant::now();
         for i in 0..trip(STORES) {
-            std::ptr::write(slot, values[cursor(round, i, mask)]);
+            let slot = Object::prop_at(owners[cursor(round, i, mask)], 16);
+            std::ptr::write(slot, values[cursor(round, i + STORES, mask)]);
         }
 
-        let elapsed = start.elapsed();
-        std::ptr::write(slot, Value::null());
-        elapsed
+        start.elapsed()
     }
 }
 
@@ -220,10 +261,11 @@ fn reduce(mut samples: Vec<f64>) -> ArmStats {
 /// always inheriting the other's cache state.
 ///
 /// # Safety
-/// As [`counted_round`].
+/// As [`counted_round`] and [`plain_round`].
 unsafe fn arms_at(
     arena: *mut Arena,
-    slot: *mut Value,
+    counted_owners: &[*mut Object],
+    plain_owners: &[*mut Object],
     values: &[Value],
     mask: usize,
 ) -> (ArmStats, ArmStats) {
@@ -232,45 +274,69 @@ unsafe fn arms_at(
 
     for round in 0..=ROUNDS {
         let per_store = |elapsed: Duration| elapsed.as_nanos() as f64 / STORES as f64;
-        if round % 2 == 0 {
-            let c = unsafe { counted_round(arena, slot, values, mask, round) };
-            let p = unsafe { plain_round(slot, values, mask, round) };
-            if round > 0 {
-                counted.push(per_store(c));
-                plain.push(per_store(p));
-            }
+        let (c, p) = if round % 2 == 0 {
+            let c = unsafe { counted_round(arena, counted_owners, values, mask, round) };
+            let p = unsafe { plain_round(plain_owners, values, mask, round) };
+            (c, p)
         } else {
-            let p = unsafe { plain_round(slot, values, mask, round) };
-            let c = unsafe { counted_round(arena, slot, values, mask, round) };
-            if round > 0 {
-                counted.push(per_store(c));
-                plain.push(per_store(p));
-            }
+            let p = unsafe { plain_round(plain_owners, values, mask, round) };
+            let c = unsafe { counted_round(arena, counted_owners, values, mask, round) };
+            (c, p)
+        };
+
+        if round > 0 {
+            counted.push(per_store(c));
+            plain.push(per_store(p));
         }
     }
 
     (reduce(counted), reduce(plain))
 }
 
-/// Give every child back its creation reference, checking first that the
-/// round's telescoping left it holding exactly that.
+/// Release what every counted slot holds and null both populations' slots,
+/// then give every child and owner its creation reference back.
 ///
-/// An over-count leaks and reads as drift in the next size; an under-count
-/// frees a child a slot still names. The check is an `assert_eq!` and not a
-/// `debug_assert!` because the probe is a release-mode run.
+/// The check is an `assert_eq!` and not a `debug_assert!` because the probe
+/// is a release-mode run: a child left holding more than its creation
+/// reference means the rounds lost a release and every figure above it is
+/// a different measurement from the one reported.
 ///
 /// # Safety
-/// `values` are live GC-heap entities named by no slot any longer.
-unsafe fn drain(values: &[Value]) {
+/// Every argument is live; no slot outside these populations names any of
+/// them.
+unsafe fn teardown(
+    counted_owners: &[*mut Object],
+    plain_owners: &[*mut Object],
+    values: &[Value],
+) {
+    for owner in counted_owners {
+        unsafe {
+            let slot = Object::prop_at(*owner, 16);
+            let held = std::ptr::read(slot);
+            std::ptr::write(slot, Value::null());
+            if held.is_refcounted() {
+                drop_ref(MemoryCategory::GcHeap, held.entity_ptr());
+            }
+        }
+    }
+
+    for owner in plain_owners {
+        unsafe { std::ptr::write(Object::prop_at(*owner, 16), Value::null()) };
+    }
+
     for (index, value) in values.iter().enumerate() {
         let entity = value.entity_ptr();
         assert_eq!(
             unsafe { header_refcount(entity) },
             1,
-            "child {index} was left holding a count the round did not intend"
+            "child {index} was left holding a count the rounds did not intend"
         );
 
         unsafe { drop_ref(MemoryCategory::GcHeap, entity) };
+    }
+
+    for owner in counted_owners.iter().chain(plain_owners) {
+        unsafe { drop_ref(MemoryCategory::GcHeap, *owner as *mut RcHeader) };
     }
 }
 
@@ -289,40 +355,47 @@ fn measure_cold_pair_cost() {
     // caches, cold predictors, a cold frequency state
     // (`dev/BENCHMARKS.md`, Method, "Throw away the first run"). The per-arm
     // warm-up round inside `arms_at` sits inside the interleaving and warms
-    // one arm at a time, so the whole probe runs once at the narrow end and
-    // the answer is dropped.
-    unsafe {
-        let owner = new_constructed(context_ptr, holder, MemoryCategory::GcHeap);
-        let slot = Object::prop_at(owner, 16);
-        let values = children(context_ptr, leaf, 64);
-        arms_at(arena_ptr, slot, &values, 63);
-        drain(&values);
-        drop_ref(MemoryCategory::GcHeap, owner as *mut RcHeader);
-    }
+    // one arm at a time, so the whole probe runs once at a narrow set and the
+    // answer is dropped.
+    for (set, report) in [(64usize, false)]
+        .into_iter()
+        .chain(SETS.map(|set| (set, true)))
+    {
+        assert!(
+            set.is_power_of_two(),
+            "the cursor masks, so a set is a power of two"
+        );
 
-    for set in SETS {
-        assert!(set.is_power_of_two(), "the cursor masks, so a set is a power of two");
         unsafe {
-            let owner = new_constructed(context_ptr, holder, MemoryCategory::GcHeap);
-            let slot = Object::prop_at(owner, 16);
+            let counted_owners = owners(context_ptr, holder, set);
+            let plain_owners = owners(context_ptr, holder, set);
             let values = children(context_ptr, leaf, set);
+            prefill(arena_ptr, &counted_owners, &values);
 
-            let (counted, plain) = arms_at(arena_ptr, slot, &values, set - 1);
-            println!(
-                "cold_pair working_set={set} counted={:.3} ns/store min={:.3} max={:.3}",
-                counted.median, counted.minimum, counted.maximum
-            );
-            println!(
-                "cold_pair working_set={set} plain={:.3} ns/store min={:.3} max={:.3}",
-                plain.median, plain.minimum, plain.maximum
-            );
-            println!(
-                "cold_pair working_set={set} pair={:.3} ns/store",
-                counted.median - plain.median
+            let (counted, plain) = arms_at(
+                arena_ptr,
+                &counted_owners,
+                &plain_owners,
+                &values,
+                set - 1,
             );
 
-            drain(&values);
-            drop_ref(MemoryCategory::GcHeap, owner as *mut RcHeader);
+            if report {
+                println!(
+                    "cold_pair working_set={set} counted={:.3} ns/store min={:.3} max={:.3}",
+                    counted.median, counted.minimum, counted.maximum
+                );
+                println!(
+                    "cold_pair working_set={set} plain={:.3} ns/store min={:.3} max={:.3}",
+                    plain.median, plain.minimum, plain.maximum
+                );
+                println!(
+                    "cold_pair working_set={set} pair={:.3} ns/store",
+                    counted.median - plain.median
+                );
+            }
+
+            teardown(&counted_owners, &plain_owners, &values);
         }
     }
 }
