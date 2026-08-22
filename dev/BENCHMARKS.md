@@ -100,6 +100,61 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-22 — negative: counting ring-capable entities per block buys nothing, because no block comes out uniform
+
+Node B6 of `rfc/model/gc/walk/questions.md`.
+`collector::tests::how_uniform_a_block_comes_out::measure_block_uniformity`,
+`cargo test --release --lib -- --ignored measure_block_uniformity --nocapture`,
+11th Gen Intel i7-11700K, WSL2. Counting rather than timing, so one run.
+
+B6 offers two shapes for skipping a block the walk need not read. The cheap
+one keeps a per-block count of ring-capable entities and skips at zero; the
+node called it the one that "costs nothing in layout and is where to start".
+**It starts nowhere.** 20 000 entities per point, a one-property object at
+size class 32 and a string sized into the same class, so the two kinds
+genuinely share blocks — the class list in every line confirms it.
+
+By interleaving ratio, objects per group against strings per group:
+
+| ratio | blocks | skippable | mixed | entities in a skippable block |
+|---|---|---|---|---|
+| 1 : 0 | 10 | 0 | 0 | 0 % |
+| 0 : 1 | 10 | 10 | 0 | 100 % |
+| 1 : 1 | 10 | 0 | 10 | 0 % |
+| 1 : 4 | 10 | 0 | 10 | 0 % |
+| 1 : 16 | 10 | 0 | 10 | 0 % |
+| 4 : 1 | 10 | 0 | 10 | 0 % |
+
+**One object per sixteen strings contaminates every block.** A block at this
+class holds 2 000 slots and the allocator bumps through it, so one
+ring-capable entity anywhere in a block's fill is enough.
+
+By same-kind run length, that many strings then that many objects, repeated:
+
+| run | skippable blocks | entities in a skippable block |
+|---|---|---|
+| 1 | 0 % | 0 % |
+| 100 | 0 % | 0 % |
+| 1 000 | 0 % | 0 % |
+| 2 000 | 0 % | 0 % |
+| 4 000 | 40 % | 38.8 % |
+| 10 000 | 40 % | 40.8 % |
+
+**A run has to exceed a whole block before any block comes out uniform**, and
+even a run of five blocks' worth leaves 40 % rather than 80 %, because the run
+boundaries land mid-block.
+
+**What it does to the node.** The two shapes swap places. The cheap count is
+worth nothing without an allocation pattern that runs one kind for thousands
+of consecutive allocations, which no interleaved program produces. The
+expensive shape — segregate entity blocks by entity kind as well as by size
+class — is the one that delivers, and its price is what the node already
+names: a partly-filled tail block per pair of size class and kind.
+
+**What this does not measure:** a real program's runs. The ratios here are
+chosen, and what a PHP heap actually interleaves is the corpus question of
+node A6.
+
 ## 2026-08-22 — a prefetch of the two foreign headers: costs 0.9 ns where nothing misses, and its gain at a million entities is not established
 
 Node A5 of `rfc/model/gc/walk/questions.md`.
