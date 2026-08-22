@@ -100,6 +100,46 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-22 — a prefetch of the two foreign headers: costs 0.9 ns where nothing misses, and its gain at a million entities is not established
+
+Node A5 of `rfc/model/gc/walk/questions.md`.
+`memory::barrier::tests::what_a_prefetch_recovers_from_a_cold_pair::measure_prefetch_recovery`,
+`cargo test --release --lib -- --ignored measure_prefetch_recovery --nocapture`,
+11th Gen Intel i7-11700K, WSL2. Fifteen timed rounds per point after a
+discarded warm-up, median of the rounds; the wide point repeated seven times.
+
+A1 measured the counted pair at 2.9 ns warm and 33 ns at a million entities,
+so the store is not what costs — the two foreign header misses are. The
+barrier knows both addresses before it needs either header, so the misses are
+prefetchable in principle. Two arms, both counted, identical but for a read
+prefetch of the retained and the displaced header issued eight stores ahead.
+
+| working set | bare, ns/store | prefetched, ns/store | recovered, ns |
+|---|---|---|---|
+| 1 | 3.86 | 4.93 | −1.07 |
+| 64 | 4.09 | 4.95 | −0.86 |
+| 4 096 | 5.54 | 5.79 | −0.25 |
+| 65 536 | 43.5 | 41.0 | +2.4 |
+| 1 048 576 | 79.4 | 67.9 | +11.6 |
+
+**Where nothing misses the prefetch costs 0.9 ns per store**, stable across
+runs: two instructions and three address computations, bought for nothing.
+
+**At a million entities the answer is not established.** Seven runs of that
+point recovered +11.6, +7.3, −0.3, −1.3, +20.3, +1.3 and +7.2 ns — median
++7.2, five of seven positive, and the spread crosses zero. The bare arm's own
+median moved between 79 and 107 ns across those runs, so the point's noise is
+of the same size as the effect. **Direction suggestive, magnitude unmeasured.**
+
+**What it takes to settle it:** a wide point that holds still — a pinned core
+and a longer round, or a machine that is not WSL2 — and then the prefetch
+distance tuned, which is fixed at eight here and not varied.
+
+**What it means meanwhile.** A5's other candidates are worse placed: a
+narrower count word makes the store cheaper and the store is inside the 2.9
+ns, and a deferred log must drain before any checkpoint that can run the
+exact test, which leaves one straight-line stretch to coalesce.
+
 ## 2026-08-22 — the walk's cost per cell is the edge, not the container: 43 ns in array storage, 47 ns in an object body
 
 Node B4 of `rfc/model/gc/walk/questions.md`, extending the entry below with

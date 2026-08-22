@@ -88,16 +88,16 @@ use crate::{Class, ClassBuilder};
 /// Publishes per timed region, matching
 /// [`super::what_a_store_costs_by_working_set`] so the narrow end is
 /// comparable with its figures.
-const STORES: usize = 1_000;
+pub(super) const STORES: usize = 1_000;
 
 /// Timed rounds per arm, after one warm-up round whose time is discarded.
 /// The quoted figure is the median.
-const ROUNDS: usize = 15;
+pub(super) const ROUNDS: usize = 15;
 
 /// Child populations measured, in entities. The largest spreads headers over
 /// tens of megabytes, past the 16 MiB last level this box has; the smallest
 /// is the shape the recorded pair figure was taken in.
-const SETS: [usize; 5] = [1, 64, 4_096, 65_536, 1 << 20];
+pub(super) const SETS: [usize; 5] = [1, 64, 4_096, 65_536, 1 << 20];
 
 /// Odd multiplier that scatters the cursor over the population — the 64-bit
 /// golden-ratio constant, coprime with every power of two, so the cursor
@@ -109,7 +109,7 @@ const GOLDEN: usize = 0x9E37_79B9_7F4A_7C15;
 /// Rounds start a region apart so that a round reads headers the round
 /// before it did not warm.
 #[inline]
-fn cursor(round: usize, i: usize, mask: usize) -> usize {
+pub(super) fn cursor(round: usize, i: usize, mask: usize) -> usize {
     (round * STORES + i).wrapping_mul(GOLDEN) & mask
 }
 
@@ -117,18 +117,18 @@ fn cursor(round: usize, i: usize, mask: usize) -> usize {
 /// bound is a different compilation from the run-time bound a loop filling
 /// slots in compiled PHP has.
 #[inline]
-fn trip(count: usize) -> usize {
+pub(super) fn trip(count: usize) -> usize {
     std::hint::black_box(count)
 }
 
 /// A class with one Box property at offset 16 — the slot both arms publish
 /// into.
-fn holder_class(name: &str) -> *const Class {
+pub(super) fn holder_class(name: &str) -> *const Class {
     ClassBuilder::new(name).prop("value", true).build()
 }
 
 /// A class with no properties: the children the arms move around.
-fn leaf_class(name: &str) -> *const Class {
+pub(super) fn leaf_class(name: &str) -> *const Class {
     ClassBuilder::new(name).build()
 }
 
@@ -136,7 +136,7 @@ fn leaf_class(name: &str) -> *const Class {
 ///
 /// # Safety
 /// `ctx` is a mounted context and `class` outlives every entity built here.
-unsafe fn children(ctx: *mut LLContext, class: *const Class, n: usize) -> Vec<Value> {
+pub(super) unsafe fn children(ctx: *mut LLContext, class: *const Class, n: usize) -> Vec<Value> {
     (0..n)
         .map(|_| {
             let child = unsafe { new_constructed(ctx, class, MemoryCategory::GcHeap) };
@@ -149,7 +149,7 @@ unsafe fn children(ctx: *mut LLContext, class: *const Class, n: usize) -> Vec<Va
 ///
 /// # Safety
 /// `ctx` is a mounted context and `class` outlives every entity built here.
-unsafe fn owners(ctx: *mut LLContext, class: *const Class, n: usize) -> Vec<*mut Object> {
+pub(super) unsafe fn owners(ctx: *mut LLContext, class: *const Class, n: usize) -> Vec<*mut Object> {
     (0..n)
         .map(|_| unsafe { new_constructed(ctx, class, MemoryCategory::GcHeap) })
         .collect()
@@ -165,7 +165,7 @@ unsafe fn owners(ctx: *mut LLContext, class: *const Class, n: usize) -> Vec<*mut
 /// # Safety
 /// `owners` and `values` have the same length; both are live GC-heap
 /// entities; no slot holds anything yet.
-unsafe fn prefill(arena: *mut Arena, owners: &[*mut Object], values: &[Value]) {
+pub(super) unsafe fn prefill(arena: *mut Arena, owners: &[*mut Object], values: &[Value]) {
     for (owner, value) in owners.iter().zip(values) {
         unsafe {
             let slot = Object::prop_at(*owner, 16);
@@ -181,7 +181,7 @@ unsafe fn prefill(arena: *mut Arena, owners: &[*mut Object], values: &[Value]) {
 /// # Safety
 /// `owners` and `values` are live, `mask + 1` is their common length and a
 /// power of two, and every owner's slot holds a counted reference.
-unsafe fn counted_round(
+pub(super) unsafe fn counted_round(
     arena: *mut Arena,
     owners: &[*mut Object],
     values: &[Value],
@@ -237,14 +237,14 @@ unsafe fn plain_round(
 }
 
 /// Median, minimum and maximum nanoseconds per store over [`ROUNDS`] rounds.
-struct ArmStats {
-    minimum: f64,
-    median: f64,
-    maximum: f64,
+pub(super) struct ArmStats {
+    pub(super) minimum: f64,
+    pub(super) median: f64,
+    pub(super) maximum: f64,
 }
 
 /// Reduce a round's samples to [`ArmStats`].
-fn reduce(mut samples: Vec<f64>) -> ArmStats {
+pub(super) fn reduce(mut samples: Vec<f64>) -> ArmStats {
     samples.sort_by(|a, b| a.partial_cmp(b).expect("a duration is never NaN"));
     ArmStats {
         minimum: samples[0],
