@@ -100,6 +100,63 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-22 — the counted pair against its working set: 4 ns hot, 88 ns at a million entities, and a spread of seven
+
+S5.4b of `rfc/dev/PLAN.md`:
+`memory::barrier::tests::what_a_counted_pair_costs_when_headers_miss::measure_cold_pair_cost`,
+`cargo test --release --lib -- --ignored measure_cold_pair_cost --nocapture`,
+11th Gen Intel i7-11700K, 8 cores, L2 4 MiB, L3 16 MiB, WSL2. Eight runs of
+the whole probe, each run 15 timed rounds per arm after a discarded warm-up,
+median of the rounds.
+
+The question is what a store costs when the two foreign headers the pair
+touches are out of cache. `what_a_store_costs_by_working_set` does not answer
+it and says so: its cold half warms every child header before the timer
+starts. This probe varies the child population instead and subtracts a plain
+arm that makes the same scattered read of the value vector and the same slot
+write without touching a count, so the difference is the pair.
+
+| children | pair, ns/store, eight runs | median |
+|---|---|---|
+| 1 | 3.5 3.6 3.9 4.1 4.2 4.3 5.8 6.4 | **4.1** |
+| 64 | 3.7 3.8 3.9 4.2 5.5 6.0 6.2 7.1 | **4.9** |
+| 4 096 | 4.0 4.0 4.2 5.0 5.8 5.9 7.1 7.8 | **5.4** |
+| 65 536 | 13.0 18.8 27.6 28.4 43.1 54.6 66.5 91.1 | **35.8** |
+| 1 048 576 | 27.2 48.9 57.7 76.8 99.8 115.3 182.5 185.4 | **88.3** |
+
+**The instrument agrees with the one already here at the narrow end.** The
+existing figures put the counted publish at 2.74–2.82 ns and `drop_ref` of
+the displaced value at 0.85, so an overwriting store costs 3.6–3.7 ns where
+the headers are warm. The narrow end of this probe reads 4.1. The bare
+`retain_release_nonfinal` bench at 1.84–1.87 is not the comparable figure:
+it carries neither the category test nor the slot write.
+
+**The direction is settled and the magnitude is not.** Every run is monotone
+in the working set, and the pair at a million entities is an order above the
+pair at a thousand. The spread at that end is a factor of seven run to run,
+so 88 is a median over a heavy tail, not a figure to plan against. Fifteen
+rounds do not resolve a distribution this shape; a run that wants the
+magnitude needs more rounds, pinned frequency, and pre-faulted pages.
+
+**What it decides.** `rfc/model/gc/gc-horizon-v2/questions.md` node N puts
+the crossover of the deferred regime against today's counted lowering at 1 to
+40 elided stores per live entity per pass, and says the answer turns on the
+share of counted stores whose headers miss, estimated there at ~80 ns and
+marked unmeasured. The estimate is inside the measured range and near its
+median. The store path therefore carries real money at large working sets,
+and node N's low end of the crossover is the one in force for a heap that
+does not fit cache.
+
+**What it does not decide.** The population here is one class of empty
+objects allocated consecutively and addressed by a scattered cursor, which is
+the worst case for the header, not an observed PHP heap. The plain arm also
+degrades — 0.45 to 15.6 ns — because its own read of the value vector misses,
+and real code has the value in a register from a previous load, so the
+absolute store cost at the wide end is above what a program pays. Only the
+difference is read here. The horizon's elisions apply on top of all of it:
+what a proven owned slot never pays does not appear in any of these figures.
+
+
 ## 2026-08-16 — what an epoch parks, in counts that repeat exactly
 
 S26.5: `collector::tests::the_epoch_as_a_whole::measure_parked_memory`,

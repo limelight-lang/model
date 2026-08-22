@@ -41,5 +41,6 @@ impl Holder {
 #[cfg(not(feature = "rc-walk"))]
 mod publication_before_teardown;
 mod the_ordinary_store;
+mod what_a_counted_pair_costs_when_headers_miss;
 mod what_a_store_costs_by_working_set;
 mod what_crossing_a_category_boundary_costs;
