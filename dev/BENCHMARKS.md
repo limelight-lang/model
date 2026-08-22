@@ -100,6 +100,48 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-22 — what a leaf row costs the walk: 39-46 ns per entity that cannot ring
+
+Node B1 of `rfc/model/gc/walk/questions.md`.
+`collector::tests::what_a_leaf_row_costs_the_walk::measure_leaf_row_cost`,
+`cargo test --release --lib -- --ignored measure_leaf_row_cost --nocapture`,
+11th Gen Intel i7-11700K, WSL2. Three runs, five timed epochs per point
+after a discarded warm-up, median of the epochs.
+
+The census enrols every occupied entity slot and gives each a row. A string,
+a weak cell and an FFI box are filed by `src/walk.rs` under "the kinds with
+no counted children": the trace finds nothing, and a leaf cannot be a ring
+member, so the row is walk load and nothing else. The design has an acyclic
+skip for exactly this and does not take it.
+
+Fixed population: 100 000 chained objects, every one externally retained.
+Beside it a growing population of distinct strings, adding rows and no edges.
+
+| strings | walked | epoch, ms — run 1 / 2 / 3 |
+|---|---|---|
+| 0 | 100 000 | 8.7 / 8.2 / 8.0 |
+| 100 000 | 200 000 | 12.7 / 12.5 / 13.8 |
+| 200 000 | 300 000 | 18.0 / 14.4 / 13.8 |
+| 400 000 | 500 000 | 26.5 / 26.6 / 24.3 |
+
+**Slope: 45.0, 45.6 and 38.7 ns per leaf row.** An object row in the same
+runs costs about 80 ns (8 ms over 100 000 chained), which is inside the
+72-108 ns the epoch probe records for that shape, so a leaf row is roughly
+half an object row — it pays the header read, the id-map entry and the count
+store, and skips only the edge trace.
+
+**The residual says the line is not clean.** 0.42, 2.14 and 2.17 ms over the
+four points, and it is the 200 000 point that moves: 18.0 in the first run
+against 14.4 and 13.8 in the other two. Read the slope as 40 ns give or take
+a fifth, not as a resolved constant.
+
+**What it decides, and what it leaves.** The rate is now known: skipping the
+kinds that cannot ring returns about 40 ns per entity skipped, and the walk
+is about 70 % of an epoch. What it is worth therefore turns entirely on the
+share of such entities in a real heap, which nothing here measures and which
+no PHP corpus has been scanned for. B1 stays open on the share; its rate is
+answered.
+
 ## 2026-08-22 — the counted pair against its working set, corrected: 2.9 ns hot, 33 ns at a million entities
 
 S5.4b of `rfc/dev/PLAN.md`, second measurement.
