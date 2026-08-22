@@ -295,7 +295,10 @@ pub const CANDIDATE_INDEX_MAX: usize = 0x0001_FFFF - 1;
 /// (`rfc/model/gc/rc-walk.md`, "The one header byte"). The collector's
 /// maturity stamp: 0 on every fresh header (the factory writes the flags
 /// word with this byte zero at no extra cost), the current epoch number
-/// once the walker has met the entity. Written by the **collector only**,
+/// once a walk has skipped the entity as new. An entity the walk enrols
+/// keeps the older number it was met with — the byte is written in the
+/// allocate-black branch and nowhere else, so 0-or-current reads as "not
+/// walked this epoch". Written by the **collector only**,
 /// as a plain byte store; the mutator's whole-word header stores may bury
 /// a concurrent stamp, which costs one epoch of latency, never a verdict.
 ///
