@@ -100,6 +100,58 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-22 — the walk's cost per cell is the edge, not the container: 43 ns in array storage, 47 ns in an object body
+
+Node B4 of `rfc/model/gc/walk/questions.md`, extending the entry below with
+two arms it did not have. Same probe, now five arms:
+`collector::tests::what_an_array_row_costs_the_walk::measure_array_row_cost`,
+`cargo test --release --lib -- --ignored measure_array_row_cost --nocapture`,
+11th Gen Intel i7-11700K, WSL2. Six runs, five timed epochs per point after
+a discarded warm-up, median of the epochs, then the median over the runs.
+
+The arms, each a growing population beside a fixed 100 000 chained objects:
+a string; an empty array; an array of 8 vector entries; an object of 8 boxed
+properties, all unoccupied; the same object with all 8 filled. Every filled
+cell names **one shared entity**, so those arms add edges to trace and no
+rows to enrol. Arrays and objects therefore hold the same number of cells,
+and the two containers differ only in how the walk reaches them.
+
+| run | head, ns/array | array cell, ns | object cell, ns |
+|---|---|---|---|
+| 1 | 27.0 | 48.8 | 53.1 |
+| 2 | 28.2 | 48.2 | 41.0 |
+| 3 | 7.8 | 38.2 | 39.2 |
+| 4 | 18.2 | 37.7 | 48.3 |
+| 5 | 29.9 | 36.4 | 44.6 |
+| 6 | 18.9 | 68.9 | 54.6 |
+
+**Median: 23 ns the storage head, 43 ns an array cell, 47 ns an object
+cell.** The two cell figures overlap inside their spreads, so on this
+evidence a cell costs the same in array storage as in an object body.
+
+**What it answers.** B4 asked whether the walk can read an array's storage
+differently from an object's fields. The layout is not where the cost is:
+per cell the two containers are indistinguishable, and the array's whole
+structural excess is the storage-head read it takes once per array. What the
+per-cell figure buys is the edge — the id-map lookup of the target and the
+`IN` increment — and at 43-47 ns it is larger than the 40-54 ns row overhead
+a leaf pays. **The walk's mass is edges, not rows.**
+
+**What that does to the neighbouring nodes.** B1's acyclic skip removes rows
+and no edges, so it saves the smaller half; B6's skip by block removes both
+for a uniform block. Neither is priced without the corpus share A6 asks for,
+and the ratio of edges to entities in a real heap is now a third quantity
+that scan owes.
+
+**Confounds named.** The empty-object arm carries 8 unoccupied cells the walk
+skips, where the empty-array arm carries none, so the object figure is the
+cost of turning a skip into a traced edge and the array figure includes the
+read as well — the object number is the lower bound of the two. Every filled
+cell names the same entity, so the `IN` increments hit one cache line; a real
+heap scatters them and would pay more, which makes both figures floors. Run 6
+is an outlier in the array arm and is kept: the median is over runs, not over
+a chosen subset.
+
 ## 2026-08-22 — an empty array's row costs the walk about 15 ns more than a leaf's
 
 Node B4 of `rfc/model/gc/walk/questions.md`.

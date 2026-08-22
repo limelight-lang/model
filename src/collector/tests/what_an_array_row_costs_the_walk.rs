@@ -20,7 +20,12 @@
 //! same counts and the same rounds inside one binary, so the difference
 //! of their slopes carries no drift between runs.
 //!
-//! **What the two arms do not share is the entity.** A string of these
+//! A third arm fills each array with [`ELEMENTS`] vector entries naming
+//! one shared entity, so it adds cells to trace and no rows to enrol, and
+//! its excess over the empty arm divided by the element count is what one
+//! cell of array storage costs.
+//!
+//! **What the arms do not share is the entity.** A string of these
 //! bytes is one inline allocation; an empty array is a header and a
 //! storage head, and its census row therefore touches more bytes. The
 //! difference of the slopes is the array row's whole excess over a leaf
@@ -54,6 +59,14 @@ const ROWS: [usize; 4] = [0, 100_000, 200_000, 400_000];
 /// Timed epochs per point, after one warm-up whose time is discarded.
 const ROUNDS: usize = 5;
 
+/// Byte distance between two boxed properties, and the offset of the
+/// first: a `Value` is one slot wide and the header sits below them.
+const PROP_STRIDE: u32 = 16;
+
+/// Elements in a populated array. Small, because the question is the
+/// per-cell cost and a long array would measure the block allocator too.
+const ELEMENTS: usize = 8;
+
 /// Which kind the growing population is made of.
 #[derive(Clone, Copy)]
 enum Row {
@@ -62,6 +75,15 @@ enum Row {
     /// An array with no elements: a leaf that is reached through the
     /// storage head.
     EmptyArray,
+    /// An array of [`ELEMENTS`] vector entries, every one naming the same
+    /// entity, so the arm adds cells to trace and no rows to enrol.
+    FilledArray,
+    /// An object of [`ELEMENTS`] boxed properties, all unoccupied: the
+    /// control for the arm below, and the object-side twin of the empty
+    /// array.
+    EmptyObject,
+    /// The same object with every property naming the shared entity.
+    FilledObject,
 }
 
 impl Row {
@@ -69,6 +91,9 @@ impl Row {
         match self {
             Row::Leaf => "leaf",
             Row::EmptyArray => "empty_array",
+            Row::FilledArray => "filled_array",
+            Row::EmptyObject => "empty_object",
+            Row::FilledObject => "filled_object",
         }
     }
 }
@@ -108,7 +133,13 @@ fn slope_ns_per_row(totals_ns: &[f64]) -> (f64, f64) {
 ///
 /// Leaving a row alive would enter the next point's census and flatten
 /// the slope, so every entity built here is dropped here.
-fn medians_for(row: Row, ctx: &mut LLContext, cls: *const Class) -> Vec<f64> {
+fn medians_for(
+    row: Row,
+    ctx: &mut LLContext,
+    cls: *const Class,
+    wide: *const Class,
+    element: *mut RcHeader,
+) -> Vec<f64> {
     let mut medians: Vec<f64> = Vec::with_capacity(ROWS.len());
 
     for &rows in &ROWS {
@@ -139,6 +170,37 @@ fn medians_for(row: Row, ctx: &mut LLContext, cls: *const Class) -> Vec<f64> {
                 Row::EmptyArray => {
                     let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
                     a as *mut RcHeader
+                }
+                Row::FilledArray => {
+                    let a = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+                    for _ in 0..ELEMENTS {
+                        // Retained before the entry is published, per
+                        // `Vector::push`; the array's teardown releases
+                        // it back.
+                        unsafe { ll_retain(element) };
+                        let pushed = unsafe {
+                            crate::array::testing::push(a, Value::entity(Tag::Object, element))
+                        };
+                        assert!(pushed, "the probe's array must take its element");
+                    }
+
+                    a as *mut RcHeader
+                }
+                Row::EmptyObject => {
+                    let o = unsafe { new_constructed(ctx, wide, MemoryCategory::GcHeap) };
+                    o as *mut RcHeader
+                }
+                Row::FilledObject => {
+                    let o = unsafe { new_constructed(ctx, wide, MemoryCategory::GcHeap) };
+                    for slot in 0..ELEMENTS {
+                        unsafe { ll_retain(element) };
+                        let at = PROP_STRIDE + slot as u32 * PROP_STRIDE;
+                        unsafe {
+                            Object::prop_at(o, at).write(Value::entity(Tag::Object, element));
+                        }
+                    }
+
+                    o as *mut RcHeader
                 }
             };
             assert!(!entity.is_null(), "the probe's population must allocate");
@@ -200,21 +262,42 @@ fn medians_for(row: Row, ctx: &mut LLContext, cls: *const Class) -> Vec<f64> {
 fn measure_array_row_cost() {
     let _g = crate::memory::block_pool::test_guard();
     let cls = ClassBuilder::new("ArrayRowCost").prop("child", true).build();
+    // The object arms' class: as many boxed properties as a filled array
+    // has entries, so the two containers hold the same number of cells.
+    let mut builder = ClassBuilder::new("ArrayRowCostWide");
+    for slot in 0..ELEMENTS {
+        builder = builder.prop(&format!("child{slot}"), true);
+    }
+
+    let wide = builder.build();
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
 
-    let leaf = medians_for(Row::Leaf, &mut ctx, cls);
-    let array = medians_for(Row::EmptyArray, &mut ctx, cls);
+    // One entity named by every cell of every filled array: the arm adds
+    // edges to trace without adding rows to enrol, which is what makes
+    // its slope a per-cell figure rather than a population figure.
+    let element = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) } as *mut RcHeader;
+    unsafe { ll_retain(element) };
 
-    let (leaf_slope, leaf_residual) = slope_ns_per_row(&leaf);
-    let (array_slope, array_residual) = slope_ns_per_row(&array);
+    let leaf = medians_for(Row::Leaf, &mut ctx, cls, wide, element);
+    let empty = medians_for(Row::EmptyArray, &mut ctx, cls, wide, element);
+    let filled = medians_for(Row::FilledArray, &mut ctx, cls, wide, element);
+    let empty_object = medians_for(Row::EmptyObject, &mut ctx, cls, wide, element);
+    let filled_object = medians_for(Row::FilledObject, &mut ctx, cls, wide, element);
+
+    let (leaf_slope, _) = slope_ns_per_row(&leaf);
+    let (empty_slope, _) = slope_ns_per_row(&empty);
+    let (filled_slope, _) = slope_ns_per_row(&filled);
+    let (empty_object_slope, _) = slope_ns_per_row(&empty_object);
+    let (filled_object_slope, _) = slope_ns_per_row(&filled_object);
     println!(
-        "array_row leaf={leaf_slope:.3} ns/row residual={:.3} ms \
-         empty_array={array_slope:.3} ns/row residual={:.3} ms \
-         excess={:.3} ns/row objects={OBJECTS}",
-        leaf_residual / 1e6,
-        array_residual / 1e6,
-        array_slope - leaf_slope,
+        "array_row leaf={leaf_slope:.1} empty_array={empty_slope:.1} \
+         filled_array={filled_slope:.1} empty_object={empty_object_slope:.1} \
+         filled_object={filled_object_slope:.1} ns/row \
+         head={:.1} array_cell={:.1} object_cell={:.1} ns objects={OBJECTS}",
+        empty_slope - leaf_slope,
+        (filled_slope - empty_slope) / ELEMENTS as f64,
+        (filled_object_slope - empty_object_slope) / ELEMENTS as f64,
     );
     arena.reset(|_| {});
 }
