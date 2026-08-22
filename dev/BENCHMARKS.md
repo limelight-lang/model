@@ -100,6 +100,54 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-22 — an empty array's row costs the walk about 15 ns more than a leaf's
+
+Node B4 of `rfc/model/gc/walk/questions.md`.
+`collector::tests::what_an_array_row_costs_the_walk::measure_array_row_cost`,
+`cargo test --release --lib -- --ignored measure_array_row_cost --nocapture`,
+11th Gen Intel i7-11700K, WSL2. Six runs, five timed epochs per point after
+a discarded warm-up, median of the epochs, then the median over the runs.
+
+B4 asks whether the walk can read an array's storage differently from an
+object's fields. It already does: the array arm reads the storage head under
+a version and gives the array up when the two readings disagree
+(`array::head::StorageHead::coherent`), and only then picks a stride from
+the tag — where the object arm chases the class word. An empty array strides
+nothing, so its row is that second dereference and the dispatch around it.
+
+Both arms run in one binary, over the same fixed population of 100 000
+chained objects and the same row counts, so the figure that carries is the
+difference and not either level.
+
+| run | leaf row, ns | empty-array row, ns | excess, ns |
+|---|---|---|---|
+| 1 | 44.6 | 64.8 | 20.2 |
+| 2 | 50.1 | 63.1 | 13.0 |
+| 3 | 56.0 | 75.4 | 19.4 |
+| 4 | 57.4 | 66.6 | 9.2 |
+| 5 | 51.6 | 69.2 | 17.5 |
+| 6 | 62.6 | 73.1 | 10.6 |
+
+**Median: 54 ns a leaf row, 68 ns an empty-array row, 15 ns the excess**,
+the excess spanning 9.2 to 20.2 — a factor of 2.2, so the direction is
+settled and the magnitude is not.
+
+The leaf level here reads higher than the 39-46 ns of the entry below,
+which was a different binary out of a different session; the two levels are
+not comparable and nothing here rests on them. What rests on this run is the
+excess, both arms having been measured back to back.
+
+**What it means for B4.** An array that can hold no cells still costs the
+walk about a third more than a string. The extra is not the elements — there
+are none — but the coherent read that the mutator's freedom to move storage
+forces. So B1's acyclic skip, if it is ever taken, saves more per array than
+per string, and any scheme that skips a block rather than an entity (node B6)
+saves that read as well as the header miss.
+
+**What is not measured:** a populated array, where the per-entry stride adds
+one cell for a vector and two for a hash table; and whether the give-up path
+on an incoherent head is hot under a mutator that is actually writing.
+
 ## 2026-08-22 — what a leaf row costs the walk: 39-46 ns per entity that cannot ring
 
 Node B1 of `rfc/model/gc/walk/questions.md`.
