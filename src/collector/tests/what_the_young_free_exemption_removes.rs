@@ -28,25 +28,31 @@
 //!
 //! ## What the share is a property of
 //!
-//! The workload's lifetimes against the epoch's duration, with nothing the
-//! collector does moving it. The arms share one population and one death
-//! count and differ only in which live entity a step kills:
+//! The workload's lifetimes against **the interval between two walks**, which
+//! is the epoch's own length plus whatever the collector idles between
+//! epochs. A death at position `t` of an epoch is exempt exactly when the
+//! entity was born after the previous walk, so with `W` deaths between walks
+//! the condition is `age at death < t + W`. The arms share one population and
+//! one death count and differ only in which live entity a step kills:
 //!
-//! - **oldest** — a lifetime is exactly [`POPULATION`] steps. An entity dying
-//!   at position `t` of the epoch was born `POPULATION` steps earlier, which
-//!   is inside the previous epoch when `t > POPULATION - steps`, so the
-//!   predicted count is `clamp(2 * steps - POPULATION, 0, steps)`.
+//! - **oldest** — a lifetime is exactly [`POPULATION`] steps, so the
+//!   predicted count is `clamp(steps + W - POPULATION, 0, steps)`.
 //! - **uniform** — a uniformly chosen victim, so the age at death is
-//!   geometric with mean [`POPULATION`] and the entity is exempt when that
-//!   age is under `t + steps`. The predicted share is that probability
-//!   averaged over the epoch's death positions.
+//!   geometric with mean [`POPULATION`] and the predicted share is
+//!   `P(age < t + W)` averaged over the epoch's death positions.
 //!
-//! The prediction is the control on one arm and one cell: the two curves are
-//! more than the assertion's tolerance apart only where the epoch runs about
-//! as long as a lifetime, and the `oldest` arm is a step function its own
-//! loop bound would reproduce. What the `oldest` arm is good for is the
-//! negative half — the exemption removes nothing from a population that
-//! outlives two epochs.
+//! Both are swept at `gap = 0`, where the collector never idles and `W` is
+//! the epoch's own death count, and at `gap = steps`, a duty cycle of a half.
+//! The first is the least favourable value of the free variable, so its
+//! column is a floor rather than the answer.
+//!
+//! The prediction column is the control on the arms rather than on the cells:
+//! it separates `oldest` from `uniform` by more than the assertion's
+//! tolerance at three of the four death counts, converging only where the
+//! epoch outlives three lifetimes. The `oldest` arm is a step function its
+//! own loop bound would reproduce; what it is good for is the negative half,
+//! that a population outliving two walk intervals gives the exemption
+//! nothing.
 //!
 //! ## The ceiling this measures, and what sits under it
 //!
@@ -73,7 +79,7 @@ use crate::refcount::{EPOCH_BYTE_MASK, EPOCH_BYTE_SHIFT, header_flags, ll_releas
 const POPULATION: usize = 10_000;
 
 /// Deaths landed inside each epoch, chosen around the region where the
-/// lifetime crosses one and two epochs.
+/// lifetime crosses one and two walk intervals.
 const STEPS: [usize; 4] = [1_000, 6_000, 10_000, 30_000];
 
 /// Epochs of the same churn run before the measured one. Two decide a stamp,
@@ -125,21 +131,59 @@ fn next(state: &mut u64) -> u64 {
 }
 
 /// The share the arm's lifetime distribution predicts, from the arm alone:
-/// no measured quantity enters either branch.
-fn predicted(victim: Victim, steps: usize) -> f64 {
+/// no measured quantity enters either branch. `walk_interval` is the number
+/// of deaths between two consecutive walks.
+fn predicted(victim: Victim, steps: usize, walk_interval: usize) -> f64 {
     match victim {
         Victim::Oldest => {
-            let exempt = (2 * steps).saturating_sub(POPULATION).min(steps);
+            let exempt = (steps + walk_interval)
+                .saturating_sub(POPULATION)
+                .min(steps);
             exempt as f64 / steps as f64
         }
         Victim::Uniform => {
             let survives_a_step = 1.0 - 1.0 / POPULATION as f64;
             (1..=steps)
-                .map(|t| 1.0 - survives_a_step.powi((t + steps - 1) as i32))
+                .map(|t| 1.0 - survives_a_step.powi((t + walk_interval - 1) as i32))
                 .sum::<f64>()
                 / steps as f64
         }
     }
+}
+
+/// One churn step: kill by the arm's policy, allocate a replacement, and hand
+/// back the epoch byte the victim carried, which is what the exemption reads.
+fn churn_step(
+    ctx: &mut LLContext,
+    cls: *const crate::class::Class,
+    live: &mut VecDeque<*mut Object>,
+    rng: &mut u64,
+    victim: Victim,
+) -> u8 {
+    let dying = match victim {
+        Victim::Oldest => live.pop_front().unwrap(),
+        Victim::Uniform => {
+            let i = (next(rng) % live.len() as u64) as usize;
+            live.swap_remove_back(i).unwrap()
+        }
+    };
+
+    // Read while the entity is whole. The releasing store is counter-half
+    // only and teardown's flag writes preserve the byte, so the answer would
+    // not change after the death, but nothing is gained by reading it later.
+    let flags = unsafe { header_flags(dying as *const RcHeader) };
+    let stamp = ((flags & EPOCH_BYTE_MASK) >> EPOCH_BYTE_SHIFT) as u8;
+
+    unsafe {
+        assert!(
+            ll_release(dying as *mut RcHeader),
+            "the probe holds the only reference"
+        );
+        ll_object_die(dying);
+    }
+
+    live.push_back(unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) });
+    stamp
 }
 
 /// One epoch: open it, walk, land `steps` deaths and as many births inside
@@ -163,37 +207,14 @@ fn one_epoch(
 
     let before = parked_count();
     for _ in 0..steps {
-        let dying = match victim {
-            Victim::Oldest => live.pop_front().unwrap(),
-            Victim::Uniform => {
-                let i = (next(rng) % live.len() as u64) as usize;
-                live.swap_remove_back(i).unwrap()
-            }
-        };
-
+        let stamp = churn_step(ctx, cls, live, rng, victim);
         if measure {
-            // Read while the entity is whole. The releasing store is
-            // counter-half only and teardown's flag writes preserve the byte,
-            // so the answer would not change after the death, but nothing is
-            // gained by reading it later.
-            let flags = unsafe { header_flags(dying as *const RcHeader) };
-            let stamp = ((flags & EPOCH_BYTE_MASK) >> EPOCH_BYTE_SHIFT) as u8;
             if stamp == 0 {
                 arm.exempt_zero += 1;
             } else if stamp == e.number {
                 arm.exempt_current += 1;
             }
         }
-
-        unsafe {
-            assert!(
-                ll_release(dying as *mut RcHeader),
-                "the probe holds the only reference"
-            );
-            ll_object_die(dying);
-        }
-
-        live.push_back(unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) });
     }
 
     arm.parked = parked_count() - before;
@@ -212,9 +233,11 @@ fn one_epoch(
     arm
 }
 
-/// One arm: a population churned through [`WARM_EPOCHS`] epochs and measured
-/// over the next.
-fn one_arm(victim: Victim, steps: usize) -> Arm {
+/// One arm: a population churned through [`WARM_EPOCHS`] epochs, each
+/// followed by `gap` deaths with no epoch open, and measured over the next
+/// epoch. The walk interval is `steps + gap`; `gap` of zero is a collector
+/// that never idles.
+fn one_arm(victim: Victim, steps: usize, gap: usize) -> Arm {
     let _g = crate::memory::block_pool::test_guard();
     let cls = ClassBuilder::new("YoungFreeExemption").build();
     let mut arena = Arena::new();
@@ -226,9 +249,12 @@ fn one_arm(victim: Victim, steps: usize) -> Arm {
 
     let mut rng = 0x9E37_79B9_7F4A_7C15;
     for _ in 0..WARM_EPOCHS {
-        one_epoch(
-            &mut ctx, cls, &mut live, &mut rng, victim, steps, false,
-        );
+        one_epoch(&mut ctx, cls, &mut live, &mut rng, victim, steps, false);
+        for _ in 0..gap {
+            churn_step(&mut ctx, cls, &mut live, &mut rng, victim);
+        }
+
+        assert_eq!(parked_count(), 0, "a free outside an epoch recycles");
     }
 
     let arm = one_epoch(&mut ctx, cls, &mut live, &mut rng, victim, steps, true);
@@ -252,42 +278,45 @@ fn measure_young_free_exemption() {
 
     for victim in [Victim::Oldest, Victim::Uniform] {
         for &steps in &STEPS {
-            let arm = one_arm(victim, steps);
-            let exempt = arm.exempt_zero + arm.exempt_current;
-            let share = exempt as f64 / steps as f64;
-            let prediction = predicted(victim, steps);
-            zero_seen += arm.exempt_zero;
-            current_seen += arm.exempt_current;
+            for gap in [0, steps] {
+                let walk_interval = steps + gap;
+                let arm = one_arm(victim, steps, gap);
+                let exempt = arm.exempt_zero + arm.exempt_current;
+                let share = exempt as f64 / steps as f64;
+                let prediction = predicted(victim, steps, walk_interval);
+                zero_seen += arm.exempt_zero;
+                current_seen += arm.exempt_current;
 
-            println!(
-                "young_free victim={} population={POPULATION} steps={steps} parked={} \
-                 exempt={exempt} (zero {} + current {}) stamped_new={} share={share:.3} \
-                 predicted={prediction:.3}",
-                victim.name(),
-                arm.parked,
-                arm.exempt_zero,
-                arm.exempt_current,
-                arm.stamped_new
-            );
+                println!(
+                    "young_free victim={} population={POPULATION} steps={steps} gap={gap} \
+                     parked={} exempt={exempt} (zero {} + current {}) stamped_new={} \
+                     share={share:.3} predicted={prediction:.3}",
+                    victim.name(),
+                    arm.parked,
+                    arm.exempt_zero,
+                    arm.exempt_current,
+                    arm.stamped_new
+                );
 
-            assert_eq!(
-                arm.parked, steps,
-                "one record per death: this class carries no payload"
-            );
+                assert_eq!(
+                    arm.parked, steps,
+                    "one record per death: this class carries no payload"
+                );
 
-            match victim {
-                // Exact rather than approximate: under a fixed lifetime the
-                // exempt deaths are precisely those whose birth fell after
-                // the previous epoch's walk. A warm-up that had not settled
-                // would miss this.
-                Victim::Oldest => assert_eq!(
-                    exempt,
-                    (2 * steps).saturating_sub(POPULATION).min(steps)
-                ),
-                Victim::Uniform => assert!(
-                    (share - prediction).abs() < 0.03,
-                    "share {share:.3} against the geometric prediction {prediction:.3}"
-                ),
+                match victim {
+                    // Exact rather than approximate: under a fixed lifetime
+                    // the exempt deaths are precisely those born after the
+                    // previous walk. A warm-up that had not settled would
+                    // miss this.
+                    Victim::Oldest => assert_eq!(
+                        exempt,
+                        (steps + walk_interval).saturating_sub(POPULATION).min(steps)
+                    ),
+                    Victim::Uniform => assert!(
+                        (share - prediction).abs() < 0.03,
+                        "share {share:.3} against the geometric prediction {prediction:.3}"
+                    ),
+                }
             }
         }
     }

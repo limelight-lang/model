@@ -109,48 +109,82 @@ Node C2 of `rfc/model/gc/walk/questions.md`.
 print the same table, so one run.
 
 The exemption recycles a dying entity's slot instead of parking it when the
-epoch byte reads zero or the current number, which is the walk's skip predicate
-read backwards. The byte reads zero from birth until a walk meets the slot, and
-that walk writes the current number and skips the entity, so **the exempt
-window runs from birth to the second walk that meets the slot** — the rest of
-the epoch the entity was born in, and the whole of the next one.
+epoch byte reads zero or the current number, which is the walk's skip
+predicate read backwards. The byte reads zero from birth until a walk meets
+the slot, and that walk writes the current number and skips the entity, so
+**the exempt window runs from birth to the second walk that meets the slot**.
+A death at position `t` of an epoch is therefore exempt exactly when the
+entity's age is under `t + W`, where `W` is the deaths between two
+consecutive walks — the epoch's own churn plus whatever the collector idles
+between epochs.
 
-The population is 10 000 leaf objects and stays constant: a churn step kills one
-live entity and allocates one, and the arms differ only in which entity the step
-kills. Each arm runs three epochs of the same churn before the one it measures,
-so the ages and the stamps are what that history made them.
+The population is 10 000 leaf objects and stays constant: a churn step kills
+one live entity and allocates one. Each arm runs three epochs of the same
+churn before the one it measures, so the ages and the stamps are what that
+history made them. `gap` is deaths landed with no epoch open, so `gap = 0` is
+a collector that never idles and `gap = deaths` a duty cycle of a half.
 
-| deaths per epoch | oldest: exempt | share | predicted | uniform: exempt | share | predicted |
-|---|---|---|---|---|---|---|
-| 1 000 | 0 | 0.000 | 0.000 | 147 | 0.147 | 0.139 |
-| 6 000 | 2 000 | 0.333 | 0.333 | 3 483 | 0.581 | 0.587 |
-| 10 000 | 10 000 | 1.000 | 1.000 | 7 711 | 0.771 | 0.767 |
-| 30 000 | 30 000 | 1.000 | 1.000 | 29 525 | 0.984 | 0.984 |
+**Killing the oldest**, which fixes every lifetime at the population:
+
+| deaths per epoch | share, gap 0 | predicted | share, gap = deaths | predicted |
+|---|---|---|---|---|
+| 1 000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 6 000 | 0.333 | 0.333 | 1.000 | 1.000 |
+| 10 000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| 30 000 | 1.000 | 1.000 | 1.000 | 1.000 |
+
+**Killing a uniformly chosen victim**, which makes the age at death geometric
+with the same mean:
+
+| deaths per epoch | share, gap 0 | predicted | share, gap = deaths | predicted |
+|---|---|---|---|---|
+| 1 000 | 0.147 | 0.139 | 0.220 | 0.221 |
+| 6 000 | 0.581 | 0.587 | 0.767 | 0.774 |
+| 10 000 | 0.771 | 0.767 | 0.914 | 0.914 |
+| 30 000 | 0.984 | 0.984 | 0.999 | 0.999 |
+
+**The gap column is the point of the table.** Idling the collector for as long
+as an epoch takes moves the uniform arm from 0.581 to 0.767 at six thousand
+deaths and from 0.147 to 0.220 at one thousand, and moves the fixed-lifetime
+arm from a third to everything. So what the exemption is worth is decided by
+the cadence of node C1 rather than by the epoch alone, and the `gap 0` column
+is the floor at the least favourable duty cycle.
 
 Parked records equal deaths in every cell, one for one, which reproduces the
 2026-08-16 table on a different workload. Both disjuncts fire and are counted
-apart: at 10 000 deaths the uniform arm's exempt records are 3 669 never met by
-a walk and 4 042 stamped and skipped by this epoch's own.
+apart. For the uniform arm at `gap 0`, exempt records as never-met plus
+stamped-and-skipped, beside the walk's own count of what it stamped:
 
-**Killing the oldest fixes every lifetime at the population**, so the share is a
-step — nothing while a lifetime spans more than two epochs, everything once an
-epoch outlives one. **Killing a uniformly chosen victim makes the age at death
-geometric with the same mean**, and at an epoch as long as the mean lifetime
-three quarters of the parked records are exempt.
+| deaths | never met | stamped this epoch | `stamped_new` |
+|---|---|---|---|
+| 1 000 | 51 | 96 | 952 |
+| 6 000 | 1 456 | 2 027 | 4 505 |
+| 10 000 | 3 669 | 4 042 | 6 336 |
+| 30 000 | 20 491 | 9 034 | 9 497 |
 
-The prediction column is computed from each arm's lifetime distribution with
-nothing measured in it, and it is a control on one arm and one cell rather than
-on the table. The `oldest` arm is a step function its own loop bound would
-reproduce; the two curves are further apart than the assertion's 0.03 only at
-1 000 and 10 000 deaths. What the `oldest` arm establishes is the negative
-half: a population that outlives two epochs gives the exemption nothing.
+`stamped_new` is the walk's count of slots it met reading zero or the current
+number — entities born since the previous walk **and still alive when this
+walk reached them**, of any memory category, since the stamp precedes the
+category test. It is not an allocation count: at thirty thousand deaths per
+epoch the arm births thirty thousand entities against a population of ten
+thousand, and `stamped_new` reports 9 497.
 
-**What the table does not cover.** Only an entity slot carries a header, so only
+The prediction columns are computed from each arm's lifetime distribution with
+nothing measured in them. They discriminate the two arms at 1 000, 6 000 and
+10 000 deaths — by 0.139, 0.254 and 0.233 against an assertion tolerance of
+0.03 — and converge to 0.016 apart at 30 000, where an epoch outlives three
+lifetimes and everything is young. The `oldest` arm is a step function its own
+loop bound would reproduce; what it establishes is the negative half, that a
+population outliving two walk intervals gives the exemption nothing.
+
+**What the tables do not cover.** Only an entity slot carries a header, so only
 an entity's record can be exempt at all: a dying out-of-line string parks its
-payload and a dying array parks its table storage as headerless records whatever
-the entity's age. This class holds no payload, so the table is the exemption's
-ceiling, and the corpus figure that lowers it is payload records per entity
-(node A6).
+payload and a dying array parks its table storage as headerless records
+whatever the entity's age, and a payload freed by *growth* rather than by death
+parks the same way and is never exempt. This class holds no payload and never
+grows one, so the tables are the exemption's ceiling over an epoch's death
+records alone. The corpus figure that lowers it is companion records per
+entity (node A6).
 
 **A correction this measurement forces.** The 2026-08-16 entry below and
 `docs/performance-case.md` both said the exemption would remove "exactly the
@@ -168,7 +202,9 @@ four lifetimes, and the entry read off them that the share "is zero by
 construction for a heap whose entities outlive the epoch". Both are wrong the
 same way: the arm measured "born after this epoch's walk", which is strictly
 narrower than the exemption, over a population whose stamps were bimodal where
-a running heap's are not. A review round the same day found it.
+a running heap's are not. A review round the same day found it; a second round
+found that the replacement still pinned the walk interval to one epoch, which
+is the `gap` column above.
 
 ## 2026-08-22 — negative: counting ring-capable entities per block buys nothing, because no block comes out uniform
 
