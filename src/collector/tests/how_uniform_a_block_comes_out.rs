@@ -159,6 +159,16 @@ fn measure_block_uniformity() {
         }
 
         let seen = unsafe { classify() };
+        // The whole point is that the two kinds share blocks. One size
+        // class means they could; two means the run measured the
+        // allocator's separation instead, and the figures below say
+        // nothing about interleaving.
+        assert_eq!(
+            seen.classes.len(),
+            1,
+            "the two kinds must land in one size class, saw {:?}",
+            seen.classes
+        );
         let share = |part: usize, whole: usize| {
             if whole == 0 {
                 0.0

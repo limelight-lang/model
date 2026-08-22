@@ -141,8 +141,16 @@ By same-kind run length, that many strings then that many objects, repeated:
 | 10 000 | 40 % | 40.8 % |
 
 **A run has to exceed a whole block before any block comes out uniform**, and
-even a run of five blocks' worth leaves 40 % rather than 80 %, because the run
-boundaries land mid-block.
+even a run of five blocks' worth leaves 40 % rather than 80 %.
+
+**Why is not what a first reading of this table said.** A strict sequential
+fill of one block at a time predicts 50 % at a run of 2 000 (one block each),
+60 % at 4 000 and 50 % at 10 000; measured are 0 %, 40 % and 40 %. All ten
+blocks are full, so nothing leaks between the arms — the allocator keeps a
+per-class chain of available blocks (`Heap::available`, `src/memory/heap.rs`)
+rather than one open block, and which block a refill hands out from is what
+decides. The result is stronger for it: exact block multiples still come out
+mixed.
 
 **What it does to the node.** The two shapes swap places. The cheap count is
 worth nothing without an allocation pattern that runs one kind for thousands
