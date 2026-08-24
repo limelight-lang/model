@@ -471,7 +471,7 @@ objects and one two-object ring condemned per epoch.
 | 100 000 | 13 | 128 | 76 | 131 |
 
 Each row is the median of the two runs. They agree to a tenth of a
-microsecond in the three ack columns that read 0.1, to a microsecond in the
+microsecond in the five ack cells that read 0.1, to a microsecond in the
 rest, and to 3 % in the last row, where 3 % is about 4 µs.
 
 **Both acks are bounded by the checkpoint interval and neither is only
@@ -568,7 +568,8 @@ a longer round and the fixed distance of eight swept.
 `memory::barrier::tests::what_a_prefetch_recovers_from_a_cold_pair::measure_prefetch_recovery`,
 `taskset -c 3 cargo test --release --lib -- --ignored measure_prefetch_recovery --nocapture`,
 11th Gen Intel i7-11700K, WSL2. Three runs, five distances — 1, 4, 8, 32,
-128 — at each of five working sets, 15 timed rounds an arm.
+128 — at each of five working sets, 15 timed rounds an arm, forty-five
+readings in all. The table below prints the fifteen of one run.
 
 **Where the reading is stable the distance changes nothing, and the
 prefetch costs rather than pays.**
@@ -629,7 +630,7 @@ read they were charged.
 | R1 − R0 | release one child, no death | 0.48 0.89 0.98 1.04 1.19 1.35 | **1.0** |
 | R2 − R1 | the teardown when it does die | 11.9 12.4 12.9 13.0 13.7 16.6 | **13.0** |
 | A2 − A | the null pair | 0.01 0.03 0.03 0.17 0.42 0.48 | **0.10** |
-| CLOCK | one `Instant::now()`, three later runs | 12.95 13.19 13.52 | **13.0** |
+| CLOCK | one `Instant::now()`, three later runs | 12.95 13.19 13.52 | **13.2** |
 
 **The arms.** A strides an object's body with
 `for_each_body_cell::<PlainCells>` and reads the child; B strides and
@@ -685,7 +686,7 @@ teardown on top of it, 2.3 + 1.0 + 13.0 = **16.3 ns**, so about **61 000
 cells**. Both replace the node's "roughly twenty thousand cells to a slice".
 
 **The clock costs six severed cells**, added 2026-08-24 when the batch
-ceiling's mechanism was chosen. A monotonic read is 13.0 ns on this box and
+ceiling's mechanism was chosen. A monotonic read is 13.2 ns on this box and
 the steadiest figure in the probe — three runs inside 0.6 ns. Against 2.3 ns
 a severed cell and 1.0 a released child, reading it per cell would multiply
 the drain's mechanical cost by six to thirteen, and reading it per
