@@ -51,13 +51,16 @@ use super::what_a_counted_pair_costs_when_headers_miss::{
     owners, prefill, reduce, trip,
 };
 
-/// Stores between a prefetch and the store it was issued for.
+/// Stores between a prefetch and the store it was issued for, swept.
 ///
 /// Far enough that a miss has time to return, near enough that the line is
-/// not evicted before use. Eight is the usual starting point for a scattered
-/// access pattern and is not tuned here: tuning it is a second experiment,
-/// and this one asks whether the direction is worth that experiment.
-const DISTANCE: usize = 8;
+/// not evicted before use. Eight was the only value a first version tried,
+/// on the usual starting point for a scattered access pattern; node A5 of
+/// `rfc/model/gc/walk/questions.md` asked for the sweep, and this is it.
+/// The lower bound is one — a prefetch for the very next store, which
+/// cannot hide a miss — so a monotone rise from it says the window is the
+/// lever and a flat line says it is not.
+const DISTANCES: [usize; 5] = [1, 4, 8, 32, 128];
 
 /// Issue a read prefetch for the header at the front of `entity`.
 ///
@@ -86,7 +89,7 @@ unsafe fn prefetch_header(entity: *mut RcHeader) {
 }
 
 /// One round of the counted store with both foreign headers prefetched
-/// [`DISTANCE`] stores ahead.
+/// `distance` stores ahead.
 ///
 /// The body is [`counted_round`]'s, with the prefetches added and nothing
 /// removed, so the difference between the two arms is the prefetches and
@@ -100,6 +103,7 @@ unsafe fn prefetched_round(
     values: &[Value],
     mask: usize,
     round: usize,
+    distance: usize,
 ) -> Duration {
     unsafe {
         let start = Instant::now();
@@ -107,7 +111,7 @@ unsafe fn prefetched_round(
             // The store `DISTANCE` iterations from now: the value it will
             // retain, and the value it will displace, which is whatever the
             // owner slot holds now.
-            let ahead = i + DISTANCE;
+            let ahead = i + distance;
             let ahead_owner = owners[cursor(round, ahead, mask)];
             let ahead_slot = Object::prop_at(ahead_owner, 16);
             prefetch_header(std::ptr::read(ahead_slot).entity_ptr());
@@ -146,6 +150,7 @@ unsafe fn arms_at(
     prefetched_owners: &[*mut Object],
     values: &[Value],
     mask: usize,
+    distance: usize,
 ) -> (ArmStats, ArmStats) {
     let mut bare: Vec<f64> = Vec::with_capacity(ROUNDS);
     let mut prefetched: Vec<f64> = Vec::with_capacity(ROUNDS);
@@ -154,10 +159,14 @@ unsafe fn arms_at(
         let per_store = |elapsed: Duration| elapsed.as_nanos() as f64 / STORES as f64;
         let (b, p) = if round % 2 == 0 {
             let b = unsafe { counted_round(arena, bare_owners, values, mask, round) };
-            let p = unsafe { prefetched_round(arena, prefetched_owners, values, mask, round) };
+            let p = unsafe {
+                prefetched_round(arena, prefetched_owners, values, mask, round, distance)
+            };
             (b, p)
         } else {
-            let p = unsafe { prefetched_round(arena, prefetched_owners, values, mask, round) };
+            let p = unsafe {
+                prefetched_round(arena, prefetched_owners, values, mask, round, distance)
+            };
             let b = unsafe { counted_round(arena, bare_owners, values, mask, round) };
             (b, p)
         };
@@ -242,22 +251,30 @@ fn measure_prefetch_recovery() {
             prefill(arena_ptr, &bare_owners, &values);
             prefill(arena_ptr, &prefetched_owners, &values);
 
-            let (bare, prefetched) =
-                arms_at(arena_ptr, &bare_owners, &prefetched_owners, &values, set - 1);
+            for distance in DISTANCES {
+                let (bare, prefetched) = arms_at(
+                    arena_ptr,
+                    &bare_owners,
+                    &prefetched_owners,
+                    &values,
+                    set - 1,
+                    distance,
+                );
 
-            if report {
-                println!(
-                    "prefetch working_set={set} bare={:.3} ns/store min={:.3} max={:.3}",
-                    bare.median, bare.minimum, bare.maximum
-                );
-                println!(
-                    "prefetch working_set={set} prefetched={:.3} ns/store min={:.3} max={:.3}",
-                    prefetched.median, prefetched.minimum, prefetched.maximum
-                );
-                println!(
-                    "prefetch working_set={set} recovered={:.3} ns/store",
-                    bare.median - prefetched.median
-                );
+                if report {
+                    println!(
+                        "prefetch working_set={set} distance={distance} \
+                         bare={:.3} prefetched={:.3} recovered={:.3} ns/store \
+                         bare_min={:.3} bare_max={:.3} pf_min={:.3} pf_max={:.3}",
+                        bare.median,
+                        prefetched.median,
+                        bare.median - prefetched.median,
+                        bare.minimum,
+                        bare.maximum,
+                        prefetched.minimum,
+                        prefetched.maximum,
+                    );
+                }
             }
 
             teardown(&bare_owners, &prefetched_owners, &values);

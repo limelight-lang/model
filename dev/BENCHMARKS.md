@@ -451,6 +451,52 @@ share of such entities in a real heap, which nothing here measures and which
 no PHP corpus has been scanned for. B1 stays open on the share; its rate is
 answered.
 
+## 2026-08-24 — the prefetch distance is not the lever, and the wide arm has no sign
+
+Node A5 of `rfc/model/gc/walk/questions.md`, which asked for a pinned core,
+a longer round and the fixed distance of eight swept.
+`memory::barrier::tests::what_a_prefetch_recovers_from_a_cold_pair::measure_prefetch_recovery`,
+`taskset -c 3 cargo test --release --lib -- --ignored measure_prefetch_recovery --nocapture`,
+11th Gen Intel i7-11700K, WSL2. Three runs, five distances — 1, 4, 8, 32,
+128 — at each of five working sets, 15 timed rounds an arm.
+
+**Where the reading is stable the distance changes nothing, and the
+prefetch costs rather than pays.**
+
+| working set | recovered, ns/store, distance 1 / 4 / 8 / 32 / 128, run 3 |
+|---|---|
+| 1 | -0.98 -0.67 -0.66 -0.88 -0.89 |
+| 64 | -0.72 -0.87 -0.89 -0.89 -0.87 |
+| 4 096 | -0.56 -0.73 -0.55 -0.73 -1.30 |
+
+Negative is the prefetched arm losing. The figure is 0.7-1.0 ns across
+three runs, five distances and three working sets: it is the two address
+computations and two prefetch instructions per store, and neither their
+count nor their cost depends on how far ahead they are issued. Distance 1
+prefetches for the very next store and cannot hide a miss; that it reads
+the same as distance 128 is the result.
+
+**Where the prefetch could pay, the instrument has no sign.** At 1 048 576
+the three runs disagree about the direction: run 1 reads -24 to -9, run 2
+-16 to -8, run 3 **+9.7 to +18.1**, and an earlier unswept pinned run read
++13.2. The bare arm itself moves from 59 to 122 ns/store inside one run's
+sweep, so the difference being taken is smaller than the swing of the arm
+it is taken from. 65 536 is the same shape one order down: -1.6, +18.8 and
++4.1 at distance 1 across the three runs.
+
+**Pinning did not fix it**, which is the point of recording this. The wide
+sets hold two owner populations and one child population, about 150 MB at
+the widest against a 16 MiB L3, so every access is a DRAM miss and what
+varies between runs is page-walk behaviour rather than the code. A stabler
+wide-set instrument — huge pages, or an arm that does not carry two
+populations — is what A5 needs before the prefetch question has an answer
+at all.
+
+**What it decides.** A5's coalescing half is untouched by this. Its
+prefetch half now has a measured answer for the cache-resident case (the
+prefetch costs about 0.9 ns and the window is not the free variable) and a
+named instrument defect for the case that matters.
+
 ## 2026-08-24 — a severed cell is 2.3 ns and a released child 1.0 ns: the drain's borrowed price was an order too high
 
 Node D3 of `rfc/model/gc/walk/questions.md`.
