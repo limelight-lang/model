@@ -451,6 +451,52 @@ share of such entities in a real heap, which nothing here measures and which
 no PHP corpus has been scanned for. B1 stays open on the share; its rate is
 answered.
 
+## 2026-08-24 — a skipped entity still costs the walk about 4 ns, a tenth of the row it does not get
+
+Node B7 of `rfc/model/gc/walk/questions.md`, which asks what a block skip
+adds over the per-entity skip of node B1.
+`collector::tests::what_a_skipped_entity_still_costs::measure_skipped_entity_cost`,
+`taskset -c 3 cargo test --release --lib -- --ignored measure_skipped_entity_cost --nocapture`,
+11th Gen Intel i7-11700K, WSL2. Nine runs, five timed epochs per point
+after a discarded warm-up, median of the epochs; slope over four points.
+
+**The residue, read off `walk_rows` before the measurement:** the slot's
+address, one relaxed 64-bit header load, and three tests over the word —
+occupancy, the epoch byte, the memory category. The census store and the
+four row pushes are all below the third test, so an entity that fails it
+pays the list above and nothing else.
+
+**The population that isolates it.** A `LongLived` entity allocates from
+the same entity blocks a `GcHeap` one does and the walk skips it at that
+third test (`src/memory/routing.rs`). A kind skip, which this crate does
+not have, would stop one predicted compare later.
+
+| skipped | walked | epoch, ms, one run |
+|---|---|---|
+| 0 | 100 000 | 8.16 |
+| 100 000 | 200 000 | — |
+| 200 000 | 300 000 | — |
+| 400 000 | 500 000 | 10.08 |
+
+**Slope over nine runs:** 1.14 2.18 2.48 3.67 4.14 4.36 4.80 5.29 5.56 —
+**median 4.1 ns** per skipped entity. The two endpoints read the same
+thing: 3.07, 5.39, 2.58, 4.84, 4.80 and 5.46 over the last six runs,
+median 4.8.
+
+**The instrument is at its limit here and the figure carries that.** The
+effect is about a tenth of B1's, taken against the same 8 ms baseline, so
+400 000 skipped entities move the epoch by 1.2 to 2.2 ms — a fifth of it —
+and the residual of the four-point line is 0.3 to 0.7 ms rather than B1's
+0.4 to 2.2 over a ten-times-larger slope. Read 4 ns as an order, not as a
+point.
+
+**What it decides.** B7's quantity, which nobody had: a skipped **block**
+removes about 4 ns times its slot count, so **about 8 µs per block** at size
+class 32 (2 040 slots) and 4 µs at class 64. Against B1's enrolled leaf row
+of 39-46 ns, the entity skip returns roughly nine tenths of a row and the
+block skip returns the last tenth. That ratio is what B7 has to be worth
+its fallback and its counter against.
+
 ## 2026-08-24 — the prefetch distance is not the lever, and the wide arm has no sign
 
 Node A5 of `rfc/model/gc/walk/questions.md`, which asked for a pinned core,
