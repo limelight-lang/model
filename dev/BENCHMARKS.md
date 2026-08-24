@@ -629,6 +629,7 @@ read they were charged.
 | R1 − R0 | release one child, no death | 0.48 0.89 0.98 1.04 1.19 1.35 | **1.0** |
 | R2 − R1 | the teardown when it does die | 11.9 12.4 12.9 13.0 13.7 16.6 | **13.0** |
 | A2 − A | the null pair | 0.01 0.03 0.03 0.17 0.42 0.48 | **0.10** |
+| CLOCK | one `Instant::now()`, three later runs | 12.95 13.19 13.52 | **13.0** |
 
 **The arms.** A strides an object's body with
 `for_each_body_cell::<PlainCells>` and reads the child; B strides and
@@ -682,6 +683,16 @@ costs the sever plus the count-down, 2.3 + 1.0 = **3.3 ns**, so about
 **300 000 cells**. A dying one costs the sever, the count-down and the
 teardown on top of it, 2.3 + 1.0 + 13.0 = **16.3 ns**, so about **61 000
 cells**. Both replace the node's "roughly twenty thousand cells to a slice".
+
+**The clock costs six severed cells**, added 2026-08-24 when the batch
+ceiling's mechanism was chosen. A monotonic read is 13.0 ns on this box and
+the steadiest figure in the probe — three runs inside 0.6 ns. Against 2.3 ns
+a severed cell and 1.0 a released child, reading it per cell would multiply
+the drain's mechanical cost by six to thirteen, and reading it per
+mechanical teardown would roughly double that unit. Read once per slice, at
+a millisecond budget, it is one part in seventy-seven thousand. That spread
+is what makes the ceiling a charged budget between reads rather than a check.
+This crate reads no clock in production; the arm exists to price the choice.
 
 **What it does not decide.** The teardown figure is a floor — an empty leaf
 with no destructor, no children and no outside cells; a class with any of

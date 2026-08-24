@@ -88,8 +88,8 @@ const ELEMENTS: usize = 128;
 /// 16 000 cells the object arms do.
 const ARRAYS: usize = PARENTS * CELLS / ELEMENTS;
 
-/// The nine arms, in the order they are built and run.
-const ARMS: usize = 9;
+/// The ten arms, in the order they are built and run.
+const ARMS: usize = 10;
 
 /// A multiplier coprime with the population sizes here, used to visit the
 /// **release** populations in an order the prefetcher cannot follow. The
@@ -264,6 +264,15 @@ unsafe fn drop_children(l: &Leaves) {
         unsafe { drop_ref(MemoryCategory::GcHeap, l.children[i]) };
     }
 }
+/// Arm CLOCK: one monotonic clock read per item, over the same count the
+/// sever arms use. Not part of the drain — this crate reads no clock in
+/// production — but the number that decides whether ruling 3's time
+/// ceiling can be checked per cell or has to be charged against a budget.
+fn read_clock(n: usize) {
+    for _ in 0..black_box(n) {
+        black_box(Instant::now());
+    }
+}
 
 /// Median, minimum and maximum of a sample, in nanoseconds.
 fn reduce(samples: &mut [f64]) -> (f64, f64, f64) {
@@ -351,7 +360,8 @@ fn measure_sever_and_release() {
                 5 => unsafe { drop_children(&r1_arms[round]) },
                 6 => unsafe { drop_children(&r2_arms[round]) },
                 7 => unsafe { stride_arrays(&aa_arms[round]) },
-                _ => unsafe { sever_arrays(&ca_arms[round], &mut ca_displaced[round]) },
+                8 => unsafe { sever_arrays(&ca_arms[round], &mut ca_displaced[round]) },
+                _ => read_clock(PARENTS * CELLS),
             }
 
             let elapsed = start.elapsed().as_nanos() as f64;
@@ -371,10 +381,11 @@ fn measure_sever_and_release() {
         "R2_die",
         "AA_stride_array",
         "CA_sever_array",
+        "CLOCK_read",
     ];
     let entries = (ARRAYS * ELEMENTS) as f64;
     let per = [
-        cells, cells, cells, cells, children, children, children, entries, entries,
+        cells, cells, cells, cells, children, children, children, entries, entries, cells,
     ];
     let mut median = [0.0f64; ARMS];
     for arm in 0..ARMS {
@@ -392,7 +403,7 @@ fn measure_sever_and_release() {
 
     println!(
         "sever_release null_pair={:.3} record={:.3} empty={:.3} pair={:.3} \
-         counting={:.3} teardown={:.3} array_pair={:.3} ns",
+         counting={:.3} teardown={:.3} array_pair={:.3} clock={:.3} ns",
         (median[1] - median[0]).abs(),
         median[2] - median[0],
         median[3] - median[2],
@@ -400,6 +411,7 @@ fn measure_sever_and_release() {
         median[5] - median[4],
         median[6] - median[5],
         median[8] - median[7],
+        median[9],
     );
 
     // Give it all back. A leaked population fails other tests rather than
