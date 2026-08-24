@@ -451,6 +451,64 @@ share of such entities in a real heap, which nothing here measures and which
 no PHP corpus has been scanned for. B1 stays open on the share; its rate is
 answered.
 
+## 2026-08-24 — a severed cell is 2.3 ns and a released child 1.0 ns: the drain's borrowed price was an order too high
+
+Node D3 of `rfc/model/gc/walk/questions.md`.
+`walk::tests::what_a_sever_and_a_release_cost::measure_sever_and_release`,
+`taskset -c 3 cargo test --release --lib -- --ignored measure_sever_and_release --nocapture`,
+11th Gen Intel i7-11700K, L2 4 MiB, L3 16 MiB, WSL2. Six runs, 15 timed
+rounds per arm after a discarded warm-up round, median of the rounds
+within a run and the six run medians below.
+
+D3 priced the sever and the release at B4's 43-47 ns, which measures the
+walk **reading** a cell. Both operations are far cheaper than the cell
+read they were charged.
+
+| difference | what it is | six runs, ns | middle |
+|---|---|---|---|
+| C − A | sever one cell, object body | 2.13 2.13 2.28 2.38 2.88 5.28 | **2.3** |
+| CA − AA | sever one cell, array storage | 1.81 2.26 2.27 2.34 2.47 5.14 | **2.3** |
+| R1 − R0 | release one child, no death | 0.48 0.89 0.98 1.04 1.19 1.35 | **1.0** |
+| R2 − R1 | the teardown when it does die | 11.9 12.4 12.9 13.0 13.7 16.6 | **13.0** |
+| A2 − A | the null pair | 0.01 0.03 0.03 0.17 0.42 0.48 | **0.10** |
+
+**The arms.** A strides an object's body with
+`for_each_body_cell::<PlainCells>` and reads the child; B strides and
+records it into a pre-reserved vector; C is `sever_cells`, which strides,
+empties and records. AA and CA are the same read-only and production pair
+over arrays of 128 entries, whose sever goes through the table rather than
+through `empty_cell`. R0 reads each child's flags word, R1 drops a child
+holding one spare reference, R2 drops a child holding only the entry's.
+Every arm gets its own population, all built before the first timed round,
+because a sever is destructive and one-shot.
+
+**The store that empties a cell is not resolvable.** C − B reads 0.31,
+-0.73, -0.42, 0.30, 0.93 and 0.12 — two of six negative, all inside the
+null pair. The whole 2.3 ns is the record: the cell was loaded by the
+stride an instant earlier, so its store hits L1 and the store buffer, while
+the push writes into a vector that grows to 16 000 entries. The real drain
+pays more here than this probe does, its `displaced` being a fresh
+`Vec::new()` per component; that regrowth is a per-component term and this
+figure is per cell.
+
+**An array cell and an object cell sever at the same price**, 2.3 against
+2.3 with a 0.10 null pair. B4 found the same for the walk's read of a cell,
+and the sever now agrees with it through a different code path.
+
+**What it decides.** A raw sever of a million-cell array is **2.3 ms**, not
+the 43-47 ms D3 carried. What a millisecond buys depends on whether the
+displaced children die, which the old single figure hid: 3.3 ns a cell when
+they do not, so about **300 000 cells**; 15.3 ns a cell when each one dies
+at an empty leaf class, so about **65 000 cells**. Both replace "about
+twenty thousand cells to a slice".
+
+**What it does not decide.** The teardown figure is a floor — an empty leaf
+with no destructor, no children and no outside cells; a class with any of
+the three pays more, and D3's blocking measurement is the distribution over
+a real heap rather than this floor. Run 2 of the six is contaminated (5.28
+and 5.14 against five values between 1.8 and 2.9) and is kept in the table
+rather than dropped.
+
 ## 2026-08-22 — the counted pair against its working set, corrected: 2.9 ns hot, 33 ns at a million entities
 
 S5.4b of `rfc/dev/PLAN.md`, second measurement.

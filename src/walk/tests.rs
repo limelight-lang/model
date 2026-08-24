@@ -33,6 +33,7 @@ unsafe fn tie(a: *mut Object, offset: u32, b: *mut Object) {
 }
 
 mod the_children_a_kind_has;
+mod what_a_sever_and_a_release_cost;
 mod what_roots_a_component;
 mod what_the_collection_reclaims;
 mod what_the_drain_meets_when_it_arrives;
