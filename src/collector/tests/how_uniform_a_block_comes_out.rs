@@ -134,7 +134,9 @@ unsafe fn classify() -> Uniformity {
 #[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
 fn measure_block_uniformity() {
     let _g = crate::memory::block_pool::test_guard();
-    let cls = ClassBuilder::new("BlockUniformity").prop("child", true).build();
+    let cls = ClassBuilder::new("BlockUniformity")
+        .prop("child", true)
+        .build();
 
     for (objects, strings) in RATIOS {
         let mut arena = Arena::new();
@@ -151,7 +153,8 @@ fn measure_block_uniformity() {
                 // Fixed-length bytes so every string takes the same size
                 // class; distinct so interning cannot fold the population.
                 let bytes = format!("{i:06}");
-                let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, bytes.as_bytes()) };
+                let s =
+                    unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, bytes.as_bytes()) };
                 s as *mut RcHeader
             };
             assert!(!entity.is_null(), "the probe's population must allocate");
@@ -206,7 +209,8 @@ fn measure_block_uniformity() {
         for i in 0..POPULATION {
             let entity = if (i / run) % 2 == 0 {
                 let bytes = format!("{i:06}");
-                let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, bytes.as_bytes()) };
+                let s =
+                    unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, bytes.as_bytes()) };
                 s as *mut RcHeader
             } else {
                 let o = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };

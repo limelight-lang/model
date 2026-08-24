@@ -310,7 +310,9 @@ fn measure_young_free_exemption() {
                     // miss this.
                     Victim::Oldest => assert_eq!(
                         exempt,
-                        (steps + walk_interval).saturating_sub(POPULATION).min(steps)
+                        (steps + walk_interval)
+                            .saturating_sub(POPULATION)
+                            .min(steps)
                     ),
                     Victim::Uniform => assert!(
                         (share - prediction).abs() < 0.03,

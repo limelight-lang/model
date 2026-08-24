@@ -149,7 +149,11 @@ pub(super) unsafe fn children(ctx: *mut LLContext, class: *const Class, n: usize
 ///
 /// # Safety
 /// `ctx` is a mounted context and `class` outlives every entity built here.
-pub(super) unsafe fn owners(ctx: *mut LLContext, class: *const Class, n: usize) -> Vec<*mut Object> {
+pub(super) unsafe fn owners(
+    ctx: *mut LLContext,
+    class: *const Class,
+    n: usize,
+) -> Vec<*mut Object> {
     (0..n)
         .map(|_| unsafe { new_constructed(ctx, class, MemoryCategory::GcHeap) })
         .collect()
@@ -304,11 +308,7 @@ unsafe fn arms_at(
 /// # Safety
 /// Every argument is live; no slot outside these populations names any of
 /// them.
-unsafe fn teardown(
-    counted_owners: &[*mut Object],
-    plain_owners: &[*mut Object],
-    values: &[Value],
-) {
+unsafe fn teardown(counted_owners: &[*mut Object], plain_owners: &[*mut Object], values: &[Value]) {
     for owner in counted_owners {
         unsafe {
             let slot = Object::prop_at(*owner, 16);
@@ -372,13 +372,8 @@ fn measure_cold_pair_cost() {
             let values = children(context_ptr, leaf, set);
             prefill(arena_ptr, &counted_owners, &values);
 
-            let (counted, plain) = arms_at(
-                arena_ptr,
-                &counted_owners,
-                &plain_owners,
-                &values,
-                set - 1,
-            );
+            let (counted, plain) =
+                arms_at(arena_ptr, &counted_owners, &plain_owners, &values, set - 1);
 
             if report {
                 println!(

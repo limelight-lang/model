@@ -261,7 +261,9 @@ fn medians_for(
 #[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
 fn measure_array_row_cost() {
     let _g = crate::memory::block_pool::test_guard();
-    let cls = ClassBuilder::new("ArrayRowCost").prop("child", true).build();
+    let cls = ClassBuilder::new("ArrayRowCost")
+        .prop("child", true)
+        .build();
     // The object arms' class: as many boxed properties as a filled array
     // has entries, so the two containers hold the same number of cells.
     let mut builder = ClassBuilder::new("ArrayRowCostWide");
@@ -276,7 +278,8 @@ fn measure_array_row_cost() {
     // One entity named by every cell of every filled array: the arm adds
     // edges to trace without adding rows to enrol, which is what makes
     // its slope a per-cell figure rather than a population figure.
-    let element = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) } as *mut RcHeader;
+    let element =
+        unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) } as *mut RcHeader;
     unsafe { ll_retain(element) };
 
     let leaf = medians_for(Row::Leaf, &mut ctx, cls, wide, element);

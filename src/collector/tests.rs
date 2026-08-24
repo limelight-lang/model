@@ -51,10 +51,10 @@ fn stepped_epoch() -> EpochStats {
 mod a_ring_through_a_string_keyed_array;
 mod an_edge_the_walk_may_not_record;
 mod cells_a_class_keeps_outside_itself;
-mod the_epoch_as_a_whole;
 mod how_uniform_a_block_comes_out;
+mod the_epoch_as_a_whole;
+mod the_three_way_judgement;
 mod what_a_leaf_row_costs_the_walk;
 mod what_an_array_row_costs_the_walk;
-mod the_three_way_judgement;
 mod what_the_snapshot_reaches;
 mod what_the_young_free_exemption_removes;
