@@ -15,22 +15,28 @@
 //! only reads the child; arm B strides and records it; arm C is
 //! `sever_cells`, which strides, empties and records. B − A is the
 //! record, C − B is the empty, and C − A is the pair the second Sage
-//! verdict made splittable at cell granularity. All three run the same
-//! dispatch over the same class, so their difference is the operation
-//! and nothing else.
+//! verdict made splittable at cell granularity. All three stride the same
+//! class through the same walker — but A and B receive the class pointer
+//! hoisted out of the loop while C loads it per entity off the object
+//! header and then tests `outside_cells`, so C − B carries a per-parent
+//! dispatch term amortised over eight cells beside the store it isolates.
 //!
 //! **The release, in two steps.** Arm R0 reads each child's flags word,
 //! which is the scattered memory traffic a drop pays before it decides
 //! anything; arm R1 drops a child holding one spare reference, so the
 //! count falls and nothing dies; arm R2 drops a child holding only the
-//! cell's reference, so the teardown runs. R1 − R0 is the counting alone
-//! and R2 − R1 is the teardown of an empty leaf, which is a floor: a
-//! class with a destructor or with children of its own pays more.
+//! creation reference, so the teardown runs — the release children are
+//! reachable from a vector of the probe's own and sit in no cell and no
+//! entry. R1 − R0 is the counting alone and R2 − R1 is the teardown of an
+//! empty leaf **on top of** the counting, which is a floor: a class with a
+//! destructor or with children of its own pays more, and a child that dies
+//! costs R1 − R0 plus R2 − R1 rather than the second alone.
 //!
 //! **The null pair is arm A against a second, identically built
-//! population.** Its difference is zero by construction, so whatever it
-//! reads is this probe's error bar, and no smaller difference above it
-//! is worth reading.
+//! population.** Its difference is zero by construction, so what it reads
+//! bounds the two read-only object arms. It bounds nothing else: the array
+//! arms and the three release arms have no identically built twin, and no
+//! error bar is available for their differences.
 //!
 //! ## Why every round gets its own population
 //!
@@ -60,9 +66,9 @@ use crate::refcount::{header_flags, ll_retain};
 const CELLS: usize = 8;
 
 /// Parents per timed round: 2 000 × 8 = 16 000 cells, which at a few
-/// nanoseconds a cell is over a hundred microseconds — well clear of the
-/// clock's granularity and short enough that 16 rounds of seven arms fit
-/// in memory at once.
+/// nanoseconds a cell is tens of microseconds — well clear of the clock's
+/// granularity and short enough that 16 rounds of nine arms fit in memory
+/// at once.
 const PARENTS: usize = 2_000;
 
 /// Children per release round, matched to the sever round's cell count
@@ -79,16 +85,18 @@ const ROUNDS: usize = 15;
 const ELEMENTS: usize = 128;
 
 /// Arrays per timed round, chosen so the array arms stride the same
-/// 32 000 cells the object arms do.
+/// 16 000 cells the object arms do.
 const ARRAYS: usize = PARENTS * CELLS / ELEMENTS;
 
 /// The nine arms, in the order they are built and run.
 const ARMS: usize = 9;
 
-/// A multiplier coprime with the population sizes here, used to visit a
-/// population in an order the prefetcher cannot follow. The drain reaches
-/// its children through a component rather than through a vector, so a
-/// sequential sweep would measure a shape the drain never has.
+/// A multiplier coprime with the population sizes here, used to visit the
+/// **release** populations in an order the prefetcher cannot follow. The
+/// drain reaches its children through a component rather than through a
+/// vector, so a sequential sweep would measure a shape it never has. The
+/// sever and array arms are not scattered — they sweep their parents in
+/// allocation order, which makes their figure a floor.
 const SCATTER: usize = 2_654_435_761;
 
 /// One round's worth of parents, each holding [`CELLS`] children.
@@ -197,8 +205,10 @@ unsafe fn stride_arrays(a: &Arrays) {
     }
 }
 
-/// Arm CA: the production sever over an array, which goes through the
-/// table rather than through `empty_cell`.
+/// Arm CA: the production sever over an array. `ll_array_new` builds a
+/// mixed vector and `testing::push` fills one, so this reaches
+/// `Vector::sever_entries`; a table-backed array is a different path and
+/// this probe does not measure it.
 unsafe fn sever_arrays(a: &Arrays, displaced: &mut Vec<*mut RcHeader>) {
     const ARRAY: u32 = crate::refcount::EntityKind::Array as u32;
     for i in 0..black_box(a.arrays.len()) {

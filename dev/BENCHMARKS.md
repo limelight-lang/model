@@ -451,7 +451,7 @@ share of such entities in a real heap, which nothing here measures and which
 no PHP corpus has been scanned for. B1 stays open on the share; its rate is
 answered.
 
-## 2026-08-24 — what the collector waits for: three round trips, each the mutator's checkpoint interval, over a 6 µs drain floor
+## 2026-08-24 — what the collector waits for: three round trips bounded by the mutator's checkpoint interval, over a 6 µs drain floor
 
 Node C4 of `rfc/model/gc/walk/questions.md`, whose currency a review round
 corrected: rung 2 costs epoch **duration**, and what it spends it on is the
@@ -470,14 +470,18 @@ objects and one two-object ring condemned per epoch.
 | 10 000 | ~104 | 8.0 | 9.1 | 9.7 |
 | 100 000 | 13 | 128 | 76 | 131 |
 
-Each row is the median of the two runs, which agree within a microsecond
-everywhere but the last, where they differ by 3 %.
+Each row is the median of the two runs. They agree to a tenth of a
+microsecond in the three ack columns that read 0.1, to a microsecond in the
+rest, and to 3 % in the last row, where 3 % is about 4 µs.
 
-**The two acks scale with the checkpoint interval and nothing else**, which
-is what the design says and what nobody had shown: a checkpoint attends
-when the flag is up, so the collector waits for the mutator to arrive. At
-thirteen checkpoints an epoch the three waits total about 335 µs; at a
-thousand they total nine.
+**Both acks are bounded by the checkpoint interval and neither is only
+that**, which is the half of it nobody had shown: a checkpoint attends when
+the flag is up, so the collector waits for the mutator to arrive — but at
+about 1 180 checkpoints an epoch the open ack reads 1.3 µs and the condemn ack
+0.1, thirteen times apart at one and the same interval, because where the
+mutator sits in its loop when each flag goes up is not the same. What the
+interval sets is the bound. At thirteen checkpoints an epoch the three waits
+total about 335 µs; at 1 180 they total about eight.
 
 **The drain has a floor the acks do not.** It never falls under about 6 µs,
 even against a mutator that checkpoints continuously, because after the
@@ -515,7 +519,17 @@ after a discarded warm-up, median of the epochs; slope over four points.
 address, one relaxed 64-bit header load, and three tests over the word —
 occupancy, the epoch byte, the memory category. The census store and the
 four row pushes are all below the third test, so an entity that fails it
-pays the list above and nothing else.
+pays the list above and nothing else **inside `walk_rows`**.
+
+**The probe times more than `walk_rows`, and the excess has the same sign.**
+Its clock spans a whole epoch, and `Epoch::snapshot` allocates and fills
+`slot_rows` at four bytes per snapshotted **slot** — 1.6 MB more at 400 000
+extra entities, first-touched inside the timed window — beside the extra
+per-block work of `snapshot_entity_blocks`. That term scales with the probe's
+own free variable, so the slope below is the `walk_rows` residue **plus** a
+per-slot snapshot term and is an upper bound on the residue rather than the
+residue itself. Which is the honest reading for B7's purpose: a block skip
+removes the snapshot's slots as well.
 
 **The population that isolates it.** A `LongLived` entity allocates from
 the same entity blocks a `GcHeap` one does and the walk skips it at that
@@ -535,11 +549,10 @@ thing: 3.07, 5.39, 2.58, 4.84, 4.80 and 5.46 over the last six runs,
 median 4.8.
 
 **The instrument is at its limit here and the figure carries that.** The
-effect is about a tenth of B1's, taken against the same 8 ms baseline, so
-400 000 skipped entities move the epoch by 1.2 to 2.2 ms — a fifth of it —
-and the residual of the four-point line is 0.3 to 0.7 ms rather than B1's
-0.4 to 2.2 over a ten-times-larger slope. Read 4 ns as an order, not as a
-point.
+effect is about a tenth of B1's, taken against the same 8 ms baseline: the
+nine slopes put 400 000 skipped entities at 0.46 to 2.22 ms of extra epoch,
+and the residual of the four-point line is 0.3 to 0.7 ms. Read 4 ns as an
+order, not as a point.
 
 **What it decides.** B7's quantity, which nobody had: a skipped **block**
 removes about 4 ns times its slot count, so **about 8 µs per block** at size
@@ -566,10 +579,12 @@ prefetch costs rather than pays.**
 | 64 | -0.72 -0.87 -0.89 -0.89 -0.87 |
 | 4 096 | -0.56 -0.73 -0.55 -0.73 -1.30 |
 
-Negative is the prefetched arm losing. The figure is 0.7-1.0 ns across
-three runs, five distances and three working sets: it is the two address
-computations and two prefetch instructions per store, and neither their
-count nor their cost depends on how far ahead they are issued. Distance 1
+Negative is the prefetched arm losing. The figure spans 0.55 to 1.30 ns
+across three runs, five distances and three working sets, ten of the fifteen
+readings between 0.7 and 1.0: it is the three address computations and two
+prefetch instructions per store the 2026-08-22 entry already counted, and
+neither their number nor their cost depends on how far ahead they are
+issued. Distance 1
 prefetches for the very next store and cannot hide a miss; that it reads
 the same as distance 128 is the result.
 
@@ -594,7 +609,7 @@ prefetch half now has a measured answer for the cache-resident case (the
 prefetch costs about 0.9 ns and the window is not the free variable) and a
 named instrument defect for the case that matters.
 
-## 2026-08-24 — a severed cell is 2.3 ns and a released child 1.0 ns: the drain's borrowed price was an order too high
+## 2026-08-24 — a severed cell is 2.3 ns and a released child 1.0 ns, or 14 with its teardown: the drain's borrowed price was three to fourteen times over
 
 Node D3 of `rfc/model/gc/walk/questions.md`.
 `walk::tests::what_a_sever_and_a_release_cost::measure_sever_and_release`,
@@ -618,32 +633,55 @@ read they were charged.
 **The arms.** A strides an object's body with
 `for_each_body_cell::<PlainCells>` and reads the child; B strides and
 records it into a pre-reserved vector; C is `sever_cells`, which strides,
-empties and records. AA and CA are the same read-only and production pair
-over arrays of 128 entries, whose sever goes through the table rather than
-through `empty_cell`. R0 reads each child's flags word, R1 drops a child
-holding one spare reference, R2 drops a child holding only the entry's.
+empties and records. AA and CA are the read-only and production pair
+over arrays of 128 entries. `ll_array_new` builds a **mixed vector**, and
+`array::testing::push` fills one, so the sever reaches `Vector::sever_entries`
+and `Table::sever_entries` is never entered — a table-backed array is a
+different path and is not measured here. The two array arms are also not
+matched as exactly as the object arms: the control goes through `trace_cells`,
+which validates the storage head before striding, and the production sever
+reads the head's tag and count directly, so a per-array term of unknown sign
+sits in their difference. R0 reads each child's flags word, R1 drops a child
+holding one spare reference, R2 drops a child holding only its creation
+reference; the release children are reachable from the probe's own vector and
+sit in no entry and no cell.
 Every arm gets its own population, all built before the first timed round,
-because a sever is destructive and one-shot.
+because a sever is destructive and one-shot. **Two asymmetries the difference
+carries.** A and B receive the class pointer hoisted out of the loop while C
+loads it per entity off the object header and then tests `outside_cells`, so
+C − B holds a per-parent dispatch term amortised over eight cells. And the
+scattering cursor is applied to the release populations only: the sever and
+array arms sweep their parents in allocation order, which is the friendlier
+shape and makes 2.3 a floor for a heap the drain reaches through a component.
 
-**The store that empties a cell is not resolvable.** C − B reads 0.31,
--0.73, -0.42, 0.30, 0.93 and 0.12 — two of six negative, all inside the
-null pair. The whole 2.3 ns is the record: the cell was loaded by the
-stride an instant earlier, so its store hits L1 and the store buffer, while
-the push writes into a vector that grows to 16 000 entries. The real drain
+**The store that empties a cell is not separable from the push, and the
+error bar does not cover the gap.** C − B reads 0.31, -0.73, -0.42, 0.30,
+0.93 and 0.12 — two of six negative, and two of six outside the null pair's
+widest reading of 0.48. So the empty is under about 0.9 ns and may be zero,
+which is a third of the 2.3 the pair costs, and no tighter statement is
+available: the stride loaded the cell an instant earlier, so its store hits
+L1, while the push writes into a vector that grows to 16 000 entries. **The
+null pair bounds the object read-only arms and nothing else** — arms A and A2
+are the only identically built pair in the probe, and the array and release
+arms have no second arm of their own. The real drain
 pays more here than this probe does, its `displaced` being a fresh
 `Vec::new()` per component; that regrowth is a per-component term and this
 figure is per cell.
 
-**An array cell and an object cell sever at the same price**, 2.3 against
-2.3 with a 0.10 null pair. B4 found the same for the walk's read of a cell,
-and the sever now agrees with it through a different code path.
+**An array cell and an object cell sever at about the same price**, 2.3
+against 2.3 — but no null pair bounds that agreement, the array arms having
+no identically built twin, and the control's head validation sits inside their
+difference. B4 found the same for the walk's read of a cell, and the sever
+agrees with it through a different code path to whatever precision this probe
+has, which is not stated.
 
 **What it decides.** A raw sever of a million-cell array is **2.3 ms**, not
 the 43-47 ms D3 carried. What a millisecond buys depends on whether the
-displaced children die, which the old single figure hid: 3.3 ns a cell when
-they do not, so about **300 000 cells**; 15.3 ns a cell when each one dies
-at an empty leaf class, so about **65 000 cells**. Both replace "about
-twenty thousand cells to a slice".
+displaced children die, which the old single figure hid. A surviving child
+costs the sever plus the count-down, 2.3 + 1.0 = **3.3 ns**, so about
+**300 000 cells**. A dying one costs the sever, the count-down and the
+teardown on top of it, 2.3 + 1.0 + 13.0 = **16.3 ns**, so about **61 000
+cells**. Both replace the node's "roughly twenty thousand cells to a slice".
 
 **What it does not decide.** The teardown figure is a floor — an empty leaf
 with no destructor, no children and no outside cells; a class with any of
