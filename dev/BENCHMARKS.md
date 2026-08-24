@@ -451,6 +451,57 @@ share of such entities in a real heap, which nothing here measures and which
 no PHP corpus has been scanned for. B1 stays open on the share; its rate is
 answered.
 
+## 2026-08-24 — what the collector waits for: three round trips, each the mutator's checkpoint interval, over a 6 µs drain floor
+
+Node C4 of `rfc/model/gc/walk/questions.md`, whose currency a review round
+corrected: rung 2 costs epoch **duration**, and what it spends it on is the
+collector waiting for a handshake ack. Nothing timed that wait before.
+`collector::tests::what_the_collector_waits_for::measure_collector_wait`,
+`taskset -c 2,3 cargo test --release --lib -- --ignored measure_collector_wait --nocapture`,
+11th Gen Intel i7-11700K, WSL2. Two runs, seven timed epochs per point
+after a discarded warm-up, median of the epochs. 20 000 live filler
+objects and one two-object ring condemned per epoch.
+
+| mutator spin between checkpoints | checkpoints per epoch | open ack, µs | condemn ack, µs | drain, µs |
+|---|---|---|---|---|
+| 0 | ~365 000 | 0.1 | 0.1 | 6.0 |
+| 100 | ~16 000 | 0.1 | 0.1 | 6.8 |
+| 1 000 | ~1 180 | 1.3 | 0.1 | 6.8 |
+| 10 000 | ~104 | 8.0 | 9.1 | 9.7 |
+| 100 000 | 13 | 128 | 76 | 131 |
+
+Each row is the median of the two runs, which agree within a microsecond
+everywhere but the last, where they differ by 3 %.
+
+**The two acks scale with the checkpoint interval and nothing else**, which
+is what the design says and what nobody had shown: a checkpoint attends
+when the flag is up, so the collector waits for the mutator to arrive. At
+thirteen checkpoints an epoch the three waits total about 335 µs; at a
+thousand they total nine.
+
+**The drain has a floor the acks do not.** It never falls under about 6 µs,
+even against a mutator that checkpoints continuously, because after the
+verdict is posted the mutator still has to pick the message up, run the
+drain and let `outstanding_verdicts` fall. That floor is for one
+two-object component; what a real component costs is the sever and release
+prices measured the same day, and this figure is the round trip around
+them.
+
+**What it decides.** Rung 2's per-round price is three handshake round
+trips plus a drain floor, in the currency the node demanded. What it does
+not decide is whether the rung earns its keep: that needs the rung to
+exist — the ladder is unbuilt (`rfc/model/gc/rc-walk.md`, "When the
+collector runs") — and needs a workload with a real checkpoint interval
+rather than this sweep's synthetic one.
+
+**A defect in the first version of this probe, recorded because the shape
+is easy to get wrong.** It made the test's own thread the collector and
+spawned the mutator. Two of the three waits then never ran at all: with
+nothing condemned the sequence returns early, and had anything been
+condemned the drain would have had to be reached by the very thread
+spinning on it. The timer also caught the spawn rather than the ack, and
+reported a flat 30-70 µs at every point of the sweep.
+
 ## 2026-08-24 — a skipped entity still costs the walk about 4 ns, a tenth of the row it does not get
 
 Node B7 of `rfc/model/gc/walk/questions.md`, which asks what a block skip
