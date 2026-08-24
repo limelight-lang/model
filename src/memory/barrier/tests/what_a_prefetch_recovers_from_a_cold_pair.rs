@@ -54,12 +54,12 @@ use super::what_a_counted_pair_costs_when_headers_miss::{
 /// Stores between a prefetch and the store it was issued for, swept.
 ///
 /// Far enough that a miss has time to return, near enough that the line is
-/// not evicted before use. Eight was the only value a first version tried,
-/// on the usual starting point for a scattered access pattern; node A5 of
-/// `rfc/model/gc/walk/questions.md` asked for the sweep, and this is it.
-/// The lower bound is one — a prefetch for the very next store, which
-/// cannot hide a miss — so a monotone rise from it says the window is the
-/// lever and a flat line says it is not.
+/// not evicted before use. Eight is the usual starting point for a scattered
+/// access pattern and carries no other claim here; node A5 of
+/// `rfc/model/gc/walk/questions.md` asks for the sweep. The lower bound is
+/// one — a prefetch for the very next store, which cannot hide a miss — so a
+/// monotone rise from it says the window is the lever and a flat line says it
+/// is not.
 const DISTANCES: [usize; 5] = [1, 4, 8, 32, 128];
 
 /// Issue a read prefetch for the header at the front of `entity`.

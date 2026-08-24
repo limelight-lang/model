@@ -2,11 +2,9 @@
 //! one released child cost, taken directly rather than borrowed.
 //!
 //! Node D3 of `rfc/model/gc/walk/questions.md` prices the drain's batch
-//! ceiling in cells, and until now it spent node B4's 43-47 ns on the
-//! sever and on the release. B4 measured neither: it measured the walk
-//! *reading* a cell, and the borrowing is recorded in that node as an
-//! error already corrected once. This probe takes the two prices the
-//! ceiling actually needs.
+//! ceiling in cells, and the per-cell figure it had came from node B4,
+//! which measures the walk *reading* a cell and neither severing nor
+//! releasing one. This probe takes the two prices the ceiling needs.
 //!
 //! ## What is measured, and against what
 //!
