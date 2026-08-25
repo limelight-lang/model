@@ -12,7 +12,7 @@ The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate; the GC-horizon case book runs
 there.
 
-Updated: 2026-08-18 · Active: S28 — the sections below it are the backlog
+Updated: 2026-08-25 · Active: S28 — the sections below it are the backlog; S29 files two GC defects for the rc-cycle cleanup
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
@@ -131,6 +131,30 @@ Critic 2026-08-18 round 2, on the fixes: the 28-byte budget forgot the
         and was reverted. The `storage_versions` doc moves with the
         encoding.
       tier: T2 · role: Critic
+
+## S29 — Two GC defects, filed 2026-08-25 to be decided at the rc-cycle cleanup
+
+Found reading the crate for the `rfc` stage S6 on 2026-08-17; Edmond ruled
+2026-08-25 they go to the plan rather than being fixed on the spot, because
+the `rc-walk` deletion ruling (`rfc` `dev/DECISIONS.md`, twelfth entry of
+2026-08-25) may remove the code either lives in. At the cleanup each step is
+decided fix-or-fall; a fix, if the code survives, starts with the failing
+reproduction.
+
+- [ ] S29.1 A cyclically dead `Lazy` never runs `__destruct` under
+      `rc-trace`: `Lazy` is in `CANDIDATE_KINDS` but the collect stage's
+      destructor gate tests `is_object`
+      done: either the gate admits every kind `CANDIDATE_KINDS` admits,
+        proven by a red-first test with a dying `Lazy` cycle, or the code
+        is deleted by the rc-cycle replacement and the step closes with it
+      tier: T1 · role: —
+- [ ] S29.2 `gc.rs` `dispose()` at thread exit leaves the buffered bit
+      set, so a live buffered entity whose thread dies leaks its cycle
+      done: either exit hands the buffer over (or clears the bit into a
+        re-offer path), proven by a red-first test with a thread dying
+        between buffering and collection, or the code is deleted by the
+        rc-cycle replacement and the step closes with it
+      tier: T1 · role: —
 
 ## Then: arrays as a performance problem
 

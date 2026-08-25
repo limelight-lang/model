@@ -1949,7 +1949,12 @@ and/or) and store the full word back — the protocol's
 turned a one-instruction decrement into a load-modify-store chain.
 Notable: on steady churn rc-walk does **not** win — rc-trace's
 candidate machinery after the first buffering is a single masked test
-(`testl` + skip). Decomposition of the 2.7 ns lifecycle tax:
+(`testl` + skip). [Correction 2026-08-25: that figure predates the
+kind-set gate of 2026-08-07 (`dev/DECISIONS.md`, "the candidate gate is
+a set of kinds"); since then the tail is three tests — memory category,
+the buffered bit, the kind-set shift (`refcount.rs`, `ll_release`) —
+and the decomposition below describes the old shape.]
+Decomposition of the 2.7 ns lifecycle tax:
 ~1.1 ns checkpoint test + ~0.5 ns word-protocol on the two header ops
 + ~1 ns spread over factory/free (kind release-store, parking branch).
 Optimisation lead, unmeasured: narrow relaxed byte ops (4-byte
