@@ -690,9 +690,12 @@ ceiling's mechanism was chosen. A monotonic read is 13.2 ns on this box and
 the steadiest figure in the probe — three runs inside 0.6 ns. Against 2.3 ns
 a severed cell and 1.0 a released child, reading it per cell would multiply
 the drain's mechanical cost by six to thirteen, and reading it per
-mechanical teardown would roughly double that unit. Read once per slice, at
-a millisecond budget, it is one part in seventy-seven thousand. That spread
-is what makes the ceiling a charged budget between reads rather than a check.
+mechanical teardown would roughly double that unit. Read at a slice's resume
+and at its yield, on a millisecond budget, the pair is one part in
+thirty-eight thousand. That spread is what makes the ceiling a charged budget
+between reads rather than a clock read per unit. (A first derivation said one
+read per slice and one part in seventy-seven thousand: the read count is the
+2026-08-25 correction, and the figure was 75 758 either way.)
 This crate reads no clock in production; the arm exists to price the choice.
 
 **What it does not decide.** The teardown figure is a floor — an empty leaf
