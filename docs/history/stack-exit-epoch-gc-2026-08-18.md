@@ -2,7 +2,7 @@
 >
 > Superseded 2026-08-18, the same day it was recorded, by
 > `dev/design/proof-horizon.md`. The five-axis review that decided the
-> supersession is `dev/STACK_EXIT_EPOCH_GC_REVIEW.md`: a critical
+> supersession is `stack-exit-epoch-gc-review-2026-08-18.md` beside this file: a critical
 > untouch/retirement race, a load path that dominates the RC pair it
 > replaces, and the loss of deterministic destruction. What survives —
 > the anchored borrow and payment at proof boundaries, the author's
