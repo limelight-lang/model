@@ -20,7 +20,16 @@ fn the_hash_is_computed_once_on_demand_and_never_zero() {
     assert_ne!(first, 0, "zero is the sentinel, never a value");
     assert_eq!(unsafe { (*s).hash }, first, "cached in the entity");
 
-    // Poison the bytes: a second call that recomputed would notice.
+    // Poison the bytes: a second call that recomputed would notice. The
+    // write lands at `size_of::<LLString>()`, which is the first byte
+    // only in the inline layout — in the other it is the `data` pointer —
+    // so the layout this assumes is asserted rather than assumed.
+    assert_eq!(
+        unsafe { crate::refcount::header_flags(s as *const RcHeader) }
+            & crate::refcount::ENTITY_KIND_MASK,
+        EntityKind::String.to_flags(),
+        "the poisoning below writes at an inline string's first byte"
+    );
     unsafe { (s.add(1) as *mut u8).write(b'L') };
     assert_eq!(unsafe { LLString::hash(s) }, first, "read from the cache");
 

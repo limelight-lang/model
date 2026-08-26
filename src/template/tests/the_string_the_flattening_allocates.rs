@@ -25,10 +25,10 @@ fn a_flattened_result_past_the_slot_limit_is_out_of_line() {
         let t = unsafe { ll_template_new(ctx, cls, &*shape, &held, MemoryCategory::GcHeap) };
         let out = unsafe { flatten(ctx, t, MemoryCategory::GcHeap) };
         assert!(!out.is_null());
-        assert_ne!(
-            unsafe { crate::refcount::header_flags(out as *const RcHeader) }
-                & crate::refcount::STRING_OUT_OF_LINE,
-            0,
+        assert!(
+            crate::string::bytes_are_out_of_line(unsafe {
+                crate::refcount::header_flags(out as *const RcHeader)
+            }),
             "the assembled result did not fit one slot"
         );
 

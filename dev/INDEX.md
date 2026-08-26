@@ -43,9 +43,11 @@ versions live in `docs/history/`, marked at the top.
   unspecified — is `dev/DECISIONS.md`, 2026-08-03. **Rule for anything
   new on that path:** no `thread_local!` it can reach may have drop
   glue.
-- Strings: `src/string.rs` — both layouts of the string entity (kind 8),
-  told apart by `STRING_OUT_OF_LINE` (bit 15, string-scoped) rather than
-  by `COW`, which means only copy-on-write.
+- Strings: `src/string.rs` — the two layouts of the string entity, told
+  apart by their kind codes, 8 inline and 9 out of line
+  (`string::bytes_are_out_of_line`), rather than by `COW`, which means
+  only copy-on-write. Both answer `refcount::is_string`, one mask test,
+  because the codes differ in the kind field's low bit alone.
   Inline: `RcHeader | len (u32) | hash (u64) | bytes`, one
   allocation, fixed size, `ll_string_new`. Out of line:
   `… | capacity (u32) | … | data`, payload through the memory manager's

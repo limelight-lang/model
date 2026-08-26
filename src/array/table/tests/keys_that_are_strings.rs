@@ -49,10 +49,10 @@ fn an_oversize_string_key_is_matched_by_content() {
     let mut m = t();
     let content = vec![b'k'; crate::memory::heap::MAX_SMALL * 2];
     let stored = mk(&content);
-    assert_ne!(
-        unsafe { crate::refcount::header_flags(stored as *const crate::refcount::RcHeader) }
-            & crate::refcount::STRING_OUT_OF_LINE,
-        0,
+    assert!(
+        crate::string::bytes_are_out_of_line(unsafe {
+            crate::refcount::header_flags(stored as *const crate::refcount::RcHeader)
+        }),
         "the key is out of line, or this test proves nothing"
     );
     m.insert(Key::Str(stored), Value::int(9));

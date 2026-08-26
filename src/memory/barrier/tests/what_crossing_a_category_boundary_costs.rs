@@ -36,7 +36,7 @@ fn a_cow_value_leaving_the_arena_is_copied_rather_than_counted() {
         "the copy lands where its holder lives"
     );
     assert_eq!(
-        unsafe { crate::string::LLString::bytes(slot as *const crate::string::LLString) },
+        unsafe { crate::string::string_bytes(slot as *const crate::string::LLString) },
         b"name",
         "and it is the same value"
     );

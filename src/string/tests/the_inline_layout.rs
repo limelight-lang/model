@@ -119,8 +119,13 @@ fn the_walker_counts_a_heap_string_as_a_leaf() {
     let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"walked") };
     let after = unsafe { crate::cells::heap_census() };
 
-    let k = EntityKind::String as usize;
-    assert_eq!(after.by_kind[k], before.by_kind[k] + 1);
+    // Both codes, because what this pins is that a string of any
+    // representation is walked and has no out-edges, not which of the two
+    // the factory chose here.
+    let strings = |c: &crate::cells::Census| {
+        c.by_kind[EntityKind::String as usize] + c.by_kind[EntityKind::StringDynamic as usize]
+    };
+    assert_eq!(strings(&after), strings(&before) + 1);
     assert_eq!(after.edges, before.edges, "a string has no out-edges");
 
     unsafe {
@@ -129,6 +134,6 @@ fn the_walker_counts_a_heap_string_as_a_leaf() {
     }
 
     let freed = unsafe { crate::cells::heap_census() };
-    assert_eq!(freed.by_kind[k], before.by_kind[k], "and it goes away");
+    assert_eq!(strings(&freed), strings(&before), "and it goes away");
     arena.reset(|_| {});
 }

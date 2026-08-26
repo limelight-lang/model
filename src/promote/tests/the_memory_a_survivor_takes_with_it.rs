@@ -276,9 +276,8 @@ fn an_oversize_cow_arena_string_carries_its_payload_through_promotion() {
     let s = unsafe { crate::string::ll_string_new(ctx_ptr, MemoryCategory::RequestArena, &content) }
         as *mut RcHeader;
     assert!(!s.is_null());
-    assert_ne!(
-        unsafe { crate::refcount::header_flags(s) } & crate::refcount::STRING_OUT_OF_LINE,
-        0,
+    assert!(
+        crate::string::bytes_are_out_of_line(unsafe { crate::refcount::header_flags(s) }),
         "out of line, or the payload carry is not on the path"
     );
 

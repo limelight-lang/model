@@ -27,9 +27,8 @@ fn a_heap_string_past_the_size_class_is_out_of_line_and_still_cow() {
     assert!(!s.is_null(), "an oversize string is served, not refused");
 
     let flags = unsafe { crate::refcount::header_flags(s as *const RcHeader) };
-    assert_ne!(
-        flags & crate::refcount::STRING_OUT_OF_LINE,
-        0,
+    assert!(
+        crate::string::bytes_are_out_of_line(flags),
         "the bytes did not fit one slot, so they are out of line"
     );
     assert_ne!(flags & COW, 0, "and it is copy-on-write all the same");
@@ -59,10 +58,10 @@ fn the_layout_switches_at_the_slot_limit_and_not_a_byte_earlier() {
 
     let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, &vec![b'a'; last_inline]) };
     assert!(!s.is_null());
-    assert_eq!(
-        unsafe { crate::refcount::header_flags(s as *const RcHeader) }
-            & crate::refcount::STRING_OUT_OF_LINE,
-        0,
+    assert!(
+        !crate::string::bytes_are_out_of_line(unsafe {
+            crate::refcount::header_flags(s as *const RcHeader)
+        }),
         "exactly one slot's worth stays inline"
     );
     let big = unsafe {
@@ -74,10 +73,10 @@ fn the_layout_switches_at_the_slot_limit_and_not_a_byte_earlier() {
     };
 
     assert!(!big.is_null());
-    assert_ne!(
-        unsafe { crate::refcount::header_flags(big as *const RcHeader) }
-            & crate::refcount::STRING_OUT_OF_LINE,
-        0,
+    assert!(
+        crate::string::bytes_are_out_of_line(unsafe {
+            crate::refcount::header_flags(big as *const RcHeader)
+        }),
         "and one byte more does not"
     );
 
@@ -111,9 +110,8 @@ fn a_shared_oversize_string_separates_on_write() {
     assert!(!copy.is_null());
     assert_ne!(copy as usize, s as usize, "a shared COW string separates");
     let copy_flags = unsafe { crate::refcount::header_flags(copy) };
-    assert_ne!(
-        copy_flags & crate::refcount::STRING_OUT_OF_LINE,
-        0,
+    assert!(
+        crate::string::bytes_are_out_of_line(copy_flags),
         "the copy is as oversize as the original"
     );
     assert_eq!(unsafe { string_bytes(copy as *const LLString) }, &big[..]);
@@ -147,7 +145,7 @@ fn an_arena_string_past_a_block_payload_is_out_of_line_and_counted() {
     assert!(!s.is_null(), "an oversize arena string is served");
 
     let flags = unsafe { crate::refcount::header_flags(s as *const RcHeader) };
-    assert_ne!(flags & crate::refcount::STRING_OUT_OF_LINE, 0);
+    assert!(crate::string::bytes_are_out_of_line(flags));
     assert_ne!(flags & COW, 0);
     assert_eq!(unsafe { string_bytes(s) }, &big[..]);
 
@@ -198,7 +196,7 @@ fn an_escaping_oversize_arena_string_is_copied_into_the_heap() {
         "a COW entity is copied out, never held"
     );
     let copy_flags = unsafe { crate::refcount::header_flags(heap_slot) };
-    assert_ne!(copy_flags & crate::refcount::STRING_OUT_OF_LINE, 0);
+    assert!(crate::string::bytes_are_out_of_line(copy_flags));
     assert_ne!(copy_flags & COW, 0);
     assert_eq!(
         unsafe { crate::object::header_category(heap_slot) },
@@ -247,10 +245,10 @@ fn a_long_lived_string_past_the_slot_limit_is_refused_by_both_factories() {
         )
     };
     assert!(!served.is_null(), "one slot's worth is served");
-    assert_eq!(
-        unsafe { crate::refcount::header_flags(served as *const RcHeader) }
-            & crate::refcount::STRING_OUT_OF_LINE,
-        0,
+    assert!(
+        !crate::string::bytes_are_out_of_line(unsafe {
+            crate::refcount::header_flags(served as *const RcHeader)
+        }),
         "and it is inline, the only layout this category has"
     );
 
@@ -320,10 +318,10 @@ fn an_immortal_string_past_a_block_payload_keeps_the_inline_layout() {
     let big = vec![b'i'; crate::memory::block_pool::BLOCK_PAYLOAD];
     let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::Immortal, &big) };
     assert!(!s.is_null(), "an oversize immortal string is served");
-    assert_eq!(
-        unsafe { crate::refcount::header_flags(s as *const RcHeader) }
-            & crate::refcount::STRING_OUT_OF_LINE,
-        0,
+    assert!(
+        !crate::string::bytes_are_out_of_line(unsafe {
+            crate::refcount::header_flags(s as *const RcHeader)
+        }),
         "the run holds the inline layout rather than a payload pointer"
     );
     assert_eq!(unsafe { string_bytes(s) }, &big[..]);

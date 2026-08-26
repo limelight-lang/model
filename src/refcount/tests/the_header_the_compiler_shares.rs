@@ -46,12 +46,6 @@ fn flags_layout_matches_the_normative_table() {
     assert_eq!(HAS_WEAK_REFERENCES, 1 << 12);
     assert_eq!(DESTRUCTOR_PENDING, 1 << 13);
     assert_eq!(DESTRUCTOR_RAN, 1 << 14);
-    assert_eq!(STRING_OUT_OF_LINE, 1 << 15, "string layout: bit 15");
-    assert_eq!(
-        STRING_OUT_OF_LINE & ENTITY_KIND_MASK,
-        0,
-        "a wider kind field would take the layout bit"
-    );
 
     let claimed = MEMORY_CATEGORY_MASK
         | ENTITY_KIND_MASK
@@ -60,8 +54,7 @@ fn flags_layout_matches_the_normative_table() {
         | IS_ESCAPEE
         | HAS_WEAK_REFERENCES
         | DESTRUCTOR_PENDING
-        | DESTRUCTOR_RAN
-        | STRING_OUT_OF_LINE;
+        | DESTRUCTOR_RAN;
     // Bits 8-10 are the enrolment gate's three — acyclic class, proven
     // ownership, enrolled — and S31.3 names them. A constant drifting
     // into one would leave the gate's single mask testing a condition
@@ -71,6 +64,9 @@ fn flags_layout_matches_the_normative_table() {
         0,
         "bits 8-10 stay free for the enrolment gate"
     );
+    // Bit 15 came free when the string's layout became a kind code, and
+    // the normative table now calls it free.
+    assert_eq!(claimed & (1 << 15), 0, "bit 15 is free");
     // Bits 16 and above are unclaimed until S31 lays the collector's
     // epoch, maturation age and reserve there. Nothing may drift into
     // them meanwhile, which is what this asserts.
@@ -91,8 +87,7 @@ fn each_predicate_answers_for_the_kind_alone() {
             | IS_ESCAPEE
             | HAS_WEAK_REFERENCES
             | DESTRUCTOR_PENDING
-            | DESTRUCTOR_RAN
-            | STRING_OUT_OF_LINE;
+            | DESTRUCTOR_RAN;
 
         assert_eq!(
             kind_may_close_a_cycle(flags),

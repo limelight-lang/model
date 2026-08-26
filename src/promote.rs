@@ -455,12 +455,12 @@ enum External {
 /// # Safety
 /// `surv` must be a live entity.
 unsafe fn external_memory(surv: *mut RcHeader) -> External {
-    use crate::refcount::{ENTITY_KIND_MASK, EntityKind, STRING_OUT_OF_LINE};
+    use crate::refcount::{ENTITY_KIND_MASK, EntityKind};
     let flags = unsafe { (*surv).flags };
     match flags & ENTITY_KIND_MASK {
         // Only the dynamic layout holds bytes out of line; an inline
         // string carries them behind its own header and moves with it.
-        k if k == EntityKind::String.to_flags() && flags & STRING_OUT_OF_LINE != 0 => {
+        k if k == EntityKind::StringDynamic.to_flags() => {
             External::StringPayload(surv as *mut crate::string::LLStringDynamic)
         }
         k if k == EntityKind::Array.to_flags() => {
@@ -733,11 +733,15 @@ fn traceable_in_full(flags: u32) -> bool {
     const LAZY: u32 = EntityKind::Lazy as u32;
     const REFERENCE: u32 = EntityKind::Reference as u32;
     const STRING: u32 = EntityKind::String as u32;
+    const STRING_DYNAMIC: u32 = EntityKind::StringDynamic as u32;
     const WEAKREF: u32 = EntityKind::WeakRef as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
-    // String and WeakRef are leaves, so "skipped" and "enumerated in
-    // full" are the same answer for them.
-    matches!(kind, OBJECT | LAZY | REFERENCE | STRING | WEAKREF | ARRAY)
+    // A string of either layout and a WeakRef are leaves, so "skipped"
+    // and "enumerated in full" are the same answer for them.
+    matches!(
+        kind,
+        OBJECT | LAZY | REFERENCE | STRING | STRING_DYNAMIC | WEAKREF | ARRAY
+    )
 }
 
 /// One counting pass over a survivor's reference slots: +1 to arena

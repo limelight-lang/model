@@ -719,6 +719,7 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     const REFERENCE: u32 = EntityKind::Reference as u32;
     const WEAKREF: u32 = EntityKind::WeakRef as u32;
     const STRING: u32 = EntityKind::String as u32;
+    const STRING_DYNAMIC: u32 = EntityKind::StringDynamic as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
     let flags = unsafe { crate::refcount::header_flags(entity) };
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
@@ -741,7 +742,9 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
             crate::reference::reference_die(entity as *mut crate::reference::LLReference)
         },
         WEAKREF => unsafe { crate::weak::weakref_die(entity as *mut crate::weak::LLWeakRef) },
-        STRING => unsafe { crate::string::string_die(entity as *mut crate::string::LLString) },
+        STRING | STRING_DYNAMIC => unsafe {
+            crate::string::string_die(entity as *mut crate::string::LLString)
+        },
         ARRAY => unsafe {
             crate::array::entity::array_die(entity as *mut crate::array::entity::LLArray)
         },
@@ -831,9 +834,14 @@ pub unsafe fn ll_cow_separate(
     }
 
     const STRING: u32 = EntityKind::String as u32;
+    const STRING_DYNAMIC: u32 = EntityKind::StringDynamic as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
     match (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT {
-        STRING => unsafe {
+        // Both codes, because a string is out of line by size as well as
+        // by a proof of single ownership, and the first sort is
+        // copy-on-write like any other; `string::separate` reads it
+        // through the layout-agnostic accessor.
+        STRING | STRING_DYNAMIC => unsafe {
             crate::string::separate(ctx, owner_cat, entity as *mut crate::string::LLString)
                 as *mut RcHeader
         },
@@ -886,9 +894,10 @@ pub(crate) unsafe fn escape_copy(
     debug_assert_ne!(owner_cat, MemoryCategory::RequestArena);
     let flags = unsafe { crate::refcount::header_flags(entity) };
     const STRING: u32 = EntityKind::String as u32;
+    const STRING_DYNAMIC: u32 = EntityKind::StringDynamic as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
     match (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT {
-        STRING => unsafe {
+        STRING | STRING_DYNAMIC => unsafe {
             crate::string::separate(
                 std::ptr::null_mut(),
                 owner_cat,

@@ -8,6 +8,43 @@
 
 use super::*;
 
+/// The kind code alone decides where the bytes are read from, and
+/// "read through `data`" is asserted as an address rather than as a
+/// content match: the inline accessor over this entity would answer a
+/// slice starting at `&(*s).data`, whose first eight bytes are the
+/// payload pointer, and on a short payload that slice can still compare
+/// equal to nothing anyone checked.
+#[test]
+fn an_out_of_line_string_is_read_through_data_by_its_kind_alone() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = Arena::new();
+    let mut ctx = LLContext { arena: &mut arena };
+    let s = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, b"grows", 0) };
+    assert!(!s.is_null());
+
+    let flags = unsafe { crate::refcount::header_flags(s as *const RcHeader) };
+    assert_eq!(
+        flags & ENTITY_KIND_MASK,
+        EntityKind::StringDynamic.to_flags(),
+        "the factory stamps the code that says where the bytes are"
+    );
+
+    let bytes = unsafe { string_bytes(s as *const LLString) };
+    assert_eq!(
+        bytes.as_ptr(),
+        unsafe { (*s).data },
+        "the slice starts at the payload, not inside the entity"
+    );
+    assert_eq!(bytes, b"grows");
+
+    unsafe {
+        assert!(crate::refcount::ll_release(s as *mut RcHeader));
+        crate::object::ll_entity_die(s as *mut RcHeader);
+    }
+
+    arena.reset(|_| {});
+}
+
 /// The second layout's offsets, and the half of them it shares with
 /// the first: `len` at +8 and `hash` at +16 in both, which is what
 /// lets either be read without deciding which layout this is.
@@ -36,11 +73,14 @@ fn a_dynamic_heap_string_holds_its_bytes_out_of_line() {
     assert!(!s.is_null());
 
     let rc = unsafe { &(*s).rc };
-    assert_eq!(rc.flags & ENTITY_KIND_MASK, EntityKind::String.to_flags());
-    assert_ne!(
-        rc.flags & STRING_OUT_OF_LINE,
-        0,
-        "the layout is its own bit"
+    assert_eq!(
+        rc.flags & ENTITY_KIND_MASK,
+        EntityKind::StringDynamic.to_flags(),
+        "the layout is the kind code"
+    );
+    assert!(
+        crate::refcount::is_string(rc.flags),
+        "and both codes still answer the one string test"
     );
     assert_eq!(
         rc.flags & COW,

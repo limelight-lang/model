@@ -14,12 +14,12 @@
 //! collector thread as an accelerator over the same headers
 //! (`rfc/model/gc/rc-cycle.md`, "What it is" and "Concurrency").
 //!
-//! **Flags bits 8-10 and 16-31 are unclaimed, and each region has an
-//! owner waiting for it.** The three below are the enrolment gate's —
-//! acyclic class, proven ownership, enrolled — which S31.3 names; the
-//! region above is the collector's own, laid out as epoch at 16-17,
-//! maturation age at 18-19 and reserve at 20-23. Until each step lands,
-//! nothing reads or writes them, and
+//! **Flags bits 8-10, 15 and 16-31 are unclaimed.** The three low ones
+//! are the enrolment gate's — acyclic class, proven ownership,
+//! enrolled — which S31.3 names; bit 15 came free when the string's
+//! layout became a kind code; the region above is the collector's own,
+//! laid out as epoch at 16-17, maturation age at 18-19 and reserve at
+//! 20-23. Until each step lands, nothing reads or writes them, and
 //! `refcount::tests::the_header_the_compiler_shares` is what keeps a
 //! constant from drifting in meanwhile.
 
@@ -239,10 +239,12 @@ pub enum EntityKind {
     Array = 2,
     Reference = 3,
     String = 8,
-    /// The string whose bytes lie outside the body. **No producer until
-    /// S31.2** (`PLAN.md`), which retires `STRING_OUT_OF_LINE` in favour
-    /// of this code; the code is held here meanwhile so the pair `{8, 9}`
-    /// stays the range [`is_string`] tests.
+    /// The string whose bytes lie outside the body, behind `data`,
+    /// rather than inline after the fixed fields. **Outside the body
+    /// whatever put them there** — a compiler proof of single ownership
+    /// or a size past the category's slot limit — so this code does not
+    /// mean "growable": the second sort keeps [`COW`]
+    /// (`rfc/model/strings.md`, "Two Layouts Behind `StringInterface`").
     StringDynamic = 9,
     Box = 10,
     WeakRef = 11,
@@ -344,10 +346,9 @@ pub fn carries_a_class_word(flags: u32) -> bool {
 /// True for a string entity in either layout, the bytes inline after the
 /// fixed fields or out of line behind `data`.
 ///
-/// The second layout is [`EntityKind::StringDynamic`], which no factory
-/// stamps until S31.2 (`PLAN.md`); until then this answers for
-/// [`EntityKind::String`] alone and every site it can serve reads
-/// `STRING_OUT_OF_LINE` beside the kind.
+/// One mask rather than two comparisons because the two codes differ in
+/// the kind field's low bit alone, which is what their assignment was
+/// chosen for.
 #[inline]
 pub fn is_string(flags: u32) -> bool {
     flags & KIND_TOP_THREE == EntityKind::String.to_flags()
@@ -361,25 +362,6 @@ pub fn is_string(flags: u32) -> bool {
 pub fn is_object(flags: u32) -> bool {
     flags & ENTITY_KIND_MASK == 0
 }
-
-/// **String entities only:** the bytes live out of line, through the
-/// `data` pointer of `string::LLStringDynamic`, rather than inline after
-/// the fixed fields. Set once by the factory and never flipped — nothing
-/// promotes between the two layouts at run time.
-///
-/// It sits at bit 15, scoped to one kind: nothing but a string reads it,
-/// so it costs the other kinds nothing. [`COW`] carries copy-on-write and
-/// nothing else, one bit being unable to say both for an oversize string,
-/// which is out of line by size and copy-on-write by semantics
-/// (`dev/DECISIONS.md`, "a string's layout is its own header bit";
-/// `rfc/model/memory/large-entities.md`).
-///
-/// **It is the one constant outside `rfc/model/classes.md`'s table**,
-/// which calls bit 15 free: S31.2 replaces it with the kind code
-/// [`EntityKind::StringDynamic`] and the bit goes (`PLAN.md`). A kind
-/// code says the same thing in a field every path already loads, and it
-/// says it for a second representation without a second bit.
-pub const STRING_OUT_OF_LINE: u32 = 1 << 15;
 
 #[cfg(not(target_endian = "little"))]
 compile_error!(

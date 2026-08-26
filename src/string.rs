@@ -5,8 +5,12 @@
 //! (bytes out of line with spare capacity) shares `len` at +8 and `hash`
 //! at +16 so that neither read has to decide which layout it is looking
 //! at; only byte access and teardown branch. Which layout a string has is
-//! the header flag [`STRING_OUT_OF_LINE`] (`rfc/model/strings.md`, "Two
-//! Layouts Behind `StringInterface`").
+//! its entity kind code — [`EntityKind::String`] or
+//! [`EntityKind::StringDynamic`], read here through
+//! [`bytes_are_out_of_line`] (`rfc/model/strings.md`, "Two Layouts Behind
+//! `StringInterface`"). The two codes share the kind field's top three
+//! bits, so "is a string" stays one mask test over the pair
+//! ([`crate::refcount::is_string`]).
 //!
 //! **Layout and copy-on-write are two facts, and the header keeps two
 //! bits.** [`COW`] says the value separates when a second holder writes,
@@ -26,8 +30,21 @@ use crate::journal::kinds::journal_event;
 use crate::memory::buffer::Buffer;
 use crate::memory::context::LLContext;
 use crate::refcount::{
-    COW, EntityKind, MemoryCategory, RcHeader, STRING_OUT_OF_LINE, publish_header,
+    COW, ENTITY_KIND_MASK, EntityKind, MemoryCategory, RcHeader, publish_header,
 };
+
+/// True when this string entity keeps its bytes outside the body, behind
+/// `data`, rather than inline after the fixed fields.
+///
+/// **The code means "outside the body", whatever put them there** — a
+/// compiler proof of single ownership or a size past the category's slot
+/// limit — and not "growable": the second sort keeps [`COW`], so an
+/// append may not write into it in place (`rfc/model/strings.md`, "Two
+/// Layouts Behind `StringInterface`").
+#[inline]
+pub(crate) fn bytes_are_out_of_line(flags: u32) -> bool {
+    flags & ENTITY_KIND_MASK == EntityKind::StringDynamic.to_flags()
+}
 
 /// The most bytes a string can hold: `len` is a `u32`
 /// (`rfc/dev/DECISIONS.md`, "a string is capped at 4 GiB, and the length
@@ -168,10 +185,10 @@ impl LLStringDynamic {
 /// `s` must be a live string entity, and must outlive the slice.
 #[inline]
 pub unsafe fn string_bytes<'a>(s: *const LLString) -> &'a [u8] {
-    if unsafe { crate::refcount::header_flags(s as *const RcHeader) } & STRING_OUT_OF_LINE == 0 {
-        unsafe { LLString::bytes(s) }
-    } else {
+    if bytes_are_out_of_line(unsafe { crate::refcount::header_flags(s as *const RcHeader) }) {
         unsafe { LLStringDynamic::bytes(s as *const LLStringDynamic) }
+    } else {
+        unsafe { LLString::bytes(s) }
     }
 }
 
@@ -398,7 +415,11 @@ pub(crate) unsafe fn publish_uninit(r: Reserved, category: MemoryCategory) -> *m
         category,
         MemoryCategory::Immortal | MemoryCategory::LongLived
     );
-    let layout = if r.out_of_line { STRING_OUT_OF_LINE } else { 0 };
+    let kind = if r.out_of_line {
+        EntityKind::StringDynamic
+    } else {
+        EntityKind::String
+    };
     unsafe {
         let len = (*s).len as usize;
         // From the fill pointer rather than from the entity: the two
@@ -414,7 +435,7 @@ pub(crate) unsafe fn publish_uninit(r: Reserved, category: MemoryCategory) -> *m
         (&raw mut (*s).hash).write(hash);
         publish_header(
             s as *mut RcHeader,
-            RcHeader::new(category, COW | EntityKind::String.to_flags() | layout),
+            RcHeader::new(category, COW | kind.to_flags()),
         );
     }
 
@@ -648,10 +669,7 @@ unsafe fn new_out_of_line(
         (&raw mut (*s).data).write(payload.data);
         publish_header(
             s as *mut RcHeader,
-            RcHeader::new(
-                category,
-                EntityKind::String.to_flags() | STRING_OUT_OF_LINE | extra_flags,
-            ),
+            RcHeader::new(category, EntityKind::StringDynamic.to_flags() | extra_flags),
         );
     }
 
@@ -711,9 +729,8 @@ unsafe fn grow_payload(
 /// `ctx` per [`crate::memory::context::ll_arena_alloc`].
 pub unsafe fn ll_string_append(ctx: *mut LLContext, s: *mut LLStringDynamic, extra: &[u8]) -> bool {
     let flags = unsafe { crate::refcount::header_flags(s as *const RcHeader) };
-    debug_assert_ne!(
-        flags & STRING_OUT_OF_LINE,
-        0,
+    debug_assert!(
+        bytes_are_out_of_line(flags),
         "an inline string has no spare capacity to append into"
     );
     // Out of line no longer implies sole ownership: a string is also out
@@ -841,9 +858,9 @@ pub(crate) unsafe fn string_die(s: *mut LLString) {
         0
     );
     let owner_cat = unsafe { crate::object::header_category(s as *const RcHeader) };
-    let inline =
-        unsafe { crate::refcount::header_flags(s as *const RcHeader) } & STRING_OUT_OF_LINE == 0;
-    if !inline && owner_cat != MemoryCategory::RequestArena {
+    let out_of_line =
+        bytes_are_out_of_line(unsafe { crate::refcount::header_flags(s as *const RcHeader) });
+    if out_of_line && owner_cat != MemoryCategory::RequestArena {
         let d = s as *mut LLStringDynamic;
         let (data, capacity) = unsafe { ((*d).data, (*d).capacity as usize) };
         if !data.is_null() {

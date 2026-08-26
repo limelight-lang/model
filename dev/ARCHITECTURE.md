@@ -202,11 +202,11 @@ field is lent to):
   sites test it before calling in;
 - bits 13–14, destructor state (`DESTRUCTOR_PENDING` / `DESTRUCTOR_RAN`)
   — the debt protocol between `object` and the death paths;
-- bit 15, `STRING_OUT_OF_LINE` — **string entities only**: the bytes
-  live through `data` rather than inline; read by `string` and by
-  `promote`'s survivor classification. S31.2 retires it for the kind
-  code `StringDynamic`, which is why `rfc/model/classes.md`'s table
-  already calls this bit free;
+- bit 15, **free**. It carried `STRING_OUT_OF_LINE` until the string's
+  two layouts became the kind codes 8 and 9: a code says the same thing
+  in a field every teardown and trace path already loads, and it says it
+  without a second bit. `string::bytes_are_out_of_line` is the one
+  reader of that distinction now;
 - bits 16–31, **free and asserted free**. `rc-trace` kept a candidate
   index across 15–31 and `rc-walk` an epoch byte at 16–23, and both went
   on 2026-08-26. `refcount::tests::the_header_the_compiler_shares`

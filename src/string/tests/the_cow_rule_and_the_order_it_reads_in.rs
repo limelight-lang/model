@@ -49,14 +49,14 @@ fn an_immortal_string_separates_although_its_count_says_one() {
         crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, name as *mut RcHeader)
     } as *mut LLString;
     assert_ne!(copy as usize, name as usize);
-    assert_eq!(unsafe { LLString::bytes(copy) }, b"Order");
+    assert_eq!(unsafe { string_bytes(copy) }, b"Order");
     assert_eq!(
         unsafe { (*copy).rc.memory_category() },
         MemoryCategory::GcHeap,
         "a heap holder gets a heap copy"
     );
     assert_eq!(
-        unsafe { LLString::bytes(name) },
+        unsafe { string_bytes(name) },
         b"Order",
         "the name is intact"
     );
@@ -112,7 +112,7 @@ fn a_long_lived_string_separates_although_its_count_is_real() {
         crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, s as *mut RcHeader)
     } as *mut LLString;
     assert_ne!(copy as usize, s as usize, "sole holder and still a copy");
-    assert_eq!(unsafe { LLString::bytes(copy) }, b"cached");
+    assert_eq!(unsafe { string_bytes(copy) }, b"cached");
     assert_eq!(
         unsafe { (*copy).rc.memory_category() },
         MemoryCategory::GcHeap
@@ -216,7 +216,7 @@ fn separating_then_storing_leaves_exactly_one_holder_on_each_side() {
         1,
         "and the local alone holds the original"
     );
-    assert_eq!(unsafe { LLString::bytes(copy as *mut LLString) }, b"shared");
+    assert_eq!(unsafe { string_bytes(copy as *mut LLString) }, b"shared");
 
     unsafe {
         crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, slot);

@@ -134,7 +134,7 @@ enrolment gate is one mask, and the kind field is four bits wide.
         superseded" was already met by `dev/DECISIONS.md`, 2026-08-26, "the
         flags word is re-laid for one collector", written in S31.0's session —
         checked against the criterion rather than carried over from the handoff.
-- [ ] S31.2 Fold the string's layout into the kind field
+- [x] S31.2 Fold the string's layout into the kind field
       done: `STRING_OUT_OF_LINE` is gone, `LLStringDynamic` is selected by kind
         code 9 — whose meaning is **bytes outside the body, whatever the
         reason**, not "growable" — and every "is a string" site accepts both
@@ -154,6 +154,21 @@ enrolment gate is one mask, and the kind field is four bits wide.
         `_ => External::None`, which loses a survivor's out-of-line bytes at a
         reset; and `promote::traceable_in_full`. S31.1 named the code in
         `cells::sever_cells` already, that arm's answer being mechanical.
+      handoff: closed 2026-08-26. `rfc` `d5ea1b1` went first — `strings.md`
+        still selected the layout with the flag while `classes.md` had already
+        given it a code, and the crate cites both. The stamp flip ran **twice**,
+        which is what the method is worth here: before the fold it finds only
+        sites that name a *representation*, because the kind does not yet
+        discriminate; after it, every string carries code 9 and the kind
+        dispatch is exercised. The second run added exactly one failure over the
+        first, and no production site among them — the four named above were
+        widened before it ran, which is what makes their silence evidence.
+      handoff: the flip's own casualty is worth knowing before re-running it.
+        `the_hash_is_computed_once_on_demand_and_never_zero` poisons bytes by
+        writing at `size_of::<LLString>()`, which in the other layout is the
+        `data` pointer, so the run **aborts** on a misaligned free and hides
+        every later failure. It now asserts the layout it assumes; a future flip
+        still has to skip it, since the assertion is what fires.
 - [ ] S31.3 The enrolment gate is one mask
       done: the release path decides with `flags & 0x723 == 0` — category zero,
         kind below eight, class not acyclic, ownership not proven, not already
