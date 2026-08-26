@@ -306,7 +306,7 @@ pub(crate) unsafe fn counted_box_cell<R: CellReader>(at: *const u8) -> Option<Ce
 }
 
 /// Visit every counted child of `entity`, dispatching on the kind bits
-/// **before** touching `+8`: only Object (0) and Lazy (6) carry a class
+/// **before** touching `+8`: only Object (0) and Lazy (1) carry a class
 /// pointer there (`rfc/model/classes.md`, "the class pointer lives in
 /// the body"), and reaching for the trace map through a class that does
 /// not exist is a wild read.
@@ -509,6 +509,10 @@ pub(crate) unsafe fn sever_cells(
     const REFERENCE: u32 = EntityKind::Reference as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
     const STRING: u32 = EntityKind::String as u32;
+    // Named although no factory stamps it until S31.2: a producible kind
+    // reaching the arm below through the catch-all is how the Array kind
+    // sat here unnoticed once already (this module's own doc).
+    const STRING_DYNAMIC: u32 = EntityKind::StringDynamic as u32;
     const WEAKREF: u32 = EntityKind::WeakRef as u32;
     const BOX: u32 = EntityKind::Box as u32;
     match kind {
@@ -558,8 +562,8 @@ pub(crate) unsafe fn sever_cells(
         // deliberately uncounted and the drain's weak pass has already
         // nulled it, and an FFI Box holds an opaque C payload the runtime
         // never counted.
-        STRING | WEAKREF | BOX => {}
-        _ => debug_assert!(false, "entity kind 7 is reserved"),
+        STRING | STRING_DYNAMIC | WEAKREF | BOX => {}
+        _ => debug_assert!(false, "entity kind codes 4-7 and 12-15 are unassigned"),
     }
 }
 
@@ -572,8 +576,11 @@ use crate::memory::heap::for_each_entity_slot;
 pub struct Census {
     /// Occupied entity-block slots.
     pub entities: usize,
-    /// Entities per kind code (index = kind bits; 7 is reserved).
-    pub by_kind: [usize; 8],
+    /// Entities per kind code (index = kind bits; codes 4-7 and 12-15
+    /// are unassigned and stay zero). Sixteen entries because the field
+    /// is four bits wide: a census over a code the array cannot hold
+    /// would panic rather than report an unknown kind.
+    pub by_kind: [usize; 16],
     /// Counted out-edges of walked entities, targets anywhere.
     pub edges: usize,
 }

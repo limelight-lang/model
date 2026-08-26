@@ -14,6 +14,14 @@ live.
 > `archive/pre-rc-cycle`. The figures stand as the baseline `rc-cycle` is
 > to be measured against, not as a description of what the tree builds
 > today (`PLAN.md`, S30).
+>
+> **The flags word was re-laid the same week** (`PLAN.md`, S31), so every
+> immediate below names a bit position the header no longer uses: `COW`
+> moved from bit 10 to bit 6, and the kind field from bits 12-14 to 2-5.
+> The instruction counts and the contract each instruction answers to are
+> unchanged by the move; the constants are the old ones because these are
+> listings of the build that produced the figures, and re-typing them
+> against the new layout would report a disassembly nobody read.
 
 
 Produced from the release staticlib built with `-C debuginfo=2`

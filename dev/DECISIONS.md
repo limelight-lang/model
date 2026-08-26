@@ -67,6 +67,31 @@ the leak in the new design.
 itself leaves no survivor, which is why the abandonment is recorded here rather
 than being read as completion.
 
+## 2026-08-26 — the ring-closing reserve is widened to codes 0–7
+
+**Decided:** the kind codes of the entry below become `Object 0, Lazy 1,
+Array 2, Reference 3, String 8, StringDynamic 9, Box 10, WeakRef 11`. Codes
+0–7 are held for kinds that can close a ring, four of them free; 12–15 are
+free for kinds that cannot. "Closes a cycle" is `flags & 0b100000 == 0`, "is a
+string" is `flags & 0b111000 == 0b100000`, and the enrolment gate is
+`flags & 0x723 == 0`. `RING_CLOSING_KINDS` is replaced by
+`EntityKind::closes_a_ring`, an exhaustive `match` with no `_` arm, plus a
+`const` assertion that each kind's classification agrees with its code and a
+`debug_assert!` of the same equation in `to_flags`.
+**Why:** the entry below held codes 0–3 for ring-closing kinds and assigned all
+four, so the reserve reserved nothing and the fifth such kind — a closure
+entity, 179 of the corpus's 381 objects being closures — would have taken code
+8 and been refused by the mask permanently, with nothing red. A list of members
+does not close it either: a kind never added to the list passes every
+assertion, which is the bitset's missing line under another name. The
+exhaustive match stops the build in the file that owns the answer.
+**Rejected:** moving Array and Reference to 4–5 to leave room inside the
+class-word prefix 0–1. An entity carrying a class word at +8 tears down through
+`dispose`, so a new one needs no kind of its own — it is an Object.
+**Cost:** the assignment of the entry below is superseded before any of it
+shipped, and `EntityKind` is renumbered twice in one day. Nothing in
+`rfc/model/lowering.md` moves: its C mirror names bit positions and no codes.
+
 ## 2026-08-26 — the flags word is re-laid for one collector, and `EntityKind` is renumbered
 
 **Decided:** category 0–1, kind 2–5 (four bits), COW 6, arena mark 7, acyclic 8,

@@ -6,7 +6,7 @@
 use super::*;
 
 #[test]
-fn a_weak_cell_is_a_16_byte_kind_5_gc_heap_entity() {
+fn a_weak_cell_is_a_16_byte_kind_11_gc_heap_entity() {
     let _g = crate::memory::block_pool::test_guard();
     assert_eq!(size_of::<LLWeakRef>(), 16);
     assert_eq!(core::mem::offset_of!(LLWeakRef, rc), 0);

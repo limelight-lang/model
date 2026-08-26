@@ -58,7 +58,12 @@ Since 2026-08-04 there is a second build-time axis, `hash-folding`
 touches no header bit, no GC path and no threading, so the interleavings
 the three threaded runs exist to find are the same on both sides of it.
 What it does need is one run of its own, because the two arms take
-different `cfg` branches and each carries a test the other does not:
+different `cfg` branches and each carries a test the other does not.
+The two are `hash::seed::tests::where_the_seed_comes_from::`
+`the_process_seed_comes_from_the_operating_system` off and
+`a_folding_build_hashes_under_its_own_seed` on, so the arms list the
+same number of tests and a count tells them apart in neither direction
+(diffed byte for byte, 2026-08-26, 454 each):
 
 ```
 LL_HASH_SEED=<any> cargo test --lib --features hash-folding -- --test-threads=4

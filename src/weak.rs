@@ -10,8 +10,8 @@
 //! Knowledge split: this module owns the cell, the table, and every
 //! notification rule; teardown paths (`object::ll_default_dispose`, the
 //! cycle collectors, arena reset) own only *when* to call in, gated by
-//! bit 7. A plain `HashMap` under no lock is sound because every
-//! notification site runs on the owning thread — teardown, the drain in
+//! `HAS_WEAK_REFERENCES`. A plain `HashMap` under no lock is sound because
+//! every notification site runs on the owning thread — teardown, the drain in
 //! the mutator's checkpoint, arena reset — and the collector thread never
 //! touches it.
 //!
@@ -25,11 +25,11 @@ use std::collections::HashMap;
 use crate::journal::kinds::journal_event;
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::refcount::{
-    ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind, HAS_WEAK_REFERENCES, MemoryCategory, RcHeader,
-    header_flags, ll_retain, update_header_flags,
+    EntityKind, HAS_WEAK_REFERENCES, MemoryCategory, RcHeader, header_flags, ll_retain,
+    update_header_flags,
 };
 
-/// The `WeakReference` entity — kind 5, class-less singleton kind, and
+/// The `WeakReference` entity — kind 11, class-less singleton kind, and
 /// **the weak cell itself**. 16 bytes: header + the referent, nulled by
 /// death notification. `get()` is a load, a null test and a retain.
 #[repr(C)]
@@ -42,7 +42,7 @@ pub struct LLWeakRef {
 
 thread_local! {
     /// The weak table: target address → its canonical cell. Row exists
-    /// iff the target's bit 7 is set iff a cell is live for it.
+    /// iff the target's `HAS_WEAK_REFERENCES` is set iff a cell is live for it.
     ///
     /// Discarded at thread exit without notification — the thread's
     /// entities die with its heap, and nothing outlives them to read a
@@ -58,6 +58,21 @@ thread_local! {
     /// initialized key cannot be first-initialized mid-destruction.
     static WEAK_TABLE: std::cell::Cell<*mut HashMap<usize, *mut LLWeakRef>> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// Which entity kinds PHP admits as the referent of a `WeakReference`.
+///
+/// It answers for the same kinds as `refcount::carries_a_class_word`
+/// today and is a predicate of its own because the two questions are
+/// known to diverge: an `FFIBox` is a legal referent
+/// (`rfc/model/weak-references.md`, "Death notification") and carries a C
+/// payload at `+8` rather than a class, so the day the FFI surface lands,
+/// widening this must not widen the other — a trace reading that payload
+/// as a `*const Class` is the wild read `cells::trace_cells` dispatches on
+/// the kind to avoid.
+#[inline]
+fn may_be_a_weak_referent(flags: u32) -> bool {
+    crate::refcount::carries_a_class_word(flags)
 }
 
 /// This thread's weak table, allocated on first use.
@@ -111,13 +126,8 @@ pub unsafe extern "C" fn ll_weakref_create(
     target: *mut RcHeader,
 ) -> *mut LLWeakRef {
     let flags = unsafe { header_flags(target) };
-    // PHP permits only objects as referents; in entity terms that is the
-    // class-pointer-bearing kinds today (Box joins them with FFI).
     debug_assert!(
-        matches!(
-            (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT,
-            k if k == EntityKind::Object as u32 || k == EntityKind::Lazy as u32
-        ),
+        may_be_a_weak_referent(flags),
         "a weak referent must be an object"
     );
 
@@ -177,10 +187,10 @@ pub unsafe extern "C" fn ll_weakref_get(cell: *mut LLWeakRef) -> *mut RcHeader {
 
 /// Death notification (`rfc/model/weak-references.md`): null the cell,
 /// drop the row, clear the gate bit. Runs no user code — safe inside
-/// teardown and inside the drain. The caller has tested bit 7.
+/// teardown and inside the drain. The caller has tested `HAS_WEAK_REFERENCES`.
 ///
 /// # Safety
-/// `target` must be a live entity on its owning thread, bit 7 set.
+/// `target` must be a live entity on its owning thread, `HAS_WEAK_REFERENCES` set.
 pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
     let cell = unsafe { (*weak_table()).remove(&(target as usize)) };
     debug_assert!(
@@ -213,9 +223,9 @@ pub(crate) unsafe fn notify_members(members: &[*mut RcHeader]) {
     }
 }
 
-/// Kind-5 arm of the entity death switch: the last `$w` copy died. A
+/// The WeakRef arm of the entity death switch: the last `$w` copy died. A
 /// still-live target goes back to the cheap death path — its row is
-/// removed and bit 7 cleared, so the next `create()` builds a fresh
+/// removed and `HAS_WEAK_REFERENCES` cleared, so the next `create()` builds a fresh
 /// canonical cell (observable via `spl_object_id`, and exactly PHP's
 /// behaviour). A nulled target means the row died first; nothing to do.
 ///
@@ -255,7 +265,7 @@ pub(crate) unsafe fn weakref_die(cell: *mut LLWeakRef) {
 /// Two kinds of stale entry are tolerated by the two tests: a promoted
 /// survivor has its category rewritten off the arena (its cell stays
 /// live — a weak reference to it must keep resolving), and a row that
-/// died and was re-created leaves duplicates, deduplicated by bit 7
+/// died and was re-created leaves duplicates, deduplicated by `HAS_WEAK_REFERENCES`
 /// going clear on the first notify.
 ///
 /// # Safety

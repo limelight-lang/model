@@ -113,7 +113,7 @@ commit (`WORKFLOW.md`).
 | `object` | `ll_object_new` factory; `ll_object_constructed` (destructor registration); three-phase `ll_object_die`; the kind-switched `ll_entity_die`; `for_each_counted_child` | class runs; every category's allocator; the weak gate bit; the destructor-debt protocol | collector internals; block internals; per-site barrier composition | `class`, `refcount`, `value`, `context`, `heap`, `immortal`, `stdapi`, `barrier`, `reference`, `array/entity` (the Array arms of the kind switch and of both COW doors), `gc` (forget candidate), `weak` (notify) |
 | `reference` | the `&` reference box, entity kind 3: `RcHeader \| Value` — the model's only extra indirection, self-describing at teardown via the kind field | its own kind | classes; typed slot references (future) | `refcount`, `value`, `context`, `heap`, `immortal`, `stdapi`, `barrier`, `object` |
 | `static_block` | the per-thread registry of static blocks and the teardown pass that releases their roots at thread exit (A6): registration in first-touch order, drained in reverse | that a static block is headerless and laid out by a descriptor; that a `__destruct` may register another block mid-pass | how a static block is allocated; what its slots mean — the release policy is the barrier's, the teardown `object`'s | `class`, `refcount`, `object`, `barrier` |
-| `weak` | the kind-5 weak cell (the canonical `WeakReference` *is* the cell); the per-thread weak table; every notification rule (`notify_death` / `notify_members` / `drain_arena_weak_log`); `ll_weakref_create` / `ll_weakref_get` | the bit-7 gate; that cells always live in the GC heap; that only the owning thread touches the table | *when* to call in — that duty belongs to the death sites (dispose phase 2 first act, both collectors, arena reset) | `refcount`, `arena`, `context`, `heap`, `stdapi`, `object` |
+| `weak` | the kind-11 weak cell (the canonical `WeakReference` *is* the cell); the per-thread weak table; every notification rule (`notify_death` / `notify_members` / `drain_arena_weak_log`); `ll_weakref_create` / `ll_weakref_get` | the `HAS_WEAK_REFERENCES` gate; that cells always live in the GC heap; that only the owning thread touches the table | *when* to call in — that duty belongs to the death sites (dispose phase 2 first act, both collectors, arena reset) | `refcount`, `arena`, `context`, `heap`, `stdapi`, `object` |
 
 The array is four modules under `mod.rs`, with a loom model beside them
 under `cfg(loom)`, and the cut between them is what the rows record:
@@ -162,7 +162,7 @@ teardown they run call back out — which is why `object` names
 | Intern table | process-global mutex, Rust-owned | `intern` | `class` looks names up |
 | Retained-block object indexes | process-global mutex, Rust-owned | `retained` | `promote` registers at reset; both of `heap`'s enumerators clone the `Arc` under the lock and read it outside |
 | Static-block registry | TLS, no drop glue | `static_block` | the static initializer registers; `heap`'s `ll_thread_exit` drains |
-| Weak table | TLS, no drop glue | `weak` | death sites call in, gated by bit 7; the collector thread never touches it |
+| Weak table | TLS, no drop glue | `weak` | death sites call in, gated by `HAS_WEAK_REFERENCES`; the collector thread never touches it |
 
 Three rows left this table on 2026-08-26 with the collectors that owned
 them: `rc-trace`'s candidate buffer, `rc-walk`'s confirmation queue and
@@ -176,24 +176,37 @@ field is lent to):
 
 - bits 0–1, memory category — stamped at allocation, read by the
   barrier and every death path; rewritten in place only by `promote`;
-- bit 2, `ARENA_RESET_MARK` — the reset's transient survivor mark,
-  written and consumed by `promote`. It was the low bit of a two-bit GC
-  state field whose CAS handoff went with the collectors;
-- bits 3–6, free;
-- bit 7, weak gate (`HAS_WEAK_REFERENCES`) — lent to `weak`; death
-  sites test it before calling in;
-- bits 8–9, destructor state (`DESTRUCTOR_PENDING` / `DESTRUCTOR_RAN`)
-  — the debt protocol between `object` and the death paths;
-- bit 10, `COW` — retain/release become no-ops, a write separates;
+- bits 2–5, entity kind, four bits — written once at creation,
+  dispatched on by `cells` and `ll_entity_die`. It sits beside the
+  category because the codes are assigned so that three questions are
+  range tests, and a range is one comparison only while the field's high
+  bits carry it: `kind_may_close_a_cycle`, `carries_a_class_word` and
+  `is_string` are those three. Codes 0–7 are held for kinds a ring can
+  close through and four of them stand free, which is what a fifth such
+  kind takes instead of a renumbering; `EntityKind::closes_a_ring` is the
+  classification and a `const` assertion ties it to the bound;
+- bit 6, `COW` — retain/release become no-ops, a write separates;
   read by `refcount` and the barrier, stamped by `intern` (the
   mechanism behind invariant 13);
+- bit 7, `ARENA_RESET_MARK` — the reset's transient survivor mark,
+  written and consumed by `promote`. It shares the word with the
+  collector's fields safely because an arena entity is never a
+  candidate, so a reset and a collection never mark the same entity;
+- bits 8–10, **free**, and lent to the collector by S31.3: acyclic
+  class, proven ownership, enrolled. The enrolment gate reads them
+  together with the category and the kind as one `flags & 0x733`, which
+  is why nothing else may take them;
 - bit 11, `IS_ESCAPEE` — repurposes the refcount as the escapee
   hold-count (see invariant 5);
-- bits 12–14, entity kind — written once at creation, dispatched on by
-  `cells` and `ll_entity_die`;
+- bit 12, weak gate (`HAS_WEAK_REFERENCES`) — lent to `weak`; death
+  sites test it before calling in;
+- bits 13–14, destructor state (`DESTRUCTOR_PENDING` / `DESTRUCTOR_RAN`)
+  — the debt protocol between `object` and the death paths;
 - bit 15, `STRING_OUT_OF_LINE` — **string entities only**: the bytes
   live through `data` rather than inline; read by `string` and by
-  `promote`'s survivor classification;
+  `promote`'s survivor classification. S31.2 retires it for the kind
+  code `StringDynamic`, which is why `rfc/model/classes.md`'s table
+  already calls this bit free;
 - bits 16–31, **free and asserted free**. `rc-trace` kept a candidate
   index across 15–31 and `rc-walk` an epoch byte at 16–23, and both went
   on 2026-08-26. `refcount::tests::the_header_the_compiler_shares`

@@ -469,7 +469,7 @@ unsafe fn external_memory(surv: *mut RcHeader) -> External {
         // Both kinds that carry a class word at +8, because a specialized
         // teardown is not inherited while the group is: a subclass of a
         // hooked class owns the same storage.
-        k if k == EntityKind::Object.to_flags() || k == EntityKind::Lazy.to_flags() => {
+        k if crate::refcount::carries_a_class_word(k) => {
             let cls = unsafe { (*(surv as *mut crate::object::Object)).class };
             match unsafe { crate::class::Class::outside_cells(cls) } {
                 Some(group) => External::Outside(group),

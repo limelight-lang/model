@@ -38,7 +38,7 @@ fn layout_matches_the_string_design() {
 }
 
 #[test]
-fn a_heap_string_is_a_cow_kind_1_entity_that_dies_by_refcount() {
+fn a_heap_string_is_a_cow_kind_8_entity_that_dies_by_refcount() {
     let _g = crate::memory::block_pool::test_guard();
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };

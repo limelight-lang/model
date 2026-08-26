@@ -50,9 +50,7 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 
 ## Fog
 
-- The `hash-folding` arm lists the same number of tests as the plain run
-  (449 each on 2026-08-26), while `dev/WORKFLOW.md` says each arm carries a
-  test the other does not. One of the two is wrong and it is not known which.
+Empty.
 
 ---
 
@@ -97,33 +95,48 @@ enrolment gate is one mask, and the kind field is four bits wide.
         `weak-references.md`'s eight mentions of bit 7. `cycle/questions.md`
         Y7 got a superseding note instead: its bit accounting reasoned about
         the old positions, and what it settles is which bits have customers.
-- [ ] S31.1 Renumber the entity kinds so the predicates become masks
-      done: `Object 0, Lazy 1, Array 2, Reference 3, String 4, StringDynamic 5,
-        Box 6, WeakRef 7`, codes 8–15 free; the category keeps bits 0–1 because
+- [x] S31.1 Renumber the entity kinds so the predicates become masks
+      done: `Object 0, Lazy 1, Array 2, Reference 3, String 8, StringDynamic 9,
+        Box 10, WeakRef 11`, codes 4–7 held free for ring-closing kinds and
+        12–15 free for the rest; the category keeps bits 0–1 because
         more surviving sites read its value than the kind's, and a mask test is
         position-free; "closes a cycle" is
-        `flags & 0b110000 == 0`, "carries a class at +8" is
-        `flags & 0b111000 == 0`, "is a string" is `flags & 0b111000 == 0b010000`;
-        `CANDIDATE_KINDS`' bitset is replaced by the range test, the four codes
-        below four are declared reserved for ring-closing kinds so a later kind
+        `flags & 0b100000 == 0`, "carries a class at +8" is
+        `flags & 0b111000 == 0`, "is a string" is `flags & 0b111000 == 0b100000`;
+        `CANDIDATE_KINDS`' bitset is replaced by the range test, the codes below
+        eight are declared reserved for ring-closing kinds so a later kind
         is not silently excluded by a permanent refusal (Y6), and the decision
         that refused renumbering is superseded in `dev/DECISIONS.md` with its
         reason; `kind_may_close_a_cycle` gains the caller S31.3 gives it or
         goes too
       tier: T2 · role: Critic
-      handoff: the candidate-index constants S30.3 owed are already gone
-        (`5ec11ac`), and `the_header_the_compiler_shares.rs` now asserts that
-        nothing claims bits 16-31 — so this step has a red-first check waiting
-        for it the moment it lays a field there.
-      handoff: the renumbering was refused once, when it would have bought one
-        test at the price of churn. It rides along here because the field is
-        being rebuilt anyway. The reservation clause answers the Critic round's
-        objection that a mask makes adding a ring-closing kind invisible, where
-        the bitset made it a one-line act; 179 of the corpus's 381 objects are
-        closures, and a closure entity is the likeliest next such kind.
+      Critic 2026-08-26: the reserve was 0–3 and its four codes were all
+        assigned, so a fifth ring-closing kind would take code 8 and be refused
+        by the mask forever — Y6's own failure inside the clause written against
+        it. Also: a member list is the bitset again, since a kind never added to
+        the list passes every assertion; three numeric citations missed
+        (`Lazy (6)`, `Kind-5`, `bit-7`); `carries_a_class_word` conflates the
+        weak-referent question with the class-word one, and they diverge at FFI.
+      Sage 2026-08-26: the reserve widens to codes 0–7 in the Critic's
+        assignment; the `rfc` amendment is a precondition and lands first; the
+        exhaustive `match` is necessary and not sufficient, so a `const`
+        assertion ties each kind's classification to its code and a
+        `debug_assert!` in `to_flags` catches a kind the battery never named.
+        `lowering.md` needs no edit — its C mirror names positions, not codes.
+        Final.
+      handoff: closed 2026-08-26. The reserve is four free codes, and that is
+        the whole content of the clause: a full range refuses the next kind for
+        ever and reports nothing. `EntityKind::closes_a_ring` is the
+        classification and `kind_may_close_a_cycle` the mask; the `const`
+        battery is what makes them agree, verified by a standalone `rustc` run
+        in which a ring-closing kind coded at 8 fails the build.
+      handoff: the criterion's clause "the decision that refused renumbering is
+        superseded" was already met by `dev/DECISIONS.md`, 2026-08-26, "the
+        flags word is re-laid for one collector", written in S31.0's session —
+        checked against the criterion rather than carried over from the handoff.
 - [ ] S31.2 Fold the string's layout into the kind field
       done: `STRING_OUT_OF_LINE` is gone, `LLStringDynamic` is selected by kind
-        code 5 — whose meaning is **bytes outside the body, whatever the
+        code 9 — whose meaning is **bytes outside the body, whatever the
         reason**, not "growable" — and every "is a string" site accepts both
         codes; the inventory of sites that name one representation is taken by
         flipping the factory's stamp so every string is out-of-line and reading
@@ -133,11 +146,21 @@ enrolment gate is one mask, and the kind field is four bits wide.
       handoff: `promote.rs:461` tests `k == EntityKind::String.to_flags() &&
         flags & STRING_OUT_OF_LINE != 0`, which is exactly the shape the stamp
         flip finds and static reading does not.
+      handoff: four sites reach code 9 through a catch-all and the stamp flip
+        finds each only if the suite drives that path, so they are named here
+        rather than left to it: `object.rs`'s `ll_cow_separate`, whose `_` arm
+        returns the original and so writes a **shared** string in place;
+        `escape_copy`'s `unreachable!`; `promote::external_memory`'s
+        `_ => External::None`, which loses a survivor's out-of-line bytes at a
+        reset; and `promote::traceable_in_full`. S31.1 named the code in
+        `cells::sever_cells` already, that arm's answer being mechanical.
 - [ ] S31.3 The enrolment gate is one mask
-      done: the release path decides with `flags & 0x733 == 0` — category zero,
-        kind below four, class not acyclic, ownership not proven, not already
+      done: the release path decides with `flags & 0x723 == 0` — category zero,
+        kind below eight, class not acyclic, ownership not proven, not already
         enrolled — and a `#[cfg(test)]` counter past the gate proves each of the
-        five conditions rejects on its own
+        five conditions rejects on its own; the mask is composed from the named
+        constants rather than written as a literal, and
+        `EntityKind::closes_a_ring` is what its kind term is checked against
       tier: T2 · role: —
       handoff: a scenario test covers a pair, never one half — the counter is
         what sees a condition that never fires.
@@ -147,7 +170,7 @@ enrolment gate is one mask, and the kind field is four bits wide.
         the whole-word `mutator_update_flags` is gone, and so is the flags half
         of `mutator_guard_retain` and `mutator_unguard_release`, which write it
         in a 64-bit store on the teardown path; the release path's
-        `flags & 0x733` read is narrowed with it, because a 32-bit load at +4
+        `flags & 0x723` read is narrowed with it, because a 32-bit load at +4
         against the collector's byte store at +6 is a mixed-size atomic access
         that Rust's memory model does not define and Miri refuses; a test
         asserts the collector's byte survives a concurrent flags update, and it
@@ -388,7 +411,7 @@ the exact test confirmed. The teardown is here in full: the Critic round of
         deferred-drop queue — severed children and the weak notify's displaced
         map values — drains only after the last member's free, the order proven
         by a test-only sequence probe; a weak cell re-created on a condemned
-        member is cleared by the free-time bit-7 notification
+        member is cleared by the free-time `HAS_WEAK_REFERENCES` notification
       tier: T2 · role: Code Reviewer
 - [ ] S36.6 Commit writes the maturation stamp
       done: on the owning thread, after judgement, each proven-live component is
@@ -649,11 +672,12 @@ own checkbox.
 - [ ] **A7, no zeroing by default.** `ll_object_new` zero-fills the whole
   body unconditionally; which slots need a defined initial state is the
   factory's to decide (`rfc/BACKLOG.md`, deferred optimizations).
-- [ ] **Kinds 4 and 6 have no producer.** `ll_entity_die`'s switch serves
-  five; Box waits on the FFI surface and Lazy on the compiler, and each
-  reaches a `debug_assert!` meanwhile. `Lazy` is nevertheless in
-  `CANDIDATE_KINDS`, on the argument recorded in `dev/DECISIONS.md`,
-  2026-08-07.
+- [ ] **`Lazy` (code 1) and `Box` (code 10) have no producer.**
+  `ll_entity_die`'s switch serves five; Box waits on the FFI surface and
+  Lazy on the compiler, and each reaches a `debug_assert!` meanwhile.
+  `Lazy` nevertheless answers yes to `EntityKind::closes_a_ring`, on the argument recorded
+  in `dev/DECISIONS.md`, 2026-08-07. `StringDynamic` (code 9) has no
+  producer either and is S31.2's, so it is not carried here.
 - [ ] **The threshold arming policy and the collector-thread accelerator.**
   What is left of the old escalation ladder after S38.4 builds the entry gate
   and the slow-path fire. The arming policy is the compiler's

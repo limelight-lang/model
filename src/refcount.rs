@@ -13,6 +13,15 @@
 //! back. `rc-cycle` collects in-line on the owning thread and adds the
 //! collector thread as an accelerator over the same headers
 //! (`rfc/model/gc/rc-cycle.md`, "What it is" and "Concurrency").
+//!
+//! **Flags bits 8-10 and 16-31 are unclaimed, and each region has an
+//! owner waiting for it.** The three below are the enrolment gate's —
+//! acyclic class, proven ownership, enrolled — which S31.3 names; the
+//! region above is the collector's own, laid out as epoch at 16-17,
+//! maturation age at 18-19 and reserve at 20-23. Until each step lands,
+//! nothing reads or writes them, and
+//! `refcount::tests::the_header_the_compiler_shares` is what keeps a
+//! constant from drifting in meanwhile.
 
 use crate::journal::kinds::journal_event;
 
@@ -70,29 +79,29 @@ impl MemoryCategory {
     }
 }
 
+/// Copy-on-write semantics: refcount is always maintained,
+/// writes with refcount > 1 must separate (`rfc/model/values.md`).
+pub const COW: u32 = 1 << 6;
+
 /// Transient mark set on an arena entity while arena reset traces its
-/// escaped subgraph (`rfc/model/memory/arena-reset.md`). Bit 2, which the
-/// deleted CAS handoff of `heap-design.md` used to own together with bit
-/// 3; arena entities never ran a strategy, so reset borrowed it, and with
-/// the handoff gone it is the bit's only meaning. Cleared when a survivor
-/// is promoted to the heap.
+/// escaped subgraph (`rfc/model/memory/arena-reset.md`). Cleared when a
+/// survivor is promoted to the heap.
 ///
-/// Bits 3 through 6 are free, and `rc-cycle` re-lays the whole word at
-/// S31 — the layout there is `rfc/model/gc/cycle/questions.md` Y7.
-pub const ARENA_RESET_MARK: u32 = 1 << 2;
+/// It shares no bit with the collector's fields although a reset and a
+/// collection are both traces, because the two never run against the same
+/// entity: an arena entity is never a candidate
+/// (`rfc/model/classes.md`, "Flags layout").
+pub const ARENA_RESET_MARK: u32 = 1 << 7;
 
 /// Entity has weak references (side table exists).
-pub const HAS_WEAK_REFERENCES: u32 = 1 << 7;
+pub const HAS_WEAK_REFERENCES: u32 = 1 << 12;
 /// This instance owes a `__destruct`: set only when the user constructor
 /// has returned successfully, and only for a class that has a destructor.
 /// What every teardown path dispatches on (`rfc/runtime/object-lifecycle.md`).
-pub const DESTRUCTOR_PENDING: u32 = 1 << 8;
+pub const DESTRUCTOR_PENDING: u32 = 1 << 13;
 /// `__destruct` has already run (exactly-once guard),
 /// `rfc/runtime/object-lifecycle.md`.
-pub const DESTRUCTOR_RAN: u32 = 1 << 9;
-/// Copy-on-write semantics: refcount is always maintained,
-/// writes with refcount > 1 must separate (`rfc/model/values.md`).
-pub const COW: u32 = 1 << 10;
+pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 
 /// The entity is a live **escapee**: a request-arena object that one or
 /// more longer-lived containers currently reference
@@ -184,76 +193,164 @@ pub(crate) fn separation_category(owner_cat: MemoryCategory) -> MemoryCategory {
     }
 }
 
-/// Entity kind (bits 12-14): what makes a bare heap pointer
+/// Entity kind (bits 2-5): what makes a bare heap pointer
 /// self-describing for freeing and for a `mixed` conversion. `0` object is
 /// the zero default, so an entity built with no kind bits is an object;
 /// strings, arrays and the other kinds set theirs explicitly. Authoritative
 /// table: `rfc/model/classes.md`, "Flags layout".
-pub const ENTITY_KIND_SHIFT: u32 = 12;
-pub const ENTITY_KIND_MASK: u32 = 0b111 << ENTITY_KIND_SHIFT;
+///
+/// Four bits rather than three, and adjacent to the category rather than
+/// above the destructor state, because the order is what turns three
+/// questions and the enrolment gate into mask tests: the codes are
+/// assigned so that each answer is a range, and a range is a comparison
+/// only while the field's high bits carry it
+/// ([`kind_may_close_a_cycle`], [`carries_a_class_word`], [`is_string`]).
+pub const ENTITY_KIND_SHIFT: u32 = 2;
+pub const ENTITY_KIND_MASK: u32 = 0b1111 << ENTITY_KIND_SHIFT;
 
-/// The seven entity kinds (code `7` is reserved). A value context `Box`
-/// and the FFI wrapper `Box` share the [`EntityKind::Box`] tag,
-/// distinguished by context (`rfc/model/values.md`, `rfc/model/memory/ffi.md`).
+/// The kind field's top bit. Zero exactly for the codes below eight,
+/// which is the range held for kinds that can close a ring
+/// ([`EntityKind::closes_a_ring`]).
+const KIND_ABOVE_THE_RING_RESERVE: u32 = 0b1 << (ENTITY_KIND_SHIFT + 3);
+
+/// The kind field's top three bits. Equal within the code pairs `{0, 1}`
+/// and `{8, 9}`, which is what lets one comparison name a pair: zero for
+/// the two kinds carrying a class word at `+8`, and
+/// `EntityKind::String.to_flags()` for the two string layouts.
+const KIND_TOP_THREE: u32 = 0b111 << (ENTITY_KIND_SHIFT + 1);
+
+/// The eight entity kinds. A value context `Box` and the FFI wrapper
+/// `Box` share the [`EntityKind::Box`] tag, distinguished by context
+/// (`rfc/model/values.md`, `rfc/model/memory/ffi.md`).
+///
+/// **The codes are a range assignment, not an enumeration order.** Which
+/// code a kind holds decides which questions about it are one mask test,
+/// so a code is chosen by the ranges above and never for convenience:
+/// `0-7` are held for the kinds that close a ring, `0-1` carry a class
+/// word at `+8`, `8-9` are the two string layouts. Four codes of the ring
+/// reserve stand free — `4-7` — and so do `12-15` for a kind that closes
+/// no ring; the free half of the reserve is what
+/// [`EntityKind::closes_a_ring`] exists to defend.
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EntityKind {
     Object = 0,
-    String = 1,
+    Lazy = 1,
     Array = 2,
     Reference = 3,
-    Box = 4,
-    WeakRef = 5,
-    Lazy = 6,
+    String = 8,
+    /// The string whose bytes lie outside the body. **No producer until
+    /// S31.2** (`PLAN.md`), which retires `STRING_OUT_OF_LINE` in favour
+    /// of this code; the code is held here meanwhile so the pair `{8, 9}`
+    /// stays the range [`is_string`] tests.
+    StringDynamic = 9,
+    Box = 10,
+    WeakRef = 11,
 }
 
 impl EntityKind {
     /// The kind bits for construction, positioned at [`ENTITY_KIND_SHIFT`].
     #[inline]
     pub const fn to_flags(self) -> u32 {
+        // Every entity's flags word passes here at birth, which makes it
+        // the one door that can catch a kind classified on one side of
+        // the reserve and coded on the other. The `const` battery below
+        // catches the same thing earlier for every kind it names; this
+        // catches a kind the battery was not extended to.
+        debug_assert!(
+            self.closes_a_ring() == ((self as u32) < 8),
+            "a kind's ring classification and its code disagree, so the \
+             enrolment mask answers the opposite of the classification"
+        );
         (self as u32) << ENTITY_KIND_SHIFT
+    }
+
+    /// Whether this kind holds counted slots a ring can close through: an
+    /// object's properties, a Lazy proxy's object slots, an array's
+    /// elements and string keys, and a ReferenceBox's one Value.
+    /// `ll_entity_die` sends `Lazy` through `ll_object_die` and
+    /// `cells::trace_cells` strides it like an object, which is why it
+    /// answers yes before any factory stamps it (`dev/DECISIONS.md`,
+    /// 2026-08-07). A string, an FFI Box and a weak cell own nothing a
+    /// ring can pass through.
+    ///
+    /// **This is the classification; [`kind_may_close_a_cycle`] is the
+    /// test the release path runs**, and the two agree by the assertion
+    /// below rather than by anyone's care. The match takes no `_` arm on
+    /// purpose: a kind added to the enum stops the build here, in the
+    /// file that owns the answer, rather than being refused enrolment
+    /// forever by a mask that never heard of it
+    /// (`rfc/model/gc/cycle/questions.md`, Y6).
+    #[inline]
+    pub const fn closes_a_ring(self) -> bool {
+        match self {
+            EntityKind::Object | EntityKind::Lazy | EntityKind::Array | EntityKind::Reference => {
+                true
+            }
+            EntityKind::String
+            | EntityKind::StringDynamic
+            | EntityKind::Box
+            | EntityKind::WeakRef => false,
+        }
     }
 }
 
-/// The entity kinds that may enter the cycle collector's candidate
-/// buffer, as a set indexed by the kind code. **A kind belongs here
-/// exactly when it holds counted slots a cycle can close through**: an
-/// object's properties, an array's elements and string keys, a
-/// ReferenceBox's one Value, and a Lazy proxy's object slots —
-/// `ll_entity_die` sends `Lazy` through `ll_object_die` and
-/// `cells::trace_cells` strides it like an object. String, Box and WeakRef
-/// own nothing a ring can pass through and stay out by that same
-/// criterion.
-///
-/// Why a set rather than a mask over the kind bits, why it is built from
-/// [`EntityKind`] rather than written as a literal, and why `Lazy` is
-/// admitted before any factory stamps it: `dev/DECISIONS.md`, "the
-/// candidate gate is a set of kinds, not a mask over their codes".
-/// Membership costs a shift and a bit test on a word the release path
-/// already holds ([`kind_may_close_a_cycle`]).
-///
-/// **No consumer since 2026-08-26**, when the candidate buffer this
-/// gated was deleted with `rc-trace`. The set outlives the buffer: it is
-/// the kind half of the gate `rc-cycle` enrols through, and S31.1
-/// replaces the bitset with a range test over renumbered kind codes
-/// (`PLAN.md`).
-pub const CANDIDATE_KINDS: u32 = (1 << EntityKind::Object as u32)
-    | (1 << EntityKind::Array as u32)
-    | (1 << EntityKind::Reference as u32)
-    | (1 << EntityKind::Lazy as u32);
+// The classification and the code agree, in both directions: a
+// ring-closing kind coded at eight or above would be refused enrolment by
+// the mask, and an inert kind coded below eight would be enrolled and
+// traced for children it does not have.
+const _: () = {
+    let kinds = [
+        EntityKind::Object,
+        EntityKind::Lazy,
+        EntityKind::Array,
+        EntityKind::Reference,
+        EntityKind::String,
+        EntityKind::StringDynamic,
+        EntityKind::Box,
+        EntityKind::WeakRef,
+    ];
+    let mut i = 0;
+    while i < kinds.len() {
+        assert!(
+            kinds[i].closes_a_ring() == ((kinds[i] as u32) < 8),
+            "a kind's ring classification and its code disagree"
+        );
+        i += 1;
+    }
+};
 
-/// True when the kind in this flags word is in [`CANDIDATE_KINDS`] — the
-/// kinds whose non-zero decrement can leave a garbage ring behind. For
-/// the reserved code 7 the answer is false, as for every kind outside
-/// the set. Takes the flags word rather than the entity, because every
-/// caller holds it in a register already.
+/// True when the kind in this flags word closes a ring — the kinds whose
+/// non-zero decrement can leave a garbage ring behind. Takes the flags
+/// word rather than the entity, because every caller holds it in a
+/// register already.
 ///
 /// **No caller since 2026-08-26**: the release path stopped enrolling
 /// when the two collectors went. S31.3 gives it back as one mask over
 /// five conditions, of which the kind is the second (`PLAN.md`).
 #[inline]
 pub fn kind_may_close_a_cycle(flags: u32) -> bool {
-    (CANDIDATE_KINDS >> ((flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT)) & 1 != 0
+    flags & KIND_ABOVE_THE_RING_RESERVE == 0
+}
+
+/// True when the entity carries a class word at `+8` — an object or a
+/// Lazy proxy, the two kinds a class descriptor and therefore a
+/// specialized `dispose` can belong to.
+#[inline]
+pub fn carries_a_class_word(flags: u32) -> bool {
+    flags & KIND_TOP_THREE == 0
+}
+
+/// True for a string entity in either layout, the bytes inline after the
+/// fixed fields or out of line behind `data`.
+///
+/// The second layout is [`EntityKind::StringDynamic`], which no factory
+/// stamps until S31.2 (`PLAN.md`); until then this answers for
+/// [`EntityKind::String`] alone and every site it can serve reads
+/// `STRING_OUT_OF_LINE` beside the kind.
+#[inline]
+pub fn is_string(flags: u32) -> bool {
+    flags & KIND_TOP_THREE == EntityKind::String.to_flags()
 }
 
 /// True when the entity kind field is `Object` (the zero default). The
@@ -270,21 +367,20 @@ pub fn is_object(flags: u32) -> bool {
 /// the fixed fields. Set once by the factory and never flipped — nothing
 /// promotes between the two layouts at run time.
 ///
-/// It sits at bit 15, kind-scoped the way [`ARENA_RESET_MARK`] is
-/// kind-scoped in the GC-state field: nothing but a string reads it, so
-/// it costs the other kinds nothing. [`COW`] carries
-/// copy-on-write and nothing else: one bit could not say both for an
-/// oversize string, which is out of line by size and copy-on-write by
-/// semantics (`dev/DECISIONS.md`, "a string's layout is its own header
-/// bit"; `rfc/model/memory/large-entities.md`).
+/// It sits at bit 15, scoped to one kind: nothing but a string reads it,
+/// so it costs the other kinds nothing. [`COW`] carries copy-on-write and
+/// nothing else, one bit being unable to say both for an oversize string,
+/// which is out of line by size and copy-on-write by semantics
+/// (`dev/DECISIONS.md`, "a string's layout is its own header bit";
+/// `rfc/model/memory/large-entities.md`).
+///
+/// **It is the one constant outside `rfc/model/classes.md`'s table**,
+/// which calls bit 15 free: S31.2 replaces it with the kind code
+/// [`EntityKind::StringDynamic`] and the bit goes (`PLAN.md`). A kind
+/// code says the same thing in a field every path already loads, and it
+/// says it for a second representation without a second bit.
 pub const STRING_OUT_OF_LINE: u32 = 1 << 15;
 
-/// **Flags bits 15 and above are unclaimed**, [`STRING_OUT_OF_LINE`]
-/// apart. `rc-walk` kept an eight-bit epoch stamp at 16-23 and it went
-/// with that collector; S31 re-lays the region as epoch at 16-17,
-/// maturation age at 18-19 and the collector's reserve at 20-23
-/// (`PLAN.md`), and until then nothing above bit 14 is read or written
-/// by anything.
 #[cfg(not(target_endian = "little"))]
 compile_error!(
     "the header is one 8-byte word with the refcount in the low half, so \

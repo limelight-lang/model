@@ -2,7 +2,7 @@ use super::*;
 use crate::class::ClassBuilder;
 use crate::memory::arena::Arena;
 use crate::object::{Object, new_constructed};
-use crate::refcount::{DESTRUCTOR_RAN, ll_release};
+use crate::refcount::{DESTRUCTOR_RAN, ENTITY_KIND_MASK, ll_release};
 use crate::value::{Tag, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

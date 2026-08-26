@@ -43,7 +43,7 @@ versions live in `docs/history/`, marked at the top.
   unspecified — is `dev/DECISIONS.md`, 2026-08-03. **Rule for anything
   new on that path:** no `thread_local!` it can reach may have drop
   glue.
-- Strings: `src/string.rs` — both layouts of the string entity (kind 1),
+- Strings: `src/string.rs` — both layouts of the string entity (kind 8),
   told apart by `STRING_OUT_OF_LINE` (bit 15, string-scoped) rather than
   by `COW`, which means only copy-on-write.
   Inline: `RcHeader | len (u32) | hash (u64) | bytes`, one
@@ -405,7 +405,7 @@ versions live in `docs/history/`, marked at the top.
   (`dev/DECISIONS.md`, "a class with cells outside itself carries one flag
   and one group of five" and "the arena carry is the group's sixth
   member, and a refusal answers the bytes it left behind").
-- Weak references: `src/weak.rs` — the kind-5 weak cell, the per-thread
+- Weak references: `src/weak.rs` — the kind-11 weak cell, the per-thread
   weak table, death notification (`notify_death` / `notify_members` /
   `drain_arena_weak_log`) and the `ll_weakref_create` / `ll_weakref_get`
   ABI. Notification sites live in `object.rs` (dispose phase 2, first
@@ -561,13 +561,15 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
 ## Key decisions
 
 `dev/DECISIONS.md` — 2026-08-26: what the old collectors left behind is
-deleted, and the two things kept from it are named. 2026-08-07: the
-candidate gate is a **set of kinds** (`refcount::CANDIDATE_KINDS`,
-`{Object, Array, Reference, Lazy}`) rather than a mask over their codes,
-because no mask admits `Reference 011` while excluding `String 001`; a
-kind is in the set exactly when it holds counted slots a cycle can close
-through, so the policy stops depending on which numbers the kinds were
-given — S31.1 renumbers them and replaces the bitset with a range test.
+deleted, and the two things kept from it are named. 2026-08-26: the flags
+word is re-laid for one collector, and the ring-closing reserve is widened
+to codes 0–7 — a kind holds counted slots a ring can close through exactly
+when its code is below eight (`refcount::EntityKind::closes_a_ring`,
+`{Object, Lazy, Array, Reference}`), so the gate is the mask test
+`kind_may_close_a_cycle` and four codes stand free for the next such kind.
+It supersedes 2026-08-07, where the same policy was a bitset because the
+codes of that day admitted no mask: `Reference` was `011` and `String`
+`001`, and no subset mask separates them.
 2026-07-26: entity blocks as a second heap population. 2026-07-20: arena
 handle as a raw pointer;
 trailing inline data through raw pointers; block header split by access

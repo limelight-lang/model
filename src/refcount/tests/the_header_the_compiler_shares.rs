@@ -5,6 +5,21 @@
 
 use super::*;
 
+/// Every kind in code order. The predicates below are checked against
+/// this list rather than against the masks they use, so a code moved
+/// without its range being reconsidered fails here instead of at the
+/// first collection.
+const ALL_KINDS: [EntityKind; 8] = [
+    EntityKind::Object,
+    EntityKind::Lazy,
+    EntityKind::Array,
+    EntityKind::Reference,
+    EntityKind::String,
+    EntityKind::StringDynamic,
+    EntityKind::Box,
+    EntityKind::WeakRef,
+];
+
 #[test]
 fn header_is_8_bytes_at_offset_zero() {
     assert_eq!(size_of::<RcHeader>(), 8);
@@ -18,38 +33,107 @@ fn header_is_8_bytes_at_offset_zero() {
 
 /// The flags word layout is a contract with the compiler and the C
 /// mirror in `rfc/model/lowering.md`: generated code stamps these exact
-/// bit positions. Pin them so the 2026-07-22 compaction cannot drift.
+/// bit positions, and `rfc/model/classes.md`'s "Flags layout" is the
+/// table both sides transcribe.
 #[test]
-fn flags_layout_is_the_compacted_design() {
+fn flags_layout_matches_the_normative_table() {
     assert_eq!(MEMORY_CATEGORY_MASK, 0b11, "category: bits 0-1");
-    assert_eq!(ARENA_RESET_MARK, 1 << 2, "arena reset mark: bit 2");
-    assert_eq!(HAS_WEAK_REFERENCES, 1 << 7);
-    assert_eq!(DESTRUCTOR_PENDING, 1 << 8);
-    assert_eq!(DESTRUCTOR_RAN, 1 << 9);
-    assert_eq!(COW, 1 << 10);
+    assert_eq!(ENTITY_KIND_SHIFT, 2);
+    assert_eq!(ENTITY_KIND_MASK, 0b1111 << 2, "entity kind: bits 2-5");
+    assert_eq!(COW, 1 << 6);
+    assert_eq!(ARENA_RESET_MARK, 1 << 7, "arena reset mark: bit 7");
+    assert_eq!(IS_ESCAPEE, 1 << 11);
+    assert_eq!(HAS_WEAK_REFERENCES, 1 << 12);
+    assert_eq!(DESTRUCTOR_PENDING, 1 << 13);
+    assert_eq!(DESTRUCTOR_RAN, 1 << 14);
     assert_eq!(STRING_OUT_OF_LINE, 1 << 15, "string layout: bit 15");
     assert_eq!(
         STRING_OUT_OF_LINE & ENTITY_KIND_MASK,
         0,
         "a wider kind field would take the layout bit"
     );
-    assert_eq!(IS_ESCAPEE, 1 << 11);
-    assert_eq!(ENTITY_KIND_SHIFT, 12);
-    assert_eq!(ENTITY_KIND_MASK, 0b111 << 12, "entity kind: bits 12-14");
 
-    // Bits 16 and above are unclaimed until S31 lays the collector's
-    // fields there. Nothing may drift into them meanwhile, which is what
-    // this asserts: every constant above is below bit 16.
     let claimed = MEMORY_CATEGORY_MASK
+        | ENTITY_KIND_MASK
+        | COW
         | ARENA_RESET_MARK
+        | IS_ESCAPEE
         | HAS_WEAK_REFERENCES
         | DESTRUCTOR_PENDING
         | DESTRUCTOR_RAN
-        | COW
-        | IS_ESCAPEE
-        | ENTITY_KIND_MASK
         | STRING_OUT_OF_LINE;
+    // Bits 8-10 are the enrolment gate's three — acyclic class, proven
+    // ownership, enrolled — and S31.3 names them. A constant drifting
+    // into one would leave the gate's single mask testing a condition
+    // that is not the one it reads as.
+    assert_eq!(
+        claimed & 0b0111_0000_0000,
+        0,
+        "bits 8-10 stay free for the enrolment gate"
+    );
+    // Bits 16 and above are unclaimed until S31 lays the collector's
+    // epoch, maturation age and reserve there. Nothing may drift into
+    // them meanwhile, which is what this asserts.
     assert_eq!(claimed & 0xFFFF_0000, 0, "nothing claims bits 16-31");
+}
+
+/// The three questions `rfc/model/classes.md` turns into mask tests. Each
+/// is checked with the non-kind bits set, because a predicate that read
+/// the whole word rather than the field would agree on a bare kind and
+/// disagree on a live header.
+#[test]
+fn each_predicate_answers_for_the_kind_alone() {
+    for kind in ALL_KINDS {
+        let flags = MemoryCategory::Immortal as u32
+            | kind.to_flags()
+            | COW
+            | ARENA_RESET_MARK
+            | IS_ESCAPEE
+            | HAS_WEAK_REFERENCES
+            | DESTRUCTOR_PENDING
+            | DESTRUCTOR_RAN
+            | STRING_OUT_OF_LINE;
+
+        assert_eq!(
+            kind_may_close_a_cycle(flags),
+            kind.closes_a_ring(),
+            "{kind:?}: the mask and the classification have to agree"
+        );
+        assert_eq!(
+            carries_a_class_word(flags),
+            matches!(kind, EntityKind::Object | EntityKind::Lazy),
+            "{kind:?}: a class word at +8 belongs to the object kinds"
+        );
+        assert_eq!(
+            is_string(flags),
+            matches!(kind, EntityKind::String | EntityKind::StringDynamic),
+            "{kind:?}: both string layouts answer, and only they"
+        );
+        assert_eq!(is_object(flags), kind == EntityKind::Object);
+    }
+}
+
+/// Codes 0-7 are held for kinds that can close a ring and four of them
+/// stand free, so that adding such a kind is a code assignment rather
+/// than a renumbering. Four codes rather than none is the whole content
+/// of the reserve: a full range refuses the next kind for ever and
+/// reports nothing (`rfc/model/gc/cycle/questions.md`, Y6).
+#[test]
+fn the_ring_reserve_holds_the_low_eight_codes_and_four_stand_free() {
+    for kind in ALL_KINDS {
+        assert_eq!(
+            (kind as u32) < 8,
+            kind.closes_a_ring(),
+            "{kind:?}: the reserved range and the classification disagree"
+        );
+    }
+
+    let taken = ALL_KINDS.iter().filter(|k| k.closes_a_ring()).count();
+    assert_eq!(
+        8 - taken,
+        4,
+        "four ring-closing codes stand free; a full reserve reserves nothing"
+    );
 }
 
 /// `Object` is the zero kind field, so a header built with no kind bits
@@ -64,14 +148,11 @@ fn object_is_the_zero_kind() {
         "non-kind bits do not confuse it"
     );
 
-    for kind in [
-        EntityKind::String,
-        EntityKind::Array,
-        EntityKind::Reference,
-        EntityKind::Box,
-        EntityKind::WeakRef,
-        EntityKind::Lazy,
-    ] {
+    for kind in ALL_KINDS {
+        if kind == EntityKind::Object {
+            continue;
+        }
+
         let bits = kind.to_flags();
         assert_ne!(bits, 0, "{kind:?} is a non-zero kind");
         assert_eq!(

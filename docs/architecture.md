@@ -217,7 +217,7 @@ resources, invariants) is in `dev/ARCHITECTURE.md`.
 | `class` | descriptors: inline vtable train, itables, Cohen display, layout runs, trace lists | instance state, categories, GC |
 | `object` | factory, constructed hook, three-phase death, kind-switched `ll_entity_die` | collector internals, block internals |
 | `reference` | the `&` reference box, entity kind 3 | classes |
-| `weak` | weak cell (kind 5) = canonical `WeakReference`; per-thread weak table; every notification rule | *when* to notify — the death sites' duty |
+| `weak` | weak cell (kind 11) = canonical `WeakReference`; per-thread weak table; every notification rule | *when* to notify — the death sites' duty |
 | `gc` | rc-trace cycle collector (Bacon–Rajan); arm-vs-fire; the `ll_gc_maybe_collect` poll | arming policy (compiler's) |
 | `walk` | kind-dispatched tracer, census, whole-heap collection, Phase-4 drains | slots and occupancy (heap's side) |
 | `epoch` *(rc-walk)* | mutator side: handshake ack, verdict queue, non-reentrant checkpoint | collector phases |
@@ -311,7 +311,7 @@ else refcount reached 0
   site -> object : ll_entity_die (kind switch)
   object -> object : phase 1 — pre-destructor,\nresurrection check
   object -> gc : forget_candidate (rc-trace)\nbefore any child drops
-  object -> weak : notify_death (if bit 7)
+  object -> weak : notify_death (if HAS_WEAK_REFERENCES)
   note right : first act of phase 2
   loop counted children (class runs)
     object -> barrier : drop_ref(child)

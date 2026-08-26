@@ -704,7 +704,7 @@ pub(crate) unsafe fn header_category(header: *const RcHeader) -> MemoryCategory 
 /// unregisters from the weak table; a string and an array free the
 /// body they own outside their own slot. Box gains its arm when the
 /// crate can produce one (FFI), and reaching it today is a bug, not a
-/// leak policy; that arm owes the bit-7 weak-notify test — a Box is a
+/// leak policy; that arm owes the `HAS_WEAK_REFERENCES` weak-notify test — a Box is a
 /// legal `WeakReference` target (`rfc/model/weak-references.md`,
 /// "Death notification").
 ///
@@ -725,7 +725,7 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     // What a dying enrolled slot owes a collector is done here, for
     // every kind the gate admits, so a kind that gains counted slots
     // later inherits it without a call site of its own
-    // (`refcount::CANDIDATE_KINDS`). An array runs no `dispose`, which is
+    // (`refcount::EntityKind::closes_a_ring`). An array runs no `dispose`, which is
     // where an object would do it on its way past the free, so this door
     // is the array's too — with one exception owing the same duty at its
     // own site: a **nested** array is torn down by `array_die`'s drain

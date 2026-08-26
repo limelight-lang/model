@@ -387,12 +387,12 @@ property slots. `Class` descriptors are immortal and carry their vtable
 inline, after the fixed fields.
 
 Non-object entities carry no class pointer; the header's **kind field**
-(bits 12–14) is what makes a bare pointer self-describing at teardown —
+(bits 2–5) is what makes a bare pointer self-describing at teardown —
 `ll_entity_die` switches on it (`rfc/model/classes.md`, "Entity kind and
 non-object teardown"). The first produced non-object kind is the
 **reference box** (`&`, kind 3): `RcHeader | Value`, 24 bytes
 (`src/reference.rs`) — dying, it releases its one Value and frees.
-The second is the **weak cell** (kind 5): the canonical `WeakReference`
+The second is the **weak cell** (kind 11): the canonical `WeakReference`
 entity *is* the cell, 16 bytes, always in the GC heap (`src/weak.rs`,
 `rfc/model/weak-references.md`). Strings, arrays, `Box` and lazy objects
 arrive with their own subsystems.
