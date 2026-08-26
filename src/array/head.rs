@@ -56,11 +56,11 @@
 
 use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
 
-/// How many times a walker re-reads a head whose elements keep moving
-/// before it gives up on this epoch. Small on purpose: growth,
-/// compaction and migration are all rare, so a second disagreement means
-/// the walker is unlucky rather than starved, and giving up leaks one
-/// epoch's worth rather than freeing anything early.
+/// How many times a trace re-reads a head whose elements keep moving
+/// before it gives the array up. Small on purpose: growth, compaction
+/// and migration are all rare, so a second disagreement means the reader
+/// is unlucky rather than starved, and giving up leaks one collection's
+/// worth rather than freeing anything early.
 const COHERENT_READ_ATTEMPTS: usize = 4;
 
 /// Which storage representation the head describes, numbered as
@@ -77,17 +77,14 @@ pub(crate) enum StorageTag {
     Hash = 3,
 }
 
-/// A reading of the head that a walker may act on: the four words below
-/// taken between two equal even versions, so they describe one moment,
-/// with that version kept beside them.
+/// A reading of the head that a trace may act on: the four words below
+/// taken between two equal even versions, so they describe one moment.
+///
+/// The version they agreed on is **not** kept beside them. It was, for
+/// `rc-walk`'s re-check, which re-read a recorded cell and asked whether
+/// the chunk was still the array's; that phase is gone, and S38.0's
+/// reader answers no version either (`PLAN.md`).
 pub(crate) struct CoherentView {
-    /// The even version both readings agreed on. A reader that keeps an
-    /// address out of this chunk keeps this beside it: the address stays
-    /// readable after a move, because a collection parks the chunk's
-    /// free, so re-reading it answers about a chunk nobody writes any
-    /// more — and this number is what says the chunk stopped being the
-    /// array's.
-    pub(crate) version: usize,
     pub(crate) tag: StorageTag,
     /// Null when the representation has never allocated.
     pub(crate) storage: *mut u8,
@@ -106,11 +103,12 @@ pub(crate) struct CoherentView {
 pub struct StorageHead {
     /// Bumped twice by every operation that moves elements — growth,
     /// compaction, and the migration between representations — odd while
-    /// the move is in progress. A walker reads it, then the four words
+    /// the move is in progress. A trace reads it, then the four words
     /// below, then reads it again, and starts over unless both readings
     /// are the same even number. A stale-but-coherent view is a missed
-    /// edge, which the epoch's later phases repair; an incoherent one is
-    /// an edge that never existed, which nothing repairs.
+    /// edge, and a missed edge only pins its target as a root; an
+    /// incoherent one is an edge that never existed, which would take a
+    /// live object's count down.
     ///
     /// One mover skips the bracket: `entity::carry_storage_out_of`
     /// copies an arena array's elements into a fresh chunk and publishes
@@ -236,14 +234,8 @@ impl StorageHead {
         self.version.store(v + 1, Ordering::Release);
     }
 
-    /// The version a walker validates its reading against, read on its
-    /// own.
-    ///
-    /// The Phase 3 re-check reads it this way: it holds the number a
-    /// [`CoherentView`] agreed on and asks whether the elements have
-    /// moved since. An odd answer is a move in progress and equals no
-    /// recorded version, so a caller comparing for equality needs no
-    /// case of its own for it.
+    /// The version word on its own, for a test that asks whether a move
+    /// happened. An odd answer is a move in progress.
     #[cfg(test)]
     #[inline]
     pub(crate) fn version(&self) -> usize {
@@ -307,15 +299,14 @@ impl StorageHead {
 
             // An unknown tag is this crate writing one it does not
             // define. Giving the array up is the same safe direction the
-            // retry bound takes, and it costs one epoch rather than a
-            // stride over bytes with no agreed meaning.
+            // retry bound takes, and it costs one collection rather than
+            // a stride over bytes with no agreed meaning.
             let Some(tag) = decode_tag(tag) else {
                 debug_assert!(false, "a storage head carries a tag nothing writes");
                 return None;
             };
 
             return Some(CoherentView {
-                version: before,
                 tag,
                 storage,
                 nslots,

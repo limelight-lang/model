@@ -1,0 +1,60 @@
+//! The mutator writes the counter and nothing else, so a byte a
+//! collector puts in the flags half survives every hot-path operation.
+//!
+//! Nothing writes the flags half from another thread between S30 and
+//! S31, which lays the collector's fields at bits 16-23 (`PLAN.md`).
+//! What these tests pin is the separation the mutator owes, and that
+//! outlives the collector that first asked for it: `rc-walk`'s epoch
+//! stamp is where the marker below comes from.
+
+use super::*;
+
+/// A marker in the flags half, in bits no constant claims. Any value
+/// there would do — what the tests read is whether it comes back.
+const FOREIGN_MARK: u32 = 7 << 16;
+
+/// Byte 6 of the header is addressable on its own: a byte store there
+/// lands in the flags half and leaves the refcount untouched. The
+/// little-endian assumption behind that is a `compile_error!` in
+/// `refcount.rs`; this is the run-time half of the same claim.
+#[test]
+fn a_byte_store_at_offset_six_misses_the_counter() {
+    let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+    let p = &mut h as *mut RcHeader as *mut u8;
+    unsafe {
+        p.add(6).write(3);
+    }
+
+    assert_eq!(h.flags & 0x00FF_0000, 3 << 16, "byte 6 is flags bits 16-23");
+    assert_eq!(h.refcount, 1, "the refcount bytes are untouched");
+}
+
+/// The narrow mutator (rfc amendment, 2026-07-27): retain and a
+/// non-final release store only the counter half — a foreign mark in
+/// the flags half passes through untouched.
+#[test]
+fn retain_and_release_leave_the_flags_half_alone() {
+    let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+    h.flags |= FOREIGN_MARK;
+
+    retain(&mut h);
+    assert_eq!(h.refcount, 2);
+    assert_eq!(h.flags & FOREIGN_MARK, FOREIGN_MARK, "the mark survives");
+
+    assert!(!release(&mut h));
+    assert_eq!(h.refcount, 1);
+    assert_eq!(h.flags & FOREIGN_MARK, FOREIGN_MARK);
+}
+
+/// Eager death (rfc amendment, 2026-07-27, superseding F5's deferral):
+/// the release reaching zero reports the death — there is no condemned
+/// test on the death branch, and the flags half is left exactly as
+/// loaded.
+#[test]
+fn every_death_takes_the_ordinary_path() {
+    let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+    h.flags |= FOREIGN_MARK;
+    assert!(release(&mut h), "the death is reported, marked or not");
+    assert_eq!(h.refcount, 0);
+    assert_eq!(h.flags & FOREIGN_MARK, FOREIGN_MARK, "flags untouched");
+}

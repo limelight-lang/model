@@ -244,14 +244,13 @@ struct Registry {
     /// not on its way out.
     ///
     /// The free cannot happen where the eviction does. A ring is one
-    /// pooled block, so `ll_free` parks it while a collector epoch is in
-    /// flight — onto a backlog `heap::ll_thread_exit` disposed three
-    /// steps before it reaches retirement, which would rebuild the list
-    /// on a dying thread and leak it with the ring inside. Checking for
-    /// an epoch does not fix it either: one can open between the check
-    /// and the free. So a retiring thread drops the rings here, and the
-    /// next thread to journal or to take a mark — a live thread, whose
-    /// parked backlog is still its own — frees them.
+    /// pooled block, and a block freed on a thread inside its own exit
+    /// reaches structures that exit has already disposed. Testing for
+    /// the exit at the eviction does not fix it: the two are ordered by
+    /// nothing. So a retiring thread drops the rings here, and the next
+    /// thread to journal or to take a mark — a live one — frees them.
+    /// The parking S36.2 rebuilds lands on this same path, which is why
+    /// the shape is kept rather than simplified while nothing parks.
     pending_free: Vec<*mut Ring>,
 }
 
@@ -539,8 +538,8 @@ fn take_pending(registry: &mut Registry) -> Vec<*mut Ring> {
 }
 
 /// Give the rings back to the allocator. Called on a live thread only:
-/// the free can park for a collector epoch, and a parked free needs the
-/// backlog its own thread still owns ([`Registry::pending_free`]).
+/// a free reaches structures a thread inside its own exit has already
+/// disposed ([`Registry::pending_free`]).
 fn free_rings(rings: Vec<*mut Ring>) {
     for ring in rings {
         unsafe { crate::memory::stdapi::ll_free(ring as *mut u8) };
@@ -574,9 +573,8 @@ fn allocate_ring() -> *mut Ring {
 /// Called from `heap::ll_thread_exit` and nowhere else. It goes **last**
 /// in that sequence, after every structure whose teardown is worth
 /// journaling. **It frees nothing**, because by the time it runs this
-/// thread cannot: a ring's free can park for a collector epoch, and the
-/// backlog a park needs was disposed three steps earlier
-/// ([`Registry::pending_free`]).
+/// thread cannot: the structures a free reaches are disposed earlier in
+/// the same sequence ([`Registry::pending_free`]).
 pub fn retire_thread_ring() {
     // Only a thread that has a ring closes: a cell already holding a
     // sentinel keeps the one it has, so a refusal is not turned into a

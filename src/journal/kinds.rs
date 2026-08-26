@@ -82,25 +82,11 @@ pub const KIND_THREAD_START: u32 = 7;
 /// last act.
 pub const KIND_THREAD_EXIT: u32 = 8;
 
-/// A collection opens: `a` is its number, `subject` and `b` unused. The
-/// number wraps at 256, the width the header's epoch byte has; a window
-/// longer than 256 collections is not one the ring could hold anyway.
-///
-/// **No site since 2026-08-26**, when the two collectors that raised it
-/// were deleted. The kind is kept rather than renumbered: the codes are
-/// a wire contract with the readers of a retired ring.
-pub const KIND_EPOCH_BEGIN: u32 = 9;
-
-/// A collection closes: `a` is its number, `b` the components it
-/// confirmed, `subject` unused. No site, for [`KIND_EPOCH_BEGIN`]'s
-/// reason.
-pub const KIND_EPOCH_END: u32 = 10;
-
 /// The highest kind that has a site. The mask is a `u64`, so a kind past
 /// 63 would shift out of it and enable the wrong one — a limit worth
 /// failing the build over rather than discovering as a silent
 /// misreading.
-const HIGHEST_KIND: u32 = KIND_EPOCH_END;
+const HIGHEST_KIND: u32 = KIND_THREAD_EXIT;
 
 const _: () = assert!(
     HIGHEST_KIND < 64,
@@ -126,9 +112,7 @@ pub const DEFAULT_KINDS: u64 = bit(KIND_ENTITY_BIRTH)
     | bit(KIND_BLOCK_COMMISSIONED)
     | bit(KIND_BLOCK_DECOMMISSIONED)
     | bit(KIND_THREAD_START)
-    | bit(KIND_THREAD_EXIT)
-    | bit(KIND_EPOCH_BEGIN)
-    | bit(KIND_EPOCH_END);
+    | bit(KIND_THREAD_EXIT);
 
 /// Which kinds are written, process-wide.
 ///

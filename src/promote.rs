@@ -358,7 +358,8 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // a block returned before that walk cuts the chain under it. The
     // route is `ll_free` rather than the pool directly, because the block
     // still reads `BLOCK_KIND_RETAINED` and that is the one path which
-    // both parks it under a live epoch and drops the index first.
+    // drops the index first, and which S36.2's parking will hold back
+    // while a collection reads the block.
     for block in emptied {
         unsafe { crate::memory::stdapi::ll_free(block as *mut u8) };
     }

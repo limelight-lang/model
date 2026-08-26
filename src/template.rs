@@ -87,7 +87,7 @@ pub(crate) unsafe fn values<'a>(t: *const Template) -> &'a [Value] {
 /// count inside the shape does not, the shape being static data no
 /// mutator writes. Chasing that word is safe for the concurrent reader
 /// for the same reason the class word is: the entity is mature, so the
-/// store that published it was ordered by a handshake epochs ago.
+/// store that published it was ordered long before the read.
 ///
 /// # Safety
 /// `base` is a live template instance, and under a relaxed reader its
@@ -169,8 +169,8 @@ pub unsafe fn ll_template_new(
             // ordinary one. Abandoning it was survivable while a refused
             // entity was at most a size class; a template of five
             // thousand values takes a block-aligned run of its own, and
-            // that one would keep a registry entry the collector walks
-            // every epoch for the life of the process.
+            // that one would keep a registry entry every collection
+            // walks for the life of the process.
             unsafe { crate::memory::stdapi::ll_free(mem) };
             return std::ptr::null_mut();
         }

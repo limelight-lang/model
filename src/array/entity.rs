@@ -1213,8 +1213,9 @@ pub unsafe fn release_children(a: *mut LLArray) {
 
 /// Sever this array's counted children — every element, and under the
 /// ordered hash every string key beside them — collecting them into
-/// `displaced` without releasing them. The array's arm of the drain's
-/// Phase 4, and the counterpart of
+/// `displaced` without releasing them. The array's arm of a cycle
+/// teardown's sever (`rfc/model/gc/rc-cycle.md`, "Cycle teardown",
+/// step 6), and the counterpart of
 /// [`crate::object::sever_counted_slots`]: same contract, same reason
 /// for not dropping inline, and the caller owes one drop per entry.
 ///
@@ -1399,7 +1400,11 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
                     }
 
                     if unsafe { is_array(dead) } {
-                        unsafe { leave_the_candidate_buffer(dead) };
+                        // S34.3: a nested array taken over here never
+                        // passes the bare-pointer door, so whatever that
+                        // door owes a dying enrolled slot is owed twice —
+                        // here and at the second site below
+                        // (`object::ll_entity_die`).
                         next = Some(dead as *mut LLArray);
                         break;
                     }
@@ -1465,8 +1470,8 @@ unsafe fn release_children_in_order(a: *mut LLArray, pending: &mut WorkList<Pend
                 return;
             }
 
+            // S34.3: the second site of the duty named above.
             if is_array(dead) && pending.push(Pending::DeadArray(dead as *mut LLArray)) {
-                leave_the_candidate_buffer(dead);
                 deferring = true;
                 return;
             }
@@ -1489,18 +1494,6 @@ unsafe fn is_array(entity: *mut RcHeader) -> bool {
     let flags = unsafe { crate::refcount::header_flags(entity) };
     (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT == EntityKind::Array as u32
 }
-
-/// The duty [`crate::object::ll_entity_die`]'s door performs that a
-/// collector's drain takes over along with the array. There is none
-/// today: `rc-cycle` cannot withdraw a queue entry, so a slot that dies
-/// enrolled is parked rather than forgotten, and S34.3 builds that
-/// (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
-///
-/// # Safety
-/// `entity` is an entity at count zero, taken over by the drain.
-
-#[inline]
-unsafe fn leave_the_candidate_buffer(_entity: *mut RcHeader) {}
 
 #[cfg(test)]
 mod tests;

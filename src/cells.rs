@@ -79,8 +79,8 @@ pub(crate) enum CellShape {
 /// **The storage these yield cells from is drawn under the instance's own
 /// memory category**, through [`crate::memory::routing::body_alloc`], the
 /// way a table's storage is. Two obligations meet in that one rule. The
-/// storage must be parkable — a block whose cells the collector recorded
-/// may not be freed while an epoch is in flight, and the parking
+/// storage must be parkable — a block whose cells a trace is reading may
+/// not be freed under it (S36.2), and the parking
 /// machinery takes a freeable block kind or a buffer-arena chunk, never an
 /// allocation from `std::alloc`. And the category is what decides who
 /// frees the storage of an instance that dies without a teardown: an
@@ -101,9 +101,7 @@ pub(crate) enum CellShape {
 /// its survivors are carried correctly and merely leak the old chunk,
 /// and its corpses leak one chunk each with no symptom short of RSS.
 pub(crate) struct OutsideCells {
-    /// Yield every cell outside the body, on a quiescent heap. Answers
-    /// the storage version the cells were read at, or `None` when no
-    /// versioned storage is behind them.
+    /// Yield every cell outside the body, on a quiescent heap.
     ///
     /// **It has no way to say "I gave up"**, and that is the type doing
     /// the work an assertion would otherwise do: a pass that reads
@@ -111,8 +109,7 @@ pub(crate) struct OutsideCells {
     /// survivor's count from the edges it finds
     /// (`promote::reconcile_cow_counts`), so a walk that yielded nothing
     /// would write that count below the truth.
-    pub walk_plain:
-        unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)) -> Option<usize>,
+    pub walk_plain: unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)),
     /// Empty the outside cells and collect their former occupants,
     /// without dropping them. Not [`empty_cell`], which writes a whole
     /// `Value` and a bare `NULL`: in a table entry the first zeroes the
@@ -179,9 +176,9 @@ pub(crate) enum OutsideCarry {
     Nothing,
 }
 
-/// What a class's outside-cell walk answers, and the three cases are not
-/// two: the epoch may conflate the last with the first, and the arena
-/// reset may not.
+/// What a class's outside-cell carry answers, and the three cases are
+/// not two: a promotion that moved the storage and one that had none to
+/// move leave the arena reset different work.
 ///
 /// Only a class's own hook constructs one, and no class does yet: the
 /// first is the map of `rfc/model/maps.md`, and the tests here build one
@@ -229,7 +226,7 @@ pub(crate) trait CellReader {
         base: *mut u8,
         cls: *const crate::class::Class,
         visit: &mut dyn FnMut(Cell),
-    ) -> Option<usize>;
+    );
 
     /// Read the eight bytes at `addr` as an integer. For the second word
     /// of a `Value`, which carries the tag and flags rather than an
@@ -260,7 +257,7 @@ impl CellReader for PlainCells {
         base: *mut u8,
         cls: *const crate::class::Class,
         visit: &mut dyn FnMut(Cell),
-    ) -> Option<usize> {
+    ) {
         unsafe { (group.walk_plain)(base, cls, visit) }
     }
 
@@ -330,7 +327,7 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
 }
 
 /// Every counted cell of `entity`, dispatched on its kind: the one
-/// tracing stride, shared by the quiescent walk and the collector's epoch,
+/// tracing stride, shared by the quiescent walk and a collector's trace,
 /// which differ only in `R`. Which kinds have counted cells is the
 /// dispatch at [`trace_entity`].
 ///
@@ -338,10 +335,10 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
 /// from its own snapshot and must not re-read a header the mutator is
 /// writing.
 ///
-/// Answers the version of the storage the cells came out of, and `None`
-/// for a kind that keeps its cells in its own slot or an array whose head
-/// would not read coherently. Neither can leave a cell behind in a chunk
-/// it has left, so neither has a version worth answering about.
+/// Yields nothing for a kind that keeps its cells in its own slot, and
+/// for an array whose head would not read coherently — an array given up
+/// this way is the safe direction of the `RC − IN` root identity, since
+/// its children read as externally referenced.
 ///
 /// # Safety
 /// `entity` is a live entity of `kind` whose cells are readable. Under a
@@ -352,7 +349,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
     entity: *mut RcHeader,
     kind: u32,
     mut visit: impl FnMut(Cell),
-) -> Option<usize> {
+) {
     const OBJECT: u32 = EntityKind::Object as u32;
     const LAZY: u32 = EntityKind::Lazy as u32;
     const REFERENCE: u32 = EntityKind::Reference as u32;
@@ -365,9 +362,6 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
             // reader; the descriptor it names is immortal and does not.
             let class =
                 unsafe { R::ptr((entity as *const u8).add(8)) } as *const crate::class::Class;
-            // The answer is the class's, not this arm's: a class with
-            // cells outside its body may keep them in storage it
-            // replaces, and then the re-check has a version to ask about.
             unsafe { crate::object::for_each_counted_cell::<R>(entity as *mut u8, class, visit) }
         }
         REFERENCE => {
@@ -375,8 +369,6 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
             if let Some(cell) = unsafe { counted_box_cell::<R>(at) } {
                 visit(cell);
             }
-
-            None
         }
 
         // The mutator moves an array's cells, so the head is read
@@ -391,7 +383,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 crate::array::entity::storage_head(entity as *mut crate::array::entity::LLArray)
             };
             let Some(view) = (unsafe { crate::array::head::StorageHead::coherent(head) }) else {
-                return None;
+                return;
             };
 
             // The stride is chosen here and nowhere earlier: the tag came
@@ -407,7 +399,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 crate::array::head::StorageTag::Hash => {}
                 crate::array::head::StorageTag::Typed => {
                     debug_assert!(false, "the walker has no stride for the typed vector");
-                    return None;
+                    return;
                 }
                 crate::array::head::StorageTag::Vector => {
                     let (elements, used) =
@@ -423,7 +415,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                         }
                     }
 
-                    return Some(view.version);
+                    return;
                 }
             }
 
@@ -452,10 +444,8 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                     visit(cell);
                 }
             }
-
-            Some(view.version)
         }
-        _ => None,
+        _ => {}
     }
 }
 
@@ -533,8 +523,6 @@ pub(crate) unsafe fn sever_cells(
             // The body's own cells, and only those: `empty_cell` writes a
             // whole `Value` or a bare `NULL`, which is right for a cell
             // inside the entity and wrong for anything a class keeps
-            // outside it. The storage version the walk answers with is
-            // the epoch's instrument and nothing to a sever.
             let cls = (*(entity as *mut Object)).class;
             crate::object::for_each_body_cell::<PlainCells>(entity as *mut u8, cls, &mut |cell| {
                 empty_cell(cell);

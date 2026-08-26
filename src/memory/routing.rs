@@ -208,8 +208,8 @@ pub(crate) unsafe fn body_free(category: MemoryCategory, ptr: *mut u8, capacity:
         MemoryCategory::RequestArena | MemoryCategory::Immortal => {}
         // Within this population the block kind *is* the dispatch, and
         // `buffer_free_longlived_payload` makes it: a retained block's
-        // bytes are left alone, a chunk parks during a collector epoch,
-        // and an OS-direct run goes back to the system allocator.
+        // bytes are left alone, a chunk parks while a collection reads
+        // it, and an OS-direct run goes back to the system allocator.
         MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
             crate::memory::buffer_arena::buffer_free_longlived_payload(ptr, capacity)
         },

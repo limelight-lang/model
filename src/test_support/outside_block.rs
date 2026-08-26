@@ -13,15 +13,17 @@
 //! `memory::routing::body_alloc`, which is the group's contract
 //! (`crate::cells::OutsideCells`) and the same door a table's storage
 //! takes. For the GcHeap instances these tests build that is a
-//! buffer-arena chunk, which parks during an epoch like any other body.
+//! buffer-arena chunk, which parks during a collection like any other
+//! body.
 //!
 //! **The block is replaced whole rather than written in place**, and the
 //! version word beside it is the array head's bracket in miniature
 //! (`crate::array::head::StorageHead::coherent`): odd while the pointer
-//! moves, and read on both sides of the collector's own reading. It is
-//! here because the re-check is one of the six, and Phase 3 has nothing
-//! to ask about a class whose storage never moves. The window covers the
-//! release as well as the move, which is `StorageHead`'s rule too: a
+//! moves. Nothing validates a reading against it here — the walk stopped
+//! answering a version when `rc-walk`'s re-check went — and it is kept
+//! because it is the mutator half S38.0's Miri slice races against. The
+//! window covers the release as well as the move, which is
+//! `StorageHead`'s rule too: a
 //! class whose block goes away while the instance lives — a coroutine
 //! whose wait completed — publishes that null the same way it publishes
 //! a fresh pointer.
@@ -92,8 +94,8 @@ pub(crate) fn class(name: &str) -> *const Class {
 }
 
 /// Give `obj` a fresh block, carrying over what the old one held, and
-/// free the old one — through the same category-routed door, so an epoch
-/// in flight parks it instead of recycling.
+/// free the old one — through the same category-routed door, so a
+/// collection in flight parks it instead of recycling (S36.2).
 ///
 /// Answers the new block, whose granted capacity the object keeps. The
 /// cells of a fresh block are written plainly: no walker can reach a
@@ -219,17 +221,15 @@ static GROUP: OutsideCells = OutsideCells {
     carry,
 };
 
-/// The quiescent walk: every cell of the block, and the version they came
-/// out of. `None` for an instance with no block — there is no storage
-/// behind it, so there is nothing for Phase 3 to ask about.
-unsafe fn walk_plain(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)) -> Option<usize> {
+/// The quiescent walk: every cell of the block. Nothing for an instance
+/// with no block.
+unsafe fn walk_plain(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)) {
     let block = unsafe { block_at::<PlainCells>(base) };
     if block.is_null() {
-        return None;
+        return;
     }
 
     unsafe { yield_cells::<PlainCells>(block, visit) };
-    Some(unsafe { version(base) })
 }
 
 /// Empty every cell and hand its former occupant back undropped, the
@@ -254,10 +254,10 @@ unsafe fn sever(entity: *mut RcHeader, displaced: &mut Vec<*mut RcHeader>) {
 ///
 /// The null goes through the window like any other pointer store. Both of
 /// today's callers hold an entity whose count has already changed, so a
-/// walker would be acquitted by the count alone — but a class whose block
-/// goes away while the instance lives has no such second answer, and then
-/// an unbracketed null leaves the epoch re-reading cell addresses in a
-/// freed block against a version that never moved.
+/// trace would be acquitted by the count alone — but a class whose block
+/// goes away while the instance lives has no such second answer, and
+/// then an unbracketed null hands a concurrent reader cell addresses in
+/// a freed block.
 unsafe fn free(entity: *mut RcHeader) {
     let base = entity as *mut u8;
     let block = unsafe { block_at::<PlainCells>(base) };

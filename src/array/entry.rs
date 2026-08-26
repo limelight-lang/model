@@ -172,10 +172,10 @@ impl Entry {
     /// Publish `v` as the element, keeping the chain link this entry
     /// already carries.
     ///
-    /// Two relaxed atomic stores, one per word, because the collector
+    /// Two relaxed atomic stores, one per word, because a collector
     /// reads both words relaxed and an access of another width — or a
-    /// plain store — against that is a data race rather than the torn
-    /// value the epoch repairs.
+    /// plain store — against that is a data race rather than a torn
+    /// value, which costs at most a phantom edge.
     ///
     /// # Safety
     /// `e` addresses a live entry of a live table.

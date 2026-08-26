@@ -1,16 +1,17 @@
-//! What a walker is handed while the owner releases the storage.
+//! What a trace is handed while the owner releases the storage.
 //!
-//! An array dies mid-epoch and the collector's snapshot still names its
-//! slot, so the head is read while `dispose` drives the three words to
-//! their empty values. Every reading the head hands out has to be a
-//! state the array was actually in, which for these two words means: a
-//! null chunk carries no counts, and a chunk carries the slots that
-//! offset past the index region.
+//! An array dies while a collection still names its slot, so the head is
+//! read while `dispose` drives the three words to their empty values.
+//! Every reading the head hands out has to be a state the array was
+//! actually in, which for these two words means: a null chunk carries no
+//! counts, and a chunk carries the slots that offset past the index
+//! region.
 //!
-//! The chunk is not strided here — `what_a_walker_reads_during_a_move`
-//! asks that question — and the reader runs in both configurations,
-//! because the head's bracket belongs to the array rather than to a
-//! collector.
+//! The chunk is not strided here. That question — what a trace reads
+//! while the mutator rearranges the very chunk it is striding — is
+//! S38.0's, and only Miri can answer it (`PLAN.md`). The bracket this
+//! test drives belongs to the array rather than to a collector, which is
+//! why it survives having none.
 
 use super::*;
 use std::sync::Arc;

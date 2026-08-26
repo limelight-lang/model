@@ -27,51 +27,29 @@ fn flags_layout_is_the_compacted_design() {
     assert_eq!(DESTRUCTOR_PENDING, 1 << 8);
     assert_eq!(DESTRUCTOR_RAN, 1 << 9);
     assert_eq!(COW, 1 << 10);
-    // The string layout bit deliberately overlaps the candidate
-    // index's lowest bit, and the whole safety of that rests on two
-    // facts nothing else asserts. `encode_index(0)` is `1 << 15`, so
-    // a string admitted to the buffer at position zero would acquire
-    // the layout bit and every later byte access would read its hash
-    // field as a payload pointer.
-    assert_eq!(STRING_OUT_OF_LINE, 1 << CANDIDATE_INDEX_SHIFT);
+    assert_eq!(STRING_OUT_OF_LINE, 1 << 15, "string layout: bit 15");
     assert_eq!(
         STRING_OUT_OF_LINE & ENTITY_KIND_MASK,
         0,
         "a wider kind field would take the layout bit"
     );
-    assert_eq!(
-        CANDIDATE_KINDS & (1 << EntityKind::String as u32),
-        0,
-        "String must never take a candidate index: bit 15 is its layout"
-    );
     assert_eq!(IS_ESCAPEE, 1 << 11);
     assert_eq!(ENTITY_KIND_SHIFT, 12);
     assert_eq!(ENTITY_KIND_MASK, 0b111 << 12, "entity kind: bits 12-14");
-    assert_eq!(CANDIDATE_INDEX_SHIFT, 15);
-    assert_eq!(
-        CANDIDATE_INDEX_MASK,
-        0x0001_FFFF << 15,
-        "candidate index: bits 15-31, 17 wide"
-    );
-    assert_eq!(CANDIDATE_INDEX_MAX, 131_070);
 
-    // The kind field and the candidate index must not overlap, and the
-    // whole word must stay 32 bits wide.
-    assert_eq!(
-        ENTITY_KIND_MASK & CANDIDATE_INDEX_MASK,
-        0,
-        "kind and index are disjoint"
-    );
-    assert_eq!(
-        CANDIDATE_INDEX_MASK >> 15 << 15,
-        CANDIDATE_INDEX_MASK,
-        "index reaches the top bit"
-    );
-    assert_eq!(
-        0x8000_0000u32 & CANDIDATE_INDEX_MASK,
-        0x8000_0000,
-        "and includes bit 31"
-    );
+    // Bits 16 and above are unclaimed until S31 lays the collector's
+    // fields there. Nothing may drift into them meanwhile, which is what
+    // this asserts: every constant above is below bit 16.
+    let claimed = MEMORY_CATEGORY_MASK
+        | ARENA_RESET_MARK
+        | HAS_WEAK_REFERENCES
+        | DESTRUCTOR_PENDING
+        | DESTRUCTOR_RAN
+        | COW
+        | IS_ESCAPEE
+        | ENTITY_KIND_MASK
+        | STRING_OUT_OF_LINE;
+    assert_eq!(claimed & 0xFFFF_0000, 0, "nothing claims bits 16-31");
 }
 
 /// `Object` is the zero kind field, so a header built with no kind bits

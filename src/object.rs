@@ -271,8 +271,8 @@ pub unsafe fn object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool 
         return false;
     }
 
-    // Post-publish header write: races the collector's byte stores
-    // under a live epoch, so it goes through the relaxed word helper.
+    // Post-publish header write: races a collector's byte stores into
+    // the same word, so it goes through the relaxed word helper.
     unsafe {
         crate::refcount::mutator_update_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_PENDING)
     };
@@ -389,14 +389,16 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::cells::CellReader>(
     base: *mut u8,
     cls: *const crate::class::Class,
     mut visit: impl FnMut(crate::cells::Cell),
-) -> Option<usize> {
+) {
     unsafe { for_each_body_cell::<R>(base, cls, &mut visit) };
 
     // The outside cells come after the body's, never instead of them: a
     // subclass declares properties of its own and those live in the runs,
     // so replacing the stride would leave them untraced — a computed root
     // and a ring that never collects.
-    let group = unsafe { crate::class::Class::outside_cells(cls) }?;
+    let Some(group) = (unsafe { crate::class::Class::outside_cells(cls) }) else {
+        return;
+    };
     unsafe { R::walk_outside(group, base, cls, &mut visit) }
 }
 
@@ -558,10 +560,11 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
     // not counted, so a $this reference there is a no-op anyway.
 
     {
-        // Header traffic through the relaxed word helpers: the walker
+        // Header traffic through the relaxed word helpers: a collector
         // reads this header concurrently, and the guard's transient
-        // `rc 0 → 1 → 0` is visible to it (a phantom row at worst —
-        // repaired by Phases 3–4). No candidate buffer exists to leave.
+        // `rc 0 → 1 → 0` is visible to it. A count read high is the safe
+        // direction — the entity reads as externally referenced and
+        // survives one collection.
         let (_, flags) = unsafe { crate::refcount::mutator_load_header(obj as *const RcHeader) };
         let counted = MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap;
         if counted {
@@ -570,9 +573,11 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
 
         let ran = unsafe { run_pre_destructor(obj) };
         if counted {
-            // Eager death (2026-07-27): a condemnation landing while
-            // the destructor ran changes nothing — teardown always
-            // finishes, and the component's drain drops on the corpse.
+            // Eager death (2026-07-27): a collection judging this
+            // entity garbage while the destructor ran changes nothing —
+            // teardown always finishes, and the corpse rule drops a
+            // component holding a member already at zero
+            // (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 1).
             let refcount =
                 unsafe { crate::refcount::mutator_unguard_release(obj as *mut RcHeader) };
             if ran && refcount > 0 {
@@ -717,16 +722,18 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     const ARRAY: u32 = EntityKind::Array as u32;
     let flags = unsafe { crate::refcount::header_flags(entity) };
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
-    // The bare-pointer door leaves the candidate buffer for every kind
-    // the gate admits, so a kind that gains counted slots later inherits
-    // it without a call site of its own (`refcount::CANDIDATE_KINDS`).
-    // An array runs no `dispose`, which is where an object does this on
-    // its way past the free, so this is where an array does it — with one
-    // exception that owes the same duty at its own site: a **nested**
-    // array is torn down by `array_die`'s drain and never passes here
-    // again (`array::entity::leave_the_candidate_buffer`). A duty added
-    // here has to be added there as well until the two doors are one.
-    // The bit is tested from flags already in a register.
+    // What a dying enrolled slot owes a collector is done here, for
+    // every kind the gate admits, so a kind that gains counted slots
+    // later inherits it without a call site of its own
+    // (`refcount::CANDIDATE_KINDS`). An array runs no `dispose`, which is
+    // where an object would do it on its way past the free, so this door
+    // is the array's too — with one exception owing the same duty at its
+    // own site: a **nested** array is torn down by `array_die`'s drain
+    // and never passes here again (`array::entity::array_die` and
+    // `release_children_in_order`, the two sites marked S34.3). A duty
+    // added here has to be added
+    // there as well until the two doors are one. Nothing is owed between
+    // S30 and S34.3, which is the step that builds the parking.
 
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },

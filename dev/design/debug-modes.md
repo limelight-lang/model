@@ -718,15 +718,18 @@ Default:
 - arena reset: begin, end, survivor count;
 - block commissioning and decommissioning, and a block leaving the region
   registry's reachable set;
-- thread start and thread exit;
-- collector epoch begin and end.
+- thread start and thread exit.
+
+A collection's begin and end were in this list and are not any more: the
+two kinds went with `rc-walk` and `rc-trace` on 2026-08-26, and
+`rc-cycle`'s own events are S36's to name (`PLAN.md`).
 
 On demand:
 
 - retain and release — the highest-volume event in the runtime, and it
   evicts every other kind within a few thousand records;
 - store-barrier publishes;
-- buffer chunk allocation and free, including a free parked by an epoch.
+- buffer chunk allocation and free, including a free a collection parks.
 
 The default set is what the census hunt had to build by hand, plus the one
 event it lacked: a block leaving the reachable set is the standing

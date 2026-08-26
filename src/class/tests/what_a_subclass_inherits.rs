@@ -13,8 +13,6 @@ use super::*;
 use crate::cells::Cell;
 use crate::cells::OutsideCells;
 
-const PROBE_VERSION: usize = 0xC0FFEE;
-
 /// A group whose members are distinguishable from any other's. Identity
 /// is what most of these tests read, not behaviour — S18.3 is where a
 /// group is made to work.
@@ -25,21 +23,7 @@ static PROBE: OutsideCells = OutsideCells {
     carry: probe_carry,
 };
 
-/// A group whose cells sit in storage nothing replaces.
-static UNVERSIONED: OutsideCells = OutsideCells {
-    walk_plain: unversioned_walk,
-    sever: probe_sever,
-    free: probe_free,
-    carry: probe_carry,
-};
-
-unsafe fn probe_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) -> Option<usize> {
-    Some(PROBE_VERSION)
-}
-
-unsafe fn unversioned_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) -> Option<usize> {
-    None
-}
+unsafe fn probe_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) {}
 
 unsafe fn probe_sever(
     _: *mut crate::refcount::RcHeader,
@@ -155,49 +139,6 @@ fn a_subclass_that_declares_its_own_keeps_it() {
     }
 }
 
-/// The version the class answers reaches the caller, and a class whose
-/// storage nothing replaces answers none.
-#[test]
-fn the_version_a_class_answers_reaches_the_walk() {
-    let _g = crate::memory::block_pool::test_guard();
-
-    let fixed = ClassBuilder::new("Fixed")
-        .outside_cells(&UNVERSIONED)
-        .build();
-    let moving = ClassBuilder::new("Moving").outside_cells(&PROBE).build();
-    assert!(
-        !fixed.is_null() && !moving.is_null(),
-        "immortal region refused a class"
-    );
-
-    let mut arena = crate::memory::arena::Arena::new();
-    let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
-    for (cls, expected) in [(fixed, None), (moving, Some(PROBE_VERSION))] {
-        let obj = unsafe {
-            crate::object::ll_object_new(&mut ctx, cls, crate::refcount::MemoryCategory::GcHeap)
-        };
-        assert!(!obj.is_null(), "the factory refused");
-        let answered = unsafe {
-            crate::object::for_each_counted_cell::<crate::cells::PlainCells>(
-                obj as *mut u8,
-                cls,
-                |_| {},
-            )
-        };
-        assert_eq!(
-            answered, expected,
-            "the class's answer did not reach the walk"
-        );
-
-        unsafe {
-            assert!(crate::refcount::ll_release(
-                obj as *mut crate::refcount::RcHeader
-            ));
-            crate::object::ll_entity_die(obj as *mut crate::refcount::RcHeader);
-        }
-    }
-}
-
 /// A class that declares nothing carries the default teardown and no
 /// group, which is every class the compiler emits today.
 #[test]
@@ -254,7 +195,7 @@ fn the_default_teardown_frees_the_outside_storage() {
 static FREED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 static COUNTING: OutsideCells = OutsideCells {
-    walk_plain: unversioned_walk,
+    walk_plain: probe_walk,
     sever: probe_sever,
     free: counting_free,
     carry: probe_carry,

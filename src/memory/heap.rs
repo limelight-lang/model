@@ -272,11 +272,11 @@ struct HeapBlockHeader {
     /// (`dev/DECISIONS.md`, "the block header is split by access rule, not
     /// by topic").
     kind: AtomicU32,
-    /// The block's size class, and the second word the collector reads
-    /// from another thread (`snapshot_entity_blocks`): written once at
-    /// commissioning, read every epoch. Out here with `kind` and for the
-    /// same reason — the owner's `&mut` over `private` must not cover a
-    /// word another thread is reading.
+    /// The block's size class, and the second word a collector reads
+    /// from another thread: written once at commissioning, read by every
+    /// collection. Out here with `kind` and for the same reason — the
+    /// owner's `&mut` over `private` must not cover a word another
+    /// thread is reading.
     size_class: AtomicU32,
     private: BlockPrivate,
     shared: BlockShared,

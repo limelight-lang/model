@@ -209,7 +209,7 @@ fn the_retired_list_keeps_the_newest_and_drops_the_oldest() {
 
 /// A retiring thread frees no ring, because by then it cannot: its
 /// parked backlog is gone, and a ring's free parks while a collector
-/// epoch is in flight. The rings wait for a thread that is not on its
+/// collection is in flight. The rings wait for a thread that is not on its
 /// way out — an investigator taking a mark is one.
 #[test]
 fn an_evicted_ring_is_freed_by_a_live_thread_rather_than_a_dying_one() {

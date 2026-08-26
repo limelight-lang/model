@@ -265,61 +265,31 @@ pub fn is_object(flags: u32) -> bool {
     flags & ENTITY_KIND_MASK == 0
 }
 
-/// **Dead since 2026-08-26, and unclaimed until S31.** These named the
-/// entity's position in `rc-trace`'s candidate buffer, stored as
-/// `index + 1` so that zero meant "position unknown"; the buffer and
-/// every reader of the field went with the strategy. They stay declared
-/// only because the flags word above bit 14 is re-laid whole at S31,
-/// which gives 16-17 to the epoch, 18-19 to the maturation age and
-/// 20-23 to the collector's reserve (`PLAN.md`). The old design is on
-/// `archive/pre-rc-cycle`.
-pub const CANDIDATE_INDEX_SHIFT: u32 = 15;
-pub const CANDIDATE_INDEX_MASK: u32 = 0x0001_FFFF << CANDIDATE_INDEX_SHIFT;
-
 /// **String entities only:** the bytes live out of line, through the
 /// `data` pointer of `string::LLStringDynamic`, rather than inline after
 /// the fixed fields. Set once by the factory and never flipped — nothing
 /// promotes between the two layouts at run time.
 ///
-/// It sits at bit 15, which the candidate index above claimed as its
-/// lowest until that field died; a string never entered the buffer, so
-/// the two never met. Nothing claims the bit now, and it stays
-/// kind-scoped the way [`ARENA_RESET_MARK`] is kind-scoped in the
-/// GC-state field. [`COW`] carries
+/// It sits at bit 15, kind-scoped the way [`ARENA_RESET_MARK`] is
+/// kind-scoped in the GC-state field: nothing but a string reads it, so
+/// it costs the other kinds nothing. [`COW`] carries
 /// copy-on-write and nothing else: one bit could not say both for an
 /// oversize string, which is out of line by size and copy-on-write by
 /// semantics (`dev/DECISIONS.md`, "a string's layout is its own header
 /// bit"; `rfc/model/memory/large-entities.md`).
 pub const STRING_OUT_OF_LINE: u32 = 1 << 15;
-/// Largest buffer position the field can hold. Beyond it the index is
-/// stored as zero: 131 070 candidates is many full thresholds without a
-/// single collection point, and the fallback costs only speed.
-pub const CANDIDATE_INDEX_MAX: usize = 0x0001_FFFF - 1;
 
-/// The collector's **epoch byte** — header byte 6, flags bits 16-23,
-/// and the collector's only claim on the header. Nothing writes it
-/// today: it carried `rc-walk`'s maturity stamp, written by the
-/// collector thread in the allocate-black branch and nowhere else, and
-/// it went with that collector.
-///
-/// `rc-cycle` stamps the same region for the same purpose — an entity
-/// is traced only once it has stayed a candidate across `k` collections
-/// (`rfc/model/gc/rc-cycle.md`, "What it is") — but in two bits rather
-/// than eight: S31 splits the byte into epoch at 16-17, maturation age
-/// at 18-19 and the collector's reserve at 20-23 (`PLAN.md`).
-///
-/// It is a byte of its own because the mutator and the collector write
-/// the header at different widths from different threads. Which widths
-/// each side may use is S31.4's to settle; the Critic round of
-/// 2026-08-26 found today's rule guarding writes while the defect it
-/// has carried since day one is a read.
-pub const EPOCH_BYTE_SHIFT: u32 = 16;
-pub const EPOCH_BYTE_MASK: u32 = 0xFF << EPOCH_BYTE_SHIFT;
-
+/// **Flags bits 15 and above are unclaimed**, [`STRING_OUT_OF_LINE`]
+/// apart. `rc-walk` kept an eight-bit epoch stamp at 16-23 and it went
+/// with that collector; S31 re-lays the region as epoch at 16-17,
+/// maturation age at 18-19 and the collector's reserve at 20-23
+/// (`PLAN.md`), and until then nothing above bit 14 is read or written
+/// by anything.
 #[cfg(not(target_endian = "little"))]
 compile_error!(
-    "the header is one 8-byte word with the refcount in the low half, and \
-     byte offset 6 of the collector's byte assumes a little-endian target"
+    "the header is one 8-byte word with the refcount in the low half, so \
+     the flags half sitting at byte offsets 4-7 assumes a little-endian \
+     target"
 );
 
 /// The 8-byte header at offset 0 of every heap entity.
@@ -403,8 +373,8 @@ pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
 /// Relaxed-atomic load of the whole header word: refcount in the low
 /// half, flags in the high (little-endian, enforced above). Same
 /// instruction as a plain load on x86-64 and AArch64; the annotation is
-/// what makes the cross-thread race with the collector's byte stores
-/// defined ([`EPOCH_BYTE_MASK`] is the byte in question).
+/// what makes the cross-thread race with a collector's byte stores into
+/// the flags half defined.
 #[inline]
 unsafe fn header_word_load(header: *mut RcHeader) -> u64 {
     unsafe {
@@ -600,8 +570,8 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
 /// case here and is not the case in the store path.
 ///
 /// It buys no coherence the two readers above lack: the only concurrent
-/// writer of a published header is the collector, and its one claim is the
-/// epoch byte ([`EPOCH_BYTE_MASK`]), which no caller of this reads.
+/// writer of a published header is a collector, and its one claim is the
+/// unallocated top of the flags half, which no caller of this reads.
 #[inline]
 pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
     unsafe { mutator_load_header(header) }

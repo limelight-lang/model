@@ -168,10 +168,11 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// every other address either enumerator holds, a run's memory can be
 /// **unmapped**: [`free`] hands it to the system allocator. Three things
 /// together make the read sound — the registry entry is removed strictly
-/// before the `dealloc`, a free during a collection epoch parks instead
-/// of running, and the collector waits for the handshake ack that
-/// publishes the epoch before it snapshots. A caller outside those rules
-/// is reading memory that may be gone.
+/// before the `dealloc`, a free during a collection parks instead of
+/// running, and a collection does not begin reading a thread's blocks
+/// until that thread has entered it. The second and third are S36.2's
+/// and S38.1's (`PLAN.md`), so today only the first holds and a caller
+/// outside those rules is reading memory that may be gone.
 ///
 /// **A visitor must not free a run while walking this list.** The
 /// addresses are a snapshot, so a run freed during the walk leaves

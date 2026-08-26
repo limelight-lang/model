@@ -1455,9 +1455,9 @@ impl Table {
     /// collector, so the entity wrapper walks and releases them first and
     /// then calls this. Nothing here reads a value.
     ///
-    /// **The three words a walker reads go out inside the head's
-    /// window**, because a dying array is still reachable: it dies
-    /// mid-epoch and the collector's snapshot holds its slot. Published
+    /// **The three words a trace reads go out inside the head's
+    /// window**, because a dying array is still reachable: it dies while
+    /// a collection holds its slot. Published
     /// one by one they offer readings no array was ever in — the chunk
     /// with the counts of the empty state, which for this representation
     /// strides the index region as entries. The window is also what

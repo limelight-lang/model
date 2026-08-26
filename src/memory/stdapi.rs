@@ -234,9 +234,9 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     let kind = unsafe { load_block_kind(block as *const AtomicU32) };
 
     // An entity slot reaches the free list carrying the final
-    // refcount-0 header, because that word is the occupancy test both
-    // process-global enumerators apply (`heap::for_each_entity_slot`,
-    // `heap::snapshot_entity_blocks`). A slot freed while its header
+    // refcount-0 header, because that word is the occupancy test every
+    // pass over the entity blocks applies
+    // (`heap::for_each_entity_slot`). A slot freed while its header
     // still reads a live count is enumerated as a live entity by every
     // later walk in the process, and for an object it is worse than an
     // over-count: the free-list link lands at bytes 8-15, where the
