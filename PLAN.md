@@ -235,7 +235,7 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         `memory/barrier/tests/publication_before_teardown.rs`,
         `weak/tests/*` and the `heap_census` leak tests keep a
         strategy-independent contract while losing their driver.
-- [ ] S30.8 The comment pass: repoint what the code still cites
+- [~] S30.8 The comment pass: repoint what the code still cites
       done: the 95 references to `rc-walk`, `rc-trace`, `gc-horizon` and
         `satb` that stood in 30 files of `src/` on 2026-08-26, and the 11 in
         `benches/` and `bench-external/`, are gone or repointed — a citation
@@ -253,6 +253,42 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         criterion still open, and it is a reading job rather than a
         mechanical one: three quarters of the sites are prose about a
         mechanism, not a path in backticks.
+      handoff: `src/` is down from 95 to 25 on 2026-08-26 evening, and 23 of
+        the 25 are history statements naming what was deleted and where it
+        went; `benches/` and `bench-external/` are at zero. Commit `6968e5c`,
+        gate green — 450 passed 3 ignored at four threads, three runs. The
+        step's own grep is not the whole defect and three mechanical checks
+        found the rest: every `rfc/…md` path cited from code resolved against
+        the rfc tree (four dead documents, three of them invisible to a grep
+        for `rc-walk`), every `walk::`/`collector::`/`epoch::` path resolved
+        against the modules that exist (nine stale `walk::`, one dead
+        intra-doc link), and `deferred_free`, named by 13 comments in 8 files.
+        All three return empty now.
+      handoff: **not closed**, and what is left is two files rather than a
+        sweep. `memory/barrier/tests/publication_before_teardown.rs` is
+        declared by no `mod` and compiles nowhere;
+        `array/table/tests/what_a_walker_reads_during_a_move.rs` is an empty
+        module whose doc says "the test below". Commit `de18686` sent both
+        contracts to S36 and S38.0 by decision, so the husks are residue of a
+        ruling rather than an oversight — but a file no build sees reads as a
+        live test, and both still describe themselves as gated to a deleted
+        collector. Whether they go or stay with a rewritten header is Edmond's.
+- [ ] S30.9 Repoint the two live maps in `dev/`
+      done: `dev/INDEX.md` and `dev/ARCHITECTURE.md` describe the tree that
+        exists — no entry point named `src/collector.rs`, `src/epoch.rs` or
+        `src/walk.rs`, no per-module knowledge row for a deleted module, and
+        the six citations of deleted `rfc` documents they carry between them
+        repointed or dropped; `dev/BENCHMARKS.md`, `dev/DECISIONS.md` and
+        `dev/POSTMORTEM.md` keep theirs, being history by definition, and
+        `dev/design/pure-destructors.md` keeps the six it was dated with on
+        2026-08-26; checked by the two mechanical passes S30.8 used, run over
+        `dev/`
+      tier: T1 · role: —
+      handoff: measured 2026-08-26 evening: 15 references in `INDEX.md` and 29
+        in `ARCHITECTURE.md`. S30's own "Done when" asks for this and no step
+        owned it, which is why the stage cannot close on S30.8 alone.
+        `dev/WORKFLOW.md` is already done — its gate said
+        `--no-default-features` three times, and that was the live half.
 - [x] S30.5 Delete the documents of both collectors and the horizon
       done: in `rfc`, `model/gc/rc-walk*.md`, `model/gc/walk/`,
         `model/gc/retained-block-walk.md`, `model/gc/gc-horizon*.md`,
@@ -319,8 +355,14 @@ enrolment gate is one mask, and the kind field is four bits wide.
         below four are declared reserved for ring-closing kinds so a later kind
         is not silently excluded by a permanent refusal (Y6), and the decision
         that refused renumbering is superseded in `dev/DECISIONS.md` with its
-        reason
+        reason; `CANDIDATE_INDEX_SHIFT`, `_MASK` and `_MAX` go with it, and
+        `kind_may_close_a_cycle` gains the caller S31.3 gives it or goes too
       tier: T2 · role: Critic
+      handoff: S30.3's criterion said the candidate-index constants die with
+        the buffer and they did not; they stand with no reader, pinned only by
+        `the_header_the_compiler_shares.rs`, which this step rewrites anyway.
+        Doing it here rather than reopening S30.3 costs one test rewrite
+        instead of two.
       handoff: the renumbering was refused once, when it would have bought one
         test at the price of churn. It rides along here because the field is
         being rebuilt anyway. The reservation clause answers the Critic round's
