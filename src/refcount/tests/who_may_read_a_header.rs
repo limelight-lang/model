@@ -159,9 +159,8 @@ fn constructed(obj: *mut Object) -> bool {
 
 /// The pointer spelling is the one every site converted on 2026-08-26
 /// used, and a class descriptor's own `flags` word is what the guard must
-/// not answer to:
-/// `Class` carries a field of that name, is immortal, and is read through
-/// a shared reference for that reason.
+/// not answer to: `Class` carries a field of that name, and it is read at
+/// its offset by `Class::flags_of` rather than through a deref here.
 #[test]
 fn the_guard_sees_the_pointer_spelling_and_spares_a_descriptor() {
     let source = "fn count(child: *mut RcHeader, cls: *const Class) -> u32 {
