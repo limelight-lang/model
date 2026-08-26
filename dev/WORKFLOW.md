@@ -241,6 +241,37 @@ the citation moving with it.
 code. What you can no longer answer is what the comment is for; the rest
 was a retelling.
 
+## Checks a grep cannot make
+
+A deletion leaves debris a name search does not find, because the debris no
+longer carries the name. Four passes found what a grep for `rc-walk|rc-trace`
+missed when the two collectors went (2026-08-26), and each is cheap enough to
+re-run after any deletion of a module, a document or a feature:
+
+1. **Every document a comment cites, resolved against the tree it names.**
+   Pull each `` `rfc/…md` `` out of `src/`, `benches/`, `docs/` and `dev/` and
+   test the file exists. Three of the four dead documents this found —
+   `retained-block-walk.md`, `walk/questions.md`, `gc-horizon-v2/questions.md`
+   — do not contain the deleted strategy's name at all. `dev/tools/linkcheck.php`
+   in `rfc` does not cover this: it reads only `rfc`, and only bracketed links.
+2. **Every module path a comment cites, resolved against the modules that
+   exist.** `` `walk::` ``, `` `collector::` ``, `` `epoch::` ``. A rename
+   leaves nine of these behind and no build reports one, since a comment is
+   not code. An intra-doc link (`[`crate::epoch`]`) is the exception —
+   `cargo doc` does report it — so run that too.
+3. **Orphan files:** every `.rs` under `src/` that no `mod` declares. A test
+   file whose `mod` line was removed compiles nowhere and still reads as a
+   live test.
+4. **The upward edges, re-enumerated rather than patched.** Resolve every
+   `crate::…` path in production code against `dev/ARCHITECTURE.md`'s layer
+   map. Patching that table by hand removes the edges you remember and leaves
+   the ones you do not: the 2026-08-26 run found three edges into `cells` the
+   table had never listed, and one listed edge that was doc links with no call
+   behind them.
+
+The first three returned empty at `06ddd1e`. A count is not the check — the
+question is which sites, and the passes name them.
+
 ## Tests
 
 **Every fix needs a regression test verified to fail on the bug.**

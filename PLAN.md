@@ -11,13 +11,13 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-08-26 · Active: S30 — the sections after S40 are the backlog
+Updated: 2026-08-26 · Active: S31 — the sections after S40 are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S29. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S30. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -30,307 +30,31 @@ without the flood ladder 32 tests in 79 s, the ladder's own module 14 in
 clean. `array::entity` is the expensive one and is taken by test rather
 than whole; the copy tests of that module ran 25 in 59 s.
 
-**S28 was abandoned rather than closed** on 2026-08-26: it optimised the epoch
-metadata of `rc-walk`, and `rc-walk` is deleted by S30. The reason is in
-`dev/DECISIONS.md` so the abandonment is not mistaken for completion.
+**The crate collects no cycles.** S30 deleted `rc-walk`, `rc-trace` and
+`rc-satb` on 2026-08-26 and the design in force is unbuilt, so a garbage ring
+is retained and acyclic garbage dies by counting. S31 through S40 build
+`rc-cycle`; what the deletion took, what it kept and why is `dev/DECISIONS.md`
+under that date, and the old code is on `archive/pre-rc-cycle`. S28 was
+abandoned rather than closed by the same ruling, and S29 was split — its
+second half is carried as S39.
 
-**S29 was split by the same ruling.** S29.1 — a cyclically dead `Lazy` never
-runs `__destruct` — closes with the code it lives in, deleted by S30. S29.2 —
-thread exit leaves the enrolment bit set and leaks the cycle — is not a defect
-of the old collector alone: the new design parks slots on the same bit, so the
-defect would be reproduced. It is carried as S39.
-
-**Verification collapses to one configuration at S30.** With both collectors
-gone there is no `rc-walk` feature and no `rc-trace` default, so the matrix in
-`dev/WORKFLOW.md` loses its GC axis: one `cargo test --lib`, three threaded
-runs at four threads, and one release build. The `hash-folding` axis is
-untouched. `cargo bench --no-run` joins the gate at S30, because `cargo test
---lib` builds no bench target and `benches/lifecycle.rs` imports the GC ABI.
-
-**S30 through S40 went through a Critic round and four Sage rulings on
+**S31 through S40 went through a Critic round and four Sage rulings on
 2026-08-26**, on Edmond's instruction, and the stages below are the amended
-form. What the round changed, in one line each: `walk.rs` is split rather than
-deleted, because its upper half is the crate's only entity tracer and five
-surviving modules compile against it; `gc.rs` survives as the ABI and safepoint
-module, because it carries the compiler's lowering surface and the log
-reserve's only steady-state refill; `strategies.md` leaves the deletion list,
-because Y14 cites its arm/fire rule as a correctness requirement; S36 gains the
-teardown it claimed and never built; S37 builds Y9's edge-side prune instead of
-a root-side delay that bounds nothing; and the enrolment bit is cleared only at
-death, which supersedes Y12 clause 4. The rulings and their reasons are in
-`dev/DECISIONS.md`.
+form. The rulings and their reasons are in `dev/DECISIONS.md`.
+
+**Verification is one configuration** since 2026-08-26: the GC axis went with
+the collectors, `hash-folding` and `debug-journal` are what remains, and
+`cargo bench --no-run` is part of the gate because `cargo test --lib` builds
+no bench target while `benches/lifecycle.rs` imports the GC ABI
+(`dev/WORKFLOW.md`).
+
+## Fog
+
+- The `hash-folding` arm lists the same number of tests as the plain run
+  (449 each on 2026-08-26), while `dev/WORKFLOW.md` says each arm carries a
+  test the other does not. One of the two is wrong and it is not known which.
 
 ---
-
-## S30 — Delete `rc-walk` and `rc-trace`, and split the tracer out of the walk  [active]
-
-Goal, ruled by Edmond 2026-08-26: nothing of the two old collectors survives in
-the working tree, in code or in documents, so that no reader — human or agent —
-takes a superseded mechanism for the design in force. The old state stays
-reachable as a branch rather than as files.
-
-**Three things live inside the deleted files without belonging to either
-collector**, and the Critic round of 2026-08-26 found all three scheduled for
-deletion: the kind-dispatched tracer in the upper half of `walk.rs`, whose
-customers are the class descriptor, the arena reset and the dispose path; the
-GC C ABI and the barrier's log-reserve refill in `gc.rs`; and the barrier
-micro-operation contract in `rfc`'s `strategies.md`. Each survives by a step
-below. The four Sage rulings that decided them are in `dev/DECISIONS.md`,
-2026-08-26.
-
-**The steps run in the order they are written, not in numeric order.** S30.6 and
-S30.7 were added by that round and are preconditions of the deletions they
-precede; a number is never reissued, so they keep the numbers they were given.
-
-Done when: the crate builds and its suite is green with no cycle collector at
-all; `cargo bench --no-run` compiles the bench targets; `rg
-'rc-walk|rc-trace|gc-horizon'` over `src/`, `dev/`, `docs/`, `benches/`,
-`bench-external/`, `Cargo.toml` and `PLAN.md` returns only history references —
-the journals, and the steps of this stage that name what they delete; the 85 backticked citations of deleted documents that `model/src`
-carried across 31 files on 2026-08-26 are repointed or gone, checked by grep,
-because `dev/tools/linkcheck.php` reads only `rfc` and only bracketed links and
-reports zero while every one of them is broken; that tool reports zero broken
-links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
-
-- [x] S30.1 Tag the pre-deletion state in both repositories
-      done: branch `archive/pre-rc-cycle` exists in `model` and in `rfc` at the
-        commit before the first deletion and is pushed to `origin` — a local
-        branch is one disk — and its name is recorded in `dev/DECISIONS.md` so
-        a later reader knows where the old code went
-      tier: T0 · role: —
-      handoff: closed 2026-08-26 at `model` `3d5d853` and `rfc` `af10eae`, both
-        on `origin`. The branch point is after the plan amendment, so the branch
-        carries the plan that explains why its code was deleted.
-- [x] S30.6 Write the teardown's order into `rc-cycle.md`   *(before S30.2)*
-      done: `rfc/model/gc/rc-cycle.md` carries a "Cycle teardown" section
-        stating the commit-side order as a binding obligation — the exact test
-        confirms with the corpse rule included, every member takes the teardown
-        guard, every weak cell naming any member is nulled with all members
-        covered before any user code runs, destructors run, and when any ran the
-        exact test runs again guard-discounted and abandons on failure with
-        survivors at true counts and cells left nulled; then sever, free through
-        the ordinary death path, and drain the deferred-drop queue after the
-        last free — with the two accepted consequences restated, that nulling is
-        irrevocable and that the free-time bit-7 clear catches weak state a
-        destructor re-created; `rfc/model/weak-references.md`, "Cycle death",
-        names that section as its binding obligation in place of
-        `gc/rc-walk.md`, and its `rc-trace` sentence goes
-      tier: T1 · role: Critic
-      handoff: written before S30.2 rather than before S30.5 alone, so the
-        section is transcribed against the running `drain_confirmed` instead of
-        against a branch. `weak::notify_members` itself carries no feature gate
-        and survives; what dies is the only composition of the eight operations.
-      handoff: closed 2026-08-26 by `rfc` `68cf10a`, ticked here 2026-08-26
-        evening — the work landed before S30.2 as required and the box was
-        never crossed. The section is at `model/gc/rc-cycle.md`, "Cycle
-        teardown", six steps; `weak-references.md`'s "Cycle death" names it.
-- [x] S30.7 Amend `strategies.md` instead of deleting it   *(before S30.5)*
-      done: the `rc-trace` section and the registry rows of both deleted
-        strategies are gone; the registry lists `rc-cycle` (in force) and
-        `rc-satb` (designed, unbuilt) and carries no tombstone, the deletion
-        record being the journal's; the barrier micro-operation contract
-        (`store_ptr` / `store_box` / `drop`), the safepoint duties including the
-        reserve refill, the non-moving constraint and the arm/fire rule stay,
-        with the arm half re-said against `rc-cycle`'s root queue and §2's
-        counted-locals argument re-attributed from `rc-walk` to `rc-cycle`;
-        linkcheck clean, and no text presents a deleted strategy as in force
-      tier: T2 · role: Critic
-      handoff: Edmond's ruling named `rc-walk`, `rc-trace` and the horizon and
-        not this file. Y14 cites its arm/fire rule as a correctness
-        requirement — a store lowers the old value's count before overwriting
-        the pointer, and a collection firing in that window subtracts one
-        reference twice and frees a live object — and 21 documents link it, 14
-        of which survive S30.5.
-      handoff: closed 2026-08-26 by the same `rfc` commit, ticked here
-        2026-08-26 evening. The registry lists `rc-cycle` alone: `rc-satb` is
-        not in it, because Edmond's ruling of the same day deleted that
-        document too, superseding this step's own criterion. `linkcheck.php`
-        reports 553 links and zero broken targets over 56 files.
-- [x] S30.2 Split `walk.rs`, delete the `rc-walk` collector
-      done: `src/collector.rs`, `src/collector/`, `src/epoch.rs`, `src/epoch/`,
-        the `rc-walk` Cargo feature and `default = ["rc-walk"]` in `Cargo.toml`
-        are gone, and the feature's guards are resolved in the 24 files that
-        carry them — **the files stay**; the 13 files carrying
-        `not(feature = "rc-walk")` are a subset of those 24, not a second group,
-        and each guarded pair is resolved per site rather than by keeping one
-        arm wholesale, because the `not(rc-walk)` arm of `ll_release` still
-        calls `gc::buffer_candidate`, which S30.3 deletes. `src/walk.rs` is
-        **split at its build-step-2 marker, never deleted whole**: the collector
-        below the marker dies; the kind-dispatched tracer above it — `Cell`,
-        `CellShape`, `OutsideCells`, `OutsideCarry`, `CellReader`, `PlainCells`,
-        `counted_box_cell`, `trace_entity`, `trace_cells`, `empty_cell`,
-        `sever_cells` — moves to `src/cells.rs` with the tests that pin it,
-        because `class.rs`, `promote.rs`, `object.rs`, `template.rs`,
-        `array/entity.rs`, `array/entry.rs` and `refcount.rs` compile against it
-        and S35 traces through it; the module is crate-visible, `pub mod walk`
-        is not carried forward, and no customer outside the crate exists.
-        Inside the moved half the epoch's re-check apparatus dies with the
-        feature: `RelaxedCells`, `WalkOutsideFn`, `OutsideRead`, the
-        `walk_relaxed` and `recheck` members of `OutsideCells`, `Cell.raw` and
-        the storage-version answers threaded through `trace_cells` and
-        `for_each_counted_cell`. `Census` and `heap_census` move as
-        `#[cfg(test)] pub(crate)`, so the leak tests of `string/` and
-        `array/vector/` keep their instrument and the production build compiles
-        no census. `src/memory/retained.rs` stays, its module doc repointed off
-        `retained-block-walk.md`. What `rc-cycle` inherits — the deferred-free
-        parking, the handshake, the exact test, the sever dispatch — has moved
-        rather than died, each moved item named in the commit body, and every
-        `crate::walk` path and comment citation is repointed by grep, since no
-        build reports a stale one
-      tier: T2 · role: Code Reviewer
-      handoff: renaming in place was refused: the module doc and half the
-        comments present the tracer as "rc-walk build step 1" and cite
-        `rc-walk.md`, so the text is rewritten either way, and the move is the
-        rewrite's vehicle. The name is `cells` and not `trace`, because
-        `rc-cycle.md` calls the S35 mark "the trace" and a substrate module of
-        that name would read as a collector again.
-      handoff: closed 2026-08-26 by `b581c22`, which also took the epoch's
-        re-check apparatus, `memory/deferred_free` and the two collectors'
-        header bits. `rc-satb` was deleted by the same ruling: only the new
-        algorithm remains.
-- [x] S30.3 Delete the `rc-trace` strategy from `gc.rs`, keep the module
-      done: the candidate buffer, the colours, trial deletion, the thresholds
-        and `COLLECT_PENDING` are gone from `src/gc.rs` together with their
-        tests, and `CANDIDATE_INDEX_*`, `CYCLE_COLLECTOR_COLOR_SHIFT` and the
-        buffered bit's old meaning die in `refcount.rs`; every call site that
-        reached into the buffer (`object.rs`, `array/entity.rs`,
-        `memory/heap.rs:1541`'s `gc::dispose` from `ll_thread_exit`, and the
-        `epoch`/`gc` teardown bracket pairs in `object.rs`) is closed rather
-        than stubbed. **`src/gc.rs` stays** as the ABI-and-safepoint module: the
-        four exported symbols keep their names — `ll_gc_collect_cycles`,
-        `ll_gc_maybe_collect`, `ll_gc_checkpoint`, `ll_gc_checkpoint_ack` — the
-        barrier's log reserve is still refilled inside `ll_gc_maybe_collect`,
-        and the module doc is rewritten against `rc-cycle.md`; interim bodies
-        collect nothing and say so in their docs; `memory/arena/tests/the_logs_the_reset_reads.rs`
-        passes untouched, which is what proves the refill survived
-      tier: T2 · role: Code Reviewer
-      handoff: three of the four things `gc.rs` carries are not the strategy.
-        `ll_gc_checkpoint`'s own doc says it is kept exported so lowering is
-        configuration-independent, and `object.rs:238,246` and
-        `benches/lifecycle.rs:23` already depend on that. `gc.rs:714` is the only
-        steady-state refill of the log reserve — `heap.rs:1734` fills once at
-        thread init — and deleting it reverts `rfc/runtime/exceptions.md`'s
-        "the next safepoint raises" to "the barrier eventually fails", with no
-        test that can see the change.
-- [x] S30.4 Decide each dying test rather than sweeping them
-      done: every test deleted with S30.2 and S30.3 is listed in the commit body
-        under one of **three** headings — *encodes a contract that dies with the
-        mechanism*, *encodes a contract that outlives it, and has moved*, or
-        *the contract outlives it and the instrument does not, so the test is
-        rewritten*; `cargo test --lib -- --list` is diffed **in both GC
-        configurations before against the single configuration after**, since
-        the 2026-08-26 baseline is 526 tests under `rc-walk` and 493 under
-        `rc-trace`, union 553, and a diff taken in one configuration is blind to
-        the other's 60 or 27; the difference is exactly the first two headings'
-        lists, and the third heading's tests are named with the assertions they
-        keep, because a rewrite keeps its name and the diff shows nothing;
-        `benches/lifecycle.rs`'s `rc-walk` arm is decided under the same
-        headings
-      tier: T2 · role: Critic
-      handoff: `dev/WORKFLOW.md` forbids deleting a test to go green. These are
-        deleted because their subject is gone, which is a different act — and
-        the difference has to be visible, not asserted. The third heading is
-        owed to two cases the two-heading form cannot express:
-        `refcount/tests/the_header_the_compiler_shares.rs` survives gutted, and
-        `memory/barrier/tests/publication_before_teardown.rs`,
-        `weak/tests/*` and the `heap_census` leak tests keep a
-        strategy-independent contract while losing their driver.
-- [x] S30.8 The comment pass: repoint what the code still cites
-      done: the 95 references to `rc-walk`, `rc-trace`, `gc-horizon` and
-        `satb` that stood in 30 files of `src/` on 2026-08-26, and the 11 in
-        `benches/` and `bench-external/`, are gone or repointed — a citation
-        of a deleted document to `rc-cycle.md` where the successor carries the
-        same clause, and to `archive/pre-rc-cycle` where nothing does; a
-        sentence describing a mechanism that no longer runs is rewritten
-        rather than re-cited, because a comment is the contract and a wrong
-        one stops a reader from reading the code (`dev/WORKFLOW.md`); the
-        `dev/` journals keep their references, which are history by
-        definition, and `docs/architecture.md`'s banner stands until its
-        diagrams are redrawn
-      tier: T2 · role: Code Reviewer
-      handoff: the count is the measurement of 2026-08-26, taken with
-        `grep -rn -i` over each directory. It is the last clause of S30's own
-        criterion still open, and it is a reading job rather than a
-        mechanical one: three quarters of the sites are prose about a
-        mechanism, not a path in backticks.
-      handoff: `src/` is down from 95 to 25 on 2026-08-26 evening, and 23 of
-        the 25 are history statements naming what was deleted and where it
-        went; `benches/` and `bench-external/` are at zero. Commit `6968e5c`,
-        gate green — 450 passed 3 ignored at four threads, three runs. The
-        step's own grep is not the whole defect and three mechanical checks
-        found the rest: every `rfc/…md` path cited from code resolved against
-        the rfc tree (four dead documents, three of them invisible to a grep
-        for `rc-walk`), every `walk::`/`collector::`/`epoch::` path resolved
-        against the modules that exist (nine stale `walk::`, one dead
-        intra-doc link), and `deferred_free`, named by 13 comments in 8 files.
-        All three return empty now.
-      handoff: closed 2026-08-26 by `5ec11ac`, which answered the two husks
-        the way Edmond ruled — delete everything the task does not need — and
-        took six more limbs with them: the candidate index, the epoch byte,
-        the two epoch journal kinds, the `leave_the_candidate_buffer` stub,
-        the storage-version answer threaded through `trace_cells`, and the
-        epoch vocabulary in 22 comments. The test list was diffed byte for
-        byte: 453 before, 452 after, one test gone and one replaced.
-- [x] S30.9 Repoint the two live maps in `dev/`
-      done: `dev/INDEX.md` and `dev/ARCHITECTURE.md` describe the tree that
-        exists — no entry point named `src/collector.rs`, `src/epoch.rs` or
-        `src/walk.rs`, no per-module knowledge row for a deleted module, and
-        the six citations of deleted `rfc` documents they carry between them
-        repointed or dropped; `dev/BENCHMARKS.md`, `dev/DECISIONS.md` and
-        `dev/POSTMORTEM.md` keep theirs, being history by definition, and
-        `dev/design/pure-destructors.md` keeps the six it was dated with on
-        2026-08-26; checked by the two mechanical passes S30.8 used, run over
-        `dev/`
-      tier: T1 · role: —
-      handoff: measured 2026-08-26 evening: 15 references in `INDEX.md` and 29
-        in `ARCHITECTURE.md`. S30's own "Done when" asks for this and no step
-        owned it, which is why the stage cannot close on S30.8 alone.
-        `dev/WORKFLOW.md` is already done — its gate said
-        `--no-default-features` three times, and that was the live half.
-      handoff: closed 2026-08-26. `INDEX.md` 15 references to 4 and
-        `ARCHITECTURE.md` 29 to 7, every survivor a dated history statement;
-        both carry zero citations of deleted `rfc` documents. The upward-edge
-        table was **re-enumerated mechanically** rather than patched — every
-        `crate::…` path in production code resolved against the layer map —
-        which is what found `class`, `object` and `template` calling up into
-        `cells`, three edges the old table never listed. The header-bit
-        ledger's "bits 2-3 GC state" was wrong too: only bit 2 exists, the
-        CAS handoff having died with the field.
-- [x] S30.5 Delete the documents of both collectors and the horizon
-      done: in `rfc`, `model/gc/rc-walk*.md`, `model/gc/walk/`,
-        `model/gc/retained-block-walk.md`, `model/gc/gc-horizon*.md`,
-        `model/gc/gc-horizon-cases/`, `model/gc/gc-horizon-v2/`,
-        `model/gc/drain-window.md`, `model/gc/satb.md`,
-        `dev/TASK-rc-walk-proof.md` and `dev/tools/rc-walk/` are gone; in `model`,
-        `dev/RC_WALK_CRITICAL_REVIEW.md` and the three `dev/design/` records of
-        the walk are gone, and `docs/architecture.md`,
-        `docs/memory-manager.md`, `docs/performance-case.md` and
-        `docs/performance-case-decompositions.md` lose their 37 references —
-        `memory/mod.rs` declares `docs/memory-manager.md` normative for that
-        module, so a stale one there is authority; every inbound link is
-        repointed or its paragraph goes with it, and the arguments that outlive
-        the documents move **first**: the verification debt of
-        `model/gc/cycle/questions.md` names where the TLC battery's obligation
-        now lives, and the count-elision bargain cited by Y11 and by the
-        fourteenth ruling moves into `rc-cycle`'s own documents
-      tier: T2 · role: Critic
-      handoff: `satb.md` goes too, by Edmond's ruling of 2026-08-26 — only
-        the new algorithm remains — so its ten inbound links are repointed or
-        their paragraphs go: `values.md`, `layouts.md`, `arenas.md`,
-        `regions.md`, `heap-design.md`, `gc-research.md`,
-        `static-lifetimes.md`, `gc/README.md` and `strategies.md`.
-        `heap-design.md` stays, minus the
-        CAS-handoff section, which dies with the GC-state field; its
-        `strategies.md` links at lines 4 and 32 are outside that section.
-      handoff: closed 2026-08-26. `docs/architecture.md`'s diagrams were
-        **not** redrawn: they show four modules that no longer exist, and a
-        banner says so and says why — drawing `rc-cycle`'s boundaries before
-        S31–S40 build them would show structure that does not exist. They are
-        redrawn when the boundaries are real.
-        `cycle/questions.md` links the deleted set seven times, Y5 and Y8
-        hardest, and those are the answers that authorise this stage: a
-        paragraph that cannot be repointed cites `archive/pre-rc-cycle` by name
-        rather than being deleted.
 
 ## S31 — The header's new flag layout
 
@@ -811,6 +535,17 @@ Goal: the one number the design still lacks.
         slots, so this arm is Phase-D-blocked in the same way S37.2 is blocked
         on `classes.md`; the synthetic arm is not, and it is what the row form
         can be decided on if Phase D is far.
+- [ ] S40.0 Redraw `docs/architecture.md`'s diagrams
+      done: the four modules the diagrams show that no longer exist are gone
+        from them, `rc-cycle`'s own boundaries are drawn as built, and the
+        banner added on 2026-08-26 comes off with them; `dev/ARCHITECTURE.md`
+        stays the source of truth and the two agree
+      tier: T1 · role: —
+      handoff: the debt of S30.5, which left the diagrams standing under a
+        banner rather than redrawing them — a diagram of an unbuilt collector
+        reads as structure that exists. It sits here rather than earlier
+        because the boundaries are not real until S38 closes; S40 is simply
+        the last stage that will still be open.
 - [ ] S40.2 Decide chunks or not
       done: below 29 % density the chunked form replaces the flat array and the
         measurement is quoted in the decision, with its denominator; above it
