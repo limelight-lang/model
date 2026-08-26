@@ -9,6 +9,52 @@ never edited or deleted.
 ---
 
 
+## 2026-08-26 — what the old collectors left behind is deleted, and what is kept is named
+
+Edmond ruled that nothing of `rc-walk` or `rc-trace` this task does not need
+stays in the tree. Six limbs went beyond the two collectors' own files, all of
+them unreachable from anything the crate runs:
+
+- `CANDIDATE_INDEX_SHIFT`, `_MASK` and `_MAX` — a position in `rc-trace`'s
+  buffer. S30.3's criterion had already called them dead and left them
+  standing.
+- `EPOCH_BYTE_SHIFT` and `_MASK` — `rc-walk`'s eight-bit maturity stamp, whose
+  region S31 re-lays as two bits of epoch, two of maturation age and four of
+  reserve. Its test group keeps the narrow-mutator and eager-death contracts
+  and marks the flags half with a literal instead.
+- `KIND_EPOCH_BEGIN` and `KIND_EPOCH_END` — journal kinds with no site.
+  `rc-cycle`'s events get fresh codes at S36.
+- `leave_the_candidate_buffer` — an empty function called from two places.
+  The duty it marked is real and is S34.3's; the two sites carry it as a
+  comment.
+- The **storage-version answer** threaded through `trace_cells`,
+  `for_each_counted_cell`, `CellReader::walk_outside` and
+  `OutsideCells::walk_plain`, and with it `CoherentView.version`. Every caller
+  discarded it. It was `rc-walk`'s Phase 3 re-check, S30.2's criterion said it
+  dies, and S38.0's reader is specified to answer no version and no give-up.
+- The epoch vocabulary in 22 comments across 12 files.
+
+**Two things are deliberately kept**, because the reason to keep them is not
+the reason the rest went. `CANDIDATE_KINDS` and `kind_may_close_a_cycle` have
+no reader either, but the kind set is the gate `rc-cycle` enrols through and
+S31.1 rewrites it rather than inventing it. And the version bracket in
+`test_support/outside_block.rs` models the array head's publication window,
+which survives in `StorageHead`, and is the mutator half S38.0's Miri slice
+races against.
+
+**How the sweep was made checkable rather than read for.** Three mechanical
+passes, each returning empty at the end: every `rfc/…md` path cited from code
+resolved against the `rfc` tree; every `walk::`, `collector::` and `epoch::`
+path resolved against the modules that exist; and an orphan scan for `.rs`
+files under `src/` that no `mod` declares. The first found three dead
+documents a grep for `rc-walk` cannot see, the second nine stale module paths
+S30.2 claimed to have repointed, and the third the one file that compiled
+nowhere. A grep for the strategies' names finds none of these.
+
+
+---
+
+
 ## 2026-08-26 — S28 is abandoned rather than closed, and S29 splits
 
 **Decided:** S28 — flat per-row words for the epoch metadata — stops where it

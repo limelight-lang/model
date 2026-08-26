@@ -235,7 +235,7 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         `memory/barrier/tests/publication_before_teardown.rs`,
         `weak/tests/*` and the `heap_census` leak tests keep a
         strategy-independent contract while losing their driver.
-- [~] S30.8 The comment pass: repoint what the code still cites
+- [x] S30.8 The comment pass: repoint what the code still cites
       done: the 95 references to `rc-walk`, `rc-trace`, `gc-horizon` and
         `satb` that stood in 30 files of `src/` on 2026-08-26, and the 11 in
         `benches/` and `bench-external/`, are gone or repointed — a citation
@@ -264,15 +264,13 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         against the modules that exist (nine stale `walk::`, one dead
         intra-doc link), and `deferred_free`, named by 13 comments in 8 files.
         All three return empty now.
-      handoff: **not closed**, and what is left is two files rather than a
-        sweep. `memory/barrier/tests/publication_before_teardown.rs` is
-        declared by no `mod` and compiles nowhere;
-        `array/table/tests/what_a_walker_reads_during_a_move.rs` is an empty
-        module whose doc says "the test below". Commit `de18686` sent both
-        contracts to S36 and S38.0 by decision, so the husks are residue of a
-        ruling rather than an oversight — but a file no build sees reads as a
-        live test, and both still describe themselves as gated to a deleted
-        collector. Whether they go or stay with a rewritten header is Edmond's.
+      handoff: closed 2026-08-26 by `5ec11ac`, which answered the two husks
+        the way Edmond ruled — delete everything the task does not need — and
+        took six more limbs with them: the candidate index, the epoch byte,
+        the two epoch journal kinds, the `leave_the_candidate_buffer` stub,
+        the storage-version answer threaded through `trace_cells`, and the
+        epoch vocabulary in 22 comments. The test list was diffed byte for
+        byte: 453 before, 452 after, one test gone and one replaced.
 - [ ] S30.9 Repoint the two live maps in `dev/`
       done: `dev/INDEX.md` and `dev/ARCHITECTURE.md` describe the tree that
         exists — no entry point named `src/collector.rs`, `src/epoch.rs` or
@@ -355,14 +353,13 @@ enrolment gate is one mask, and the kind field is four bits wide.
         below four are declared reserved for ring-closing kinds so a later kind
         is not silently excluded by a permanent refusal (Y6), and the decision
         that refused renumbering is superseded in `dev/DECISIONS.md` with its
-        reason; `CANDIDATE_INDEX_SHIFT`, `_MASK` and `_MAX` go with it, and
-        `kind_may_close_a_cycle` gains the caller S31.3 gives it or goes too
+        reason; `kind_may_close_a_cycle` gains the caller S31.3 gives it or
+        goes too
       tier: T2 · role: Critic
-      handoff: S30.3's criterion said the candidate-index constants die with
-        the buffer and they did not; they stand with no reader, pinned only by
-        `the_header_the_compiler_shares.rs`, which this step rewrites anyway.
-        Doing it here rather than reopening S30.3 costs one test rewrite
-        instead of two.
+      handoff: the candidate-index constants S30.3 owed are already gone
+        (`5ec11ac`), and `the_header_the_compiler_shares.rs` now asserts that
+        nothing claims bits 16-31 — so this step has a red-first check waiting
+        for it the moment it lays a field there.
       handoff: the renumbering was refused once, when it would have bought one
         test at the price of churn. It rides along here because the field is
         being rebuilt anyway. The reservation clause answers the Critic round's
