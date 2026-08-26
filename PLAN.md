@@ -226,7 +226,7 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         `memory/barrier/tests/publication_before_teardown.rs`,
         `weak/tests/*` and the `heap_census` leak tests keep a
         strategy-independent contract while losing their driver.
-- [ ] S30.5 Delete the documents of both collectors and the horizon
+- [x] S30.5 Delete the documents of both collectors and the horizon
       done: in `rfc`, `model/gc/rc-walk*.md`, `model/gc/walk/`,
         `model/gc/retained-block-walk.md`, `model/gc/gc-horizon*.md`,
         `model/gc/gc-horizon-cases/`, `model/gc/gc-horizon-v2/`,
@@ -252,6 +252,11 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         `heap-design.md` stays, minus the
         CAS-handoff section, which dies with the GC-state field; its
         `strategies.md` links at lines 4 and 32 are outside that section.
+      handoff: closed 2026-08-26. `docs/architecture.md`'s diagrams were
+        **not** redrawn: they show four modules that no longer exist, and a
+        banner says so and says why — drawing `rc-cycle`'s boundaries before
+        S31–S40 build them would show structure that does not exist. They are
+        redrawn when the boundaries are real.
         `cycle/questions.md` links the deleted set seven times, Y5 and Y8
         hardest, and those are the answers that authorise this stage: a
         paragraph that cannot be repointed cites `archive/pre-rc-cycle` by name
@@ -844,9 +849,11 @@ own checkbox.
   2026-08-18; the child-release-order ruling landed the same day —
   specified, P2 keeps its call (`dev/DECISIONS.md`) — so the
   compiler tiers wait only on the compiler. The composition with the
-  ownership pair — including the
-  fast class that can block its own memory return — is
-  `dev/design/owned-slots-and-the-walk.md`.
+  ownership pair — including the fast class that can block its own memory
+  return — was `dev/design/owned-slots-and-the-walk.md`, deleted 2026-08-26
+  and readable on `archive/pre-rc-cycle`; it is argued against the walk
+  throughout, so it is a source to re-read rather than a conclusion to
+  carry.
 - [ ] **The horizon's borrow elision** (Edmond's algorithm, 2026-08-18,
   named `proof-horizon` until 2026-08-20) — closed, and no pre-D step can
   change that status: the scan is kill-only, the census is undated, every

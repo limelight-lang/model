@@ -8,6 +8,23 @@ whom, who is responsible for what, and the key use cases as
 sequences. When a boundary changes, both files change in the same
 commit (`dev/WORKFLOW.md`).
 
+> **The collector half of every diagram below is out of date since
+> 2026-08-26, and is kept rather than redrawn.** Four modules the diagrams
+> show no longer exist: `gc` as a collector (the file survives as the GC ABI
+> and the safepoint, and reports zero), `epoch`, `collector` and
+> `deferred_free`. The violet "rc-walk feature only" layer is gone entirely,
+> and so is the feature. `walk` is now `cells` and carries the tracer alone.
+>
+> They are not redrawn here because the replacement, `rc-cycle`
+> (`rfc/model/gc/rc-cycle.md`), is not built: a diagram of an unbuilt
+> collector would read as structure that exists, which is the failure this
+> banner exists to avoid. The stages that build it are S31 through S40 of
+> `PLAN.md`, and the diagrams are redrawn when the boundaries they show are
+> real. What the deleted modules looked like is on `archive/pre-rc-cycle`.
+>
+> Everything outside the collector — the arenas, the heap, the block pool,
+> the store barrier, the object model — is current.
+
 Diagrams are PlantUML, embedded as fenced blocks; render on demand
 (IDE plugin or any PlantUML processor). No generated images are
 committed.

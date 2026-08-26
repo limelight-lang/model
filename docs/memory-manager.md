@@ -11,6 +11,14 @@ not built, it says so. Superseded versions live in
 [`docs/history/`](history/) and are marked as such; the rule that keeps
 this file honest is in [`dev/WORKFLOW.md`](../dev/WORKFLOW.md).
 
+> **The crate has no cycle collector as of 2026-08-26.** `rc-walk`,
+> `rc-trace` and `rc-satb` were deleted whole — code and documents — and
+> `rc-cycle` (`rfc/model/gc/rc-cycle.md`) is the only design in force and is
+> not built. Between stages S30 and S36 of `PLAN.md` a garbage ring is
+> retained; acyclic garbage dies by counting as it always did. Passages below
+> that describe a collector are dated and marked, and the code they described
+> is on the branch `archive/pre-rc-cycle`.
+
 ---
 
 ## Layers
@@ -217,9 +225,15 @@ region and is found from the module's own registry, which is why its
 free parks during an epoch like everything else that can put memory back
 in circulation.
 
-### Deferred free (rc-walk builds)
+### Deferred free — deleted 2026-08-26 with `rc-walk`
 
-While an rc-walk collection epoch is in flight, a free **parks** instead
+*What follows described `deferred_free.rs`, which is gone.* `rc-cycle` parks
+per slot on two windows of different widths — a queue entry naming the slot,
+and a collection in flight — rather than epoch-wide, and stages S34.3 and
+S36.2 build it. The lesson that survives is the last paragraph of this
+section: parking is out of band, and the parked memory is not written.
+
+While an rc-walk collection epoch was in flight, a free **parked** instead
 of recycling (`deferred_free.rs`): one relaxed load of a global activity
 bit and a predicted branch, after the kind dispatch, active only during
 an epoch. The entity still dies on time, destructor included, and only
@@ -419,13 +433,12 @@ inside `ll_release`, mid-mutation, where refcounts and edges disagree;
 the collection fires at a clean point, an explicit
 `ll_gc_collect_cycles` or the compiler's `ll_gc_maybe_collect` poll.
 
-A second, whole-heap collector exists as `walk::collect_cycles`
-(rc-walk build step 2, `rfc/model/gc/rc-walk.md`): a synchronous walk of
-the entity blocks with roots *computed* (`RC − IN > 0`) rather than
-buffered, and every verdict re-proven by the exact test before anything
-is freed. It needs no candidate buffer and no barrier and today serves
-as a leak detector and the exact test's correctness harness; the
-concurrent rc-walk collector (build step 3) grows out of it.
+*Both collectors this section describes were deleted on 2026-08-26.* What
+remains of them in the crate is the entry points — `ll_gc_collect_cycles` and
+`ll_gc_maybe_collect` in `gc.rs`, which report zero — and the kind-dispatched
+tracer, which moved to `cells.rs` because the class descriptor, the arena
+reset and the dispose path all stand on it. `rc-cycle` traces through it
+rather than growing a stride of its own.
 
 ### The store barrier
 
@@ -595,11 +608,11 @@ count goes is handed over by the reset itself.
 
 - **Strategy selection as an interface.** The RFC's four-interface
   contract is not represented in code, and deliberately so:
-  `refcount.rs` and `object.rs` call `gc::*` directly. Two compositions
-  are built and both must stay green — `rc-walk` (the default since
-  2026-07-27) and `rc-trace` behind `--no-default-features`; they claim
-  overlapping header bits, which is why the choice is a cargo feature
-  rather than a runtime one. A `GcStrategy` trait with trivial impls
+  `refcount.rs` and `object.rs` call `gc::*` directly. One composition is
+  built as of 2026-08-26, and there is no GC feature axis left: the two
+  that claimed overlapping header bits were deleted, and with a single
+  strategy the build-time choice has no subject. A `GcStrategy` trait with
+  trivial impls
   used to stand in for the contract and was removed — nothing
   constructed it, and being dispatch-shaped it could not deliver the
   build-time choice the contract asks for. When a `nogc` or pure-`rc`

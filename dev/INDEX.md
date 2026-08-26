@@ -602,11 +602,9 @@ demand; no images committed.
 registry, lifetimes, shadow metadata, integrity checks, metrics export.
 Design only, nothing implemented.
 
-`dev/design/epoch-walk.md` and `dev/design/epoch-walk-structures.md` —
-the rc-walk epoch as a reading aid: the phase machine, both protocol
-diagrams, the grouping algorithm, and every collector structure with
-its per-row and per-edge cost, including what stage S28 changes. The
-RFC stays normative; these two describe, dated 2026-08-18.
+`dev/design/epoch-walk.md`, `dev/design/epoch-walk-structures.md` and
+`dev/RC_WALK_CRITICAL_REVIEW.md` were deleted on 2026-08-26 with the
+collector they described. They are on the branch `archive/pre-rc-cycle`.
 
 `rfc/model/gc/gc-horizon.md` — Edmond's algorithm, 2026-08-18, named
 `proof-horizon` until it moved to the RFC on 2026-08-20: a local is
@@ -632,10 +630,10 @@ algorithm, numbered 7 to 11 there.
 `dev/design/pure-destructors.md` — Edmond's pure-destructor proposal
 analyzed, 2026-08-18: the purity ladder, what the runtime already
 banks, the five owner-bound races, and the hand-off drain the
-proposal soundly buys. `dev/design/owned-slots-and-the-walk.md` maps
-the designed birth-count and unique-ownership pair and the
-compositions between all three. Analysis, not design; the RFC stays
-normative, and the backlog line in `PLAN.md` is the owner.
+proposal soundly buys. Its banner names the three sources deleted with
+the collectors on 2026-08-26, one of which mapped the birth-count and
+unique-ownership pair. Analysis, not design; the RFC stays normative, and
+the backlog line in `PLAN.md` is the owner.
 
 ## Traps
 

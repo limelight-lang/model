@@ -4,11 +4,19 @@ Proposed by Edmond, 2026-08-18: an object whose destructor is absent, or
 provably affects only the object's own data, is pure — and a pure object
 could be reclaimed by the collector itself, making freeing simpler and
 faster. This note is the analysis of that proposal against the code at
-`23c3216` and `rfc/model/gc/rc-walk.md`, run the same day through three
+`23c3216` and the `rc-walk` collector, run the same day through three
 lenses (protocol soundness, purity semantics, payoff and composition).
 Status: analysis, not design — nothing here is implemented and the RFC
-has no section for it yet. The ownership work this composes with is
-catalogued in `owned-slots-and-the-walk.md`.
+has no section for it yet.
+
+> **Its three sources were deleted on 2026-08-26** — `rc-walk.md` in the RFC,
+> `dev/RC_WALK_CRITICAL_REVIEW.md` and `dev/design/owned-slots-and-the-walk.md`
+> here — when the two collectors and the horizon left the tree and `rc-cycle`
+> became the only design. Every citation of them below names a document on the
+> branch `archive/pre-rc-cycle`, and each is a claim about a mechanism that no
+> longer runs. What survives the change is the purity ladder itself and the
+> hand-off drain; what has to be re-argued against `rc-cycle` is every clause
+> resting on the epoch, the verdict message or the drain window.
 
 ## The design philosophy this is judged by
 
