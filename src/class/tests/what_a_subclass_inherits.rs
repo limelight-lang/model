@@ -10,10 +10,9 @@
 //! the group has to be inherited for that to be safe.
 
 use super::*;
-use crate::walk::Cell;
-use crate::walk::OutsideCells;
-#[cfg(feature = "rc-walk")]
-use crate::walk::OutsideRead;
+use crate::cells::Cell;
+use crate::cells::OutsideCells;
+use crate::cells::OutsideRead;
 
 const PROBE_VERSION: usize = 0xC0FFEE;
 
@@ -22,7 +21,6 @@ const PROBE_VERSION: usize = 0xC0FFEE;
 /// group is made to work.
 static PROBE: OutsideCells = OutsideCells {
     walk_plain: probe_walk,
-    #[cfg(feature = "rc-walk")]
     walk_relaxed: probe_walk_racing,
     recheck: probe_recheck,
     sever: probe_sever,
@@ -33,7 +31,6 @@ static PROBE: OutsideCells = OutsideCells {
 /// A group whose cells sit in storage nothing replaces.
 static UNVERSIONED: OutsideCells = OutsideCells {
     walk_plain: unversioned_walk,
-    #[cfg(feature = "rc-walk")]
     walk_relaxed: unversioned_walk_racing,
     recheck: probe_recheck,
     sever: probe_sever,
@@ -44,7 +41,6 @@ static UNVERSIONED: OutsideCells = OutsideCells {
 /// A group whose racing walk gives the entity up. Only the racing one
 /// can: `walk_plain`'s return type has no variant for it, which is the
 /// point of the two members having different types.
-#[cfg(feature = "rc-walk")]
 static QUITTER: OutsideCells = OutsideCells {
     walk_plain: unversioned_walk,
     walk_relaxed: quitter_walk,
@@ -58,7 +54,6 @@ unsafe fn probe_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) -> Op
     Some(PROBE_VERSION)
 }
 
-#[cfg(feature = "rc-walk")]
 unsafe fn probe_walk_racing(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) -> OutsideRead {
     OutsideRead::Version(PROBE_VERSION)
 }
@@ -67,7 +62,6 @@ unsafe fn unversioned_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell))
     None
 }
 
-#[cfg(feature = "rc-walk")]
 unsafe fn unversioned_walk_racing(
     _: *mut u8,
     _: *const Class,
@@ -76,7 +70,6 @@ unsafe fn unversioned_walk_racing(
     OutsideRead::NoStorage
 }
 
-#[cfg(feature = "rc-walk")]
 unsafe fn quitter_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) -> OutsideRead {
     OutsideRead::GaveUp
 }
@@ -96,8 +89,8 @@ unsafe fn probe_free(_: *mut crate::refcount::RcHeader) {}
 unsafe fn probe_carry(
     _: *mut crate::memory::arena::Arena,
     _: *mut crate::refcount::RcHeader,
-) -> crate::walk::OutsideCarry {
-    crate::walk::OutsideCarry::Nothing
+) -> crate::cells::OutsideCarry {
+    crate::cells::OutsideCarry::Nothing
 }
 
 /// A stand-in with the real signature. `Class::dispose` is transmuted to
@@ -222,7 +215,7 @@ fn the_version_a_class_answers_reaches_the_walk() {
         };
         assert!(!obj.is_null(), "the factory refused");
         let answered = unsafe {
-            crate::object::for_each_counted_cell::<crate::walk::PlainCells>(
+            crate::object::for_each_counted_cell::<crate::cells::PlainCells>(
                 obj as *mut u8,
                 cls,
                 |_| {},
@@ -244,7 +237,6 @@ fn the_version_a_class_answers_reaches_the_walk() {
 
 /// A give-up is the racing reader's alone, and it reaches the caller as
 /// "no version" rather than as a version of its own.
-#[cfg(feature = "rc-walk")]
 #[test]
 fn a_racing_walk_that_gives_up_answers_no_version() {
     let _g = crate::memory::block_pool::test_guard();
@@ -260,7 +252,7 @@ fn a_racing_walk_that_gives_up_answers_no_version() {
     assert!(!obj.is_null(), "the factory refused");
 
     let answered = unsafe {
-        crate::object::for_each_counted_cell::<crate::walk::RelaxedCells>(
+        crate::object::for_each_counted_cell::<crate::cells::RelaxedCells>(
             obj as *mut u8,
             cls,
             |_| {},
@@ -336,7 +328,6 @@ static FREED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0
 
 static COUNTING: OutsideCells = OutsideCells {
     walk_plain: unversioned_walk,
-    #[cfg(feature = "rc-walk")]
     walk_relaxed: unversioned_walk_racing,
     recheck: probe_recheck,
     sever: probe_sever,

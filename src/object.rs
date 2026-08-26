@@ -273,14 +273,9 @@ pub unsafe fn object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool 
         return false;
     }
 
-    #[cfg(not(feature = "rc-walk"))]
-    unsafe {
-        (*obj).rc.flags |= DESTRUCTOR_PENDING
-    };
 
     // Post-publish header write: races the collector's byte stores
     // under a live epoch, so it goes through the relaxed word helper.
-    #[cfg(feature = "rc-walk")]
     unsafe {
         crate::refcount::mutator_update_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_PENDING)
     };
@@ -362,7 +357,7 @@ pub(crate) unsafe fn for_each_counted_child(
 ) {
     let cls = unsafe { (*obj).class() };
     unsafe {
-        for_each_counted_cell::<crate::walk::PlainCells>(obj as *mut u8, cls, |cell| {
+        for_each_counted_cell::<crate::cells::PlainCells>(obj as *mut u8, cls, |cell| {
             visit(cell.child)
         })
     };
@@ -373,7 +368,7 @@ pub(crate) unsafe fn for_each_counted_child(
 /// goes through: tracing, severing, the arena reset's walk, and the
 /// concurrent collector alike.
 ///
-/// `R` is how the memory is read (`crate::walk::CellReader`).
+/// `R` is how the memory is read (`crate::cells::CellReader`).
 ///
 /// Keyed on `(base, cls)` rather than on an entity pointer, because one
 /// caller has no entity to read a class from: a static block is a
@@ -392,10 +387,10 @@ pub(crate) unsafe fn for_each_counted_child(
 /// `base` addresses a live region laid out by `cls`, and its cells are
 /// readable — under `R = RelaxedCells` they may be concurrently written.
 #[inline]
-pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
+pub(crate) unsafe fn for_each_counted_cell<R: crate::cells::CellReader>(
     base: *mut u8,
     cls: *const crate::class::Class,
-    mut visit: impl FnMut(crate::walk::Cell),
+    mut visit: impl FnMut(crate::cells::Cell),
 ) -> Option<usize> {
     unsafe { for_each_body_cell::<R>(base, cls, &mut visit) };
 
@@ -418,10 +413,10 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::walk::CellReader>(
 /// # Safety
 /// As [`for_each_counted_cell`].
 #[inline]
-pub(crate) unsafe fn for_each_body_cell<R: crate::walk::CellReader>(
+pub(crate) unsafe fn for_each_body_cell<R: crate::cells::CellReader>(
     base: *mut u8,
     cls: *const crate::class::Class,
-    visit: &mut impl FnMut(crate::walk::Cell),
+    visit: &mut impl FnMut(crate::cells::Cell),
 ) {
     // A template's children are counted by its shape, because one class
     // serves every interpolation site and the runs would have to differ
@@ -430,7 +425,7 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::walk::CellReader>(
         let n = unsafe { crate::template::value_count_at::<R>(base) };
         for i in 0..n {
             let at = unsafe { base.add(crate::template::VALUES_OFFSET + i * 16) };
-            if let Some(cell) = unsafe { crate::walk::counted_box_cell::<R>(at) } {
+            if let Some(cell) = unsafe { crate::cells::counted_box_cell::<R>(at) } {
                 visit(cell);
             }
         }
@@ -444,11 +439,11 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::walk::CellReader>(
             let at = unsafe { base.add((run.offset + i * 8) as usize) };
             let child = unsafe { R::ptr(at) } as *mut RcHeader;
             if !child.is_null() {
-                visit(crate::walk::Cell {
+                visit(crate::cells::Cell {
                     addr: at as usize,
                     raw: child as u64,
                     child,
-                    shape: crate::walk::CellShape::Pointer,
+                    shape: crate::cells::CellShape::Pointer,
                 });
             }
         }
@@ -458,7 +453,7 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::walk::CellReader>(
     for run in unsafe { (*cls).box_runs() } {
         for i in 0..run.count {
             let at = unsafe { base.add((run.offset + i * 16) as usize) };
-            if let Some(cell) = unsafe { crate::walk::counted_box_cell::<R>(at) } {
+            if let Some(cell) = unsafe { crate::cells::counted_box_cell::<R>(at) } {
                 visit(cell);
             }
         }
@@ -489,8 +484,8 @@ pub(crate) unsafe fn sever_counted_slots(
     displaced: &mut Vec<*mut RcHeader>,
 ) {
     unsafe {
-        for_each_body_cell::<crate::walk::PlainCells>(base, cls, &mut |cell| {
-            crate::walk::empty_cell(cell);
+        for_each_body_cell::<crate::cells::PlainCells>(base, cls, &mut |cell| {
+            crate::cells::empty_cell(cell);
             displaced.push(cell.child);
         })
     };
@@ -508,18 +503,7 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
     // The header flag, not the class: a class may declare `__destruct`
     // while this particular object never finished construction, and such
     // an object must not run it (`rfc/runtime/object-lifecycle.md`).
-    #[cfg(not(feature = "rc-walk"))]
-    {
-        if unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING == 0
-            || unsafe { (*obj).rc.flags } & DESTRUCTOR_RAN != 0
-        {
-            return false;
-        }
 
-        unsafe { (*obj).rc.flags |= DESTRUCTOR_RAN };
-    }
-
-    #[cfg(feature = "rc-walk")]
     {
         let (_, flags) = unsafe { crate::refcount::mutator_load_header(obj as *const RcHeader) };
         if flags & DESTRUCTOR_PENDING == 0 || flags & DESTRUCTOR_RAN != 0 {
@@ -575,24 +559,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
     // guard, and is detected after it is dropped. The guard is only
     // meaningful for lifetime-counted (GcHeap) objects; arena objects are
     // not counted, so a $this reference there is a no-op anyway.
-    #[cfg(not(feature = "rc-walk"))]
-    {
-        let counted = unsafe { (*obj).rc.lifetime_counted() };
-        if counted {
-            unsafe { (*obj).rc.refcount += 1 };
-        }
 
-        let ran = unsafe { run_pre_destructor(obj) };
-        if counted {
-            unsafe { (*obj).rc.refcount -= 1 };
-        }
-
-        if ran && unsafe { (*obj).rc.refcount } > 0 {
-            return false; // resurrected: __destruct stored $this somewhere lasting
-        }
-    }
-
-    #[cfg(feature = "rc-walk")]
     {
         // Header traffic through the relaxed word helpers: the walker
         // reads this header concurrently, and the guard's transient
@@ -689,19 +656,12 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
             >> crate::refcount::ENTITY_KIND_SHIFT) as u64,
         0
     );
-    // Teardown bracket (rc-walk): no epoch-message pickup between the
-    // death's committing store and this dispose's completion — a drain
-    // destructor's `WeakRef::get` could reach the committed-dead
-    // entity (review finding 2026-07-27, `rfc/model/gc/rc-walk.md`).
-    // The exit of the outermost bracket runs the full checkpoint.
-    #[cfg(feature = "rc-walk")]
-    crate::epoch::teardown_enter();
-    // Teardown bracket (rc-trace): while it is held no fire point
-    // collects, so the user code `dispose` runs cannot reach a
-    // collection that would judge this refcount-zero object garbage
-    // (`gc::teardown_enter`).
-    #[cfg(not(feature = "rc-walk"))]
-    crate::gc::teardown_enter();
+    // The teardown bracket that guarded this window died with the two
+    // collectors it belonged to. `rc-cycle` owes the same guarantee by a
+    // different mechanism — a slot that dies while enrolled is parked,
+    // and only the owner un-parks it on an exact reading
+    // (`rfc/model/gc/rc-cycle.md`, "Death while enrolled") — and S34.3
+    // is where it is built. Until then this window is unguarded.
 
     let dispose: DisposeFn = unsafe { std::mem::transmute((*(*obj).class).dispose) };
     if unsafe { dispose(obj) } {
@@ -709,17 +669,14 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
         // this is where a reset in flight learns of the death and takes
         // over what the entity held (`memory::reset_window`).
         crate::memory::reset_window::record_death(obj as *mut RcHeader);
-        // Leave the candidate buffer before the free, or the buffer
-        // keeps a root pointing at memory about to be reused. It has to
-        // be *here* rather than before `dispose`, because `__destruct`
-        // can buffer the object afresh: a transient `$this` taken inside
-        // it is a retain and a release, and that release is a non-zero
-        // decrement. `dispose` cannot own the duty — it is class code,
-        // and the compiler emits one per class.
-        #[cfg(not(feature = "rc-walk"))]
-        unsafe {
-            crate::gc::forget_candidate(obj as *mut RcHeader)
-        };
+        // Under `rc-trace` the object left the candidate buffer here,
+        // after `dispose` rather than before it, because `__destruct`
+        // can enrol the object afresh — a transient `$this` inside it is
+        // a retain and a release, and that release is a non-zero
+        // decrement. `rc-cycle` cannot withdraw a queue entry at all, so
+        // the same fact is paid for by parking the slot instead (S34.3).
+        // The ordering argument survives the buffer: whatever S34.3
+        // builds runs after `dispose`, never before.
 
         // Phase 3 — memory, by category. Arenas reclaim at reset; the
         // long-lived policy is TBD; only the GC heap frees here.
@@ -727,11 +684,6 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
             unsafe { crate::memory::stdapi::ll_free(obj as *mut u8) };
         }
     } // else resurrected: kept alive, not freed
-
-    #[cfg(feature = "rc-walk")]
-    crate::epoch::teardown_exit();
-    #[cfg(not(feature = "rc-walk"))]
-    crate::gc::teardown_exit();
 }
 
 /// The category of a possibly-walked header: a relaxed read under
@@ -778,18 +730,7 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     // again (`array::entity::leave_the_candidate_buffer`). A duty added
     // here has to be added there as well until the two doors are one.
     // The bit is tested from flags already in a register.
-    #[cfg(not(feature = "rc-walk"))]
-    if flags & crate::refcount::CYCLE_COLLECTOR_BUFFERED != 0 {
-        unsafe { crate::gc::forget_candidate(entity) };
-    }
 
-    // Teardown bracket (rc-walk) — see `ll_object_die`; nesting is
-    // fine, the depth is a counter and only the outermost exit picks
-    // up messages.
-    #[cfg(feature = "rc-walk")]
-    crate::epoch::teardown_enter();
-    #[cfg(not(feature = "rc-walk"))]
-    crate::gc::teardown_enter();
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },
         REFERENCE => unsafe {
@@ -805,11 +746,6 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
             "teardown for an entity kind the crate cannot produce yet"
         ),
     }
-
-    #[cfg(feature = "rc-walk")]
-    crate::epoch::teardown_exit();
-    #[cfg(not(feature = "rc-walk"))]
-    crate::gc::teardown_exit();
 }
 
 /// Tear an entity at count one down that no slot has ever named —

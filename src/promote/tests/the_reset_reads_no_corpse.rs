@@ -967,7 +967,6 @@ fn a_run_parked_by_a_nested_reset_outlives_the_reset_that_parked_it() {
 /// Parked instead, the free replays after the epoch against exactly that
 /// index — one occupant short of what it was built from — and the block
 /// goes to the pool with a living survivor inside it.
-#[cfg(feature = "rc-walk")]
 #[test]
 fn a_corpse_freed_under_an_epoch_is_absorbed_rather_than_parked() {
     use crate::memory::block_pool::BLOCK_KIND_RETAINED;
@@ -1053,7 +1052,6 @@ fn a_corpse_freed_under_an_epoch_is_absorbed_rather_than_parked() {
 /// is built without the corpse, and the flush spends a count the index
 /// never took, leaving the block one short of its true occupancy and
 /// ready to go home under the two survivors still living in it.
-#[cfg(feature = "rc-walk")]
 #[test]
 fn a_corpse_in_a_block_pinned_for_bytes_is_absorbed_like_any_other() {
     use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED};

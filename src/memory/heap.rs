@@ -1537,14 +1537,11 @@ pub extern "C" fn ll_thread_exit() {
     //    (2026-08-03). The cost is stated at `gc::dispose` — an entity
     //    that outlives this thread in an abandoned block keeps a stale
     //    buffered bit, which suppresses its re-buffering for good.
-    #[cfg(not(feature = "rc-walk"))]
-    crate::gc::dispose();
 
     // 3. The parked backlog: flushed when no epoch is in flight, left to
     //    leak when one is — that is the limit `deferred_free`'s module
     //    doc already declares, and freeing mid-epoch would recycle the
     //    slots the queue exists to pin.
-    #[cfg(feature = "rc-walk")]
     crate::memory::deferred_free::dispose();
 
     // 4. The weak table, after every death that could still need a row.
@@ -2136,155 +2133,8 @@ pub(crate) fn describe_slot(addr: usize) -> String {
     )
 }
 
-/// One walkable block as the rc-walk collector snapshotted it at epoch
-/// open (`rfc/model/gc/rc-walk.md`, Phase 1). The collector computes
-/// slot addresses itself and touches slots only through the
-/// relaxed-atomic header helpers; what it holds here is arithmetic and,
-/// for a retained block, the array of addresses that replaces it.
-///
-/// Three kinds of block are walkable and they differ only in how a slot
-/// index becomes an address. An **entity block** has one size class, so
-/// slot *s* is `payload + s * class_size` and an address divides back.
-/// A **retained** former-arena block was bump-filled with mixed sizes
-/// and has no stride at all: slot *s* is `index[s]`, and an address is
-/// found by searching the index (`memory/retained.rs`). A
-/// **large-entity** block holds one occupant, so the division still
-/// works and always answers slot 0
-/// (`rfc/model/memory/large-entities.md`).
-#[cfg(feature = "rc-walk")]
-#[derive(Clone, Debug)]
-pub(crate) struct EntityBlockSnapshot {
-    /// Address of the first slot. The block payload for a size-class
-    /// block, and the entity itself for a large-entity one, which is the
-    /// same address by geometry.
-    pub payload: usize,
-    /// Slot stride. The block's size class where slots repeat, and the
-    /// **entity's own size** where the block holds one — either way it is
-    /// what an in-block offset divides by. Meaningless for a retained
-    /// block, which has neither; read it only when `index` is `None`.
-    pub class_size: usize,
-    /// Every slot of the block, virgin tail included. The walker does
-    /// NOT read the bump cursor: commissioning zeroes every slot's
-    /// header, so a virgin slot reads refcount 0 and skips — the same
-    /// occupancy test as a freed one. Skipping the cursor keeps the
-    /// mutator's `bump += 1` a plain store (an atomic one measured
-    /// +14% on larson, `dev/BENCHMARKS.md`, "the rc-walk build vs default;
-    /// an atomic bump cursor rejected"); the full-block scan is
-    /// collector-side work, which is always the right side to pay on.
-    ///
-    /// For a retained block this is `index.len()` — the survivors the
-    /// reset recorded, which is that block's whole population because
-    /// nothing allocates into a dead arena.
-    ///
-    /// **For a large-entity block it is 1, and that is soundness rather
-    /// than economy.** The obvious formula, `BLOCK_PAYLOAD / class_size`,
-    /// answers 6 for a 9 632-byte object; the walker would then read five
-    /// fabricated rows out of that object's own cells, and edges invented
-    /// from cell bytes can drive a live component to `RC == IN` and
-    /// confirm it for collection.
-    pub slots: usize,
-    /// The occupants, ascending, when this is a retained block. `None`
-    /// for the two populations whose occupants are found by arithmetic.
-    pub index: Option<std::sync::Arc<[usize]>>,
-}
 
-/// Snapshot every entity block for one collection epoch: the region
-/// registry is append-only and a block changes population only between
-/// epochs (frees park while one is in flight), so the list is stable
-/// for the epoch's whole life. Sorted by payload address, for the
-/// child-pointer validation's binary search.
-///
-/// Runs on the collector thread; the kind read is an acquire atomic
-/// pairing with commissioning's release store (a block mid-commission
-/// appears not at all — conservative).
-#[cfg(feature = "rc-walk")]
-pub(crate) fn snapshot_entity_blocks() -> Vec<EntityBlockSnapshot> {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    let mut blocks = Vec::new();
-    for region in BlockPool::global().regions() {
-        for i in 0..BLOCKS_PER_REGION {
-            let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut HeapBlockHeader;
-            // What this acquire publishes: a block reading "entity" has
-            // its class, cursor and zeroed slots visible.
-            let kind = unsafe {
-                (*(&raw const (*block).kind as *const AtomicU32)).load(Ordering::Acquire)
-            };
 
-            // One large entity in a pooled block; `slots` is 1 for the
-            // reason `EntityBlockSnapshot::slots` states. The acquire
-            // above published the size.
-            if kind == crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE {
-                let (entity, size) =
-                    unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
-                blocks.push(EntityBlockSnapshot {
-                    payload: entity as usize,
-                    class_size: size,
-                    slots: 1,
-                    index: None,
-                });
-
-                continue;
-            }
-
-            if kind != BLOCK_KIND_ENTITY {
-                continue;
-            }
-
-            let size_class = unsafe { (*block).size_class.load(Ordering::Relaxed) };
-            let class_size = SIZE_CLASSES[size_class as usize];
-            blocks.push(EntityBlockSnapshot {
-                payload: unsafe { (block as *mut u8).add(LINE_SIZE) } as usize,
-                class_size,
-                slots: BLOCK_PAYLOAD / class_size,
-                index: None,
-            });
-        }
-    }
-
-    // Retained former-arena blocks join the same list, so the census's
-    // single binary search covers both kinds and row omission stays one
-    // decision at one test (`dev/DECISIONS.md`, "retained blocks are
-    // walked through a per-block object index"). Their indexes are frozen
-    // — nothing allocates into a dead arena — so a snapshot taken here is
-    // as stable for the epoch as an entity block's slot count is.
-    for (block, index) in crate::memory::retained::snapshot() {
-        blocks.push(EntityBlockSnapshot {
-            payload: block + LINE_SIZE,
-            class_size: 0,
-            slots: index.len(),
-            index: Some(index),
-        });
-    }
-
-    // And the OS-direct runs, for the reason the synchronous walk takes
-    // them from the same registry: no region contains one, so nothing
-    // else names it. Reading a registered run's header is sound for the
-    // epoch, because its free parks — the entry outlives the snapshot.
-    for block in crate::memory::large_entity::snapshot() {
-        let (entity, size) = unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
-        blocks.push(EntityBlockSnapshot {
-            payload: entity as usize,
-            class_size: size,
-            slots: 1,
-            index: None,
-        });
-    }
-
-    blocks.sort_unstable_by_key(|b| b.payload);
-    blocks
-}
-
-/// The payload address of the block that would contain `addr` — pure
-/// geometry (blocks are `BLOCK_SIZE`-aligned, payload starts one line
-/// in), no header read, no validity claim. The collector matches the
-/// result against its snapshot's sorted payload list; an address in no
-/// snapshotted entity block simply finds nothing (`collector.rs`, the
-/// dense census).
-#[cfg(feature = "rc-walk")]
-#[inline]
-pub(crate) fn block_payload_of(addr: usize) -> usize {
-    (addr & !BLOCK_MASK) + LINE_SIZE
-}
 
 /// Post `ptr` to its block's cross-thread stack, without needing a heap of
 /// our own — for a thread that frees something it never could have allocated.

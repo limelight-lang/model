@@ -46,7 +46,7 @@ fn the_walk_finds_a_cell_the_runs_cannot_describe() {
         );
 
         let mut seen = Vec::new();
-        crate::walk::trace_entity(obj as *mut RcHeader, |c| seen.push(c));
+        crate::cells::trace_entity(obj as *mut RcHeader, |c| seen.push(c));
         assert_eq!(
             seen,
             vec![child as *mut RcHeader],
@@ -124,7 +124,7 @@ fn an_instance_with_no_block_walks_and_dies_like_any_other() {
         assert!(outside_block::block_of(obj).is_null(), "the factory zeroed");
 
         let mut seen = 0;
-        crate::walk::trace_entity(obj as *mut RcHeader, |_| seen += 1);
+        crate::cells::trace_entity(obj as *mut RcHeader, |_| seen += 1);
         assert_eq!(seen, 0, "an object with no block has no children");
 
         assert!(ll_release(obj as *mut RcHeader));

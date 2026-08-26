@@ -115,9 +115,9 @@ fn the_walker_counts_a_heap_string_as_a_leaf() {
     let _g = crate::memory::block_pool::test_guard();
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
-    let before = unsafe { crate::walk::heap_census() };
+    let before = unsafe { crate::cells::heap_census() };
     let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"walked") };
-    let after = unsafe { crate::walk::heap_census() };
+    let after = unsafe { crate::cells::heap_census() };
 
     let k = EntityKind::String as usize;
     assert_eq!(after.by_kind[k], before.by_kind[k] + 1);
@@ -128,7 +128,7 @@ fn the_walker_counts_a_heap_string_as_a_leaf() {
         crate::object::ll_entity_die(s as *mut RcHeader);
     }
 
-    let freed = unsafe { crate::walk::heap_census() };
+    let freed = unsafe { crate::cells::heap_census() };
     assert_eq!(freed.by_kind[k], before.by_kind[k], "and it goes away");
     arena.reset(|_| {});
 }

@@ -404,12 +404,12 @@ unsafe fn carry_external_memory(arena: *mut Arena, surv: *mut RcHeader) -> Exter
         }
         // A class with cells outside its body answers both halves itself:
         // the group's `carry` is the only code that knows where the
-        // storage is (`crate::walk::OutsideCells`).
+        // storage is (`crate::cells::OutsideCells`).
         External::Outside(group) => match unsafe { (group.carry)(arena, surv) } {
-            crate::walk::OutsideCarry::Carried | crate::walk::OutsideCarry::Nothing => {
+            crate::cells::OutsideCarry::Carried | crate::cells::OutsideCarry::Nothing => {
                 ExternalCarry::Done
             }
-            crate::walk::OutsideCarry::Refused { memory } => {
+            crate::cells::OutsideCarry::Refused { memory } => {
                 ExternalCarry::Refused(block_holding(memory))
             }
         },
@@ -444,7 +444,7 @@ enum External {
     None,
     StringPayload(*mut crate::string::LLStringDynamic),
     ArrayStorage(*mut crate::array::entity::LLArray),
-    Outside(&'static crate::walk::OutsideCells),
+    Outside(&'static crate::cells::OutsideCells),
 }
 
 /// Classify a survivor once, so the carry and the block it falls back on
@@ -552,7 +552,7 @@ unsafe fn mark_subgraph(root: *mut RcHeader, survivors: &mut Vec<*mut RcHeader>)
 
     while let Some(e) = stack.pop() {
         unsafe {
-            crate::walk::trace_entity(e, |child| {
+            crate::cells::trace_entity(e, |child| {
                 if is_arena_entity(child) {
                     mark_one(child, survivors, &mut stack);
                 }
@@ -584,7 +584,7 @@ unsafe fn retrace_survivors(survivors: &mut Vec<*mut RcHeader>) {
         #[cfg(test)]
         crate::memory::reset_window::note_walk(s);
         unsafe {
-            crate::walk::trace_entity(s, |child| {
+            crate::cells::trace_entity(s, |child| {
                 if is_arena_entity(child) && (*child).flags & ARENA_RESET_MARK == 0 {
                     mark_subgraph(child, survivors);
                 }
@@ -693,7 +693,7 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
             "a survivor of a kind `trace_entity` skips would have its              references erased here, not conservatively ignored"
         );
         unsafe {
-            crate::walk::trace_entity(s, |child| {
+            crate::cells::trace_entity(s, |child| {
                 if let Some(entry) = settled.get_mut(&(child as usize)) {
                     entry.0 += 1;
                 }
@@ -745,7 +745,7 @@ fn traceable_in_full(flags: u32) -> bool {
 /// (`memory::reset_window::snapshot_edge`, `credit`).
 unsafe fn count_children(surv: *mut RcHeader) {
     unsafe {
-        crate::walk::trace_entity(surv, |child| {
+        crate::cells::trace_entity(surv, |child| {
             // This pass is the instant the snapshot has to be taken at:
             // after this round's destructors, before the category
             // rewrite. Why not the holder's death instead —

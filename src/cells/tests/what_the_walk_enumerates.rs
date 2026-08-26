@@ -6,6 +6,7 @@
 //! deltas rather than totals, the walk being process-global.
 
 use super::*;
+use std::collections::HashSet;
 
 /// Print what left the census and what joined it, each address with
 /// the state of the block the enumerator gates on.

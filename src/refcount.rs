@@ -306,9 +306,7 @@ pub const CANDIDATE_INDEX_MAX: usize = 0x0001_FFFF - 1;
 /// eager-death amendment (2026-07-27): the condemned byte (bits 24-31)
 /// is retired — condemnation is collector-private, and the mutator's
 /// death path never consults the collector at all.
-#[cfg(feature = "rc-walk")]
 pub const EPOCH_BYTE_SHIFT: u32 = 16;
-#[cfg(feature = "rc-walk")]
 pub const EPOCH_BYTE_MASK: u32 = 0xFF << EPOCH_BYTE_SHIFT;
 
 #[cfg(all(feature = "rc-walk", not(target_endian = "little")))]
@@ -379,12 +377,7 @@ pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
     #[cfg(feature = "debug-journal")]
     let born_with = header.flags;
     let word = unsafe { core::mem::transmute::<RcHeader, u64>(header) };
-    #[cfg(not(feature = "rc-walk"))]
-    unsafe {
-        (slot as *mut u64).write(word)
-    };
 
-    #[cfg(feature = "rc-walk")]
     unsafe {
         (*(slot as *const core::sync::atomic::AtomicU64))
             .store(word, core::sync::atomic::Ordering::Relaxed)
@@ -406,7 +399,6 @@ pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
 /// instruction as a plain load on x86-64 and AArch64; the annotation is
 /// what makes the cross-thread race with the collector's byte stores
 /// defined (`rfc/model/gc/rc-walk.md`, "The one header byte").
-#[cfg(feature = "rc-walk")]
 #[inline]
 unsafe fn header_word_load(header: *mut RcHeader) -> u64 {
     unsafe {
@@ -417,7 +409,6 @@ unsafe fn header_word_load(header: *mut RcHeader) -> u64 {
 
 /// Relaxed-atomic store of the whole header word; pair of
 /// [`header_word_load`].
-#[cfg(feature = "rc-walk")]
 #[inline]
 unsafe fn header_word_store(header: *mut RcHeader, word: u64) {
     unsafe {
@@ -426,37 +417,7 @@ unsafe fn header_word_store(header: *mut RcHeader, word: u64) {
     }
 }
 
-/// Collector-side whole-header read: refcount in the low half, flags in
-/// the high. Stale by design; Phases 3–4 repair what it misreads.
-///
-/// # Safety
-/// `header` must point into a live entity-block slot (occupied or free —
-/// a free slot legitimately reads refcount 0).
-#[cfg(feature = "rc-walk")]
-#[inline]
-pub(crate) unsafe fn collector_load_header(header: *mut RcHeader) -> u64 {
-    unsafe { header_word_load(header) }
-}
 
-/// The collector's maturity stamp: one plain byte store into header
-/// byte 6. A concurrent mutator whole-word store may bury it — the
-/// entity then reads "new" one more epoch: latency, never a verdict
-/// (`rfc/model/gc/rc-walk.md`, "The one header byte").
-///
-/// # Safety
-/// `header` must point to an occupied entity-block slot.
-#[cfg(feature = "rc-walk")]
-#[inline]
-pub(crate) unsafe fn collector_stamp_epoch(header: *mut RcHeader, epoch_number: u8) {
-    debug_assert_ne!(
-        epoch_number, 0,
-        "0 means never-stamped; numbers cycle 1-255"
-    );
-    unsafe {
-        (*((header as *mut u8).add(6) as *const core::sync::atomic::AtomicU8))
-            .store(epoch_number, core::sync::atomic::Ordering::Relaxed)
-    };
-}
 
 /// Increment the reference count.
 ///
@@ -474,32 +435,7 @@ pub(crate) unsafe fn collector_stamp_epoch(header: *mut RcHeader, epoch_number: 
 /// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
-    #[cfg(not(feature = "rc-walk"))]
-    {
-        let header = unsafe { &mut *header };
 
-        if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
-            return; // arena or immortal, not COW: not counted
-        }
-
-        if header.memory_category() == MemoryCategory::Immortal {
-            return; // immortal COW entities are no-ops too
-        }
-
-        // With `checked-refcount`, saturate rather than wrap. Wrapping to
-        // zero would make the next release think the entity died and free it
-        // while it is still referenced. Saturating leaks it instead, which is
-        // the safe direction. See the feature's note in `Cargo.toml` for why
-        // this is optional and not a default.
-        #[cfg(feature = "checked-refcount")]
-        if header.refcount == u32::MAX {
-            return;
-        }
-
-        header.refcount += 1;
-    }
-
-    #[cfg(feature = "rc-walk")]
     {
         let flags = unsafe { flags_load(header) };
 
@@ -530,7 +466,6 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 /// store (`rfc/model/gc/rc-walk.md`, "The narrow mutator"). Must stay an
 /// aligned atomic store: the collector reads the containing word
 /// concurrently.
-#[cfg(feature = "rc-walk")]
 #[inline]
 unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
     unsafe {
@@ -546,7 +481,6 @@ unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
 /// pair (`dev/BENCHMARKS.md`, "the narrow mutator lands: retain/release
 /// reach parity with rc-trace (and past it)"). Narrow stores demand
 /// narrow loads.
-#[cfg(feature = "rc-walk")]
 #[inline]
 unsafe fn refcount_load(header: *const RcHeader) -> u32 {
     unsafe {
@@ -555,7 +489,6 @@ unsafe fn refcount_load(header: *const RcHeader) -> u32 {
     }
 }
 
-#[cfg(feature = "rc-walk")]
 #[inline]
 unsafe fn flags_load(header: *const RcHeader) -> u32 {
     unsafe {
@@ -593,82 +526,13 @@ unsafe fn flags_load(header: *const RcHeader) -> u32 {
 /// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
-    #[cfg(not(feature = "rc-walk"))]
-    {
-        let header = unsafe { &mut *entity };
 
-        if header.flags & MEMORY_CATEGORY_MASK != 0 && header.flags & COW == 0 {
-            return false;
-        }
-
-        if header.memory_category() == MemoryCategory::Immortal {
-            return false;
-        }
-
-        debug_assert!(header.refcount > 0, "release of dead entity");
-        header.refcount -= 1;
-
-        if header.refcount == 0 {
-            // Lifetime reaction depends on category: GC heap frees, arenas
-            // do nothing (arena reset reclaims).
-            return header.memory_category() == MemoryCategory::GcHeap;
-        }
-
-        // Non-zero decrement on a heap entity: a possible cycle root
-        // (`ll_buffer_cycle_root` of rfc/model/lowering.md). The kinds
-        // that buffer are those holding counted slots a cycle can close
-        // through ([`CANDIDATE_KINDS`]). In a NoGC or pure-RC build this
-        // call compiles away with the strategy.
-        //
-        // The "already buffered" test is here rather than only inside
-        // `buffer_candidate`, because `flags` is in a register on this line
-        // and an entity is buffered at most once per collection: hoisting
-        // it keeps the thread-local access and the `Vec` push out of this
-        // function, and `buffer_candidate` is `#[inline(never)]` so they
-        // stay out. It saves no call — the callee was inlined before the
-        // split (`dev/BENCHMARKS.md`, "`buffer_candidate` taken out of
-        // `ll_release`"). The callee keeps its own
-        // copy of the test: it has other callers, and this one is an
-        // optimization, not the invariant.
-        //
-        // The buffered bit and the kind are two tests rather than one
-        // masked compare, because the admitted kinds are not a mask
-        // ([`CANDIDATE_KINDS`]).
-        if header.memory_category() == MemoryCategory::GcHeap
-            && header.flags & CYCLE_COLLECTOR_BUFFERED == 0
-            && kind_may_close_a_cycle(header.flags)
-        {
-            // `entity`, not `header`: the buffered pointer outlives this call
-            // and the collector casts it back to `*mut Object` to read the
-            // class word and the property slots. A pointer derived from
-            // `&mut RcHeader` carries provenance over the 8-byte header only,
-            // so every one of those reads would be out of bounds of the tag
-            // it came from (audit `class.rs:115`, same family).
-            unsafe { crate::gc::buffer_candidate(entity) };
-        }
-
-        false
-    }
-
-    #[cfg(feature = "rc-walk")]
-    {
-        let tear = unsafe { release_word(entity) };
-        if tear {
-            // The death branch acks the epoch handshake (decision
-            // 2026-07-27, amended same day: ack ONLY): after this
-            // release's own header store, before any teardown, so
-            // every free this death performs observes the epoch in
-            // program order. Message pickup waits for the outermost
-            // dispose's exit — between the zero store and the dispose
-            // the entity is committed-dead with a live weak cell, and
-            // drain user code could reach it through `WeakRef::get`.
-            // The fast paths — allocation, free, non-final release —
-            // carry no test.
-            crate::epoch::checkpoint_ack();
-        }
-
-        tear
-    }
+    // A non-zero decrement is where `rc-cycle` enrols a candidate
+    // (`rfc/model/gc/rc-cycle.md`); the queue that receives it is S34,
+    // so nothing is enrolled yet and a garbage ring is retained until
+    // it lands. The epoch handshake this branch used to acknowledge died
+    // with the collector that owned it.
+    unsafe { release_word(entity) }
 }
 
 /// The rc-walk decrement: the shared core of [`ll_release`] and
@@ -676,7 +540,6 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
 /// teardown. Since the eager-death amendment there is no condemned
 /// test and no deferral: the death branch is the same narrow counter
 /// store as every other release.
-#[cfg(feature = "rc-walk")]
 #[inline]
 unsafe fn release_word(entity: *mut RcHeader) -> bool {
     let flags = unsafe { flags_load(entity) };
@@ -712,10 +575,7 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
 /// As [`ll_release`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_release_batch(entity: *mut RcHeader) -> bool {
-    #[cfg(not(feature = "rc-walk"))]
-    return unsafe { ll_release(entity) };
 
-    #[cfg(feature = "rc-walk")]
     return unsafe { release_word(entity) };
 }
 
@@ -735,9 +595,6 @@ pub unsafe extern "C" fn ll_release_batch(entity: *mut RcHeader) -> bool {
 /// go narrow").
 #[inline]
 pub(crate) unsafe fn header_flags(header: *const RcHeader) -> u32 {
-    #[cfg(not(feature = "rc-walk"))]
-    return unsafe { (*header).flags };
-    #[cfg(feature = "rc-walk")]
     unsafe {
         flags_load(header)
     }
@@ -747,9 +604,6 @@ pub(crate) unsafe fn header_flags(header: *const RcHeader) -> u32 {
 /// the same width rule — the counter twin of [`header_flags`].
 #[inline]
 pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
-    #[cfg(not(feature = "rc-walk"))]
-    return unsafe { (*header).refcount };
-    #[cfg(feature = "rc-walk")]
     unsafe {
         refcount_load(header)
     }
@@ -765,9 +619,6 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
 /// epoch byte ([`collector_stamp_epoch`]), which no caller of this reads.
 #[inline]
 pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
-    #[cfg(not(feature = "rc-walk"))]
-    return unsafe { ((*header).refcount, (*header).flags) };
-    #[cfg(feature = "rc-walk")]
     unsafe {
         mutator_load_header(header)
     }
@@ -778,12 +629,7 @@ pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
 /// walked header must not be plain stores under `rc-walk`.
 #[inline]
 pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
-    #[cfg(not(feature = "rc-walk"))]
-    unsafe {
-        (*header).flags = f((*header).flags)
-    };
 
-    #[cfg(feature = "rc-walk")]
     unsafe {
         mutator_update_flags(header, f)
     };
@@ -793,7 +639,6 @@ pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u
 /// Under a live epoch every plain header access races the collector's
 /// byte stores, which is undefined behaviour — these helpers are the
 /// same instructions with the race made defined.
-#[cfg(feature = "rc-walk")]
 #[inline]
 pub(crate) unsafe fn mutator_load_header(header: *const RcHeader) -> (u32, u32) {
     let word = unsafe { header_word_load(header as *mut RcHeader) };
@@ -803,7 +648,6 @@ pub(crate) unsafe fn mutator_load_header(header: *const RcHeader) -> (u32, u32) 
 /// Mutator-side flags update as one relaxed whole-word store. May bury
 /// a concurrent collector byte store — a lost stamp or verdict, always
 /// the conservative direction (`rfc/model/gc/rc-walk.md`).
-#[cfg(feature = "rc-walk")]
 #[inline]
 pub(crate) unsafe fn mutator_update_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
     let word = unsafe { header_word_load(header) };
@@ -812,7 +656,6 @@ pub(crate) unsafe fn mutator_update_flags(header: *mut RcHeader, f: impl FnOnce(
 }
 
 /// The teardown guard's `+1` (relaxed whole-word; flags kept).
-#[cfg(feature = "rc-walk")]
 #[inline]
 pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
     let word = unsafe { header_word_load(header) };
@@ -824,7 +667,6 @@ pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
 /// the new refcount. Since the eager-death amendment a condemnation
 /// landing mid-destructor changes nothing here — teardown always
 /// finishes, and the component's later drain drops on the corpse.
-#[cfg(feature = "rc-walk")]
 #[inline]
 pub(crate) unsafe fn mutator_unguard_release(header: *mut RcHeader) -> u32 {
     let word = unsafe { header_word_load(header) };

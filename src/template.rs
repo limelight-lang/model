@@ -81,7 +81,7 @@ pub(crate) unsafe fn values<'a>(t: *const Template) -> &'a [Value] {
 
 /// How many values the instance at `base` holds, for a walker that must
 /// read the instance's own memory through its reader rather than by a
-/// plain load (`crate::walk::CellReader`).
+/// plain load (`crate::cells::CellReader`).
 ///
 /// The **shape word** is the instance's and goes through the reader; the
 /// count inside the shape does not, the shape being static data no
@@ -93,7 +93,7 @@ pub(crate) unsafe fn values<'a>(t: *const Template) -> &'a [Value] {
 /// `base` is a live template instance, and under a relaxed reader its
 /// cells may be concurrently written.
 #[inline]
-pub(crate) unsafe fn value_count_at<R: crate::walk::CellReader>(base: *const u8) -> usize {
+pub(crate) unsafe fn value_count_at<R: crate::cells::CellReader>(base: *const u8) -> usize {
     let shape = unsafe { R::ptr(base.add(16)) } as *const TemplateShape;
     unsafe { (*shape).value_count as usize }
 }

@@ -211,7 +211,7 @@ pub struct Class {
     /// into per-class code. Holds [`crate::object::ll_default_dispose`]
     /// until the compiler generates a specialized one.
     pub dispose: *const (),
-    /// The [`crate::walk::OutsideCells`] group when
+    /// The [`crate::cells::OutsideCells`] group when
     /// [`CLASS_OUTSIDE_CELLS`] is set, null otherwise. Erased for the
     /// same reason `dispose` is: the group names crate-private types and
     /// this struct is public.
@@ -242,12 +242,12 @@ impl Class {
     #[inline]
     pub(crate) unsafe fn outside_cells<'a>(
         cls: *const Class,
-    ) -> Option<&'a crate::walk::OutsideCells> {
+    ) -> Option<&'a crate::cells::OutsideCells> {
         if unsafe { (*cls).flags } & CLASS_OUTSIDE_CELLS == 0 {
             return None;
         }
 
-        Some(unsafe { &*((*cls).outside as *const crate::walk::OutsideCells) })
+        Some(unsafe { &*((*cls).outside as *const crate::cells::OutsideCells) })
     }
 
     /// The inline trailing vtable.
@@ -399,7 +399,7 @@ impl ClassBuilder {
     }
 
     /// Install the group of behaviours for counted cells this class owns
-    /// outside its own body ([`crate::walk::OutsideCells`]), which also
+    /// outside its own body ([`crate::cells::OutsideCells`]), which also
     /// raises [`CLASS_OUTSIDE_CELLS`]. A subclass inherits it.
     ///
     /// The group is taken whole. A class carrying some of its members and
@@ -412,8 +412,8 @@ impl ClassBuilder {
         not(test),
         allow(dead_code, reason = "the first caller is another crate")
     )]
-    pub(crate) fn outside_cells(mut self, group: &'static crate::walk::OutsideCells) -> Self {
-        self.outside = group as *const crate::walk::OutsideCells as *const ();
+    pub(crate) fn outside_cells(mut self, group: &'static crate::cells::OutsideCells) -> Self {
+        self.outside = group as *const crate::cells::OutsideCells as *const ();
         self
     }
 

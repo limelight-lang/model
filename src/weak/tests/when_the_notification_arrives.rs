@@ -15,7 +15,6 @@ static RESURRECTED_INTO: AtomicUsize = AtomicUsize::new(0);
 
 static PROBE_CELL: AtomicUsize = AtomicUsize::new(0);
 
-static CYCLE_DESTRUCTOR_SAW: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 unsafe extern "C" fn resurrecting_destructor(obj: *mut Object) {
     unsafe { crate::refcount::ll_retain(obj as *mut RcHeader) };
@@ -43,10 +42,6 @@ unsafe extern "C" fn probing_child_destructor(_obj: *mut Object) {
     SEEN_BY_CHILD_DESTRUCTOR.store(unsafe { ll_weakref_get(cell) } as usize, Ordering::Relaxed);
 }
 
-unsafe extern "C" fn cycle_probing_destructor(_obj: *mut Object) {
-    let cell = PROBE_CELL.load(Ordering::Relaxed) as *mut LLWeakRef;
-    CYCLE_DESTRUCTOR_SAW.store(unsafe { ll_weakref_get(cell) } as usize, Ordering::Relaxed);
-}
 
 #[test]
 fn own_destructor_still_sees_the_object_but_a_child_destructor_sees_null() {
@@ -93,94 +88,9 @@ fn own_destructor_still_sees_the_object_but_a_child_destructor_sees_null() {
     });
 }
 
-#[test]
-fn cyclic_death_nulls_the_cell_before_any_destructor_runs() {
-    let _g = crate::memory::block_pool::test_guard();
-    let cls = ClassBuilder::new("WeakRing")
-        .prop("next", true)
-        .destructor(cycle_probing_destructor as *const ())
-        .build();
-
-    with_ctx(|ctx| {
-        let a = unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) };
-        let b = unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) };
-        // Raw slot writes: each slot takes over the object's initial
-        // reference, so the ring is pure garbage held only by itself.
-        unsafe {
-            Object::prop_at(a, 16).write(Value::entity(Tag::Object, b as *mut RcHeader));
-            Object::prop_at(b, 16).write(Value::entity(Tag::Object, a as *mut RcHeader));
-        }
-
-        let w = unsafe { ll_weakref_create(ctx, a as *mut RcHeader) };
-        PROBE_CELL.store(w as usize, Ordering::Relaxed);
-        CYCLE_DESTRUCTOR_SAW.store(usize::MAX, Ordering::Relaxed);
-
-        let stats = unsafe { crate::walk::collect_cycles() };
-        assert_eq!(stats.collected, 2, "the ring was collected");
-        assert_eq!(
-            CYCLE_DESTRUCTOR_SAW.load(Ordering::Relaxed),
-            0,
-            "a member's __destruct must not be able to fish a condemned \
-             sibling out of a weak cell (the PEP 442 obligation)"
-        );
-        assert!(unsafe { ll_weakref_get(w) }.is_null());
-
-        unsafe {
-            assert!(ll_release(w as *mut RcHeader));
-            crate::object::ll_entity_die(w as *mut RcHeader);
-        }
-    });
-}
 
 /// rc-trace frees its white set raw (no dispose), so its weak pass is
 /// a separate site from the walk drain and needs its own proof.
-#[cfg(not(feature = "rc-walk"))]
-#[test]
-fn rc_trace_cycle_collection_nulls_the_cell() {
-    let _g = crate::memory::block_pool::test_guard();
-    let cls = ClassBuilder::new("WeakTraceRing")
-        .prop("next", true)
-        .build();
-
-    /// Real store through the barrier: retain + whole-value write.
-    unsafe fn link(arena: *mut Arena, from: *mut Object, to: *mut Object) {
-        unsafe {
-            assert!(
-                crate::memory::barrier::ref_store(
-                    arena,
-                    from as *mut RcHeader,
-                    Object::prop_at(from, 16),
-                    std::ptr::null_mut(),
-                    Value::entity(Tag::Object, to as *mut RcHeader),
-                ),
-                "the barrier refused the link this test is built on"
-            );
-        }
-    }
-
-    let mut arena = Arena::new();
-    let mut ctx = LLContext { arena: &mut arena };
-    // Barrier stores (retain + slot write), then the variable
-    // references die: the decrement-to-nonzero buffers the
-    // candidates, exactly as generated code would.
-    unsafe {
-        let a = new_constructed(&mut ctx, cls, MemoryCategory::GcHeap);
-        let b = new_constructed(&mut ctx, cls, MemoryCategory::GcHeap);
-        link(&mut arena, a, b);
-        link(&mut arena, b, a);
-        let w = ll_weakref_create(&mut ctx, a as *mut RcHeader);
-
-        assert!(!ll_release(a as *mut RcHeader));
-        assert!(!ll_release(b as *mut RcHeader));
-        assert_eq!(crate::gc::collect_cycles(), 2, "the ring was collected");
-        assert!(ll_weakref_get(w).is_null());
-
-        assert!(ll_release(w as *mut RcHeader));
-        crate::object::ll_entity_die(w as *mut RcHeader);
-    }
-
-    arena.reset(|_| {});
-}
 
 #[test]
 fn a_resurrected_object_keeps_its_weak_state() {

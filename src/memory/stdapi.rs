@@ -263,13 +263,6 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         // memory about to be handed out again. Every teardown door
         // clears it (`gc::forget_candidate`); this is where a door that
         // forgot to says so.
-        #[cfg(not(feature = "rc-walk"))]
-        assert_eq!(
-            (header >> 32) as u32 & crate::refcount::CYCLE_COLLECTOR_BUFFERED,
-            0,
-            "entity freed while buffered as a cycle-collector candidate at {:#x}",
-            ptr as usize
-        );
     }
 
     // A reset in flight on this thread reads one header word of every
@@ -302,7 +295,6 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // hands the **whole block** to the pool, so it parks with the rest.
     // The arena kind is the one that falls through: it recycles nothing
     // at all, so identity holds without parking.
-    #[cfg(feature = "rc-walk")]
     if crate::memory::deferred_free::active()
         && matches!(
             kind,

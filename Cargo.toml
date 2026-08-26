@@ -14,10 +14,9 @@ description = "Limelight runtime data model: classes, memory manager, GC"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-# rc-walk is the primary GC strategy and the default build
-# (decision 2026-07-27, dev/DECISIONS.md). The rc-trace configuration
-# is selected with --no-default-features.
-default = ["rc-walk"]
+# No default features. The GC axis is gone: `rc-cycle` is the only
+# strategy, so there is nothing to select at build time (S30, 2026-08-26).
+default = []
 
 # Counters read by the bench-external probes (`walk_probe.cpp`,
 # `churn_probe.cpp`) via `ll_probe_counters`. Off by default: each one is a
@@ -37,20 +36,6 @@ probe-counters = []
 # fires the object becomes permanently immortal — a leak, chosen over
 # freeing an object that is still referenced.
 checked-refcount = []
-
-# Select the rc-walk concurrent cycle collector instead of rc-trace
-# (`rfc/model/gc/rc-walk.md`). Strategy selection is build-time by design
-# (`rfc/model/gc/strategies.md`): the two collectors claim the same top
-# half of the header flags word — rc-trace stores its candidate index in
-# bits 15-31, rc-walk its epoch byte (16-23) and condemned byte (24-31) —
-# and rc-walk's collector writes both bytes from its own thread, which
-# would corrupt a live candidate index. With this feature on, the
-# candidate buffer is never fed and header accesses compile as relaxed
-# atomics (another thread — the collector — reads them). Since the
-# narrow-mutator amendment (2026-07-27) the mutator's hot paths do not
-# touch the condemned byte at all; the collision is the collector's
-# writes, not the mutator's.
-rc-walk = []
 
 # Compile the event journal's record sites into the runtime
 # (`dev/design/debug-modes.md` §9.6). Off by default, and off means the

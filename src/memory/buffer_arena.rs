@@ -958,7 +958,6 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         // it, and a block handed to the pool is re-stamped as another
         // kind under them.
         let block = (ptr as usize) & !BLOCK_MASK;
-        #[cfg(feature = "rc-walk")]
         if crate::memory::deferred_free::active() {
             return unsafe { crate::memory::deferred_free::park_retained_payload(ptr) };
         }
@@ -973,7 +972,6 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         // block's live count, and an emptied block goes back to the
         // global pool to be re-stamped as another kind while the walker
         // still holds addresses inside it (`deferred_free`).
-        #[cfg(feature = "rc-walk")]
         if crate::memory::deferred_free::active() {
             return unsafe { crate::memory::deferred_free::park_buffer_chunk(ptr, capacity) };
         }
@@ -1089,7 +1087,6 @@ unsafe fn free_chunk(ptr: *mut u8, capacity: usize) {
 /// # Safety
 /// `(ptr, capacity)` is a record this thread parked, released once, with
 /// no epoch in flight.
-#[cfg(feature = "rc-walk")]
 pub(crate) unsafe fn free_parked_chunk(ptr: *mut u8, capacity: usize) {
     unsafe { free_chunk(ptr, capacity) };
 }

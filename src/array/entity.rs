@@ -1180,7 +1180,7 @@ pub(crate) unsafe fn publish_key(
 /// `a` is a live array entity.
 pub unsafe fn for_each_counted_child(a: *mut LLArray, mut visit: impl FnMut(*mut RcHeader)) {
     unsafe {
-        crate::walk::trace_cells::<crate::walk::PlainCells>(
+        crate::cells::trace_cells::<crate::cells::PlainCells>(
             a as *mut RcHeader,
             crate::refcount::EntityKind::Array as u32,
             |cell| visit(cell.child),
@@ -1497,16 +1497,7 @@ unsafe fn is_array(entity: *mut RcHeader) -> bool {
 ///
 /// # Safety
 /// `entity` is an entity at count zero, taken over by the drain.
-#[cfg(not(feature = "rc-walk"))]
-#[inline]
-unsafe fn leave_the_candidate_buffer(entity: *mut RcHeader) {
-    let flags = unsafe { crate::refcount::header_flags(entity) };
-    if flags & crate::refcount::CYCLE_COLLECTOR_BUFFERED != 0 {
-        unsafe { crate::gc::forget_candidate(entity) };
-    }
-}
 
-#[cfg(feature = "rc-walk")]
 #[inline]
 unsafe fn leave_the_candidate_buffer(_entity: *mut RcHeader) {}
 

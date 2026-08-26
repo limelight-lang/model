@@ -1,6 +1,6 @@
 //! A class whose counted cells lie in a block outside the object's own
 //! body, and the six behaviours that reach them
-//! (`crate::walk::OutsideCells`).
+//! (`crate::cells::OutsideCells`).
 //!
 //! Neither real customer is in this crate — `limelight-lang/io`'s
 //! coroutine puts its wait halves in a raw block once there are more than
@@ -11,7 +11,7 @@
 //!
 //! **The block is drawn under the instance's own category**, through
 //! `memory::routing::body_alloc`, which is the group's contract
-//! (`crate::walk::OutsideCells`) and the same door a table's storage
+//! (`crate::cells::OutsideCells`) and the same door a table's storage
 //! takes. For the GcHeap instances these tests build that is a
 //! buffer-arena chunk, which parks during an epoch like any other body.
 //!
@@ -31,7 +31,7 @@
 //! puts them at a known offset with no new machinery. The price is that
 //! the language can name them, and a generated scalar store is a plain
 //! eight-byte write beside a collector reading the same word as an
-//! `AtomicU64` — the mixed-atomicity race `crate::walk::empty_cell`
+//! `AtomicU64` — the mixed-atomicity race `crate::cells::empty_cell`
 //! exists to refuse. The storage pointer and its version belong in slots
 //! no property store can reach.
 
@@ -43,9 +43,8 @@ use crate::memory::context::LLContext;
 use crate::object::Object;
 use crate::refcount::RcHeader;
 use crate::value::Value;
-use crate::walk::{Cell, CellReader, OutsideCarry, OutsideCells, PlainCells};
-#[cfg(feature = "rc-walk")]
-use crate::walk::{OutsideRead, RelaxedCells};
+use crate::cells::{Cell, CellReader, OutsideCarry, OutsideCells, PlainCells};
+use crate::cells::{OutsideRead, RelaxedCells};
 
 /// Cells one block holds. Two is the coroutine's own number: its block
 /// exists exactly when a wait has more than two halves.
@@ -73,7 +72,6 @@ const CAPACITY_AT: usize = 32;
 /// `array::head::COHERENT_READ_ATTEMPTS` sets for the same protocol: a
 /// mutator that keeps moving the block wins the epoch rather than the
 /// walker's stack.
-#[cfg(feature = "rc-walk")]
 const COHERENT_READ_ATTEMPTS: usize = 4;
 
 /// A class of instances whose counted cells lie in a block outside the
@@ -183,40 +181,8 @@ pub(crate) unsafe fn block_of(obj: *mut Object) -> *mut u8 {
     unsafe { block_at::<PlainCells>(obj as *mut u8) }
 }
 
-/// The version the walk would answer with, for a test that wants to see
-/// it move.
-///
-/// # Safety
-/// As [`block_of`].
-#[cfg_attr(not(feature = "rc-walk"), expect(dead_code))]
-pub(crate) unsafe fn version_of(obj: *mut Object) -> usize {
-    unsafe { version(obj as *mut u8) }
-}
 
-/// Open the move window and leave it open, without moving anything.
-///
-/// The mutator half of a race the stepped harness cannot otherwise
-/// produce: one thread plays both actors there, so a walk never runs
-/// while a window is genuinely open, and the branch that gives the entity
-/// up would go untried. Closed by [`close_window`], which the caller owes
-/// before the instance is torn down — the teardown's own members read the
-/// block, and a class left mid-move is a class the walk refuses.
-///
-/// # Safety
-/// As [`block_of`].
-#[cfg(feature = "rc-walk")]
-pub(crate) unsafe fn open_window(obj: *mut Object) {
-    unsafe { open_move(obj as *mut u8) };
-}
 
-/// Close what [`open_window`] opened.
-///
-/// # Safety
-/// As [`block_of`], with a window open.
-#[cfg(feature = "rc-walk")]
-pub(crate) unsafe fn close_window(obj: *mut Object) {
-    unsafe { close_move(obj as *mut u8) };
-}
 
 /// Publish a block pointer — a fresh one, or the null a release leaves —
 /// inside the window a walker validates its reading against.
@@ -258,7 +224,6 @@ unsafe fn close_move(base: *mut u8) {
 /// cells the runs cannot describe.
 static GROUP: OutsideCells = OutsideCells {
     walk_plain,
-    #[cfg(feature = "rc-walk")]
     walk_relaxed,
     recheck,
     sever,
@@ -285,7 +250,6 @@ unsafe fn walk_plain(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)
 /// address that escapes into the epoch's edge list is one Phase 3 will
 /// re-read, so a reading taken across a move may not be handed out and
 /// then withdrawn.
-#[cfg(feature = "rc-walk")]
 unsafe fn walk_relaxed(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)) -> OutsideRead {
     for _ in 0..COHERENT_READ_ATTEMPTS {
         let before = unsafe { version(base) };
@@ -330,7 +294,7 @@ unsafe fn sever(entity: *mut RcHeader, displaced: &mut Vec<*mut RcHeader>) {
 
     unsafe {
         yield_cells::<PlainCells>(block, &mut |cell| {
-            crate::walk::empty_cell(cell);
+            crate::cells::empty_cell(cell);
             displaced.push(cell.child);
         })
     };
@@ -411,7 +375,7 @@ unsafe fn carry(_: *mut Arena, entity: *mut RcHeader) -> OutsideCarry {
 /// test the body's Box runs use.
 unsafe fn yield_cells<R: CellReader>(block: *mut u8, visit: &mut dyn FnMut(Cell)) {
     for i in 0..CELLS {
-        if let Some(cell) = unsafe { crate::walk::counted_box_cell::<R>(block.add(i * 16)) } {
+        if let Some(cell) = unsafe { crate::cells::counted_box_cell::<R>(block.add(i * 16)) } {
             visit(cell);
         }
     }

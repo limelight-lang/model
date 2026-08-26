@@ -89,7 +89,7 @@ fn the_sever_empties_the_vector_and_hands_the_children_out() {
 #[test]
 fn teardown_releases_the_elements_and_frees_the_storage() {
     let _g = crate::memory::block_pool::test_guard();
-    let before = unsafe { crate::walk::heap_census() };
+    let before = unsafe { crate::cells::heap_census() };
     let a = vector_array(MemoryCategory::GcHeap);
     let only = child();
     unsafe {
@@ -100,7 +100,7 @@ fn teardown_releases_the_elements_and_frees_the_storage() {
     }
 
     let k = crate::refcount::EntityKind::Array as usize;
-    let with_both = unsafe { crate::walk::heap_census() };
+    let with_both = unsafe { crate::cells::heap_census() };
     assert_eq!(with_both.by_kind[k], before.by_kind[k] + 2);
 
     unsafe {
@@ -108,7 +108,7 @@ fn teardown_releases_the_elements_and_frees_the_storage() {
         crate::object::ll_entity_die(a as *mut RcHeader);
     }
 
-    let after = unsafe { crate::walk::heap_census() };
+    let after = unsafe { crate::cells::heap_census() };
     assert_eq!(
         after.by_kind[k], before.by_kind[k],
         "the array and the child it was the last holder of are both gone"

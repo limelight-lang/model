@@ -187,7 +187,6 @@ mod the_flood_ladder;
 mod the_ordered_hash_itself;
 mod what_a_sever_leaves_behind;
 mod what_a_walker_is_shown;
-#[cfg(feature = "rc-walk")]
 mod what_a_walker_reads_during_a_move;
 mod what_a_walker_reads_while_the_storage_is_released;
 mod what_moves_the_entries;

@@ -47,7 +47,7 @@ fn a_relaxed_reader_strides_the_entries_while_the_owner_compacts() {
         let mut cells = 0usize;
         for _ in 0..READINGS {
             unsafe {
-                crate::walk::trace_cells::<crate::walk::RelaxedCells>(
+                crate::cells::trace_cells::<crate::cells::RelaxedCells>(
                     handed.0 as *mut crate::refcount::RcHeader,
                     crate::refcount::EntityKind::Array as u32,
                     |_| cells += 1,

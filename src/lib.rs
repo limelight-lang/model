@@ -5,11 +5,8 @@
 //! functions live here.
 
 pub mod array;
+pub(crate) mod cells;
 pub mod class;
-#[cfg(feature = "rc-walk")]
-pub(crate) mod collector;
-#[cfg(feature = "rc-walk")]
-pub(crate) mod epoch;
 pub mod gc;
 pub mod hash;
 pub mod intern;
@@ -25,7 +22,6 @@ pub mod template;
 #[cfg(test)]
 mod test_support;
 pub mod value;
-pub mod walk;
 pub mod weak;
 
 pub use class::{Class, ClassBuilder};

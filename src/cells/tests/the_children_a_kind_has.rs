@@ -15,12 +15,18 @@ fn wide_ring_class(name: &str, fillers: usize) -> *const crate::class::Class {
     crate::test_support::wide_class(name, fillers, Some(counting_destructor as *const ()))
 }
 
-/// The `$a->r = &$a` ring: object → reference box → object. The
-/// first non-object kind inside a collected component — the
-/// tracer's reference arm, the drain's reference sever and the kind
-/// switch at death all fire.
+/// A reference box passes an edge through: `a.child` is a box and the
+/// box names `b`, so the tracer's reference arm must yield `b` for the
+/// box and the box for `a`. Before that arm existed the chain stopped
+/// at the box, which reads every object behind one as unreferenced.
+///
+/// The shape was a ring — `$a->r = &$a` — until 2026-08-26, and the
+/// observable was that a collection reclaimed it. That observable died
+/// with the collector; the contract it stood for is the enumeration
+/// asserted here, and reclamation returns as a test of the commit stage
+/// at S36 (`PLAN.md`).
 #[test]
-fn a_cycle_through_a_reference_box_is_collected() {
+fn a_reference_box_passes_an_edge_through() {
     let _g = crate::memory::block_pool::test_guard();
     DESTRUCTS.store(0, Ordering::Relaxed);
     let cls = ClassBuilder::new("RefRingHolder")
@@ -31,24 +37,43 @@ fn a_cycle_through_a_reference_box_is_collected() {
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
     let a = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+    let b = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
     let r = crate::reference::ll_reference_new();
     unsafe {
-        // a.child owns the box's initial ref; the box owns a's.
+        // a.child owns the box's initial ref; the box owns b's.
         Object::prop_at(a, 16).write(Value::entity(Tag::Reference, r as *mut RcHeader));
-        (*r).value = Value::entity(Tag::Object, a as *mut RcHeader);
+        (*r).value = Value::entity(Tag::Object, b as *mut RcHeader);
     }
 
     let census = unsafe { heap_census() };
     assert!(
         census.by_kind[EntityKind::Reference as usize] >= 1,
-        "the box is walked"
+        "the box is enumerated"
     );
 
-    unsafe { collect_cycles() };
+    let mut from_a = Vec::new();
+    unsafe { trace_entity(a as *mut RcHeader, |c| from_a.push(c as usize)) };
+    assert!(
+        from_a.contains(&(r as usize)),
+        "an object's counted slot yields the box it holds"
+    );
+    let mut from_box = Vec::new();
+    unsafe { trace_entity(r as *mut RcHeader, |c| from_box.push(c as usize)) };
+    assert_eq!(
+        from_box,
+        vec![b as usize],
+        "the box yields exactly what it names"
+    );
+
+    unsafe {
+        // Acyclic: releasing `a` frees the chain by counting alone.
+        assert!(ll_release(a as *mut RcHeader));
+        crate::object::ll_object_die(a);
+    }
+    assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 2, "both destructors ran");
     let seen = walked_addresses();
     assert!(!seen.contains(&(a as usize)), "the object died");
     assert!(!seen.contains(&(r as usize)), "the box died");
-    assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1, "a's destructor ran");
     arena.reset(|_| {});
 }
 
@@ -113,7 +138,6 @@ fn an_array_is_traced_through_its_elements_and_its_string_keys() {
 /// item 12 exists for: until it landed the concurrent tracer took the
 /// empty default on kind 2, so an array's out-edges were invisible to
 /// the epoch while its in-edge was not.
-#[cfg(feature = "rc-walk")]
 #[test]
 fn the_relaxed_reader_sees_an_arrays_children() {
     use crate::array::table::Key;
@@ -175,7 +199,6 @@ fn the_relaxed_reader_sees_an_arrays_children() {
 /// Quiescent is the whole precondition: the relaxed reader exists for
 /// a racing mutator, and here there is none, so the two must return
 /// the same set rather than merely compatible ones.
-#[cfg(feature = "rc-walk")]
 #[test]
 fn both_readers_agree_on_a_quiet_heap() {
     use crate::class::ClassBuilder;
@@ -274,8 +297,13 @@ fn a_cycle_through_large_entities_is_walked_and_collected() {
             crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN,
             "and the larger one is a run"
         );
+        // Acyclic on purpose since 2026-08-26: the pair was a ring and
+        // the observable was that a collection reclaimed it. The
+        // contract this test carries is the enumeration below — a large
+        // entity is found in whichever half of the population it landed
+        // in — and it needs no collector. Reclaiming a ring of large
+        // entities returns as a test of the commit stage at S36.
         tie(a, 16, b);
-        tie(b, 16, a);
     }
 
     let seen = walked_addresses();
@@ -283,9 +311,17 @@ fn a_cycle_through_large_entities_is_walked_and_collected() {
         seen.contains(&(a as usize)) && seen.contains(&(b as usize)),
         "both halves of the population are enumerated"
     );
+    let mut from_a = Vec::new();
+    unsafe { trace_entity(a as *mut RcHeader, |c| from_a.push(c as usize)) };
+    assert!(
+        from_a.contains(&(b as usize)),
+        "a large entity's counted slot is an out-edge"
+    );
 
-    let stats = unsafe { collect_cycles() };
-    assert!(stats.collected >= 2, "the ring is garbage");
+    unsafe {
+        assert!(ll_release(a as *mut RcHeader));
+        crate::object::ll_object_die(a);
+    }
     assert_eq!(
         DESTRUCTS.load(Ordering::Relaxed),
         2,

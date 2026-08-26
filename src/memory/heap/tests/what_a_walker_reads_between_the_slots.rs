@@ -90,49 +90,6 @@ fn entity_commissioning_zeroes_slot_headers_of_a_recycled_block() {
     unsafe { entity.free(p) };
 }
 
-/// Commissioning an entity block writes its header while the
-/// collector reads the kind of every block in every carved region, so
-/// that word is published through `store_block_kind` and is touched
-/// by nothing else — including the whole-header struct store that
-/// used to write it on the way past, with the value that was already
-/// there.
-///
-/// **Miri's data-race model is the instrument this test is for.**
-/// Under `cargo test` the two shapes are indistinguishable, which is
-/// what let the plain store stand until Miri read it. Neither thread
-/// waits on the other: the accesses are unordered whatever the
-/// interleaving, which is the whole of the report.
-#[cfg(feature = "rc-walk")]
-#[test]
-fn commissioning_an_entity_block_does_not_race_the_snapshot() {
-    let _g = crate::memory::block_pool::test_guard();
-
-    // The collector's first act, and the only part of an epoch that
-    // touches a block being commissioned.
-    let reader = std::thread::spawn(|| {
-        for _ in 0..64 {
-            let _ = snapshot_entity_blocks();
-        }
-    });
-
-    // The largest size class puts seven slots in a block, so a short
-    // run of allocations commissions several.
-    let mut slots = Vec::new();
-    for _ in 0..24 {
-        let slot = unsafe { entity_alloc(MAX_SMALL) };
-        assert!(!slot.is_null(), "the pool refused mid-test");
-        slots.push(slot);
-    }
-
-    reader.join().unwrap();
-
-    // Given back: a leaked slot holds its block off the pool for the
-    // rest of the binary. The headers still read the zero
-    // commissioning left, which is what the free door asks of a slot.
-    for slot in slots {
-        unsafe { crate::memory::stdapi::ll_free(slot) };
-    }
-}
 
 /// A block never crosses populations through abandonment: a raw heap
 /// must not adopt an entity block, or C buffers land where the walker

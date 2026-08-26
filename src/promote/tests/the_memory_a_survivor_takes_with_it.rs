@@ -546,7 +546,7 @@ fn a_hooked_survivor_carries_its_block_out_of_the_arena() {
         );
 
         let mut seen = Vec::new();
-        crate::walk::trace_entity(waker as *mut RcHeader, |c| seen.push(c));
+        crate::cells::trace_entity(waker as *mut RcHeader, |c| seen.push(c));
         assert_eq!(
             seen,
             vec![child as *mut RcHeader],
