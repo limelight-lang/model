@@ -278,7 +278,7 @@ introduce two constants nobody reads.
         example of it. Accepted — it reads the word at its offset now. The
         same round found the comment over the category rewrite still naming a
         GC-state field S31.1 removed; rewritten.
-      Critic 2026-08-26: the guard's test exemption covers 163 accesses in 34
+      Critic 2026-08-26: the guard's test exemption covers 187 accesses in 37
         files and its stated reason — headers built on the stack — is false for
         most of them, so the fallback instrument covers nothing there either.
         Recorded in the guard's doc and in `dev/DECISIONS.md`; the conversion
@@ -294,19 +294,20 @@ introduce two constants nobody reads.
         addition named above.
 - [ ] S31.6 Decide whether `RcHeader`'s fields stop being public
       done: the choice and its reason are in `dev/DECISIONS.md`, naming the
-        price it was weighed against — 163 header accesses in 34 test files,
-        plus every fixture's struct literal — and saying what becomes of
+        price it was weighed against — 187 header accesses in 37 test files,
+        none of them in production and none in `refcount`'s own tests, which
+        keep access as a child module — and saying what becomes of
         `refcount::tests::who_may_read_a_header`: retired, or kept for what a
         type cannot reach
       tier: T2 · role: Sage
       handoff: raised by S31.5's Critic. The grep has been widened twice and
         still admits the three evasions its own doc names — a rename, a local,
         a reference binding — where private fields make all three a compile
-        error at every site, the exempt tests included. Against that:
-        `RcHeader` is `#[repr(C)]`, though it is the layout that is published
-        and not the field names, and the fixtures lose their struct literal —
-        which is the shape where a `#[cfg(test)]` shorthand has beaten
-        softening the production form before.
+        error at every site, the exempt tests included. The price was measured
+        on 2026-08-26 and is one-sided: 187 accesses in 37 test files break,
+        while production, the benches and `refcount`'s own tests break nowhere.
+        `RcHeader` stays `#[repr(C)]` either way — the layout is published, the
+        field names are not.
 
 ## S32 — The block header's collector triple
 

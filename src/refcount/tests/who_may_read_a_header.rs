@@ -67,9 +67,10 @@ fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
 
 /// The helpers themselves, and the tests.
 ///
-/// **The test exemption is wider than it reads.** 163 header accesses stand
-/// in 34 test files (counted 2026-08-26), and most are on entities a factory
-/// allocated and published rather than on a header built in a local. So this
+/// **The test exemption is wider than it reads.** 187 header accesses stand
+/// in 37 test files outside `refcount`'s own (counted 2026-08-26 by these
+/// same patterns), and most are on entities a factory allocated and published
+/// rather than on a header built in a local. So this
 /// guard is silent about exactly the population a ThreadSanitizer run reaches
 /// first, which is the instrument the module doc above defers to. Narrowing
 /// the exemption means converting those sites, which is the same job as

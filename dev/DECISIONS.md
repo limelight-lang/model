@@ -54,9 +54,10 @@ as text and now reports the two mutator halves, the collector's bits having no
 mutator-side reader to report them. `stdapi`'s `#[cfg(test)]` free-path
 assertion read eight bytes to test four, on every entity of every test build.
 
-**The guard's test exemption covers 163 accesses in 34 files**, counted the
-same day, and its stated reason — headers built on the stack — is false for
-most of them, which are factory-allocated entities. That population is the one
+**The guard's test exemption covers 187 accesses in 37 files** outside
+`refcount`'s own tests, counted the same day by the guard's own patterns, and
+its stated reason — headers built on the stack — is false for most of them,
+which are factory-allocated entities. That population is the one
 a ThreadSanitizer run reaches first, so the exemption is a hole in the
 fallback instrument rather than in this one. Closing it is the same job as
 taking `RcHeader`'s fields private, and that decision is open: a type would

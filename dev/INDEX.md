@@ -572,7 +572,7 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
   A `Class` descriptor's own `flags` word is read through
   `Class::flags_of`, at its offset rather than through the pointer deref
   the guard greps for (`dev/DECISIONS.md`, "the header guard greps the
-  pointer spelling"). The guard's test exemption is a known hole, 163
+  pointer spelling"). The guard's test exemption is a known hole, 187
   accesses wide, and the same entry sizes it.
 - **No mutator access to a live published header spans byte 6** — four
   bytes for the counter, two for the mutator's half of the flags. The
