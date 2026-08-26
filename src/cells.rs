@@ -30,7 +30,7 @@ use crate::value::Value;
 /// `e` must point to a live entity header.
 #[inline]
 unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
-    (unsafe { (*e).flags } & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT
+    (unsafe { crate::refcount::mutator_flags(e) } & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT
 }
 
 /// One counted cell of an entity: where it is, and the child the word

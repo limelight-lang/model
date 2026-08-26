@@ -124,7 +124,7 @@ pub unsafe fn ll_template_new(
     let n = unsafe { (*shape).value_count } as usize;
     debug_assert_eq!(values.len(), n, "a pass substitutes one value per hole");
     debug_assert!(
-        unsafe { (*class).flags } & CLASS_TEMPLATE != 0,
+        unsafe { Class::flags_of(class) } & CLASS_TEMPLATE != 0,
         "a template instance needs the template class"
     );
 

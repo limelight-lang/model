@@ -250,11 +250,15 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // killed at refcount 1").
     #[cfg(test)]
     if kind == BLOCK_KIND_ENTITY || crate::memory::large_entity::is_large_entity(kind) {
-        let header = unsafe { *(ptr as *const u64) };
+        // Narrow, like every other read of a published header: a wide one
+        // overlaps the collector's byte store without covering it
+        // (`dev/DECISIONS.md`, "the header's access width is a correctness
+        // rule").
+        let refcount =
+            unsafe { crate::refcount::header_refcount(ptr as *const crate::refcount::RcHeader) };
         assert_eq!(
-            header & 0xffff_ffff,
-            0,
-            "entity freed with a live-looking header {header:#018x} at {:#x}",
+            refcount, 0,
+            "entity freed at a live refcount {refcount} at {:#x}",
             ptr as usize
         );
         // The same shape one field up: the cycle collector's candidate

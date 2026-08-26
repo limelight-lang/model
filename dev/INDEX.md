@@ -563,15 +563,23 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
   `header_is_8_bytes_at_offset_zero`.
 - `Value` 16 bytes, fixed offsets: `value::tests::`
   `box_is_16_bytes_with_fixed_offsets`.
-- A published header is read through `refcount`'s helpers and never as a
-  field: `refcount::tests::who_may_read_a_header`, which reads the crate's
+- A published header is read through `refcount`'s helpers, never as a field
+  of an entity struct and never as `(*p).flags` through a pointer of its
+  own: `refcount::tests::who_may_read_a_header`, which reads the crate's
   own sources, the class being invisible to every runtime check
   (`dev/DECISIONS.md`, "a header is read as narrowly as it is written";
   the instrument that exhibits it is `dev/WORKFLOW.md`, ThreadSanitizer).
-- **No mutator access to a published header spans byte 6** — four bytes
-  for the counter, two for the mutator's half of the flags, and the one
-  eight-byte store is `publish_header`, made before anything can read the
-  slot as live. A wider access would overlap the collector's byte store
+  A `Class` descriptor's own `flags` word is read through
+  `Class::flags_of`, at its offset rather than through the pointer deref
+  the guard greps for (`dev/DECISIONS.md`, "the header guard greps the
+  pointer spelling"). The guard's test exemption is a known hole, 163
+  accesses wide, and the same entry sizes it.
+- **No mutator access to a live published header spans byte 6** — four
+  bytes for the counter, two for the mutator's half of the flags. The
+  eight-byte accesses are the four outside a header's life: `publish_header`
+  itself, the commissioning zero-fill in `heap::refill` and
+  `large_entity::commission`, and the arena's death zero for an OS-direct
+  run (`memory/arena.rs`). A wider access would overlap the collector's byte store
   without covering it, which is a mixed-size atomic access
   (`dev/DECISIONS.md`, "the header's access width is a correctness rule";
   pinned by `refcount::tests::the_flags_half_the_mutator_leaves_alone`).

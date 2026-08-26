@@ -41,7 +41,10 @@
 
 use crate::memory::arena::Arena;
 use crate::memory::context::{LLContext, resolve_arena};
-use crate::refcount::{COW, IS_ESCAPEE, MemoryCategory, RcHeader, ll_release, ll_retain};
+use crate::refcount::{
+    COW, IS_ESCAPEE, MemoryCategory, RcHeader, header_refcount, ll_release, ll_retain,
+    mutator_flags, set_header_refcount, update_header_flags,
+};
 use crate::value::Value;
 
 /// A longer-lived container took a reference to request-arena object
@@ -54,9 +57,15 @@ use crate::value::Value;
 /// # Safety
 /// `entity` must be a live request-arena entity.
 pub(crate) unsafe fn escape_gain(arena: *mut Arena, entity: *mut RcHeader) {
-    let e = unsafe { &mut *entity };
+    // Every access here is one word of the header, never a borrow of it:
+    // a `&mut RcHeader` asserts uniqueness over the flags word too, and
+    // the collector writes a byte of that word from another thread
+    // (`dev/POSTMORTEM.md`, "an atomic field does not survive a `&mut`
+    // over the struct"). An arena entity is not traced today, but the
+    // shape is what a reader copies.
+    let flags = unsafe { mutator_flags(entity) };
     debug_assert!(
-        e.flags & COW == 0,
+        flags & COW == 0,
         "a COW value is copied out of the arena, never counted into it"
     );
     // The assert is an invariant now rather than a wish: the caller
@@ -65,21 +74,23 @@ pub(crate) unsafe fn escape_gain(arena: *mut Arena, entity: *mut RcHeader) {
     // same four bytes. A dynamic string reaches here and should: it is
     // the non-COW form, it has real identity, and promotion carries its
     // payload out of the arena (`promote::carry_external_memory`).
-    if e.flags & IS_ESCAPEE == 0 {
-        e.flags |= IS_ESCAPEE;
-        e.refcount = 1;
+    if flags & IS_ESCAPEE == 0 {
+        unsafe { update_header_flags(entity, |f| f | IS_ESCAPEE) };
+        unsafe { set_header_refcount(entity, 1) };
         unsafe { (*arena).log_escapee(entity) };
-    } else {
-        // Same field, same arithmetic, so the same guard as `ll_retain`:
-        // a wrapped hold-count would make reset believe every holder let
-        // go and drop a still-held escapee.
-        #[cfg(feature = "checked-refcount")]
-        if e.refcount == u32::MAX {
-            return;
-        }
-
-        e.refcount += 1;
+        return;
     }
+
+    // Same field, same arithmetic, so the same guard as `ll_retain`:
+    // a wrapped hold-count would make reset believe every holder let
+    // go and drop a still-held escapee.
+    let held = unsafe { header_refcount(entity) };
+    #[cfg(feature = "checked-refcount")]
+    if held == u32::MAX {
+        return;
+    }
+
+    unsafe { set_header_refcount(entity, held + 1) };
 }
 
 /// A longer-lived slot let go of request-arena escapee `entity`: either
@@ -91,15 +102,15 @@ pub(crate) unsafe fn escape_gain(arena: *mut Arena, entity: *mut RcHeader) {
 /// # Safety
 /// `entity` must be a live request-arena entity.
 pub(crate) unsafe fn escape_lose(entity: *mut RcHeader) {
-    let e = unsafe { &mut *entity };
-    if e.flags & IS_ESCAPEE == 0 {
+    if unsafe { mutator_flags(entity) } & IS_ESCAPEE == 0 {
         return; // not tracked (never gained, or already back to zero)
     }
 
-    debug_assert!(e.refcount > 0, "escape hold-count underflow");
-    e.refcount -= 1;
-    if e.refcount == 0 {
-        e.flags &= !IS_ESCAPEE;
+    let held = unsafe { header_refcount(entity) };
+    debug_assert!(held > 0, "escape hold-count underflow");
+    unsafe { set_header_refcount(entity, held - 1) };
+    if held == 1 {
+        unsafe { update_header_flags(entity, |f| f & !IS_ESCAPEE) };
     }
 }
 

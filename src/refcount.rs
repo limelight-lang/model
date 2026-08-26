@@ -761,6 +761,20 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
     unsafe { refcount_load(header) }
 }
 
+/// Write the refcount of a **published** header — the store twin of
+/// [`header_refcount`], and narrow for the same reason: the flags half
+/// is neither read nor written, so a byte the collector puts there
+/// cannot be buried by this store.
+///
+/// A count changed by a delta reads with [`header_refcount`] and writes
+/// here. There is no read-modify-write helper, because the two halves
+/// are separate relaxed accesses either way — which is what [`ll_retain`]
+/// spells out inline.
+#[inline]
+pub(crate) unsafe fn set_header_refcount(header: *mut RcHeader, value: u32) {
+    unsafe { refcount_store(header, value) };
+}
+
 /// The count and the mutator's flags together, for a caller that wants
 /// both — [`cow_separation_needed`] is the predicate over the pair.
 ///

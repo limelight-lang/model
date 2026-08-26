@@ -248,7 +248,7 @@ introduce two constants nobody reads.
         narrow publication that does not zero it hands a new entity a stale
         mature stamp — S37.1 would prune its whole subgraph, permanently and
         silently. Owner: S38.0, which is where the second thread arrives.
-- [ ] S31.5 Every published-header access goes through the helpers
+- [x] S31.5 Every published-header access goes through the helpers
       done: `promote.rs` and `barrier.rs` reach a published header through
         `mutator_flags` / `header_refcount` / `update_header_flags` and a
         counter writer this step names, rather than through `(*p).flags` and
@@ -267,6 +267,46 @@ introduce two constants nobody reads.
         at `:759` reads every counted child, GC-heap ones included. The
         "arena entities are never traced" defence does not cover them, which is
         what makes this a step rather than a note.
+      Critic 2026-08-26: four accesses the widened grep cannot spell survived
+        the first pass, all eight bytes wide over a header — `is_occupied` in
+        `memory/retained.rs`, which the reset applies to the survivors it has
+        just promoted and which `heap::for_each_entity_slot` reads narrowly at
+        the same addresses; `heap::describe_slot`, twice; and `stdapi`'s
+        `#[cfg(test)]` free-path assertion. Accepted, all four narrowed.
+      Critic 2026-08-26: `Class::flags_of` bound a shared reference, which is
+        the evasion the guard's own doc names, so the change shipped a worked
+        example of it. Accepted — it reads the word at its offset now. The
+        same round found the comment over the category rewrite still naming a
+        GC-state field S31.1 removed; rewritten.
+      Critic 2026-08-26: the guard's test exemption covers 163 accesses in 34
+        files and its stated reason — headers built on the stack — is false for
+        most of them, so the fallback instrument covers nothing there either.
+        Recorded in the guard's doc and in `dev/DECISIONS.md`; the conversion
+        is S31.6's to decide, being the same job as a type change.
+      handoff: closed 2026-08-26 by `2b2c31a`. The guard was red on 29 sites
+        before the conversion, is green after, and its widening carries a
+        fixture of its own, verified by narrowing `READS` back and watching it
+        fail. Gate at that commit: suite 460 three times, `debug-journal` 466
+        three times, `hash-folding` 460, release, benches, `fmt --check`, no
+        unresolved doc link; Miri clean over `refcount::`, `promote::`,
+        `cells::`, `memory::barrier::`, `memory::heap::`, `memory::retained::`,
+        `memory::stdapi::` and `class::`. Test list 462 → 463, the one
+        addition named above.
+- [ ] S31.6 Decide whether `RcHeader`'s fields stop being public
+      done: the choice and its reason are in `dev/DECISIONS.md`, naming the
+        price it was weighed against — 163 header accesses in 34 test files,
+        plus every fixture's struct literal — and saying what becomes of
+        `refcount::tests::who_may_read_a_header`: retired, or kept for what a
+        type cannot reach
+      tier: T2 · role: Sage
+      handoff: raised by S31.5's Critic. The grep has been widened twice and
+        still admits the three evasions its own doc names — a rename, a local,
+        a reference binding — where private fields make all three a compile
+        error at every site, the exempt tests included. Against that:
+        `RcHeader` is `#[repr(C)]`, though it is the layout that is published
+        and not the field names, and the fixtures lose their struct literal —
+        which is the shape where a `#[cfg(test)]` shorthand has beaten
+        softening the production form before.
 
 ## S32 — The block header's collector triple
 

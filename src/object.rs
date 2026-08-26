@@ -161,7 +161,7 @@ unsafe fn stamp_into(
     // shape word past the end of it (`crate::template::ll_template_new`
     // is the one that builds these).
     debug_assert!(
-        unsafe { (*class).flags } & crate::class::CLASS_TEMPLATE == 0,
+        unsafe { crate::class::Class::flags_of(class) } & crate::class::CLASS_TEMPLATE == 0,
         "a template is built by its own factory, not by the object one"
     );
     let obj = mem as *mut Object;
@@ -421,7 +421,7 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::cells::CellReader>(
     // A template's children are counted by its shape, because one class
     // serves every interpolation site and the runs would have to differ
     // per instance (`crate::template`).
-    if unsafe { (*cls).flags } & crate::class::CLASS_TEMPLATE != 0 {
+    if unsafe { crate::class::Class::flags_of(cls) } & crate::class::CLASS_TEMPLATE != 0 {
         let n = unsafe { crate::template::value_count_at::<R>(base) };
         for i in 0..n {
             let at = unsafe { base.add(crate::template::VALUES_OFFSET + i * 16) };

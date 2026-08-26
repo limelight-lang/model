@@ -256,14 +256,20 @@ pub(crate) unsafe fn give_block_back(block: usize) {
 }
 
 /// The occupancy test both enumerators apply, and the only thing this
-/// module reads through an address: a slot whose refcount word is zero
-/// holds no live entity.
+/// module reads through an address: a slot whose refcount is zero holds
+/// no live entity.
+///
+/// The counter comes through `refcount`'s narrow helper rather than as a
+/// word of its own, because the addresses in an index are promoted
+/// survivors — published GC-heap headers whose byte 6 a collector writes
+/// (`dev/DECISIONS.md`, "the header's access width is a correctness
+/// rule"). `heap::for_each_entity_slot` applies this same test to these
+/// same addresses, so the two must read at one width.
 ///
 /// # Safety
 /// `address` must be readable.
 unsafe fn is_occupied(address: usize) -> bool {
-    let header = unsafe { *(address as *const u64) };
-    header & 0xffff_ffff != 0
+    unsafe { crate::refcount::header_refcount(address as *const crate::refcount::RcHeader) != 0 }
 }
 
 /// Whether some reset has finished establishing what occupies `block`.

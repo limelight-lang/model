@@ -49,8 +49,9 @@ use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_KIND_RETAINED, BlockHeader};
 use crate::object::Object;
 use crate::refcount::{
-    ARENA_RESET_MARK, COW, IS_ESCAPEE, MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader, ll_release,
-    ll_retain,
+    ARENA_RESET_MARK, COW, IS_ESCAPEE, MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader,
+    header_refcount, ll_release, ll_retain, mutator_flags, set_header_refcount,
+    update_header_flags,
 };
 
 /// Recursion guard for the reset fixpoint. Pure and non-recreating
@@ -134,7 +135,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 progress = true;
                 // Count back to zero (every holder let go): survives only if
                 // an internal edge reaches it — the subgraph trace covers it.
-                if unsafe { (*a).flags } & IS_ESCAPEE == 0 {
+                if unsafe { mutator_flags(a) } & IS_ESCAPEE == 0 {
                     continue;
                 }
 
@@ -151,7 +152,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             unsafe { (*arena).drain_destructors(|o| round_dtors.push(o)) };
             for obj in round_dtors {
                 progress = true;
-                if unsafe { (*obj).flags } & ARENA_RESET_MARK != 0 {
+                if unsafe { mutator_flags(obj) } & ARENA_RESET_MARK != 0 {
                     continue; // escaped objects survive; they do not destruct
                 }
 
@@ -231,15 +232,21 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             }
 
             unsafe {
-                if (*surv).flags & COW != 0 {
-                    cow_at_promotion.push((surv, (*surv).refcount));
+                if mutator_flags(surv) & COW != 0 {
+                    cow_at_promotion.push((surv, header_refcount(surv)));
                 }
 
                 // 00 = GcHeap; drop the transient arena-reset mark and
-                // IS_ESCAPEE. The mark lives in the GC-state field, so
-                // clearing it also leaves the promoted object's GC state at
-                // 00 (LIVE), the correct fresh heap state.
-                (*surv).flags &= !(MEMORY_CATEGORY_MASK | ARENA_RESET_MARK | IS_ESCAPEE);
+                // IS_ESCAPEE. Every bit named is the mutator's, below bit
+                // 16, so this is the narrow flags pair and the collector's
+                // byte leaves the arena exactly as the survivor carried it
+                // in. That byte has no reader yet; the step that gives it
+                // one owes promotion a defined value, because promotion is
+                // a publication (`dev/DECISIONS.md`, "the header's access
+                // width is a correctness rule").
+                update_header_flags(surv, |f| {
+                    f & !(MEMORY_CATEGORY_MASK | ARENA_RESET_MARK | IS_ESCAPEE)
+                });
             }
 
             // A survivor that had a block to itself keeps it, and none of
@@ -456,7 +463,7 @@ enum External {
 /// `surv` must be a live entity.
 unsafe fn external_memory(surv: *mut RcHeader) -> External {
     use crate::refcount::{ENTITY_KIND_MASK, EntityKind};
-    let flags = unsafe { (*surv).flags };
+    let flags = unsafe { mutator_flags(surv) };
     match flags & ENTITY_KIND_MASK {
         // Only the dynamic layout holds bytes out of line; an inline
         // string carries them behind its own header and moves with it.
@@ -536,7 +543,7 @@ unsafe fn die(entity: *mut RcHeader) {
 
 #[inline]
 unsafe fn is_arena_entity(p: *mut RcHeader) -> bool {
-    !p.is_null() && unsafe { (*p).memory_category() } == MemoryCategory::RequestArena
+    !p.is_null() && unsafe { crate::object::header_category(p) } == MemoryCategory::RequestArena
 }
 
 /// Mark the surviving subgraph from one escapee root: the root and
@@ -587,7 +594,7 @@ unsafe fn retrace_survivors(survivors: &mut Vec<*mut RcHeader>) {
         crate::memory::reset_window::note_walk(s);
         unsafe {
             crate::cells::trace_entity(s, |child| {
-                if is_arena_entity(child) && (*child).flags & ARENA_RESET_MARK == 0 {
+                if is_arena_entity(child) && mutator_flags(child) & ARENA_RESET_MARK == 0 {
                     mark_subgraph(child, survivors);
                 }
             });
@@ -600,12 +607,12 @@ unsafe fn mark_one(
     survivors: &mut Vec<*mut RcHeader>,
     stack: &mut Vec<*mut RcHeader>,
 ) {
-    if unsafe { (*e).flags } & ARENA_RESET_MARK != 0 {
+    if unsafe { mutator_flags(e) } & ARENA_RESET_MARK != 0 {
         return;
     }
 
     unsafe {
-        (*e).flags |= ARENA_RESET_MARK;
+        update_header_flags(e, |f| f | ARENA_RESET_MARK);
         // Roots (still IS_ESCAPEE) keep their external hold-count; a
         // survivor reached only internally has none, so start it at zero
         // and let the counting pass rebuild it from internal edges.
@@ -616,8 +623,8 @@ unsafe fn mark_one(
         // decrements it. Zeroing here would make that decrement underflow
         // inside the reset. Its count is settled once instead, by
         // [`reconcile_cow_counts`], after the last destructor has run.
-        if (*e).flags & (IS_ESCAPEE | COW) == 0 {
-            (*e).refcount = 0;
+        if mutator_flags(e) & (IS_ESCAPEE | COW) == 0 {
+            set_header_refcount(e, 0);
         }
     }
 
@@ -662,7 +669,7 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
     // Address → (edges seen so far, delta since promotion).
     let mut settled: HashMap<usize, (u32, i64)> = HashMap::with_capacity(at_promotion.len());
     for &(s, at) in at_promotion {
-        let now = unsafe { (*s).refcount } as i64;
+        let now = unsafe { header_refcount(s) } as i64;
         settled.insert(s as usize, (0, now - at as i64));
     }
 
@@ -691,7 +698,7 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
         #[cfg(test)]
         crate::memory::reset_window::note_walk(s);
         debug_assert!(
-            traceable_in_full(unsafe { (*s).flags }),
+            traceable_in_full(unsafe { mutator_flags(s) }),
             "a survivor of a kind `trace_entity` skips would have its              references erased here, not conservatively ignored"
         );
         unsafe {
@@ -714,7 +721,7 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
             settled_count >= 0,
             "a COW survivor lost more references than it had"
         );
-        unsafe { (*s).refcount = settled_count.max(0) as u32 };
+        unsafe { set_header_refcount(s, settled_count.max(0) as u32) };
     }
 }
 
@@ -756,13 +763,15 @@ unsafe fn count_children(surv: *mut RcHeader) {
             // after this round's destructors, before the category
             // rewrite. Why not the holder's death instead —
             // `dev/DECISIONS.md`, "the reset reads no corpse".
-            let cow = (*child).flags & COW != 0;
+            let cow = mutator_flags(child) & COW != 0;
             if cow {
                 crate::memory::reset_window::snapshot_edge(surv, child);
             }
 
-            match (*child).memory_category() {
-                MemoryCategory::RequestArena => (*child).refcount += 1,
+            match crate::object::header_category(child) {
+                MemoryCategory::RequestArena => {
+                    set_header_refcount(child, header_refcount(child) + 1)
+                }
                 MemoryCategory::GcHeap => {
                     ll_retain(child);
                     // A retain of this pass's own, taken back by the

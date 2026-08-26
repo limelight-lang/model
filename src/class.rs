@@ -243,11 +243,35 @@ impl Class {
     pub(crate) unsafe fn outside_cells<'a>(
         cls: *const Class,
     ) -> Option<&'a crate::cells::OutsideCells> {
-        if unsafe { (*cls).flags } & CLASS_OUTSIDE_CELLS == 0 {
+        if unsafe { Self::flags_of(cls) } & CLASS_OUTSIDE_CELLS == 0 {
             return None;
         }
 
         Some(unsafe { &*((*cls).outside as *const crate::cells::OutsideCells) })
+    }
+
+    /// The descriptor's own `CLASS_*` flags.
+    ///
+    /// Four bytes at the field's offset, through the pointer. A shared
+    /// reference would read the same word and assert more on the way:
+    /// `size_of::<Class>()` bytes dereferenceable and `cls` non-null,
+    /// where the raw read needs four bytes and faults on null. The five
+    /// callers document neither.
+    ///
+    /// Nothing here is a concurrency rule — a descriptor is written once
+    /// by [`ClassBuilder::build`] before anything can reach it and is
+    /// immortal after. The word is read in one place so that a pointer
+    /// deref of a field named `flags` means an entity header everywhere
+    /// else in the crate, which is what
+    /// `refcount::tests::who_may_read_a_header` greps for — this comment
+    /// included, had it kept the spelling.
+    ///
+    /// # Safety
+    /// `cls` points at a linked class descriptor.
+    #[inline]
+    pub(crate) unsafe fn flags_of(cls: *const Class) -> u32 {
+        let at = unsafe { (cls as *const u8).add(core::mem::offset_of!(Class, flags)) };
+        unsafe { (at as *const u32).read() }
     }
 
     /// The inline trailing vtable.

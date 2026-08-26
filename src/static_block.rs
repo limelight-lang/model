@@ -82,7 +82,7 @@ pub unsafe extern "C" fn ll_static_block_register(block: *mut u8, layout: *const
     // frees (`dev/DECISIONS.md`, "a class with cells outside itself
     // carries one flag and one group of five").
     debug_assert_eq!(
-        unsafe { (*layout).flags } & crate::class::CLASS_OUTSIDE_CELLS,
+        unsafe { Class::flags_of(layout) } & crate::class::CLASS_OUTSIDE_CELLS,
         0,
         "a static block's layout may not own cells outside the block"
     );

@@ -425,6 +425,16 @@ is weak evidence and a report is strong evidence, the same asymmetry loom has.
 It is outside the commit gate. Run it when a change touches header access,
 the collector's own writes, or anything else two threads reach.
 
+**Since 2026-08-26 the run has no test.** `a_free_running_mutator_survives_`
+`concurrent_epochs` lived in `collector::`, which went with `rc-walk` and
+`rc-trace`, so the command above now selects nothing and reports silence for
+that reason rather than for the good one. Nothing in the crate pairs a live
+collector with a mutator today. The debt belongs to `PLAN.md` S38.0, which is
+where the second thread arrives; until it lands, a change to header access is
+verified by reading the sources, by
+`refcount::tests::who_may_read_a_header`, and by Miri, which sees the
+mixed-size access but not the plain-against-atomic race.
+
 ## Loom
 
 Loom explores the executions the C11 model permits, which is how an

@@ -9,6 +9,63 @@ never edited or deleted.
 ---
 
 
+## 2026-08-26 — the header guard greps the pointer spelling, and a class descriptor keeps its reference
+
+`refcount::tests::who_may_read_a_header` matched `.rc.flags` and its three
+neighbours, which is a header reached through an entity struct. The same read
+through a raw pointer of the header spells `(*p).flags`, and the guard never
+saw it: twenty-four sites stood in `promote.rs`, `memory/heap.rs`, `cells.rs`
+and one fixture. Most touch arena entities, which no collector traces, but
+three populations are published headers outright — `memory/heap.rs`'s census
+strides GC-heap slots, `promote.rs` rewrites a survivor's category and then
+keeps reading the same header, and `count_children` reads every counted child
+including the heap ones. The guard now matches `).flags`, `).refcount`,
+`).memory_category()` and `).lifetime_counted()` as well, and every site goes
+through `mutator_flags`, `header_refcount`, `update_header_flags` or the new
+`set_header_refcount`.
+
+**A class descriptor carries a `flags` word of its own**, and five sites read
+it as `(*cls).flags`, so the widened grep flagged those too. They are not
+headers, and `Class::flags_of` now reads the word at its own offset through
+the pointer; the five sites call it, and the guard keeps no exemption list.
+Two other forms were tried and refused. A shared reference — `let cls = &*cls;
+cls.flags` — was the first, and it asserts `size_of::<Class>()` bytes readable
+and `cls` non-null where the raw read needs four bytes, besides being the one
+spelling this guard is documented as unable to see. Renaming the field was the
+other: `Class` is `#[repr(C)]` and the compiler emits descriptors against that
+layout, so the name is published and moving it starts with an amendment to
+`rfc/model/classes.md`.
+
+**A reference binding still evades the guard**, `let e = &mut *entity;
+e.flags`, and `memory/barrier.rs` had exactly that in `escape_gain` and
+`escape_lose`. It is worse than a plain read, because a `&mut` asserts
+uniqueness over the whole struct and an atomic field inside it buys nothing
+(`dev/POSTMORTEM.md`, "an atomic field does not survive a `&mut` over the
+struct"). Both functions now take one word at a time. Reading found them, the
+guard cannot, and the guard's module doc says so.
+
+**Three wide reads survived the first pass**, each eight bytes over a header
+and none of them spellable by the grep. `retained::is_occupied` was the worst:
+`promote::index_retained_blocks` applies it to the survivors promotion has
+just rewritten to `GcHeap`, and `heap::for_each_entity_slot` applies the same
+test to the same addresses at the narrow width, so one word was being read at
+two widths in one walk. `heap::describe_slot` reported the whole header word
+as text and now reports the two mutator halves, the collector's bits having no
+mutator-side reader to report them. `stdapi`'s `#[cfg(test)]` free-path
+assertion read eight bytes to test four, on every entity of every test build.
+
+**The guard's test exemption covers 163 accesses in 34 files**, counted the
+same day, and its stated reason — headers built on the stack — is false for
+most of them, which are factory-allocated entities. That population is the one
+a ThreadSanitizer run reaches first, so the exemption is a hole in the
+fallback instrument rather than in this one. Closing it is the same job as
+taking `RcHeader`'s fields private, and that decision is open: a type would
+retire all three evasions the guard admits to — a rename, a local, a reference
+binding — at the price of every fixture's shorthand.
+
+---
+
+
 ## 2026-08-26 — what the old collectors left behind is deleted, and what is kept is named
 
 Edmond ruled that nothing of `rc-walk` or `rc-trace` this task does not need

@@ -2008,7 +2008,7 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
                 let (entity, _) =
                     unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
                 let slot = entity as *mut crate::refcount::RcHeader;
-                if unsafe { (*slot).refcount } != 0 {
+                if unsafe { crate::refcount::header_refcount(slot) } != 0 {
                     visit(slot);
                 }
 
@@ -2030,7 +2030,7 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
             let base = unsafe { (block as *mut u8).add(LINE_SIZE) };
             for s in 0..bump as usize {
                 let slot = unsafe { base.add(s * class_size) } as *mut crate::refcount::RcHeader;
-                if unsafe { (*slot).refcount } != 0 {
+                if unsafe { crate::refcount::header_refcount(slot) } != 0 {
                     visit(slot);
                 }
             }
@@ -2045,7 +2045,7 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
     for (_block, index) in crate::memory::retained::snapshot() {
         for &addr in index.iter() {
             let slot = addr as *mut crate::refcount::RcHeader;
-            if unsafe { (*slot).refcount } != 0 {
+            if unsafe { crate::refcount::header_refcount(slot) } != 0 {
                 visit(slot);
             }
         }
@@ -2058,7 +2058,7 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
     for block in crate::memory::large_entity::snapshot() {
         let (entity, _) = unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
         let slot = entity as *mut crate::refcount::RcHeader;
-        if unsafe { (*slot).refcount } != 0 {
+        if unsafe { crate::refcount::header_refcount(slot) } != 0 {
             visit(slot);
         }
     }
@@ -2069,9 +2069,14 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
 ///
 /// Every field `for_each_entity_slot` gates on, in the order it reads
 /// them: whether the address is inside a registered region at all, then
-/// the block's kind, then its stride and bump, then the header word whose
-/// low half is the refcount. A slot index at or past `bump` is a slot the
+/// the block's kind, then its stride and bump, then the refcount the
+/// occupancy test reads. A slot index at or past `bump` is a slot the
 /// walk does not reach.
+///
+/// The header is reported as its two mutator halves rather than as one
+/// word, because a mutator-side read of a published header may not span
+/// byte 6. The collector's bits 16-31 are therefore absent from the text,
+/// having no mutator-side reader at all yet.
 ///
 /// A large-entity block answers a different set, because it has no
 /// stride and no cursor: its occupant's size, and — the membership that
@@ -2094,11 +2099,12 @@ pub(crate) fn describe_slot(addr: usize) -> String {
     if crate::memory::large_entity::is_large_entity(kind_word) {
         let (entity, size) = unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
         let registered = crate::memory::large_entity::snapshot().contains(&(block as usize));
-        let header = unsafe { *(addr as *const u64) };
+        let (refcount, flags) =
+            unsafe { crate::refcount::header_pair(addr as *const crate::refcount::RcHeader) };
         return format!(
             "addr {addr:#x} block {:#x} in_region {in_region} kind {kind_word} \
              large_entity size {size} occupant {:#x} registered_run {registered} \
-             header {header:#018x}",
+             refcount {refcount} flags {flags:#06x}",
             block as usize, entity as usize
         );
     }
@@ -2113,7 +2119,8 @@ pub(crate) fn describe_slot(addr: usize) -> String {
         )
     };
 
-    let header = unsafe { *(addr as *const u64) };
+    let (refcount, flags) =
+        unsafe { crate::refcount::header_pair(addr as *const crate::refcount::RcHeader) };
     let stride = SIZE_CLASSES
         .get(size_class as usize)
         .copied()
@@ -2125,7 +2132,7 @@ pub(crate) fn describe_slot(addr: usize) -> String {
     format!(
         "addr {addr:#x} block {:#x} in_region {in_region} kind {kind} class {size_class} \
          stride {stride} used {used} slots {slots} bump {bump} slot_index {index} \
-         retained_index {retained} header {header:#018x}",
+         retained_index {retained} refcount {refcount} flags {flags:#06x}",
         block as usize
     )
 }

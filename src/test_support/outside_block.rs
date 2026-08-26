@@ -274,7 +274,7 @@ unsafe fn free(entity: *mut RcHeader) {
     }
 
     unsafe { store_version(base, opened + 1, Ordering::Release) };
-    let category = unsafe { (*entity).memory_category() };
+    let category = unsafe { crate::object::header_category(entity) };
     unsafe { crate::memory::routing::body_free(category, block, capacity(base)) };
 }
 
