@@ -283,7 +283,7 @@ introduce two constants nobody reads.
         most of them, so the fallback instrument covers nothing there either.
         Recorded in the guard's doc and in `dev/DECISIONS.md`; the conversion
         is S31.6's to decide, being the same job as a type change.
-      handoff: closed 2026-08-26 by `2b2c31a`. The guard was red on 29 sites
+      handoff: closed 2026-08-26 by `5ed9d34`. The guard was red on 29 sites
         before the conversion, is green after, and its widening carries a
         fixture of its own, verified by narrowing `READS` back and watching it
         fail. Gate at that commit: suite 460 three times, `debug-journal` 466
