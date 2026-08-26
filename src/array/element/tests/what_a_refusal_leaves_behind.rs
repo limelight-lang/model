@@ -54,11 +54,15 @@ fn a_refused_separation_reports_and_changes_nothing() {
             src,
             "a refused store moved the slot"
         );
-        assert_eq!((*src).rc.refcount, 2, "a refused store moved a count");
+        assert_eq!(
+            crate::refcount::entity_refcount(src),
+            2,
+            "a refused store moved a count"
+        );
         assert_eq!(crate::array::testing::table(src).len(), 1);
         assert!(crate::array::testing::get(src, Key::Int(1)).is_none());
         assert_eq!(
-            (*val).rc.refcount,
+            crate::refcount::entity_refcount(val),
             1,
             "a refused store kept the caller's value reference"
         );
@@ -184,10 +188,10 @@ fn a_growth_refusal_inside_the_copy_destroys_the_copy_alone() {
 
     unsafe {
         assert_eq!((*slot_a).entity_ptr() as *mut LLArray, src);
-        assert_eq!((*src).rc.refcount, 2);
+        assert_eq!(crate::refcount::entity_refcount(src), 2);
         assert!(crate::array::testing::table(src).is_empty());
         assert_eq!(
-            (*val).rc.refcount,
+            crate::refcount::entity_refcount(val),
             1,
             "the giveback did not balance the copy's publication"
         );
@@ -225,7 +229,7 @@ fn a_destroyed_arena_copy_gives_its_children_back() {
         crate::refcount::ll_retain(src as *mut RcHeader);
     }
 
-    let before = unsafe { (*child).rc.refcount };
+    let before = unsafe { crate::refcount::entity_refcount(child) };
 
     let copy = unsafe {
         crate::array::entity::separate(
@@ -239,13 +243,13 @@ fn a_destroyed_arena_copy_gives_its_children_back() {
     assert!(!copy.is_null());
     unsafe {
         assert_eq!(
-            (*child).rc.refcount,
+            crate::refcount::entity_refcount(child),
             before + 1,
             "the replay was meant to take a reference of its own"
         );
         crate::object::destroy_unpublished(copy as *mut RcHeader);
         assert_eq!(
-            (*child).rc.refcount,
+            crate::refcount::entity_refcount(child),
             before,
             "the corpse kept the replay's reference"
         );
@@ -287,7 +291,7 @@ fn a_refused_escape_copy_of_the_value_reports_and_changes_nothing() {
     }
 
     let value = unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"arena") };
-    let before = unsafe { (*value).rc.refcount };
+    let before = unsafe { crate::refcount::entity_refcount(value) };
 
     FORCE_OOM.store(true, Ordering::Relaxed);
     let fillers = unsafe { exhaust_string_entities(b"arena".len()) };
@@ -310,7 +314,7 @@ fn a_refused_escape_copy_of_the_value_reports_and_changes_nothing() {
         assert_eq!(crate::array::testing::table(src).len(), 1);
         assert!(crate::array::testing::get(src, Key::Int(1)).is_none());
         assert_eq!(
-            (*value).rc.refcount,
+            crate::refcount::entity_refcount(value),
             before,
             "a refused store kept the caller's value reference"
         );

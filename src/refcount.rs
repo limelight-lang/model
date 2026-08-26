@@ -843,5 +843,48 @@ pub(crate) unsafe fn mutator_unguard_release(header: *mut RcHeader) -> u32 {
     refcount
 }
 
+/// The refcount of the entity at `entity`, for a fixture holding a typed
+/// pointer — `*mut Object`, `*mut LLArray` — rather than a header one.
+/// `RcHeader` is at offset 0 of every entity, which is what makes the cast
+/// sound.
+///
+/// **A raw pointer and a narrow load, both by ruling.** A shorthand shaped
+/// `fn refcount(&self)` would form the `&RcHeader` the field privacy exists
+/// to ban, and one whose body was a plain read would leave the fixtures in
+/// the population a ThreadSanitizer run reaches first — they are the sites
+/// that touch published entities (`dev/DECISIONS.md`, "`RcHeader`'s fields
+/// go private, and the source grep is re-aimed rather than retired").
+///
+/// # Safety
+/// `entity` points at a live entity, whose first field is its header.
+#[cfg(test)]
+#[inline]
+pub(crate) unsafe fn entity_refcount<T>(entity: *const T) -> u32 {
+    unsafe { refcount_load(entity as *const RcHeader) }
+}
+
+/// The mutator's half of the flags of the entity at `entity` — the twin of
+/// [`entity_refcount`], and [`mutator_flags`]'s answer, so bits 16 and above
+/// read zero.
+///
+/// # Safety
+/// As [`entity_refcount`].
+#[cfg(test)]
+#[inline]
+pub(crate) unsafe fn entity_flags<T>(entity: *const T) -> u32 {
+    unsafe { flags_load(entity as *const RcHeader) }
+}
+
+/// The memory category of the entity at `entity`, read through
+/// [`entity_flags`].
+///
+/// # Safety
+/// As [`entity_refcount`].
+#[cfg(test)]
+#[inline]
+pub(crate) unsafe fn entity_category<T>(entity: *const T) -> MemoryCategory {
+    MemoryCategory::from_flags(unsafe { entity_flags(entity) })
+}
+
 #[cfg(test)]
 mod tests;

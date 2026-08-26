@@ -209,12 +209,12 @@ fn a_cow_child_of_a_holder_the_drain_killed_settles_to_its_live_holders() {
 
     unsafe {
         assert_eq!(
-            (*(array as *mut RcHeader)).memory_category(),
+            crate::refcount::entity_category(array),
             MemoryCategory::GcHeap,
             "the array stayed behind in the dying arena"
         );
         assert_eq!(
-            (*(array as *mut RcHeader)).refcount,
+            crate::refcount::entity_refcount(array),
             1,
             "the array is held by the survivor that lived, and by nothing else"
         );
@@ -300,7 +300,7 @@ fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_reconcile() {
     );
     unsafe {
         assert_eq!(
-            (*(array as *mut RcHeader)).refcount,
+            crate::refcount::entity_refcount(array),
             1,
             "the surviving holder is the array's one holder"
         );
@@ -373,18 +373,18 @@ fn a_survivor_promoted_at_refcount_zero_is_not_read_as_a_corpse() {
 
     unsafe {
         assert_eq!(
-            (*holder).rc.memory_category(),
+            crate::refcount::entity_category(holder),
             MemoryCategory::GcHeap,
             "the marked survivor was promoted whatever its count says"
         );
         assert_eq!(
-            (*holder).rc.refcount,
+            crate::refcount::entity_refcount(holder),
             0,
             "the hold this survivor was promoted for is the one the \
              destructor dropped, so this test proves nothing otherwise"
         );
         assert_eq!(
-            (*(array as *mut RcHeader)).refcount,
+            crate::refcount::entity_refcount(array),
             1,
             "the array is held by the survivor's slot"
         );
@@ -481,14 +481,14 @@ fn a_cow_child_counted_again_in_a_later_round_credits_each_retain() {
     unsafe {
         for holder in [early, late_a, late_b] {
             assert_eq!(
-                (*holder).rc.memory_category(),
+                crate::refcount::entity_category(holder),
                 MemoryCategory::GcHeap,
                 "a holder of the array stayed behind in the dying arena"
             );
         }
 
         assert_eq!(
-            (*(array as *mut RcHeader)).refcount,
+            crate::refcount::entity_refcount(array),
             3,
             "the array is held by its three holders, once each"
         );
@@ -615,7 +615,7 @@ fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_retrace() {
     assert!(!node.is_null(), "the next round's destructor never ran");
     unsafe {
         assert_eq!(
-            (*node).rc.memory_category(),
+            crate::refcount::entity_category(node),
             MemoryCategory::GcHeap,
             "the child stored into a survivor mid-round was not traced, so \
              this test never reached the pass it is about"
@@ -734,7 +734,7 @@ fn a_survivor_dying_inside_a_nested_reset_pays_its_edges_to_the_outer_one() {
 
     unsafe {
         assert_eq!(
-            (*(array as *mut RcHeader)).refcount,
+            crate::refcount::entity_refcount(array),
             1,
             "the array is held by the survivor that lived, and by nothing else"
         );
@@ -873,13 +873,13 @@ fn a_survivor_that_resurrects_itself_records_no_death() {
 
     unsafe {
         assert_eq!(
-            (*dying).rc.refcount,
+            crate::refcount::entity_refcount(dying),
             1,
             "the resurrected object is held by the slot its destructor \
              stored it into"
         );
         assert_eq!(
-            (*(array as *mut RcHeader)).refcount,
+            crate::refcount::entity_refcount(array),
             2,
             "both holders came out of the reset alive"
         );
@@ -1031,7 +1031,7 @@ fn an_edge_unset_before_its_holder_dies_still_settles_its_child() {
 
     unsafe {
         assert_eq!(
-            (*(array as *mut RcHeader)).refcount,
+            crate::refcount::entity_refcount(array),
             1,
             "the array is held by the survivor that lived, and by nothing else"
         );

@@ -85,10 +85,10 @@ fn a_store_into_a_boxed_element_goes_through_the_box() {
         boxed
     };
 
-    let first_held = unsafe { (*first).rc.refcount };
+    let first_held = unsafe { crate::refcount::entity_refcount(first) };
 
     let second = mk(b"second");
-    let second_start = unsafe { (*second).rc.refcount };
+    let second_start = unsafe { crate::refcount::entity_refcount(second) };
     assert!(unsafe {
         set(
             context_ptr,
@@ -113,19 +113,19 @@ fn a_store_into_a_boxed_element_goes_through_the_box() {
             second as *mut RcHeader
         );
         assert_eq!(
-            (*first).rc.refcount,
+            crate::refcount::entity_refcount(first),
             first_held - 1,
             "the value the box displaced did not come back"
         );
         assert_eq!(
-            (*second).rc.refcount,
+            crate::refcount::entity_refcount(second),
             second_start + 1,
             "the box took no reference of its own"
         );
 
         assert!(ll_release(h as *mut RcHeader));
         ll_object_die(h);
-        assert_eq!((*second).rc.refcount, second_start);
+        assert_eq!(crate::refcount::entity_refcount(second), second_start);
         for s in [first, second] {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
@@ -173,12 +173,12 @@ fn a_refused_store_through_the_box_keeps_the_displaced_value() {
         boxed
     };
 
-    let held_start = unsafe { (*held).rc.refcount };
+    let held_start = unsafe { crate::refcount::entity_refcount(held) };
 
     // An arena COW value crossing into the heap box is copied out,
     // and that copy is the allocation the refusal lands on.
     let crossing = unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"crossing") };
-    let crossing_start = unsafe { (*crossing).rc.refcount };
+    let crossing_start = unsafe { crate::refcount::entity_refcount(crossing) };
 
     FORCE_OOM.store(true, Ordering::Relaxed);
     let fillers = unsafe { exhaust_string_entities(b"crossing".len()) };
@@ -203,11 +203,11 @@ fn a_refused_store_through_the_box_keeps_the_displaced_value() {
             "a refused store moved the box"
         );
         assert_eq!(
-            (*held).rc.refcount,
+            crate::refcount::entity_refcount(held),
             held_start,
             "the displaced value was released for a store that never happened"
         );
-        assert_eq!((*crossing).rc.refcount, crossing_start);
+        assert_eq!(crate::refcount::entity_refcount(crossing), crossing_start);
 
         assert!(ll_release(h as *mut RcHeader));
         ll_object_die(h);
@@ -327,7 +327,7 @@ fn taking_a_reference_separates_the_shared_table_first() {
         crate::array::testing::insert(src, Key::Str(x), Value::int(1));
     }
 
-    let x_shared = unsafe { (*x).rc.refcount };
+    let x_shared = unsafe { crate::refcount::entity_refcount(x) };
     // `slot_a` is `$a`, `slot_b` is `$b`.
     let (h, slot_a, slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
 
@@ -370,7 +370,7 @@ fn taking_a_reference_separates_the_shared_table_first() {
 
         assert!(ll_release(h as *mut RcHeader));
         ll_object_die(h);
-        assert_eq!((*x).rc.refcount, x_shared - 1);
+        assert_eq!(crate::refcount::entity_refcount(x), x_shared - 1);
         assert!(ll_release(x as *mut RcHeader));
         crate::object::ll_entity_die(x as *mut RcHeader);
     }

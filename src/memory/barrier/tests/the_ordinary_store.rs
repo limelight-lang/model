@@ -22,18 +22,18 @@ fn heap_to_heap_counts_and_writes_slot() {
     unsafe { owner.store(&mut arena, pa) };
     assert_eq!(owner.entity_ptr(), pa);
     assert_eq!(
-        unsafe { (*pa).refcount },
+        unsafe { crate::refcount::entity_refcount(pa) },
         2,
         "initial + the slot's reference"
     );
 
     unsafe { owner.store(&mut arena, pb) };
     assert_eq!(
-        unsafe { (*pa).refcount },
+        unsafe { crate::refcount::entity_refcount(pa) },
         1,
         "displaced from a heap slot: released now"
     );
-    assert_eq!(unsafe { (*pb).refcount }, 2);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(pb) }, 2);
 }
 
 /// The pointer-slot analog, driven by the micro-ops directly: an
@@ -52,7 +52,7 @@ fn store_ptr_publishes_a_pointer_slot_then_drop_releases_the_old() {
     assert!(unsafe { store_ptr(&mut arena, MemoryCategory::GcHeap, &mut slot, pa) });
     assert_eq!(slot, pa, "slot published as a bare 8-byte pointer");
     assert_eq!(
-        unsafe { (*pa).refcount },
+        unsafe { crate::refcount::entity_refcount(pa) },
         2,
         "initial + the slot's reference"
     );
@@ -63,11 +63,11 @@ fn store_ptr_publishes_a_pointer_slot_then_drop_releases_the_old() {
     unsafe { drop_ref(MemoryCategory::GcHeap, old) };
     assert_eq!(slot, pb);
     assert_eq!(
-        unsafe { (*pa).refcount },
+        unsafe { crate::refcount::entity_refcount(pa) },
         1,
         "displaced from a heap slot: released"
     );
-    assert_eq!(unsafe { (*pb).refcount }, 2);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(pb) }, 2);
 }
 
 #[test]

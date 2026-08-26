@@ -21,12 +21,12 @@ fn releasing_children_walks_elements_and_string_keys_once_each() {
             Key::Str(key),
             Value::entity(crate::value::Tag::String, child as *mut RcHeader),
         );
-        let k0 = (*(key as *mut RcHeader)).refcount;
-        let c0 = (*(child as *mut RcHeader)).refcount;
+        let k0 = crate::refcount::entity_refcount(key);
+        let c0 = crate::refcount::entity_refcount(child);
 
         release_children(a);
-        assert_eq!((*(key as *mut RcHeader)).refcount, k0 - 1);
-        assert_eq!((*(child as *mut RcHeader)).refcount, c0 - 1);
+        assert_eq!(crate::refcount::entity_refcount(key), k0 - 1);
+        assert_eq!(crate::refcount::entity_refcount(child), c0 - 1);
 
         crate::array::entity::dispose_storage(a, category_of(a));
     }
@@ -71,12 +71,12 @@ fn dying_through_the_kind_switch_releases_the_children_and_the_storage() {
         crate::object::ll_entity_die(a as *mut RcHeader);
 
         assert_eq!(
-            (*(key as *mut RcHeader)).refcount,
+            crate::refcount::entity_refcount(key),
             1,
             "the key's reference was not let go"
         );
         assert_eq!(
-            (*(value as *mut RcHeader)).refcount,
+            crate::refcount::entity_refcount(value),
             1,
             "the element's reference was not let go"
         );

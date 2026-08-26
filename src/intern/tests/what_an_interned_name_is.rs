@@ -22,10 +22,17 @@ fn entity_is_a_valid_immortal_cow_string() {
     let s = unsafe { &*p };
     assert_eq!(unsafe { LLString::bytes(p) }, b"hello");
     assert_eq!(s.len, 5);
-    assert_eq!(s.rc.memory_category(), MemoryCategory::Immortal);
-    assert_ne!(s.rc.flags & COW, 0, "immortal strings are COW-flagged");
     assert_eq!(
-        s.rc.flags & ENTITY_KIND_MASK,
+        unsafe { crate::refcount::entity_category(p) },
+        MemoryCategory::Immortal
+    );
+    assert_ne!(
+        unsafe { crate::refcount::entity_flags(p) } & COW,
+        0,
+        "immortal strings are COW-flagged"
+    );
+    assert_eq!(
+        unsafe { crate::refcount::entity_flags(p) } & ENTITY_KIND_MASK,
         EntityKind::String.to_flags(),
         "an interned name is a string entity, not an object"
     );

@@ -171,7 +171,7 @@ fn resurrection_aborts_teardown_and_destructor_never_reruns() {
         unsafe { ll_object_die(obj) };
         assert_eq!(DESTRUCTS.load(Ordering::Relaxed), 1);
         assert_eq!(
-            unsafe { (*obj).rc.refcount },
+            unsafe { crate::refcount::entity_refcount(obj) },
             1,
             "resurrected: the destructor's reference keeps it alive"
         );

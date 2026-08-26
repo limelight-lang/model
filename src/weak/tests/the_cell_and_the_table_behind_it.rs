@@ -24,7 +24,10 @@ fn a_weak_cell_is_a_16_byte_kind_11_gc_heap_entity() {
             MemoryCategory::GcHeap,
             "the cell is GC-heap even when an arena is ambient"
         );
-        assert_ne!(unsafe { (*obj).rc.flags } & HAS_WEAK_REFERENCES, 0);
+        assert_ne!(
+            unsafe { crate::refcount::entity_flags(obj) } & HAS_WEAK_REFERENCES,
+            0
+        );
 
         unsafe {
             assert!(ll_release(obj as *mut RcHeader));
@@ -44,7 +47,7 @@ fn create_is_canonical_while_the_cell_lives_and_fresh_after_it_dies() {
         let w1 = unsafe { ll_weakref_create(ctx, obj as *mut RcHeader) };
         let w2 = unsafe { ll_weakref_create(ctx, obj as *mut RcHeader) };
         assert_eq!(w1, w2, "one canonical cell per live target");
-        assert_eq!(unsafe { (*w1).rc.refcount }, 2);
+        assert_eq!(unsafe { crate::refcount::entity_refcount(w1) }, 2);
         assert!(!unsafe { ll_release(w2 as *mut RcHeader) });
 
         // The last copy dies first: the target returns to the cheap
@@ -55,7 +58,10 @@ fn create_is_canonical_while_the_cell_lives_and_fresh_after_it_dies() {
             crate::object::ll_entity_die(w1 as *mut RcHeader);
         }
 
-        assert_eq!(unsafe { (*obj).rc.flags } & HAS_WEAK_REFERENCES, 0);
+        assert_eq!(
+            unsafe { crate::refcount::entity_flags(obj) } & HAS_WEAK_REFERENCES,
+            0
+        );
         let w3 = unsafe { ll_weakref_create(ctx, obj as *mut RcHeader) };
         assert!(!w3.is_null());
         assert_eq!(unsafe { (*w3).target }, obj as *mut RcHeader);
@@ -80,7 +86,7 @@ fn get_returns_the_target_retained_until_death_nulls_it() {
         let got = unsafe { ll_weakref_get(w) };
         assert_eq!(got, obj as *mut RcHeader);
         assert_eq!(
-            unsafe { (*obj).rc.refcount },
+            unsafe { crate::refcount::entity_refcount(obj) },
             2,
             "get returned a strong reference"
         );

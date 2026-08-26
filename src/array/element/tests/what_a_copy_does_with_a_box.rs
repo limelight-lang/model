@@ -164,12 +164,12 @@ fn a_copy_over_an_arena_source_shares_the_box() {
         "an arena array's box is still a heap entity"
     );
     assert_eq!(
-        unsafe { (*boxed).rc.flags } & crate::refcount::IS_ESCAPEE,
+        unsafe { crate::refcount::entity_flags(boxed) } & crate::refcount::IS_ESCAPEE,
         0,
         "a heap box is never an escapee"
     );
     assert_eq!(
-        unsafe { (*boxed).rc.refcount },
+        unsafe { crate::refcount::entity_refcount(boxed) },
         1,
         "the source's entry is the box's one holder"
     );
@@ -195,7 +195,7 @@ fn a_copy_over_an_arena_source_shares_the_box() {
         // boundary rather than a duplication and collapses nothing
         // (`entity::CopyReason`).
         assert_eq!(
-            (*boxed).rc.refcount,
+            crate::refcount::entity_refcount(boxed),
             2,
             "the copy took no hold of its own on the shared box"
         );
@@ -203,7 +203,7 @@ fn a_copy_over_an_arena_source_shares_the_box() {
         assert!(ll_release(copy as *mut RcHeader));
         crate::object::ll_entity_die(copy as *mut RcHeader);
         assert_eq!(
-            (*boxed).rc.refcount,
+            crate::refcount::entity_refcount(boxed),
             1,
             "the dying copy kept its hold on the box"
         );

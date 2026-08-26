@@ -74,7 +74,7 @@ fn an_array_reached_from_an_escapee_carries_its_storage_out() {
 
     unsafe {
         assert_eq!(
-            (*(array as *mut RcHeader)).memory_category(),
+            crate::refcount::entity_category(array),
             MemoryCategory::GcHeap,
             "the array stayed behind in the dying arena"
         );
@@ -299,7 +299,7 @@ fn an_oversize_cow_arena_string_carries_its_payload_through_promotion() {
 
     unsafe {
         assert_eq!(
-            (*s).memory_category(),
+            crate::refcount::entity_category(s),
             MemoryCategory::GcHeap,
             "promoted with its holder rather than copied at the barrier"
         );
@@ -342,7 +342,7 @@ fn a_promoted_large_entity_keeps_its_block_and_leaves_the_arenas_log() {
 
     unsafe {
         assert_eq!(
-            (*obj).rc.memory_category(),
+            crate::refcount::entity_category(obj),
             MemoryCategory::GcHeap,
             "recategorized in place, like any other survivor"
         );
@@ -531,7 +531,7 @@ fn a_hooked_survivor_carries_its_block_out_of_the_arena() {
 
     unsafe {
         assert_eq!(
-            (*(waker as *mut RcHeader)).memory_category(),
+            crate::refcount::entity_category(waker),
             MemoryCategory::GcHeap,
             "the waker stayed behind in the dying arena"
         );

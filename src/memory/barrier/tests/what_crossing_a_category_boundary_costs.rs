@@ -41,13 +41,21 @@ fn a_cow_value_leaving_the_arena_is_copied_rather_than_counted() {
         "and it is the same value"
     );
     assert_eq!(
-        unsafe { (*slot).refcount },
+        unsafe { crate::refcount::entity_refcount(slot) },
         1,
         "the slot is its only holder"
     );
     unsafe {
-        assert_eq!((*s).flags & IS_ESCAPEE, 0, "a COW entity never escapes");
-        assert_eq!((*s).refcount, 1, "the original keeps the count it had");
+        assert_eq!(
+            crate::refcount::entity_flags(s) & IS_ESCAPEE,
+            0,
+            "a COW entity never escapes"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(s),
+            1,
+            "the original keeps the count it had"
+        );
     }
 
     let mut escapees = Vec::new();
@@ -72,12 +80,12 @@ fn owner_cat_parameter_drives_the_escape_barrier_without_an_owner_header() {
 
     assert!(unsafe { store_ptr(&mut arena, MemoryCategory::LongLived, &mut slot, obj) });
     assert_ne!(
-        unsafe { (*obj).flags } & IS_ESCAPEE,
+        unsafe { crate::refcount::entity_flags(obj) } & IS_ESCAPEE,
         0,
         "arena ref escaped into a long-lived slot"
     );
     assert_eq!(
-        unsafe { (*obj).refcount },
+        unsafe { crate::refcount::entity_refcount(obj) },
         1,
         "one holder, counted in the escapee"
     );
@@ -104,9 +112,13 @@ fn arena_ref_into_heap_owner_is_recorded_as_an_escapee() {
     unsafe { owner.store(&mut arena, obj) };
     // The escape is counted in the entity itself (the IS_ESCAPEE
     // hold-count), not by remembering the holder's slot.
-    assert_eq!(unsafe { (*obj).refcount }, 1, "one heap holder");
+    assert_eq!(
+        unsafe { crate::refcount::entity_refcount(obj) },
+        1,
+        "one heap holder"
+    );
     assert_ne!(
-        unsafe { (*obj).flags } & crate::refcount::IS_ESCAPEE,
+        unsafe { crate::refcount::entity_flags(obj) } & crate::refcount::IS_ESCAPEE,
         0,
         "marked as an escapee"
     );

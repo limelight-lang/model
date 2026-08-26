@@ -60,13 +60,17 @@ fn a_store_through_one_holder_leaves_the_other_holders_entries_alone() {
             "the other holder's entries changed"
         );
         assert_eq!(
-            (*src).rc.refcount,
+            crate::refcount::entity_refcount(src),
             1,
             "the displaced original keeps exactly its other holder"
         );
-        assert_eq!((*copy).rc.refcount, 1, "the copy is held once, by the slot");
         assert_eq!(
-            (*val).rc.refcount,
+            crate::refcount::entity_refcount(copy),
+            1,
+            "the copy is held once, by the slot"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(val),
             2,
             "the array takes its own reference and leaves the caller's"
         );
@@ -95,7 +99,7 @@ fn a_store_through_one_holder_leaves_the_other_holders_entries_alone() {
         assert!(ll_release(h as *mut RcHeader));
         ll_object_die(h);
         assert_eq!(
-            (*val).rc.refcount,
+            crate::refcount::entity_refcount(val),
             1,
             "the dying array did not give the value back"
         );
@@ -134,8 +138,8 @@ fn a_store_in_place_gives_the_displaced_element_back() {
 
     let first = mk(b"first");
     let second = mk(b"second");
-    let first_start = unsafe { (*first).rc.refcount };
-    let second_start = unsafe { (*second).rc.refcount };
+    let first_start = unsafe { crate::refcount::entity_refcount(first) };
+    let second_start = unsafe { crate::refcount::entity_refcount(second) };
 
     unsafe {
         assert!(set(
@@ -151,7 +155,7 @@ fn a_store_in_place_gives_the_displaced_element_back() {
             "an exclusively owned array separated"
         );
         assert_eq!(
-            (*first).rc.refcount,
+            crate::refcount::entity_refcount(first),
             first_start + 1,
             "the array takes its own reference and leaves the caller's"
         );
@@ -164,11 +168,11 @@ fn a_store_in_place_gives_the_displaced_element_back() {
             Value::entity(Tag::String, second as *mut RcHeader),
         ));
         assert_eq!(
-            (*first).rc.refcount,
+            crate::refcount::entity_refcount(first),
             first_start,
             "the displaced element kept the array's reference"
         );
-        assert_eq!((*second).rc.refcount, second_start + 1);
+        assert_eq!(crate::refcount::entity_refcount(second), second_start + 1);
         assert_eq!(
             crate::array::testing::get(src, Key::Int(0))
                 .unwrap()
@@ -178,7 +182,7 @@ fn a_store_in_place_gives_the_displaced_element_back() {
 
         assert!(ll_release(h as *mut RcHeader));
         ll_object_die(h);
-        assert_eq!((*second).rc.refcount, second_start);
+        assert_eq!(crate::refcount::entity_refcount(second), second_start);
         for s in [first, second] {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
@@ -277,8 +281,8 @@ fn an_unset_gives_the_key_back_and_leaves_the_other_holder_standing() {
         );
     }
 
-    let key_shared = unsafe { (*key).rc.refcount };
-    let value_shared = unsafe { (*value).rc.refcount };
+    let key_shared = unsafe { crate::refcount::entity_refcount(key) };
+    let value_shared = unsafe { crate::refcount::entity_refcount(value) };
     let (h, slot_a, _slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
 
     assert!(unsafe { unset(context_ptr, MemoryCategory::GcHeap, slot_a, Key::Str(key)) });
@@ -295,12 +299,12 @@ fn an_unset_gives_the_key_back_and_leaves_the_other_holder_standing() {
             "the other holder lost its entry"
         );
         assert_eq!(
-            (*key).rc.refcount,
+            crate::refcount::entity_refcount(key),
             key_shared,
             "the removed key did not come back"
         );
         assert_eq!(
-            (*value).rc.refcount,
+            crate::refcount::entity_refcount(value),
             value_shared,
             "the removed element did not come back"
         );
@@ -318,11 +322,11 @@ fn an_unset_gives_the_key_back_and_leaves_the_other_holder_standing() {
         assert!(ll_release(h as *mut RcHeader));
         ll_object_die(h);
         assert_eq!(
-            (*key).rc.refcount,
+            crate::refcount::entity_refcount(key),
             key_shared - 1,
             "the dying array kept it"
         );
-        assert_eq!((*value).rc.refcount, value_shared - 1);
+        assert_eq!(crate::refcount::entity_refcount(value), value_shared - 1);
         for s in [key, value] {
             assert!(ll_release(s as *mut RcHeader));
             crate::object::ll_entity_die(s as *mut RcHeader);
@@ -404,12 +408,12 @@ fn a_store_through_an_arena_holder_separates_into_the_arena() {
             "the other holder's entries changed"
         );
         assert_eq!(
-            (*src).rc.refcount,
+            crate::refcount::entity_refcount(src),
             1,
             "the displaced original keeps exactly its other holder"
         );
         assert_eq!(
-            (*copy).rc.flags & crate::refcount::IS_ESCAPEE,
+            crate::refcount::entity_flags(copy) & crate::refcount::IS_ESCAPEE,
             0,
             "an arena copy in an arena slot crossed no boundary"
         );
@@ -460,8 +464,8 @@ fn a_string_key_through_the_store_obeys_the_ownership_rule() {
     let k1 = mk(b"key");
     let k2 = mk(b"key");
     assert_ne!(k1, k2, "two distinct entities, or the arms collapse");
-    let k1_start = unsafe { (*k1).rc.refcount };
-    let k2_start = unsafe { (*k2).rc.refcount };
+    let k1_start = unsafe { crate::refcount::entity_refcount(k1) };
+    let k2_start = unsafe { crate::refcount::entity_refcount(k2) };
 
     unsafe {
         assert!(set(
@@ -472,7 +476,7 @@ fn a_string_key_through_the_store_obeys_the_ownership_rule() {
             Value::int(1),
         ));
         assert_eq!(
-            (*k1).rc.refcount,
+            crate::refcount::entity_refcount(k1),
             k1_start + 1,
             "a stored new key is consumed into the table's reference"
         );
@@ -485,7 +489,7 @@ fn a_string_key_through_the_store_obeys_the_ownership_rule() {
             Value::int(2),
         ));
         assert_eq!(
-            (*k2).rc.refcount,
+            crate::refcount::entity_refcount(k2),
             k2_start,
             "the overwrite arm kept its published reference"
         );
@@ -503,7 +507,7 @@ fn a_string_key_through_the_store_obeys_the_ownership_rule() {
         }
 
         let k3 = mk(b"other");
-        let k3_start = (*k3).rc.refcount;
+        let k3_start = crate::refcount::entity_refcount(k3);
         FORCE_OOM.store(true, Ordering::Relaxed);
         let fillers = exhaust_buffer_sources(DOUBLED_STORAGE_BYTES);
         let stored = set(
@@ -517,7 +521,7 @@ fn a_string_key_through_the_store_obeys_the_ownership_rule() {
         free_fillers(fillers);
         assert!(!stored, "growth was meant to be refused");
         assert_eq!(
-            (*k3).rc.refcount,
+            crate::refcount::entity_refcount(k3),
             k3_start,
             "the refused insert kept the published key"
         );
@@ -525,7 +529,7 @@ fn a_string_key_through_the_store_obeys_the_ownership_rule() {
         assert!(ll_release(h as *mut RcHeader));
         ll_object_die(h);
         assert_eq!(
-            (*k1).rc.refcount,
+            crate::refcount::entity_refcount(k1),
             k1_start,
             "the dying array did not give its key back"
         );

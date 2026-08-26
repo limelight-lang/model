@@ -99,7 +99,7 @@ fn an_arena_string_is_left_to_the_reset() {
     let mut ctx = LLContext { arena: &mut arena };
     let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::RequestArena, b"scoped") };
     assert_eq!(
-        unsafe { (*s).rc.memory_category() },
+        unsafe { crate::refcount::entity_category(s) },
         MemoryCategory::RequestArena
     );
     assert_eq!(unsafe { LLString::bytes(s) }, b"scoped");

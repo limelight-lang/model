@@ -71,7 +71,7 @@ fn the_sever_empties_the_vector_and_hands_the_children_out() {
         "severed, so nothing is left to release twice"
     );
     assert_eq!(
-        unsafe { (*held).rc.refcount },
+        unsafe { crate::refcount::entity_refcount(held) },
         1,
         "the sever released nothing: that reference is the caller's now"
     );

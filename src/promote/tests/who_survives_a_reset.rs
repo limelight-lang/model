@@ -48,14 +48,21 @@ fn escaped_object_survives_with_exact_count_and_retained_block() {
 
     unsafe { arena_reset_full(&mut arena) };
 
-    let o = unsafe { &*obj };
     assert_eq!(
-        o.rc.memory_category(),
+        unsafe { crate::refcount::entity_category(obj) },
         MemoryCategory::GcHeap,
         "recategorized in place"
     );
-    assert_eq!(o.rc.refcount, 1, "exactly the one external reference");
-    assert_eq!(o.rc.flags & ARENA_RESET_MARK, 0, "transient mark cleared");
+    assert_eq!(
+        unsafe { crate::refcount::entity_refcount(obj) },
+        1,
+        "exactly the one external reference"
+    );
+    assert_eq!(
+        unsafe { crate::refcount::entity_flags(obj) } & ARENA_RESET_MARK,
+        0,
+        "transient mark cleared"
+    );
     assert_eq!(
         unsafe { (*block).kind.load(Ordering::Relaxed) },
         BLOCK_KIND_RETAINED
@@ -119,12 +126,12 @@ fn a_surviving_reference_box_carries_its_referent() {
     unsafe { arena_reset_full(&mut arena) };
 
     assert_eq!(
-        unsafe { (*(target as *mut RcHeader)).memory_category() },
+        unsafe { crate::refcount::entity_category(target) },
         MemoryCategory::GcHeap,
         "the referent stayed behind in the dying arena"
     );
     assert_eq!(
-        unsafe { (*(target as *mut RcHeader)).refcount },
+        unsafe { crate::refcount::entity_refcount(target) },
         1,
         "the box's slot is its one holder"
     );
@@ -149,10 +156,18 @@ fn internal_edges_survive_and_are_counted() {
     }
 
     unsafe {
-        assert_eq!((*a).rc.memory_category(), MemoryCategory::GcHeap);
-        assert_eq!((*b).rc.memory_category(), MemoryCategory::GcHeap);
-        assert_eq!((*a).rc.refcount, 1, "one external reference");
-        assert_eq!((*b).rc.refcount, 1, "one internal edge from a");
+        assert_eq!(crate::refcount::entity_category(a), MemoryCategory::GcHeap);
+        assert_eq!(crate::refcount::entity_category(b), MemoryCategory::GcHeap);
+        assert_eq!(
+            crate::refcount::entity_refcount(a),
+            1,
+            "one external reference"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(b),
+            1,
+            "one internal edge from a"
+        );
     }
 }
 
@@ -175,8 +190,12 @@ fn overwritten_slot_is_stale_and_only_the_final_target_survives() {
     }
 
     unsafe {
-        assert_eq!((*b).rc.memory_category(), MemoryCategory::GcHeap);
-        assert_eq!((*b).rc.refcount, 1, "deduplicated: one slot, one count");
+        assert_eq!(crate::refcount::entity_category(b), MemoryCategory::GcHeap);
+        assert_eq!(
+            crate::refcount::entity_refcount(b),
+            1,
+            "deduplicated: one slot, one count"
+        );
         // `a` is not a survivor at all: the second store spent its
         // escape count, and the fixpoint skips a log entry whose
         // `IS_ESCAPEE` is already clear. It dies with the arena.
@@ -205,7 +224,7 @@ fn holder_death_before_reset_neither_dangles_nor_miscounts() {
         // A escapes into two heap holders: hold-count 2.
         store_prop(&mut arena, h1, 16, a);
         store_prop(&mut arena, h2, 16, a);
-        assert_eq!((*a).rc.refcount, 2, "two heap holders");
+        assert_eq!(crate::refcount::entity_refcount(a), 2, "two heap holders");
 
         // H1 dies before reset. Its teardown drops the count (lose) and
         // frees its memory — including the slot that held A. The old
@@ -213,18 +232,26 @@ fn holder_death_before_reset_neither_dangles_nor_miscounts() {
         // 2; the counter leaves the count at exactly 1.
         assert!(crate::refcount::ll_release(h1 as *mut RcHeader));
         ll_object_die(h1);
-        assert_eq!((*a).rc.refcount, 1, "H1's death dropped the count");
+        assert_eq!(
+            crate::refcount::entity_refcount(a),
+            1,
+            "H1's death dropped the count"
+        );
 
         arena_reset_full(&mut arena);
 
         // A survived (H2 holds it), promoted with exactly one
         // reference, and no freed slot was ever dereferenced.
         assert_eq!(
-            (*a).rc.memory_category(),
+            crate::refcount::entity_category(a),
             MemoryCategory::GcHeap,
             "promoted"
         );
-        assert_eq!((*a).rc.refcount, 1, "exactly H2's reference, not two");
+        assert_eq!(
+            crate::refcount::entity_refcount(a),
+            1,
+            "exactly H2's reference, not two"
+        );
 
         // H2 dies for real: A cascades to teardown.
         assert!(crate::refcount::ll_release(h2 as *mut RcHeader));

@@ -23,8 +23,8 @@ fn a_stored_key_is_consumed_and_a_dropped_key_comes_back() {
     let b = mk(b"key");
     assert_ne!(a, b, "two distinct entities, or neither arm is measured");
     let e = hash_arr();
-    let a0 = unsafe { (*a).rc.refcount };
-    let b0 = unsafe { (*b).rc.refcount };
+    let a0 = unsafe { crate::refcount::entity_refcount(a) };
+    let b0 = unsafe { crate::refcount::entity_refcount(b) };
 
     unsafe {
         crate::refcount::ll_retain(a as *mut RcHeader);
@@ -45,9 +45,13 @@ fn a_stored_key_is_consumed_and_a_dropped_key_comes_back() {
         assert_eq!(key, a, "the entry kept its original key entity");
         assert!(!ll_release(key as *mut RcHeader), "the table's reference");
 
-        assert_eq!((*a).rc.refcount, a0, "the stored key's references balance");
         assert_eq!(
-            (*b).rc.refcount,
+            crate::refcount::entity_refcount(a),
+            a0,
+            "the stored key's references balance"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(b),
             b0,
             "the overwriting key's references balance"
         );
@@ -103,7 +107,7 @@ fn an_arena_tables_key_release_is_owed_by_the_reset_log() {
         // `drop_ref` knows that where a bare release would not.
         crate::memory::barrier::drop_ref(MemoryCategory::RequestArena, k as *mut RcHeader);
         assert_eq!(
-            (*key).rc.refcount,
+            crate::refcount::entity_refcount(key),
             2,
             "the log still holds its one reference"
         );
@@ -114,7 +118,7 @@ fn an_arena_tables_key_release_is_owed_by_the_reset_log() {
 
     unsafe {
         assert_eq!(
-            (*key).rc.refcount,
+            crate::refcount::entity_refcount(key),
             1,
             "the reset's one release balanced the barrier's one record"
         );

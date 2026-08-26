@@ -113,7 +113,7 @@ unsafe fn two_holders(
 
 fn free(s: *mut LLString) {
     unsafe {
-        (*s).rc.refcount = 0;
+        crate::refcount::set_header_refcount(s as *mut crate::refcount::RcHeader, 0);
         ll_free(s as *mut u8);
     }
 }

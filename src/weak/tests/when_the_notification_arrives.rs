@@ -98,7 +98,10 @@ fn a_resurrected_object_keeps_its_weak_state() {
 
         assert!(unsafe { ll_release(obj as *mut RcHeader) });
         unsafe { crate::object::ll_object_die(obj) };
-        assert_ne!(unsafe { (*obj).rc.flags } & DESTRUCTOR_RAN, 0);
+        assert_ne!(
+            unsafe { crate::refcount::entity_flags(obj) } & DESTRUCTOR_RAN,
+            0
+        );
         assert_eq!(
             unsafe { ll_weakref_get(w) },
             obj as *mut RcHeader,

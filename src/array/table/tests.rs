@@ -137,7 +137,7 @@ impl Drop for Owned {
             // them back themselves, and teardown would release them a
             // second time. The count goes to zero first because that
             // is what a slot reaching the free list must read.
-            (*self.0).rc.refcount = 0;
+            crate::refcount::set_header_refcount(self.0 as *mut crate::refcount::RcHeader, 0);
             crate::memory::stdapi::ll_free(self.0 as *mut u8);
         }
     }

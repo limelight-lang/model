@@ -48,12 +48,12 @@ fn a_shared_array_separates_into_a_copy_of_its_own() {
     );
     // Three each: this test, the source array, and the copy.
     assert_eq!(
-        unsafe { (*(key as *mut RcHeader)).refcount },
+        unsafe { crate::refcount::entity_refcount(key) },
         3,
         "the copy did not take a reference to the key"
     );
     assert_eq!(
-        unsafe { (*(value as *mut RcHeader)).refcount },
+        unsafe { crate::refcount::entity_refcount(value) },
         3,
         "the copy did not take a reference to the element"
     );
@@ -106,8 +106,8 @@ fn separation_copies_the_order_and_shares_the_children() {
         crate::array::testing::insert(src, Key::Int(2), Value::int(20));
     }
 
-    let before_key = unsafe { (*(key as *mut RcHeader)).refcount };
-    let before_child = unsafe { (*(child as *mut RcHeader)).refcount };
+    let before_key = unsafe { crate::refcount::entity_refcount(key) };
+    let before_child = unsafe { crate::refcount::entity_refcount(child) };
 
     let dst = unsafe {
         separate(
@@ -134,8 +134,8 @@ fn separation_copies_the_order_and_shares_the_children() {
         assert_eq!(order, vec![1, -1, 2]);
 
         // The children are shared, each counted once more.
-        assert_eq!((*(key as *mut RcHeader)).refcount, before_key + 1);
-        assert_eq!((*(child as *mut RcHeader)).refcount, before_child + 1);
+        assert_eq!(crate::refcount::entity_refcount(key), before_key + 1);
+        assert_eq!(crate::refcount::entity_refcount(child), before_child + 1);
 
         // Writing the copy does not touch the source.
         crate::array::testing::insert(dst, Key::Int(1), Value::int(999));
@@ -244,7 +244,7 @@ fn an_arena_array_taken_by_a_heap_holder_is_copied_out_with_its_children() {
         unsafe { (*crate::object::Object::prop_at(holder, 16)).entity_ptr() } as *mut LLArray;
     assert_ne!(stored, src, "the heap slot took the arena array itself");
     assert_eq!(
-        unsafe { (*stored).rc.memory_category() },
+        unsafe { crate::refcount::entity_category(stored) },
         MemoryCategory::GcHeap,
         "the copy did not land in the heap"
     );

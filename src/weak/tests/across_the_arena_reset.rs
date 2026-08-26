@@ -46,15 +46,17 @@ fn a_promoted_survivor_keeps_its_weak_state_across_reset() {
     // A longer-lived holder takes the object: hold-count 1, logged —
     // the store barrier's escape protocol, done by hand here.
     unsafe {
-        (*obj).rc.flags |= crate::refcount::IS_ESCAPEE;
-        (*obj).rc.refcount = 1;
+        crate::refcount::update_header_flags(obj as *mut RcHeader, |f| {
+            f | crate::refcount::IS_ESCAPEE
+        });
+        crate::refcount::set_header_refcount(obj as *mut RcHeader, 1);
         arena.log_escapee(obj as *mut RcHeader);
     }
 
     unsafe { crate::promote::arena_reset_full(&mut arena) };
 
     assert_eq!(
-        unsafe { (*obj).rc.memory_category() },
+        unsafe { crate::refcount::entity_category(obj) },
         MemoryCategory::GcHeap,
         "the escapee was promoted in place"
     );

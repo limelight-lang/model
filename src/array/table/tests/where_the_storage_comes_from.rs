@@ -172,7 +172,7 @@ fn a_table_disposed_on_another_thread_leaves_the_owners_block_alive() {
                 carried.0,
                 crate::array::entity::category_of(carried.0),
             );
-            (*carried.0).rc.refcount = 0;
+            crate::refcount::set_header_refcount(carried.0 as *mut crate::refcount::RcHeader, 0);
             crate::memory::stdapi::ll_free(carried.0 as *mut u8);
         }
     })

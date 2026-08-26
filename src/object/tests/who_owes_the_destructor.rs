@@ -16,7 +16,10 @@ fn arena_object_with_destructor_is_tracked_and_reset_delivers_it() {
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
     let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
-    assert_ne!(unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING, 0);
+    assert_ne!(
+        unsafe { crate::refcount::entity_flags(obj) } & DESTRUCTOR_PENDING,
+        0
+    );
 
     let mut delivered = Vec::new();
     arena.reset(|o| delivered.push(o));
@@ -41,7 +44,10 @@ fn an_unconstructed_object_owes_no_destructor() {
     // The factory alone: no `object_constructed` call, as for a
     // constructor that raised.
     let obj = unsafe { ll_object_new(&mut ctx, cls, MemoryCategory::RequestArena) };
-    assert_eq!(unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING, 0);
+    assert_eq!(
+        unsafe { crate::refcount::entity_flags(obj) } & DESTRUCTOR_PENDING,
+        0
+    );
 
     let mut delivered = Vec::new();
     arena.reset(|o| delivered.push(o));
@@ -117,7 +123,7 @@ fn a_refused_destructor_record_fails_the_construction() {
 
     assert!(!registered, "the record could not be written");
     assert_eq!(
-        unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING,
+        unsafe { crate::refcount::entity_flags(obj) } & DESTRUCTOR_PENDING,
         0,
         "so the object owes no destructor"
     );
@@ -129,7 +135,7 @@ fn a_refused_destructor_record_fails_the_construction() {
         "the refusal was the pool's, not the arena's remaining bytes"
     );
     assert_ne!(
-        unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING,
+        unsafe { crate::refcount::entity_flags(obj) } & DESTRUCTOR_PENDING,
         0,
         "and now the object owes one"
     );

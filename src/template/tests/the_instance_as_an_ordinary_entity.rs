@@ -24,7 +24,7 @@ fn the_walker_sees_a_templates_values() {
         let t = unsafe { ll_template_new(ctx, cls, &*shape, &held, MemoryCategory::GcHeap) };
         assert!(!t.is_null());
         assert_eq!(
-            unsafe { (*(s as *mut RcHeader)).refcount },
+            unsafe { crate::refcount::entity_refcount(s) },
             2,
             "the template took its own reference, the caller kept its own"
         );
@@ -44,7 +44,7 @@ fn the_walker_sees_a_templates_values() {
             "the template dies"
         );
         unsafe { crate::object::ll_entity_die(t as *mut RcHeader) };
-        assert_eq!(unsafe { (*(s as *mut RcHeader)).refcount }, 1);
+        assert_eq!(unsafe { crate::refcount::entity_refcount(s) }, 1);
         unsafe { ll_release(s as *mut RcHeader) };
     });
 }
@@ -63,7 +63,7 @@ fn a_dying_template_releases_what_it_held() {
         unsafe { ll_retain(s as *mut RcHeader) };
         let held = [Value::entity(Tag::String, s as *mut RcHeader)];
         let t = unsafe { ll_template_new(ctx, cls, &*shape, &held, MemoryCategory::GcHeap) };
-        assert_eq!(unsafe { (*(s as *mut RcHeader)).refcount }, 3);
+        assert_eq!(unsafe { crate::refcount::entity_refcount(s) }, 3);
 
         assert!(
             unsafe { ll_release(t as *mut RcHeader) },
@@ -71,7 +71,7 @@ fn a_dying_template_releases_what_it_held() {
         );
         unsafe { crate::object::ll_entity_die(t as *mut RcHeader) };
         assert_eq!(
-            unsafe { (*(s as *mut RcHeader)).refcount },
+            unsafe { crate::refcount::entity_refcount(s) },
             2,
             "the template's own reference went back"
         );

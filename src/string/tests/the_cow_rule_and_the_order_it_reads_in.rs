@@ -43,7 +43,7 @@ fn an_immortal_string_separates_although_its_count_says_one() {
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
     let name = crate::intern::intern_str("Order") as *mut LLString;
-    assert_eq!(unsafe { (*name).rc.refcount }, 1);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(name) }, 1);
 
     let copy = unsafe {
         crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, name as *mut RcHeader)
@@ -51,7 +51,7 @@ fn an_immortal_string_separates_although_its_count_says_one() {
     assert_ne!(copy as usize, name as usize);
     assert_eq!(unsafe { string_bytes(copy) }, b"Order");
     assert_eq!(
-        unsafe { (*copy).rc.memory_category() },
+        unsafe { crate::refcount::entity_category(copy) },
         MemoryCategory::GcHeap,
         "a heap holder gets a heap copy"
     );
@@ -72,7 +72,7 @@ fn an_immortal_string_separates_although_its_count_says_one() {
         )
     } as *mut LLString;
     assert_eq!(
-        unsafe { (*local).rc.memory_category() },
+        unsafe { crate::refcount::entity_category(local) },
         MemoryCategory::RequestArena,
         "the holder's category decides, not the original's"
     );
@@ -99,10 +99,10 @@ fn a_long_lived_string_separates_although_its_count_is_real() {
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
     let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::LongLived, b"cached") };
-    assert_eq!(unsafe { (*s).rc.refcount }, 1);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(s) }, 1);
     unsafe { crate::refcount::ll_retain(s as *mut RcHeader) };
     assert_eq!(
-        unsafe { (*s).rc.refcount },
+        unsafe { crate::refcount::entity_refcount(s) },
         2,
         "counted, unlike an immortal entity"
     );
@@ -114,7 +114,7 @@ fn a_long_lived_string_separates_although_its_count_is_real() {
     assert_ne!(copy as usize, s as usize, "sole holder and still a copy");
     assert_eq!(unsafe { string_bytes(copy) }, b"cached");
     assert_eq!(
-        unsafe { (*copy).rc.memory_category() },
+        unsafe { crate::refcount::entity_category(copy) },
         MemoryCategory::GcHeap
     );
 
@@ -195,7 +195,7 @@ fn separating_then_storing_leaves_exactly_one_holder_on_each_side() {
         ));
     };
 
-    assert_eq!(unsafe { (*original).rc.refcount }, 2);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(original) }, 2);
 
     let copy = unsafe { crate::object::ll_cow_separate(&mut ctx, MemoryCategory::GcHeap, slot) };
     assert_ne!(copy as usize, original as usize, "two holders, so a copy");
@@ -210,9 +210,13 @@ fn separating_then_storing_leaves_exactly_one_holder_on_each_side() {
         crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, original as *mut RcHeader);
     }
 
-    assert_eq!(unsafe { (*copy).refcount }, 1, "the slot alone holds it");
     assert_eq!(
-        unsafe { (*original).rc.refcount },
+        unsafe { crate::refcount::entity_refcount(copy) },
+        1,
+        "the slot alone holds it"
+    );
+    assert_eq!(
+        unsafe { crate::refcount::entity_refcount(original) },
         1,
         "and the local alone holds the original"
     );

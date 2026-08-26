@@ -96,7 +96,7 @@ fn deep_copy_body() {
     let mut level = copy;
     for depth in 0..DEPTH {
         assert_eq!(
-            unsafe { (*level).rc.memory_category() },
+            unsafe { crate::refcount::entity_category(level) },
             MemoryCategory::GcHeap,
             "level {depth} did not leave the arena"
         );

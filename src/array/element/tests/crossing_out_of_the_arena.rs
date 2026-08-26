@@ -180,7 +180,11 @@ fn a_promoted_array_takes_its_next_storage_from_the_heap() {
     // What promotion does to a survivor, and the whole of what the
     // write needs from it: clear the category bits, which leaves 00 —
     // the GC heap (`promote.rs`).
-    unsafe { (*a).rc.flags &= !crate::refcount::MEMORY_CATEGORY_MASK };
+    unsafe {
+        crate::refcount::update_header_flags(a as *mut crate::refcount::RcHeader, |f| {
+            f & !crate::refcount::MEMORY_CATEGORY_MASK
+        })
+    };
 
     let class = ClassBuilder::new("PromotedHolder").prop("a", true).build();
     let h = unsafe { new_constructed(context_ptr, class, MemoryCategory::GcHeap) };

@@ -321,7 +321,7 @@ introduce two constants nobody reads.
         deciding consequence the Sage named is S38.0: a compile error is the
         only detector this crate has that fires before the racing code exists.
         What it accepts losing is the fields as public API, unsurveyed.
-- [ ] S31.7 Convert the fixtures to the narrow shorthand
+- [x] S31.7 Convert the fixtures to the narrow shorthand
       done: a `#[cfg(test)]` shorthand in `refcount` takes a raw pointer and
         loads narrowly, and all 187 accesses in the 37 test files outside
         `refcount`'s own go through it or through the existing helpers, the
@@ -332,6 +332,17 @@ introduce two constants nobody reads.
       handoff: expand before migrate (`skills`, 23.6): this step leaves the
         production form alone, so nothing is red in the middle of it. The
         counting is in `dev/DECISIONS.md`, "`RcHeader`'s fields go private".
+      handoff: closed 2026-08-26. Three shorthands — `entity_refcount`,
+        `entity_flags`, `entity_category`, generic over the entity type
+        because `RcHeader` is at offset 0 of every one — took 179 sites; the
+        eight writes went to `set_header_refcount` and `update_header_flags`
+        by hand. Nought remains outside `refcount`'s own tests. The one trap:
+        a rewrite keyed on the field name converted four `(*cls).flags` reads
+        of a **class descriptor**, whose `flags` is at offset 0, not 4 — two
+        tests went red at once and they now call `Class::flags_of`. Gate:
+        suite 460 three times, `debug-journal` 466 three times,
+        `hash-folding` 460, release, benches, `fmt --check`, 42 doc warnings
+        and no unresolved link; test list byte-identical.
 - [ ] S31.8 Take the fields private and re-aim the guard
       done: `refcount` and its child modules are the only readers of `refcount`
         and `flags` — the modifier is gone, not narrowed — and the crate builds

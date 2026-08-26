@@ -18,7 +18,7 @@ fn an_arena_dynamic_string_leaves_both_halves_to_the_reset() {
     let mut ctx = LLContext { arena: &mut arena };
     let s = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::RequestArena, b"scoped", 0) };
     assert_eq!(
-        unsafe { (*s).rc.memory_category() },
+        unsafe { crate::refcount::entity_category(s) },
         MemoryCategory::RequestArena
     );
     assert!(unsafe { ll_string_append(&mut ctx, s, b" and grown") });
@@ -65,7 +65,7 @@ fn an_escaped_arena_string_carries_its_payload_through_the_reset() {
 
     let s = heap_slot as *mut LLStringDynamic;
     assert_eq!(
-        unsafe { (*s).rc.memory_category() },
+        unsafe { crate::refcount::entity_category(s) },
         MemoryCategory::GcHeap,
         "promoted"
     );

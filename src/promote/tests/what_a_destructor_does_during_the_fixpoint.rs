@@ -59,17 +59,17 @@ fn destructor_created_escape_survives_already_destructed() {
     assert_eq!(DTORS.load(Ordering::Relaxed), 1);
     unsafe {
         assert_eq!(
-            (*obj).rc.memory_category(),
+            crate::refcount::entity_category(obj),
             MemoryCategory::GcHeap,
             "the destructor-created escape was caught by the fixpoint"
         );
-        assert_eq!((*obj).rc.refcount, 1);
+        assert_eq!(crate::refcount::entity_refcount(obj), 1);
         assert_ne!(
-            (*obj).rc.flags & DESTRUCTOR_RAN,
+            crate::refcount::entity_flags(obj) & DESTRUCTOR_RAN,
             0,
             "survives already-destructed"
         );
-        assert_ne!((*obj).rc.flags & DESTRUCTOR_PENDING, 0);
+        assert_ne!(crate::refcount::entity_flags(obj) & DESTRUCTOR_PENDING, 0);
     }
 }
 
@@ -141,16 +141,20 @@ fn dirty_destructor_storing_into_a_survivor_traces_the_new_child() {
     assert!(!node.is_null(), "the destructor created the child");
     unsafe {
         assert_eq!(
-            (*s).rc.memory_category(),
+            crate::refcount::entity_category(s),
             MemoryCategory::GcHeap,
             "survivor promoted"
         );
         assert_eq!(
-            (*node).rc.memory_category(),
+            crate::refcount::entity_category(node),
             MemoryCategory::GcHeap,
             "the destructor-added child was traced and promoted, not left to die with the arena"
         );
-        assert_eq!((*node).rc.refcount, 1, "held once, by the survivor's slot");
+        assert_eq!(
+            crate::refcount::entity_refcount(node),
+            1,
+            "held once, by the survivor's slot"
+        );
 
         // Teardown cascades holder → s → node with no dangling.
         assert!(crate::refcount::ll_release(holder as *mut RcHeader));
@@ -223,7 +227,11 @@ fn a_destructor_may_release_a_cow_survivor_during_the_fixpoint() {
         // The creation reference goes, as it would at the end of the
         // statement that built the string.
         assert!(!crate::refcount::ll_release(s));
-        assert_eq!((*s).refcount, 2, "both holders, counted as COW demands");
+        assert_eq!(
+            crate::refcount::entity_refcount(s),
+            2,
+            "both holders, counted as COW demands"
+        );
 
         // Keeper escapes: it survives, and the string with it. Dropper
         // is unheld, so its destructor runs during the fixpoint.
@@ -235,12 +243,12 @@ fn a_destructor_may_release_a_cow_survivor_during_the_fixpoint() {
 
     unsafe {
         assert_eq!(
-            (*s).memory_category(),
+            crate::refcount::entity_category(s),
             MemoryCategory::GcHeap,
             "the string survived with its keeper"
         );
         assert_eq!(
-            (*s).refcount,
+            crate::refcount::entity_refcount(s),
             1,
             "one surviving holder: the dead one never released twice"
         );
@@ -328,11 +336,11 @@ fn a_holder_acquired_after_promotion_keeps_its_count() {
 
     unsafe {
         assert_eq!(
-            (*s).refcount,
+            crate::refcount::entity_refcount(s),
             2,
             "the keeper's slot and the one the destructor added"
         );
-        assert_eq!((*s).memory_category(), MemoryCategory::GcHeap);
+        assert_eq!(crate::refcount::entity_category(s), MemoryCategory::GcHeap);
     }
 }
 
@@ -393,7 +401,7 @@ fn release_log_grown_during_the_drain_is_still_drained() {
         // B was retained by the store and released once by the re-drained
         // log: back to the creator's single reference (not leaked at 2).
         assert_eq!(
-            (*b).rc.refcount,
+            crate::refcount::entity_refcount(b),
             1,
             "B's late release-log entry was drained"
         );

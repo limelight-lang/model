@@ -11,10 +11,13 @@ fn a_fresh_array_is_a_cow_entity_of_the_array_kind_at_count_one() {
     let a = arr();
     assert!(!a.is_null());
     unsafe {
-        assert_eq!((*a).rc.refcount, 1);
-        assert_eq!((*a).rc.flags & crate::refcount::COW, crate::refcount::COW);
+        assert_eq!(crate::refcount::entity_refcount(a), 1);
         assert_eq!(
-            (*a).rc.flags & crate::refcount::ENTITY_KIND_MASK,
+            crate::refcount::entity_flags(a) & crate::refcount::COW,
+            crate::refcount::COW
+        );
+        assert_eq!(
+            crate::refcount::entity_flags(a) & crate::refcount::ENTITY_KIND_MASK,
             EntityKind::Array.to_flags()
         );
         assert_eq!(category_of(a), MemoryCategory::GcHeap);

@@ -88,12 +88,12 @@ fn an_arena_escapee_loses_its_hold_count_at_thread_exit() {
         ll_static_block_register(block, holder_layout);
     }
 
-    let held = unsafe { (*(obj as *mut RcHeader)).refcount };
+    let held = unsafe { crate::refcount::entity_refcount(obj) };
     assert!(held >= 1, "the static's store is an escape hold");
 
     run_thread_exit_teardown();
     assert_eq!(
-        unsafe { (*(obj as *mut RcHeader)).refcount },
+        unsafe { crate::refcount::entity_refcount(obj) },
         held - 1,
         "thread exit is the escape hold-count's other decrement point"
     );

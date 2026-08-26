@@ -22,7 +22,10 @@ fn a_dying_reference_releases_its_referent() {
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
     let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
-    assert_ne!(unsafe { (*obj).rc.flags } & DESTRUCTOR_PENDING, 0);
+    assert_ne!(
+        unsafe { crate::refcount::entity_flags(obj) } & DESTRUCTOR_PENDING,
+        0
+    );
     let r = ll_reference_new();
     // The box's slot takes over the object's initial reference.
     unsafe { (*r).value = Value::entity(Tag::Object, obj as *mut RcHeader) };

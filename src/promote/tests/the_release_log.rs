@@ -22,7 +22,7 @@ fn survivor_holding_heap_entity_compensates_the_release_log() {
     unsafe {
         // Heap entity into an arena container: retain + release log.
         store_prop(&mut arena, keeper, 16, cfg);
-        assert_eq!((*cfg).rc.refcount, 2);
+        assert_eq!(crate::refcount::entity_refcount(cfg), 2);
         // The keeper escapes.
         store_prop(&mut arena, holder, 16, keeper);
         arena_reset_full(&mut arena);
@@ -30,7 +30,7 @@ fn survivor_holding_heap_entity_compensates_the_release_log() {
 
     // Log's -1 and the survivor compensation +1 cancel out: the
     // keeper legitimately holds cfg.
-    assert_eq!(unsafe { (*cfg).rc.refcount }, 2);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(cfg) }, 2);
 
     // Keeper dies for real, and it dies **through its holder**: the
     // `Slot` object's property is the reference keeping it alive, so
@@ -50,7 +50,7 @@ fn survivor_holding_heap_entity_compensates_the_release_log() {
     }
 
     assert_eq!(
-        unsafe { (*cfg).rc.refcount },
+        unsafe { crate::refcount::entity_refcount(cfg) },
         1,
         "exactly one release at real death"
     );

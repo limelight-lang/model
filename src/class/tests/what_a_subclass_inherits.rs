@@ -63,7 +63,7 @@ fn a_subclass_inherits_the_group_and_the_flag_that_finds_it() {
 
     unsafe {
         assert_ne!(
-            (*child).flags & CLASS_OUTSIDE_CELLS,
+            crate::class::Class::flags_of(child) & CLASS_OUTSIDE_CELLS,
             0,
             "the subclass lost the flag, so nothing would look for the group"
         );
@@ -130,9 +130,12 @@ fn a_subclass_that_declares_its_own_keeps_it() {
 
     unsafe {
         assert_eq!((*child).dispose, own_dispose as *const ());
-        assert_ne!((*child).flags & CLASS_OUTSIDE_CELLS, 0);
+        assert_ne!(
+            crate::class::Class::flags_of(child) & CLASS_OUTSIDE_CELLS,
+            0
+        );
         assert_eq!(
-            (*parent).flags & CLASS_OUTSIDE_CELLS,
+            crate::class::Class::flags_of(parent) & CLASS_OUTSIDE_CELLS,
             0,
             "the parent gained a flag from its own subclass"
         );
@@ -154,7 +157,7 @@ fn a_class_that_declares_neither_carries_the_default_and_no_group() {
             (*cls).dispose,
             crate::object::ll_default_dispose as *const ()
         );
-        assert_eq!((*cls).flags & CLASS_OUTSIDE_CELLS, 0);
+        assert_eq!(crate::class::Class::flags_of(cls) & CLASS_OUTSIDE_CELLS, 0);
         assert!((*cls).outside.is_null());
         assert!(Class::outside_cells(cls).is_none());
     }

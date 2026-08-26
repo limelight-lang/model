@@ -47,7 +47,7 @@ fn a_canonical_numeric_string_finds_what_the_integer_key_stored() {
 
     unsafe {
         crate::array::entity::dispose_storage(a, category_of(a));
-        (*a).rc.refcount = 0;
+        crate::refcount::set_header_refcount(a as *mut crate::refcount::RcHeader, 0);
         ll_free(a as *mut u8);
     }
 }

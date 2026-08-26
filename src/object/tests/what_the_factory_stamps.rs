@@ -15,10 +15,17 @@ fn new_stamps_header_class_and_null_props() {
     with_ctx(|ctx| {
         let obj = unsafe { new_constructed(ctx, cls, MemoryCategory::RequestArena) };
         let o = unsafe { &mut *obj };
-        assert_eq!(o.rc.refcount, 1);
-        assert_eq!(o.rc.memory_category(), MemoryCategory::RequestArena);
+        assert_eq!(unsafe { crate::refcount::entity_refcount(obj) }, 1);
+        assert_eq!(
+            unsafe { crate::refcount::entity_category(obj) },
+            MemoryCategory::RequestArena
+        );
         assert_eq!(o.class, cls);
-        assert_eq!(o.rc.flags & DESTRUCTOR_PENDING, 0, "no destructor declared");
+        assert_eq!(
+            unsafe { crate::refcount::entity_flags(obj) } & DESTRUCTOR_PENDING,
+            0,
+            "no destructor declared"
+        );
         let x = unsafe { Object::prop_at(obj, 16).read() };
         assert_eq!(x.tag(), Tag::Null);
     });
@@ -69,7 +76,11 @@ fn defaultless_box_slot_lives_the_undef_lifecycle() {
             Value::entity(crate::value::Tag::Object, child as *mut RcHeader),
         ));
         assert!(!bare.read().is_undef());
-        assert_eq!((*child).rc.refcount, 2, "creation + the slot");
+        assert_eq!(
+            crate::refcount::entity_refcount(child),
+            2,
+            "creation + the slot"
+        );
         let mut children = 0;
         for_each_counted_child(obj, |_| children += 1);
         assert_eq!(children, 1, "a stored entity is walked again");
@@ -85,7 +96,11 @@ fn defaultless_box_slot_lives_the_undef_lifecycle() {
             Value::undef(),
         ));
         assert!(bare.read().is_undef(), "unset returns the slot to undef");
-        assert_eq!((*child).rc.refcount, 1, "the slot's reference released");
+        assert_eq!(
+            crate::refcount::entity_refcount(child),
+            1,
+            "the slot's reference released"
+        );
         let mut children = 0;
         for_each_counted_child(obj, |_| children += 1);
         assert_eq!(children, 0);
@@ -150,7 +165,11 @@ fn bitmap_tracked_raw_slots_live_the_init_lifecycle() {
             child as *mut RcHeader,
         ));
         Object::init_bit_set(obj, p_bit);
-        assert_eq!((*child).rc.refcount, 2, "creation + the slot");
+        assert_eq!(
+            crate::refcount::entity_refcount(child),
+            2,
+            "creation + the slot"
+        );
 
         // A walked child now; the bitmap never affects the trace.
         let mut children = 0;
@@ -171,7 +190,11 @@ fn bitmap_tracked_raw_slots_live_the_init_lifecycle() {
             Object::init_bit_test(obj, p_bit),
             "null is a value, still initialized"
         );
-        assert_eq!((*child).rc.refcount, 1, "the slot's reference released");
+        assert_eq!(
+            crate::refcount::entity_refcount(child),
+            1,
+            "the slot's reference released"
+        );
 
         // unset($obj->p) / unset($obj->n): back to uninitialized. The
         // pointer slot is already NULL; a raw slot has only the bit.
@@ -223,7 +246,7 @@ fn abi_object_new_takes_the_category_as_u32() {
         // As generated code passes it: the category is a raw u32.
         let obj = unsafe { ll_object_new_abi(ctx, cls, MemoryCategory::RequestArena as u32) };
         assert_eq!(
-            unsafe { (*obj).rc.memory_category() },
+            unsafe { crate::refcount::entity_category(obj) },
             MemoryCategory::RequestArena
         );
     });
