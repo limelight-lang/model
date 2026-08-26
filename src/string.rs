@@ -12,10 +12,11 @@
 //! bits, so "is a string" stays one mask test over the pair
 //! ([`crate::refcount::is_string`]).
 //!
-//! **Layout and copy-on-write are two facts, and the header keeps two
-//! bits.** [`COW`] says the value separates when a second holder writes,
-//! which is also what makes an arena entity counted and what makes it
-//! copied rather than held when it escapes.
+//! **Layout and copy-on-write are two facts, and the header keeps them
+//! apart.** The kind code says where the bytes live; [`COW`] says the
+//! value separates when a second holder writes, which is also what makes
+//! an arena entity counted and what makes it copied rather than held when
+//! it escapes.
 //!
 //! `len` is 32 bits, so a string holds at most [`MAX_LEN`] bytes
 //! (`rfc/model/strings.md`, "A string holds at most 4 GiB").
@@ -36,11 +37,10 @@ use crate::refcount::{
 /// True when this string entity keeps its bytes outside the body, behind
 /// `data`, rather than inline after the fixed fields.
 ///
-/// **The code means "outside the body", whatever put them there** — a
-/// compiler proof of single ownership or a size past the category's slot
-/// limit — and not "growable": the second sort keeps [`COW`], so an
-/// append may not write into it in place (`rfc/model/strings.md`, "Two
-/// Layouts Behind `StringInterface`").
+/// The kind code alone answers it, so a `true` says where the bytes are
+/// and nothing about who may write into the spare capacity behind them:
+/// what the code does and does not mean is
+/// [`EntityKind::StringDynamic`]'s own contract.
 #[inline]
 pub(crate) fn bytes_are_out_of_line(flags: u32) -> bool {
     flags & ENTITY_KIND_MASK == EntityKind::StringDynamic.to_flags()

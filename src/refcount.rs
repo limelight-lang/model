@@ -14,8 +14,7 @@
 //! collector thread as an accelerator over the same headers
 //! (`rfc/model/gc/rc-cycle.md`, "What it is" and "Concurrency").
 //!
-//! **Flags bits 15 and 16-31 are unclaimed.** Bit 15 came free when the
-//! string's layout became a kind code; the region above is the
+//! **Flags bits 15 and 16-31 are unclaimed.** The region above 15 is the
 //! collector's own, laid out as epoch at 16-17, maturation age at 18-19
 //! and reserve at 20-23. Until the step that lays each one lands,
 //! nothing reads or writes them, and
@@ -290,9 +289,10 @@ impl EntityKind {
     /// elements and string keys, and a ReferenceBox's one Value.
     /// `ll_entity_die` sends `Lazy` through `ll_object_die` and
     /// `cells::trace_cells` strides it like an object, which is why it
-    /// answers yes before any factory stamps it (`dev/DECISIONS.md`,
-    /// 2026-08-07). A string, an FFI Box and a weak cell own nothing a
-    /// ring can pass through.
+    /// answers yes before any factory stamps it (`dev/DECISIONS.md`, "the
+    /// candidate gate is a set of kinds, not a mask over their codes").
+    /// A string, an FFI Box and a weak cell own nothing a ring can pass
+    /// through.
     ///
     /// **This is the classification; [`kind_may_close_a_cycle`] is the
     /// test the release path runs**, and the two agree by the assertion
@@ -345,9 +345,11 @@ const _: () = {
 /// word rather than the entity, because every caller holds it in a
 /// register already.
 ///
-/// **No caller since 2026-08-26**: the release path stopped enrolling
-/// when the two collectors went. S31.3 gives it back as one mask over
-/// five conditions, of which the kind is the second (`PLAN.md`).
+/// **No production caller**: the release path reads this same bit inside
+/// [`ENROLMENT_GATE_MASK`], which answers the kind clause and four others
+/// in one test. Here the kind clause stands alone, and
+/// `refcount::tests::the_header_the_compiler_shares` is what holds it to
+/// [`EntityKind::closes_a_ring`].
 #[inline]
 pub fn kind_may_close_a_cycle(flags: u32) -> bool {
     flags & KIND_ABOVE_THE_RING_RESERVE == 0
@@ -422,9 +424,9 @@ compile_error!(
 
 /// The 8-byte header at offset 0 of every heap entity.
 ///
-/// Aligned to 8: the factory publishes it as one 8-byte store, and the
-/// wide header helpers are relaxed atomics on the whole word — both need
-/// the address 8-aligned. Every real entity already was (the smallest
+/// Aligned to 8: the factory publishes it as one 8-byte relaxed-atomic
+/// store, which needs the address 8-aligned; the narrow accesses that
+/// follow it need 4 and 2. Every real entity already was (the smallest
 /// heap slot is 16 bytes); the attribute makes stack-built headers in
 /// tests honest too.
 #[repr(C, align(8))]
@@ -766,13 +768,8 @@ pub(crate) unsafe fn set_header_refcount(header: *mut RcHeader, value: u32) {
 
 /// The count and the mutator's flags together, for a caller that wants
 /// both — [`cow_separation_needed`] is the predicate over the pair.
-///
-/// **Two narrow loads.** It was one 8-byte load, on a measurement that
-/// priced it against two narrow ones (`dev/BENCHMARKS.md`, "the
-/// barrier's header reads go narrow"); what that measurement priced is
-/// no longer on offer, because an 8-byte load at +0 overlaps the
-/// collector's byte store at +6 without covering it. The cost of the
-/// second load on this path is unmeasured.
+/// [`mutator_load_header`]'s two narrow loads; the cost of the second is
+/// unmeasured.
 #[inline]
 pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
     unsafe { mutator_load_header(header) }

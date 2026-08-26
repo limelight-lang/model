@@ -255,8 +255,8 @@ impl Class {
     /// Four bytes at the field's offset, through the pointer. A shared
     /// reference would read the same word and assert more on the way:
     /// `size_of::<Class>()` bytes dereferenceable and `cls` non-null,
-    /// where the raw read needs four bytes and faults on null. The five
-    /// callers document neither.
+    /// where the raw read needs four bytes and faults on null. No call
+    /// site documents either.
     ///
     /// Nothing here is a concurrency rule — a descriptor is written once
     /// by [`ClassBuilder::build`] before anything can reach it and is

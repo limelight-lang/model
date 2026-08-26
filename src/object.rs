@@ -272,7 +272,7 @@ pub unsafe fn object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool 
     }
 
     // Post-publish header write: races a collector's byte stores into
-    // the same word, so it goes through the relaxed word helper.
+    // the same word, so it goes through the relaxed flags helper.
     unsafe {
         crate::refcount::update_header_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_PENDING)
     };
@@ -560,7 +560,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
     // not counted, so a $this reference there is a no-op anyway.
 
     {
-        // Header traffic through the relaxed word helpers: a collector
+        // Header traffic through the relaxed header helpers: a collector
         // reads this header concurrently, and the guard's transient
         // `rc 0 → 1 → 0` is visible to it. A count read high is the safe
         // direction — the entity reads as externally referenced and
@@ -704,9 +704,9 @@ pub(crate) unsafe fn header_category(header: *const RcHeader) -> MemoryCategory 
 /// unregisters from the weak table; a string and an array free the
 /// body they own outside their own slot. Box gains its arm when the
 /// crate can produce one (FFI), and reaching it today is a bug, not a
-/// leak policy; that arm owes the `HAS_WEAK_REFERENCES` weak-notify test — a Box is a
-/// legal `WeakReference` target (`rfc/model/weak-references.md`,
-/// "Death notification").
+/// leak policy; that arm owes the `HAS_WEAK_REFERENCES` weak-notify
+/// test — a Box is a legal `WeakReference` target
+/// (`rfc/model/weak-references.md`, "Death notification").
 ///
 /// # Safety
 /// `entity` must be a live entity whose count just reached zero (or a
@@ -726,15 +726,15 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     // What a dying enrolled slot owes a collector is done here, for
     // every kind the gate admits, so a kind that gains counted slots
     // later inherits it without a call site of its own
-    // (`refcount::EntityKind::closes_a_ring`). An array runs no `dispose`, which is
-    // where an object would do it on its way past the free, so this door
-    // is the array's too — with one exception owing the same duty at its
-    // own site: a **nested** array is torn down by `array_die`'s drain
-    // and never passes here again (`array::entity::array_die` and
-    // `release_children_in_order`, the two sites marked S34.3). A duty
-    // added here has to be added
-    // there as well until the two doors are one. Nothing is owed between
-    // S30 and S34.3, which is the step that builds the parking.
+    // (`refcount::EntityKind::closes_a_ring`). An array runs no
+    // `dispose`, which is where an object would do it on its way past the
+    // free, so this door is the array's too — with one exception owing
+    // the same duty at its own site: a **nested** array is torn down by
+    // `array_die`'s drain and never passes here again
+    // (`array::entity::array_die` and `release_children_in_order`, the
+    // two sites marked S34.3). A duty added here has to be added there as
+    // well until the two doors are one. Nothing is owed between S30 and
+    // S34.3, which is the step that builds the parking.
 
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },
@@ -826,8 +826,6 @@ pub unsafe fn ll_cow_separate(
     entity: *mut RcHeader,
 ) -> *mut RcHeader {
     use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
-    // One load for both halves: nothing narrow precedes this call, so the
-    // wide read is cheaper than two narrow ones (`refcount::header_pair`).
     let (count, flags) = unsafe { crate::refcount::header_pair(entity) };
     if !crate::refcount::cow_separation_needed(flags, count) {
         return entity;

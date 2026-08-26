@@ -509,9 +509,6 @@ pub(crate) unsafe fn sever_cells(
     const REFERENCE: u32 = EntityKind::Reference as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
     const STRING: u32 = EntityKind::String as u32;
-    // Named although no factory stamps it until S31.2: a producible kind
-    // reaching the arm below through the catch-all is how the Array kind
-    // sat here unnoticed once already (this module's own doc).
     const STRING_DYNAMIC: u32 = EntityKind::StringDynamic as u32;
     const WEAKREF: u32 = EntityKind::WeakRef as u32;
     const BOX: u32 = EntityKind::Box as u32;

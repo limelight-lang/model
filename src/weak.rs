@@ -10,10 +10,10 @@
 //! Knowledge split: this module owns the cell, the table, and every
 //! notification rule; teardown paths (`object::ll_default_dispose`, the
 //! cycle collectors, arena reset) own only *when* to call in, gated by
-//! `HAS_WEAK_REFERENCES`. A plain `HashMap` under no lock is sound because
-//! every notification site runs on the owning thread — teardown, the drain in
-//! the mutator's checkpoint, arena reset — and the collector thread never
-//! touches it.
+//! [`HAS_WEAK_REFERENCES`]. A plain `HashMap` under no lock is sound
+//! because every notification site runs on the owning thread — teardown,
+//! the drain in the mutator's checkpoint, arena reset — and the collector
+//! thread never touches it.
 //!
 //! The row is a single canonical-cell pointer today; it widens to the
 //! design's tagged subscriber list when `WeakMap` lands and maps start
@@ -29,9 +29,10 @@ use crate::refcount::{
     update_header_flags,
 };
 
-/// The `WeakReference` entity — kind 11, class-less singleton kind, and
-/// **the weak cell itself**. 16 bytes: header + the referent, nulled by
-/// death notification. `get()` is a load, a null test and a retain.
+/// The `WeakReference` entity — [`EntityKind::WeakRef`], a class-less
+/// singleton kind, and **the weak cell itself**. 16 bytes: header + the
+/// referent, nulled by death notification. `get()` is a load, a null test
+/// and a retain.
 #[repr(C)]
 pub struct LLWeakRef {
     pub rc: RcHeader,
@@ -42,7 +43,8 @@ pub struct LLWeakRef {
 
 thread_local! {
     /// The weak table: target address → its canonical cell. Row exists
-    /// iff the target's `HAS_WEAK_REFERENCES` is set iff a cell is live for it.
+    /// iff the target's `HAS_WEAK_REFERENCES` is set iff a cell is live
+    /// for it.
     ///
     /// Discarded at thread exit without notification — the thread's
     /// entities die with its heap, and nothing outlives them to read a
@@ -187,10 +189,12 @@ pub unsafe extern "C" fn ll_weakref_get(cell: *mut LLWeakRef) -> *mut RcHeader {
 
 /// Death notification (`rfc/model/weak-references.md`): null the cell,
 /// drop the row, clear the gate bit. Runs no user code — safe inside
-/// teardown and inside the drain. The caller has tested `HAS_WEAK_REFERENCES`.
+/// teardown and inside the drain. The caller has tested
+/// `HAS_WEAK_REFERENCES`.
 ///
 /// # Safety
-/// `target` must be a live entity on its owning thread, `HAS_WEAK_REFERENCES` set.
+/// `target` must be a live entity on its owning thread, with
+/// `HAS_WEAK_REFERENCES` set.
 pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
     let cell = unsafe { (*weak_table()).remove(&(target as usize)) };
     debug_assert!(
@@ -223,11 +227,12 @@ pub(crate) unsafe fn notify_members(members: &[*mut RcHeader]) {
     }
 }
 
-/// The WeakRef arm of the entity death switch: the last `$w` copy died. A
-/// still-live target goes back to the cheap death path — its row is
-/// removed and `HAS_WEAK_REFERENCES` cleared, so the next `create()` builds a fresh
-/// canonical cell (observable via `spl_object_id`, and exactly PHP's
-/// behaviour). A nulled target means the row died first; nothing to do.
+/// The `WeakRef` arm of the entity death switch: the last `$w` copy died.
+/// A still-live target goes back to the cheap death path — its row is
+/// removed and `HAS_WEAK_REFERENCES` cleared, so the next `create()`
+/// builds a fresh canonical cell (observable via `spl_object_id`, and
+/// exactly PHP's behaviour). A nulled target means the row died first;
+/// nothing to do.
 ///
 /// # Safety
 /// `cell` must be a weak cell whose count just reached zero (or that a
@@ -265,8 +270,8 @@ pub(crate) unsafe fn weakref_die(cell: *mut LLWeakRef) {
 /// Two kinds of stale entry are tolerated by the two tests: a promoted
 /// survivor has its category rewritten off the arena (its cell stays
 /// live — a weak reference to it must keep resolving), and a row that
-/// died and was re-created leaves duplicates, deduplicated by `HAS_WEAK_REFERENCES`
-/// going clear on the first notify.
+/// died and was re-created leaves duplicates, deduplicated by
+/// `HAS_WEAK_REFERENCES` going clear on the first notify.
 ///
 /// # Safety
 /// `arena` must be mid-reset on its owning thread, destructors settled.

@@ -234,7 +234,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     let kind = unsafe { load_block_kind(block as *const AtomicU32) };
 
     // An entity slot reaches the free list carrying the final
-    // refcount-0 header, because that word is the occupancy test every
+    // refcount-0 header, because that count is the occupancy test every
     // pass over the entity blocks applies
     // (`heap::for_each_entity_slot`). A slot freed while its header
     // still reads a live count is enumerated as a live entity by every
@@ -250,10 +250,6 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // killed at refcount 1").
     #[cfg(test)]
     if kind == BLOCK_KIND_ENTITY || crate::memory::large_entity::is_large_entity(kind) {
-        // Narrow, like every other read of a published header: a wide one
-        // overlaps the collector's byte store without covering it
-        // (`dev/DECISIONS.md`, "the header's access width is a correctness
-        // rule").
         let refcount =
             unsafe { crate::refcount::header_refcount(ptr as *const crate::refcount::RcHeader) };
         assert_eq!(
