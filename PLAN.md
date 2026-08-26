@@ -175,7 +175,13 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         rewrite's vehicle. The name is `cells` and not `trace`, because
         `rc-cycle.md` calls the S35 mark "the trace" and a substrate module of
         that name would read as a collector again.
-- [ ] S30.3 Delete the `rc-trace` strategy from `gc.rs`, keep the module
+      **Open after `de18686`:** the epoch's re-check apparatus is still in
+        `cells.rs` — `RelaxedCells`, `OutsideRead`, `WalkOutsideFn`, the
+        `walk_relaxed` and `recheck` members and `Cell.raw` — because its
+        fixtures reach into `test_support/outside_block.rs` and
+        `class/tests/what_a_subclass_inherits.rs`. It compiles and warns as
+        dead code. The step closes when those and their fixtures are gone.
+- [x] S30.3 Delete the `rc-trace` strategy from `gc.rs`, keep the module
       done: the candidate buffer, the colours, trial deletion, the thresholds
         and `COLLECT_PENDING` are gone from `src/gc.rs` together with their
         tests, and `CANDIDATE_INDEX_*`, `CYCLE_COLLECTOR_COLOR_SHIFT` and the
@@ -199,7 +205,7 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         thread init — and deleting it reverts `rfc/runtime/exceptions.md`'s
         "the next safepoint raises" to "the barrier eventually fails", with no
         test that can see the change.
-- [ ] S30.4 Decide each dying test rather than sweeping them
+- [x] S30.4 Decide each dying test rather than sweeping them
       done: every test deleted with S30.2 and S30.3 is listed in the commit body
         under one of **three** headings — *encodes a contract that dies with the
         mechanism*, *encodes a contract that outlives it, and has moved*, or

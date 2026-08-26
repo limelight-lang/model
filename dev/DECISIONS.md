@@ -4645,3 +4645,36 @@ branch rather than as files, and a branch that exists on one disk is not an
 archive. The branch point sits after the plan amendment rather than before it,
 so a reader who finds the branch also finds the plan that explains why the
 code on it was deleted.
+
+## 2026-08-26 — the test ledger of the deletion, in numbers
+
+**Measured, not estimated.** Before the deletion the crate listed **526**
+tests in the `rc-walk` configuration and **493** in `rc-trace`, **553** in
+their union — 60 belonged to `rc-walk` alone and 27 to `rc-trace` alone, which
+is why the before/after diff had to be taken in both configurations. After it
+the single configuration lists **467**: 464 run, 3 are Miri-ignored. **87**
+tests are gone and **1** is new.
+
+**Why the diff cannot be the whole ledger.** A test whose contract outlives
+the collector but whose *instrument* dies keeps its name when it is rewritten,
+so the `--list` diff shows nothing for it, and a test deleted with the promise
+that its contract re-lands at a later stage looks exactly like a test swept to
+go green. Both classes are named in the commit body of `de18686` under their
+own headings, with the stage each contract returns at.
+
+## 2026-08-26 — one arm survives every `rc-walk` gate: the atomic one
+
+**Decided:** where the deleted feature had two arms, the `rc-walk` arm stays
+and the `not(rc-walk)` arm goes. The surviving arm reaches the header through
+narrow relaxed atomics — `flags_load`, `refcount_load`, `refcount_store` — and
+the other reached it through `&mut RcHeader` and plain field access.
+
+**Why:** `rc-cycle` writes a maturation stamp into byte 2 of the flags word
+from commit and reads it from the trace, and its collector-thread accelerator
+reads the whole header from a thread that did not write it. A plain field
+access cannot express either without undefined behaviour, and S31.4 is built
+on the narrow-store discipline the surviving arm already has. The choice is
+not free: the `not(rc-walk)` arm carried the candidate enrolment on a non-zero
+decrement, which is exactly what `rc-cycle` needs, so `ll_release` now enrols
+nothing at all until S34 builds the root queue. A garbage ring is retained
+until then, and the crate has no cycle collection between S30 and S36.
