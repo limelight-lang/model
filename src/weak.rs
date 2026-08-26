@@ -203,6 +203,7 @@ pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
 ///
 /// # Safety
 /// Members must be live entities on their owning thread.
+#[expect(dead_code, reason = "the weak window of the cycle teardown is S36.3")]
 pub(crate) unsafe fn notify_members(members: &[*mut RcHeader]) {
     for &m in members {
         if unsafe { header_flags(m) } & HAS_WEAK_REFERENCES != 0 {

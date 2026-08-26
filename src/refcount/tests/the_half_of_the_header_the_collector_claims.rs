@@ -16,9 +16,7 @@ fn the_epoch_byte_sits_at_header_byte_six() {
     assert_eq!(EPOCH_BYTE_MASK, 0xFF << 16, "epoch byte: flags bits 16-23");
     // The byte may not reach into the mutator-owned low half.
     let low_half = MEMORY_CATEGORY_MASK
-        | GC_STATE_MASK
-        | (0b11 << CYCLE_COLLECTOR_COLOR_SHIFT)
-        | CYCLE_COLLECTOR_BUFFERED
+        | ARENA_RESET_MARK
         | HAS_WEAK_REFERENCES
         | DESTRUCTOR_PENDING
         | DESTRUCTOR_RAN

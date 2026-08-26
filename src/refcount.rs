@@ -63,24 +63,16 @@ impl MemoryCategory {
     }
 }
 
-/// GC state for the CAS handoff (bits 2-3), `rfc/model/gc/heap-design.md`.
-/// Idle for arena-category entities — no strategy ever sees them — so
-/// arena reset borrows its low bit as a transient mark, see
-/// [`ARENA_RESET_MARK`].
-pub const GC_STATE_SHIFT: u32 = 2;
-pub const GC_STATE_MASK: u32 = 0b11 << GC_STATE_SHIFT;
-
 /// Transient mark set on an arena entity while arena reset traces its
-/// escaped subgraph. Arena entities never run a GC strategy, so the
-/// GC-state field is idle for them and reset borrows its low bit here
-/// (`rfc/model/classes.md`, "Flags layout"; `rfc/model/memory/arena-reset.md`).
-/// Cleared when a survivor is promoted to the heap, where its whole
-/// category + GC-state is rewritten.
-pub const ARENA_RESET_MARK: u32 = 1 << GC_STATE_SHIFT;
-
-/// Cycle-collector color (bits 4-5) + buffered bit (6).
-pub const CYCLE_COLLECTOR_COLOR_SHIFT: u32 = 4;
-pub const CYCLE_COLLECTOR_BUFFERED: u32 = 1 << 6;
+/// escaped subgraph (`rfc/model/memory/arena-reset.md`). Bit 2, which the
+/// deleted CAS handoff of `heap-design.md` used to own together with bit
+/// 3; arena entities never ran a strategy, so reset borrowed it, and with
+/// the handoff gone it is the bit's only meaning. Cleared when a survivor
+/// is promoted to the heap.
+///
+/// Bits 3 through 6 are free, and `rc-cycle` re-lays the whole word at
+/// S31 — the layout there is `rfc/model/gc/cycle/questions.md` Y7.
+pub const ARENA_RESET_MARK: u32 = 1 << 2;
 
 /// Entity has weak references (side table exists).
 pub const HAS_WEAK_REFERENCES: u32 = 1 << 7;
@@ -309,11 +301,10 @@ pub const CANDIDATE_INDEX_MAX: usize = 0x0001_FFFF - 1;
 pub const EPOCH_BYTE_SHIFT: u32 = 16;
 pub const EPOCH_BYTE_MASK: u32 = 0xFF << EPOCH_BYTE_SHIFT;
 
-#[cfg(all(feature = "rc-walk", not(target_endian = "little")))]
+#[cfg(not(target_endian = "little"))]
 compile_error!(
-    "rc-walk handles the header as one 8-byte word with refcount in the \
-     low half; the byte offset 6 of the epoch byte assumes a \
-     little-endian target"
+    "the header is one 8-byte word with the refcount in the low half, and \
+     byte offset 6 of the collector's byte assumes a little-endian target"
 );
 
 /// The 8-byte header at offset 0 of every heap entity.

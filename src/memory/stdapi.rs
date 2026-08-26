@@ -260,9 +260,8 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         // The same shape one field up: the cycle collector's candidate
         // buffer holds raw pointers, so a slot that reaches the free
         // list still claiming a place in it leaves a root aimed at
-        // memory about to be handed out again. Every teardown door
-        // clears it (`gc::forget_candidate`); this is where a door that
-        // forgot to says so.
+        // memory about to be handed out again. Every teardown door has
+        // to clear it; this is where a door that forgot to says so.
     }
 
     // A reset in flight on this thread reads one header word of every
@@ -287,28 +286,12 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         return;
     }
 
-    // While an rc-walk epoch is in flight, every kind whose free can put
-    // memory back in circulation parks instead — identity of walked
-    // slots and chased buffers (`deferred_free`, one relaxed load +
-    // predicted branch, per `rfc/model/gc/rc-walk.md`). A retained block
-    // recycles nothing inside itself, but its last occupant's death
-    // hands the **whole block** to the pool, so it parks with the rest.
-    // The arena kind is the one that falls through: it recycles nothing
-    // at all, so identity holds without parking.
-    if crate::memory::deferred_free::active()
-        && matches!(
-            kind,
-            BLOCK_KIND_HEAP
-                | BLOCK_KIND_ENTITY
-                | BLOCK_KIND_LARGE
-                | BLOCK_KIND_LARGE_RUN
-                | crate::memory::block_pool::BLOCK_KIND_RETAINED
-                | crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE
-                | crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN
-        )
-    {
-        return unsafe { crate::memory::deferred_free::park(ptr) };
-    }
+    // An epoch-wide parking of every free that can put memory back in
+    // circulation stood here while `rc-walk` ran, and went with it.
+    // `rc-cycle` parks per slot rather than per epoch, on two windows
+    // that are not the same width — a queue entry naming the slot, and a
+    // collection in flight — and neither exists yet: S34.3 and S36.2
+    // build them (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
 
     if kind == BLOCK_KIND_HEAP {
         let h = crate::memory::heap::thread_heap();

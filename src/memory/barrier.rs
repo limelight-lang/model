@@ -30,8 +30,8 @@
 //! the list"). `drop_ref` itself cannot fail and returns nothing.
 //!
 //! Composition in this build (phase 1): RC operations and the category
-//! barrier (`rfc/model/memory/arenas.md`). Strategy hooks (SATB) plug into
-//! `drop_ref` later (A5).
+//! barrier (`rfc/model/memory/arenas.md`). `rc-cycle` adds no hook here —
+//! it enrols on the release path instead (`rfc/model/gc/rc-cycle.md`).
 //!
 //! **The four micro-ops are `pub` for the benchmark**, which is a separate
 //! crate and may not reach the `extern "C"` twins at the foot of this file
@@ -530,9 +530,10 @@ pub unsafe extern "C" fn ll_store_box(
     }
 }
 
-/// C ABI: the `drop` micro-op. `ctx` is unused in this composition — a
-/// `drop` needs no arena — but is kept in the signature, reserved for the
-/// SATB strategy hook that plugs into `drop` (A5).
+/// C ABI: the `drop` micro-op. `ctx` is unused — a `drop` needs no arena —
+/// and is kept in the signature because generated code passes it in every
+/// build and the four micro-ops share one shape
+/// (`rfc/model/gc/strategies.md`, §1).
 ///
 /// # Safety
 /// As [`drop_ref`]; `owner_cat` a valid `MemoryCategory` code (`0..=3`).

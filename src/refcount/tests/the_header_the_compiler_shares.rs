@@ -22,13 +22,7 @@ fn header_is_8_bytes_at_offset_zero() {
 #[test]
 fn flags_layout_is_the_compacted_design() {
     assert_eq!(MEMORY_CATEGORY_MASK, 0b11, "category: bits 0-1");
-    assert_eq!(GC_STATE_MASK, 0b11 << 2, "gc state: bits 2-3");
-    assert_eq!(
-        ARENA_RESET_MARK,
-        1 << 2,
-        "reset mark borrows gc-state bit 2"
-    );
-    assert_eq!(CYCLE_COLLECTOR_BUFFERED, 1 << 6);
+    assert_eq!(ARENA_RESET_MARK, 1 << 2, "arena reset mark: bit 2");
     assert_eq!(HAS_WEAK_REFERENCES, 1 << 7);
     assert_eq!(DESTRUCTOR_PENDING, 1 << 8);
     assert_eq!(DESTRUCTOR_RAN, 1 << 9);

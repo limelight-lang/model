@@ -17,7 +17,6 @@ fn box_is_16_bytes_with_fixed_offsets() {
 fn flag_bits_are_pinned_and_undef_is_not_null() {
     assert_eq!(VALUE_REFCOUNTED, 1);
     assert_eq!(VALUE_UNDEF, 2);
-    assert_eq!(VALUE_WRITING, 4);
 
     let u = Value::undef();
     assert!(u.is_undef());

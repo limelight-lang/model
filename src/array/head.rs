@@ -244,7 +244,7 @@ impl StorageHead {
     /// moved since. An odd answer is a move in progress and equals no
     /// recorded version, so a caller comparing for equality needs no
     /// case of its own for it.
-    #[cfg(any(feature = "rc-walk", test))]
+    #[cfg(test)]
     #[inline]
     pub(crate) fn version(&self) -> usize {
         self.version.load(Ordering::Acquire)

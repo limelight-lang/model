@@ -44,7 +44,6 @@ use crate::object::Object;
 use crate::refcount::RcHeader;
 use crate::value::Value;
 use crate::cells::{Cell, CellReader, OutsideCarry, OutsideCells, PlainCells};
-use crate::cells::{OutsideRead, RelaxedCells};
 
 /// Cells one block holds. Two is the coroutine's own number: its block
 /// exists exactly when a wait has more than two halves.
@@ -68,11 +67,6 @@ const BLOCK_AT: usize = 16;
 const VERSION_AT: usize = 24;
 const CAPACITY_AT: usize = 32;
 
-/// Readings before the racing walk gives the entity up, the bound
-/// `array::head::COHERENT_READ_ATTEMPTS` sets for the same protocol: a
-/// mutator that keeps moving the block wins the epoch rather than the
-/// walker's stack.
-const COHERENT_READ_ATTEMPTS: usize = 4;
 
 /// A class of instances whose counted cells lie in a block outside the
 /// body, laid out as this module's readers expect.
@@ -224,8 +218,6 @@ unsafe fn close_move(base: *mut u8) {
 /// cells the runs cannot describe.
 static GROUP: OutsideCells = OutsideCells {
     walk_plain,
-    walk_relaxed,
-    recheck,
     sever,
     free,
     carry,
@@ -244,45 +236,7 @@ unsafe fn walk_plain(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)
     Some(unsafe { version(base) })
 }
 
-/// The same cells under the collector's reader, with the mutator running.
-///
-/// The pointer is validated **before** a single cell is yielded: a cell
-/// address that escapes into the epoch's edge list is one Phase 3 will
-/// re-read, so a reading taken across a move may not be handed out and
-/// then withdrawn.
-unsafe fn walk_relaxed(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)) -> OutsideRead {
-    for _ in 0..COHERENT_READ_ATTEMPTS {
-        let before = unsafe { version(base) };
-        if before % 2 != 0 {
-            continue;
-        }
 
-        let block = unsafe { block_at::<RelaxedCells>(base) };
-        // The fence rather than an acquire load, for
-        // `StorageHead::coherent`'s reason: an acquire load orders what
-        // follows it, so the pointer this check validates could be read
-        // past the check and validated by nothing.
-        fence(Ordering::Acquire);
-        if unsafe { version(base) } != before {
-            continue;
-        }
-
-        if block.is_null() {
-            return OutsideRead::NoStorage;
-        }
-
-        unsafe { yield_cells::<RelaxedCells>(block, visit) };
-        return OutsideRead::Version(before);
-    }
-
-    OutsideRead::GaveUp
-}
-
-/// Is the block still the one the walk read? An odd reading is a move in
-/// flight and equals no walked version, so it needs no case of its own.
-unsafe fn recheck(base: *mut u8, _: *const Class, walked: usize) -> bool {
-    unsafe { version(base) == walked }
-}
 
 /// Empty every cell and hand its former occupant back undropped, the
 /// drain's contract for the group.

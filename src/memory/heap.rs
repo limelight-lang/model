@@ -1538,12 +1538,6 @@ pub extern "C" fn ll_thread_exit() {
     //    that outlives this thread in an abandoned block keeps a stale
     //    buffered bit, which suppresses its re-buffering for good.
 
-    // 3. The parked backlog: flushed when no epoch is in flight, left to
-    //    leak when one is — that is the limit `deferred_free`'s module
-    //    doc already declares, and freeing mid-epoch would recycle the
-    //    slots the queue exists to pin.
-    crate::memory::deferred_free::dispose();
-
     // 4. The weak table, after every death that could still need a row.
     //    `weak.rs` pinned this position against the day static-block
     //    teardown existed; this is that day.

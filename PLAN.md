@@ -826,9 +826,6 @@ own checkbox.
   collector thread would shorten — until then the in-line collection at a
   failed allocation is the whole trigger, and that is the design in force
   rather than a stopgap (Y14, amended 2026-08-26).
-- [ ] **`rc-satb` as a second build-time GC strategy**
-  (`rfc/model/gc/satb.md`). The `WRITING` bit it waited on is pinned and
-  the barrier's hook site is reserved; nothing else of it is built.
 - [ ] **The birth count and the unique-owner policy**
   (designed 2026-08-17 in the old collector's document, sections "The birth
   count" and "Unique ownership"; S30.5 moves the text into `rc-cycle`'s

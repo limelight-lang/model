@@ -46,14 +46,6 @@ pub const VALUE_REFCOUNTED: u8 = 1 << 0;
 /// ([`crate::class::Class::undef_runs`]).
 pub const VALUE_UNDEF: u8 = 1 << 1;
 
-/// Box flag: the slot is mid-write — the `rc-satb` concurrent marker's
-/// torn-16-byte-read lock (`rfc/model/gc/satb.md`). `store_box` on that
-/// strategy sets it before the payload store and clears it with the
-/// final tag store; the marker skips a slot whose flag is set. Every
-/// other build leaves the bit permanently clear. Reserved here until
-/// rc-satb lands; pinned now so the flags byte's assignments are fixed.
-pub const VALUE_WRITING: u8 = 1 << 2;
-
 /// The Box. `#[repr(C)]`: generated code addresses the fields by
 /// offset (payload +0, tag +8, flags +9).
 #[repr(C)]

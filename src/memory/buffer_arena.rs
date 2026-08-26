@@ -953,29 +953,21 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         // event, which is what the block was waiting for. With its last
         // occupant and its last payload gone the block goes home.
         //
-        // During an epoch the whole call parks, for the reason `ll_free`
-        // parks a slot in such a block: the walker holds addresses inside
-        // it, and a block handed to the pool is re-stamped as another
-        // kind under them.
+        // A collection in flight has to stop this: the trace holds
+        // addresses inside the block, and a block handed to the pool is
+        // re-stamped as another kind under them. `rc-walk` parked the
+        // whole call for the length of its epoch; `rc-cycle`'s equivalent
+        // is S36.2 and is not built.
         let block = (ptr as usize) & !BLOCK_MASK;
-        if crate::memory::deferred_free::active() {
-            return unsafe { crate::memory::deferred_free::park_retained_payload(ptr) };
-        }
-
         if crate::memory::retained::payload_freed(block) {
             unsafe { crate::memory::retained::give_block_back(block) };
         }
     } else if kind == BLOCK_KIND_BUFFER {
-        // The epoch test `ll_free` makes, made here instead, because this
-        // free never reaches `ll_free`. The whole call parks, not the
-        // free-list link it would write: `free` also decrements the
-        // block's live count, and an emptied block goes back to the
-        // global pool to be re-stamped as another kind while the walker
-        // still holds addresses inside it (`deferred_free`).
-        if crate::memory::deferred_free::active() {
-            return unsafe { crate::memory::deferred_free::park_buffer_chunk(ptr, capacity) };
-        }
-
+        // The same hazard as the retained arm above, and the same gap:
+        // `free` decrements the block's live count, and an emptied block
+        // goes back to the global pool to be re-stamped as another kind
+        // while a trace still holds addresses inside it. The parking that
+        // covered it went with `rc-walk`; S36.2 rebuilds it.
         unsafe { free_chunk(ptr, capacity) };
     } else {
         // OS-direct run: the standard path frees it by mask.
@@ -1078,18 +1070,6 @@ unsafe fn free_chunk(ptr: *mut u8, capacity: usize) {
     unsafe { (*existing).free(ptr, capacity) };
 }
 
-/// Give a parked chunk back for real, at the flush. Skips the kind
-/// dispatch and the epoch test of [`buffer_free_longlived_payload`]: the
-/// kind was read when the chunk was parked and cannot have changed —
-/// nothing recycled the block, which is what parking bought — and
-/// testing the epoch again would park what the flush is releasing.
-///
-/// # Safety
-/// `(ptr, capacity)` is a record this thread parked, released once, with
-/// no epoch in flight.
-pub(crate) unsafe fn free_parked_chunk(ptr: *mut u8, capacity: usize) {
-    unsafe { free_chunk(ptr, capacity) };
-}
 
 /// Release a long-lived buffer: frees the payload, zeroes the struct.
 ///

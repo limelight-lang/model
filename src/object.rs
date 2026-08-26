@@ -441,7 +441,6 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::cells::CellReader>(
             if !child.is_null() {
                 visit(crate::cells::Cell {
                     addr: at as usize,
-                    raw: child as u64,
                     child,
                     shape: crate::cells::CellShape::Pointer,
                 });

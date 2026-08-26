@@ -11,7 +11,6 @@
 //! ([`for_each_entity_slot`]); this module knows entity kinds and what
 //! each kind's out-edges are. Neither knows the other's internals.
 
-use crate::memory::heap::for_each_entity_slot;
 use crate::object::Object;
 use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind, RcHeader};
 use crate::value::Value;
@@ -39,7 +38,6 @@ unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
 #[derive(Clone, Copy)]
 pub(crate) struct Cell {
     pub addr: usize,
-    pub raw: u64,
     pub child: *mut RcHeader,
     pub shape: CellShape,
 }
@@ -109,16 +107,6 @@ pub(crate) struct OutsideCells {
     /// would write that count below the truth.
     pub walk_plain:
         unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)) -> Option<usize>,
-    /// The same cells under the collector's reader, which may find the
-    /// head mid-move and give the entity up for the epoch. Inside the
-    /// group rather than beside it in `Class`, so the descriptor's shape
-    /// does not differ between the two strategy builds — the vtable
-    /// begins at `size_of::<Class>()`.
-    pub walk_relaxed: WalkOutsideFn,
-    /// Is the storage still the one `walked` came from? Phase 3 asks
-    /// this instead of casting the entity to an array and reading the
-    /// head at `+8`, which on an object is the class word.
-    pub recheck: unsafe fn(*mut u8, *const crate::class::Class, walked: usize) -> bool,
     /// Empty the outside cells and collect their former occupants,
     /// without dropping them. Not [`empty_cell`], which writes a whole
     /// `Value` and a bare `NULL`: in a table entry the first zeroes the
@@ -151,6 +139,10 @@ pub(crate) struct OutsideCells {
     pub carry: unsafe fn(*mut crate::memory::arena::Arena, *mut RcHeader) -> OutsideCarry,
 }
 
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "only a class hook constructs one, and no class does yet")
+)]
 /// What a class's [`OutsideCells::carry`] did about a survivor's storage.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum OutsideCarry {
@@ -176,12 +168,6 @@ pub(crate) enum OutsideCarry {
     Nothing,
 }
 
-/// The racing instantiation of a class's outside-cell walk. Two walks sit
-/// in [`OutsideCells`] because a function pointer cannot be generic and
-/// the reader has to be chosen before the call; the plain one answers a
-/// narrower type, which is where the give-up is ruled out.
-pub(crate) type WalkOutsideFn =
-    unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)) -> OutsideRead;
 
 /// What a class's outside-cell walk answers, and the three cases are not
 /// two: the epoch may conflate the last with the first, and the arena
@@ -190,23 +176,6 @@ pub(crate) type WalkOutsideFn =
 /// Only a class's own hook constructs one, and no class does yet: the
 /// first is the map of `rfc/model/maps.md`, and the tests here build one
 /// of their own.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "no producer yet; the map is the first")
-)]
-pub(crate) enum OutsideRead {
-    /// The cells came out of storage nothing replaces, so there is no
-    /// version and nothing for Phase 3 to ask about.
-    NoStorage,
-    /// Every cell was yielded, out of storage at this version.
-    Version(usize),
-    /// Nothing was yielded: the head would not read coherently and the
-    /// entity is given up for this epoch. Only the racing reader's walk
-    /// can answer it, the plain one having no such variant to return.
-    GaveUp,
-}
-
 /// How a walk reads the entity memory it strides over.
 ///
 /// This is the **only** difference between the three walks that used to
@@ -295,44 +264,7 @@ impl CellReader for PlainCells {
     }
 }
 
-/// The collector's reader: the mutator is running and may store into any
-/// of these cells. Exists only where a concurrent collector does.
-pub(crate) struct RelaxedCells;
 
-impl CellReader for RelaxedCells {
-    #[inline]
-    unsafe fn walk_outside(
-        group: &OutsideCells,
-        base: *mut u8,
-        cls: *const crate::class::Class,
-        visit: &mut dyn FnMut(Cell),
-    ) -> Option<usize> {
-        match unsafe { (group.walk_relaxed)(base, cls, visit) } {
-            OutsideRead::Version(v) => Some(v),
-            OutsideRead::NoStorage | OutsideRead::GaveUp => None,
-        }
-    }
-
-    #[inline]
-    unsafe fn word(at: *const u8) -> u64 {
-        unsafe {
-            (*(at as *const std::sync::atomic::AtomicU64))
-                .load(std::sync::atomic::Ordering::Relaxed)
-        }
-    }
-
-    /// `AtomicPtr`, not an `AtomicU64` cast back: the atomic load keeps
-    /// the provenance an integer load would drop, so the collector gains
-    /// what the quiescent walk needed rather than merely tolerating what
-    /// it had.
-    #[inline]
-    unsafe fn ptr(at: *const u8) -> *mut u8 {
-        unsafe {
-            (*(at as *const std::sync::atomic::AtomicPtr<u8>))
-                .load(std::sync::atomic::Ordering::Relaxed)
-        }
-    }
-}
 
 /// The counted child of the sixteen-byte `Value` at `at`, or `None` when
 /// the cell holds nothing counted.
@@ -359,7 +291,6 @@ pub(crate) unsafe fn counted_box_cell<R: CellReader>(at: *const u8) -> Option<Ce
 
     Some(Cell {
         addr: at as usize,
-        raw: child as u64,
         child,
         shape: CellShape::Box,
     })
@@ -500,7 +431,6 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 if key as usize >= crate::array::entry::KEY_SENTINEL_LIMIT {
                     visit(Cell {
                         addr: at as usize + KEY_OFFSET,
-                        raw: key as u64,
                         child: (key as usize & !crate::array::entry::KEY_TAG_MASK) as *mut RcHeader,
                         shape: CellShape::Pointer,
                     });
@@ -562,6 +492,7 @@ pub(crate) unsafe fn empty_cell(cell: Cell) {
 /// # Safety
 /// `entity` is a live entity of `kind` whose cells are readable and
 /// writable, and no other thread writes them.
+#[expect(dead_code, reason = "the commit stage that severs a condemned component is S36.5")]
 pub(crate) unsafe fn sever_cells(
     entity: *mut RcHeader,
     kind: u32,
@@ -628,6 +559,10 @@ pub(crate) unsafe fn sever_cells(
     }
 }
 
+#[cfg(test)]
+use crate::memory::heap::for_each_entity_slot;
+
+#[cfg(test)]
 /// A point-in-time census of the walked entity population.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Census {
@@ -639,6 +574,7 @@ pub struct Census {
     pub edges: usize,
 }
 
+#[cfg(test)]
 /// Count every live entity in the entity-block population, by kind, with
 /// its counted out-edges — the whole-heap leak-detector precursor of
 /// build step 2.
