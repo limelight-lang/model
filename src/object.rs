@@ -274,7 +274,7 @@ pub unsafe fn object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool 
     // Post-publish header write: races a collector's byte stores into
     // the same word, so it goes through the relaxed word helper.
     unsafe {
-        crate::refcount::mutator_update_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_PENDING)
+        crate::refcount::update_header_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_PENDING)
     };
 
     true
@@ -510,7 +510,7 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
         }
 
         unsafe {
-            crate::refcount::mutator_update_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_RAN)
+            crate::refcount::update_header_flags(obj as *mut RcHeader, |f| f | DESTRUCTOR_RAN)
         };
     }
 
@@ -596,7 +596,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
     // own_destructor_still_sees_the_object_but_a_child_destructor_sees_null`).
     // Read the flags fresh: the `__destruct` above may itself have created
     // the weak state.
-    if unsafe { crate::refcount::header_flags(obj as *const RcHeader) }
+    if unsafe { crate::refcount::mutator_flags(obj as *const RcHeader) }
         & crate::refcount::HAS_WEAK_REFERENCES
         != 0
     {
@@ -653,7 +653,7 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     journal_event!(
         crate::journal::kinds::KIND_ENTITY_DEATH,
         obj as u64,
-        ((unsafe { crate::refcount::header_flags(obj as *const RcHeader) }
+        ((unsafe { crate::refcount::mutator_flags(obj as *const RcHeader) }
             & crate::refcount::ENTITY_KIND_MASK)
             >> crate::refcount::ENTITY_KIND_SHIFT) as u64,
         0
@@ -690,10 +690,10 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
 
 /// The category of a published header, through the relaxed read every
 /// header access uses: a collector's byte stores race a plain one
-/// ([`crate::refcount::header_flags`]).
+/// ([`crate::refcount::mutator_flags`]).
 #[inline]
 pub(crate) unsafe fn header_category(header: *const RcHeader) -> MemoryCategory {
-    MemoryCategory::from_flags(unsafe { crate::refcount::header_flags(header) })
+    MemoryCategory::from_flags(unsafe { crate::refcount::mutator_flags(header) })
 }
 
 /// Teardown for a **bare entity pointer**: the kind field selects the
@@ -721,7 +721,7 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     const STRING: u32 = EntityKind::String as u32;
     const STRING_DYNAMIC: u32 = EntityKind::StringDynamic as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
-    let flags = unsafe { crate::refcount::header_flags(entity) };
+    let flags = unsafe { crate::refcount::mutator_flags(entity) };
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
     // What a dying enrolled slot owes a collector is done here, for
     // every kind the gate admits, so a kind that gains counted slots
@@ -892,7 +892,7 @@ pub(crate) unsafe fn escape_copy(
 ) -> *mut RcHeader {
     use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
     debug_assert_ne!(owner_cat, MemoryCategory::RequestArena);
-    let flags = unsafe { crate::refcount::header_flags(entity) };
+    let flags = unsafe { crate::refcount::mutator_flags(entity) };
     const STRING: u32 = EntityKind::String as u32;
     const STRING_DYNAMIC: u32 = EntityKind::StringDynamic as u32;
     const ARRAY: u32 = EntityKind::Array as u32;

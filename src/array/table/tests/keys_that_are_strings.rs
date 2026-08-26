@@ -51,7 +51,7 @@ fn an_oversize_string_key_is_matched_by_content() {
     let stored = mk(&content);
     assert!(
         crate::string::bytes_are_out_of_line(unsafe {
-            crate::refcount::header_flags(stored as *const crate::refcount::RcHeader)
+            crate::refcount::mutator_flags(stored as *const crate::refcount::RcHeader)
         }),
         "the key is out of line, or this test proves nothing"
     );

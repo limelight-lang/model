@@ -468,6 +468,14 @@ impl RcHeader {
 /// (`rfc/model/gc/rc-cycle.md`, "Concurrency"), and without the
 /// annotation the race is undefined behaviour.
 ///
+/// **This is the one eight-byte access to a header the crate makes**,
+/// and it is legal precisely because the entity is not published yet: no
+/// collector can be writing byte 6 of a slot it reads as free, so the
+/// wide store overlaps nothing. Every access after this point is narrow
+/// — four bytes for the counter, two for the mutator's half of the
+/// flags — because a wide one would be a mixed-size atomic access
+/// against the collector's byte stores.
+///
 /// # Safety
 /// `slot` must be 8-aligned, writable, and not yet published as a live
 /// entity (the body must already be fully formed).
@@ -496,29 +504,6 @@ pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
         ((born_with & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT) as u64,
         (born_with & MEMORY_CATEGORY_MASK) as u64
     );
-}
-
-/// Relaxed-atomic load of the whole header word: refcount in the low
-/// half, flags in the high (little-endian, enforced above). Same
-/// instruction as a plain load on x86-64 and AArch64; the annotation is
-/// what makes the cross-thread race with a collector's byte stores into
-/// the flags half defined.
-#[inline]
-unsafe fn header_word_load(header: *mut RcHeader) -> u64 {
-    unsafe {
-        (*(header as *const core::sync::atomic::AtomicU64))
-            .load(core::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-/// Relaxed-atomic store of the whole header word; pair of
-/// [`header_word_load`].
-#[inline]
-unsafe fn header_word_store(header: *mut RcHeader, word: u64) {
-    unsafe {
-        (*(header as *const core::sync::atomic::AtomicU64))
-            .store(word, core::sync::atomic::Ordering::Relaxed)
-    }
 }
 
 /// Increment the reference count.
@@ -592,13 +577,60 @@ unsafe fn refcount_load(header: *const RcHeader) -> u32 {
     }
 }
 
+/// The mutator's half of the flags word — **bits 0-15, bytes 4-5** —
+/// zero-extended, as a relaxed 16-bit atomic load.
+///
+/// Two bytes rather than four because the collector's fields start at
+/// bit 16 and it writes byte 6 on its own. A 32-bit load at +4 and a
+/// 1-byte store at +6 overlap without covering each other, which is a
+/// mixed-size atomic access: Rust's memory model does not define it and
+/// Miri rejects it outright, so the width is the contract rather than an
+/// economy (`rfc/model/classes.md`, "Flags layout").
+///
+/// **Every constant a mutator path reads lives below bit 16**, which is
+/// what makes the narrow read lossless; the assertion below is what
+/// holds that true as constants are added.
 #[inline]
 unsafe fn flags_load(header: *const RcHeader) -> u32 {
     unsafe {
-        (*((header as *const u8).add(4) as *const core::sync::atomic::AtomicU32))
-            .load(core::sync::atomic::Ordering::Relaxed)
+        (*((header as *const u8).add(4) as *const core::sync::atomic::AtomicU16))
+            .load(core::sync::atomic::Ordering::Relaxed) as u32
     }
 }
+
+/// The store twin of [`flags_load`], and the only way a published
+/// header's flags are written after publication.
+#[inline]
+unsafe fn flags_store(header: *mut RcHeader, flags: u32) {
+    debug_assert_eq!(
+        flags & 0xFFFF_0000,
+        0,
+        "the mutator writes flags bits 0-15; bit 16 and above are the \
+         collector's and it writes them a byte at a time"
+    );
+    unsafe {
+        (*((header as *mut u8).add(4) as *const core::sync::atomic::AtomicU16))
+            .store(flags as u16, core::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+const _: () = assert!(
+    (MEMORY_CATEGORY_MASK
+        | ENTITY_KIND_MASK
+        | COW
+        | ARENA_RESET_MARK
+        | ACYCLIC_GATE
+        | OWNERSHIP_MARK
+        | ENROLLED
+        | IS_ESCAPEE
+        | HAS_WEAK_REFERENCES
+        | DESTRUCTOR_PENDING
+        | DESTRUCTOR_RAN)
+        & 0xFFFF_0000
+        == 0,
+    "a mutator-visible flag above bit 15 would read back as zero, because \
+     the mutator loads two bytes of the flags half and not four"
+);
 
 /// Decrement the reference count. Returns `true` when the entity died
 /// (count reached zero and it is lifetime-managed by counting) — the
@@ -706,92 +738,94 @@ pub unsafe extern "C" fn ll_release_batch(entity: *mut RcHeader) -> bool {
     return unsafe { release_word(entity) };
 }
 
-/// The flags word of a published header, read as a relaxed atomic: a
-/// collector's byte stores race every plain access to a header it may
-/// be tracing. The one read helper — teardown paths and the weak
-/// machinery share it rather than owning private copies.
+/// **The mutator's half** of a published header's flags — bits 0-15,
+/// zero-extended — as a relaxed atomic. The one read helper: teardown
+/// paths and the weak machinery share it rather than owning private
+/// copies.
 ///
-/// **Four bytes, not the word.** The store barrier reaches here right after
-/// `ll_retain` has written the counter half, and an 8-byte load spanning
-/// that fresh 4-byte store waits for the store buffer. Bytes 4-7 do not
-/// overlap the counter at all, so nothing has to be forwarded — which is
-/// the other half of [`refcount_load`]'s discipline rather than the same
-/// case: there the load covers exactly the bytes the store wrote and
-/// forwarding succeeds (`dev/BENCHMARKS.md`, "the barrier's header reads
-/// go narrow").
+/// **It does not answer for bits 16 and above**, and the name says
+/// mutator for that reason. Those are the collector's, written a byte at
+/// a time, and a caller asking this what epoch an entity carries gets
+/// zero in every build with nothing red. The byte reader they need is
+/// S36.6's and S37.1's, and it is not written yet — **change this, and
+/// give those steps their helper.**
 #[inline]
-pub(crate) unsafe fn header_flags(header: *const RcHeader) -> u32 {
+pub(crate) unsafe fn mutator_flags(header: *const RcHeader) -> u32 {
     unsafe { flags_load(header) }
 }
 
 /// Read the refcount of a **published** header, same dispatch rule and
-/// the same width rule — the counter twin of [`header_flags`].
+/// the same width rule — the counter twin of [`mutator_flags`].
 #[inline]
 pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
     unsafe { refcount_load(header) }
 }
 
-/// The count and the flags in **one** load, for a caller that wants both —
-/// [`cow_separation_needed`] is the predicate over the pair. One wide load
-/// beats two narrow ones where nothing narrow precedes it, which is the
-/// case here and is not the case in the store path.
+/// The count and the mutator's flags together, for a caller that wants
+/// both — [`cow_separation_needed`] is the predicate over the pair.
 ///
-/// It buys no coherence the two readers above lack: the only concurrent
-/// writer of a published header is a collector, and its one claim is the
-/// unallocated top of the flags half, which no caller of this reads.
+/// **Two narrow loads.** It was one 8-byte load, on a measurement that
+/// priced it against two narrow ones (`dev/BENCHMARKS.md`, "the
+/// barrier's header reads go narrow"); what that measurement priced is
+/// no longer on offer, because an 8-byte load at +0 overlaps the
+/// collector's byte store at +6 without covering it. The cost of the
+/// second load on this path is unmeasured.
 #[inline]
 pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
     unsafe { mutator_load_header(header) }
 }
 
 /// Rewrite the flags of a **published** header — the write twin of
-/// [`header_flags`]. A post-publish flag write must not be a plain
+/// [`mutator_flags`]. A post-publish flag write must not be a plain
 /// store: the header may be under a concurrent trace.
+///
+/// **`f` sees and returns bits 0-15 only**, which [`flags_store`]
+/// enforces: a bit it sets above 15 is a caller error, not a write. What
+/// the collector holds up there is not disturbed, because the load and
+/// the store are both two bytes wide, so whatever it writes to byte 6
+/// between them survives. That is the whole content of the narrow rule —
+/// a wide store here writes back a flags half read before the
+/// collector's store, and buries it.
 #[inline]
 pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
-    unsafe { mutator_update_flags(header, f) };
+    let flags = unsafe { flags_load(header) };
+    unsafe { flags_store(header, f(flags)) };
 }
 
-/// Mutator-side relaxed header read; pair of the mutator's word store.
-/// While a collection is in flight every plain header access races the
-/// collector's byte stores, which is undefined behaviour — these
-/// helpers are the same instructions with the race made defined.
+/// Mutator-side relaxed header read: the counter, then the mutator's
+/// half of the flags.
+///
+/// **Two narrow loads rather than one wide one**, which is a change of
+/// width and not of economy: an 8-byte load at +0 overlaps the
+/// collector's byte store at +6 without covering it, and a mixed-size
+/// atomic access is undefined in Rust's model whatever it costs. The
+/// wide form was measured cheaper where nothing narrow precedes it
+/// (`dev/BENCHMARKS.md`, "the barrier's header reads go narrow"), and
+/// what that measurement priced is no longer on offer.
 #[inline]
 pub(crate) unsafe fn mutator_load_header(header: *const RcHeader) -> (u32, u32) {
-    let word = unsafe { header_word_load(header as *mut RcHeader) };
-    (word as u32, (word >> 32) as u32)
+    unsafe { (refcount_load(header), flags_load(header)) }
 }
 
-/// Mutator-side flags update as one relaxed whole-word store, which
-/// spans the collector's byte at +6 and can bury a store into it.
-/// S31.4 deletes this helper for that reason: the mutator's flags
-/// writes are to stop below byte 2 (`PLAN.md`).
-#[inline]
-pub(crate) unsafe fn mutator_update_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
-    let word = unsafe { header_word_load(header) };
-    let flags = f((word >> 32) as u32) as u64;
-    unsafe { header_word_store(header, flags << 32 | word as u32 as u64) };
-}
-
-/// The teardown guard's `+1` (relaxed whole-word; flags kept).
+/// The teardown guard's `+1`, as a narrow counter store: the flags half
+/// is not read and not written, so nothing the collector puts there can
+/// be buried by it.
 #[inline]
 pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
-    let word = unsafe { header_word_load(header) };
-    let flags_half = word & 0xFFFF_FFFF_0000_0000;
-    unsafe { header_word_store(header, flags_half | (word as u32 + 1) as u64) };
+    let refcount = unsafe { refcount_load(header) };
+    unsafe { refcount_store(header, refcount + 1) };
 }
 
-/// The teardown guard's `-1` (relaxed whole-word; flags kept): returns
-/// the new refcount. A collection landing mid-destructor changes
-/// nothing here — teardown always finishes, and the corpse rule drops a
-/// component holding a member already at zero
-/// (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 1).
+/// The teardown guard's `-1`, the counter twin of
+/// [`mutator_guard_retain`]: returns the new refcount. A collection
+/// landing mid-destructor changes nothing here — teardown always
+/// finishes, and the corpse rule drops a component holding a member
+/// already at zero (`rfc/model/gc/rc-cycle.md`, "Cycle teardown",
+/// step 1).
 #[inline]
 pub(crate) unsafe fn mutator_unguard_release(header: *mut RcHeader) -> u32 {
-    let word = unsafe { header_word_load(header) };
-    let refcount = (word as u32) - 1;
-    let flags_half = word & 0xFFFF_FFFF_0000_0000;
-    unsafe { header_word_store(header, flags_half | refcount as u64) };
+    let refcount = unsafe { refcount_load(header) } - 1;
+    unsafe { refcount_store(header, refcount) };
     refcount
 }
 

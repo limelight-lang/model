@@ -145,7 +145,7 @@ pub unsafe fn store_category_barrier(
     // Dangerous direction: an arena reference stored into a longer-lived
     // container would dangle after reset.
     if new_cat == MemoryCategory::RequestArena && owner_cat != MemoryCategory::RequestArena {
-        if unsafe { crate::refcount::header_flags(new) } & COW != 0 {
+        if unsafe { crate::refcount::mutator_flags(new) } & COW != 0 {
             // A COW entity is value-like: its identity is not observable,
             // so the longer-lived holder takes a **copy** rather than a
             // hold on arena memory (`rfc/model/memory/arenas.md`, the deep

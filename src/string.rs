@@ -173,7 +173,7 @@ impl LLStringDynamic {
 /// says which. Code that has proved the layout — the compiler's, mostly —
 /// calls the layout's own accessor and skips the branch.
 ///
-/// The flags come from [`crate::refcount::header_flags`] rather than a
+/// The flags come from [`crate::refcount::mutator_flags`] rather than a
 /// plain field read: a collector byte-stores into the same word while it
 /// traces, and a plain load races it. The helper is
 /// the same instruction with the race made defined, so this costs
@@ -185,7 +185,7 @@ impl LLStringDynamic {
 /// `s` must be a live string entity, and must outlive the slice.
 #[inline]
 pub unsafe fn string_bytes<'a>(s: *const LLString) -> &'a [u8] {
-    if bytes_are_out_of_line(unsafe { crate::refcount::header_flags(s as *const RcHeader) }) {
+    if bytes_are_out_of_line(unsafe { crate::refcount::mutator_flags(s as *const RcHeader) }) {
         unsafe { LLStringDynamic::bytes(s as *const LLStringDynamic) }
     } else {
         unsafe { LLString::bytes(s) }
@@ -543,7 +543,7 @@ pub unsafe fn separate(
     s: *mut LLString,
 ) -> *mut LLString {
     debug_assert_ne!(
-        unsafe { crate::refcount::header_flags(s as *const RcHeader) } & COW,
+        unsafe { crate::refcount::mutator_flags(s as *const RcHeader) } & COW,
         0,
         "a non-COW string is outside the COW rule and writes in place"
     );
@@ -728,7 +728,7 @@ unsafe fn grow_payload(
 /// `s` must be a live out-of-line string that this writer owns alone;
 /// `ctx` per [`crate::memory::context::ll_arena_alloc`].
 pub unsafe fn ll_string_append(ctx: *mut LLContext, s: *mut LLStringDynamic, extra: &[u8]) -> bool {
-    let flags = unsafe { crate::refcount::header_flags(s as *const RcHeader) };
+    let flags = unsafe { crate::refcount::mutator_flags(s as *const RcHeader) };
     debug_assert!(
         bytes_are_out_of_line(flags),
         "an inline string has no spare capacity to append into"
@@ -859,7 +859,7 @@ pub(crate) unsafe fn string_die(s: *mut LLString) {
     );
     let owner_cat = unsafe { crate::object::header_category(s as *const RcHeader) };
     let out_of_line =
-        bytes_are_out_of_line(unsafe { crate::refcount::header_flags(s as *const RcHeader) });
+        bytes_are_out_of_line(unsafe { crate::refcount::mutator_flags(s as *const RcHeader) });
     if out_of_line && owner_cat != MemoryCategory::RequestArena {
         let d = s as *mut LLStringDynamic;
         let (data, capacity) = unsafe { ((*d).data, (*d).capacity as usize) };

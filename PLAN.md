@@ -190,7 +190,7 @@ enrolment gate is one mask, and the kind field is four bits wide.
         the admission and one on the mask's own coverage. A `const` assertion
         ties the composition to the `0x723` the RFC names, so the two cannot
         part silently.
-- [ ] S31.4 Narrow the mutator's header writes, and rule the read side
+- [x] S31.4 Narrow the mutator's header writes, and rule the read side
       done: the mutator writes the refcount with a 32-bit store and the flags
         half with stores that stop below byte 2, so no mutator write spans it;
         the whole-word `mutator_update_flags` is gone, and so is the flags half
@@ -207,6 +207,57 @@ enrolment gate is one mask, and the kind field is four bits wide.
         collector byte store". The Critic round of 2026-08-26 found the clause
         guarding writes while the day-one defect is a read, and naming one of
         three writers.
+      Critic 2026-08-26: six production sites read and write a **published**
+        header plainly, through `(*p).flags` rather than an entity struct, so
+        `who_may_read_a_header` cannot match them — `promote.rs` at 242, 608,
+        620, 717 and 759, `barrier.rs` at 69 and 102, `cells.rs:33`. Two of
+        them reach GC-heap entities, not only arena ones. Also: the new
+        interleaving test passes on a *preserving* 32-bit access, which is the
+        defect itself; the `const` battery is a member list with the hole S31.1
+        already paid for; `header_flags` now returns a half and its name says
+        otherwise. All accepted; the first goes to S31.5, the rest are in this
+        step.
+      handoff: closed 2026-08-26, after `rfc` `32af118` — `lowering.md`
+        declared `_Atomic uint32_t flags`, and a consumer transcribing that
+        mirror emits exactly the access this step removes, so the widths went
+        into the declaration first. `header_flags` is now `mutator_flags`,
+        because it answers for bits 0-15 and an S37 caller asking it for the
+        epoch would get zero in every build with nothing red.
+      handoff: what pins the width is `the_widths_the_mutator_uses`, which
+        reads `refcount.rs` — no behaviour separates a two-byte access from a
+        four-byte one that preserves bytes 6-7, and Miri does not either, since
+        it allows a width change on a byte the accessing thread is ordered
+        after. The same test checks the `const` battery against the
+        declarations, so a constant nobody added to the list is caught rather
+        than assumed absent. Both shown red on their own defect.
+      handoff: `publish_header` keeps the one eight-byte store, and its
+        argument is about writers while the counterparty at S38 is a **reader**
+        — S33.2 seeds a row from a four-byte load of the refcount, and a
+        concurrent publication is then a mixed-size pair. Narrowing it is not
+        free: `heap::FreeSlot` preserves a dead entity's final header, so a
+        recycled slot arrives carrying the previous occupant's byte 6, and a
+        narrow publication that does not zero it hands a new entity a stale
+        mature stamp — S37.1 would prune its whole subgraph, permanently and
+        silently. Owner: S38.0, which is where the second thread arrives.
+- [ ] S31.5 Every published-header access goes through the helpers
+      done: `promote.rs` and `barrier.rs` reach a published header through
+        `mutator_flags` / `header_refcount` / `update_header_flags` and a
+        counter writer this step names, rather than through `(*p).flags` and
+        `e.refcount`; `cells::entity_kind` does the same; the guard's `READS`
+        gains the `)` spellings — `).flags`, `).refcount`,
+        `).memory_category()` — so the pointer form is an offence like the
+        field form, and the guard is shown red on one of the sites before they
+        are converted
+      tier: T2 · role: Critic
+      handoff: a `&mut RcHeader` is the shape to watch: `barrier.rs` holds one
+        and writes both halves through it, and a `&mut` retag covers the whole
+        struct, so the word has to leave the struct rather than the borrow being
+        narrowed (`dev/POSTMORTEM.md` and the memory of 2026-08-19).
+      handoff: `promote.rs:242` and `:717` run **after** the category rewrite,
+        so they touch heap headers rather than arena ones, and `count_children`
+        at `:759` reads every counted child, GC-heap ones included. The
+        "arena entities are never traced" defence does not cover them, which is
+        what makes this a step rather than a note.
 
 ## S32 — The block header's collector triple
 

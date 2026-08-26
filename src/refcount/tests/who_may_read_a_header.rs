@@ -24,7 +24,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// What a direct read looks like: the `RcHeader` field of an entity struct,
-/// reached past [`crate::refcount::header_flags`] and its neighbours.
+/// reached past [`crate::refcount::mutator_flags`] and its neighbours.
 const READS: [&str; 4] = [
     ".rc.flags",
     ".rc.refcount",
@@ -96,7 +96,7 @@ fn a_header_is_read_through_the_helpers_and_nowhere_else() {
         offences.is_empty(),
         "a published header is read past the helpers of `refcount`, which \
          races the collector's byte store into the same word. Use \
-         `header_flags`, `header_refcount` or `header_pair`; there is no \
+         `mutator_flags`, `header_refcount` or `header_pair`; there is no \
          exemption:\n{}",
         offences.join("\n")
     );

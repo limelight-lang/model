@@ -277,7 +277,7 @@ fn an_oversize_cow_arena_string_carries_its_payload_through_promotion() {
         as *mut RcHeader;
     assert!(!s.is_null());
     assert!(
-        crate::string::bytes_are_out_of_line(unsafe { crate::refcount::header_flags(s) }),
+        crate::string::bytes_are_out_of_line(unsafe { crate::refcount::mutator_flags(s) }),
         "out of line, or the payload carry is not on the path"
     );
 

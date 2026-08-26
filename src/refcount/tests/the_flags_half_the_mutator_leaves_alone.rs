@@ -1,11 +1,11 @@
-//! The mutator writes the counter and nothing else, so a byte a
-//! collector puts in the flags half survives every hot-path operation.
+//! The mutator writes the counter and its own two bytes of the flags,
+//! so a byte a collector puts at +6 survives every hot-path operation
+//! and every flags update.
 //!
-//! Nothing writes the flags half from another thread between S30 and
-//! S31, which lays the collector's fields at bits 16-23 (`PLAN.md`).
-//! What these tests pin is the separation the mutator owes, and that
-//! outlives the collector that first asked for it: `rc-walk`'s epoch
-//! stamp is where the marker below comes from.
+//! Nothing writes the flags half from another thread yet — the collector
+//! that will is S38's — so what these tests pin is the separation the
+//! mutator owes, which outlives the collector that first asked for it:
+//! `rc-walk`'s epoch stamp is where the marker below comes from.
 
 use super::*;
 
@@ -57,4 +57,60 @@ fn every_death_takes_the_ordinary_path() {
     assert!(release(&mut h), "the death is reported, marked or not");
     assert_eq!(h.refcount, 0);
     assert_eq!(h.flags & FOREIGN_MARK, FOREIGN_MARK, "flags untouched");
+}
+
+/// A flags update that **started before** the collector's byte landed
+/// leaves that byte alone.
+///
+/// The order is the test. A store made before the update passes on a
+/// whole-word writer too, because such a writer loads the byte and puts
+/// it back unchanged; only a store made *after* the mutator's load and
+/// before the mutator's store separates the two widths. The closure runs
+/// in exactly that gap, so the interleaving is fixed rather than raced
+/// for.
+#[test]
+fn a_collector_byte_survives_an_update_that_read_before_it() {
+    let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+    // One raw pointer, cast rather than re-derived: two `&raw mut`
+    // borrows of the same local would invalidate the first under Stacked
+    // Borrows, and the byte write below happens while the update holds
+    // its own pointer.
+    let base = &raw mut h as *mut u8;
+
+    unsafe {
+        update_header_flags(base as *mut RcHeader, |flags| {
+            base.add(6).write(3);
+            flags | COW
+        });
+    }
+
+    assert_eq!(
+        h.flags & 0x00FF_0000,
+        3 << 16,
+        "the collector's byte survived an update that had already read"
+    );
+    assert_ne!(h.flags & COW, 0, "and the mutator's own bit landed");
+    assert_eq!(h.refcount, 1, "with the counter untouched");
+}
+
+/// A mark in the collector's bytes passes through both halves of a
+/// destructor's guard.
+///
+/// **This pins the outcome, not the width.** The mark is set before the
+/// call, so a whole-word writer that loads it and puts it back passes
+/// too — the two functions take no closure, so there is no gap to place
+/// a store in the way the update test does. What holds their width is
+/// `the_widths_the_mutator_uses`, which reads the source.
+#[test]
+fn the_teardown_guard_leaves_the_flags_half_alone() {
+    let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+    h.flags |= FOREIGN_MARK;
+
+    unsafe { crate::refcount::mutator_guard_retain(&raw mut h) };
+    assert_eq!(h.refcount, 2);
+    assert_eq!(h.flags & FOREIGN_MARK, FOREIGN_MARK, "the mark survives +1");
+
+    let left = unsafe { crate::refcount::mutator_unguard_release(&raw mut h) };
+    assert_eq!(left, 1);
+    assert_eq!(h.flags & FOREIGN_MARK, FOREIGN_MARK, "and survives -1");
 }

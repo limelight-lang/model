@@ -25,7 +25,7 @@ fn the_hash_is_computed_once_on_demand_and_never_zero() {
     // only in the inline layout — in the other it is the `data` pointer —
     // so the layout this assumes is asserted rather than assumed.
     assert_eq!(
-        unsafe { crate::refcount::header_flags(s as *const RcHeader) }
+        unsafe { crate::refcount::mutator_flags(s as *const RcHeader) }
             & crate::refcount::ENTITY_KIND_MASK,
         EntityKind::String.to_flags(),
         "the poisoning below writes at an inline string's first byte"

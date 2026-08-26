@@ -22,7 +22,7 @@ fn an_out_of_line_string_is_read_through_data_by_its_kind_alone() {
     let s = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, b"grows", 0) };
     assert!(!s.is_null());
 
-    let flags = unsafe { crate::refcount::header_flags(s as *const RcHeader) };
+    let flags = unsafe { crate::refcount::mutator_flags(s as *const RcHeader) };
     assert_eq!(
         flags & ENTITY_KIND_MASK,
         EntityKind::StringDynamic.to_flags(),

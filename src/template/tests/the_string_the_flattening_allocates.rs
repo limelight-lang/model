@@ -27,7 +27,7 @@ fn a_flattened_result_past_the_slot_limit_is_out_of_line() {
         assert!(!out.is_null());
         assert!(
             crate::string::bytes_are_out_of_line(unsafe {
-                crate::refcount::header_flags(out as *const RcHeader)
+                crate::refcount::mutator_flags(out as *const RcHeader)
             }),
             "the assembled result did not fit one slot"
         );

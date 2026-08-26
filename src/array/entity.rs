@@ -1491,7 +1491,7 @@ unsafe fn release_children_in_order(a: *mut LLArray, pending: &mut WorkList<Pend
 #[inline]
 unsafe fn is_array(entity: *mut RcHeader) -> bool {
     use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind};
-    let flags = unsafe { crate::refcount::header_flags(entity) };
+    let flags = unsafe { crate::refcount::mutator_flags(entity) };
     (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT == EntityKind::Array as u32
 }
 

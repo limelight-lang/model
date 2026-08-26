@@ -52,7 +52,7 @@ unsafe fn distinct_arrays(root: *mut LLArray) -> usize {
         // reads whichever representation the array holds.
         unsafe {
             for_each_counted_child(a, |child| {
-                let flags = crate::refcount::header_flags(child);
+                let flags = crate::refcount::mutator_flags(child);
                 let kind = (flags & crate::refcount::ENTITY_KIND_MASK)
                     >> crate::refcount::ENTITY_KIND_SHIFT;
                 if kind == crate::refcount::EntityKind::Array as u32 {

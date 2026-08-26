@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use crate::journal::kinds::journal_event;
 use crate::memory::context::{LLContext, resolve_arena};
 use crate::refcount::{
-    EntityKind, HAS_WEAK_REFERENCES, MemoryCategory, RcHeader, header_flags, ll_retain,
+    EntityKind, HAS_WEAK_REFERENCES, MemoryCategory, RcHeader, ll_retain, mutator_flags,
     update_header_flags,
 };
 
@@ -125,7 +125,7 @@ pub unsafe extern "C" fn ll_weakref_create(
     ctx: *mut LLContext,
     target: *mut RcHeader,
 ) -> *mut LLWeakRef {
-    let flags = unsafe { header_flags(target) };
+    let flags = unsafe { mutator_flags(target) };
     debug_assert!(
         may_be_a_weak_referent(flags),
         "a weak referent must be an object"
@@ -217,7 +217,7 @@ pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
 #[expect(dead_code, reason = "the weak window of the cycle teardown is S36.3")]
 pub(crate) unsafe fn notify_members(members: &[*mut RcHeader]) {
     for &m in members {
-        if unsafe { header_flags(m) } & HAS_WEAK_REFERENCES != 0 {
+        if unsafe { mutator_flags(m) } & HAS_WEAK_REFERENCES != 0 {
             unsafe { notify_death(m) };
         }
     }
@@ -274,7 +274,7 @@ pub(crate) unsafe fn drain_arena_weak_log(arena: *mut crate::memory::arena::Aren
     let mut entries = Vec::new();
     unsafe { (*arena).drain_weak_log(|e| entries.push(e)) };
     for target in entries {
-        let flags = unsafe { header_flags(target) };
+        let flags = unsafe { mutator_flags(target) };
         if MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena
             && flags & HAS_WEAK_REFERENCES != 0
         {

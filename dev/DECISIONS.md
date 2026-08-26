@@ -67,6 +67,35 @@ the leak in the new design.
 itself leaves no survivor, which is why the abandonment is recorded here rather
 than being read as completion.
 
+## 2026-08-26 — the header's access width is a correctness rule, and no mutator access spans byte 6
+
+**Decided:** every mutator access to a **published** header is narrow — four
+bytes for the counter at +0, two for the mutator's half of the flags at +4.
+`header_pair` becomes two loads, `update_header_flags` a 16-bit
+read-modify-write, and the teardown guard's `+1`/`-1` touch the counter alone.
+The eight-byte helpers are deleted; `publish_header`'s single wide store
+stays, being the one access made before the entity is published. A `const`
+assertion requires every mutator-visible flag constant to sit below bit 16,
+which is what makes the 16-bit read lossless.
+**Why:** the collector writes byte 6 one byte at a time, and a 4- or 8-byte
+mutator access at +4 overlaps that store without covering it. That is a
+mixed-size atomic access: undefined in Rust's memory model whatever it costs,
+and Miri rejects it. The entry of 2026-08-15 below called the width a
+performance rule with a measurement behind it and kept `header_pair` wide on
+that argument; the argument was about which access is faster, and this one is
+about which is defined, so it supersedes rather than contradicts.
+**Rejected:** keeping the wide accesses and narrowing only the write side. The
+Critic round of 2026-08-26 found the plan's own clause guarding writes while
+the day-one defect is a read — a write buries the collector's byte, a read is
+undefined without burying anything, and only the second is invisible to every
+test the crate can write.
+**Cost:** `header_pair`'s one wide load becomes two narrow ones on
+`ll_cow_separate`'s path, and **that is unmeasured** — the 2026-08-15 figures
+priced the opposite direction on the store barrier, not this one. The path is
+a copy-on-write separation, which allocates, so the two loads are unlikely to
+be its cost; unlikely is not measured, and `dev/BENCHMARKS.md` carries no
+entry for it.
+
 ## 2026-08-26 — the ring-closing reserve is widened to codes 0–7
 
 **Decided:** the kind codes of the entry below become `Object 0, Lazy 1,

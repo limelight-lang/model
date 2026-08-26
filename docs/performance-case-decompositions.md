@@ -21,7 +21,14 @@ live.
 > The instruction counts and the contract each instruction answers to are
 > unchanged by the move; the constants are the old ones because these are
 > listings of the build that produced the figures, and re-typing them
-> against the new layout would report a disassembly nobody read.
+> against the new layout would report a disassembly nobody read. The
+> width rule the rows cite has also changed footing: it was a
+> performance rule with these measurements behind it and is now a
+> correctness one, the mutator's flags load having narrowed to two bytes
+> so that it cannot overlap the collector's byte store
+> (`dev/DECISIONS.md`, "the header's access width is a correctness
+> rule"). The instruction counts are unaffected; what the rows may no
+> longer be read as is the *reason* for the width.
 
 
 Produced from the release staticlib built with `-C debuginfo=2`

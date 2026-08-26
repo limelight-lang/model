@@ -568,6 +568,13 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
   own sources, the class being invisible to every runtime check
   (`dev/DECISIONS.md`, "a header is read as narrowly as it is written";
   the instrument that exhibits it is `dev/WORKFLOW.md`, ThreadSanitizer).
+- **No mutator access to a published header spans byte 6** — four bytes
+  for the counter, two for the mutator's half of the flags, and the one
+  eight-byte store is `publish_header`, made before anything can read the
+  slot as live. A wider access would overlap the collector's byte store
+  without covering it, which is a mixed-size atomic access
+  (`dev/DECISIONS.md`, "the header's access width is a correctness rule";
+  pinned by `refcount::tests::the_flags_half_the_mutator_leaves_alone`).
 
 ## Key decisions
 

@@ -216,7 +216,7 @@ fn a_refused_heap_copy_gives_an_escaped_child_back_through_the_barrier() {
 
     unsafe {
         assert_eq!(
-            crate::refcount::header_flags(d as *const RcHeader) & crate::refcount::IS_ESCAPEE,
+            crate::refcount::mutator_flags(d as *const RcHeader) & crate::refcount::IS_ESCAPEE,
             0,
             "the refused copy left the child counted as an escapee"
         );
