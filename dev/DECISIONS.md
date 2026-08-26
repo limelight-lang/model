@@ -4473,3 +4473,162 @@ a defect to engineer away.
 an order that changes under an optimization tier is the timing class
 this family has consistently refused to trade (the drop-point pin,
 the destructor-bearing exclusion in `proof-horizon.md`).
+
+## 2026-08-26 — `walk.rs` is split, not deleted: its upper half is the crate's only entity tracer
+
+Sage ruling, after a Critic round over `PLAN.md` S30–S40 that Edmond asked
+for.
+
+**Decided:** the unconditional half of `src/walk.rs` — `Cell`, `CellShape`,
+`OutsideCells`, `OutsideCarry`, `CellReader`, `PlainCells`,
+`counted_box_cell`, `trace_entity`, `trace_cells`, `empty_cell`,
+`sever_cells` — moves whole to a new crate-visible `src/cells.rs` in the
+deletion commit itself. The collector below the file's build-step-2 marker
+dies. Inside the moved half the epoch's re-check apparatus dies with the
+feature: `RelaxedCells`, `WalkOutsideFn`, `OutsideRead`, the `walk_relaxed`
+and `recheck` members, `Cell.raw` and the storage-version answers. `Census`
+and `heap_census` move as `#[cfg(test)]`. `rc-cycle` builds no enumerator of
+its own: S35's mark traces through `cells::trace_cells::<PlainCells>` and
+S32.0's block-kind dispatch runs above that call, in the collector's
+per-child visit, so `cells.rs` keeps no knowledge of shadow rows.
+
+**Why:** the file is two modules. `class.rs` stores `OutsideCells` in the
+class descriptor, `promote.rs`'s arena reset calls `trace_entity` four times,
+`object.rs`'s dispose path is generic over `CellReader`, and `template.rs`,
+`array/entity.rs`, `array/entry.rs` and `refcount.rs` compile against the
+rest. Deleting the file breaks five modules for reasons unconnected to either
+collector, which makes S30's own criterion — the crate builds green with no
+cycle collector — unreachable by its own step. Renaming in place was refused
+because the module doc and half the comments present the tracer as "rc-walk
+build step 1" and cite a deleted document: the text is rewritten either way,
+and the move is the rewrite's vehicle. The name is `cells` and not `trace`
+because `rc-cycle.md` calls the S35 mark "the trace", and a substrate module
+of that name would read as a collector again.
+
+## 2026-08-26 — `gc.rs` survives the deletion of `rc-trace`: it is the ABI and the safepoint
+
+Sage ruling, same round.
+
+**Decided:** S30.3 deletes the `rc-trace` strategy *from* `src/gc.rs` — the
+candidate buffer, the colours, trial deletion, the thresholds and
+`COLLECT_PENDING` — and keeps the module. `ll_gc_collect_cycles`,
+`ll_gc_maybe_collect`, `ll_gc_checkpoint` and `ll_gc_checkpoint_ack` keep
+their names, the barrier's log reserve is still refilled inside
+`ll_gc_maybe_collect`, and the interim bodies collect nothing and say so.
+The trigger of this plan is the in-line collection at a failed allocation
+plus one runtime arm — a failed enrolment, fired at the poll; thresholds are
+the compiler's policy and stay in the backlog with the collector-thread
+accelerator.
+
+**Why:** three of the four things the file carries are not the strategy. The
+checkpoint pair is the configuration-independent lowering surface, and
+`object.rs:238,246` and `benches/lifecycle.rs:23` already depend on it.
+`gc.rs:714` is the only steady-state refill of the log reserve —
+`heap.rs:1734` fills once at thread init — so deleting the file reverts
+`rfc/runtime/exceptions.md`'s "the next safepoint raises memory-exhausted"
+to "the barrier eventually fails", with no test that can see the change.
+And S30's verification links nothing and builds no bench target, so four
+undefined C symbols would surface at integration rather than at the stage.
+
+## 2026-08-26 — `rc-cycle`'s teardown is built, and its order is written down before the old collector goes
+
+Sage ruling, same round.
+
+**Decided:** S36 gains three steps for the teardown — the guard and the weak
+window, destructors and the resurrection re-verify, sever and free and the
+deferred drops — and all eight operations of `drain_confirmed` survive in
+today's order. The resurrection re-verify survives. The order is written
+into `rfc/model/gc/rc-cycle.md` as a "Cycle teardown" section by a new step
+S30.6, executed **before** S30.2, so the section is transcribed against
+running code; `rfc/model/weak-references.md` repoints its binding obligation
+there. A block's `used` falls at the slot's return and never at the parking,
+and S34.3's criterion names it.
+
+**Why:** S36's goal claimed the frees while its two steps built the exact
+test and the epoch parking and nothing else; with every box ticked the crate
+would enrol, trace, judge, and return nothing to the allocator. The weak-cell
+ordering is the part that cannot be re-derived later: null per member as each
+is torn down, and the second member's destructor calls `get()` on the first,
+receives a strong reference, and the slot is freed under it — the window PEP
+442 exists to close. The re-verify survives the shortlist framing rather than
+contradicting it: garbage is monotone only while no reference to the
+component exists outside it, and the destructor runs holding `$this`, a
+reference the teardown itself handed to user code.
+
+## 2026-08-26 — maturation is Y9's edge-side prune, and the trace writes nothing
+
+Sage ruling, same round.
+
+**Decided:** S37 builds the prune and only it. A member whose stamp epoch is
+current and whose age has reached `k` is read as an opaque live external and
+is not descended into; the same test at depth zero skips a mature popped
+root, which is all the root-side delay ever meant. The stamp has one writer,
+the owning thread's commit, after judgement (new step S36.6); the trace loads
+it and never writes it, so S35.1's "writes nothing into any entity" stands
+verbatim and "the two-bit epoch's wrap is retired on contact" is withdrawn.
+Ageing is component-wise in value and per-entity in residence:
+`min(age) + 1` saturated at 3, stored identically in every member. A stale
+stamp reads as age 0 and is left in place. **Acquittal never clears the
+enrolment bit** (new step S37.4): a proven-live root parks in the suspects
+buffer with its bit set and is re-offered at epoch turnover. `k = 3` and a
+turnover every 64 completed collections are provisional, after YRC's only
+known values, with the measurement owed at S40.1.
+
+**Why:** the root-side reading filters which roots start a trace and does
+nothing to the closure, and the closure is the problem — the subgraph
+reachable from a median candidate root on a booted Laravel corpus is 381 of
+381 objects. Commit is the only writer that the law of S34.2 allows, since a
+mature stamp suppresses future suspicion, and it is what keeps S33.1's abort
+free and S35.1's byte-identical hash true. The withdrawn clause was both
+contradictory and useless: eager clearing fires only when a trace touches the
+entity, and the stamp that wraps is exactly the one no trace touched for four
+epochs. The epoch-scoped re-offer is the real backstop, and it turns every
+stamp pathology — ring-mates matured apart, a wrapped stamp, a wrong dirty
+proposal — from a permanent miss into bounded floating garbage.
+
+## 2026-08-26 — Y14's non-wait clause retires with the handshake that was its reason
+
+Sage ruling, same round, and a change to the specification rather than to the
+plan alone.
+
+**Decided:** a mutator whose GC-heap allocation is refused waits on a held
+claim by any holder but itself, then takes the claim and collects. The clause
+"a thread that finds the token taken does not wait" is retired. The claim
+carries a thread-local held flag, so a destructor allocating inside its own
+thread's collection collects nothing instead of waiting on itself.
+
+**Why:** the clause was argued from the handshake's deadlock, and the
+amendment of 2026-08-26 deleted the handshake. A holder's in-line collection
+is synchronous and needs nothing from the waiter, so the waiter's only cost
+is latency. The one hazard the deletion leaves is self-re-entry, and the held
+flag is what distinguishes it from contention.
+
+## 2026-08-26 — the boundary corrections the same round forced on S30
+
+Bookkeeping, recorded because each was a claim in the plan that the tree
+contradicted.
+
+**Decided and fixed in `PLAN.md`:** the 13 files carrying
+`not(feature = "rc-walk")` are a **subset** of the 24 gated on it, not a
+second group, and both counts are of files that mostly survive — the guards
+go, not the files. `Cargo.toml`'s `default = ["rc-walk"]` goes with the
+feature. S30's `rg` gate widens from `src/` and `dev/` to `docs/`,
+`benches/`, `bench-external/`, `Cargo.toml` and `PLAN.md`: `model/docs/` held
+37 references in four files, and `memory/mod.rs` declares
+`docs/memory-manager.md` normative for that module. `cargo bench --no-run`
+joins the gate, because `cargo test --lib` builds no bench target. S30.4's
+`--list` diff is taken in **both** GC configurations before against the
+single configuration after — 526 tests under `rc-walk`, 493 under
+`rc-trace`, union 553 on 2026-08-26 — and gains a third heading for a test
+whose contract outlives its instrument, which a rewrite hides from the diff
+because the name does not change. The 85 backticked citations of deleted
+documents across 31 files of `model/src` are checked by grep, since
+`linkcheck.php` reads only `rfc` and only bracketed links and reports zero
+while all 85 are broken. `rfc/model/gc/strategies.md` leaves the deletion
+list: Edmond's ruling named `rc-walk`, `rc-trace` and the horizon, and Y14
+cites that file's arm/fire rule as a correctness requirement.
+
+**Why:** every one of these was a sentence that read as checked and was not.
+The counts were right and the sentence built on them was not; the gate grepped
+two directories of six; the link checker cannot see the citation form the
+Rust source actually uses.

@@ -44,66 +44,208 @@ defect would be reproduced. It is carried as S39.
 gone there is no `rc-walk` feature and no `rc-trace` default, so the matrix in
 `dev/WORKFLOW.md` loses its GC axis: one `cargo test --lib`, three threaded
 runs at four threads, and one release build. The `hash-folding` axis is
-untouched.
+untouched. `cargo bench --no-run` joins the gate at S30, because `cargo test
+--lib` builds no bench target and `benches/lifecycle.rs` imports the GC ABI.
+
+**S30 through S40 went through a Critic round and four Sage rulings on
+2026-08-26**, on Edmond's instruction, and the stages below are the amended
+form. What the round changed, in one line each: `walk.rs` is split rather than
+deleted, because its upper half is the crate's only entity tracer and five
+surviving modules compile against it; `gc.rs` survives as the ABI and safepoint
+module, because it carries the compiler's lowering surface and the log
+reserve's only steady-state refill; `strategies.md` leaves the deletion list,
+because Y14 cites its arm/fire rule as a correctness requirement; S36 gains the
+teardown it claimed and never built; S37 builds Y9's edge-side prune instead of
+a root-side delay that bounds nothing; and the enrolment bit is cleared only at
+death, which supersedes Y12 clause 4. The rulings and their reasons are in
+`dev/DECISIONS.md`.
 
 ---
 
-## S30 — Delete `rc-walk`, `rc-trace` and the horizon  [active]
+## S30 — Delete `rc-walk` and `rc-trace`, and split the tracer out of the walk  [active]
 
 Goal, ruled by Edmond 2026-08-26: nothing of the two old collectors survives in
 the working tree, in code or in documents, so that no reader — human or agent —
 takes a superseded mechanism for the design in force. The old state stays
 reachable as a branch rather than as files.
 
+**Three things live inside the deleted files without belonging to either
+collector**, and the Critic round of 2026-08-26 found all three scheduled for
+deletion: the kind-dispatched tracer in the upper half of `walk.rs`, whose
+customers are the class descriptor, the arena reset and the dispose path; the
+GC C ABI and the barrier's log-reserve refill in `gc.rs`; and the barrier
+micro-operation contract in `rfc`'s `strategies.md`. Each survives by a step
+below. The four Sage rulings that decided them are in `dev/DECISIONS.md`,
+2026-08-26.
+
+**The steps run in the order they are written, not in numeric order.** S30.6 and
+S30.7 were added by that round and are preconditions of the deletions they
+precede; a number is never reissued, so they keep the numbers they were given.
+
 Done when: the crate builds and its suite is green with no cycle collector at
-all; `rg 'rc-walk|rc-trace|gc-horizon'` over `src/` and `dev/` returns only
-history references in the journals; `dev/tools/linkcheck.php` in `rfc` reports
-zero broken links.
+all; `cargo bench --no-run` compiles the bench targets; `rg
+'rc-walk|rc-trace|gc-horizon'` over `src/`, `dev/`, `docs/`, `benches/`,
+`bench-external/`, `Cargo.toml` and `PLAN.md` returns only history references —
+the journals, and the steps of this stage that name what they delete; the 85 backticked citations of deleted documents that `model/src`
+carried across 31 files on 2026-08-26 are repointed or gone, checked by grep,
+because `dev/tools/linkcheck.php` reads only `rfc` and only bracketed links and
+reports zero while every one of them is broken; that tool reports zero broken
+links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
 
 - [ ] S30.1 Tag the pre-deletion state in both repositories
       done: branch `archive/pre-rc-cycle` exists in `model` and in `rfc` at the
-        commit before the first deletion, and its name is recorded in
-        `dev/DECISIONS.md` so a later reader knows where the old code went
+        commit before the first deletion and is pushed to `origin` — a local
+        branch is one disk — and its name is recorded in `dev/DECISIONS.md` so
+        a later reader knows where the old code went
       tier: T0 · role: —
-- [ ] S30.2 Delete the `rc-walk` code
-      done: `src/walk.rs`, `src/walk/`, `src/collector.rs`, `src/collector/`,
-        `src/epoch.rs`, `src/epoch/`, the `rc-walk` Cargo feature, the 24 files
-        gated on it and the 13 carrying `not(feature = "rc-walk")` guards are
-        gone — **except `src/memory/retained.rs`**, whose occupancy index
-        `rc-cycle` inherits for retained blocks and which therefore moves rather
-        than dies; what `rc-cycle` inherits — the deferred-free parking, the
-        handshake, the exact test — has **moved** into its own module rather
-        than died, and each moved item is named in the commit body
+- [ ] S30.6 Write the teardown's order into `rc-cycle.md`   *(before S30.2)*
+      done: `rfc/model/gc/rc-cycle.md` carries a "Cycle teardown" section
+        stating the commit-side order as a binding obligation — the exact test
+        confirms with the corpse rule included, every member takes the teardown
+        guard, every weak cell naming any member is nulled with all members
+        covered before any user code runs, destructors run, and when any ran the
+        exact test runs again guard-discounted and abandons on failure with
+        survivors at true counts and cells left nulled; then sever, free through
+        the ordinary death path, and drain the deferred-drop queue after the
+        last free — with the two accepted consequences restated, that nulling is
+        irrevocable and that the free-time bit-7 clear catches weak state a
+        destructor re-created; `rfc/model/weak-references.md`, "Cycle death",
+        names that section as its binding obligation in place of
+        `gc/rc-walk.md`, and its `rc-trace` sentence goes
+      tier: T1 · role: Critic
+      handoff: written before S30.2 rather than before S30.5 alone, so the
+        section is transcribed against the running `drain_confirmed` instead of
+        against a branch. `weak::notify_members` itself carries no feature gate
+        and survives; what dies is the only composition of the eight operations.
+- [ ] S30.7 Amend `strategies.md` instead of deleting it   *(before S30.5)*
+      done: the `rc-trace` section and the registry rows of both deleted
+        strategies are gone; the registry lists `rc-cycle` (in force) and
+        `rc-satb` (designed, unbuilt) and carries no tombstone, the deletion
+        record being the journal's; the barrier micro-operation contract
+        (`store_ptr` / `store_box` / `drop`), the safepoint duties including the
+        reserve refill, the non-moving constraint and the arm/fire rule stay,
+        with the arm half re-said against `rc-cycle`'s root queue and §2's
+        counted-locals argument re-attributed from `rc-walk` to `rc-cycle`;
+        linkcheck clean, and no text presents a deleted strategy as in force
+      tier: T2 · role: Critic
+      handoff: Edmond's ruling named `rc-walk`, `rc-trace` and the horizon and
+        not this file. Y14 cites its arm/fire rule as a correctness
+        requirement — a store lowers the old value's count before overwriting
+        the pointer, and a collection firing in that window subtracts one
+        reference twice and frees a live object — and 21 documents link it, 14
+        of which survive S30.5.
+- [ ] S30.2 Split `walk.rs`, delete the `rc-walk` collector
+      done: `src/collector.rs`, `src/collector/`, `src/epoch.rs`, `src/epoch/`,
+        the `rc-walk` Cargo feature and `default = ["rc-walk"]` in `Cargo.toml`
+        are gone, and the feature's guards are resolved in the 24 files that
+        carry them — **the files stay**; the 13 files carrying
+        `not(feature = "rc-walk")` are a subset of those 24, not a second group,
+        and each guarded pair is resolved per site rather than by keeping one
+        arm wholesale, because the `not(rc-walk)` arm of `ll_release` still
+        calls `gc::buffer_candidate`, which S30.3 deletes. `src/walk.rs` is
+        **split at its build-step-2 marker, never deleted whole**: the collector
+        below the marker dies; the kind-dispatched tracer above it — `Cell`,
+        `CellShape`, `OutsideCells`, `OutsideCarry`, `CellReader`, `PlainCells`,
+        `counted_box_cell`, `trace_entity`, `trace_cells`, `empty_cell`,
+        `sever_cells` — moves to `src/cells.rs` with the tests that pin it,
+        because `class.rs`, `promote.rs`, `object.rs`, `template.rs`,
+        `array/entity.rs`, `array/entry.rs` and `refcount.rs` compile against it
+        and S35 traces through it; the module is crate-visible, `pub mod walk`
+        is not carried forward, and no customer outside the crate exists.
+        Inside the moved half the epoch's re-check apparatus dies with the
+        feature: `RelaxedCells`, `WalkOutsideFn`, `OutsideRead`, the
+        `walk_relaxed` and `recheck` members of `OutsideCells`, `Cell.raw` and
+        the storage-version answers threaded through `trace_cells` and
+        `for_each_counted_cell`. `Census` and `heap_census` move as
+        `#[cfg(test)] pub(crate)`, so the leak tests of `string/` and
+        `array/vector/` keep their instrument and the production build compiles
+        no census. `src/memory/retained.rs` stays, its module doc repointed off
+        `retained-block-walk.md`. What `rc-cycle` inherits — the deferred-free
+        parking, the handshake, the exact test, the sever dispatch — has moved
+        rather than died, each moved item named in the commit body, and every
+        `crate::walk` path and comment citation is repointed by grep, since no
+        build reports a stale one
       tier: T2 · role: Code Reviewer
-- [ ] S30.3 Delete the `rc-trace` code
-      done: `src/gc.rs` and its candidate buffer are gone, together with
-        `CANDIDATE_INDEX_*`, `CYCLE_COLLECTOR_COLOR_SHIFT` and the buffered
-        bit's old meaning; every call site that reached into the buffer
-        (`object.rs`, `array/entity.rs`) is closed rather than stubbed
+      handoff: renaming in place was refused: the module doc and half the
+        comments present the tracer as "rc-walk build step 1" and cite
+        `rc-walk.md`, so the text is rewritten either way, and the move is the
+        rewrite's vehicle. The name is `cells` and not `trace`, because
+        `rc-cycle.md` calls the S35 mark "the trace" and a substrate module of
+        that name would read as a collector again.
+- [ ] S30.3 Delete the `rc-trace` strategy from `gc.rs`, keep the module
+      done: the candidate buffer, the colours, trial deletion, the thresholds
+        and `COLLECT_PENDING` are gone from `src/gc.rs` together with their
+        tests, and `CANDIDATE_INDEX_*`, `CYCLE_COLLECTOR_COLOR_SHIFT` and the
+        buffered bit's old meaning die in `refcount.rs`; every call site that
+        reached into the buffer (`object.rs`, `array/entity.rs`,
+        `memory/heap.rs:1541`'s `gc::dispose` from `ll_thread_exit`, and the
+        `epoch`/`gc` teardown bracket pairs in `object.rs`) is closed rather
+        than stubbed. **`src/gc.rs` stays** as the ABI-and-safepoint module: the
+        four exported symbols keep their names — `ll_gc_collect_cycles`,
+        `ll_gc_maybe_collect`, `ll_gc_checkpoint`, `ll_gc_checkpoint_ack` — the
+        barrier's log reserve is still refilled inside `ll_gc_maybe_collect`,
+        and the module doc is rewritten against `rc-cycle.md`; interim bodies
+        collect nothing and say so in their docs; `memory/arena/tests/the_logs_the_reset_reads.rs`
+        passes untouched, which is what proves the refill survived
       tier: T2 · role: Code Reviewer
+      handoff: three of the four things `gc.rs` carries are not the strategy.
+        `ll_gc_checkpoint`'s own doc says it is kept exported so lowering is
+        configuration-independent, and `object.rs:238,246` and
+        `benches/lifecycle.rs:23` already depend on that. `gc.rs:714` is the only
+        steady-state refill of the log reserve — `heap.rs:1734` fills once at
+        thread init — and deleting it reverts `rfc/runtime/exceptions.md`'s
+        "the next safepoint raises" to "the barrier eventually fails", with no
+        test that can see the change.
 - [ ] S30.4 Decide each dying test rather than sweeping them
-      done: every test deleted with S30.2 and S30.3 is listed in the commit
-        body under one of two headings — *encodes a contract that dies with the
-        mechanism* or *encodes a contract that outlives it, and has moved*;
-        `cargo test --lib -- --list` is diffed before and after, and the
-        difference is exactly that list
+      done: every test deleted with S30.2 and S30.3 is listed in the commit body
+        under one of **three** headings — *encodes a contract that dies with the
+        mechanism*, *encodes a contract that outlives it, and has moved*, or
+        *the contract outlives it and the instrument does not, so the test is
+        rewritten*; `cargo test --lib -- --list` is diffed **in both GC
+        configurations before against the single configuration after**, since
+        the 2026-08-26 baseline is 526 tests under `rc-walk` and 493 under
+        `rc-trace`, union 553, and a diff taken in one configuration is blind to
+        the other's 60 or 27; the difference is exactly the first two headings'
+        lists, and the third heading's tests are named with the assertions they
+        keep, because a rewrite keeps its name and the diff shows nothing;
+        `benches/lifecycle.rs`'s `rc-walk` arm is decided under the same
+        headings
       tier: T2 · role: Critic
       handoff: `dev/WORKFLOW.md` forbids deleting a test to go green. These are
         deleted because their subject is gone, which is a different act — and
-        the difference has to be visible, not asserted.
+        the difference has to be visible, not asserted. The third heading is
+        owed to two cases the two-heading form cannot express:
+        `refcount/tests/the_header_the_compiler_shares.rs` survives gutted, and
+        `memory/barrier/tests/publication_before_teardown.rs`,
+        `weak/tests/*` and the `heap_census` leak tests keep a
+        strategy-independent contract while losing their driver.
 - [ ] S30.5 Delete the documents of both collectors and the horizon
       done: in `rfc`, `model/gc/rc-walk*.md`, `model/gc/walk/`,
         `model/gc/retained-block-walk.md`, `model/gc/gc-horizon*.md`,
         `model/gc/gc-horizon-cases/`, `model/gc/gc-horizon-v2/`,
-        `model/gc/strategies.md`, `dev/TASK-rc-walk-proof.md` and
+        `model/gc/drain-window.md`, `dev/TASK-rc-walk-proof.md` and
         `dev/tools/rc-walk/` are gone; in `model`,
         `dev/RC_WALK_CRITICAL_REVIEW.md` and the three `dev/design/` records of
-        the walk are gone; every inbound link is repointed or its paragraph goes
-        with it
-      tier: T2 · role: —
+        the walk are gone, and `docs/architecture.md`,
+        `docs/memory-manager.md`, `docs/performance-case.md` and
+        `docs/performance-case-decompositions.md` lose their 37 references —
+        `memory/mod.rs` declares `docs/memory-manager.md` normative for that
+        module, so a stale one there is authority; every inbound link is
+        repointed or its paragraph goes with it, and the arguments that outlive
+        the documents move **first**: the verification debt of
+        `model/gc/cycle/questions.md` names where the TLC battery's obligation
+        now lives, and the count-elision bargain cited by Y11 and by the
+        fourteenth ruling moves into `rc-cycle`'s own documents
+      tier: T2 · role: Critic
       handoff: `satb.md` stays — it describes something unbuilt rather than
-        something superseded. `heap-design.md` stays, minus the CAS-handoff
-        section, which dies with the GC-state field.
+        something superseded — and its four links to `strategies.md` survive
+        because S30.7 keeps that file. `heap-design.md` stays, minus the
+        CAS-handoff section, which dies with the GC-state field; its
+        `strategies.md` links at lines 4 and 32 are outside that section.
+        `cycle/questions.md` links the deleted set seven times, Y5 and Y8
+        hardest, and those are the answers that authorise this stage: a
+        paragraph that cannot be repointed cites `archive/pre-rc-cycle` by name
+        rather than being deleted.
 
 ## S31 — The header's new flag layout
 
@@ -131,20 +273,30 @@ enrolment gate is one mask, and the kind field is four bits wide.
         position-free; "closes a cycle" is
         `flags & 0b110000 == 0`, "carries a class at +8" is
         `flags & 0b111000 == 0`, "is a string" is `flags & 0b111000 == 0b010000`;
-        `CANDIDATE_KINDS`' bitset is replaced by the range test and the decision
+        `CANDIDATE_KINDS`' bitset is replaced by the range test, the four codes
+        below four are declared reserved for ring-closing kinds so a later kind
+        is not silently excluded by a permanent refusal (Y6), and the decision
         that refused renumbering is superseded in `dev/DECISIONS.md` with its
         reason
       tier: T2 · role: Critic
       handoff: the renumbering was refused once, when it would have bought one
         test at the price of churn. It rides along here because the field is
-        being rebuilt anyway.
+        being rebuilt anyway. The reservation clause answers the Critic round's
+        objection that a mask makes adding a ring-closing kind invisible, where
+        the bitset made it a one-line act; 179 of the corpus's 381 objects are
+        closures, and a closure entity is the likeliest next such kind.
 - [ ] S31.2 Fold the string's layout into the kind field
       done: `STRING_OUT_OF_LINE` is gone, `LLStringDynamic` is selected by kind
         code 5 — whose meaning is **bytes outside the body, whatever the
         reason**, not "growable" — and every "is a string" site accepts both
-        codes; a red-first
-        test proves an out-of-line string is still read through `data`
+        codes; the inventory of sites that name one representation is taken by
+        flipping the factory's stamp so every string is out-of-line and reading
+        the failures (`dev/WORKFLOW.md`, Tests), not by grep; a red-first test
+        proves an out-of-line string is still read through `data`
       tier: T2 · role: —
+      handoff: `promote.rs:461` tests `k == EntityKind::String.to_flags() &&
+        flags & STRING_OUT_OF_LINE != 0`, which is exactly the shape the stamp
+        flip finds and static reading does not.
 - [ ] S31.3 The enrolment gate is one mask
       done: the release path decides with `flags & 0x733 == 0` — category zero,
         kind below four, class not acyclic, ownership not proven, not already
@@ -153,15 +305,23 @@ enrolment gate is one mask, and the kind field is four bits wide.
       tier: T2 · role: —
       handoff: a scenario test covers a pair, never one half — the counter is
         what sees a condition that never fires.
-- [ ] S31.4 Narrow the mutator's header writes
+- [ ] S31.4 Narrow the mutator's header writes, and rule the read side
       done: the mutator writes the refcount with a 32-bit store and the flags
-        with a byte store, so no mutator write spans byte 2; the whole-word
-        `mutator_update_flags` is gone, and a test asserts the collector's byte
-        survives a concurrent flags update
+        half with stores that stop below byte 2, so no mutator write spans it;
+        the whole-word `mutator_update_flags` is gone, and so is the flags half
+        of `mutator_guard_retain` and `mutator_unguard_release`, which write it
+        in a 64-bit store on the teardown path; the release path's
+        `flags & 0x733` read is narrowed with it, because a 32-bit load at +4
+        against the collector's byte store at +6 is a mixed-size atomic access
+        that Rust's memory model does not define and Miri refuses; a test
+        asserts the collector's byte survives a concurrent flags update, and it
+        is written so the mutator's load precedes the collector's store, since
+        the sequential order passes on today's defective code
       tier: T2 · role: Critic
       handoff: today's comment promises the opposite — "may bury a concurrent
-        collector byte store". Either this step holds, or the lossy contract is
-        inherited explicitly; it is not left implied.
+        collector byte store". The Critic round of 2026-08-26 found the clause
+        guarding writes while the day-one defect is a read, and naming one of
+        three writers.
 
 ## S32 — The block header's collector triple
 
@@ -176,21 +336,32 @@ line, and the slot index derived from an address is proven exact.
         entity block by arithmetic, retained block by binary search over the
         occupancy index, large entity to a row in its own block header, and any
         other kind stops the descent with the child read as an external live
-        reference; a test drives one entity of each population
+        reference; the dispatch runs in the collector's per-child visit, above
+        the enumerator, so `cells.rs` keeps no knowledge of rows; a test drives
+        one entity of each population and asserts that the row resolved for an
+        entity is the row that entity's own address derives, and that two
+        differently sized occupants of one retained block resolve to distinct
+        rows
       tier: T2 · role: Critic
       handoff: the arithmetic covers one population of three. A retained block
         was filled by an arena's bump — mixed sizes, no stride — and this is
-        what `memory/retained.rs` was built for.
+        what `memory/retained.rs` was built for. The row-identity assertion is
+        owed because four smoke calls that only prove the descent terminated
+        pass while the arithmetic returns another entity's row.
 - [ ] S32.1 Prove the slot index derivation
       done: `((p & BLOCK_MASK) - LINE_SIZE) * recip >> 32` returns the slot's
         own index for every size class and every slot of a block, proven by an
-        exhaustive test rather than by sampling
+        exhaustive test against the division already at `heap.rs:2127` rather
+        than against an address recomputed from the index, which is a tautology
       tier: T1 · role: —
 - [ ] S32.2 Put the triple in the header's free tail
       done: `HeapBlockHeader` occupies 192 bytes of the 256-byte line and the
         triple — shadow pointer, `recip`, the collector's own copy of the size
         class — sits past it on its own cache line; the layout test that pins
-        the header's halves is extended rather than replaced
+        the header's halves is extended rather than replaced, and a `const`
+        assertion ties the triple's offset to `size_of::<HeapBlockHeader>()`,
+        because 192 is today's number by `BlockRemote`'s 64-byte alignment and
+        the existing test only asserts the header fits the line
       tier: T2 · role: Code Reviewer
       handoff: the size class is duplicated on purpose — it is written once at
         commissioning, and the copy is what keeps the lookup off the owner's
@@ -205,27 +376,51 @@ Done when: a collection allocates rows, uses them, and returns everything in
 one reset, with no write into any entity.
 
 - [ ] S33.1 The arena
-      done: a bump arena over 64 KB blocks from the pool, taken by the
-        collector and returned whole at the end of a collection; a refusal to
-        grow aborts the collection rather than failing the process
-      tier: T2 · role: —
+      done: a bump arena over 64 KB blocks, taken by the collector and returned
+        whole at the end of a collection **including on the abort path**, so a
+        refusal to grow aborts the collection rather than failing the process
+        and rather than leaking the blocks it already holds — the path that runs
+        when memory is short; the abort also nulls the shadow pointer of every
+        block on the touched list, because a stale pointer left in a block whose
+        arena has been recommissioned makes the next collection decrement live
+        payload; where the blocks come from — the ordinary pool or the critical
+        reserve Y14 says the in-line form must draw through, since the ordinary
+        path has already refused — is settled in this step and recorded
+      tier: T2 · role: Critic
+      handoff: the abort path is the one the Critic round found unexercised and
+        leak-prone, and the touched-list sweep is what closes the staleness the
+        arithmetic form has no tag for.
 - [ ] S33.2 The per-block row array
       done: `slots × 4` bytes reserved at a block's first touch **without being
         zeroed**, the pointer stamped into the block's triple, the block pushed
         onto the touched list; the met flag lives in a bitmap of one bit per
         group of eight slots, only the bitmap and a touched group are
-        initialised, and the row is colour 2 plus working count 30
+        initialised, and the row is colour 2 plus working count 30; the colour
+        assignment names its reserved code, so a met, condemned, zero-count row
+        is distinguishable from an untouched slot and a second reach cannot
+        re-initialise it from the refcount; what `slots` means for a retained
+        block, which has mixed sizes and no stride, and what the bitmap's groups
+        group there are settled in this step; a large entity, which gets one row
+        in its own block header and no group, carries its met flag in that row
       tier: T2 · role: —
+      handoff: three holes the Critic round opened. Without the reserved code a
+        condemned zero row reads as unmet; without a met bit the large entity is
+        condemned live on the first ring it joins; and `slots × 4` has no
+        subject in a retained block.
 - [ ] S33.3 Name the saturation clause
       done: a working count that would exceed the field saturates, saturation
         reads as "external references exist, conservatively live", and a test
         drives an entity past the bound
       tier: T1 · role: —
 - [ ] S33.4 Hold the row at four bytes
-      done: no captured count is stored — the commit stage judges again rather
-        than comparing with a captured value — and a probe confirms the zeroing
-        bill is the bitmap's, not the array's (1.4 ms against 41–76 ms measured
-        for the 717 MiB case)
+      done: no captured count is stored anywhere — not in the row and not in a
+        parallel array — because the commit stage judges again rather than
+        comparing with a captured value; a probe on the collector's own path
+        counts bytes written per touched block at first touch and shows the
+        figure proportional to the bitmap and not to `slots × 4`, which a
+        standalone memset benchmark cannot show, since it reports the same two
+        numbers whether or not the array was zeroed (1.4 ms against 41–76 ms
+        measured for the 717 MiB case)
       tier: T1 · role: —
       handoff: decided 2026-08-26 by the ruling that phase 2 is a second
         judgement. Storing a captured value would have doubled the row and the
@@ -237,22 +432,39 @@ Goal: candidates reach the collector without the mutator paying for a data
 structure, and an entity that dies while enrolled leaves no dangling pointer.
 
 - [ ] S34.1 The queue against Y12's contract
-      done: the six clauses hold — a failed growth never drops a root, no
-        allocation happens on the enrolling thread's hot path, and a second
-        reader is either supported or refused by construction
+      done: **all seven** clauses hold — `questions.md` says "Six clauses" and
+        numbers seven — so a failed growth never drops a root, no allocation
+        happens on the enrolling thread's hot path, proven by a `#[cfg(test)]`
+        allocation counter bracketing the enrolment call rather than by defining
+        the growth path as not hot, and a second reader is either supported or
+        refused by construction rather than by a `debug_assert!`; clause 4's
+        second half is superseded by S34.2 and the step says so; the one arm the
+        runtime keeps is rebuilt here — a growth refusal or a reserve draw
+        during enrolment sets the pending flag, and the poll fires at the next
+        clean point, returning 0 until S36.7 wires the collection
       tier: T2 · role: Critic
 - [ ] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
-        returns a slot; a reader may mark an entry a corpse and pass it on, and
-        a test proves the acquittal case — ring A↔B with an external X→B that is
-        released after the trace read the count — does not lose the ring
+        returns a slot; a reader may mark an entry a corpse and pass it on; the
+        bit is cleared only at death — the drain's corpse rule, or commit's
+        free — and **never at acquittal**, which supersedes Y12 clause 4's
+        "cleared after the root is walked"; a test proves the acquittal case —
+        ring A↔B with an external X→B that is released after the trace read the
+        count — does not lose the ring, and the assertion is that a later
+        collection reclaims it, not merely that the bit is still set
       tier: T2 · role: Critic
+      handoff: clause 4 and the law of 2026-08-26 contradicted each other, and
+        both were in the plan. The Sage ruled for the law: clearing on acquittal
+        is the permanent miss, because enrolment is edge-triggered.
 - [ ] S34.3 Parking a slot that dies enrolled
       done: death runs in full — weak cells cleared first, then `__destruct`,
         then children released — and the slot is withheld from the allocator
         while a queue entry names it; the drain reads the refcount, retires a
         zero-count entry, clears the bit and returns the slot without touching
-        the body
+        the body; the return is the crate's single slot-return path and the
+        block's `used` falls **there and never at the parking**, proven by a test
+        that empties a block around a parked corpse and shows the block reaching
+        the pool only at the return
       tier: T2 · role: —
 - [ ] S34.4 Prove the corpse rule against arena reuse
       done: a red-first test enrols, kills, resets the arena and drains, and the
@@ -265,40 +477,145 @@ Goal: trial deletion runs entirely in the shadow rows.
 
 - [ ] S35.1 Mark
       done: the trace decrements children's working counts in their rows and
-        writes nothing into any entity; an aborted mark leaves the heap
-        byte-identical, proven by hashing the touched blocks before and after
+        writes nothing into any entity; children are enumerated through
+        `cells::trace_cells` — the tracer moved at S30.2, not a second stride —
+        and S32.0's block-kind dispatch runs per yielded child in the
+        collector's visit; an aborted mark leaves the heap byte-identical,
+        proven by hashing every block on the touched list before and after, with
+        the abort forced at a depth past the first descent rather than at the
+        first instruction
       tier: T2 · role: —
+      handoff: this clause stands verbatim against S37: the maturation stamp is
+        written by commit and only read by the trace, so no write into an entity
+        happens during a mark. The "retired on contact" clause that contradicted
+        it was withdrawn 2026-08-26.
 - [ ] S35.2 Scan
       done: a non-zero working count marks its reachable set live, a zero one
-        leaves it white, and the pair is proven on a graph with an external
-        reference into the middle of a ring
+        leaves it white, and the pair is proven on two graphs — a ring with an
+        external reference into its middle, which must survive, and the same
+        ring without that reference, which must go white — because a scan that
+        marks everything live passes the first alone
       tier: T2 · role: —
 
 ## S36 — Commit
 
 Goal: only the owning thread frees, and it frees what the judge condemned and
-the exact test confirmed.
+the exact test confirmed. The teardown is here in full: the Critic round of
+2026-08-26 found the stage claiming the frees while building none of them.
 
 - [ ] S36.1 The exact test on the owner's thread
-      done: current fields are re-read on the owning thread before any free,
-        and the test's refusal path is exercised by a mutation racing the
-        verdict
+      done: current fields are re-read on the owning thread before any free, and
+        the test opens with the corpse rule — a member read at count zero drops
+        the component whole before any guard or field write — exercised by a
+        test in which tearing down one component releases into a second already
+        judged white; the refusal path is exercised by a mutation racing the
+        verdict, and by a positive control in which the same scenario without
+        the mutation does free
       tier: T2 · role: Critic
 - [ ] S36.2 The epoch parking
-      done: a slot freed inside a collection waits for its end, and a red-first
-        test shows the defect it prevents — a reused slot inheriting the dead
-        occupant's row
+      done: a slot freed inside a collection waits for its end, releases into
+        S34.3's single return path, and that path refuses while **either**
+        window is open — a queue entry naming the slot, or a collection in
+        flight; a red-first test shows the defect it prevents, a reused slot
+        inheriting the dead occupant's row, and overlaps the two windows in both
+        orders
+      tier: T2 · role: —
+- [ ] S36.3 The guard and the weak window
+      done: after the exact test confirms, every member takes the teardown
+        guard, then every weak cell naming any member is nulled, all members
+        before any destructor; a condemned ring A↔B with a weak cell on A, whose
+        `__destruct` on B loads that cell, reads null inside the destructor —
+        seen red against the per-member order before the component-wide call
+        lands; a component the exact test refuses leaves every cell resolving
+      tier: T2 · role: Critic
+      handoff: the guard is needed even single-threaded — a destructor releasing
+        an internal edge would otherwise drop a member to zero and start
+        ordinary death inside the teardown. The window is the one PEP 442 exists
+        to close.
+- [ ] S36.4 Destructors and the resurrection re-verify
+      done: `__destruct` runs per object member on the owning thread; when any
+        ran, the exact test runs again with the guard discount; a failure
+        releases the guards through the counted path, so survivors keep true
+        counts with destructors still ahead of them, and the component is
+        abandoned with its cells nulled; a destructor that stores `$this` into
+        an external root proves both the acquittal and the nulled cell — the
+        divergence from PHP that `weak-references.md` records
+      tier: T2 · role: Critic
+      handoff: the re-verify survives the shortlist framing rather than
+        contradicting it. Garbage is monotone only while no reference to the
+        component exists outside it, and the destructor runs holding `$this`, a
+        reference the teardown itself handed to user code.
+- [ ] S36.5 Sever, free and the deferred drops
+      done: internal edges are severed with external children collected; the
+        guards come off through the counted release and each member reaching
+        zero dies through the ordinary death path into S36.2's parking; the
+        deferred-drop queue — severed children and the weak notify's displaced
+        map values — drains only after the last member's free, the order proven
+        by a test-only sequence probe; a weak cell re-created on a condemned
+        member is cleared by the free-time bit-7 notification
+      tier: T2 · role: Code Reviewer
+- [ ] S36.6 Commit writes the maturation stamp
+      done: on the owning thread, after judgement, each proven-live component is
+        stamped as a unit — current epoch and `min(age) + 1` saturated at 3, one
+        single-byte store per member, never inside a wider access; a condemned
+        or unjudged component is never stamped; in the accelerator form the
+        posted proven-live components are stamped by the owner at its drain, so
+        the stamp byte has one writing thread in both forms; a test matures a
+        live ring across two collections and shows the third pruning it, read
+        off the S37.1 counter
+      tier: T2 · role: —
+      handoff: commit is the only writer because a mature stamp suppresses
+        descent, which is a reduction of future suspicion and therefore the
+        owner's by the law of S34.2 — and because S35.1's zero-write mark is
+        what makes S33.1's abort free.
+- [ ] S36.7 Wire the collection into the ABI
+      done: `ll_gc_collect_cycles` runs a collection and reports what it
+        reclaimed, and `ll_gc_maybe_collect` fires on the armed pending flag and
+        nowhere earlier; a test arms the flag, shows nothing collected before
+        the next poll, and shows the collection at it — restaging the
+        deferred-fire contract the dying `gc/tests/where_a_collection_may_fire.rs`
+        carried
       tier: T2 · role: —
 
 ## S37 — Maturation and the two class gates
 
-Goal: the trace stops following the whole heap.
+Goal: the trace stops following the whole heap. On a booted Laravel corpus the
+subgraph reachable from a median candidate root is 381 of 381 objects, so this
+stage is what makes a trace affordable rather than what tunes it.
 
-- [ ] S37.1 The maturation stamp
-      done: epoch and age live in the header's byte 2, written by one byte
-        store, and an entity is traced only after it has stayed a candidate
-        across `k` collections; the two-bit epoch's wrap is retired on contact
+- [ ] S37.1 The maturation stamp is an edge-side prune
+      done: mark's descent reads the stamp with one single-byte load; a member
+        whose stamp epoch equals the heap's current epoch (mod 4) and whose age
+        has reached `k` is treated as an **opaque live external and is not
+        descended into**, the same test skipping a mature popped root entirely;
+        a stale-epoch stamp reads as age 0 and is never cleared in place, so the
+        trace writes no stamp; the per-thread-heap collection counter advances
+        the epoch every 64 completed collections and `k = 3`, both named
+        provisional after YRC's only known values, with the measurement owed at
+        S40.1; `#[cfg(test)]` counters report edges pruned and roots skipped
+        mature per collection
       tier: T2 · role: —
+      handoff: the root-side reading — "traced only after it has stayed a
+        candidate across `k` collections" — was struck from this step and from
+        `rc-cycle.md`'s summary bullet on 2026-08-26. It is not a second
+        mechanism: it filters which roots start a trace and does nothing to the
+        closure, and its real content falls out of the prune at depth zero.
+        Y9 calls the prune the only mechanism in this design that bounds the
+        closure.
+- [ ] S37.4 The suspects buffer and the turnover re-offer
+      done: acquittal never clears the enrolment bit; a proven-live root parks
+        in the suspects buffer with its bit set, and every suspect is re-offered
+        at the first collection after the heap's epoch advances; red tests prove
+        that a matured ring losing its last external reference mid-epoch is
+        collected at that re-offer and not before, and that a ring whose mates
+        carry unequal ages is likewise collected, so maturing apart costs recall
+        rather than a permanent miss
+      tier: T2 · role: Critic
+      handoff: this is the backstop the withdrawn "retired on contact" clause
+        was supposed to be and never was — eager clearing fires only when a
+        trace touches the entity, and the stamp that wraps is exactly the one no
+        trace touched for four epochs. It also collects YRC's 56 % saving on
+        re-registration.
 - [ ] S37.2 The acyclic gate
       done: the factory stamps bit 8 from the class's own answer — waits on
         `rfc` `model/classes.md` declaring a target per pointer slot
@@ -309,28 +626,63 @@ Goal: the trace stops following the whole heap.
       done: a proven-owned entity never enters the candidate set, and the
         compiler's stamp is honoured at bit 9
       tier: T2 · role: —
+      handoff: S31.3's mask already tests bit 9 and no compiler stamps it, so
+        this step's remaining content is the factory-side and FFI-side write.
 
 ## S38 — The claim and concurrency
 
 Goal: a collection runs either in a collector thread or in the mutator, never
 both, and the losing side never deadlocks.
 
+- [ ] S38.0 The collector's reader
+      done: a second `CellReader` impl reads `word` and `ptr` as relaxed atomics
+        and answers nothing else — no storage version and no give-up, because a
+        torn read costs at most a phantom edge or a missed one, and a child
+        mapping to no GC-heap block already ends the descent as an external live
+        reference (S32.0); the collector-thread trace instantiates `trace_cells`
+        with it, and a Miri slice drives it over an object with outside cells
+        and over an array mid-move
+      tier: T2 · role: Critic
+      handoff: `RelaxedCells` and its re-check plumbing died at S30.2 because
+        they existed for `rc-walk`'s precision. What the accelerator needs is
+        strictly smaller, and the `CellReader` trait is the socket it plugs into.
 - [ ] S38.1 The claim
       done: one word for the process, three states, CAS from free; it covers the
         **trace** — the arena, the block triples and the touched list — while
-        each owner's exact judgement runs at its own checkpoint, so a waiting
-        thread delays only the components it is party to
+        each owner's exact judgement runs at its own checkpoint; the third
+        state's only entrant in this plan is a `#[cfg(test)]` seizure, named in
+        this criterion, because no collector thread exists here; the claim
+        carries a thread-local held flag so self-re-entry is distinguishable
+        from contention, and a test proves a held claim blocks collection entry
+        alone while enrolment, release and allocation on other threads proceed
       tier: T2 · role: Critic
+- [ ] S38.4 The entry gate and the slow-path fire   *(before S38.2)*
+      done: the GC-heap slot allocation slow path, on a forced refusal that
+        names which allocation refused, waits on a held claim by any holder but
+        itself, takes the claim, runs the in-line collection, retries once and
+        reports null only after; a shortage at teardown depth ≥ 1, or under a
+        claim this thread already holds, collects nothing and reports; a heap of
+        one size class full of cyclic garbage serves the allocation with no
+        explicit collect call
+      tier: T2 · role: Critic
+      handoff: Y14's clause "a thread that finds the token taken does not wait"
+        was argued from the handshake deadlock, and the amendment of 2026-08-26
+        deleted the handshake, so the Sage retired the clause with its reason
+        and generalised the wait to any non-self holder. That generalisation is
+        recorded in `rfc` (Y14 and `rc-cycle.md`, Concurrency) as well as in
+        `dev/DECISIONS.md`; it is a decision of the round, not of the design of
+        record as it stood.
 - [ ] S38.2 The working wait
       done: an in-line collection needs no verdict list, no handshake and no
-        second phase — it is exact because the owner sees its own stack — and a
-        mutator that cannot allocate while a **collector thread** holds the claim
-        waits for the trace to end rather than preempting; a test with a starved
-        allocation and a running collection proves no deadlock
+        second phase — it is exact with respect to the counts because the owner
+        re-reads its own current fields — and a mutator that cannot allocate
+        while the claim is held in either state waits for the trace to end
+        rather than preempting; the test's running collection is staged by
+        S38.1's harness seizure and reaches the wait through S38.4's path, with
+        a `#[cfg(test)]` counter past the wait asserted non-zero, because a test
+        that merely terminates terminates most easily when the wait is never
+        taken
       tier: T2 · role: Critic
-      handoff: waiting rather than preempting is Edmond's ruling of
-        2026-08-26. The working wait is what keeps it from deadlocking against
-        ruling 5.
 - [ ] S38.3 Parking the mutator's frees during a trace
       done: while a collection is in flight over a thread's blocks, that
         thread's frees park until it ends; the cost is measured as the churn
@@ -340,11 +692,15 @@ both, and the losing side never deadlocks.
 ## S39 — Thread exit  (carried from S29.2)
 
 - [ ] S39.1 Exit drains its own queue
-      done: `ll_thread_exit` retires its queue before handing the heap over,
-        the fate of live enrolled entities at exit is named rather than left to
-        the reader, and a red-first test kills a thread between enrolment and
-        collection
+      done: `ll_thread_exit` retires its queue before handing the heap over, and
+        the fate of a live enrolled entity at exit is **chosen** — which of
+        collect, hand over or leak, and why — rather than described in a
+        comment, with the test that observes the chosen fate named; a red-first
+        test kills a thread between enrolment and collection
       tier: T2 · role: —
+      handoff: the criterion previously read "named rather than left to the
+        reader", which a doc comment saying "these leak" satisfies with S29.2's
+        defect intact.
 
 ## S40 — Measure the trace's density and decide the row form
 
@@ -352,13 +708,24 @@ Goal: the one number the design still lacks.
 
 - [ ] S40.1 Measure
       done: the share of a touched block's slots that a real collection traces
-        is measured on the corpus and on a synthetic load, with the instrument
-        checked against a known answer
+        is measured on the corpus and on a synthetic load, with the denominator
+        named — occupied slots or all slots, which differ by two at the design's
+        assumed half occupancy — and with the instrument checked against a
+        synthetic block whose traced share is fixed by construction; the same
+        instrumented run records the pruned-edge share and the suspects re-offer
+        volume at `k` of 1, 2 and 3, which is what settles S37.1's two
+        provisional constants
       tier: T2 · role: Bench
+      handoff: the corpus arm needs a driver over `ll-model`'s own heap. The
+        recorded corpus instruments read PHP's heap, which has no blocks and no
+        slots, so this arm is Phase-D-blocked in the same way S37.2 is blocked
+        on `classes.md`; the synthetic arm is not, and it is what the row form
+        can be decided on if Phase D is far.
 - [ ] S40.2 Decide chunks or not
       done: below 29 % density the chunked form replaces the flat array and the
-        measurement is quoted in the decision; above it the flat array stands
-        and the alternative is recorded as refused with its number
+        measurement is quoted in the decision, with its denominator; above it
+        the flat array stands and the alternative is recorded as refused with
+        its number
       tier: T2 · role: —
 
 ---
@@ -440,23 +807,26 @@ own checkbox.
   reaches a `debug_assert!` meanwhile. `Lazy` is nevertheless in
   `CANDIDATE_KINDS`, on the argument recorded in `dev/DECISIONS.md`,
   2026-08-07.
-- [ ] **The collector's escalation ladder**, build order 5 of
-  `rfc/model/gc/rc-walk.md`, and the trigger thresholds beside it. Both
-  are gated on a starvation measurement that does not exist, which is why
-  a collection is still an explicit call.
-- [ ] **A budgeted epoch arena for the collector's metadata**, reused
-  across collections (`dev/RC_WALK_CRITICAL_REVIEW.md`, "Per-epoch graph
-  metadata is heavy") — gated, like the escalation ladder above, on a
-  production driver and a starvation measurement that do not exist yet.
-  S28 flattens the metadata; it does not fund its reuse.
+- [ ] **The threshold arming policy and the collector-thread accelerator.**
+  What is left of the old escalation ladder after S38.4 builds the entry gate
+  and the slow-path fire. The arming policy is the compiler's
+  (`rfc/model/gc/strategies.md`, arm/fire); the accelerator carries the third
+  claim state's production entrant, the proposal machinery that turns a dirty
+  trace into a shortlist, and the owner-checkpoint judgement that reads it
+  (`rfc/model/gc/rc-cycle.md`). Gated on a measured in-line pause that a
+  collector thread would shorten — until then the in-line collection at a
+  failed allocation is the whole trigger, and that is the design in force
+  rather than a stopgap (Y14, amended 2026-08-26).
 - [ ] **`rc-satb` as a second build-time GC strategy**
   (`rfc/model/gc/satb.md`). The `WRITING` bit it waited on is pinned and
   the barrier's hook site is reserved; nothing else of it is built.
 - [ ] **The birth count and the unique-owner policy**
-  (`rfc/model/gc/rc-walk.md`, "The birth count" and "Unique ownership",
-  designed 2026-08-17) — gated on a Phase D measurement of the share of
-  dynamic publications with compiler-provable targets; the move rule
-  (copy, barrier, or a never-moved proof) is the open design question.
+  (designed 2026-08-17 in the old collector's document, sections "The birth
+  count" and "Unique ownership"; S30.5 moves the text into `rc-cycle`'s
+  documents or it goes with the file) — gated on a Phase D measurement of
+  the share of dynamic publications with compiler-provable targets; the
+  move rule (copy, barrier, or a never-moved proof) is the open design
+  question.
 - [ ] **Pure destructors, and the hand-off drain** — proposed by
   Edmond 2026-08-18, analyzed the same day in
   `dev/design/pure-destructors.md` through three lenses and two Critic
@@ -470,23 +840,21 @@ own checkbox.
   ownership pair — including the
   fast class that can block its own memory return — is
   `dev/design/owned-slots-and-the-walk.md`.
-- [ ] **GC horizon, the borrow elision** (`rfc/model/gc/gc-horizon.md`,
-  Edmond's algorithm, 2026-08-18, named `proof-horizon` until
-  2026-08-20) —
-  closed, and no pre-D step can change that status: the scan is
-  kill-only, the census is undated, every verification artifact
-  needs the compiler. Pre-D work is instrument preparation: the
-  graded corpus scan, the census channel list owed to
-  `dev/DECISIONS.md` before the census is specified, the
-  summary-language question. Three Critic rounds are recorded in
-  the document; the granularity ruling landed 2026-08-18
-  (`dev/DECISIONS.md`), and the corpus names and the
-  family-borrow-analysis and summary-language rulings are Edmond's.
-  The case book (`rfc/model/gc/gc-horizon-cases/`, 2026-08-20) opened
-  five further questions in the algorithm — the weak cell's uncounted
-  edge, promotion in the arena and immortal categories, raise sites in
-  the placement rule, the COW-unique intersection, and runtime entries
-  read as calls.
+- [ ] **The horizon's borrow elision** (Edmond's algorithm, 2026-08-18,
+  named `proof-horizon` until 2026-08-20) — closed, and no pre-D step can
+  change that status: the scan is kill-only, the census is undated, every
+  verification artifact needs the compiler. Pre-D work is instrument
+  preparation: the graded corpus scan, the census channel list owed to
+  `dev/DECISIONS.md` before the census is specified, the summary-language
+  question. Three Critic rounds, the granularity ruling of 2026-08-18
+  (`dev/DECISIONS.md`), Edmond's corpus names and his
+  family-borrow-analysis and summary-language rulings, and the five
+  questions the 2026-08-20 case book opened — the weak cell's uncounted
+  edge, promotion in the arena and immortal categories, raise sites in the
+  placement rule, the COW-unique intersection, and runtime entries read as
+  calls — were all written in documents S30.5 deletes. The arguments that
+  outlive them move where S30.5 names; the rest is at
+  `archive/pre-rc-cycle`.
 - [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2
   transition waits on one — `dev/DECISIONS.md`, 2026-08-13, which also
   says what to confirm against `arrays.md` before opening it.
@@ -630,9 +998,10 @@ names what would have to be measured first.
   **What comes first:** a footprint measurement, and there is none:
   `benches/alloc.rs` stops at 8192. The metric is `blocks_out` and RSS
   rather than operations per second.
-  **Settle separately:** entities past 8 KiB take the same path and live
-  outside the walk on purpose; a uniform stride would make them walkable,
-  which `rfc/model/gc/rc-walk.md` decided the other way.
+  **Settle separately:** entities past 8 KiB take the same path and are
+  reached by their own block header's row rather than by a stride (S32.0);
+  a uniform stride would make them walkable, which `rc-walk` decided the
+  other way and `rc-cycle` re-decided by dispatching on the block's kind.
 
 - [ ] **A flag saying the block already reads zero.** `Heap::refill`
   writes eight bytes into every slot of an entity block unconditionally —
