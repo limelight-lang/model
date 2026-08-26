@@ -4632,3 +4632,16 @@ cites that file's arm/fire rule as a correctness requirement.
 The counts were right and the sentence built on them was not; the gate grepped
 two directories of six; the link checker cannot see the citation form the
 Rust source actually uses.
+
+## 2026-08-26 — where the two deleted collectors live: `archive/pre-rc-cycle`
+
+**Decided:** the pre-deletion state of both repositories is the branch
+`archive/pre-rc-cycle`, on `origin` as well as locally, at `model` `3d5d853`
+and `rfc` `af10eae` — the commits that carry the amended plan and precede the
+first deletion. Nothing is copied back from it without an entry here.
+
+**Why:** the deletion ruling of 2026-08-26 keeps the old state reachable as a
+branch rather than as files, and a branch that exists on one disk is not an
+archive. The branch point sits after the plan amendment rather than before it,
+so a reader who finds the branch also finds the plan that explains why the
+code on it was deleted.

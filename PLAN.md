@@ -92,12 +92,15 @@ because `dev/tools/linkcheck.php` reads only `rfc` and only bracketed links and
 reports zero while every one of them is broken; that tool reports zero broken
 links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
 
-- [ ] S30.1 Tag the pre-deletion state in both repositories
+- [x] S30.1 Tag the pre-deletion state in both repositories
       done: branch `archive/pre-rc-cycle` exists in `model` and in `rfc` at the
         commit before the first deletion and is pushed to `origin` — a local
         branch is one disk — and its name is recorded in `dev/DECISIONS.md` so
         a later reader knows where the old code went
       tier: T0 · role: —
+      handoff: closed 2026-08-26 at `model` `3d5d853` and `rfc` `af10eae`, both
+        on `origin`. The branch point is after the plan amendment, so the branch
+        carries the plan that explains why its code was deleted.
 - [ ] S30.6 Write the teardown's order into `rc-cycle.md`   *(before S30.2)*
       done: `rfc/model/gc/rc-cycle.md` carries a "Cycle teardown" section
         stating the commit-side order as a binding obligation — the exact test
