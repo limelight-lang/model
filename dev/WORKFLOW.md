@@ -298,6 +298,20 @@ until the step that owns it. What this found in S7.2, and why no static
 check reports it, is `dev/DECISIONS.md`, "flipping the factory's stamp is
 how a representation-blind door is found".
 
+**Run it on both sides of a change that moves the tag.** A flip finds
+only what the tag it flips discriminates: before the string's layout
+became a kind code, the flip exercised no kind dispatch at all, because
+every string still carried one code. Running it again after the fold is
+what drove the second code through the death switch, the COW separation,
+the escape copy and the reset's traceability test.
+
+**A flip can abort rather than fail.** A test that writes at a fixed
+offset writes into a different field in the other representation, and a
+corrupted pointer reaching a free aborts the process — which hides every
+failure after it, so the inventory reads as short rather than as
+truncated. Read the tail of the run for `SIGABRT` before trusting the
+list, skip the offending test, and run again.
+
 **A flake that appears only under load is reproduced by making the
 load.** Build the test binary with `--no-run`, pin it to two cores with
 `taskset -c 0,1` at `--test-threads 4`, and run two spinners on the same
