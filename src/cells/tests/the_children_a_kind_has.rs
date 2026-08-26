@@ -134,8 +134,6 @@ fn an_array_is_traced_through_its_elements_and_its_string_keys() {
     }
 }
 
-
-
 /// A ring whose two nodes are both too large for any size class, one
 /// in each half of the population: a pooled block of its own, which
 /// the region scan reaches, and an OS-direct run, which no region

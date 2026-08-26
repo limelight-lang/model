@@ -149,7 +149,10 @@ pub(crate) struct OutsideCells {
 
 #[cfg_attr(
     not(test),
-    allow(dead_code, reason = "only a class hook constructs one, and no class does yet")
+    allow(
+        dead_code,
+        reason = "only a class hook constructs one, and no class does yet"
+    )
 )]
 /// What a class's [`OutsideCells::carry`] did about a survivor's storage.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -175,7 +178,6 @@ pub(crate) enum OutsideCarry {
     /// The instance has no storage to carry.
     Nothing,
 }
-
 
 /// What a class's outside-cell walk answers, and the three cases are not
 /// two: the epoch may conflate the last with the first, and the arena
@@ -272,8 +274,6 @@ impl CellReader for PlainCells {
         unsafe { (at as *const *mut u8).read() }
     }
 }
-
-
 
 /// The counted child of the sixteen-byte `Value` at `at`, or `None` when
 /// the cell holds nothing counted.
@@ -503,7 +503,10 @@ pub(crate) unsafe fn empty_cell(cell: Cell) {
 /// # Safety
 /// `entity` is a live entity of `kind` whose cells are readable and
 /// writable, and no other thread writes them.
-#[expect(dead_code, reason = "the commit stage that severs a condemned component is S36.5")]
+#[expect(
+    dead_code,
+    reason = "the commit stage that severs a condemned component is S36.5"
+)]
 pub(crate) unsafe fn sever_cells(
     entity: *mut RcHeader,
     kind: u32,

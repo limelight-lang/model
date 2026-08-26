@@ -2130,9 +2130,6 @@ pub(crate) fn describe_slot(addr: usize) -> String {
     )
 }
 
-
-
-
 /// Post `ptr` to its block's cross-thread stack, without needing a heap of
 /// our own — for a thread that frees something it never could have allocated.
 ///

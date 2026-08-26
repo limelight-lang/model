@@ -423,8 +423,6 @@ unsafe fn header_word_store(header: *mut RcHeader, word: u64) {
     }
 }
 
-
-
 /// Increment the reference count.
 ///
 /// Fast path per `rfc/model/lowering.md`: one branch on the category
@@ -442,7 +440,6 @@ unsafe fn header_word_store(header: *mut RcHeader, word: u64) {
 /// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
-
     {
         let flags = unsafe { flags_load(header) };
 
@@ -523,7 +520,6 @@ unsafe fn flags_load(header: *const RcHeader) -> u32 {
 /// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
-
     // A non-zero decrement is where `rc-cycle` enrols a candidate
     // (`rfc/model/gc/rc-cycle.md`); the queue that receives it is S34,
     // so nothing is enrolled yet and a garbage ring is retained until
@@ -570,7 +566,6 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
 /// As [`ll_release`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_release_batch(entity: *mut RcHeader) -> bool {
-
     return unsafe { release_word(entity) };
 }
 
@@ -589,18 +584,14 @@ pub unsafe extern "C" fn ll_release_batch(entity: *mut RcHeader) -> bool {
 /// go narrow").
 #[inline]
 pub(crate) unsafe fn header_flags(header: *const RcHeader) -> u32 {
-    unsafe {
-        flags_load(header)
-    }
+    unsafe { flags_load(header) }
 }
 
 /// Read the refcount of a **published** header, same dispatch rule and
 /// the same width rule — the counter twin of [`header_flags`].
 #[inline]
 pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
-    unsafe {
-        refcount_load(header)
-    }
+    unsafe { refcount_load(header) }
 }
 
 /// The count and the flags in **one** load, for a caller that wants both —
@@ -613,9 +604,7 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
 /// epoch byte ([`EPOCH_BYTE_MASK`]), which no caller of this reads.
 #[inline]
 pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
-    unsafe {
-        mutator_load_header(header)
-    }
+    unsafe { mutator_load_header(header) }
 }
 
 /// Rewrite the flags of a **published** header — the write twin of
@@ -623,10 +612,7 @@ pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
 /// store: the header may be under a concurrent trace.
 #[inline]
 pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
-
-    unsafe {
-        mutator_update_flags(header, f)
-    };
+    unsafe { mutator_update_flags(header, f) };
 }
 
 /// Mutator-side relaxed header read; pair of the mutator's word store.

@@ -33,18 +33,13 @@ static UNVERSIONED: OutsideCells = OutsideCells {
     carry: probe_carry,
 };
 
-
 unsafe fn probe_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) -> Option<usize> {
     Some(PROBE_VERSION)
 }
 
-
 unsafe fn unversioned_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) -> Option<usize> {
     None
 }
-
-
-
 
 unsafe fn probe_sever(
     _: *mut crate::refcount::RcHeader,
@@ -202,7 +197,6 @@ fn the_version_a_class_answers_reaches_the_walk() {
         }
     }
 }
-
 
 /// A class that declares nothing carries the default teardown and no
 /// group, which is every class the compiler emits today.

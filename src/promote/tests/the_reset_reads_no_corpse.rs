@@ -959,8 +959,6 @@ fn a_run_parked_by_a_nested_reset_outlives_the_reset_that_parked_it() {
     }
 }
 
-
-
 /// A COW child whose edge is **unset** before its holder dies. The
 /// release the unset performed is inside the child's delta, and the
 /// holder that owed the compensation is gone by the time the count is

@@ -278,7 +278,6 @@ pub unsafe fn store_ptr(
 /// Phases 3-4), the atomics make it defined.
 #[inline]
 pub(crate) unsafe fn write_ptr_slot(slot: *mut *mut RcHeader, new: *mut RcHeader) {
-
     unsafe {
         (*(slot as *const std::sync::atomic::AtomicPtr<RcHeader>))
             .store(new, std::sync::atomic::Ordering::Relaxed)
@@ -288,7 +287,6 @@ pub(crate) unsafe fn write_ptr_slot(slot: *mut *mut RcHeader, new: *mut RcHeader
 /// Write a 16-byte `Value` slot; see [`write_ptr_slot`].
 #[inline]
 pub(crate) unsafe fn write_value_slot(slot: *mut Value, new: Value) {
-
     unsafe {
         use std::sync::atomic::{AtomicU64, Ordering};
         let words = core::mem::transmute::<Value, [u64; 2]>(new);

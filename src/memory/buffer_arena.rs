@@ -1070,7 +1070,6 @@ unsafe fn free_chunk(ptr: *mut u8, capacity: usize) {
     unsafe { (*existing).free(ptr, capacity) };
 }
 
-
 /// Release a long-lived buffer: frees the payload, zeroes the struct.
 ///
 /// # Safety

@@ -63,10 +63,7 @@ const FLUSH_MAX: usize = THREAD_CACHE_CAPACITY / 2 + 1;
 /// field and its kind last, through here.
 #[inline]
 pub(crate) unsafe fn store_block_kind(kind_field: *const AtomicU32, kind: u32) {
-
-    unsafe {
-        (*kind_field).store(kind, Ordering::Release)
-    };
+    unsafe { (*kind_field).store(kind, Ordering::Release) };
 }
 
 /// Read a block header's `kind` on the thread that owns the block, where

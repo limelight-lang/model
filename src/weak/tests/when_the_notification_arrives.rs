@@ -15,7 +15,6 @@ static RESURRECTED_INTO: AtomicUsize = AtomicUsize::new(0);
 
 static PROBE_CELL: AtomicUsize = AtomicUsize::new(0);
 
-
 unsafe extern "C" fn resurrecting_destructor(obj: *mut Object) {
     unsafe { crate::refcount::ll_retain(obj as *mut RcHeader) };
     RESURRECTED_INTO.store(obj as usize, Ordering::Relaxed);
@@ -41,7 +40,6 @@ unsafe extern "C" fn probing_child_destructor(_obj: *mut Object) {
     let cell = PROBE_CELL.load(Ordering::Relaxed) as *mut LLWeakRef;
     SEEN_BY_CHILD_DESTRUCTOR.store(unsafe { ll_weakref_get(cell) } as usize, Ordering::Relaxed);
 }
-
 
 #[test]
 fn own_destructor_still_sees_the_object_but_a_child_destructor_sees_null() {

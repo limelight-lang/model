@@ -81,4 +81,3 @@ fn a_dying_template_releases_what_it_held() {
         }
     });
 }
-

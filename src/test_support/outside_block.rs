@@ -37,13 +37,13 @@
 
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering, fence};
 
+use crate::cells::{Cell, CellReader, OutsideCarry, OutsideCells, PlainCells};
 use crate::class::{Class, ClassBuilder};
 use crate::memory::arena::Arena;
 use crate::memory::context::LLContext;
 use crate::object::Object;
 use crate::refcount::RcHeader;
 use crate::value::Value;
-use crate::cells::{Cell, CellReader, OutsideCarry, OutsideCells, PlainCells};
 
 /// Cells one block holds. Two is the coroutine's own number: its block
 /// exists exactly when a wait has more than two halves.
@@ -66,7 +66,6 @@ pub(crate) const BLOCK_SIZE: usize = CELLS * 16;
 const BLOCK_AT: usize = 16;
 const VERSION_AT: usize = 24;
 const CAPACITY_AT: usize = 32;
-
 
 /// A class of instances whose counted cells lie in a block outside the
 /// body, laid out as this module's readers expect.
@@ -175,9 +174,6 @@ pub(crate) unsafe fn block_of(obj: *mut Object) -> *mut u8 {
     unsafe { block_at::<PlainCells>(obj as *mut u8) }
 }
 
-
-
-
 /// Publish a block pointer — a fresh one, or the null a release leaves —
 /// inside the window a walker validates its reading against.
 ///
@@ -235,8 +231,6 @@ unsafe fn walk_plain(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)
     unsafe { yield_cells::<PlainCells>(block, visit) };
     Some(unsafe { version(base) })
 }
-
-
 
 /// Empty every cell and hand its former occupant back undropped, the
 /// drain's contract for the group.

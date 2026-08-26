@@ -90,7 +90,6 @@ fn entity_commissioning_zeroes_slot_headers_of_a_recycled_block() {
     unsafe { entity.free(p) };
 }
 
-
 /// A block never crosses populations through abandonment: a raw heap
 /// must not adopt an entity block, or C buffers land where the walker
 /// reads headers.

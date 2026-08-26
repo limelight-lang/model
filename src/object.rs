@@ -271,7 +271,6 @@ pub unsafe fn object_constructed(ctx: *mut LLContext, obj: *mut Object) -> bool 
         return false;
     }
 
-
     // Post-publish header write: races the collector's byte stores
     // under a live epoch, so it goes through the relaxed word helper.
     unsafe {

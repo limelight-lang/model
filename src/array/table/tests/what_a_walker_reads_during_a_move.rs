@@ -13,5 +13,3 @@
 //! instruments it needs are that collector's — the relaxed reader and the
 //! epoch whose flag parks a freed chunk. rc-trace walks nothing
 //! concurrently, so the arrangement cannot be built there at all.
-
-
