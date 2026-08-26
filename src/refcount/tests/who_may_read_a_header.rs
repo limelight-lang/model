@@ -1,6 +1,6 @@
-//! Under `rc-walk` a published header is read through the helpers of this
-//! module and nowhere else, because the collector writes a byte of that
-//! same word from its own thread: a plain field read beside that store is a
+//! A published header is read through the helpers of this module and
+//! nowhere else, because a collector writes a byte of that same word from a
+//! thread that did not publish it: a plain field read beside that store is a
 //! data race, and one that misbehaves nowhere — the byte read back lies
 //! outside every field a caller tests. Behaviour is the same with the plain
 //! read and with the helper, so no `cargo test` run separates them and this
@@ -14,9 +14,11 @@
 //! `array/entity.rs` until a review of 2026-08-15 found them, and each was
 //! written by someone who knew the rule.
 //!
-//! The `rc-trace` arm of a `#[cfg]` pair is exempt and has to be: that build
-//! has no concurrent collector, and its half of every dispatching helper
-//! reads the field directly on purpose.
+//! **The rule has no exemption since 2026-08-26.** It used to spare the arm
+//! of a `#[cfg]` pair belonging to the build with no concurrent collector,
+//! and that build was deleted with `rc-trace`. One arm survives every such
+//! pair now, the one that reads through the helpers, so a direct read is an
+//! offence wherever it stands.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,10 +31,6 @@ const READS: [&str; 4] = [
     ".rc.memory_category()",
     ".rc.lifetime_counted()",
 ];
-
-/// The attribute that opens a block belonging to the build with no
-/// concurrent collector.
-const RC_TRACE_ONLY: &str = "#[cfg(not(feature = \"rc-walk\"))]";
 
 /// Every `.rs` file under `src/`, in no particular order.
 fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
@@ -56,39 +54,16 @@ fn exempt_file(path: &Path) -> bool {
         || text.ends_with("/tests.rs")
 }
 
-/// The lines of `text` that read a header directly, as (line number, line),
-/// skipping any block introduced by [`RC_TRACE_ONLY`].
+/// The lines of `text` that read a header directly, as (line number, line).
 ///
-/// The block is found by brace counting from the attribute, which holds
-/// because `rustfmt` governs this crate: the attribute sits on its own line
-/// and the block opens on the next one or the one after.
+/// The brace counting the exemption needed went with it on 2026-08-26: every
+/// direct read counts now, wherever it stands.
 fn direct_reads(text: &str) -> Vec<(usize, String)> {
     let mut found = Vec::new();
-    let mut skip_until_depth: Option<i32> = None;
-    let mut depth: i32 = 0;
-    let mut arming = false;
 
     for (number, line) in text.lines().enumerate() {
-        let opens = line.matches('{').count() as i32;
-        let closes = line.matches('}').count() as i32;
-
-        if line.trim() == RC_TRACE_ONLY {
-            arming = true;
-        } else if arming && opens > 0 {
-            skip_until_depth = Some(depth);
-            arming = false;
-        }
-
-        let inside = skip_until_depth.is_some();
-        if !inside && READS.iter().any(|read| line.contains(read)) {
+        if READS.iter().any(|read| line.contains(read)) {
             found.push((number + 1, line.trim().to_string()));
-        }
-
-        depth += opens - closes;
-        if let Some(floor) = skip_until_depth
-            && depth <= floor
-        {
-            skip_until_depth = None;
         }
     }
 
@@ -115,25 +90,25 @@ fn a_header_is_read_through_the_helpers_and_nowhere_else() {
     assert!(
         offences.is_empty(),
         "a published header is read past the helpers of `refcount`, which \
-         races the collector's epoch-byte store under rc-walk. Use \
-         `header_flags`, `header_refcount` or `header_pair`; if this is the \
-         rc-trace arm of a `#[cfg]` pair, it belongs inside that block:\n{}",
+         races the collector's byte store into the same word. Use \
+         `header_flags`, `header_refcount` or `header_pair`; there is no \
+         exemption:\n{}",
         offences.join("\n")
     );
 }
 
 /// The guard has to see an offence, or it is a test that passes by finding
 /// nothing anywhere. This is the shape of `object_constructed`'s read as it
-/// stood before 2026-08-15, and of the rc-trace block that must not count.
+/// stood before 2026-08-15, beside the write that was exempt until the
+/// exemption's build was deleted — both count now.
 #[test]
-fn the_guard_reads_the_exemption_and_the_offence_apart() {
+fn the_guard_sees_a_direct_read_wherever_it_stands() {
     let source = "\
 fn constructed(obj: *mut Object) -> bool {
     if unsafe { (*obj).rc.memory_category() } == MemoryCategory::RequestArena {
         return false;
     }
 
-    #[cfg(not(feature = \"rc-walk\"))]
     unsafe {
         (*obj).rc.flags |= DESTRUCTOR_PENDING
     };
@@ -142,7 +117,8 @@ fn constructed(obj: *mut Object) -> bool {
 }
 ";
     let found = direct_reads(source);
-    assert_eq!(found.len(), 1, "found: {found:?}");
+    assert_eq!(found.len(), 2, "found: {found:?}");
     assert_eq!(found[0].0, 2);
     assert!(found[0].1.contains("memory_category"));
+    assert!(found[1].1.contains(".rc.flags"));
 }
