@@ -157,10 +157,10 @@ block full?" costs a scan of every word; and `free` needs
 being a power of two for most classes. The free list has none of those
 (`rfc/model/memory/heap-slot-allocation.md`, "Fix 5", which also says why
 the benchmark that first chose the bitmap was not measuring what it
-claimed). The link lived in bytes 0–7 until
-rc-walk step 1 moved it: bytes 0–7 must survive a free untouched, because
-in an entity block they keep the dead entity's final refcount-0 header —
-the walker's occupancy test. One offset for both populations keeps a
+claimed). The link lived in bytes 0–7 until the entity heap needed those
+bytes: they must survive a free untouched, because in an entity block
+they keep the dead entity's final refcount-0 header, which is how a trace
+tells a free slot from a live entity. One offset for both populations keeps a
 single code path, and the cache-line argument is unchanged (every class
 is ≥ 16 bytes).
 
@@ -561,9 +561,10 @@ decided from counts carried in the objects themselves.
 gave blocks back; since 2026-08-03 it first releases what the thread's
 *static blocks* held (`static_block.rs`), which is the only step that
 runs user code and therefore goes first, while every structure a
-`__destruct` may touch is still alive. Then the rc-trace candidate
-buffer, then the parked-free backlog, then the weak table, and only
-then the heaps. The order is explicit because it cannot be delegated:
+`__destruct` may touch is still alive. Then the weak table, then the
+buffer arena, and only then the heaps — two steps shorter since
+2026-08-26, the candidate buffer and the parked-free backlog having gone
+with the collectors that owned them. The order is explicit because it cannot be delegated:
 `ll_thread_exit` runs from a TLS destructor, TLS destructor order is
 unspecified, and on glibc it is reverse registration order — so a
 structure first touched during the request registers after the guard and
