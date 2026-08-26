@@ -9,6 +9,62 @@ never edited or deleted.
 ---
 
 
+## 2026-08-26 — `RcHeader`'s fields go private, and the source grep is re-aimed rather than retired
+
+The Sage ruled it. The fields lose `pub` outright — visible to `refcount` and
+its child modules and nothing wider — and
+`refcount::tests::who_may_read_a_header` stays, pointed at what a type cannot
+reach.
+
+**The reason is this crate's own**, from `dev/POSTMORTEM.md`, 2026-08-10: an
+invariant that people who knew it still violated becomes a type rule, that
+being the only form which cannot be violated again. The grep is a list of
+spellings and its record argues against it — widened twice in eleven days,
+twenty-eight sites found by review rather than by the test, three evasions
+conceded in its own module doc, one of which stood live in `memory/barrier.rs`
+in the shape that is worse than the race it hides. No production code outside
+`refcount.rs` names either field, so the fence costs production nothing, and
+it closes the class before S38.0 puts a collector thread beside the mutator —
+where a missed spelling stops being a hole in a test and becomes undefined
+behaviour running in CI.
+
+**`pub(crate)` is refused rather than overlooked.** Every offence on record was
+internal, so that middle form breaks the unsurveyed external consumer and
+leaves the demonstrated problem standing.
+
+**The price, measured before the ruling:** 187 accesses in 37 test files, none
+in production, none in the benches, none in `refcount`'s own tests, which keep
+access as a child module. Two constraints come with the conversion, and either
+one broken makes it self-defeating. The shorthand the fixtures get takes a raw
+pointer and never `&self`, because `fn refcount(&self)` forms the `&RcHeader`
+this change exists to ban — the same shape refused for `Class` on the same day.
+And its body is the narrow atomic load rather than a plain read: those 187
+sites are the population a ThreadSanitizer run reaches first, so a shorthand
+re-exporting the plain read buys the compile error and keeps the blind spot.
+
+**The grep is kept because privacy does not subsume it.** `memory_category`
+and `lifetime_counted` take `&self`, stay public for the pre-publication
+callers, and autoref reaches them past private fields: `(*p).memory_category()`
+on a published header forms the forbidden shared reference and compiles. Those
+two spellings the guard sees and the type never will. The four field spellings
+stay in its list as the tripwire against the privacy being reverted, at the
+cost of one array literal, and its two self-tests keep it honest against
+passing by finding nothing.
+
+**What the ruling accepts losing:** the fields as public API. `RcHeader` is
+re-exported from `lib.rs` and the crate is published, so a consumer outside
+this repository reading `.refcount` breaks at its next update, unsurveyed. Such
+a consumer holds exactly the race this day was spent removing, and the
+`#[repr(C)]` layout, `RcHeader::new` and the retain/release ABI are untouched.
+
+**One limit is named rather than solved.** A `&mut Object` formed over a
+published entity to reach its other fields asserts uniqueness over the header
+bytes without spelling a header access at all. Neither the type nor the grep
+sees it; it stays Miri's, ThreadSanitizer's and a reader's.
+
+---
+
+
 ## 2026-08-26 — the header guard greps the pointer spelling, and a class descriptor keeps its reference
 
 `refcount::tests::who_may_read_a_header` matched `.rc.flags` and its three

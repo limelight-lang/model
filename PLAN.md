@@ -292,7 +292,7 @@ introduce two constants nobody reads.
         `cells::`, `memory::barrier::`, `memory::heap::`, `memory::retained::`,
         `memory::stdapi::` and `class::`. Test list 462 → 463, the one
         addition named above.
-- [ ] S31.6 Decide whether `RcHeader`'s fields stop being public
+- [x] S31.6 Decide whether `RcHeader`'s fields stop being public
       done: the choice and its reason are in `dev/DECISIONS.md`, naming the
         price it was weighed against — 187 header accesses in 37 test files,
         none of them in production and none in `refcount`'s own tests, which
@@ -308,6 +308,40 @@ introduce two constants nobody reads.
         while production, the benches and `refcount`'s own tests break nowhere.
         `RcHeader` stays `#[repr(C)]` either way — the layout is published, the
         field names are not.
+      Sage 2026-08-26: the fields go private — no modifier at all, so `refcount`
+        and its child modules and nothing wider — and the grep is kept rather
+        than retired, because `memory_category` and `lifetime_counted` take
+        `&self` and autoref reaches them past field privacy. Two constraints
+        ride with the conversion: the fixtures' shorthand takes a raw pointer,
+        never `&self`, and its body is the narrow atomic load, never a plain
+        read. `pub(crate)` refused: it breaks the external consumer and leaves
+        the internal problem. Final.
+      handoff: closed 2026-08-26 by `dev/DECISIONS.md`, "`RcHeader`'s fields go
+        private, and the source grep is re-aimed rather than retired". The
+        deciding consequence the Sage named is S38.0: a compile error is the
+        only detector this crate has that fires before the racing code exists.
+        What it accepts losing is the fields as public API, unsurveyed.
+- [ ] S31.7 Convert the fixtures to the narrow shorthand
+      done: a `#[cfg(test)]` shorthand in `refcount` takes a raw pointer and
+        loads narrowly, and all 187 accesses in the 37 test files outside
+        `refcount`'s own go through it or through the existing helpers, the
+        fields still `pub` so every batch builds and the suite stays green;
+        the test list is diffed byte for byte at the end and `who_may_read_a_`
+        `header` is unchanged, still red on nothing
+      tier: T2 · role: —
+      handoff: expand before migrate (`skills`, 23.6): this step leaves the
+        production form alone, so nothing is red in the middle of it. The
+        counting is in `dev/DECISIONS.md`, "`RcHeader`'s fields go private".
+- [ ] S31.8 Take the fields private and re-aim the guard
+      done: `refcount` and its child modules are the only readers of `refcount`
+        and `flags` — the modifier is gone, not narrowed — and the crate builds
+        with nothing else naming either field; `who_may_read_a_header` keeps all
+        eight patterns and its doc says which half the type now carries and
+        which two method spellings autoref still reaches; `dev/INDEX.md` and
+        `dev/ARCHITECTURE.md` say the rule is a type now; the full gate passes
+      tier: T2 · role: Critic
+      handoff: the delete half of S31.7's expand. It is the step that proves
+        S31.7 was complete: if a site was missed, the build names it.
 
 ## S32 — The block header's collector triple
 
