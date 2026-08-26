@@ -59,8 +59,17 @@ Empty.
 Goal: one collector claims the flags word, so the layout is chosen for the
 paths that read it rather than for a truce between two strategies.
 
-Done when: the layout below is in `refcount.rs` with every constant named, the
-enrolment gate is one mask, and the kind field is four bits wide.
+Done when: the layout below is in `refcount.rs` with every constant **that has
+a reader** named, the enrolment gate is one mask, and the kind field is four
+bits wide.
+
+The three collector fields — epoch, maturation age, reserve — get their
+constants from the steps that read them, S36.6 and S37.1, and not from here:
+`EPOCH_BYTE_SHIFT` and `_MASK` were deleted on 2026-08-26 for having no reader
+(`dev/DECISIONS.md`), and `refcount::tests::the_header_the_compiler_shares`
+asserts that nothing claims bits 16-31 so those steps start against a check
+already red for them. Naming them here would mean weakening that check to
+introduce two constants nobody reads.
 
 | bits | field | | bits | field |
 |---|---|---|---|---|
