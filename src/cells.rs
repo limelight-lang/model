@@ -1,15 +1,24 @@
-//! Entity walking: the kind-dispatched tracer and the heap census
-//! (`rc-walk` build step 1), the synchronous whole-heap collection
-//! ([`collect_cycles`], step 2) and the Phase 4 drain the collector posts
-//! to (`drain_confirmed`, step 3) — `rfc/model/gc/rc-walk.md`, "Build
-//! order". One walking substrate serves all three: enumerate every live
-//! entity through the region registry, and trace an entity's counted
-//! children by its kind without touching `+8` unless the kind carries a
-//! class pointer there.
+//! Counted cells: where each entity kind keeps them, how a reader reads
+//! one, how a writer empties one.
+//!
+//! Trace an entity's counted children by its kind, without touching `+8`
+//! unless the kind carries a class pointer there. Four callers stand on
+//! it and none of them is a cycle collector: the class descriptor's
+//! outside-cells group (`class`), the arena reset's mark and its
+//! copy-on-write reconciliation (`promote`), the dispose path
+//! (`object::for_each_counted_cell`), and the array entity.
 //!
 //! Knowledge split: `memory::heap` knows blocks, slots and occupancy
 //! ([`for_each_entity_slot`]); this module knows entity kinds and what
 //! each kind's out-edges are. Neither knows the other's internals.
+//!
+//! This file was the upper half of `walk.rs` until 2026-08-26, when the
+//! `rc-walk` collector below its build-step-2 marker was deleted and the
+//! substrate above it moved here under a name that is not a collector's.
+//! The collector, its census and its Phase 4 drain are readable at
+//! `git show archive/pre-rc-cycle:src/walk.rs`; `rc-cycle`'s mark traces
+//! through [`trace_cells`] rather than growing a stride of its own
+//! (`PLAN.md`, S35.1).
 
 use crate::object::Object;
 use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind, RcHeader};
