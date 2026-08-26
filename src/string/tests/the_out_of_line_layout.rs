@@ -72,18 +72,17 @@ fn a_dynamic_heap_string_holds_its_bytes_out_of_line() {
     let s = unsafe { ll_string_new_dynamic(&mut ctx, MemoryCategory::GcHeap, b"grows", 0) };
     assert!(!s.is_null());
 
-    let rc = unsafe { &(*s).rc };
     assert_eq!(
-        rc.flags & ENTITY_KIND_MASK,
+        unsafe { crate::refcount::entity_flags(s) } & ENTITY_KIND_MASK,
         EntityKind::StringDynamic.to_flags(),
         "the layout is the kind code"
     );
     assert!(
-        crate::refcount::is_string(rc.flags),
+        crate::refcount::is_string(unsafe { crate::refcount::entity_flags(s) }),
         "and both codes still answer the one string test"
     );
     assert_eq!(
-        rc.flags & COW,
+        unsafe { crate::refcount::entity_flags(s) } & COW,
         0,
         "and this factory builds the proved-single-owner form, which \
          is the non-COW one"

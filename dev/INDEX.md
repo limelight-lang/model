@@ -563,17 +563,28 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
   `header_is_8_bytes_at_offset_zero`.
 - `Value` 16 bytes, fixed offsets: `value::tests::`
   `box_is_16_bytes_with_fixed_offsets`.
-- A published header is read through `refcount`'s helpers, never as a field
-  of an entity struct and never as `(*p).flags` through a pointer of its
-  own: `refcount::tests::who_may_read_a_header`, which reads the crate's
-  own sources, the class being invisible to every runtime check
-  (`dev/DECISIONS.md`, "a header is read as narrowly as it is written";
-  the instrument that exhibits it is `dev/WORKFLOW.md`, ThreadSanitizer).
-  A `Class` descriptor's own `flags` word is read through
-  `Class::flags_of`, at its offset rather than through the pointer deref
-  the guard greps for (`dev/DECISIONS.md`, "the header guard greps the
-  pointer spelling"). The guard's test exemption is a known hole, 187
-  accesses wide, and the same entry sizes it.
+- A published header is read through `refcount`'s helpers, and since
+  2026-08-26 the compiler enforces the field half: `RcHeader`'s `refcount`
+  and `flags` carry no visibility modifier, so nothing outside that module
+  can name them, and a rename, a local or a reference binding fails to
+  build rather than passing a grep. The struct carries no method either —
+  `memory_category()` and `lifetime_counted()` were deleted the same day for
+  having no caller, so a `&RcHeader` reaches nothing and the binding that
+  formed one has no motive. `refcount::tests::who_may_read_a_header` still
+  reads the crate's own sources, for the two places the compiler does not
+  stand: a revert of the privacy, which breaks no build, and a
+  `#[cfg]`-disabled branch, which parses without resolving a name
+  (`dev/DECISIONS.md`, "a header is read as narrowly as it is written",
+  "`RcHeader`'s fields go private" and the amendment that retires its
+  keep-clause; the instrument that exhibits the race is `dev/WORKFLOW.md`,
+  ThreadSanitizer). Fixtures
+  **outside** `refcount` reach a header through `refcount::entity_refcount`
+  and its two neighbours, `#[cfg(test)]` shorthands over an entity pointer
+  of any type; `refcount`'s own read and write the fields plainly, on
+  headers built in a local — and in one case on byte 6, which is how a test
+  models the collector's store. A `Class` descriptor's own `flags` word is
+  read through `Class::flags_of`, at its offset rather than through the
+  pointer deref the guard greps for.
 - **No mutator access to a live published header spans byte 6** — four
   bytes for the counter, two for the mutator's half of the flags. The
   eight-byte accesses are the four outside a header's life: `publish_header`

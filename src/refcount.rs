@@ -429,8 +429,8 @@ compile_error!(
 /// tests honest too.
 #[repr(C, align(8))]
 pub struct RcHeader {
-    pub refcount: u32,
-    pub flags: u32,
+    refcount: u32,
+    flags: u32,
 }
 
 impl RcHeader {
@@ -444,17 +444,6 @@ impl RcHeader {
             refcount: 1,
             flags: category as u32 | extra_flags,
         }
-    }
-
-    #[inline]
-    pub fn memory_category(&self) -> MemoryCategory {
-        MemoryCategory::from_flags(self.flags)
-    }
-
-    /// Is this entity refcounted for *lifetime* purposes?
-    #[inline]
-    pub fn lifetime_counted(&self) -> bool {
-        self.memory_category() == MemoryCategory::GcHeap
     }
 }
 
@@ -855,11 +844,20 @@ pub(crate) unsafe fn mutator_unguard_release(header: *mut RcHeader) -> u32 {
 /// that touch published entities (`dev/DECISIONS.md`, "`RcHeader`'s fields
 /// go private, and the source grep is re-aimed rather than retired").
 ///
+/// **`*mut` because the load needs write provenance.** An atomic access
+/// retags SharedReadWrite, so a pointer that grants only SharedReadOnly
+/// stops it under Miri and nowhere else (`dev/POSTMORTEM.md`, "an atomic
+/// read needs write provenance"). `*mut` is what refuses the two spellings
+/// that carry the weaker one: `&raw const local`, and a `&T` binding, which
+/// coerces to `*const T` at a call site with no cast to notice. A cast to
+/// `*mut` still compiles, so this narrows the accident rather than closing
+/// the hole.
+///
 /// # Safety
 /// `entity` points at a live entity, whose first field is its header.
 #[cfg(test)]
 #[inline]
-pub(crate) unsafe fn entity_refcount<T>(entity: *const T) -> u32 {
+pub(crate) unsafe fn entity_refcount<T>(entity: *mut T) -> u32 {
     unsafe { refcount_load(entity as *const RcHeader) }
 }
 
@@ -871,7 +869,7 @@ pub(crate) unsafe fn entity_refcount<T>(entity: *const T) -> u32 {
 /// As [`entity_refcount`].
 #[cfg(test)]
 #[inline]
-pub(crate) unsafe fn entity_flags<T>(entity: *const T) -> u32 {
+pub(crate) unsafe fn entity_flags<T>(entity: *mut T) -> u32 {
     unsafe { flags_load(entity as *const RcHeader) }
 }
 
@@ -882,7 +880,7 @@ pub(crate) unsafe fn entity_flags<T>(entity: *const T) -> u32 {
 /// As [`entity_refcount`].
 #[cfg(test)]
 #[inline]
-pub(crate) unsafe fn entity_category<T>(entity: *const T) -> MemoryCategory {
+pub(crate) unsafe fn entity_category<T>(entity: *mut T) -> MemoryCategory {
     MemoryCategory::from_flags(unsafe { entity_flags(entity) })
 }
 

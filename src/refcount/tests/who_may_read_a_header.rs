@@ -8,26 +8,39 @@
 //! (`dev/WORKFLOW.md`, "ThreadSanitizer"), on the sites a running test
 //! reaches.
 //!
-//! **Both spellings of a header count**: the `rc` field of an entity struct,
-//! and the header behind a raw pointer of its own. The second was added on
-//! 2026-08-26: twenty-four sites in `promote.rs`, `memory/heap.rs`,
-//! `cells.rs` and one fixture spelled a header `(*p).flags` and walked
-//! through the guard on that alone.
+//! **The field half belongs to the type since 2026-08-26.** `refcount` and
+//! `flags` carry no visibility modifier, so outside this module a rename, a
+//! local and a reference binding are all compile errors, and the four field
+//! spellings below cannot be written at all. They stay in the list as the
+//! tripwire against the privacy being put back, which costs four array
+//! entries (`dev/DECISIONS.md`, "`RcHeader`'s fields go private, and the
+//! source grep is re-aimed rather than retired").
 //!
-//! It is still cheap to evade: a rename, or a reference binding taken first
-//! (`let e = &mut *entity; e.flags`), passes it. That spelling is not
-//! hypothetical — it stood in `memory/barrier.rs` until the same day, where
-//! it was worse than a plain read, the `&mut` asserting uniqueness over a
-//! word the collector writes; reading found it, and this test cannot. So the
-//! guard is aimed at inattention — four such reads stood in `object.rs` and
-//! `array/entity.rs` until a review of 2026-08-15 found them, and each was
-//! written by someone who knew the rule.
+//! **Every spelling below is a compile error in the checked build**, since
+//! `memory_category` and `lifetime_counted` were deleted the same day for
+//! having no caller: a `&RcHeader` now reaches a type with private fields and
+//! no methods, so the binding that formed it has nothing to do. What this test
+//! is for is the two places the compiler does not stand. It fires when the
+//! privacy is **reverted** — restoring `pub` breaks no build, nothing outside
+//! this module naming either field any more, so the erosion would be silent
+//! until the first new site. And it reads **configurations the checking build
+//! does not compile**: a `#[cfg]`-disabled branch parses without resolving a
+//! name, so the compiler passes `(*p).flags` there and this walk does not.
+//! That evasion is in this guard's own history rather than a hypothesis.
 //!
-//! **The rule has no exemption since 2026-08-26.** It used to spare the arm
-//! of a `#[cfg]` pair belonging to the build with no concurrent collector,
-//! and that build was deleted with `rc-trace`. One arm survives every such
-//! pair now, the one that reads through the helpers, so a direct read is an
-//! offence wherever it stands.
+//! **The rule has no exemption but this module's own.** The `#[cfg]`-arm
+//! exemption went with `rc-trace` on 2026-08-26, and the whole-test-tree one
+//! went the same day, once the 187 accesses it had been sparing were
+//! converted — they were the population a ThreadSanitizer run reaches first,
+//! so sparing them left the fallback instrument covering nothing.
+//!
+//! **What neither the type nor the grep reaches**, and it is more than one
+//! shape. A `&mut Object` formed over a published entity to touch its other
+//! fields asserts uniqueness over the header bytes without spelling a header
+//! access at all. `core::ptr::read::<RcHeader>(p)` names no field, needs no
+//! privacy, and yields a plain eight-byte read spanning byte 6 — the instinct
+//! that produced three of the wide reads repaired the same day. Both are
+//! Miri's, ThreadSanitizer's and a reader's.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,6 +49,13 @@ use std::path::{Path, PathBuf};
 /// `RcHeader` field of an entity struct, and a header reached through a
 /// raw pointer of its own. Both go past
 /// [`crate::refcount::mutator_flags`] and its neighbours.
+///
+/// All eight are refused by the compiler in the checked build. The four field
+/// spellings stay against a revert of the privacy; the four method spellings
+/// stay against `memory_category` and `lifetime_counted` being reintroduced
+/// as `&self` from habit, which is the regression this crate has already
+/// had once. If the capability is ever wanted again it comes back as a free
+/// function over the flags word, the shape `is_object` and `may_enrol` have.
 ///
 /// The pointer spellings anchor on the closing parenthesis of `(*p)`, and
 /// that is what keeps them off the other `flags` words in this crate — a
@@ -65,21 +85,18 @@ fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// The helpers themselves, and the tests.
+/// This module and its own fixtures, which are where the helpers and the
+/// stack-built headers live. Nothing else: the tests were exempt as a tree
+/// until 2026-08-26 and are not any more, their 187 accesses having gone
+/// through the helpers that day.
 ///
-/// **The test exemption spares nothing today.** It used to cover 187 accesses
-/// in 37 files, most of them on entities a factory had allocated and
-/// published rather than on headers built in a local — so the population this
-/// guard could not see and the population a ThreadSanitizer run reaches first
-/// were the same one. Those went through the helpers on 2026-08-26. What the
-/// exemption still names is `refcount`'s own fixtures, which are exempt by
-/// module in any case.
+/// `path` is relative to `src/`, and that is load-bearing: matched against
+/// the absolute path, a checkout under a directory named `refcount` would
+/// exempt every file in the crate and the walk's `files.len() > 50` would
+/// still pass.
 fn exempt_file(path: &Path) -> bool {
     let text = path.to_string_lossy().replace('\\', "/");
-    text.ends_with("/refcount.rs")
-        || text.contains("/refcount/")
-        || text.contains("/tests/")
-        || text.ends_with("/tests.rs")
+    text == "refcount.rs" || text.starts_with("refcount/")
 }
 
 /// The lines of `text` that read a header directly, as (line number, line).
@@ -90,6 +107,13 @@ fn direct_reads(text: &str) -> Vec<(usize, String)> {
     let mut found = Vec::new();
 
     for (number, line) in text.lines().enumerate() {
+        // A whole-line comment races nothing, and banning the spelling there
+        // would ban the warning a reader most needs beside the code. A
+        // trailing comment is not spared: its line carries code as well.
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+
         if READS.iter().any(|read| line.contains(read)) {
             found.push((number + 1, line.trim().to_string()));
         }
@@ -105,15 +129,26 @@ fn direct_reads(text: &str) -> Vec<(usize, String)> {
               and the abort takes the whole slice with it"
 )]
 fn a_header_is_read_through_the_helpers_and_nowhere_else() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
-    sources(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(),
-        &mut files,
-    );
+    sources(root.as_path(), &mut files);
     assert!(files.len() > 50, "the source walk found almost nothing");
 
+    // Every path is judged by its place inside `src/`, never by the
+    // directory the checkout sits in.
+    let judged: Vec<&PathBuf> = files
+        .iter()
+        .filter(|p| !exempt_file(p.strip_prefix(&root).expect("a path under src/")))
+        .collect();
+    assert!(
+        judged.len() > 40,
+        "the exemption swallowed the crate: {} of {} files judged",
+        judged.len(),
+        files.len()
+    );
+
     let mut offences = Vec::new();
-    for path in files.iter().filter(|p| !exempt_file(p)) {
+    for path in judged {
         let text = fs::read_to_string(path).expect("a source file is readable");
         for (number, line) in direct_reads(&text) {
             offences.push(format!("{}:{number}: {line}", path.display()));
@@ -182,4 +217,34 @@ fn the_guard_sees_the_pointer_spelling_and_spares_a_descriptor() {
     assert!(found[0].1.contains("(*child).flags"));
     assert!(found[1].1.contains("memory_category"));
     assert!(found[2].1.contains("(*child).refcount"));
+}
+
+/// One line per pattern, so a pattern dropped from [`READS`] goes red here.
+/// The two fixtures above pin five of the eight between them, and the main
+/// guard cannot pin any: it finds no offences in a green tree, so a shortened
+/// list leaves it passing exactly as it passed before.
+#[test]
+fn the_guard_sees_every_spelling_in_the_list() {
+    let source = "\
+fn every_spelling(e: *mut Entity, p: *mut RcHeader) {
+    let _ = e.rc.flags;
+    let _ = e.rc.refcount;
+    let _ = e.rc.memory_category();
+    let _ = e.rc.lifetime_counted();
+    let _ = (*p).flags;
+    let _ = (*p).refcount;
+    let _ = (*p).memory_category();
+    let _ = (*p).lifetime_counted();
+}
+";
+    // Both counts are literal on purpose. Against `READS.len()` the check is
+    // vacuous: dropping a pattern drops the line that matched it, and the two
+    // sides fall together — seen doing exactly that on 2026-08-26.
+    assert_eq!(READS.len(), 8, "a pattern was added or dropped");
+    let found = direct_reads(source);
+    assert_eq!(
+        found.len(),
+        8,
+        "one line per pattern, and each must match its own: {found:?}"
+    );
 }

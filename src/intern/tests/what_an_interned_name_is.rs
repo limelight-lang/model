@@ -19,20 +19,25 @@ fn entity_is_a_valid_immortal_cow_string() {
     // Keep the raw pointer: `&*` would narrow provenance to the fixed
     // fields, and the bytes live past them.
     let p = intern_str("hello");
+    // `intern_str` hands back `*const`, and the header helpers ask for
+    // `*mut` because their load retags for writing. The cast is honest: the
+    // provenance descends from the immortal region's allocation, and only
+    // the type was narrowed.
+    let header = p as *mut LLString;
     let s = unsafe { &*p };
     assert_eq!(unsafe { LLString::bytes(p) }, b"hello");
     assert_eq!(s.len, 5);
     assert_eq!(
-        unsafe { crate::refcount::entity_category(p) },
+        unsafe { crate::refcount::entity_category(header) },
         MemoryCategory::Immortal
     );
     assert_ne!(
-        unsafe { crate::refcount::entity_flags(p) } & COW,
+        unsafe { crate::refcount::entity_flags(header) } & COW,
         0,
         "immortal strings are COW-flagged"
     );
     assert_eq!(
-        unsafe { crate::refcount::entity_flags(p) } & ENTITY_KIND_MASK,
+        unsafe { crate::refcount::entity_flags(header) } & ENTITY_KIND_MASK,
         EntityKind::String.to_flags(),
         "an interned name is a string entity, not an object"
     );

@@ -12,13 +12,14 @@ fn a_reference_box_is_a_24_byte_kind_3_entity() {
 
     let mut arena = Arena::new();
     let r = ll_reference_new();
-    let rc = unsafe { &(*r).rc };
-    assert_eq!(rc.refcount, 1);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(r) }, 1);
     assert_eq!(
-        rc.flags & crate::refcount::ENTITY_KIND_MASK,
+        unsafe { crate::refcount::entity_flags(r) } & crate::refcount::ENTITY_KIND_MASK,
         EntityKind::Reference.to_flags()
     );
-    assert!(!crate::refcount::is_object(rc.flags));
+    assert!(!crate::refcount::is_object(unsafe {
+        crate::refcount::entity_flags(r)
+    }));
     assert_eq!(unsafe { (*r).value }.tag(), Tag::Null);
 
     unsafe {

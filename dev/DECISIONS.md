@@ -9,6 +9,47 @@ never edited or deleted.
 ---
 
 
+## 2026-08-26 — the keep-clause of the field-privacy ruling is retired: both `&self` readers are deleted
+
+The same Sage amends the entry below. Its main clause stands — the fields are
+private — and its **keep-clause does not**: `RcHeader::memory_category` and
+`RcHeader::lifetime_counted` were kept public on the stated ground that
+factories call them before publication, and the sources refute it. The only
+occurrences of either name in `src/`, `benches/`, `examples/` and the external
+bench crate are the two definitions, `lifetime_counted`'s call into its twin,
+and the guard's own pattern strings. The population is zero. Both are deleted.
+
+**The deciding consequence is that one binding stops compiling.** `let hdr =
+&(*slot).rc` still forms — `rc` is public on every entity struct — but it now
+reaches a type with private fields and no methods, so there is nothing to call
+and the binding has no motive. That was the last spelling by which a shared
+reference could span a published header's eight bytes while both instruments
+watched something else, and it is bit-for-bit the defect of 2026-08-15. It
+moves into the type, which is the ground the privacy ruling stood on. The type
+also reaches where the grep never walked: the guard reads `src/` alone, so a
+bench, an example or the external crate could have formed that reference with
+no instrument at all.
+
+**What is accepted lost:** the public API can no longer read any part of a
+header, `RcHeader` being construct-only from outside the crate. A consumer
+calling `.memory_category()` breaks unsurveyed, which is the consumer class the
+privacy ruling already accepted breaking on `.refcount`. If the capability is
+wanted again it returns as a free function over the flags word — the shape
+`is_object`, `is_string` and `may_enrol` already have — and never again as
+`&self`.
+
+**The grep stays on the two grounds that remain**, and the third is named as
+retired rather than smoothed over. It is the only instrument that fires when
+the privacy is reverted: restoring `pub` breaks no build, nothing outside
+`refcount` naming either field, so the erosion is silent until the first new
+site. And it reads configurations the checking build does not compile, a
+`#[cfg]`-disabled branch parsing without resolving a name — an evasion this
+guard has already had. All eight literals stay: four against the revert, four
+against the deleted pair being reintroduced from habit.
+
+---
+
+
 ## 2026-08-26 — `RcHeader`'s fields go private, and the source grep is re-aimed rather than retired
 
 The Sage ruled it. The fields lose `pub` outright — visible to `refcount` and
@@ -57,10 +98,13 @@ this repository reading `.refcount` breaks at its next update, unsurveyed. Such
 a consumer holds exactly the race this day was spent removing, and the
 `#[repr(C)]` layout, `RcHeader::new` and the retain/release ABI are untouched.
 
-**One limit is named rather than solved.** A `&mut Object` formed over a
-published entity to reach its other fields asserts uniqueness over the header
-bytes without spelling a header access at all. Neither the type nor the grep
-sees it; it stays Miri's, ThreadSanitizer's and a reader's.
+**Two limits are named rather than solved**, and the list is open. A `&mut
+Object` formed over a published entity to reach its other fields asserts
+uniqueness over the header bytes without spelling a header access at all. And
+`core::ptr::read::<RcHeader>(p)` names no field, so privacy does not reach it
+either, while it reads eight bytes across byte 6 — the same instinct that
+produced three of the wide reads repaired that day. Both stay Miri's,
+ThreadSanitizer's and a reader's.
 
 ---
 

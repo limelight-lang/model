@@ -343,7 +343,7 @@ introduce two constants nobody reads.
         suite 460 three times, `debug-journal` 466 three times,
         `hash-folding` 460, release, benches, `fmt --check`, 42 doc warnings
         and no unresolved link; test list byte-identical.
-- [ ] S31.8 Take the fields private and re-aim the guard
+- [x] S31.8 Take the fields private and re-aim the guard
       done: `refcount` and its child modules are the only readers of `refcount`
         and `flags` — the modifier is gone, not narrowed — and the crate builds
         with nothing else naming either field; `who_may_read_a_header` keeps all
@@ -353,6 +353,51 @@ introduce two constants nobody reads.
       tier: T2 · role: Critic
       handoff: the delete half of S31.7's expand. It is the step that proves
         S31.7 was complete: if a site was missed, the build names it.
+      handoff: closed 2026-08-26. The build named 24 sites in 7 files that no
+        grep pattern covered — bare locals, and four `let rc = &(*s).rc`
+        bindings, which is the reference-over-a-published-header shape the
+        Sage ruled against. The whole-test-tree exemption went with them: the
+        guard now spares `refcount.rs` and `refcount/` alone and is green.
+        Miri, one slice at a time, found a defect of its own: an atomic access
+        retags SharedReadWrite, so a fixture header reached by `&raw const`
+        stops the load — twelve sites now use `&raw mut`, and the shorthand
+        says why. Clean afterwards over `refcount::`, `value::`, `object::`,
+        `string::`, `weak::`, `reference::`, `intern::`, `memory::barrier::`,
+        `cells::`, `promote::`, `array::entity::` and `array::element::`;
+        `array::table::` did not finish inside a 560 s budget and is not
+        evidence either way.
+      Critic 2026-08-26: five findings accepted and repaired. The shorthands
+        asked for `*const T` while their bodies need write provenance, and a
+        `&T` binding coerces to that with no cast to notice — the signature is
+        `*mut T` now. The self-test pinned five of the eight patterns, and the
+        replacement compared two counts that fall together, which was seen
+        doing exactly that before it was written against a literal. The guard
+        forbade a comment naming the spelling, and matched the exemption
+        against the absolute path, so a checkout under a directory called
+        `refcount` would have exempted the crate; both closed, with a floor on
+        the judged-file count. `dev/INDEX.md` and `dev/ARCHITECTURE.md`
+        overstated what privacy carries; corrected.
+      Critic 2026-08-26: the sixth finding is the ruling's own premise —
+        `memory_category` and `lifetime_counted` are `pub fn(&self)` with
+        **zero callers anywhere**, so the pre-publication callers the Sage kept
+        them for do not exist, and `let hdr = &(*slot).rc; hdr.lifetime_`
+        `counted()` evades the type and the grep alike. Sent back to the Sage
+        rather than decided here.
+      Sage 2026-08-26: delete both, and nothing replaces them in the public
+        API — the keep-clause was argued on a premise the sources refute, and
+        with the methods gone a `&RcHeader` reaches a type with private fields
+        and no methods, so the binding has no motive. The capability, if ever
+        wanted, returns as a free function over the flags word, never as
+        `&self`. The grep stays on two grounds only: a revert of the privacy
+        breaks no build, and a `#[cfg]`-disabled branch parses without
+        resolving a name. Final.
+      handoff: closed 2026-08-26. The whole gate ran again after the deletion:
+        suite 461 three times, `debug-journal` 467 three times, `hash-folding`
+        461, release, benches, `fmt --check`, 42 doc warnings and no
+        unresolved link; Miri clean over `refcount::`, `intern::`, `value::`
+        and `memory::barrier::` afterwards. Test list 460 → 461, the addition
+        being the self-test that pins all eight patterns — verified red by
+        dropping one.
 
 ## S32 — The block header's collector triple
 

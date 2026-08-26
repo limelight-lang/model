@@ -80,8 +80,16 @@ fn storing_null_clears_the_slot_without_double_release() {
     unsafe { owner.store(&mut arena, &mut a) };
     unsafe { owner.store(&mut arena, std::ptr::null_mut()) };
     assert!(owner.entity_ptr().is_null());
-    assert_eq!(a.refcount, 2, "the log still owns A's release");
+    assert_eq!(
+        unsafe { crate::refcount::entity_refcount(&raw mut a) },
+        2,
+        "the log still owns A's release"
+    );
 
     arena.reset(|_| {});
-    assert_eq!(a.refcount, 1, "exactly one release, from the log");
+    assert_eq!(
+        unsafe { crate::refcount::entity_refcount(&raw mut a) },
+        1,
+        "exactly one release, from the log"
+    );
 }

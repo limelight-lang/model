@@ -138,23 +138,27 @@ fn heap_ref_into_arena_owner_defers_all_releases_to_reset() {
     let mut b = entity(MemoryCategory::GcHeap);
 
     unsafe { owner.store(&mut arena, &mut a) };
-    assert_eq!(a.refcount, 2);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(&raw mut a) }, 2);
 
     // Overwrite: A must NOT be released here — its log record owns
     // the release.
     unsafe { owner.store(&mut arena, &mut b) };
-    assert_eq!(a.refcount, 2, "no release on overwrite in an arena slot");
-    assert_eq!(b.refcount, 2);
+    assert_eq!(
+        unsafe { crate::refcount::entity_refcount(&raw mut a) },
+        2,
+        "no release on overwrite in an arena slot"
+    );
+    assert_eq!(unsafe { crate::refcount::entity_refcount(&raw mut b) }, 2);
 
     // Store A again: a second retain and a second log record.
     unsafe { owner.store(&mut arena, &mut a) };
-    assert_eq!(a.refcount, 3);
-    assert_eq!(b.refcount, 2);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(&raw mut a) }, 3);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(&raw mut b) }, 2);
 
     // Reset releases once per record: A twice, B once. Balanced.
     arena.reset(|_| {});
-    assert_eq!(a.refcount, 1);
-    assert_eq!(b.refcount, 1);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(&raw mut a) }, 1);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(&raw mut b) }, 1);
 }
 
 #[test]
@@ -165,7 +169,11 @@ fn immortal_values_touch_nothing() {
     let mut s = entity(MemoryCategory::Immortal);
 
     unsafe { owner.store(&mut arena, &mut s) };
-    assert_eq!(s.refcount, 1, "immortals are never counted");
+    assert_eq!(
+        unsafe { crate::refcount::entity_refcount(&raw mut s) },
+        1,
+        "immortals are never counted"
+    );
     assert_eq!(owner.entity_ptr(), &mut s as *mut _);
 
     let mut escapes = 0;

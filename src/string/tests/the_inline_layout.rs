@@ -45,15 +45,20 @@ fn a_heap_string_is_a_cow_kind_8_entity_that_dies_by_refcount() {
     let s = unsafe { ll_string_new(&mut ctx, MemoryCategory::GcHeap, b"hello") };
     assert!(!s.is_null());
 
-    let rc = unsafe { &(*s).rc };
-    assert_eq!(rc.refcount, 1);
-    assert_eq!(rc.flags & ENTITY_KIND_MASK, EntityKind::String.to_flags());
+    assert_eq!(unsafe { crate::refcount::entity_refcount(s) }, 1);
+    assert_eq!(
+        unsafe { crate::refcount::entity_flags(s) } & ENTITY_KIND_MASK,
+        EntityKind::String.to_flags()
+    );
     assert_ne!(
-        rc.flags & COW,
+        unsafe { crate::refcount::entity_flags(s) } & COW,
         0,
         "the ordinary factory builds the COW form"
     );
-    assert_eq!(rc.memory_category(), MemoryCategory::GcHeap);
+    assert_eq!(
+        unsafe { crate::refcount::entity_category(s) },
+        MemoryCategory::GcHeap
+    );
     assert_eq!(unsafe { LLString::bytes(s) }, b"hello");
     assert_eq!(unsafe { (*s).len }, 5);
 

@@ -7,6 +7,36 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-26 — an atomic read needs write provenance, and `&raw const` does not carry it
+
+**What happened.** Taking `RcHeader`'s fields private moved twelve fixture
+reads of a stack-built header from `a.refcount` to
+`entity_refcount(&raw const a)`. The suite passed in all three configurations,
+three runs each. Miri stopped the first of the twelve: `refcount_load` casts to
+`*const AtomicU32` and dereferences it, which retags SharedReadWrite because an
+atomic holds an `UnsafeCell`, while a pointer made by `&raw const` grants
+SharedReadOnly. `&raw mut` fixes all twelve.
+
+**Why it was possible.** `*const T` in the signature reads as "a read needs no
+write rights", and for a plain read that is true. An atomic access performs the
+retag its cell type demands rather than the one the operation looks like. Every
+production caller passes a pointer descended from an allocation, which carries
+write provenance already, so the crate had never exercised the read-only case
+and the signature had never been tested against it.
+
+**Why it was not caught earlier.** No `cargo test` run separates the two, which
+is the same blindness that made the header rule need a source guard in the
+first place. It surfaced because the stage ran Miri slice by slice instead of
+trusting a green suite — the discipline `dev/WORKFLOW.md` states for formal-UB
+work, applied to a change that looked like a rename.
+
+**The rule.** A pointer handed to any accessor in `refcount` carries write
+provenance. In a fixture that means `&raw mut` over a local header; everywhere
+else it is free, an allocation's pointer having it already. The accessors say
+so at the declaration.
+
+---
+
 ## 2026-08-18 — an allocation moved earlier re-aimed four refusal tests, and their counters could not see it
 
 **What happened.** The COW copy gained a presized storage chunk in

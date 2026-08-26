@@ -24,9 +24,9 @@ fn entity_boxes_count_scalars_do_not() {
     let v = Value::entity(Tag::Object, &mut e);
     assert!(v.is_refcounted());
     unsafe { value_retain(&v) };
-    assert_eq!(e.refcount, 2);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(&raw mut e) }, 2);
     assert!(!unsafe { value_release(&v) });
-    assert_eq!(e.refcount, 1);
+    assert_eq!(unsafe { crate::refcount::entity_refcount(&raw mut e) }, 1);
 
     let i = Value::int(7);
     assert!(!i.is_refcounted());

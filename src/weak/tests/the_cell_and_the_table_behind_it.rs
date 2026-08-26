@@ -16,11 +16,13 @@ fn a_weak_cell_is_a_16_byte_kind_11_gc_heap_entity() {
     with_ctx(|ctx| {
         let obj = unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) };
         let w = unsafe { ll_weakref_create(ctx, obj as *mut RcHeader) };
-        let rc = unsafe { &(*w).rc };
-        assert_eq!(rc.refcount, 1);
-        assert_eq!(rc.flags & ENTITY_KIND_MASK, EntityKind::WeakRef.to_flags());
+        assert_eq!(unsafe { crate::refcount::entity_refcount(w) }, 1);
         assert_eq!(
-            rc.memory_category(),
+            unsafe { crate::refcount::entity_flags(w) } & ENTITY_KIND_MASK,
+            EntityKind::WeakRef.to_flags()
+        );
+        assert_eq!(
+            unsafe { crate::refcount::entity_category(w) },
             MemoryCategory::GcHeap,
             "the cell is GC-heap even when an arena is ambient"
         );
