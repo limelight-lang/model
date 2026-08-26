@@ -226,6 +226,24 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         `memory/barrier/tests/publication_before_teardown.rs`,
         `weak/tests/*` and the `heap_census` leak tests keep a
         strategy-independent contract while losing their driver.
+- [ ] S30.8 The comment pass: repoint what the code still cites
+      done: the 95 references to `rc-walk`, `rc-trace`, `gc-horizon` and
+        `satb` that stood in 30 files of `src/` on 2026-08-26, and the 11 in
+        `benches/` and `bench-external/`, are gone or repointed — a citation
+        of a deleted document to `rc-cycle.md` where the successor carries the
+        same clause, and to `archive/pre-rc-cycle` where nothing does; a
+        sentence describing a mechanism that no longer runs is rewritten
+        rather than re-cited, because a comment is the contract and a wrong
+        one stops a reader from reading the code (`dev/WORKFLOW.md`); the
+        `dev/` journals keep their references, which are history by
+        definition, and `docs/architecture.md`'s banner stands until its
+        diagrams are redrawn
+      tier: T2 · role: Code Reviewer
+      handoff: the count is the measurement of 2026-08-26, taken with
+        `grep -rn -i` over each directory. It is the last clause of S30's own
+        criterion still open, and it is a reading job rather than a
+        mechanical one: three quarters of the sites are prose about a
+        mechanism, not a path in backticks.
 - [x] S30.5 Delete the documents of both collectors and the horizon
       done: in `rfc`, `model/gc/rc-walk*.md`, `model/gc/walk/`,
         `model/gc/retained-block-walk.md`, `model/gc/gc-horizon*.md`,
