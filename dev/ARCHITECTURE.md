@@ -63,9 +63,11 @@ point:
 
 **What a collector will add back.** A dying enrolled slot owes the
 collector a duty at two doors (`object::ll_entity_die` and
-`array::entity`'s drain, both marked S34.3), and the release path owes
-an enrolment (S31.3). Those are upward edges and are a design event when
-they land, not a table entry added quietly.
+`array::entity`'s drain, both marked S34.3). The release path's
+enrolment gate is built — it decides and counts — but has no queue to
+post to until S34.1, so the edge it will make is not there yet. Those are
+upward edges and are a design event when they land, not a table entry
+added quietly.
 
 Any new upward edge is a design event: stop, discuss, record in
 `DECISIONS.md` — do not just add it to this table.
@@ -192,10 +194,13 @@ field is lent to):
   written and consumed by `promote`. It shares the word with the
   collector's fields safely because an arena entity is never a
   candidate, so a reset and a collection never mark the same entity;
-- bits 8–10, **free**, and lent to the collector by S31.3: acyclic
-  class, proven ownership, enrolled. The enrolment gate reads them
-  together with the category and the kind as one `flags & 0x733`, which
-  is why nothing else may take them;
+- bits 8–10, the collector's three marks — `ACYCLIC_GATE`,
+  `OWNERSHIP_MARK`, `ENROLLED`. The release path reads them together
+  with the category and the kind's top bit as one `flags & 0x723`
+  (`refcount::ENROLMENT_GATE_MASK`), so a constant landing on any of them
+  would make the gate refuse candidates for a reason the design does not
+  have. None has a writer yet: the queue that sets `ENROLLED` is S34.1's,
+  and the two proofs are S37.2's and S37.3's;
 - bit 11, `IS_ESCAPEE` — repurposes the refcount as the escapee
   hold-count (see invariant 5);
 - bit 12, weak gate (`HAS_WEAK_REFERENCES`) — lent to `weak`; death

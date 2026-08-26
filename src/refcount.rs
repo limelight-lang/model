@@ -14,12 +14,11 @@
 //! collector thread as an accelerator over the same headers
 //! (`rfc/model/gc/rc-cycle.md`, "What it is" and "Concurrency").
 //!
-//! **Flags bits 8-10, 15 and 16-31 are unclaimed.** The three low ones
-//! are the enrolment gate's — acyclic class, proven ownership,
-//! enrolled — which S31.3 names; bit 15 came free when the string's
-//! layout became a kind code; the region above is the collector's own,
-//! laid out as epoch at 16-17, maturation age at 18-19 and reserve at
-//! 20-23. Until each step lands, nothing reads or writes them, and
+//! **Flags bits 15 and 16-31 are unclaimed.** Bit 15 came free when the
+//! string's layout became a kind code; the region above is the
+//! collector's own, laid out as epoch at 16-17, maturation age at 18-19
+//! and reserve at 20-23. Until the step that lays each one lands,
+//! nothing reads or writes them, and
 //! `refcount::tests::the_header_the_compiler_shares` is what keeps a
 //! constant from drifting in meanwhile.
 
@@ -92,6 +91,25 @@ pub const COW: u32 = 1 << 6;
 /// entity: an arena entity is never a candidate
 /// (`rfc/model/classes.md`, "Flags layout").
 pub const ARENA_RESET_MARK: u32 = 1 << 7;
+
+/// This instance's class is proven unable to hold a reference to any
+/// kind that can close a ring, so no ring passes through it and it never
+/// becomes a candidate (`rfc/model/gc/rc-cycle.md`). Stamped by the
+/// factory from the class's own answer; **no producer yet**, which is
+/// S37.2's, and it waits on `rfc` declaring a target per pointer slot.
+pub const ACYCLIC_GATE: u32 = 1 << 8;
+
+/// This entity's owner is proven, so no trace need consider it
+/// (`rfc/model/gc/rc-cycle.md`). **No producer yet** — the compiler's
+/// stamp and the factory-side write are S37.3's.
+pub const OWNERSHIP_MARK: u32 = 1 << 9;
+
+/// A root-queue entry names this entity. Cleared by the owner at death
+/// and at no other point — **never at acquittal**, because enrolment is
+/// edge-triggered and clearing it there is a permanent miss (S34.2,
+/// `rfc/model/gc/rc-cycle.md`). **No producer yet:** the queue is
+/// S34.1's, so today the bit is only read, by the gate below.
+pub const ENROLLED: u32 = 1 << 10;
 
 /// Entity has weak references (side table exists).
 pub const HAS_WEAK_REFERENCES: u32 = 1 << 12;
@@ -333,6 +351,38 @@ const _: () = {
 #[inline]
 pub fn kind_may_close_a_cycle(flags: u32) -> bool {
     flags & KIND_ABOVE_THE_RING_RESERVE == 0
+}
+
+/// The five conditions a non-zero decrement must satisfy before the
+/// entity is enrolled as a cycle candidate, as one mask: **each of them
+/// is "this bit is zero"**, which is what the flags layout was chosen
+/// for (`rfc/model/classes.md`, "Flags layout").
+///
+/// - the category is `GcHeap` — an arena entity outlives no reset in a
+///   queue, and the corpse rule would read the count of the slot's next
+///   occupant (`rfc/model/gc/rc-cycle.md`, "Enrolment requires the
+///   GC-heap category");
+/// - the kind is below eight, so a ring can close through it;
+/// - the class is not proven acyclic;
+/// - the owner is not proven;
+/// - a queue entry does not already name it.
+///
+/// Composed from the named constants rather than written as the literal
+/// the design names, so that moving a bit moves the gate with it; the
+/// assertion below is what ties the composition back to that literal.
+pub const ENROLMENT_GATE_MASK: u32 =
+    MEMORY_CATEGORY_MASK | KIND_ABOVE_THE_RING_RESERVE | ACYCLIC_GATE | OWNERSHIP_MARK | ENROLLED;
+
+const _: () = assert!(
+    ENROLMENT_GATE_MASK == 0x723,
+    "the composed gate and the value `rfc/model/classes.md` names have parted"
+);
+
+/// True when this flags word passes every clause of
+/// [`ENROLMENT_GATE_MASK`] at once.
+#[inline]
+pub fn may_enrol(flags: u32) -> bool {
+    flags & ENROLMENT_GATE_MASK == 0
 }
 
 /// True when the entity carries a class word at `+8` — an object or a
@@ -597,7 +647,46 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
     let refcount = refcount - 1;
     // Narrow-mutator store: counter half only, flags never touched.
     unsafe { refcount_store(entity, refcount) };
+
+    // A decrement that does not reach zero is the one event that can
+    // leave a garbage ring behind, so it is where a candidate is
+    // enrolled (`rfc/model/gc/rc-cycle.md`). The queue that receives one
+    // is S34.1's; until it exists the decision is made and counted and
+    // nothing is stored, which is also why the bit the gate reads has no
+    // writer yet.
+    if refcount != 0 && may_enrol(flags) {
+        note_admission();
+    }
+
     refcount == 0 && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many decrements this thread's release path admitted through
+    /// [`ENROLMENT_GATE_MASK`]. Per thread rather than global because the
+    /// harness runs tests in parallel and a shared counter would charge
+    /// one test's releases to another; `Cell<usize>` has no drop glue,
+    /// which is the rule for anything a thread exit can reach
+    /// (`memory::heap::ll_thread_exit`).
+    static ADMITTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Record one admission. A scenario test observes a pair of conditions
+/// at once — it sees an entity enrolled or not — and can never show that
+/// a clause it did not vary rejects on its own. The counter is what sees
+/// a condition that never fires.
+#[inline]
+fn note_admission() {
+    #[cfg(test)]
+    ADMITTED.with(|c| c.set(c.get() + 1));
+}
+
+/// Admissions on this thread since [`take_admissions`] last ran, and
+/// zero the count.
+#[cfg(test)]
+pub(crate) fn take_admissions() -> usize {
+    ADMITTED.with(|c| c.replace(0))
 }
 
 /// [`ll_release`] for a compiler-emitted run of releases (a scope

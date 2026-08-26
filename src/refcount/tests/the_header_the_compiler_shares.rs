@@ -42,6 +42,9 @@ fn flags_layout_matches_the_normative_table() {
     assert_eq!(ENTITY_KIND_MASK, 0b1111 << 2, "entity kind: bits 2-5");
     assert_eq!(COW, 1 << 6);
     assert_eq!(ARENA_RESET_MARK, 1 << 7, "arena reset mark: bit 7");
+    assert_eq!(ACYCLIC_GATE, 1 << 8);
+    assert_eq!(OWNERSHIP_MARK, 1 << 9);
+    assert_eq!(ENROLLED, 1 << 10);
     assert_eq!(IS_ESCAPEE, 1 << 11);
     assert_eq!(HAS_WEAK_REFERENCES, 1 << 12);
     assert_eq!(DESTRUCTOR_PENDING, 1 << 13);
@@ -51,18 +54,21 @@ fn flags_layout_matches_the_normative_table() {
         | ENTITY_KIND_MASK
         | COW
         | ARENA_RESET_MARK
+        | ACYCLIC_GATE
+        | OWNERSHIP_MARK
+        | ENROLLED
         | IS_ESCAPEE
         | HAS_WEAK_REFERENCES
         | DESTRUCTOR_PENDING
         | DESTRUCTOR_RAN;
-    // Bits 8-10 are the enrolment gate's three — acyclic class, proven
-    // ownership, enrolled — and S31.3 names them. A constant drifting
-    // into one would leave the gate's single mask testing a condition
-    // that is not the one it reads as.
+    // The enrolment gate reads bits 0-1, 5 and 8-10 as one mask, so a
+    // constant landing on any of them would make the gate refuse
+    // candidates for a reason the design does not have. The clauses
+    // themselves are `the_enrolment_gate`; this pins the positions.
     assert_eq!(
-        claimed & 0b0111_0000_0000,
-        0,
-        "bits 8-10 stay free for the enrolment gate"
+        ENROLMENT_GATE_MASK,
+        MEMORY_CATEGORY_MASK | (1 << 5) | ACYCLIC_GATE | OWNERSHIP_MARK | ENROLLED,
+        "the gate covers the category, the kind's top bit and the three marks"
     );
     // Bit 15 came free when the string's layout became a kind code, and
     // the normative table now calls it free.
@@ -87,7 +93,10 @@ fn each_predicate_answers_for_the_kind_alone() {
             | IS_ESCAPEE
             | HAS_WEAK_REFERENCES
             | DESTRUCTOR_PENDING
-            | DESTRUCTOR_RAN;
+            | DESTRUCTOR_RAN
+            | ACYCLIC_GATE
+            | OWNERSHIP_MARK
+            | ENROLLED;
 
         assert_eq!(
             kind_may_close_a_cycle(flags),

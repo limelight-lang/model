@@ -30,6 +30,15 @@ versions live in `docs/history/`, marked at the top.
   why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26;
   the code itself is on the branch `archive/pre-rc-cycle`. `PLAN.md`
   S31 through S40 build the replacement.
+- The enrolment gate: `refcount::ENROLMENT_GATE_MASK` and `may_enrol`,
+  read on the non-zero decrement in `release_word`. Five conditions in
+  one mask, each of them "this bit is zero" — GC-heap category, a kind a
+  ring can close through, no acyclic proof, no ownership proof, not
+  already enrolled. **It decides and nothing more**: the queue that would
+  receive a candidate is S34.1's, and the three marks it reads have no
+  writer yet. What proves each condition live is a `#[cfg(test)]` counter
+  past the gate (`refcount::tests::the_enrolment_gate`), because a
+  scenario test sees the pair and never one half.
 - GC C ABI and the safepoint: `src/gc.rs` — the four symbols the
   compiler emits calls to (`ll_gc_collect_cycles`, `ll_gc_maybe_collect`,
   `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`). The two collecting

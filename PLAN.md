@@ -169,7 +169,7 @@ enrolment gate is one mask, and the kind field is four bits wide.
         `data` pointer, so the run **aborts** on a misaligned free and hides
         every later failure. It now asserts the layout it assumes; a future flip
         still has to skip it, since the assertion is what fires.
-- [ ] S31.3 The enrolment gate is one mask
+- [x] S31.3 The enrolment gate is one mask
       done: the release path decides with `flags & 0x723 == 0` — category zero,
         kind below eight, class not acyclic, ownership not proven, not already
         enrolled — and a `#[cfg(test)]` counter past the gate proves each of the
@@ -179,6 +179,17 @@ enrolment gate is one mask, and the kind field is four bits wide.
       tier: T2 · role: —
       handoff: a scenario test covers a pair, never one half — the counter is
         what sees a condition that never fires.
+      handoff: closed 2026-08-26. The gate decides and counts and stores
+        nothing: `ENROLLED`, `ACYCLIC_GATE` and `OWNERSHIP_MARK` have no writer
+        until S34.1, S37.2 and S37.3, so the mask reads three bits that are
+        always zero today and the clause tests set them by hand. The counter is
+        thread-local, because the harness runs tests in parallel and a global
+        one charges another test's releases to this one.
+      handoff: the clause test was shown non-vacuous by dropping `ACYCLIC_GATE`
+        from the composed mask: both `the_enrolment_gate` tests turn red, one on
+        the admission and one on the mask's own coverage. A `const` assertion
+        ties the composition to the `0x723` the RFC names, so the two cannot
+        part silently.
 - [ ] S31.4 Narrow the mutator's header writes, and rule the read side
       done: the mutator writes the refcount with a 32-bit store and the flags
         half with stores that stop below byte 2, so no mutator write spans it;
