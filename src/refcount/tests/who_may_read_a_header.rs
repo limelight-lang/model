@@ -71,6 +71,11 @@ fn direct_reads(text: &str) -> Vec<(usize, String)> {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "reads the crate's sources; `opendir` is unavailable under Miri's isolation, \
+              and the abort takes the whole slice with it"
+)]
 fn a_header_is_read_through_the_helpers_and_nowhere_else() {
     let mut files = Vec::new();
     sources(
