@@ -75,6 +75,28 @@ enrolment gate is one mask, and the kind field is four bits wide.
 | 10 | enrolled | | 20–23 | collector reserve |
 | 11 | live escapee | | 24–31 | free |
 
+- [x] S31.0 Write the new layout into `classes.md`   *(before S31.1)*
+      done: `rfc/model/classes.md`'s "Flags layout" table carries the layout
+        below rather than the two-collector one — no GC-state field, no colour
+        bits, no buffered bit, no candidate index — and the prose under it that
+        names bit positions moves with it: the kind field is bits 2–5, the
+        eight codes are named with 8–15 free and 0–3 reserved for ring-closing
+        kinds, and the parenthesis about the candidate buffer's membership test
+        goes; `rfc/model/lowering.md`'s C mirror of the flags word is rewritten
+        to match, being what a consumer transcribes; `linkcheck.php` clean
+      tier: T1 · role: —
+      handoff: `refcount.rs` names that table **authoritative** and
+        `lowering.md` names it the same, so writing the code first would put
+        the crate in contradiction with the document it cites — which is the
+        failure S30 spent a day repairing. The decision itself is already
+        recorded (`rfc/dev/DECISIONS.md`, 2026-08-26, "the flags word is
+        re-laid for one collector"); what is missing is the normative table.
+      handoff: closed 2026-08-26 by `rfc` `1000e9d`. Four more documents named
+        positions that moved and were taken with it — `lowering.md`'s C mirror,
+        `layouts.md`'s diagram, `arena-reset.md`'s promotion step and
+        `weak-references.md`'s eight mentions of bit 7. `cycle/questions.md`
+        Y7 got a superseding note instead: its bit accounting reasoned about
+        the old positions, and what it settles is which bits have customers.
 - [ ] S31.1 Renumber the entity kinds so the predicates become masks
       done: `Object 0, Lazy 1, Array 2, Reference 3, String 4, StringDynamic 5,
         Box 6, WeakRef 7`, codes 8–15 free; the category keeps bits 0–1 because
