@@ -10,8 +10,8 @@ use super::*;
 
 /// The free-list link lives in slot bytes 8–15, so a free leaves the
 /// first 8 bytes exactly as the dying occupant left them — in an
-/// entity block that is the final refcount-0 header, the walker's
-/// occupancy test (`rfc/model/gc/rc-walk.md`). Fails with the link at
+/// entity block that is the final refcount-0 header, which is how a
+/// trace tells a free slot from a live entity. Fails with the link at
 /// bytes 0–7, where the push clobbered them.
 #[test]
 fn free_leaves_the_slots_first_8_bytes_untouched() {
@@ -34,8 +34,8 @@ fn free_leaves_the_slots_first_8_bytes_untouched() {
 }
 
 /// Commissioning an entity block zeroes every slot's first 8 bytes,
-/// whatever the block held before — the rc-walk rule that closes the
-/// carve-to-first-store window. The raw population deliberately skips
+/// whatever the block held before — the commissioning rule that closes
+/// the carve-to-first-store window. The raw population deliberately skips
 /// the pass, which is also the control proving the scribble survives
 /// the pool round-trip (i.e. that this test can fail).
 #[test]

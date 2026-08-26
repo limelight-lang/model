@@ -13,8 +13,13 @@
 //! (`BLOCK_KIND_HEAP`) for C-ABI buffers and an entity heap
 //! (`BLOCK_KIND_ENTITY`) for GC entities, as one [`ThreadHeaps`] pair
 //! behind the TLS slot. That segregation, the bytes-8-15 free-list link,
-//! the commissioning zero pass and [`for_each_entity_slot`] are rc-walk
-//! build step 1 (`rfc/model/gc/rc-walk.md`).
+//! the commissioning zero pass and [`for_each_entity_slot`] exist for the
+//! collector: a trace strides an entity block slot by slot and reads each
+//! header, so a slot must never hold a C buffer and a free slot must read
+//! as refcount 0. They were built for `rc-walk` and outlive it —
+//! `rc-cycle` reaches its shadow rows by the same arithmetic over the
+//! same blocks (`rfc/model/gc/rc-cycle.md`, "Where the shadow count
+//! lives").
 //!
 //! What the rejected alternatives cost, why the cross-thread stack is per
 //! block rather than per heap, why `used` is written by the owner alone,
@@ -109,8 +114,9 @@ pub fn size_class_index(size: usize) -> Option<usize> {
 ///
 /// Bytes 0–7 are deliberately **never written by the allocator**: in an
 /// entity block they keep the dead entity's final header — refcount 0,
-/// which is the walker's occupancy test (`rfc/model/gc/rc-walk.md`). The
-/// link lived in bytes 0–7 before rc-walk step 1; one offset for both
+/// which is how a trace tells a free slot from a live entity
+/// (`docs/memory-manager.md`, "Heap: small objects"). The link lived in
+/// bytes 0–7 until the entity heap needed that test; one offset for both
 /// populations keeps a single code path.
 #[repr(C)]
 struct FreeSlot {
@@ -132,7 +138,7 @@ struct Abandoned {
     /// `[1]` entity blocks (`BLOCK_KIND_ENTITY`) — then by size class.
     /// Separate lists because adoption must never move a block across
     /// populations: a raw heap handing out entity-block slots would put C
-    /// buffers where the walker reads headers (`rfc/model/gc/rc-walk.md`).
+    /// buffers where a trace reads headers.
     heads: [[*mut HeapBlockHeader; NUM_CLASSES]; 2],
 }
 
@@ -390,7 +396,7 @@ pub struct Heap {
     /// The block kind this heap stamps at refill and adopts by:
     /// `BLOCK_KIND_HEAP` for raw C-ABI allocations, `BLOCK_KIND_ENTITY`
     /// for GC entities. Two populations of the same allocator, never
-    /// mixed (`rfc/model/gc/rc-walk.md`).
+    /// mixed (`docs/memory-manager.md`, "Heap: small objects").
     block_kind: u32,
 }
 
@@ -1098,10 +1104,10 @@ impl Heap {
 
         let slots = (BLOCK_PAYLOAD / class_size) as u32;
 
-        // Commissioning rule for entity blocks (`rfc/model/gc/rc-walk.md`,
-        // Phase 1): every slot's first 8 bytes must read refcount 0 until
-        // an entity is published into it, or the walker meets bytes that
-        // lie. Regions come from the process allocator and blocks recycle
+        // Commissioning rule for entity blocks: every slot's first 8
+        // bytes must read refcount 0 until an entity is published into
+        // it, or a trace striding the block meets bytes that lie about
+        // occupancy. Regions come from the process allocator and blocks recycle
         // through the pool, so provenance is never a known-fresh OS commit
         // — the explicit 8-bytes-per-slot pass always runs here. Cold path
         // (once per block), ≤ 4080 stores at the smallest class.
@@ -1117,9 +1123,9 @@ impl Heap {
         }
 
         // The kind is published LAST and through `store_block_kind`,
-        // whose `rc-walk` build makes the store a release: the
-        // collector's snapshot must not read "entity" before the size
-        // class, cursor and zeroed slots behind it are visible.
+        // whose store is a release: a collector reading this block must
+        // not see "entity" before the size class, cursor and zeroed
+        // slots behind it are visible.
         //
         // Field by field rather than one struct store, for the reason
         // `large_entity::commission` writes its header the same way: a
@@ -1499,9 +1505,8 @@ mod tls {
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_exit() {
     // From here this thread may not free anything whose release can be
-    // parked, because step 3 below disposes the backlog a park needs and
-    // nothing rebuilds it (`thread_may_free`). It also tells a structure
-    // built between here and the end that this sequence will dispose it.
+    // parked (`thread_may_free`), and a structure built between here and
+    // the end is disposed by this sequence rather than by the guard.
     EXIT_PHASE.with(|phase| phase.set(ExitPhase::Exiting));
     journal_event!(crate::journal::kinds::KIND_THREAD_EXIT, 0, 0, 0);
 
@@ -1528,22 +1533,15 @@ pub extern "C" fn ll_thread_exit() {
     // 1. Static blocks let go of their roots (A6). The only step that
     //    runs user code, so it goes first, while every structure the
     //    `__destruct` bodies below it may touch is still alive — heaps,
-    //    context, candidate buffer, parked list, weak table.
+    //    context, weak table.
     crate::static_block::run_thread_exit_teardown();
 
-    // 2. The rc-trace candidate buffer, given back without touching the
-    //    entities it names: a candidate can already be freed, and a
-    //    write through such an entry is a use-after-free Miri caught
-    //    (2026-08-03). The cost is stated at `gc::dispose` — an entity
-    //    that outlives this thread in an abandoned block keeps a stale
-    //    buffered bit, which suppresses its re-buffering for good.
-
-    // 4. The weak table, after every death that could still need a row.
+    // 2. The weak table, after every death that could still need a row.
     //    `weak.rs` pinned this position against the day static-block
     //    teardown existed; this is that day.
     crate::weak::dispose();
 
-    // 5. The buffer arena last of the five, because every step above can
+    // 3. The buffer arena last of the disposals, because every step above can
     //    still free a buffer into it: a static block's teardown reaches
     //    `string_die`, which returns a dynamic string's payload here, and
     //    the parked backlog's flush routes payload frees the same way.
@@ -1553,7 +1551,7 @@ pub extern "C" fn ll_thread_exit() {
     //    thread, so nothing below needs it.
     crate::memory::buffer_arena::dispose();
 
-    // 6 is the last act of this function rather than the sixth of six,
+    // 4 is the last act of this function rather than the fourth of four,
     //    and `retire_the_journal` says why.
     let p = tls::get_raw();
     if p.is_null() {
@@ -1576,11 +1574,11 @@ pub extern "C" fn ll_thread_exit() {
     retire_the_journal();
 }
 
-/// Step 6, and the last act of [`ll_thread_exit`] on either path: the
-/// journal's ring is handed to the registry, which keeps it readable
-/// after this thread is gone (`journal.rs`).
+/// The last act of [`ll_thread_exit`] on either path: the journal's ring
+/// is handed to the registry, which keeps it readable after this thread
+/// is gone (`journal.rs`).
 ///
-/// **Last, not sixth of seven.** Everything above it is worth journaling,
+/// **Last, not fourth of four.** Everything above it is worth journaling,
 /// the block frees of the heap teardown included — those are a default
 /// event kind — and a ring retired before them would be closed while its
 /// owner still had events to raise. The position costs nothing: the ring
@@ -1610,8 +1608,7 @@ fn retire_the_journal() {
 
 /// The two heap instances a thread owns: raw C-ABI allocations and GC
 /// entities — the same allocator over two segregated block populations
-/// (`rfc/model/gc/rc-walk.md`, "Prerequisite: entity blocks are
-/// segregated").
+/// (`docs/memory-manager.md`, "Heap: small objects").
 ///
 /// `#[repr(C)]` with `raw` first, which the layout depends on: the TLS slot
 /// stores a pointer to this pair, and [`thread_heap`] hands the same
@@ -1735,9 +1732,10 @@ pub extern "C" fn ll_thread_init() {
         // for the life of the process. And no exit in progress, because a
         // heap rebuilt inside an exit is that exit repairing itself rather
         // than a new life: lowering the phase there would tell
-        // `thread_may_free` that this thread may free again, on a thread
-        // whose deferral backlog is gone (`dev/DECISIONS.md`, "the journal
-        // is complete to the exit's last act and honest past it").
+        // `thread_may_free` that this thread may free again, inside the
+        // sequence that is disposing what such a free would reach
+        // (`dev/DECISIONS.md`, "the journal is complete to the exit's
+        // last act and honest past it").
         if !thread_exit_running() && exit_guard_armed() {
             EXIT_PHASE.with(|phase| phase.set(ExitPhase::Live));
             crate::journal::reopen_thread();
@@ -1763,8 +1761,8 @@ pub(crate) enum ExitPhase {
     Live,
     /// Inside [`ll_thread_exit`]. Its own steps are the teardown, so
     /// anything built here is disposed by the sequence in progress — and
-    /// nothing may be freed, the deferral backlog being disposed within
-    /// it and never rebuilt.
+    /// nothing may be freed, the structures a free reaches being disposed
+    /// within it.
     Exiting,
     /// The exit has run. Nothing will dispose what is built now, and
     /// nothing may be freed either.
@@ -1781,12 +1779,15 @@ thread_local! {
 
 /// Whether this thread may still hand memory back.
 ///
-/// `false` from the moment [`ll_thread_exit`] begins, and afterwards. The
-/// deferral backlog a parked free needs is disposed inside that sequence
-/// and nothing rebuilds it, so a free arriving from then on is parked
-/// onto a list that is dropped unreleased — the memory is leaked rather
-/// than returned. A caller holding memory to give back at that point must
-/// leave it for another thread.
+/// `false` from the moment [`ll_thread_exit`] begins, and afterwards: the
+/// sequence disposes the structures a free reaches, and a free arriving
+/// after its own step has run has nowhere to land. A caller holding
+/// memory to give back at that point must leave it for another thread.
+///
+/// The refusal was written against a parked free, whose backlog the exit
+/// disposed and nothing rebuilt. Nothing parks between S30 and S34.3, so
+/// the refusal is wider than the case that produced it; it stays because
+/// S34.3 and S36.2 bring both parking windows back (`PLAN.md`).
 pub(crate) fn thread_may_free() -> bool {
     EXIT_PHASE.with(|phase| phase.get()) == ExitPhase::Live
 }
@@ -1932,8 +1933,9 @@ pub unsafe extern "C" fn ll_entity_reserve(
 
 /// Return unused reserved cells (`rfc/model/memory/bulk-operations.md`):
 /// each goes back through the ordinary size-less free path, which routes
-/// it to its block's free list — or parks it while an rc-walk epoch is
-/// in flight, exactly like any other free.
+/// it to its block's free list, exactly like any other free. Nothing
+/// parks today; S34.3 and S36.2 give the free path its two windows back
+/// (`PLAN.md`).
 ///
 /// # Safety
 /// Every element must be an unconsumed cell from [`ll_entity_reserve`].
@@ -1961,8 +1963,9 @@ unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
 }
 
 /// Visit every occupied slot of every entity block, process-wide — the
-/// census primitive under the rc-walk collector's Phase 1 and the
-/// synchronous walk of build step 2 (`rfc/model/gc/rc-walk.md`).
+/// census primitive a whole-heap pass is built on. Nothing in the
+/// production build calls it: its callers are `cells::heap_census` and
+/// the leak tests, all `#[cfg(test)]`.
 ///
 /// Occupancy is exact by construction: commissioning zeroes slot
 /// headers, the factory publishes a header last, and a freed slot keeps

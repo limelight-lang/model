@@ -82,14 +82,18 @@ pub const KIND_THREAD_START: u32 = 7;
 /// last act.
 pub const KIND_THREAD_EXIT: u32 = 8;
 
-/// A collector epoch opens (`rc-walk` builds): `a` is the epoch number,
-/// `subject` and `b` unused. The number wraps at 256, which is the width
-/// the header's epoch byte has; a window longer than 256 epochs is not
-/// one the ring could hold anyway.
+/// A collection opens: `a` is its number, `subject` and `b` unused. The
+/// number wraps at 256, the width the header's epoch byte has; a window
+/// longer than 256 collections is not one the ring could hold anyway.
+///
+/// **No site since 2026-08-26**, when the two collectors that raised it
+/// were deleted. The kind is kept rather than renumbered: the codes are
+/// a wire contract with the readers of a retired ring.
 pub const KIND_EPOCH_BEGIN: u32 = 9;
 
-/// A collector epoch closes (`rc-walk` builds): `a` is the epoch number,
-/// `b` the components it confirmed, `subject` unused.
+/// A collection closes: `a` is its number, `b` the components it
+/// confirmed, `subject` unused. No site, for [`KIND_EPOCH_BEGIN`]'s
+/// reason.
 pub const KIND_EPOCH_END: u32 = 10;
 
 /// The highest kind that has a site. The mask is a `u64`, so a kind past

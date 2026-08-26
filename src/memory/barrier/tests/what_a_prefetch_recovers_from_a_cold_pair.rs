@@ -4,8 +4,10 @@
 //! [`super::what_a_counted_pair_costs_when_headers_miss`] measured the pair
 //! at 2.9 ns with both foreign headers warm and 33 ns at a population of a
 //! million. The store itself is inside the 2.9; the other thirty are the two
-//! misses. Node A5 of `rfc/model/gc/walk/questions.md` asks what could
-//! reach them, and a narrower count word cannot — it makes the store
+//! misses. Node A5 of `rc-walk`'s question graph asked what could reach
+//! them — the graph is deleted and readable on `archive/pre-rc-cycle`,
+//! and the question outlives it because the barrier does. A narrower
+//! count word cannot reach them: it makes the store
 //! cheaper, and the store is not what costs. The barrier knows both
 //! addresses before it needs either header, so the misses are prefetchable
 //! in principle. This probe says whether that principle pays.
@@ -55,8 +57,8 @@ use super::what_a_counted_pair_costs_when_headers_miss::{
 ///
 /// Far enough that a miss has time to return, near enough that the line is
 /// not evicted before use. Eight is the usual starting point for a scattered
-/// access pattern and carries no other claim here; node A5 of
-/// `rfc/model/gc/walk/questions.md` asks for the sweep. The lower bound is
+/// access pattern and carries no other claim here; the sweep is what
+/// node A5 asked for (module doc). The lower bound is
 /// one — a prefetch for the very next store, which cannot hide a miss — so a
 /// monotone rise from it says the window is the lever and a flat line says it
 /// is not.

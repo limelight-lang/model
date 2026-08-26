@@ -83,10 +83,10 @@ pub(crate) enum StorageTag {
 pub(crate) struct CoherentView {
     /// The even version both readings agreed on. A reader that keeps an
     /// address out of this chunk keeps this beside it: the address stays
-    /// readable after a move — the epoch parks the free — so re-reading
-    /// it answers about a chunk nobody writes any more, and this number
-    /// is what says the chunk stopped being the array's
-    /// (`collector::Edge`).
+    /// readable after a move, because a collection parks the chunk's
+    /// free, so re-reading it answers about a chunk nobody writes any
+    /// more — and this number is what says the chunk stopped being the
+    /// array's.
     pub(crate) version: usize,
     pub(crate) tag: StorageTag,
     /// Null when the representation has never allocated.
@@ -114,11 +114,11 @@ pub struct StorageHead {
     ///
     /// One mover skips the bracket: `entity::carry_storage_out_of`
     /// copies an arena array's elements into a fresh chunk and publishes
-    /// the chunk bare. It may, because a walker enumerates GcHeap rows
-    /// alone (`collector::Epoch::walk_rows`) and that array still reads
-    /// `RequestArena` — promotion rewrites the category after the carry.
-    /// An array a walker can reach may not copy this, and the category
-    /// that makes it safe is asserted in debug builds only.
+    /// the chunk bare. It may, because a trace descends into GC-heap
+    /// entities alone and that array still reads `RequestArena` —
+    /// promotion rewrites the category after the carry. An array a trace
+    /// can reach may not copy this, and the category that makes it safe
+    /// is asserted in debug builds only.
     version: AtomicUsize,
     /// The one allocation the representation keeps its elements in.
     storage: AtomicPtr<u8>,
@@ -261,13 +261,13 @@ impl StorageHead {
     /// changes what the bytes mean rather than where they are. Hence the
     /// version.
     ///
-    /// **`None` is safe and leaks rather than frees early.** An entity
-    /// the walk does not enumerate becomes a root source — its out-edges
-    /// land in `RC` and never in `IN` — so its children are computed
-    /// roots and survive one more epoch
-    /// (`rfc/model/gc/retained-block-walk.md`, the derived-roots
-    /// corollary). That is what makes a bounded retry the right answer
-    /// rather than an unbounded one.
+    /// **`None` is safe and leaks rather than frees early.** An entity a
+    /// trace does not enumerate becomes a root source — its out-edges
+    /// land in `RC` and never in `IN` — so its children read as
+    /// externally referenced and survive one more collection
+    /// (`rfc/model/gc/rc-cycle.md`, the `RC − IN` root identity). That is
+    /// what makes a bounded retry the right answer rather than an
+    /// unbounded one.
     ///
     /// # Safety
     /// `h` addresses a live head. Under a concurrent mutator every word

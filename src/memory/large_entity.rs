@@ -5,8 +5,8 @@
 //! **Commissioning order, of which the zero pass is the half that
 //! decides.**
 //! The header is written, then the entity's first 8 bytes are zeroed,
-//! then the kind is published — release under `rc-walk`, because the
-//! collector reads every block's kind concurrently. That word is the
+//! then the kind is published — a release store, because a collector
+//! reads every block's kind concurrently. That word is the
 //! occupancy test both enumerators apply, so a block whose entity is not
 //! yet published reads refcount 0 and is skipped exactly as a free slot
 //! is. Without the pass a pooled block recycled from a raw C buffer

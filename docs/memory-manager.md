@@ -128,10 +128,10 @@ stranded block is still allocated memory.
 
 The pool also keeps the **region registry**: the base address of every
 region ever carved, append-only, indices stable for the life of the
-process. It exists for the entity walker (`rfc/model/gc/rc-walk.md`) —
-counting regions without recording their bases left nothing able to
-enumerate blocks. OS-direct `LARGE_RUN` allocations are not regions and
-stay outside it: huge objects are never walked, conservatively.
+process. It exists for a whole-heap trace — counting regions without
+recording their bases left nothing able to enumerate blocks. OS-direct
+`LARGE_RUN` allocations are not regions and stay outside it: huge
+objects are never traced, conservatively.
 
 ## Heap: small objects
 
@@ -186,9 +186,9 @@ The heap runs **twice per thread** over the same code: a raw heap
 (`BLOCK_KIND_ENTITY`) for GC entities, held as one `repr(C)` pair behind
 the TLS slot — the raw heap first, so `ll_malloc`'s path still pays a
 single TEB read and no offset. Segregation is the prerequisite of any
-walking collector (`rfc/model/gc/rc-walk.md`): a walker reads every
-occupied slot's first 8 bytes as an `RcHeader`, and a raw 40-byte buffer
-sharing a block with 40-byte objects would make that a wild read.
+tracing collector: a trace reads every occupied slot's first 8 bytes as
+an `RcHeader`, and a raw 40-byte buffer sharing a block with 40-byte
+objects would make that a wild read.
 
 Three rules distinguish the entity population:
 
@@ -238,8 +238,8 @@ of recycling (`deferred_free.rs`): one relaxed load of a global activity
 bit and a predicted branch, after the kind dispatch, active only during
 an epoch. The entity still dies on time, destructor included, and only
 reuse waits, so a walked slot cannot become a different object
-mid-epoch. Identity is what makes the Phase 4 exact test sound
-(`rfc/model/gc/rc-walk.md`).
+mid-epoch. Identity is what makes an exact test sound
+(`rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`).
 
 **Parking is out of band.** The parked pointer goes into a thread-local
 vector, and the parked memory is not written until the flush. The first
@@ -401,9 +401,9 @@ arrive with their own subsystems.
 `ll_object_new` is the factory: it allocates — `GcHeap`/`LongLived` from
 the entity population, arena and immortal from theirs — zero-fills the
 body, writes the class, and publishes the header **last**, as one 8-byte
-store (`rfc/model/gc/rc-walk.md`: until that store the slot reads
-refcount 0, so a walker classifies it as free rather than reading a
-half-built entity). That is all it does. `ll_object_constructed` is called once the user constructor
+store (until that store the slot reads refcount 0, so a trace crossing
+the block classifies it as free rather than reading a half-built
+entity). That is all it does. `ll_object_constructed` is called once the user constructor
 has returned successfully — it sets the header's `DESTRUCTOR_PENDING` flag
 and, for an arena object, writes the destructor-log record. Teardown
 dispatches on that flag, never on the class, so an object whose

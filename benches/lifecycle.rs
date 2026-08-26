@@ -8,11 +8,11 @@
 //! per death, one full `ll_gc_checkpoint` trailing it — the split of
 //! 2026-07-28).
 //!
-//! Run in BOTH configurations, A→B→A per `dev/BENCHMARKS.md`:
+//! Run A→B→A per `dev/BENCHMARKS.md`. One configuration since 2026-08-26,
+//! when the GC feature axis went with the two collectors:
 //!
 //! ```
-//! cargo bench --bench lifecycle                          # rc-walk (default)
-//! cargo bench --bench lifecycle --no-default-features    # rc-trace
+//! cargo bench --bench lifecycle
 //! ```
 //!
 //! The class has no properties and no destructor, so the loop isolates
@@ -32,8 +32,8 @@ fn class() -> *const Class {
 }
 
 /// create → constructed → release (dies) → die, one object at a time.
-/// The death branch runs the checkpoint test on every iteration in an
-/// rc-walk build; an rc-trace build has no test here.
+/// The death branch carries no collector test: every death takes the
+/// ordinary path (`refcount::ll_release`).
 fn create_release_die(c: &mut Criterion, cls: *const Class) {
     c.bench_function("lifecycle/create_release_die", |b| {
         b.iter(|| unsafe {
@@ -96,9 +96,10 @@ fn batch_batched(c: &mut Criterion, cls: *const Class) {
 }
 
 /// Non-final release churn: retain + release on one live object, the
-/// count never reaching zero. This is the path where rc-trace pays its
-/// candidate machinery (first decrement buffers, later ones test the
-/// buffered bit) and rc-walk pays only its whole-word header protocol.
+/// count never reaching zero. This is the path a collector's enrolment
+/// is paid on — a non-zero decrement is what `rc-cycle` enrols
+/// (`rfc/model/gc/rc-cycle.md`) — so the figure here is the floor the
+/// enrolment will be measured against when S34 lands.
 fn retain_release(c: &mut Criterion, cls: *const Class) {
     let obj = unsafe {
         let obj = ll_object_new_abi(std::ptr::null_mut(), cls, MemoryCategory::GcHeap as u32);

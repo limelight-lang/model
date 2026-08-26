@@ -253,11 +253,11 @@ fn a_destructor_running_after_the_exit_is_recorded_or_counted() {
     );
 }
 
-/// A thread that has begun its own exit frees no evicted ring. Its
-/// deferral backlog is disposed inside that sequence and nothing
-/// rebuilds it, so a parked free there is dropped unreleased — and
-/// the exit a caller invokes by hand is the same sequence, which is
-/// what the exit guard's own state cannot tell.
+/// A thread that has begun its own exit frees no evicted ring: the
+/// exit disposes the structures a free reaches, so a ring given back
+/// inside it has nowhere to land. The exit a caller invokes by hand is
+/// the same sequence, which is what the exit guard's own state cannot
+/// tell.
 #[test]
 fn a_thread_inside_its_own_exit_takes_no_ring_to_free() {
     let _quiet = kinds::disable_sites_for_test();

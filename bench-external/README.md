@@ -20,8 +20,7 @@ the real C ABI, in one binary — the external comparand of the
 performance case (`dev/DECISIONS.md`, "the performance case's external
 comparand is a canary, not a self-authored floor"). The larson tooling
 above is MSVC-era; these build on Linux with `g++`, the command at the
-head of each probe. The staticlib must be the rc-walk build: a
-`--no-default-features` build overwrites the same `libll_model.a`.
+head of each probe.
 
 - **`pair_canary.cpp`** — the retain/release pair: the shipped pair on
   a live ReferenceBox, its duplicate as the instrument's measured

@@ -42,7 +42,7 @@ pub struct LLReference {
 /// Same commissioning contract as the object factory: body first, the
 /// header published LAST as one 8-byte store, so an entity-block slot
 /// reads refcount 0 until the box is fully formed
-/// (`rfc/model/gc/rc-walk.md`, Phase 1).
+/// (`refcount::publish_header`).
 pub fn ll_reference_new() -> *mut LLReference {
     let size = size_of::<LLReference>();
     let mem = unsafe {

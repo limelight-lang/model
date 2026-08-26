@@ -523,10 +523,10 @@ fn register_ring(ring: *mut Ring) -> Vec<*mut Ring> {
 
 /// The rings a retirement left behind, if this thread may free them.
 ///
-/// A thread inside its own `ll_thread_exit` may not: the deferral backlog
-/// a parked free needs is disposed within that sequence and nothing
-/// rebuilds it, so the ring would be parked onto a list dropped
-/// unreleased. The exit that runs by itself and the exit a caller invokes
+/// A thread inside its own `ll_thread_exit` may not: the exit disposes
+/// the structures a free reaches, so a ring given back inside it has
+/// nowhere to land (`heap::thread_may_free` states the rule and its
+/// history). The exit that runs by itself and the exit a caller invokes
 /// by hand are the same sequence here, and `heap::thread_may_free`
 /// answers for both — the guard's own state does not, being armed
 /// throughout a hand-invoked one.

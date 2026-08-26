@@ -195,8 +195,8 @@ unsafe fn stamp_into(
 
         (*obj).class = class;
         // The header is published LAST (`publish_header`: one 8-byte
-        // store, relaxed atomic under rc-walk). Until it lands the slot
-        // reads refcount 0, so a walker classifies it as free rather
+        // relaxed-atomic store). Until it lands the slot reads refcount
+        // 0, so a trace crossing the block classifies it as free rather
         // than reading a half-built entity.
         crate::refcount::publish_header(obj as *mut RcHeader, RcHeader::new(category, extra));
     }
@@ -221,14 +221,12 @@ pub unsafe extern "C" fn ll_object_new_in(cell: *mut u8, class: *const Class) ->
 }
 
 /// Release a vector of references in one call
-/// (`rfc/model/memory/bulk-operations.md`): the epoch checkpoint is
-/// split around the run (amendment 2026-07-28) — the ack at entry,
-/// before any death, so every free the batch performs observes an
-/// in-flight epoch in program order; the full pickup after the last
-/// release, when the run's transients are back at their true counts
-/// (the phase-lock argument — [`crate::epoch`]'s module doc). Each
-/// entry is a batched release; destructors run in vector order. In an
-/// rc-trace build this is plain releases behind one call boundary.
+/// (`rfc/model/memory/bulk-operations.md`): the safepoint is split
+/// around the run — the acknowledgement at entry, before any death, and
+/// the full poll after the last release, where the run's transients are
+/// back at their true counts. Each entry is a batched release;
+/// destructors run in vector order. Both halves have empty bodies while
+/// no collector is wired (`gc.rs`).
 ///
 /// # Safety
 /// Every element must point to a live heap entity beginning with
@@ -385,7 +383,8 @@ pub(crate) unsafe fn for_each_counted_child(
 ///
 /// # Safety
 /// `base` addresses a live region laid out by `cls`, and its cells are
-/// readable — under `R = RelaxedCells` they may be concurrently written.
+/// readable — under a concurrent reader `R` they may be written while
+/// this runs.
 #[inline]
 pub(crate) unsafe fn for_each_counted_cell<R: crate::cells::CellReader>(
     base: *mut u8,
@@ -406,7 +405,7 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::cells::CellReader>(
 /// template's shape-counted values, or the two run kinds in order.
 ///
 /// Separate from [`for_each_counted_cell`] because the sever needs
-/// exactly this half — `walk::empty_cell` writes a whole `Value` or a
+/// exactly this half — `cells::empty_cell` writes a whole `Value` or a
 /// bare `NULL`, which is right for a cell in the body and wrong for
 /// whatever a class keeps outside it.
 ///
@@ -461,7 +460,7 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::cells::CellReader>(
 
 /// Sever the counted slots of a region laid out by `cls`: empty each cell
 /// and collect its former occupant into `displaced`, **without dropping
-/// it** — the caller owes one drop per entry (`walk::sever_cells`, which
+/// it** — the caller owes one drop per entry (`cells::sever_cells`, which
 /// is the dispatch this serves).
 ///
 /// Takes a base and a descriptor rather than an entity because a static
@@ -472,7 +471,7 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::cells::CellReader>(
 /// `ll_static_block_register` says so.
 ///
 /// One caller, the thread-exit pass over static blocks. The drain severs
-/// an entity through `walk::sever_cells`, which reaches the group.
+/// an entity through `cells::sever_cells`, which reaches the group.
 ///
 /// # Safety
 /// `base` must address a live region laid out by `cls`, with its slots
@@ -685,9 +684,9 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     } // else resurrected: kept alive, not freed
 }
 
-/// The category of a possibly-walked header: a relaxed read under
-/// `rc-walk` (the collector's byte stores race every plain header
-/// access during an epoch), a plain read otherwise.
+/// The category of a published header, through the relaxed read every
+/// header access uses: a collector's byte stores race a plain one
+/// ([`crate::refcount::header_flags`]).
 #[inline]
 pub(crate) unsafe fn header_category(header: *const RcHeader) -> MemoryCategory {
     MemoryCategory::from_flags(unsafe { crate::refcount::header_flags(header) })

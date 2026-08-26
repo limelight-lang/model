@@ -38,7 +38,7 @@
 //!    dispatch for entities that die of it.
 //!
 //! Every traversal here — the mark, the re-trace, the count and the COW
-//! reconciliation — goes through `walk::trace_entity`, the crate's one
+//! reconciliation — goes through `cells::trace_entity`, the crate's one
 //! kind-dispatched tracer, and never through a kind test of promotion's
 //! own (`dev/DECISIONS.md`, "the reset traces through one tracer").
 
@@ -328,9 +328,10 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
 
     // The occupant lists gathered above become the retained blocks'
     // object indexes. A bump-filled block has no stride to divide by, so
-    // this inventory is the only way the walk can enumerate its
+    // this inventory is the only way a trace can enumerate its
     // occupants — without it they are root sources and a ring among them
-    // never dies (`rfc/model/gc/retained-block-walk.md`). Registered
+    // never dies (`rfc/model/gc/rc-cycle.md`, "Where the shadow count
+    // lives", the retained-block arm). Registered
     // after the fixpoint has settled and before the blocks are disposed
     // of, so no death can arrive behind the counts it establishes.
     let mut emptied = index_retained_blocks(by_block);
@@ -716,7 +717,7 @@ unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mu
     }
 }
 
-/// True when `walk::trace_entity` enumerates **all** of this entity's
+/// True when `cells::trace_entity` enumerates **all** of this entity's
 /// counted children rather than skipping it.
 ///
 /// The tracer's own skips are conservative for the collector — an omitted

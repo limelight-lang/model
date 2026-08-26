@@ -13,7 +13,7 @@
 //!
 //! Two rules the code here exists to hold. Every write to the element's
 //! second word, and to `key_word`, is one relaxed atomic store of the width
-//! the collector loads (`walk::trace_cells`): change one width and change
+//! the collector loads (`cells::trace_cells`): change one width and change
 //! the other. And every link is an index rather than a pointer, so
 //! promotion copies the storage without fixing anything up.
 
@@ -134,7 +134,7 @@ impl Entry {
     /// the caller's, because the order matters to the collector.
     ///
     /// Published atomically because the collector reads this word to
-    /// decide whether the key is a counted child (`walk::trace_cells`),
+    /// decide whether the key is a counted child (`cells::trace_cells`),
     /// and it may be reading while this runs.
     ///
     /// # Safety

@@ -8,9 +8,9 @@ use super::*;
 #[test]
 fn header_is_8_bytes_at_offset_zero() {
     assert_eq!(size_of::<RcHeader>(), 8);
-    // 8, not 4, since the rc-walk groundwork: the header is published
-    // and (under rc-walk) accessed as one 8-byte word, which demands
-    // an 8-aligned address. Every real slot already satisfied it.
+    // 8, not 4: the header is published as one 8-byte word and the
+    // wide helpers access it as one, which demands an 8-aligned
+    // address. Every real slot already satisfied it.
     assert_eq!(align_of::<RcHeader>(), 8);
     assert_eq!(core::mem::offset_of!(RcHeader, refcount), 0);
     assert_eq!(core::mem::offset_of!(RcHeader, flags), 4);

@@ -12,6 +12,14 @@ normative — where the two disagree, this file is stale and the journal
 is right.** The claims this case does not make come first, because
 they are the half a reader will ask about.
 
+> **The two build configurations these figures name were deleted on
+> 2026-08-26.** `rc-walk` and `rc-trace` are gone from the crate, and the
+> code that produced every measurement below is on the branch
+> `archive/pre-rc-cycle`. The figures stand as the baseline `rc-cycle` is
+> to be measured against, not as a description of what the tree builds
+> today (`PLAN.md`, S30).
+
+
 ## What this case does not claim
 
 - **No end-to-end speed claim.** No PHP executes on this runtime yet;

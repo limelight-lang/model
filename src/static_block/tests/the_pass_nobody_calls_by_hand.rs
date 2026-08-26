@@ -39,10 +39,9 @@ fn a_thread_that_just_ends_releases_its_static_blocks() {
 
         // One ordinary entity death *in the thread's own body*, and
         // it is load-bearing. It is what first initializes the
-        // per-thread structures the exit teardown then reaches —
-        // the parked-free list under rc-walk, the candidate buffer
-        // under rc-trace — so their TLS destructors are registered
-        // after the exit guard's and therefore run *before* it. A
+        // per-thread structures the exit teardown then reaches, so
+        // their TLS destructors are registered after the exit guard's
+        // and therefore run *before* it. A
         // version of this test without this death passed while the
         // production shape aborted.
         let doomed = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };

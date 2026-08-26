@@ -129,8 +129,8 @@ fn a_long_lived_string_separates_although_its_count_is_real() {
 /// The two branches no entity in the crate can currently reach, so
 /// they are checked on the predicate rather than on a fabricated
 /// header: flipping `COW` on a live string would change its value
-/// semantics under holders that already have it and, under
-/// `rc-walk`, race the collector's byte stores.
+/// semantics under holders that already have it, and race a
+/// collector's byte stores into the same word.
 ///
 /// **`IS_ESCAPEE`**: not an arm of the rule. The store barrier copies
 /// a COW value out of the arena rather than counting an escape into

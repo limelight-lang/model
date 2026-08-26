@@ -269,10 +269,10 @@ pub unsafe fn store_ptr(
     true
 }
 
-/// Write an 8-byte pointer slot of a (possibly) walked object. Under
-/// `rc-walk` the store is a relaxed atomic: the collector reads fields
-/// concurrently, a racing plain store is undefined behaviour, and the
-/// relaxed store is the same instruction. Same story for
+/// Write an 8-byte pointer slot of an object a collector may be tracing.
+/// The store is a relaxed atomic: a concurrent trace reads fields, a
+/// racing plain store is undefined behaviour, and the relaxed store is
+/// the same instruction. Same story for
 /// [`write_value_slot`], whose two words the walker may see torn — the
 /// design absorbs the tear (a phantom or missed edge, repaired by
 /// Phases 3-4), the atomics make it defined.

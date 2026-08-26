@@ -235,8 +235,8 @@ impl BufferArena {
     /// `live` is untouched — one chunk before, one chunk after. So is the
     /// free list: nothing is released here, which is the second thing this
     /// path is worth. The growth it replaces frees the old payload, and a
-    /// payload freed during a collector epoch has to park
-    /// (`deferred_free`); a payload that never moves has nothing to park.
+    /// payload freed while a collection is in flight has to park (S36.2);
+    /// a payload that never moves has nothing to park.
     ///
     /// # Safety
     /// `(ptr, old_size)` must be exactly one live allocation of this arena.
@@ -756,9 +756,9 @@ fn pop_fit_in(
 ///
 /// The link is written into the freed chunk itself, which is sound for
 /// the same reason the owner's free list is — the chunk is dead, and its
-/// first 16 bytes are the arena's by contract. Under `rc-walk` a chunk
-/// the collector may still be reading never reaches here: the epoch test
-/// in `buffer_free_longlived_payload` parks the whole call first.
+/// first 16 bytes are the arena's by contract. A chunk a collector may
+/// still be reading must not reach here — the parking that held such a
+/// call back went with `rc-walk`, and S36.2 rebuilds it (`PLAN.md`).
 ///
 /// # Safety
 /// `(ptr, size)` is a live chunk of `block`, freed by this call.
@@ -778,9 +778,9 @@ unsafe fn post_remote(block: *mut BufferBlockHeader, ptr: *mut u8, size: usize) 
 
 thread_local! {
     /// This thread's persistent buffer arena, behind a raw pointer in a
-    /// `Cell` rather than a `RefCell<BufferArena>` — the shape
-    /// `gc::CANDIDATES`, `deferred_free::PARKED` and `weak::WEAK_TABLE`
-    /// were converted to on 2026-08-03, and for the same reason.
+    /// `Cell` rather than a `RefCell<BufferArena>` — the shape every
+    /// thread-local reachable from thread exit was converted to on
+    /// 2026-08-03, `weak::WEAK_TABLE` being the one still standing.
     ///
     /// The thread-exit path reaches this arena: static-block teardown
     /// runs `__destruct` bodies, those release entities, and a dying

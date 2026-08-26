@@ -33,8 +33,7 @@
 //! this box.
 //!
 //! ```
-//! cargo bench --bench strings                          # rc-walk (default)
-//! cargo bench --bench strings --no-default-features    # rc-trace
+//! cargo bench --bench strings
 //! ```
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};

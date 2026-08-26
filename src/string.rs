@@ -157,8 +157,8 @@ impl LLStringDynamic {
 /// calls the layout's own accessor and skips the branch.
 ///
 /// The flags come from [`crate::refcount::header_flags`] rather than a
-/// plain field read: under `rc-walk` the collector byte-stores into the
-/// same word during an epoch, and a plain load races it. The helper is
+/// plain field read: a collector byte-stores into the same word while it
+/// traces, and a plain load races it. The helper is
 /// the same instruction with the race made defined, so this costs
 /// nothing; the reason it matters here is the licence a plain load gives
 /// the optimiser to keep the header in a register across a loop of byte
@@ -181,7 +181,7 @@ pub unsafe fn string_bytes<'a>(s: *const LLString) -> &'a [u8] {
 /// Same commissioning contract as the object factory and the reference
 /// box: body first, header published LAST as one 8-byte store, so an
 /// entity-block slot reads refcount 0 until the string is fully formed
-/// (`rfc/model/gc/rc-walk.md`, Phase 1).
+/// (`refcount::publish_header`).
 ///
 /// `hash` is the precomputed hash, or zero to leave it lazy — except in
 /// the two categories a second thread can reach, where a zero is computed

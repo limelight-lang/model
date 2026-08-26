@@ -159,7 +159,7 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
 
         unsafe {
             // Field by field, and `kind` last through `store_block_kind`
-            // (release under rc-walk): the collector's snapshot loads the
+            // (a release store): a collector enumerating blocks loads the
             // kind of every block in every carved region, and a pooled
             // block is in one. A struct store would cover that word with
             // a plain write, which is a data race by the model even
@@ -268,9 +268,10 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // survivor it holds after its fixpoint, and one of every child their
     // slots still name, so a body whose free would return memory to the
     // system waits for it whether or not this reset ever promoted it.
-    // Ahead of the epoch arm below on purpose: parked in `deferred_free`
-    // instead, the same body could be freed by a checkpoint's flush while
-    // the reset still runs (`memory::reset_window`).
+    // Ahead of the collection arm below on purpose: parked for a
+    // collection instead, the same body could be freed by that
+    // collection's own flush while the reset still runs
+    // (`memory::reset_window`).
     if crate::memory::large_entity::is_large_entity(kind)
         && unsafe { crate::memory::reset_window::park_large(ptr) }
     {

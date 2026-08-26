@@ -135,7 +135,8 @@ fn walk_sees_gc_objects_and_not_raw_buffers() {
 
 /// Occupancy is the refcount word: an entity is invisible to the walk
 /// from the instant teardown frees it — no teardown stamp exists to
-/// forget (`rfc/model/gc/rc-walk.md`, the retired FREE stamp).
+/// forget, the FREE stamp having been retired before either collector
+/// was deleted.
 #[test]
 fn a_freed_entity_disappears_from_the_walk() {
     let _g = crate::memory::block_pool::test_guard();

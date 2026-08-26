@@ -52,9 +52,10 @@ pub(crate) unsafe fn entity_alloc_in(
         // ABI, where an entity and a byte buffer are the same request.
         MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc_entity(size) },
         // Counted entities live in the segregated entity-block population
-        // the cycle collector walks (`rfc/model/gc/rc-walk.md`). LongLived
-        // rides along: the walker skips it by category per entity, and the
-        // long-lived arena's own reclamation policy is still TBD.
+        // a cycle collector traces (`docs/memory-manager.md`, "Heap: small
+        // objects"). LongLived rides along: a trace skips it by category
+        // per entity, and the long-lived arena's own reclamation policy is
+        // still TBD.
         // Including a size past the largest class: `entity_alloc` makes
         // that split itself, against the same constant [`slot_limit`]
         // reports here. Testing it a second time in this arm would put

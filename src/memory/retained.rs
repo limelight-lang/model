@@ -1,14 +1,16 @@
 //! Object indexes for retained former-arena blocks.
 //!
-//! Why such a block cannot be walked without one, and what goes
-//! uncollected then: `rfc/model/gc/retained-block-walk.md`, and
+//! Why such a block cannot be traced without one, and what goes
+//! uncollected then: `rfc/model/gc/rc-cycle.md`, "Where the shadow count
+//! lives" — a bump-filled block has no stride, so the trace reaches its
+//! rows by binary search over this index — and
 //! `docs/memory-manager.md`, "Arena reset: the settling loop".
 //!
 //! The inventory already exists: `promote`'s reset fixpoint collects every
 //! survivor into a vector. This module keeps it as one sorted array of
-//! addresses per retained block and hands it to the two enumerators that
-//! need it, `heap::for_each_entity_slot` for the synchronous walk and
-//! `heap::snapshot_entity_blocks` for the collector's epoch.
+//! addresses per retained block and hands it to the enumerator that
+//! needs it, `heap::for_each_entity_slot`. The collector's own
+//! enumerator is S32.0's (`PLAN.md`).
 //!
 //! # What this module does not know
 //!

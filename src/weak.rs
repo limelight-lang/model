@@ -1,5 +1,4 @@
-//! Weak references — rc-walk build step 4
-//! (`rfc/model/weak-references.md`).
+//! Weak references (`rfc/model/weak-references.md`).
 //!
 //! The canonical `WeakReference` instance doubles as the shared weak
 //! cell: PHP guarantees at most one instance per target, so every `$w`
@@ -101,7 +100,7 @@ pub(crate) fn dispose() {
 ///
 /// Commissioning follows the factory contract: body first, header
 /// published last, so an entity-block slot never reads a half-built
-/// cell (`rfc/model/gc/rc-walk.md`, Phase 1).
+/// cell (`refcount::publish_header`).
 ///
 /// # Safety
 /// `ctx` per [`crate::memory::context::ll_arena_alloc`]; `target` must
@@ -195,11 +194,13 @@ pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
     unsafe { update_header_flags(target, |f| f & !HAS_WEAK_REFERENCES) };
 }
 
-/// The collectors' pre-destructor pass: null every member's cell
-/// **before any user code runs** — the binding obligation of
-/// `rfc/model/gc/rc-walk.md` (a weak load is the one channel that can
-/// hand a destructor a pointer counted references cannot account for).
-/// Irrevocable on a later acquittal, by design.
+/// A collector's pre-destructor pass: null every member's cell **before
+/// any user code runs** — the binding obligation of
+/// `rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 3 (a weak load is
+/// the one channel that can hand a destructor a pointer counted
+/// references cannot account for). Irrevocable on a later acquittal, by
+/// design. No collector calls it today; S36.3 is where the next one
+/// does (`PLAN.md`).
 ///
 /// # Safety
 /// Members must be live entities on their owning thread.

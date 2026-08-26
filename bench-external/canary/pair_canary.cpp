@@ -40,8 +40,7 @@
 // "LLVM IR export"): the bias runs against the ll arms, and a
 // "within X of C" reading is conservative.
 //
-// Build (Linux; the staticlib must be the rc-walk build — a
-// --no-default-features build overwrites the same file):
+// Build (Linux):
 //
 //   cargo build --release
 //   g++ -O2 -std=c++17 bench-external/canary/pair_canary.cpp \

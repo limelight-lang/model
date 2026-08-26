@@ -30,11 +30,17 @@ this one is reasoning from practice, not a stated rule)*
 
 ```
 cargo test --lib
-cargo test --lib -- --test-threads=4      # three times (rc-walk, the default)
-cargo test --lib --no-default-features -- --test-threads=4    # three times (rc-trace)
+cargo test --lib -- --test-threads=4      # three times
 cargo build --release
-cargo build --release --no-default-features
+cargo bench --no-run
 ```
+
+**One configuration since 2026-08-26.** The GC axis went with the two
+collectors: there is no `rc-walk` feature and no `rc-trace` default, so
+the matrix below has lost its second leg (`PLAN.md`, S30). `cargo bench
+--no-run` joined the gate at the same time, because `cargo test --lib`
+builds no bench target and `benches/lifecycle.rs` imports the GC ABI —
+without it a deleted export is found by a release, not by a commit.
 
 The three threaded runs are not ceremony: several defects here only
 appear under contention, and one flake took three runs to surface.
@@ -58,7 +64,7 @@ different `cfg` branches and each carries a test the other does not:
 LL_HASH_SEED=<any> cargo test --lib --features hash-folding -- --test-threads=4
 ```
 
-Run it once, in the default GC configuration. Without `LL_HASH_SEED` it
+Run it once. Without `LL_HASH_SEED` it
 does not fail, it does not compile: a folding build with no seed is
 refused by a `const` assertion in `hash/seed.rs`, because
 `cargo build --features hash-folding` runs no tests and an artifact from
@@ -70,25 +76,14 @@ less. Without the feature the record sites are not compiled at all, so
 their bodies are never name-resolved and a site that does not build is
 invisible to every command above. With it they are on the allocation and
 the death paths, which is where a site on a path §9.7 forbids shows up as
-an abort rather than a failure. So both GC configurations run again with
-it:
+an abort rather than a failure. So the suite runs again with it:
 
 ```
 cargo test --lib --features debug-journal -- --test-threads=4
-cargo test --lib --no-default-features --features debug-journal -- --test-threads=4
 ```
 
-Three times each, for the reason the two above are run three times: what
-this axis adds is a re-entry into the allocator from inside itself.
-
-Both GC configurations run because GC strategy selection is a build-time
-feature (the two collectors claim the same header bits — see the
-feature's note in `Cargo.toml`). Since 2026-07-27 **rc-walk is the
-default build**; rc-trace is `--no-default-features`. Both must be
-green. Strategy-bound tests are gated
-to their configuration (`cfg(not(feature = "rc-walk"))` on rc-trace
-tests); that gating is selection, not muting — the default runs keep
-executing them.
+Three times, for the reason the run above is run three times: what this
+axis adds is a re-entry into the allocator from inside itself.
 
 Run each test command **as its own command and read its result line**;
 never pipe into a filter that can swallow a failure and let a commit
@@ -226,7 +221,7 @@ normative for that module. A dated decision still goes to
 either by the entry's title rather than by its date.
 
 **How a reference is written.** By file and named section:
-`rfc/model/gc/rc-walk.md`, "Deferred physical release". Never by a
+`rfc/model/gc/rc-cycle.md`, "Cycle teardown". Never by a
 number that gets reissued or removed, which rules out a `PLAN.md` stage
 (closed stages are deleted from that file), a dated `dev/` entry, a line
 number, and an item number from a list that has since been rewritten.
@@ -234,7 +229,8 @@ When the section a comment needs does not exist yet, write it and give
 it a name.
 
 A **bolded lead-in** counts as a named section, quoted exactly:
-`rfc/model/gc/rc-walk.md`, "Batched releases". These documents state most
+`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives". These
+documents state most
 of their rules that way, and a citation of the enclosing heading instead
 sends the reader to a page rather than to the sentence. What decides the
 form is which one a search finds — so the rule that follows from it is

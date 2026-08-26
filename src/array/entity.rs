@@ -836,7 +836,7 @@ unsafe fn element_for_destination(
     // shallow separation's own path — one element at a time, every write
     // to a shared array. Only past it is the child's header worth reading,
     // and then once for both tests: the kind and the count are halves of
-    // one word, which under `rc-walk` the two accessors would load twice.
+    // one word, which the two narrow accessors would load twice.
     if category != MemoryCategory::RequestArena
         && let (count, flags) = unsafe { crate::refcount::header_pair(child) }
         && is_nested_arena_array(flags)
@@ -1172,7 +1172,7 @@ pub(crate) unsafe fn publish_key(
 ///
 /// An adapter over the one tracing stride rather than a walk of its own:
 /// reading the array's cells needs the coherent read of the head, which
-/// `walk::trace_cells` performs. Kept as a name because the release side
+/// `cells::trace_cells` performs. Kept as a name because the release side
 /// reads better for it, and because a caller here has an `LLArray` rather
 /// than a bare header and a kind.
 ///
@@ -1490,10 +1490,11 @@ unsafe fn is_array(entity: *mut RcHeader) -> bool {
     (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT == EntityKind::Array as u32
 }
 
-/// The duty [`crate::object::ll_entity_die`]'s door performs that the
-/// drain takes over along with the array: under rc-trace a dying entity
-/// leaves the candidate buffer, or a later collection reads a slot that
-/// is gone. Under rc-walk the door has no such duty and neither has this.
+/// The duty [`crate::object::ll_entity_die`]'s door performs that a
+/// collector's drain takes over along with the array. There is none
+/// today: `rc-cycle` cannot withdraw a queue entry, so a slot that dies
+/// enrolled is parked rather than forgotten, and S34.3 builds that
+/// (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
 ///
 /// # Safety
 /// `entity` is an entity at count zero, taken over by the drain.

@@ -7,8 +7,10 @@
 //! pair, 2.4 ns for a publish (`dev/BENCHMARKS.md`) — are hot figures: they
 //! were taken where those two headers are in cache. What a request pays when
 //! they are not has never been measured here, and the answer decides whether
-//! work on the store path is worth doing at all
-//! (`rfc/model/gc/gc-horizon-v2/questions.md`, node N).
+//! work on the store path is worth doing at all. The question was node
+//! N of `gc-horizon-v2`'s graph, deleted with that design and readable
+//! on `archive/pre-rc-cycle`; the measurement outlives it, because the
+//! barrier is the same one `rc-cycle` keeps.
 //!
 //! [`super::what_a_store_costs_by_working_set`] does not answer it and says
 //! so: its cold half walks scratch between rounds, but "the next round's

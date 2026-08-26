@@ -109,7 +109,7 @@ fn an_arena_string_is_left_to_the_reset() {
 /// A heap string lands in an entity block, so the walker meets it.
 /// It must be counted as its own kind and contribute no edges: a
 /// string's payload is bytes, so it is a leaf and cannot close a ring
-/// (`walk::trace_entity`).
+/// (`cells::trace_entity`).
 #[test]
 fn the_walker_counts_a_heap_string_as_a_leaf() {
     let _g = crate::memory::block_pool::test_guard();

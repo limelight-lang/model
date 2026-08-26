@@ -47,13 +47,11 @@ const REFILL_BATCH: usize = 4;
 const FLUSH_MAX: usize = THREAD_CACHE_CAPACITY / 2 + 1;
 
 /// Store a block header's `kind` discriminant, and **the only path that
-/// writes one**. Under `rc-walk` the store is a release: the collector's
-/// snapshot reads the kind of every block in every region concurrently,
-/// and the release ordering is what publishes a commissioned block's
-/// other header fields before its kind says "entity"
-/// (`heap::snapshot_entity_blocks` loads with acquire). Under `rc-trace`
-/// nothing reads across threads and the store is relaxed, which is the
-/// plain write it used to be.
+/// writes one**. The store is a **release**, and its reader is a
+/// collector enumerating the blocks of every carved region: the release
+/// ordering publishes a commissioned block's other header fields before
+/// its kind says "entity". No such reader exists between S30 and S32,
+/// which gives the collector a per-block triple to load (`PLAN.md`).
 ///
 /// The field is an [`AtomicU32`] in every header that overlays offset 0,
 /// and it sits outside the half `Heap::alloc` borrows — position, not
@@ -111,10 +109,9 @@ pub const BLOCK_KIND_ENTITY_LARGE: u32 = 9;
 pub const BLOCK_KIND_ENTITY_LARGE_RUN: u32 = 10;
 /// Entity block: same size-class layout as `BLOCK_KIND_HEAP`, but its
 /// slots hold GC entities (header at offset 0) and only these blocks are
-/// walked by the cycle collector (`rfc/model/gc/rc-walk.md`,
-/// "Prerequisite: entity blocks are segregated"). A raw C-ABI buffer must
-/// never land in one: the walker reads every occupied slot's first 8
-/// bytes as an `RcHeader`.
+/// traced by a cycle collector (`docs/memory-manager.md`, "Heap: small
+/// objects"). A raw C-ABI buffer must never land in one: a trace reads
+/// every occupied slot's first 8 bytes as an `RcHeader`.
 pub const BLOCK_KIND_ENTITY: u32 = 8;
 
 /// Header in the first line of every block.
@@ -191,12 +188,12 @@ pub struct BlockPool {
     blocks_out: AtomicUsize,
     /// Region registry: the base address of every 2 MB region ever
     /// carved. The pool used to count regions without recording their
-    /// bases, so nothing could enumerate blocks — which the entity
-    /// walker must (`rfc/model/gc/rc-walk.md`, "a region registry").
-    /// Append-only and regions are never unmapped (phase 1), so an index
-    /// is a stable handle for as long as the process lives. OS-direct
-    /// `BLOCK_KIND_LARGE_RUN` allocations are not regions and are not
-    /// here — huge objects stay outside the walk, conservatively.
+    /// bases, so nothing could enumerate blocks — which a whole-heap
+    /// trace must. Append-only and regions are never unmapped (phase 1),
+    /// so an index is a stable handle for as long as the process lives.
+    /// OS-direct `BLOCK_KIND_LARGE_RUN` allocations are not regions and
+    /// are not here — huge objects stay outside such a pass,
+    /// conservatively.
     regions: Mutex<Vec<usize>>,
 }
 

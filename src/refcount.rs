@@ -1,13 +1,18 @@
 //! Common refcounted header — offset 0 of every heap entity.
 //!
 //! Layout and flag bits per `rfc/model/classes.md`; retain/release fast
-//! path per `rfc/model/lowering.md`. Phase 1: one thread per request, no
-//! atomics (as in Zend). Under the `rc-walk` feature the header accesses
-//! compile as **relaxed atomics** instead — same instructions on x86-64
-//! and AArch64, but the collector thread reads headers concurrently and
-//! without the annotation that race is undefined behaviour
-//! (`rfc/model/gc/rc-walk.md`, "The one header byte"). Still no atomic
-//! read-modify-write anywhere.
+//! path per `rfc/model/lowering.md`. One thread per request, and no
+//! atomic read-modify-write anywhere. The header accesses are
+//! **relaxed atomics** all the same — the same instructions on x86-64
+//! and AArch64 — because a collector thread reads published headers
+//! while the owner mutates them, and without the annotation that race
+//! is undefined behaviour.
+//!
+//! That reader does not exist between S30 and S38 (`PLAN.md`): the
+//! annotation is kept across the gap rather than taken out and put
+//! back. `rc-cycle` collects in-line on the owning thread and adds the
+//! collector thread as an accelerator over the same headers
+//! (`rfc/model/gc/rc-cycle.md`, "What it is" and "Concurrency").
 
 use crate::journal::kinds::journal_event;
 
@@ -28,15 +33,17 @@ pub enum MemoryCategory {
     RequestArena = 0b01,
     /// **Out of use: stamp it on nothing new.** As the category of an
     /// entity this code has no mechanism behind it. `ll_retain` and
-    /// `ll_release` return early on it, so it is not counted; the census
-    /// enrolls only `GcHeap` (`walk.rs`), so it is not collected; and no
+    /// `ll_release` return early on it, so it is not counted, and the
+    /// same early return keeps it out of every candidate set: `rc-cycle`
+    /// enrols on the release path (`rfc/model/gc/rc-cycle.md`), which
+    /// this category never reaches. No
     /// reset or teardown pass frees it — `rfc/model/memory/arenas.md`
     /// still records the reclamation strategy as undecided, and no
     /// long-lived arena exists in this crate. What it does instead is take
     /// its memory from the same entity blocks as `GcHeap`, so an entity
     /// marked here is an immortal entity housed in the collected heap: it
-    /// lives to process exit like `Immortal` while occupying a slot the
-    /// collector strides over on every walk, paying that visit forever and
+    /// lives to process exit like `Immortal` while occupying a slot every
+    /// trace over that block must step past, paying that visit forever and
     /// buying nothing for it.
     ///
     /// **As `owner_cat` it works, and that use stays.** The question there
@@ -214,7 +221,7 @@ impl EntityKind {
 /// object's properties, an array's elements and string keys, a
 /// ReferenceBox's one Value, and a Lazy proxy's object slots —
 /// `ll_entity_die` sends `Lazy` through `ll_object_die` and
-/// `walk::trace_cells` strides it like an object. String, Box and WeakRef
+/// `cells::trace_cells` strides it like an object. String, Box and WeakRef
 /// own nothing a ring can pass through and stay out by that same
 /// criterion.
 ///
@@ -225,17 +232,25 @@ impl EntityKind {
 /// Membership costs a shift and a bit test on a word the release path
 /// already holds ([`kind_may_close_a_cycle`]).
 ///
-/// **rc-trace only**, like the buffer itself.
+/// **No consumer since 2026-08-26**, when the candidate buffer this
+/// gated was deleted with `rc-trace`. The set outlives the buffer: it is
+/// the kind half of the gate `rc-cycle` enrols through, and S31.1
+/// replaces the bitset with a range test over renumbered kind codes
+/// (`PLAN.md`).
 pub const CANDIDATE_KINDS: u32 = (1 << EntityKind::Object as u32)
     | (1 << EntityKind::Array as u32)
     | (1 << EntityKind::Reference as u32)
     | (1 << EntityKind::Lazy as u32);
 
 /// True when the kind in this flags word is in [`CANDIDATE_KINDS`] — the
-/// kinds whose non-zero decrement is buffered as a possible cycle root.
-/// For the reserved code 7 the answer is false, as for every kind outside
+/// kinds whose non-zero decrement can leave a garbage ring behind. For
+/// the reserved code 7 the answer is false, as for every kind outside
 /// the set. Takes the flags word rather than the entity, because every
 /// caller holds it in a register already.
+///
+/// **No caller since 2026-08-26**: the release path stopped enrolling
+/// when the two collectors went. S31.3 gives it back as one mask over
+/// five conditions, of which the kind is the second (`PLAN.md`).
 #[inline]
 pub fn kind_may_close_a_cycle(flags: u32) -> bool {
     (CANDIDATE_KINDS >> ((flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT)) & 1 != 0
@@ -250,18 +265,14 @@ pub fn is_object(flags: u32) -> bool {
     flags & ENTITY_KIND_MASK == 0
 }
 
-/// Where the entity sits in the cycle collector's candidate buffer,
-/// stored as `index + 1` so that zero means "position unknown" (bits
-/// 15-31, the top of the flags word). Zend keeps the same thing in
-/// `gc_info` for the same reason: without it, forgetting a candidate
-/// means a linear scan of the whole buffer. Zero is always safe — the
-/// collector falls back to that scan (`crate::gc::forget_candidate`).
-///
-/// **rc-trace only.** In an `rc-walk` build the field is dead — nothing
-/// ever feeds the candidate buffer — and its bits belong to the epoch
-/// byte below. The two strategies cannot share the top half of the
-/// word, which is why selection is a build-time feature
-/// (`rfc/model/gc/strategies.md`).
+/// **Dead since 2026-08-26, and unclaimed until S31.** These named the
+/// entity's position in `rc-trace`'s candidate buffer, stored as
+/// `index + 1` so that zero meant "position unknown"; the buffer and
+/// every reader of the field went with the strategy. They stay declared
+/// only because the flags word above bit 14 is re-laid whole at S31,
+/// which gives 16-17 to the epoch, 18-19 to the maturation age and
+/// 20-23 to the collector's reserve (`PLAN.md`). The old design is on
+/// `archive/pre-rc-cycle`.
 pub const CANDIDATE_INDEX_SHIFT: u32 = 15;
 pub const CANDIDATE_INDEX_MASK: u32 = 0x0001_FFFF << CANDIDATE_INDEX_SHIFT;
 
@@ -270,9 +281,11 @@ pub const CANDIDATE_INDEX_MASK: u32 = 0x0001_FFFF << CANDIDATE_INDEX_SHIFT;
 /// the fixed fields. Set once by the factory and never flipped — nothing
 /// promotes between the two layouts at run time.
 ///
-/// It shares bit 15 with the candidate index above and the two never
-/// meet, which is what lets a kind-scoped bit sit here the way
-/// [`ARENA_RESET_MARK`] sits in the GC-state field. [`COW`] carries
+/// It sits at bit 15, which the candidate index above claimed as its
+/// lowest until that field died; a string never entered the buffer, so
+/// the two never met. Nothing claims the bit now, and it stays
+/// kind-scoped the way [`ARENA_RESET_MARK`] is kind-scoped in the
+/// GC-state field. [`COW`] carries
 /// copy-on-write and nothing else: one bit could not say both for an
 /// oversize string, which is out of line by size and copy-on-write by
 /// semantics (`dev/DECISIONS.md`, "a string's layout is its own header
@@ -283,21 +296,23 @@ pub const STRING_OUT_OF_LINE: u32 = 1 << 15;
 /// single collection point, and the fallback costs only speed.
 pub const CANDIDATE_INDEX_MAX: usize = 0x0001_FFFF - 1;
 
-/// rc-walk's **epoch byte** — header byte 6, flags bits 16-23
-/// (`rfc/model/gc/rc-walk.md`, "The one header byte"). The collector's
-/// maturity stamp: 0 on every fresh header (the factory writes the flags
-/// word with this byte zero at no extra cost), the current epoch number
-/// once a walk has skipped the entity as new. An entity the walk enrols
-/// keeps the older number it was met with — the byte is written in the
-/// allocate-black branch and nowhere else, so 0-or-current reads as "not
-/// walked this epoch". Written by the **collector only**,
-/// as a plain byte store; the mutator's whole-word header stores may bury
-/// a concurrent stamp, which costs one epoch of latency, never a verdict.
+/// The collector's **epoch byte** — header byte 6, flags bits 16-23,
+/// and the collector's only claim on the header. Nothing writes it
+/// today: it carried `rc-walk`'s maturity stamp, written by the
+/// collector thread in the allocate-black branch and nowhere else, and
+/// it went with that collector.
 ///
-/// This is the collector's only claim on the header since the
-/// eager-death amendment (2026-07-27): the condemned byte (bits 24-31)
-/// is retired — condemnation is collector-private, and the mutator's
-/// death path never consults the collector at all.
+/// `rc-cycle` stamps the same region for the same purpose — an entity
+/// is traced only once it has stayed a candidate across `k` collections
+/// (`rfc/model/gc/rc-cycle.md`, "What it is") — but in two bits rather
+/// than eight: S31 splits the byte into epoch at 16-17, maturation age
+/// at 18-19 and the collector's reserve at 20-23 (`PLAN.md`).
+///
+/// It is a byte of its own because the mutator and the collector write
+/// the header at different widths from different threads. Which widths
+/// each side may use is S31.4's to settle; the Critic round of
+/// 2026-08-26 found today's rule guarding writes while the defect it
+/// has carried since day one is a read.
 pub const EPOCH_BYTE_SHIFT: u32 = 16;
 pub const EPOCH_BYTE_MASK: u32 = 0xFF << EPOCH_BYTE_SHIFT;
 
@@ -309,11 +324,11 @@ compile_error!(
 
 /// The 8-byte header at offset 0 of every heap entity.
 ///
-/// Aligned to 8: the factory publishes it as one 8-byte store, and under
-/// `rc-walk` every access compiles as a relaxed atomic on the whole word
-/// — both need the address 8-aligned. Every real entity already was (the
-/// smallest heap slot is 16 bytes); the attribute makes stack-built
-/// headers in tests honest too.
+/// Aligned to 8: the factory publishes it as one 8-byte store, and the
+/// wide header helpers are relaxed atomics on the whole word — both need
+/// the address 8-aligned. Every real entity already was (the smallest
+/// heap slot is 16 bytes); the attribute makes stack-built headers in
+/// tests honest too.
 #[repr(C, align(8))]
 pub struct RcHeader {
     pub refcount: u32,
@@ -346,14 +361,14 @@ impl RcHeader {
 }
 
 /// Publish a fully-built entity's header as **one 8-byte store** — never
-/// refcount and flags separately (`rfc/model/gc/rc-walk.md`, Phase 1: a
-/// torn pair would expose garbage kind bits behind a live count). Until
-/// this store the slot reads refcount 0 — block commissioning zeroed it,
-/// or the previous occupant's death left it — so a walker classifies the
-/// slot as free rather than reading a half-built entity. Under `rc-walk`
-/// the store is a relaxed atomic: the collector thread reads headers
-/// concurrently, and without the annotation the race is undefined
-/// behaviour.
+/// refcount and flags separately: a torn pair would expose garbage kind
+/// bits behind a live count. Until this store the slot reads refcount 0
+/// — block commissioning zeroed it, or the previous occupant's death
+/// left it — so a trace crossing the block classifies the slot as free
+/// rather than reading a half-built entity. The store is a relaxed
+/// atomic because that trace may run on a collector thread
+/// (`rfc/model/gc/rc-cycle.md`, "Concurrency"), and without the
+/// annotation the race is undefined behaviour.
 ///
 /// # Safety
 /// `slot` must be 8-aligned, writable, and not yet published as a live
@@ -389,7 +404,7 @@ pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
 /// half, flags in the high (little-endian, enforced above). Same
 /// instruction as a plain load on x86-64 and AArch64; the annotation is
 /// what makes the cross-thread race with the collector's byte stores
-/// defined (`rfc/model/gc/rc-walk.md`, "The one header byte").
+/// defined ([`EPOCH_BYTE_MASK`] is the byte in question).
 #[inline]
 unsafe fn header_word_load(header: *mut RcHeader) -> u64 {
     unsafe {
@@ -416,11 +431,12 @@ unsafe fn header_word_store(header: *mut RcHeader, word: u64) {
 /// bits covers arenas and immortals. COW entities always count
 /// (`rfc/model/values.md`) — their category is checked only on release.
 ///
-/// Under `rc-walk` the header is loaded once as a relaxed atomic word
-/// (the category tests need the flags anyway) and only the 4-byte
-/// counter half is stored back — the narrow-mutator amendment: no flags
-/// store, nothing beyond the counter itself
-/// (`rfc/model/gc/rc-walk.md`, "What the mutator pays").
+/// The header is read in two narrow relaxed loads — the flags half for
+/// the category tests, then the counter — and only the 4-byte counter
+/// half is stored back. That is the narrow-mutator rule: no flags store,
+/// nothing beyond the counter itself. Why narrow beats wide on both
+/// sides is [`refcount_load`]'s argument, measured in
+/// `dev/BENCHMARKS.md`, 2026-07-27.
 ///
 /// # Safety
 /// `header` must point to a live heap entity beginning with `RcHeader`.
@@ -439,24 +455,25 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
         }
 
         let refcount = unsafe { refcount_load(header) };
-        // Saturation rationale as in the rc-trace arm above.
+        // With `checked-refcount`, saturate rather than wrap. Wrapping to
+        // zero would make the next release think the entity died and free
+        // it while it is still referenced. Saturating leaks it instead,
+        // which is the safe direction. See the feature's note in
+        // `Cargo.toml` for why this is optional and not a default.
         #[cfg(feature = "checked-refcount")]
         if refcount == u32::MAX {
             return;
         }
 
-        // Narrow-mutator amendment (rfc, 2026-07-27): narrow loads,
-        // narrow counter store, no flags store — the collector's
-        // concurrent epoch stamps can no longer be buried by this
-        // path.
+        // Narrow loads, narrow counter store, no flags store — so this
+        // path cannot bury a concurrent stamp in the collector's byte.
         unsafe { refcount_store(header, refcount + 1) };
     }
 }
 
 /// Store only the 4-byte refcount half, relaxed — the narrow-mutator
-/// store (`rfc/model/gc/rc-walk.md`, "The narrow mutator"). Must stay an
-/// aligned atomic store: the collector reads the containing word
-/// concurrently.
+/// store (`dev/BENCHMARKS.md`, 2026-07-27). Must stay an aligned atomic
+/// store: the collector reads the containing word concurrently.
 #[inline]
 unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
     unsafe {
@@ -494,24 +511,13 @@ unsafe fn flags_load(header: *const RcHeader) -> u32 {
 /// (the kind switch), or `ll_object_die` directly where the caller
 /// statically knows an object.
 ///
-/// Under `rc-walk` there is no candidate buffering — candidates are
-/// computed by the collector's walk, which is the design's advertised
-/// net reduction on this path — and **every death takes the ordinary
-/// path** (the eager-death amendment, 2026-07-27,
-/// `rfc/model/gc/rc-walk.md`, Phase 4): teardown runs at the natural
-/// point, condemned or not, with only the memory parked while an epoch
-/// is in flight. The drain protects itself with the corpse rule — a
-/// posted component containing an `rc 0` member is dropped whole.
-///
-/// Under `rc-walk` the death branch also **acks the epoch handshake**
-/// ([`crate::epoch::checkpoint_ack`]) — ack only: message pickup rides
-/// the outermost dispose's exit, because between this release's zero
-/// store and the dispose no user code may observe the entity
-/// (review finding, 2026-07-27). Compiler-emitted runs of releases use
-/// [`ll_release_batch`] bracketed by one
-/// [`ll_gc_checkpoint_ack`](crate::gc::ll_gc_checkpoint_ack) before
-/// the run and one [`ll_gc_checkpoint`](crate::gc::ll_gc_checkpoint)
-/// after it instead.
+/// **Every death takes the ordinary path**: teardown runs at the point
+/// the count reaches zero, and no collector is consulted to decide it.
+/// Compiler-emitted runs of releases use [`ll_release_batch`] bracketed
+/// by one [`ll_gc_checkpoint_ack`](crate::gc::ll_gc_checkpoint_ack)
+/// before the run and one
+/// [`ll_gc_checkpoint`](crate::gc::ll_gc_checkpoint) after it
+/// (`rfc/model/memory/bulk-operations.md`).
 ///
 /// # Safety
 /// `header` must point to a live heap entity beginning with `RcHeader`.
@@ -526,11 +532,10 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
     unsafe { release_word(entity) }
 }
 
-/// The rc-walk decrement: the shared core of [`ll_release`] and
+/// The decrement itself: the shared core of [`ll_release`] and
 /// [`ll_release_batch`]. Returns the ABI verdict — the caller must run
-/// teardown. Since the eager-death amendment there is no condemned
-/// test and no deferral: the death branch is the same narrow counter
-/// store as every other release.
+/// teardown. There is no condemned test and no deferral, so the death
+/// branch is the same narrow counter store as every other release.
 #[inline]
 unsafe fn release_word(entity: *mut RcHeader) -> bool {
     let flags = unsafe { flags_load(entity) };
@@ -551,16 +556,15 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
     refcount == 0 && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap
 }
 
-/// [`ll_release`] without the epoch checkpoint, for compiler-emitted
-/// runs of releases (a scope exit): lowering emits one
-/// [`ll_gc_checkpoint_ack`](crate::gc::ll_gc_checkpoint_ack) before
-/// the run, releases each reference with this variant, then one full
-/// [`ll_gc_checkpoint`](crate::gc::ll_gc_checkpoint) after it — the
-/// run pays the test once, and the pickup lands where the run's
-/// transients are back at their true counts
-/// (`rfc/model/gc/rc-walk.md`, "Batched releases", amendment
-/// 2026-07-28). Identical to [`ll_release`] in every other respect;
-/// in an rc-trace build the two are the same function.
+/// [`ll_release`] for a compiler-emitted run of releases (a scope
+/// exit): lowering emits one
+/// [`ll_gc_checkpoint_ack`](crate::gc::ll_gc_checkpoint_ack) before the
+/// run, releases each reference with this variant, then one full
+/// [`ll_gc_checkpoint`](crate::gc::ll_gc_checkpoint) after it, so the
+/// run pays the safepoint once and pays it where its transients are
+/// back at their true counts (`rfc/model/memory/bulk-operations.md`).
+/// The two functions are the same today and the variant is kept because
+/// the emitted bracket names it.
 ///
 /// # Safety
 /// As [`ll_release`].
@@ -570,10 +574,9 @@ pub unsafe extern "C" fn ll_release_batch(entity: *mut RcHeader) -> bool {
     return unsafe { release_word(entity) };
 }
 
-/// The flags word of a possibly-walked header: a relaxed read under
-/// `rc-walk` (the collector's byte stores race every plain header
-/// access during an epoch), a plain read otherwise. The one
-/// build-dispatching read helper — teardown paths and the weak
+/// The flags word of a published header, read as a relaxed atomic: a
+/// collector's byte stores race every plain access to a header it may
+/// be tracing. The one read helper — teardown paths and the weak
 /// machinery share it rather than owning private copies.
 ///
 /// **Four bytes, not the word.** The store barrier reaches here right after
@@ -607,7 +610,7 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
 ///
 /// It buys no coherence the two readers above lack: the only concurrent
 /// writer of a published header is the collector, and its one claim is the
-/// epoch byte ([`collector_stamp_epoch`]), which no caller of this reads.
+/// epoch byte ([`EPOCH_BYTE_MASK`]), which no caller of this reads.
 #[inline]
 pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
     unsafe {
@@ -615,9 +618,9 @@ pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
     }
 }
 
-/// Rewrite the flags of a **published** header, same dispatch rule —
-/// the write twin of [`header_flags`]. Post-publish flag writes on a
-/// walked header must not be plain stores under `rc-walk`.
+/// Rewrite the flags of a **published** header — the write twin of
+/// [`header_flags`]. A post-publish flag write must not be a plain
+/// store: the header may be under a concurrent trace.
 #[inline]
 pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
 
@@ -627,18 +630,19 @@ pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u
 }
 
 /// Mutator-side relaxed header read; pair of the mutator's word store.
-/// Under a live epoch every plain header access races the collector's
-/// byte stores, which is undefined behaviour — these helpers are the
-/// same instructions with the race made defined.
+/// While a collection is in flight every plain header access races the
+/// collector's byte stores, which is undefined behaviour — these
+/// helpers are the same instructions with the race made defined.
 #[inline]
 pub(crate) unsafe fn mutator_load_header(header: *const RcHeader) -> (u32, u32) {
     let word = unsafe { header_word_load(header as *mut RcHeader) };
     (word as u32, (word >> 32) as u32)
 }
 
-/// Mutator-side flags update as one relaxed whole-word store. May bury
-/// a concurrent collector byte store — a lost stamp or verdict, always
-/// the conservative direction (`rfc/model/gc/rc-walk.md`).
+/// Mutator-side flags update as one relaxed whole-word store, which
+/// spans the collector's byte at +6 and can bury a store into it.
+/// S31.4 deletes this helper for that reason: the mutator's flags
+/// writes are to stop below byte 2 (`PLAN.md`).
 #[inline]
 pub(crate) unsafe fn mutator_update_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
     let word = unsafe { header_word_load(header) };
@@ -655,9 +659,10 @@ pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
 }
 
 /// The teardown guard's `-1` (relaxed whole-word; flags kept): returns
-/// the new refcount. Since the eager-death amendment a condemnation
-/// landing mid-destructor changes nothing here — teardown always
-/// finishes, and the component's later drain drops on the corpse.
+/// the new refcount. A collection landing mid-destructor changes
+/// nothing here — teardown always finishes, and the corpse rule drops a
+/// component holding a member already at zero
+/// (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 1).
 #[inline]
 pub(crate) unsafe fn mutator_unguard_release(header: *mut RcHeader) -> u32 {
     let word = unsafe { header_word_load(header) };

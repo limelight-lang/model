@@ -1014,10 +1014,10 @@ impl Table {
     /// The chunk being replaced is only read here, so a collector striding
     /// it races nothing.
     ///
-    /// The old chunk is freed once the window is closed. A walker still
-    /// striding it reads intact bytes: the collector walks only inside an
-    /// epoch, and an epoch parks every buffer-chunk free rather than
-    /// recycling it (`memory::deferred_free`).
+    /// The old chunk is freed once the window is closed. A trace still
+    /// striding it must read intact bytes, which is what the parking of
+    /// buffer-chunk frees during a collection buys; nothing parks between
+    /// S30 and S36.2 (`PLAN.md`).
     fn move_entries(
         &mut self,
         head: &StorageHead,
@@ -1176,9 +1176,9 @@ impl Table {
 
     /// Sever every live entry: null its element, drop its key, and
     /// collect both into `displaced` — **without releasing them**. The
-    /// array's half of the rc-walk drain's "sever and free"
-    /// (`rfc/model/gc/rc-walk.md`, Phase 4); the caller owes one drop per
-    /// collected entry.
+    /// array's half of a cycle teardown's "sever and free"
+    /// (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 6); the caller
+    /// owes one drop per collected entry.
     ///
     /// An entry becomes a **hole** rather than keeping a nulled element,
     /// because an array's key is a counted child too and there is no

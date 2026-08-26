@@ -8,6 +8,14 @@ that would remove it. A row with a citation is work the language
 mandates; a residue row is the only place a claim of avoidable cost can
 live.
 
+> **The two build configurations these figures name were deleted on
+> 2026-08-26.** `rc-walk` and `rc-trace` are gone from the crate, and the
+> code that produced every measurement below is on the branch
+> `archive/pre-rc-cycle`. The figures stand as the baseline `rc-cycle` is
+> to be measured against, not as a description of what the tree builds
+> today (`PLAN.md`, S30).
+
+
 Produced from the release staticlib built with `-C debuginfo=2`
 (`bench-external/README.md`, "Symbol resolution for profiling"), read through
 `objdump -dSr`, on the HEAD of the entry "fresh brackets on one HEAD"
@@ -42,12 +50,12 @@ ret
 
 | instructions | contract |
 |---|---|
-| `mov 0x4(%rdi),%ecx` | the width rule: a header is read as narrowly as it is written (`dev/DECISIONS.md`, "a header is read as narrowly as it is written, and through the helpers only"; `rfc/model/gc/rc-walk.md`, "The narrow mutator") |
+| `mov 0x4(%rdi),%ecx` | the width rule: a header is read as narrowly as it is written (`dev/DECISIONS.md`, "a header is read as narrowly as it is written, and through the helpers only"; `rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`, "The narrow mutator") |
 | `and $3` / `setne` | the category field, flags bits 0-1: a non-zero category is not lifetime-counted (`refcount.rs`, `MemoryCategory` contract; `rfc/model/classes.md`, "Flags layout") |
 | `test $0x400` / `sete` | the COW exception: a COW entity always counts (`rfc/model/values.md`; `refcount.rs`, the `COW` flag's contract) |
 | `cmp $3` / `je` | Immortal is never counted: the pinned-count rule of `rfc/model/values.md`; the consequence — a count sitting at 1 forever — is spelled out at `refcount.rs`, `cow_separation_needed`'s Immortal arm |
 | `and %cl,%al` / `jne` | the two tests above fused into one branch — the row inherits the category and COW citations; the fusion itself is codegen |
-| `incl (%rdi)` | the counter itself: one narrow store, no flags half, no read-modify-write atomic — the single-mutator guarantee (`rfc/model/gc/rc-walk.md`, "What the mutator pays") |
+| `incl (%rdi)` | the counter itself: one narrow store, no flags half, no read-modify-write atomic — the single-mutator guarantee (`rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`, "What the mutator pays") |
 
 Residue: none. Twelve instructions, each carrying a citation.
 
@@ -83,9 +91,9 @@ ret
 |---|---|
 | the gate | as in `ll_retain` |
 | the early `xor %eax,%eax` | the uncounted paths report false, and codegen hoists the default above the gate's branches — register scheduling, no memory access |
-| `mov` / `dec` / `mov` | the relaxed-atomic demand: the header is read by the collector's thread, so the counter halves compile as relaxed atomic load and store (`rfc/model/gc/rc-walk.md`, "One demand on codegen"). What is observed, not claimed of compilers in general: this build emits the pair unfused, while the rc-trace build — plain accesses over the same source shape — emits a narrow `decl [mem]` (`dev/BENCHMARKS.md`, 2026-07-27). The two extra instructions are the annotation's observed price, and the annotation is the contract |
+| `mov` / `dec` / `mov` | the relaxed-atomic demand: the header is read by the collector's thread, so the counter halves compile as relaxed atomic load and store (`rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`, "One demand on codegen"). What is observed, not claimed of compilers in general: this build emits the pair unfused, while the rc-trace build — plain accesses over the same source shape — emits a narrow `decl [mem]` (`dev/BENCHMARKS.md`, 2026-07-27). The two extra instructions are the annotation's observed price, and the annotation is the contract |
 | `or %ecx,%eax` / branch | only a `GcHeap` count reaching zero dies by count — arena entities die at reset (`rfc/model/memory/arena-reset.md`); the two conditions fuse into one flags-setting `or` |
-| `movzbl` / `test` / `jne` | the checkpoint rides the death branch and acks the handshake only (`rfc/model/gc/rc-walk.md`, "Both ride the death branch of `ll_release`" and the ack/pickup split); its measured price is the ≈ 1.1 ns of the 2026-07-27 decomposition |
+| `movzbl` / `test` / `jne` | the checkpoint rides the death branch and acks the handshake only (`rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`, "Both ride the death branch of `ll_release`" and the ack/pickup split); its measured price is the ≈ 1.1 ns of the 2026-07-27 decomposition |
 | the `ack` tail | out of line and cold — a handful per epoch, never per operation; its `push`/`add` frame and re-set return value execute only when a handshake is posted |
 | `mov $1,%al` / `ret` | teardown is the caller's (`ll_object_die`), bounded by deaths, not by store traffic |
 
@@ -93,7 +101,7 @@ Residue: none on the branch itself. Two scope lines, so a reader
 summing rows against measured figures knows what sits outside them:
 teardown past the branch is not decomposed here, priced by garbage
 found; and the free path's parking test — one load and a predicted
-branch while an epoch is in flight (`rfc/model/gc/rc-walk.md`,
+branch while an epoch is in flight (`rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`,
 "Deferred physical release") — is inside every measured create+die
 figure and inside no listing in this file, part of the ≈ 1 ns
 factory/free share of the 2026-07-27 decomposition.

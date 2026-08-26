@@ -18,11 +18,11 @@
 //! owns. So while the window is open those two kinds park here and are
 //! freed after it closes.
 //!
-//! **This is the reset's window, not the collector's.** It is compiled in
-//! both builds and turns on no GC state: `deferred_free` parks against an
-//! epoch, this parks against a reset, and a build without epochs runs
-//! this code unchanged. The flush re-enters `ll_free`, so a parked body
-//! meets whatever holds it then: the epoch's own parking if one is in
+//! **This is the reset's window, not the collector's.** It turns on no
+//! GC state: a collector parks against a collection, this parks against
+//! a reset, and the two are independent. The flush re-enters `ll_free`,
+//! so a parked body meets whatever holds it then: a collection's own
+//! parking if one is in
 //! flight, or — when a destructor of an outer reset drove this one — the
 //! outer window, which frees it at its own close.
 //!
@@ -33,10 +33,10 @@
 //! afterwards would take the block's live count below its true occupancy
 //! and hand it to the pool under living survivors.
 //!
-//! A `Cell<*mut _>` rather than a `RefCell<Vec<_>>`, for
-//! `deferred_free::PARKED`'s reason: a `Vec` in a thread-local registers
-//! drop glue, and this path is reachable from thread exit, where TLS
-//! destructor order is unspecified.
+//! A `Cell<*mut _>` rather than a `RefCell<Vec<_>>`: a `Vec` in a
+//! thread-local registers drop glue, and this path is reachable from
+//! thread exit, where TLS destructor order is unspecified. Every
+//! thread-local on that path took this shape on 2026-08-03.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -117,8 +117,9 @@ pub(crate) fn opened() -> Guard {
 /// Close the innermost window and free what it parked.
 ///
 /// The frees run **after** the close, so each takes the ordinary route:
-/// under an epoch in flight a body parks again in `deferred_free`, whose
-/// walker may still hold the address, and otherwise it goes back now.
+/// with a collection in flight a body parks again, since a trace may
+/// still hold the address, and otherwise it goes back now. Nothing parks
+/// between S30 and S36.2 (`PLAN.md`).
 ///
 /// # Safety
 /// A window must be open on this thread, and every reader of the parked

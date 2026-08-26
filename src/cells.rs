@@ -33,17 +33,14 @@ unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
     (unsafe { (*e).flags } & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT
 }
 
-/// One counted cell of an entity: where it is, the word that is in it,
-/// and the child that word designates.
+/// One counted cell of an entity: where it is, and the child the word
+/// in it designates.
 ///
-/// The address and the raw word are not decoration for the tracer's
-/// benefit — the epoch records both in its `Edge` and re-reads the cell
-/// at Phase 3 to see whether the mutator has moved it. A walker that
-/// yielded only the child could not serve the collector, which is how
-/// the collector came to carry its own copy of every stride.
-/// The raw word is the epoch's alone, hence its `rc-trace` dead-code
-/// exemption below; the address is the sever's too, which empties the
-/// cell it names ([`empty_cell`]).
+/// The address rides along because the sever needs it — it empties the
+/// cell it names ([`empty_cell`]) — and a tracer that yielded only the
+/// child would send the sever over the layout a second time. The raw
+/// word rode along too, for the re-read `rc-walk` made at its Phase 3,
+/// and went with that collector.
 #[derive(Clone, Copy)]
 pub(crate) struct Cell {
     pub addr: usize,
@@ -122,9 +119,11 @@ pub(crate) struct OutsideCells {
     /// collision link into a self-referencing chain and the second reads
     /// as an integer key rather than a hole.
     pub sever: unsafe fn(*mut RcHeader, &mut Vec<*mut RcHeader>),
-    /// Release the storage itself. rc-trace frees the white set without
-    /// calling `dispose`, so this is the only member that reaches a
-    /// cyclic-garbage instance's chunk.
+    /// Release the storage itself, as the last act of the ordinary
+    /// dispose (`object.rs`, phase 2). Dispose is the only caller: a
+    /// confirmed cycle member is freed through that same death path
+    /// (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 6), so no
+    /// collector reaches this hook directly.
     pub free: unsafe fn(*mut RcHeader),
     /// Bring the storage out of a dying request arena, for an instance
     /// the reset promotes. The corpse needs nothing: its storage was
@@ -187,14 +186,15 @@ pub(crate) enum OutsideCarry {
 /// of their own.
 /// How a walk reads the entity memory it strides over.
 ///
-/// This is the **only** difference between the three walks that used to
-/// exist per layout. Tracing on a quiescent heap reads plainly; the
-/// concurrent collector races the mutator and must read relaxed-atomically,
-/// because a plain read against a concurrent store is undefined behaviour
-/// rather than a torn value — and the whole design rests on a torn read
-/// being merely a phantom or a missed edge (`rfc/model/gc/rc-walk.md`).
-/// Parameterizing the read instead of copying the stride is what lets one
-/// enumerator serve both.
+/// This is the **only** difference between the walks that would
+/// otherwise be one per layout. Tracing on a quiescent heap reads
+/// plainly; a collector thread races the mutator and must read
+/// relaxed-atomically, because a plain read against a concurrent store
+/// is undefined behaviour rather than a torn value — and the design
+/// rests on a torn read costing at most a phantom edge or a missed one.
+/// Parameterizing the read instead of copying the stride is what lets
+/// one enumerator serve both. Only the plain reader exists today; S38.0
+/// adds the collector's (`PLAN.md`).
 ///
 /// It covers reads of the **entity's own** memory only. A class
 /// descriptor and a template shape are immortal static data no mutator
@@ -285,12 +285,13 @@ impl CellReader for PlainCells {
 /// `entity_ptr` recovers it by the same cast.
 ///
 /// The payload is read before the flags, and both readers may see a store
-/// land between the two: a `Value` torn across its words is what the
-/// epoch's re-check exists to catch (`collector::Edge`).
+/// land between the two, so a `Value` can be read torn across its words.
+/// A torn read costs a phantom edge or a missed one, never a wrong free
+/// (`rfc/model/gc/rc-cycle.md`, "Collector proposes, owner judges").
 ///
 /// # Safety
-/// `at` addresses a readable, aligned `Value` of a live entity, which
-/// under `R = RelaxedCells` the mutator may be writing.
+/// `at` addresses a readable, aligned `Value` of a live entity, which a
+/// concurrent reader `R` may find the mutator writing.
 #[inline]
 pub(crate) unsafe fn counted_box_cell<R: CellReader>(at: *const u8) -> Option<Cell> {
     let child = unsafe { R::word(at) } as *mut RcHeader;
@@ -307,9 +308,9 @@ pub(crate) unsafe fn counted_box_cell<R: CellReader>(at: *const u8) -> Option<Ce
 
 /// Visit every counted child of `entity`, dispatching on the kind bits
 /// **before** touching `+8`: only Object (0) and Lazy (6) carry a class
-/// pointer there, and reaching for the trace map through a class that
-/// does not exist is a wild read (`rfc/model/gc/rc-walk.md`, "What the
-/// walker traces").
+/// pointer there (`rfc/model/classes.md`, "the class pointer lives in
+/// the body"), and reaching for the trace map through a class that does
+/// not exist is a wild read.
 ///
 /// A reference box (kind 3) is traced through its one Value. An array
 /// (kind 2) is traced through the counted children of its table —
@@ -340,14 +341,13 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
 /// Answers the version of the storage the cells came out of, and `None`
 /// for a kind that keeps its cells in its own slot or an array whose head
 /// would not read coherently. Neither can leave a cell behind in a chunk
-/// it has left, so neither gives the re-check anything to ask a version
-/// about (`collector::Edge`).
+/// it has left, so neither has a version worth answering about.
 ///
 /// # Safety
-/// `entity` is a live entity of `kind` whose cells are readable. Under
-/// `R = RelaxedCells` it must be **mature**: the class word at `+8` is
-/// chased, which is safe only because a handshake ordered its publication
-/// epochs ago.
+/// `entity` is a live entity of `kind` whose cells are readable. Under a
+/// concurrent reader `R` it must be **mature**: the class word at `+8` is
+/// chased, and that is safe only for an entity published long enough ago
+/// for the read to be ordered.
 pub(crate) unsafe fn trace_cells<R: CellReader>(
     entity: *mut RcHeader,
     kind: u32,
@@ -381,9 +381,11 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
 
         // The mutator moves an array's cells, so the head is read
         // coherently first and the array given up rather than strided over
-        // a stale chunk (`StorageHead::coherent`). Giving it up leaks one
-        // epoch and frees nothing early: `rfc/model/gc/rc-walk.md`, "The
-        // central identity: roots are derived, not enumerated".
+        // a stale chunk (`StorageHead::coherent`). Giving it up costs one
+        // collection and frees nothing early: the children whose in-edges
+        // go unseen read as externally referenced, which is the safe
+        // direction of the `RC − IN` root identity
+        // (`rfc/model/gc/rc-cycle.md`).
         ARRAY => {
             let head = unsafe {
                 crate::array::entity::storage_head(entity as *mut crate::array::entity::LLArray)
@@ -460,10 +462,10 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
 /// Empty one cell through the store barrier, by its shape.
 ///
 /// The barrier is not ceremony here: this store runs on the mutator while
-/// an epoch may be live, and the collector reads the same cell as a
-/// relaxed atomic (`collector::walk_edges`). A plain write against that
-/// load is a mixed-atomicity data race, which is undefined behaviour
-/// rather than the torn value Phases 3 and 4 are built to repair.
+/// a collection may be in flight, and the collector reads the same cell
+/// as a relaxed atomic. A plain write against that load is a
+/// mixed-atomicity data race, which is undefined behaviour rather than
+/// the torn value a trace is built to tolerate.
 ///
 /// # Safety
 /// `cell` addresses a live, writable cell of the shape it names.

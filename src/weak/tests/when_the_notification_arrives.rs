@@ -88,10 +88,6 @@ fn own_destructor_still_sees_the_object_but_a_child_destructor_sees_null() {
     });
 }
 
-
-/// rc-trace frees its white set raw (no dispose), so its weak pass is
-/// a separate site from the walk drain and needs its own proof.
-
 #[test]
 fn a_resurrected_object_keeps_its_weak_state() {
     let _g = crate::memory::block_pool::test_guard();

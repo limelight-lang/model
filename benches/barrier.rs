@@ -49,12 +49,10 @@
 //! promise of this file.
 //!
 //! The numbers are in `dev/BENCHMARKS.md`, whose "Method" decides what a
-//! reading has to carry; this file is the code only. Both
-//! configurations:
+//! reading has to carry; this file is the code only.
 //!
 //! ```
-//! cargo bench --bench barrier                          # rc-walk (default)
-//! cargo bench --bench barrier --no-default-features    # rc-trace
+//! cargo bench --bench barrier
 //! ```
 
 use std::time::{Duration, Instant};

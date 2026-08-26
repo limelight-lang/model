@@ -1,16 +1,17 @@
-//! The epoch stamp sits in a byte of its own so that the collector
-//! can write it while a mutator stores the counter half, and neither
-//! retain, release nor the death branch may carry the other half
-//! with them. Only rc-walk stamps an epoch, so the group is that
-//! configuration's whole.
+//! The epoch stamp sits in a byte of its own so that a collector can
+//! write it while a mutator stores the counter half, and neither
+//! retain, release nor the death branch may carry the other half with
+//! them. Nothing stamps the byte between S30 and S31, which re-lays
+//! the region; what these tests pin is the separation, which survives
+//! the collector that produced it.
 
 use super::*;
 
 /// The collector's one header claim: the epoch byte at header
 /// byte 6 — byte-addressable, so the collector writes it with a
-/// plain byte store while the mutator stores the whole word
-/// (`rfc/model/gc/rc-walk.md`, "The one header byte"; the condemned
-/// byte at 24-31 retired by the eager-death amendment, 2026-07-27).
+/// plain byte store while the mutator stores the whole word. Bits
+/// 24-31 carried a condemned byte until the eager-death amendment of
+/// 2026-07-27 retired it, and they are free.
 #[test]
 fn the_epoch_byte_sits_at_header_byte_six() {
     assert_eq!(EPOCH_BYTE_MASK, 0xFF << 16, "epoch byte: flags bits 16-23");
