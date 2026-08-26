@@ -8,6 +8,64 @@ never edited or deleted.
 
 ---
 
+
+## 2026-08-26 — S28 is abandoned rather than closed, and S29 splits
+
+**Decided:** S28 — flat per-row words for the epoch metadata — stops where it
+stands; S29.1 closes with the code it lives in; S29.2 is carried as S39.
+**Why:** S28 optimises `rc-walk`'s collector, and S30 deletes `rc-walk`. S29.2
+is not a defect of the old collector alone: `rc-cycle` parks slots on the same
+enrolment bit, so a thread exiting without draining its queue would reproduce
+the leak in the new design.
+**Cost:** the measurements S28.1 took are kept in `dev/BENCHMARKS.md`; the stage
+itself leaves no survivor, which is why the abandonment is recorded here rather
+than being read as completion.
+
+## 2026-08-26 — the flags word is re-laid for one collector, and `EntityKind` is renumbered
+
+**Decided:** category 0–1, kind 2–5 (four bits), COW 6, arena mark 7, acyclic 8,
+owned 9, enrolled 10, escapee 11, weak 12, pending 13, ran 14, free 15, epoch
+16–17, age 18–19, collector reserve 20–23, byte 3 free. Kinds become `Object 0,
+Lazy 1, Array 2, Reference 3, String 4, StringDynamic 5, Box 6, WeakRef 7`, and
+`STRING_OUT_OF_LINE` becomes kind code 5 — *bytes outside the body, whatever the
+reason*.
+**Why:** the order turns three predicates into mask tests and folds the whole
+enrolment gate into one `flags & 0x733 == 0`. The category keeps bits 0–1
+because more surviving sites read its value than the kind's, while a mask test
+does not care where the field sits.
+**Rejected:** kind at bits 0–3, which would have given the teardown jump table a
+free index at the category's expense.
+**Cost:** this supersedes the refusal of renumbering recorded on 2026-08-07 and
+confirmed on 2026-08-13. That refusal was right when renumbering bought one test
+for a field nobody was touching; here the field is rebuilt anyway.
+
+## 2026-08-26 — `memory/retained.rs` outlives the deletion of `rc-walk`
+
+**Decided:** the occupancy index of retained blocks moves into `rc-cycle` rather
+than dying with the collector that built it.
+**Why:** a retained block was filled by an arena's bump allocator — mixed sizes,
+no stride — so the address-to-slot arithmetic the shadow rows are built on has
+nothing to divide by there. The index is how such a block is addressed at all.
+**Rejected:** not tracing retained blocks, which would reinstate the limit
+`rc-walk` removed in August: a ring living wholly among promoted survivors would
+never be collected — and promoted survivors are exactly where a long-lived ring
+forms.
+**Cost:** the retained path is a binary search, not the measured 2.6 ns
+arithmetic, and its cost is unmeasured.
+
+## 2026-08-26 — the mutator's header writes narrow to a 32-bit counter store and byte flag stores
+
+**Decided:** no mutator write spans the collector's byte; `mutator_update_flags`
+and its whole-word stores go.
+**Why:** the layout gives byte 2 to the collector, and that only means anything
+if the mutator cannot bury it. Today's comment promises the opposite in as many
+words — "may bury a concurrent collector byte store".
+**Rejected:** inheriting the lossy contract explicitly, where a buried stamp
+costs one wasted traversal and never a verdict.
+**Cost:** promotion now writes two bytes where it wrote one word, and the order
+is load-bearing: `IS_ESCAPEE` is cleared before the category, or a reader sees a
+GC-heap entity whose `refcount` still holds an escape hold-count.
+
 ## 2026-08-20 — proof-horizon is renamed GC horizon and moves to the RFC
 
 **Decided (Edmond):** the name is `gc-horizon`; the design's normative
