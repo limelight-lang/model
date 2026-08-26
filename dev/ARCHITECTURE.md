@@ -16,13 +16,13 @@ is built.
 ## Layers
 
 ```
-L4  collectors        gc (rc-trace) · walk · epoch, collector (rc-walk) · promote
+L4  collectors        gc (ABI + safepoint) · cells · promote
 L3  object model      object · class · reference · weak · intern ·
                       static_block
 LB  mutation          memory/barrier — model-level code living in memory/
 L2  memory manager    context · arena · heap · immortal · buffer ·
                       buffer_arena · reserve · retained · stats · stdapi ·
-                      deferred_free
+                      routing · large_entity · reset_window
 L1  entity substrate  refcount · value
 L0  block supply      memory/block_pool
 ```
@@ -46,22 +46,26 @@ Rules:
 
 **Sanctioned upward edges.** At module granularity the layering is not
 acyclic: entity death and GC scheduling flow back down through
-call-backs. Exactly these upward edges exist in production code
-(verified 2026-07-27, test modules excluded), each entered at a named
+call-backs. Exactly these upward edges exist in production code (re-enumerated
+mechanically 2026-08-26 by resolving every `crate::…` path against the
+module layers above, test modules excluded), each entered at a named
 point:
 
 | Edge | Point of entry | Why |
 |---|---|---|
-| `refcount → gc` | non-zero decrement in `ll_release` (rc-trace builds) | buffer a cycle candidate — *arm*, never fire |
-| `refcount → epoch` (rc-walk) | the `1 → 0` branch of `ll_release` | the mutator checkpoint rides the death branch — after the header store, before teardown (decision 2026-07-27; formerly `heap → epoch` at `entity_alloc`) |
+| `object → gc` | `ll_release_vector` | the safepoint bracket a batched run pays: `ll_gc_checkpoint_ack` before it, `ll_gc_checkpoint` after (decision 2026-07-28). Both bodies are empty while no collector is wired |
+| `object`, `class`, `template`, `array::entity` `→ cells` | `for_each_counted_cell`, the descriptor's outside-cell group, the template's shape stride, `for_each_counted_child` | one kind-dispatched tracer rather than a stride per customer; the array adapter calls up rather than striding the entries a second time |
 | `arena → weak` | `reset` | draining the arena weak log is part of arena death |
 | `context → promote` | `ll_arena_reset` | the reset ABI drives the full discipline — `promote::arena_reset_full` consumes the arena's logs through arena's own drain primitives, not the reverse |
-| `object → gc` | dispose, before children drop (rc-trace builds) | leave the candidate buffer at refcount 0 — a child release below may fire a collection that would trace the still-buffered corpse as a root (double free) |
 | `barrier → object` | `drop_ref` | the release cascade ends in `ll_entity_die`; `header_category` reads |
 | `class → object` | descriptor construction | carries `ll_default_dispose` as the default dispose pointer (data, not a call) |
-| `array::entity → walk` | `for_each_counted_child` | an array's children come from the one tracing stride (`walk::trace_cells`), so the adapter calls up rather than striding the entries a second time |
-| `array::entity → gc` | the teardown drain, per entity it takes over (rc-trace builds) | spend a dying array's candidacy — the duty `ll_entity_die` performs at its own door, and a nested array is torn down by the drain without passing it |
-| `heap → static_block`, `gc`, `weak`, `deferred_free` | `ll_thread_exit` | thread exit owns the order its per-thread state dies in, because TLS destructor order is unspecified and puts the exit guard last (decision 2026-08-03). These are disposal calls only: `heap` learns nothing about candidates, cells or verdicts, it names four `dispose`-shaped functions in a fixed sequence |
+| `heap → static_block`, `weak` | `ll_thread_exit` | thread exit owns the order its per-thread state dies in, because TLS destructor order is unspecified and puts the exit guard last (decision 2026-08-03). These are disposal calls only: `heap` learns nothing about cells or verdicts, it names `dispose`-shaped functions in a fixed sequence |
+
+**What a collector will add back.** A dying enrolled slot owes the
+collector a duty at two doors (`object::ll_entity_die` and
+`array::entity`'s drain, both marked S34.3), and the release path owes
+an enrolment (S31.3). Those are upward edges and are a design event when
+they land, not a table entry added quietly.
 
 Any new upward edge is a design event: stop, discuss, record in
 `DECISIONS.md` — do not just add it to this table.
@@ -69,8 +73,7 @@ Any new upward edge is a design event: stop, discuss, record in
 ## Knowledge map
 
 "Does not know" is the contract column. "(hot)" marks the measured hot
-paths (`INDEX.md`, "Hot paths"). "(rc-walk)" marks modules that exist
-only under the `rc-walk` cargo feature.
+paths (`INDEX.md`, "Hot paths").
 
 The "Depends on" columns restate the production import graph as
 verified 2026-07-27 (test modules excluded); where they drift, the
@@ -86,12 +89,11 @@ commit (`WORKFLOW.md`).
 | `memory/heap` (hot) | small-object heap, mimalloc model: one block per size class, intrusive free list + bump cursor, per-block MPSC remote-free, thread-exit abandonment / adoption; runs twice per thread (raw + entity heaps); both enumerators — `for_each_entity_slot` and the block snapshots — which cover retained former-arena blocks through their index as well as entity blocks by striding | block pool; slot occupancy (the header word at bytes 0–7); that a retained block has no stride | entity kinds and out-edges; verdicts; classes; the epoch protocol; who built the index | `block_pool`, `reserve` (filled at thread init), `refcount`, `stdapi` (OS-direct runs), `retained` |
 | `memory/immortal` | global bump region: class metadata, interned strings; nothing is ever freed | block pool | the contents of what it hosts | `block_pool` (+ `arena::round_up_8`) |
 | `memory/buffer` | growable `{data, len, capacity}` payload, no header; extend-in-place at the arena bump top, else copy; OS-direct above block payload | the mounted arena's bump; context resolution | entity lifecycle, headers; the long-lived buffer arena | `arena`, `context`, `block_pool` |
-| `memory/buffer_arena` | long-lived buffer blocks (`BLOCK_KIND_BUFFER`): bump + per-block intrusive LIFO free list, pressure modes, per-block live count returning empty blocks | block pool; the buffer pressure protocol | the object heap; entities; GC | `block_pool`, `buffer`, `context`, `stdapi`, `arena` (`round_up_8`), `retained` (a payload's free is a retained block's release event), `deferred_free` (rc-walk) |
+| `memory/buffer_arena` | long-lived buffer blocks (`BLOCK_KIND_BUFFER`): bump + per-block intrusive LIFO free list, pressure modes, per-block live count returning empty blocks | block pool; the buffer pressure protocol | the object heap; entities; GC | `block_pool`, `buffer`, `context`, `stdapi`, `arena` (`round_up_8`), `retained` (a payload's free is a retained block's release event) |
 | `memory/reserve` | the two-block per-thread reserve funding store-barrier log growth; drawn only after ordinary refusal; sets the refill flag the poll checks | block pool | what a log records; barrier semantics | `block_pool` |
 | `memory/retained` | the object index of each retained former-arena block: block address → its occupants, sorted; registered by the reset, read by both enumerators | block addresses and arrays of addresses | what lives at those addresses — entities, classes, refcounts, verdicts; the occupancy test its readers apply | `block_pool` (stamping an emptied block and handing it over) |
 | `memory/stats` | block-granular telemetry computed at query time; counters only on pool get/put — zero hot-path tax | pool counters | per-object events (the opt-in event log, unbuilt); arena/heap internals | `block_pool` |
-| `memory/stdapi` | the size-less allocator front door: `ll_malloc`/`ll_free`/`calloc`/`realloc`/aligned + `GlobalAlloc`; routes `ptr & !BLOCK_MASK` → header `kind` | every block kind's free route; the heap's `MAX_SMALL`; the deferred-free parking check | entity semantics; who its callers are | `block_pool`, `heap`, `deferred_free` (rc-walk) |
-| `memory/deferred_free` (rc-walk) | the GC activity flag; the thread-local parked-free list threaded through bytes 8–15 of dead memory; the post-epoch flush | that bytes 0–7 must keep the dead header | which block kinds park (stdapi's filter decides before calling in); verdicts, entity kinds, epoch phases | `stdapi`, `retained` (replaying a pinned block's release) |
+| `memory/stdapi` | the size-less allocator front door: `ll_malloc`/`ll_free`/`calloc`/`realloc`/aligned + `GlobalAlloc`; routes `ptr & !BLOCK_MASK` → header `kind` | every block kind's free route; the heap's `MAX_SMALL`; the deferred-free parking check | entity semantics; who its callers are | `block_pool`, `heap` |
 | `memory/context` | `LLContext` and the TLS current context (NULL-context fallback); the composition root wiring arena + thread heaps + immortal behind one ABI, `ll_arena_reset` included | the arena mount; which module implements each ABI it fronts | class layout; GC strategy; thread-heap init (heap's `ll_thread_init`, reached from the allocation cold paths) | `arena`, `heap`, `immortal`, `refcount`; upward: `promote` (`ll_arena_reset`) |
 
 ### LB–L2 — mutation and substrate
@@ -99,7 +101,7 @@ commit (`WORKFLOW.md`).
 | Module | Responsible for | Knows | Does not know | Depends on |
 |---|---|---|---|---|
 | `memory/barrier` (hot) | store-barrier micro-ops: `store_ptr` / `store_box` (retain + category barrier + write), `drop_ref` (release + cascade), `ref_store`; escape and release-at-reset recording into the mounted arena's logs | header category bits; `Value`; that `owner_cat` is a parameter, never a load | the per-site composition (lowering's); SATB hooks (A5, future) | `refcount`, `value`, `arena`, `context`; upward: `object` |
-| `refcount` | the 8-byte `RcHeader` at offset 0 of every entity: refcount + flag word (category, entity kind, GC bits); `ll_retain` / `ll_release` / `ll_release_batch`; relaxed-atomic header accessors under rc-walk | its own bit layout, and which bits are lent to whom (see the ledger below) | entity bodies past 8 bytes; blocks; when to collect | upward: `gc` (candidate buffering, rc-trace), `epoch` (death-branch checkpoint, rc-walk) |
+| `refcount` | the 8-byte `RcHeader` at offset 0 of every entity: refcount + flag word (category, entity kind, and bits 16-31 held for the collector); `ll_retain` / `ll_release` / `ll_release_batch`; relaxed-atomic header accessors, because a collector reads a published header while its owner mutates it | its own bit layout, and which bits are lent to whom (see the ledger below) | entity bodies past 8 bytes; blocks; when to collect | nothing upward: the enrolment a non-zero decrement owes a collector is S31.3's, and the death branch consults none |
 | `value` | the 16-byte Box: payload + type tag + flags; `VALUE_UNDEF` as a flags bit, deliberately not a tag | the tags; which tags are counted | unboxed representations (compiler contract) | `refcount` |
 
 ### L3 — object model
@@ -126,7 +128,7 @@ teardown.
 | `array/entry` | the 32-byte entry — `hash_or_key`, `key`, and the element Box whose reserved bytes carry the collision link as a `u32` at +28 — the sentinel `NONE`, which ends a chain and empties an index slot alike, with the `MAX_ENTRIES` cap a `u32` index imposes; and every store into a word the collector reads — the element's second word and the key word, `make_hole` included | that the link shares the element's second word, so tag, flags and link publish as one relaxed atomic store of the width the collector loads; which key states the raw word encodes, the hole among them; that an entry above the published count is filled by the plain setters instead, no reader being able to reach it yet | the index's shape and every operation over the entries: it supplies the sentinel and reads no slot, hashes nothing, and does not know what an element points at | `value`, `string` |
 | `array/table` | one storage allocation (`u32` index slots, then the dense entry array in insertion order) and the operations over it: lookup, insert, remove, growth by doubling or by dropping the holes, both into a fresh chunk, the flood ladder's two rungs, and the bracket it opens around every move of an entry | the memory category, handed to it as a parameter by every allocating call (`array::entity::category_of` reads it, S10) — except at the carry out of a dying arena, which names `GcHeap` because the owner's header still says `RequestArena` until promotion rewrites it; a string key's bytes and its cached hash; that nothing inside the storage points into it, so promotion copies it whole; that the words a walker reads are not its own — the chunk, the two counts, the tag and the version arrive as `head: &StorageHead` on every call that touches them | entities altogether: no kind, no header, no reference. It allocates none, retains none, releases none and calls no store barrier — it states the ownership its callers owe (`insert`'s one reference per stored key, `remove`'s `#[must_use]` pair) and hands the displaced element back for the layer above to act on. It holds no category of its own either, that field having drifted once (2026-08-07), and no storage head, a `&mut Table` being unable to span one (2026-08-11) | `entry`, `refcount`, `value`, `string`, `hash`, `memory/routing`, `memory/arena`, `memory/block_pool` |
 | `array/element` | the generic element layer over the table: `canonical_key`, the five operations, the separation composition every write goes through, the element reference box, and the teardown of anything it could not publish | COW separation and the order it publishes in; that an element reference is a `ReferenceBox` because growth moves an entry, and that the box is a heap entity whatever the array's category; that canonicalisation belongs above the table, a map keying exactly | the entry layout, the index, the chains — it names keys and elements, never an entry | `array/table`, `array/entity`, `barrier`, `reference`, `object` (`ll_cow_separate`, `ll_entity_die`), `refcount`, `value`, `string`, `memory/context`, `memory/arena` |
-| `array/entity` | the `RcHeader` over the table — kind Array, COW set, no class pointer — with the factories, the copy for both depths (`separate`), the child walk, the teardown drain that takes a nesting down without the machine stack, and — since the head moved here — the access paths every representation is reached through (`as_table_mut`), the storage's disposal and its carry out of a dying arena | the entity kind, the memory category and the COW state; that a nested array leaves the candidate buffer here, never having reached `ll_entity_die`; which representation the union holds — it owns the tag and asserts it, and it owns the rule that no reference may span the head or the whole entity | classes, an array having none; the element operations above it; the collector's phases | `array/table`, `refcount`, `value`, `barrier`, `object`, `reference`, `string`, `memory/routing`, `memory/arena`, `memory/stdapi`, `journal`; upward: `walk`, `gc` |
+| `array/entity` | the `RcHeader` over the table — kind Array, COW set, no class pointer — with the factories, the copy for both depths (`separate`), the child walk, the teardown drain that takes a nesting down without the machine stack, and — since the head moved here — the access paths every representation is reached through (`as_table_mut`), the storage's disposal and its carry out of a dying arena | the entity kind, the memory category and the COW state; that a nested array leaves the candidate buffer here, never having reached `ll_entity_die`; which representation the union holds — it owns the tag and asserts it, and it owns the rule that no reference may span the head or the whole entity | classes, an array having none; the element operations above it; the collector's phases | `array/table`, `refcount`, `value`, `barrier`, `object`, `reference`, `string`, `memory/routing`, `memory/arena`, `memory/stdapi`, `journal`; upward: `cells` |
 
 Both upward edges are `array/entity`'s and both are in the table above.
 What `entry` and `table` promise `Map` is that they read no entity but a
@@ -144,10 +146,8 @@ teardown they run call back out — which is why `object` names
 
 | Module | Responsible for | Knows | Does not know | Depends on |
 |---|---|---|---|---|
-| `gc` | the rc-trace Bacon–Rajan cycle collector: TLS candidate buffer, arm-vs-fire, `mark_gray` / `scan` / white collection, cyclic destructors with re-collect; `ll_gc_collect_cycles` and the `ll_gc_maybe_collect` poll (reserve refill + rc-walk checkpoint) | the color bits (flags 4–5, buffered bit 6); the clean-point rule | the arming policy (compiler's); other strategies' internals | `refcount`, `object`, `walk`, `weak`, `barrier`, `reserve`, `stdapi`, `array/entity` and `array/table` (an array in the white set gives its storage back through `Table::dispose`); (rc-walk) `epoch` |
-| `walk` | the kind-dispatched tracer and heap census; `collect_cycles` (synchronous whole-heap collection); the Phase-4 drain (`drain_confirmed`, opening with the corpse rule) | entity kinds and each kind's out-edges | slots, blocks, occupancy — the heap's side of the split | `heap`, `refcount`, `object`, `value`, `reference`, `weak`, `barrier`, `array/entry` and `array/table` (the Array arm reads entries through the version bracket), `array/entity` |
-| `epoch` (rc-walk) | the mutator side of the epoch protocol: soft-handshake ack, the confirmation queue (global mutex), the non-reentrant checkpoint — ack-only on `ll_release`'s death branch, full pickup at the outermost dispose's exit (`teardown_enter/exit`), the poll and the explicit batched checkpoint (`ll_gc_checkpoint` + `ll_release_batch`) | the message queue and its drain dispatch | the collector's phases; what a confirmation means (the drain decides) | `refcount`, `walk`, `deferred_free` |
-| `collector` (rc-walk) | the collector-side epoch state machine, Phases 1–3: snapshot, walk / three-way classify, judge, condemn (private), snapshot-compare re-check, confirmation posting; steppable for forcing, `run_epoch` as the threaded driver | that its only shared-memory writes are epoch stamps (condemnation is private since the eager-death amendment, 2026-07-27) | freeing — it never frees; the weak table; mutator TLS | `epoch`, `walk`, `heap` (snapshots), `refcount`, `class`, `value`, `deferred_free` |
+| `gc` | the GC C ABI and the safepoint: `ll_gc_collect_cycles`, `ll_gc_maybe_collect`, `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`, and the log-reserve refill inside the poll | that the checkpoint bracket is emitted in every build, collector or none | the arming policy (compiler's); any collector's internals — the two collecting entries report zero until S36.7 | `reserve` |
+| `cells` | the kind-dispatched tracer (`trace_entity`, `trace_cells`), the single sever dispatch, and a `#[cfg(test)]` heap census | entity kinds and each kind's out-edges; the outside-cell group's four behaviours | slots, blocks, occupancy — the heap's side of the split | `heap`, `refcount`, `object`, `value`, `class`, `array/entry`, `array/table`, `array/head`, `array/vector`, `array/entity` |
 | `promote` | arena death with promotion (retention only): the destructor/escapee fixpoint, internal-edge counting, in-place category rewrite to GcHeap, `BLOCK_KIND_RETAINED` stamping, the survivor list handed on as each retained block's object index, the release-at-reset log | escapee hold-count semantics; the retained block kind | copying / evacuation (future); who mounted the arena; how the index is read | `arena`, `block_pool`, `object`, `refcount`, `weak`, `retained`, `array/entity` (a survivor's storage carries out with it) |
 
 ## Shared resources
@@ -161,11 +161,14 @@ teardown they run call back out — which is why `object` names
 | Immortal region | process-global mutex | `immortal` | `class`, `intern`, `object` (immortal category) |
 | Intern table | process-global mutex, Rust-owned | `intern` | `class` looks names up |
 | Retained-block object indexes | process-global mutex, Rust-owned | `retained` | `promote` registers at reset; both of `heap`'s enumerators clone the `Arc` under the lock and read it outside |
-| rc-trace candidate buffer + pending flag | TLS, no drop glue | `gc` | `refcount` arms it on non-zero decrements |
 | Static-block registry | TLS, no drop glue | `static_block` | the static initializer registers; `heap`'s `ll_thread_exit` drains |
 | Weak table | TLS, no drop glue | `weak` | death sites call in, gated by bit 7; the collector thread never touches it |
-| Confirmation queue + handshake state (rc-walk) | global mutex + global atomic ack (TLS holds the mid-drain bit and the teardown depth) | `epoch` | `collector` posts confirmations; checkpoints drain |
-| GC activity flag + parked lists (rc-walk) | global atomic + TLS lists, no drop glue | `deferred_free` | the `ll_free` funnel parks; each owning thread flushes after the epoch |
+
+Three rows left this table on 2026-08-26 with the collectors that owned
+them: `rc-trace`'s candidate buffer, `rc-walk`'s confirmation queue and
+handshake, and its GC activity flag with the parked lists. `rc-cycle`'s
+replacements are a per-thread root queue (S34), per-block shadow rows in
+an arena of their own (S32, S33) and a single process claim word (S38.1).
 
 **The header flag word is itself a shared resource.** `refcount` owns
 the layout (its constants are normative; this ledger records who each
@@ -173,10 +176,10 @@ field is lent to):
 
 - bits 0–1, memory category — stamped at allocation, read by the
   barrier and every death path; rewritten in place only by `promote`;
-- bits 2–3, GC state (the CAS handoff) — idle for arena entities, so
-  arena reset borrows its low bit as the transient `ARENA_RESET_MARK`,
-  consumed by `promote`;
-- bits 4–6, rc-trace colors + buffered bit — lent to `gc`;
+- bit 2, `ARENA_RESET_MARK` — the reset's transient survivor mark,
+  written and consumed by `promote`. It was the low bit of a two-bit GC
+  state field whose CAS handoff went with the collectors;
+- bits 3–6, free;
 - bit 7, weak gate (`HAS_WEAK_REFERENCES`) — lent to `weak`; death
   sites test it before calling in;
 - bits 8–9, destructor state (`DESTRUCTOR_PENDING` / `DESTRUCTOR_RAN`)
@@ -187,19 +190,16 @@ field is lent to):
 - bit 11, `IS_ESCAPEE` — repurposes the refcount as the escapee
   hold-count (see invariant 5);
 - bits 12–14, entity kind — written once at creation, dispatched on by
-  `walk` and `ll_entity_die`;
+  `cells` and `ll_entity_die`;
 - bit 15, `STRING_OUT_OF_LINE` — **string entities only**: the bytes
-  live through `data` rather than inline. Shares the bit with the
-  candidate index below and never meets it, since that index is written
-  only for the kinds that can close a cycle and `string` is not one;
-  read by `string` and by `promote`'s survivor classification;
-- bits 15–31, the top of the word — **contested**: rc-trace stores the
-  candidate index there (O(1) `forget_candidate`); rc-walk instead
-  claims bits 16–23 as the epoch byte (bits 24–31 freed by the
-  eager-death amendment, 2026-07-27 — condemnation is
-  collector-private). The two strategies cannot share the top half,
-  which is *why* selection is a build-time cargo feature and both
-  configurations must stay green (`WORKFLOW.md`).
+  live through `data` rather than inline; read by `string` and by
+  `promote`'s survivor classification;
+- bits 16–31, **free and asserted free**. `rc-trace` kept a candidate
+  index across 15–31 and `rc-walk` an epoch byte at 16–23, and both went
+  on 2026-08-26. `refcount::tests::the_header_the_compiler_shares`
+  asserts that no constant claims a bit above 15, so S31 — which lays
+  epoch, maturation age and a collector reserve there — starts against a
+  check that is already red for it.
 
 ## End-to-end paths
 
@@ -222,20 +222,21 @@ poll turns into a raise) — + the write. An overwriting store then
 `drop_ref`s the displaced entity: release, and at zero the cascade
 into path 3. Publish before teardown, always in that order.
 
-**3. Entity death (refcount path).** `ll_release` hits zero — under
-rc-walk this branch acks the epoch handshake (`epoch`), before the
-teardown below; verdict drain and parked-memory flush wait for the
-outermost dispose's exit. Compiler-batched release runs pay the test
-once, split around the run (2026-07-28): `ll_gc_checkpoint_ack`
-before, `ll_release_batch` per reference, `ll_gc_checkpoint` after →
+**3. Entity death (refcount path).** `ll_release` hits zero and the
+death takes the ordinary path — nothing is consulted to decide it.
+Compiler-batched release runs are bracketed by the safepoint pair,
+split around the run (2026-07-28): `ll_gc_checkpoint_ack` before,
+`ll_release_batch` per reference, `ll_gc_checkpoint` after →
 `ll_entity_die` kind-switch (`object`) → for objects, three-phase
 `ll_object_die`: dispose (pre-destructor with resurrection check; weak
 notification is the *first act* of phase 2, before children drop via
 the class's typed runs) → free by category — arena memory just stays,
-heap memory goes through the size-less `ll_free` funnel (`stdapi`),
-which under an active rc-walk epoch parks it (`deferred_free`) instead
-of recycling. A *non-zero* decrement on a traceable entity buffers a
-cycle candidate (`gc`) — armed now, fired only at a clean point.
+heap memory goes through the size-less `ll_free` funnel (`stdapi`).
+
+A **non-zero** decrement is where a collector enrols a candidate, and
+nothing does today: the enrolment is S31.3's gate and S34's queue, and
+until they land a garbage ring is retained. The free path likewise parks
+nothing; S34.3 and S36.2 are its two windows.
 
 **4. Arena reset.** `ll_arena_reset` (`context`) →
 `promote::arena_reset_full` drives the whole discipline, draining the
@@ -255,30 +256,22 @@ returns to the pool.
 from the TLS guard → the static-block pass (`static_block`) releases
 each registered block's roots in reverse registration order through the
 barrier's `drop`, which is the only step here that runs user code →
-`gc::dispose` (rc-trace) returns the candidate buffer, clearing the
-buffered bit of anything still in it → `deferred_free::dispose`
-(rc-walk) flushes the parked backlog when no epoch is in flight →
 `weak::dispose` returns the weak table, after every death that could
 still need a row → `buffer_arena::dispose` returns the thread's buffer
 arena, whose blocks go to the process-global pool, after every step above
 that can still free a buffer into it → the thread's heaps are dropped and
 their blocks are abandoned or returned.
 
-**5. rc-walk collection epoch.** Explicit trigger (`collector`;
-thresholds are unmeasured) → the activity flag is published through a
-soft handshake *before* snapshotting (a mutator that has not observed
-it could still recycle a snapshotted slot) → Phase 1: snapshot entity
-blocks (`heap`, no bump cursor — zeroed slot headers make full-block
-scans sound) and walk with the three-way classification → Phase 2:
-judge → Phase 3: condemn (collector-private), snapshot-compare
-re-check, confirmations posted to the queue (`epoch`; acquittals are
-dropped in private) → the mutator picks up at the outermost dispose's
-exit, the poll or the trailing batched checkpoint (the death branch
-acks only; pickup is refused mid-drain, mid-teardown and while a
-synchronous collection runs): the drain opens with the corpse rule
-and runs the Phase-4 exact test and kills (`walk::drain_confirmed`)
-→ the epoch closes;
-each owning thread flushes its parked frees (`deferred_free`).
+**5. Cycle collection — none.** There is no fifth path. `rc-walk`,
+`rc-trace` and `rc-satb` were deleted on 2026-08-26 and `rc-cycle` is
+unbuilt, so a garbage ring is retained and acyclic garbage dies by
+counting. The shape the path will take is in
+`rfc/model/gc/rc-cycle.md`: a mutator-fed candidate set, trial deletion
+on shadow counts held off the heap, maturation by age, and a teardown
+whose order is binding ("Cycle teardown"). `PLAN.md` S31 through S40
+build it, and this section is redrawn when the boundaries are real
+rather than before — a path diagram of an unbuilt collector reads as
+structure that exists.
 
 ## Cross-module invariants
 
@@ -337,34 +330,39 @@ write them. Each is load-bearing for at least two modules.
    means "go to the global tier", which is sound.
 8. **Publish before teardown**: the barrier owns the whole slot; an
    overwriting store is `store_*` then `drop_ref`, never the reverse.
-9. **Death is owner-bound.** Every free, verdict drain, weak-table
-   touch and parked-list flush runs on the entity's owning thread. The
-   collector thread's only shared-memory writes are epoch stamps and
-   condemnation bytes; it never frees.
-10. **Arm vs fire**: nothing collects mid-mutation. Candidates are
-    buffered inside `ll_release`; collection fires only at clean
-    points — `ll_gc_collect_cycles`, the `ll_gc_maybe_collect` poll,
-    rc-walk checkpoints.
-11. **Strategy is a build-time feature.** rc-trace and rc-walk claim
-    overlapping header bits; the crate has two real configurations and
-    verification runs both (`WORKFLOW.md`).
-12. **Every death is eager and the drain drops on a corpse**
+9. **Death is owner-bound.** Every free and every weak-table touch runs
+   on the entity's owning thread. `rc-cycle` keeps the rule and sharpens
+   it: a collector proposes a shortlist, and every reduction of state —
+   the free, the acquittal, the queue entry — is the owner's, taken on
+   an exact reading at its own checkpoint (`rfc/model/gc/rc-cycle.md`).
+10. **Arm vs fire**: nothing collects mid-mutation. Collection fires
+    only at clean points — `ll_gc_collect_cycles`, the
+    `ll_gc_maybe_collect` poll, and the allocation slow path. The rule
+    is a correctness requirement rather than a policy: a store lowers
+    the old value's count before overwriting the pointer, and a
+    collection firing in that window would subtract one reference twice
+    (`rfc/model/gc/strategies.md`, "Triggering: arm vs fire").
+11. **One configuration.** The GC axis went with the two collectors on
+    2026-08-26; `hash-folding` and `debug-journal` are what remains of
+    the build matrix (`WORKFLOW.md`).
+12. **Every death is eager, and a teardown drops on a corpse**
     (eager-death amendment, 2026-07-27, superseding the F5
-    deferral/marker scheme): a release reaching zero always tears
-    down at the natural point, with only the memory parked
-    (out-of-band — a parked slot is never written until the flush);
-    `drain_confirmed` header-scans first and drops the whole message
-    on any member reading `rc 0`, before tracing a field or writing a
-    guard. No message pickup runs between a death's committing store
-    and its dispose's exit (`epoch::teardown_enter/exit` — the weak
-    cell is still live in that window).
+    deferral/marker scheme): a release reaching zero always tears down
+    at the natural point, with only the memory parked (out-of-band — a
+    parked slot is never written until the flush). The corpse rule that
+    goes with it opens the cycle teardown: a component holding a member
+    already at `rc 0` is dropped whole, before any field is traced or
+    any guard written (`rfc/model/gc/rc-cycle.md`, "Cycle teardown",
+    step 1).
 13. **An interned name *is* a valid immortal string entity** — the
     future string machinery reads it as-is; immortal + COW makes
     retain/release no-ops on it.
 14. **Class descriptor addresses are process-stable** (immortal): the
     foundation for inline caches; dispatch tables stay pure
     code-pointer arrays with no embedded headers.
-15. **Epochs do not nest** (rc-walk): at most one epoch's verdicts are
-    ever in flight, which is what lets the activity flag be one global
-    bit and the parked lists carry no epoch tag — `collector`, `epoch`
-    and `deferred_free` all lean on it.
+15. **One collection at a time in the process** — the `amSolo` rule.
+    `rc-walk`'s non-nesting epochs were the same constraint under
+    another name, and `rc-cycle` keeps it because the shadow rows are
+    one collection's scratch and a second would read the first's
+    decrements (`rfc/model/gc/rc-cycle.md`, "Concurrency"). The claim
+    word that enforces it is S38.1's.

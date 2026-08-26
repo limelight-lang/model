@@ -1,5 +1,5 @@
 //! A class whose counted cells lie in a block outside the object's own
-//! body, and the six behaviours that reach them
+//! body, and the four behaviours that reach them
 //! (`crate::cells::OutsideCells`).
 //!
 //! Neither real customer is in this crate — `limelight-lang/io`'s
@@ -212,7 +212,7 @@ unsafe fn close_move(base: *mut u8) {
     unsafe { store_version(base, closed, Ordering::Release) };
 }
 
-/// The group, whose six members are the whole of what a class owes for
+/// The group, whose four members are the whole of what a class owes for
 /// cells the runs cannot describe.
 static GROUP: OutsideCells = OutsideCells {
     walk_plain,

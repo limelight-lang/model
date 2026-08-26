@@ -271,7 +271,7 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         the storage-version answer threaded through `trace_cells`, and the
         epoch vocabulary in 22 comments. The test list was diffed byte for
         byte: 453 before, 452 after, one test gone and one replaced.
-- [ ] S30.9 Repoint the two live maps in `dev/`
+- [x] S30.9 Repoint the two live maps in `dev/`
       done: `dev/INDEX.md` and `dev/ARCHITECTURE.md` describe the tree that
         exists — no entry point named `src/collector.rs`, `src/epoch.rs` or
         `src/walk.rs`, no per-module knowledge row for a deleted module, and
@@ -287,6 +287,15 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         owned it, which is why the stage cannot close on S30.8 alone.
         `dev/WORKFLOW.md` is already done — its gate said
         `--no-default-features` three times, and that was the live half.
+      handoff: closed 2026-08-26. `INDEX.md` 15 references to 4 and
+        `ARCHITECTURE.md` 29 to 7, every survivor a dated history statement;
+        both carry zero citations of deleted `rfc` documents. The upward-edge
+        table was **re-enumerated mechanically** rather than patched — every
+        `crate::…` path in production code resolved against the layer map —
+        which is what found `class`, `object` and `template` calling up into
+        `cells`, three edges the old table never listed. The header-bit
+        ledger's "bits 2-3 GC state" was wrong too: only bit 2 exists, the
+        CAS handoff having died with the field.
 - [x] S30.5 Delete the documents of both collectors and the horizon
       done: in `rfc`, `model/gc/rc-walk*.md`, `model/gc/walk/`,
         `model/gc/retained-block-walk.md`, `model/gc/gc-horizon*.md`,

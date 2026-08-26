@@ -23,17 +23,18 @@ versions live in `docs/history/`, marked at the top.
 
 ## Entry points
 
-- rc-walk collector side (`rc-walk` builds): `src/collector.rs` — the
-  epoch state machine (Phases 1–3: snapshot, walk with the three-way
-  classification, judge, condemn, snapshot-compare re-check, verdict
-  posting), steppable for the forcing harness; `run_epoch` is the
-  threaded driver. The re-check is two questions per edge:
-  `Edge::still_designates_its_child` re-reads the recorded cell by its
-  width — a sixteen-byte one has its flags tested beside the payload —
-  and `Epoch::row_still_has_its_cells` asks whether the storage those
-  cells came out of is still the row's. Block snapshots: `heap::snapshot_entity_blocks`;
-  the walk's child test is the dense census (`collector::census_row`).
-  Trigger is an explicit call — thresholds are unmeasured.
+- **There is no cycle collector.** `rc-walk`, `rc-trace` and `rc-satb`
+  were deleted on 2026-08-26 and the design in force, `rc-cycle`
+  (`rfc/model/gc/rc-cycle.md`), is unbuilt: a garbage ring is retained,
+  acyclic garbage dies by counting. What survives of the old code and
+  why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26;
+  the code itself is on the branch `archive/pre-rc-cycle`. `PLAN.md`
+  S31 through S40 build the replacement.
+- GC C ABI and the safepoint: `src/gc.rs` — the four symbols the
+  compiler emits calls to (`ll_gc_collect_cycles`, `ll_gc_maybe_collect`,
+  `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`). The two collecting
+  entries report zero until S36.7; the poll still refills the store
+  barrier's log reserve, which is the duty that kept the module.
 - Static blocks and thread exit: `src/static_block.rs` — the per-thread
   registry and the teardown pass that releases each block's roots at
   exit (A6, `rfc/model/classes.md` "Teardown at thread exit"). The order
@@ -300,8 +301,9 @@ versions live in `docs/history/`, marked at the top.
   at all); the arena reset's two ends in `promote::arena_reset_full`; a
   block's two in `BlockPool::get` and `put`, the second carrying the kind
   the block arrived with, which is how §9.5's third block event is asked
-  for; the thread's two in `heap`; and the epoch's two in `collector`,
-  under `rc-walk`. A site must not sit anywhere the *first* record's path
+  for; and the thread's two in `heap`. A collection's two kinds were
+  deleted with the collectors that raised them, and `rc-cycle`'s are
+  S36's to name. A site must not sit anywhere the *first* record's path
   reaches, that one initialising the thread, allocating and locking —
   which is why `BlockPool::put` stages its overflow flush in a fixed
   array and pushes with nothing borrowed (`dev/DECISIONS.md`,
@@ -329,9 +331,11 @@ versions live in `docs/history/`, marked at the top.
   allocation. Discovery follows the split: the pooled half rides the
   region scan both enumerators already perform, a run is found from that
   registry and nowhere else, and both carry `slots = 1`, which is
-  soundness rather than economy. `deferred_free` parks both kinds; for a
-  run that is soundness too, its memory being unmapped at free while a
-  snapshot still addresses it. The doors above it are
+  soundness rather than economy. A free arriving while a collection
+  reads the block must park, and for a run that is soundness rather than
+  economy — its memory is unmapped at the free while a trace may still
+  address it. Nothing parks between S30 and S36.2 (`PLAN.md`). The doors
+  above it are
   `heap::entity_alloc` past `MAX_SMALL` and `Arena::alloc_entity` past
   one block payload; the arena logs the run it takes, so an unpromoted
   corpse dies with the reset, and a survivor is handed over instead —
@@ -354,8 +358,9 @@ versions live in `docs/history/`, marked at the top.
   alive. Registered by `promote` at reset, read by both of `heap`'s
   enumerators. This is what makes a bump-filled former-arena block
   walkable at all; without it its occupants are root sources and a ring
-  among them never dies (`rfc/model/gc/retained-block-walk.md`, built
-  2026-08-03). The live count is what returns the block: each
+  among them never dies (`rfc/model/gc/rc-cycle.md`, "Where the shadow
+  count lives", the retained-block arm; the index was built 2026-08-03
+  against a document deleted with `rc-walk`). The live count is what returns the block: each
   occupant's death reports through `stdapi::ll_free`'s retained arm, and
   the last one drops the index, restamps the block and hands it to the
   pool (`dev/DECISIONS.md`, 2026-08-08). Three shapes sit beside that — a
@@ -374,24 +379,22 @@ versions live in `docs/history/`, marked at the top.
   which reads a retained block under the pointer, leaves the bytes where
   they are — former arena memory has no free list — and reclaims the
   block instead; during an epoch that call parks like any other.
-- rc-walk epoch protocol, mutator side (`rc-walk` builds):
-  `src/epoch.rs` — the soft-handshake ack, the verdict message queue
-  (confirm + acquit), and the non-reentrant checkpoint; checkpoints
-  ride the death branch of `ll_release` and `ll_gc_maybe_collect`;
-  batched runs split the checkpoint — `ll_gc_checkpoint_ack` before
-  the run, `ll_release_batch` per reference, `ll_gc_checkpoint` after
-  it (decision 2026-07-28; `ll_release_vector` same). The drain it
-  dispatches to is `walk.rs`'s `drain_confirmed` (confirmations only —
-  acquittals post nothing since eager death, 2026-07-27).
-- Entity walking (rc-walk build steps 1–2): `src/walk.rs` —
-  kind-dispatched tracer, heap census, and `walk::collect_cycles` (the
-  synchronous whole-heap collection with the Phase-4 exact-test drain)
-  over `memory::heap::for_each_entity_slot`; entity blocks and the
-  region registry are in `heap.rs`/`block_pool.rs` (design:
-  `rfc/model/gc/rc-walk.md`; decision entry 2026-07-26).
-- Cells a class owns **outside** the object body: `src/walk.rs`'s
-  `OutsideCells`, a group of six behaviours — a walk per reader, the
-  Phase 3 re-check, the sever, the free and the arena carry — reached through
+- The safepoint bracket a batched run pays: lowering emits
+  `ll_gc_checkpoint_ack` before the run, `ll_release_batch` per
+  reference, and `ll_gc_checkpoint` after it (decision 2026-07-28;
+  `ll_release_vector` the same). The bracket is emitted in every build
+  and both bodies are empty while no collector is wired
+  (`rfc/model/memory/bulk-operations.md`).
+- Entity tracing: `src/cells.rs` — the kind-dispatched tracer
+  (`trace_entity`, `trace_cells`), the sever dispatch, and a
+  `#[cfg(test)]` heap census over `memory::heap::for_each_entity_slot`;
+  entity blocks and the region registry are in `heap.rs`/`block_pool.rs`.
+  It is the upper half of the deleted `walk.rs`, moved on 2026-08-26
+  under a name that is not a collector's, and S35.1 traces through it
+  rather than growing a stride of its own.
+- Cells a class owns **outside** the object body: `src/cells.rs`'s
+  `OutsideCells`, a group of four behaviours — the walk, the sever, the
+  free and the arena carry — reached through
   `class::Class::outside_cells` when the descriptor carries
   `CLASS_OUTSIDE_CELLS`. A coroutine's waker block and a map's table
   chunk are the customers, both outside this crate, so the only class
@@ -402,12 +405,12 @@ versions live in `docs/history/`, marked at the top.
   (`dev/DECISIONS.md`, "a class with cells outside itself carries one flag
   and one group of five" and "the arena carry is the group's sixth
   member, and a refusal answers the bytes it left behind").
-- Weak references (rc-walk step 4): `src/weak.rs` — the kind-5 weak
-  cell, the per-thread weak table, death notification (`notify_death` /
-  `notify_members` / `drain_arena_weak_log`) and the
-  `ll_weakref_create` / `ll_weakref_get` ABI. Notification sites live
-  in `object.rs` (dispose phase 2, first act), both collectors, and
-  arena reset. Design: `rfc/model/weak-references.md`.
+- Weak references: `src/weak.rs` — the kind-5 weak cell, the per-thread
+  weak table, death notification (`notify_death` / `notify_members` /
+  `drain_arena_weak_log`) and the `ll_weakref_create` / `ll_weakref_get`
+  ABI. Notification sites live in `object.rs` (dispose phase 2, first
+  act) and in arena reset; `notify_members` is the cycle teardown's and
+  has no caller until S36.3. Design: `rfc/model/weak-references.md`.
 - C ABI surface: `src/memory/context.rs` (arena + context),
   `src/object.rs` (`ll_object_new` factory, `ll_object_new_in` —
   construct into a reserved cell, `ll_object_constructed` —
@@ -492,15 +495,11 @@ store barrier's log growth from failing; drawn in `Arena::grow_log`,
 refilled at `ll_gc_maybe_collect`. Design in
 `rfc/runtime/exceptions.md`, "The log reserve protocol".
 
-`src/memory/deferred_free.rs` (`rc-walk` builds) — the GC activity bit
-and the parked-free list: while an epoch is in flight, `ll_free` parks
-instead of recycling (slot identity for the walker); the owning thread
-flushes after the epoch. A **buffer-arena chunk** never passes `ll_free`,
-so `buffer_arena::buffer_free_longlived_payload` makes the same test in
-its own branch and parks the whole call; that is why a parked record
-carries `(pointer, size)` (`dev/DECISIONS.md`, 2026-08-04). Design:
-`rfc/model/gc/rc-walk.md`, "Deferred physical release";
-`rfc/model/gc/heap-design.md`.
+`src/memory/deferred_free.rs` was deleted on 2026-08-26 with `rc-walk`,
+whose epoch-wide parking it was. `rc-cycle` parks per slot instead, on
+two windows of different widths — a queue entry naming the slot, and a
+collection in flight — and S34.3 and S36.2 build them. Every call site
+that used to park names one of those steps in a comment meanwhile.
 
 Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's
 out-of-line body lives: a string's payload and an array's table storage.
@@ -561,15 +560,16 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
 
 ## Key decisions
 
-`dev/DECISIONS.md` — 2026-08-07: rc-trace's candidate gate is a **set of
-kinds** (`refcount::CANDIDATE_KINDS`, `{Object, Array, Reference, Lazy}`)
-rather than a mask over their codes, because no mask admits `Reference 011`
-while excluding `String 001`; a kind is in the set exactly when it holds
-counted slots a cycle can close through, so the policy stops depending on
-which numbers the kinds were given. 2026-07-26: GC strategy is the build-time `rc-walk`
-cargo feature (the two collectors share header bits; verification runs
-both configurations); entity blocks as a second heap
-population (rc-walk step 1). 2026-07-20: arena handle as a raw pointer;
+`dev/DECISIONS.md` — 2026-08-26: what the old collectors left behind is
+deleted, and the two things kept from it are named. 2026-08-07: the
+candidate gate is a **set of kinds** (`refcount::CANDIDATE_KINDS`,
+`{Object, Array, Reference, Lazy}`) rather than a mask over their codes,
+because no mask admits `Reference 011` while excluding `String 001`; a
+kind is in the set exactly when it holds counted slots a cycle can close
+through, so the policy stops depending on which numbers the kinds were
+given — S31.1 renumbers them and replaces the bitset with a range test.
+2026-07-26: entity blocks as a second heap population. 2026-07-20: arena
+handle as a raw pointer;
 trailing inline data through raw pointers; block header split by access
 rule; cold concurrent structures take a lock rather than a CAS loop;
 Miri against a UNIX target. 2026-07-21: the barrier owns the whole slot
@@ -606,26 +606,15 @@ Design only, nothing implemented.
 `dev/RC_WALK_CRITICAL_REVIEW.md` were deleted on 2026-08-26 with the
 collector they described. They are on the branch `archive/pre-rc-cycle`.
 
-`rfc/model/gc/gc-horizon.md` — Edmond's algorithm, 2026-08-18, named
-`proof-horizon` until it moved to the RFC on 2026-08-20: a local is
-owned (counted, today's pair) or an anchored borrow paying nothing
-while compiler proofs hold, promoted to owned by an ordinary retain at
-a horizon; the collector code is untouched and the cost is
-compiler-side, with the ack-budget dependency named in the document.
-Successor to the stack-exit epoch model
-(`docs/history/stack-exit-epoch-gc-2026-08-18.md`, superseded; its
-five-axis review is `docs/history/stack-exit-epoch-gc-review-2026-08-18.md`). Critic
-rounds 1–4 ran 2026-08-18 and are recorded in the document; the
-granularity ruling landed the same day (`dev/DECISIONS.md`).
-Status: closed, and no pre-D step can change the design's closed
-status — pre-D work is instrument preparation (the graded corpus
-scan, the census channel list, the summary-language question).
-The `proof-horizon*` reading aids were absorbed into
-`rfc/model/gc/gc-horizon-states.md` and
-`rfc/model/gc/gc-horizon-cases/README.md`; their banner stubs were
-deleted 2026-08-25. The case book (`rfc/model/gc/gc-horizon-cases/`,
-sixteen cases, 2026-08-20) opened five further questions in the
-algorithm, numbered 7 to 11 there.
+The **gc-horizon** documents — `gc-horizon.md`, its states and its
+sixteen-case book — were deleted on 2026-08-26 with the two
+collectors. The algorithm was Edmond's of 2026-08-18: a local is owned
+(counted) or an anchored borrow paying nothing while compiler proofs
+hold, promoted by an ordinary retain at a horizon. It is superseded by
+`rc-cycle`, whose own answer to the same question is that a local always
+carries a counted `+1` and a pair may be elided only where no collection
+can fire (`rfc/model/gc/rc-cycle.md`; `rfc/model/gc/cycle/questions.md`
+Y11). The documents are on `archive/pre-rc-cycle`.
 
 `dev/design/pure-destructors.md` — Edmond's pure-destructor proposal
 analyzed, 2026-08-18: the purity ladder, what the runtime already

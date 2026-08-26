@@ -62,9 +62,11 @@ pub(crate) enum CellShape {
     Box,
 }
 
-/// The six behaviours a class owes when its counted cells lie outside
-/// its own body — a coroutine's waker block, a map's table chunk. One
-/// group rather than six nullable fields, because a class carrying some
+/// The four behaviours a class owes when its counted cells lie outside
+/// its own body — a coroutine's waker block, a map's table chunk. It was
+/// six until 2026-08-26: a walk per reader and a re-check went with
+/// `rc-walk`, which is what asked for them. One group rather than four
+/// nullable fields, because a class carrying some
 /// of them and not others fails silently in both directions: a walk
 /// without a sever lets the drain empty a table entry cell-wise, and a
 /// sever without a walk makes every child of the chunk a computed root
