@@ -101,7 +101,7 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
       handoff: closed 2026-08-26 at `model` `3d5d853` and `rfc` `af10eae`, both
         on `origin`. The branch point is after the plan amendment, so the branch
         carries the plan that explains why its code was deleted.
-- [ ] S30.6 Write the teardown's order into `rc-cycle.md`   *(before S30.2)*
+- [x] S30.6 Write the teardown's order into `rc-cycle.md`   *(before S30.2)*
       done: `rfc/model/gc/rc-cycle.md` carries a "Cycle teardown" section
         stating the commit-side order as a binding obligation — the exact test
         confirms with the corpse rule included, every member takes the teardown
@@ -120,7 +120,11 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         section is transcribed against the running `drain_confirmed` instead of
         against a branch. `weak::notify_members` itself carries no feature gate
         and survives; what dies is the only composition of the eight operations.
-- [ ] S30.7 Amend `strategies.md` instead of deleting it   *(before S30.5)*
+      handoff: closed 2026-08-26 by `rfc` `68cf10a`, ticked here 2026-08-26
+        evening — the work landed before S30.2 as required and the box was
+        never crossed. The section is at `model/gc/rc-cycle.md`, "Cycle
+        teardown", six steps; `weak-references.md`'s "Cycle death" names it.
+- [x] S30.7 Amend `strategies.md` instead of deleting it   *(before S30.5)*
       done: the `rc-trace` section and the registry rows of both deleted
         strategies are gone; the registry lists `rc-cycle` (in force) and
         `rc-satb` (designed, unbuilt) and carries no tombstone, the deletion
@@ -137,6 +141,11 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         the pointer, and a collection firing in that window subtracts one
         reference twice and frees a live object — and 21 documents link it, 14
         of which survive S30.5.
+      handoff: closed 2026-08-26 by the same `rfc` commit, ticked here
+        2026-08-26 evening. The registry lists `rc-cycle` alone: `rc-satb` is
+        not in it, because Edmond's ruling of the same day deleted that
+        document too, superseding this step's own criterion. `linkcheck.php`
+        reports 553 links and zero broken targets over 56 files.
 - [x] S30.2 Split `walk.rs`, delete the `rc-walk` collector
       done: `src/collector.rs`, `src/collector/`, `src/epoch.rs`, `src/epoch/`,
         the `rc-walk` Cargo feature and `default = ["rc-walk"]` in `Cargo.toml`
