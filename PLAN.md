@@ -398,6 +398,32 @@ introduce two constants nobody reads.
         and `memory::barrier::` afterwards. Test list 460 → 461, the addition
         being the self-test that pins all eight patterns — verified red by
         dropping one.
+- [ ] S31.9 Pay the Code Reviewer's four requirements
+      done: `header_pair` and `mutator_load_header` are one function rather
+        than two names for it, and `object.rs`'s two `let (_, flags)` callers
+        take `mutator_flags` instead of loading a counter nobody reads;
+        `kind_may_close_a_cycle` and `is_string` say at the declaration that
+        they are the layout's named clauses with no production caller, or go;
+        `closes_a_ring` cites a live `dev/DECISIONS.md` entry rather than one
+        whose main clause the 2026-08-26 rulings overturned, and the surviving
+        fact — Lazy answers yes before any factory stamps it — is re-recorded
+        there; `refcount::tests::the_header_the_compiler_shares` no longer
+        says the wide helpers access the word as one, there being none
+      tier: T1 · role: —
+      handoff: returned by the stage's Code Reviewer on 2026-08-26, which
+        edited comments and style itself and handed these back as substance.
+        Item four is a `dev/` edit the role may not make.
+- [ ] S31.10 Decide what a comment may cite when it means a step
+      done: choice and reason in `dev/DECISIONS.md`, and `dev/WORKFLOW.md`'s
+        "How a reference is written" agrees with it either way
+      tier: T2 · role: Sage
+      handoff: `dev/WORKFLOW.md` forbids a comment citing a `PLAN.md` stage,
+        because a closed stage is deleted from that file, and the crate does it
+        58 times in 20 non-test files — 11 in `refcount.rs` alone, eight of
+        them added by S31. Practice and rule contradict each other crate-wide,
+        so unpicking one stage's share makes the tree less consistent, not
+        more. What a comment should name instead — an open question in `rfc/`,
+        a `dev/` entry, nothing at all — is the decision.
 
 ## S32 — The block header's collector triple
 
