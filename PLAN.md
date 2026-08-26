@@ -137,7 +137,7 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         the pointer, and a collection firing in that window subtracts one
         reference twice and frees a live object — and 21 documents link it, 14
         of which survive S30.5.
-- [ ] S30.2 Split `walk.rs`, delete the `rc-walk` collector
+- [x] S30.2 Split `walk.rs`, delete the `rc-walk` collector
       done: `src/collector.rs`, `src/collector/`, `src/epoch.rs`, `src/epoch/`,
         the `rc-walk` Cargo feature and `default = ["rc-walk"]` in `Cargo.toml`
         are gone, and the feature's guards are resolved in the 24 files that
@@ -175,12 +175,10 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         rewrite's vehicle. The name is `cells` and not `trace`, because
         `rc-cycle.md` calls the S35 mark "the trace" and a substrate module of
         that name would read as a collector again.
-      **Open after `de18686`:** the epoch's re-check apparatus is still in
-        `cells.rs` — `RelaxedCells`, `OutsideRead`, `WalkOutsideFn`, the
-        `walk_relaxed` and `recheck` members and `Cell.raw` — because its
-        fixtures reach into `test_support/outside_block.rs` and
-        `class/tests/what_a_subclass_inherits.rs`. It compiles and warns as
-        dead code. The step closes when those and their fixtures are gone.
+      handoff: closed 2026-08-26 by `b581c22`, which also took the epoch's
+        re-check apparatus, `memory/deferred_free` and the two collectors'
+        header bits. `rc-satb` was deleted by the same ruling: only the new
+        algorithm remains.
 - [x] S30.3 Delete the `rc-trace` strategy from `gc.rs`, keep the module
       done: the candidate buffer, the colours, trial deletion, the thresholds
         and `COLLECT_PENDING` are gone from `src/gc.rs` together with their
@@ -232,8 +230,8 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
       done: in `rfc`, `model/gc/rc-walk*.md`, `model/gc/walk/`,
         `model/gc/retained-block-walk.md`, `model/gc/gc-horizon*.md`,
         `model/gc/gc-horizon-cases/`, `model/gc/gc-horizon-v2/`,
-        `model/gc/drain-window.md`, `dev/TASK-rc-walk-proof.md` and
-        `dev/tools/rc-walk/` are gone; in `model`,
+        `model/gc/drain-window.md`, `model/gc/satb.md`,
+        `dev/TASK-rc-walk-proof.md` and `dev/tools/rc-walk/` are gone; in `model`,
         `dev/RC_WALK_CRITICAL_REVIEW.md` and the three `dev/design/` records of
         the walk are gone, and `docs/architecture.md`,
         `docs/memory-manager.md`, `docs/performance-case.md` and
@@ -246,9 +244,12 @@ links in `rfc` against its 2026-08-26 baseline of 96 files and 1772 links.
         now lives, and the count-elision bargain cited by Y11 and by the
         fourteenth ruling moves into `rc-cycle`'s own documents
       tier: T2 · role: Critic
-      handoff: `satb.md` stays — it describes something unbuilt rather than
-        something superseded — and its four links to `strategies.md` survive
-        because S30.7 keeps that file. `heap-design.md` stays, minus the
+      handoff: `satb.md` goes too, by Edmond's ruling of 2026-08-26 — only
+        the new algorithm remains — so its ten inbound links are repointed or
+        their paragraphs go: `values.md`, `layouts.md`, `arenas.md`,
+        `regions.md`, `heap-design.md`, `gc-research.md`,
+        `static-lifetimes.md`, `gc/README.md` and `strategies.md`.
+        `heap-design.md` stays, minus the
         CAS-handoff section, which dies with the GC-state field; its
         `strategies.md` links at lines 4 and 32 are outside that section.
         `cycle/questions.md` links the deleted set seven times, Y5 and Y8
