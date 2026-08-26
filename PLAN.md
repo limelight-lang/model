@@ -678,6 +678,15 @@ stage is what makes a trace affordable rather than what tunes it.
         closure, and its real content falls out of the prune at depth zero.
         Y9 calls the prune the only mechanism in this design that bounds the
         closure.
+      handoff: carried from S31 before that stage was deleted. **Two producers
+        hand a member a stamp byte nobody wrote.** A recycled `heap::FreeSlot`
+        preserves the dead entity's final header, so the slot arrives carrying
+        the previous occupant's byte 6; and promotion rewrites a survivor's
+        category with a two-byte store, so the byte leaves the arena exactly as
+        it went in. Either one reads here as a mature stamp of the current
+        epoch and this step prunes a live subgraph permanently and silently.
+        The zeroing belongs to S38.0; this step's counters are what would show
+        it missing.
 - [ ] S37.4 The suspects buffer and the turnover re-offer
       done: acquittal never clears the enrolment bit; a proven-live root parks
         in the suspects buffer with its bit set, and every suspect is re-offered
@@ -722,6 +731,15 @@ both, and the losing side never deadlocks.
       handoff: `RelaxedCells` and its re-check plumbing died at S30.2 because
         they existed for `rc-walk`'s precision. What the accelerator needs is
         strictly smaller, and the `CellReader` trait is the socket it plugs into.
+      handoff: two debts carried from S31 before that stage was deleted. **The
+        stale stamp byte** is this step's to zero, at both producers — a
+        recycled `heap::FreeSlot` and a promoted survivor — because this is
+        where the second thread arrives and the byte stops being inert; S37.1
+        is what it breaks. And **`dev/WORKFLOW.md`'s ThreadSanitizer run has
+        selected no test since 2026-08-26**, its only one having lived in the
+        deleted `collector::`, so the instrument that reports
+        plain-against-atomic is unavailable until this step gives it a pairing
+        to watch.
 - [ ] S38.1 The claim
       done: one word for the process, three states, CAS from free; it covers the
         **trace** — the arena, the block triples and the touched list — while
