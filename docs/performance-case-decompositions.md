@@ -13,9 +13,12 @@ live.
 > code that produced every measurement below is on the branch
 > `archive/pre-rc-cycle`. The figures stand as the baseline `rc-cycle` is
 > to be measured against, not as a description of what the tree builds
-> today (`PLAN.md`, S30).
+> today (`dev/DECISIONS.md`, "where the two deleted collectors live:
+> `archive/pre-rc-cycle`").
 >
-> **The flags word was re-laid the same week** (`PLAN.md`, S31), so every
+> **The flags word was re-laid the same week** (`dev/DECISIONS.md`, "the
+> flags word is re-laid for one collector, and `EntityKind` is
+> renumbered"), so every
 > immediate below names a bit position the header no longer uses: `COW`
 > moved from bit 10 to bit 6, and the kind field from bits 12-14 to 2-5.
 > The instruction counts and the contract each instruction answers to are

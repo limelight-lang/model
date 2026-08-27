@@ -18,7 +18,7 @@ commit (`dev/WORKFLOW.md`).
 > They are not redrawn here because the replacement, `rc-cycle`
 > (`rfc/model/gc/rc-cycle.md`), is not built: a diagram of an unbuilt
 > collector would read as structure that exists, which is the failure this
-> banner exists to avoid. The stages that build it are S31 through S40 of
+> banner exists to avoid. The stages that build it are S32 through S40 of
 > `PLAN.md`, and the diagrams are redrawn when the boundaries they show are
 > real. What the deleted modules looked like is on `archive/pre-rc-cycle`.
 >

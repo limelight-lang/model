@@ -14,7 +14,7 @@ this file honest is in [`dev/WORKFLOW.md`](../dev/WORKFLOW.md).
 > **The crate has no cycle collector as of 2026-08-26.** `rc-walk`,
 > `rc-trace` and `rc-satb` were deleted whole — code and documents — and
 > `rc-cycle` (`rfc/model/gc/rc-cycle.md`) is the only design in force and is
-> not built. Between stages S30 and S36 of `PLAN.md` a garbage ring is
+> not built. Until S36 of `PLAN.md` wires a collection in, a garbage ring is
 > retained; acyclic garbage dies by counting as it always did. Passages below
 > that describe a collector are dated and marked, and the code they described
 > is on the branch `archive/pre-rc-cycle`.
@@ -101,7 +101,8 @@ covered atomics other threads read by design. The owner now borrows
 learning it cost a second round: the collector reads both for every
 block of every region, and a `&mut` retag asserts uniqueness over its
 whole range — including an `UnsafeCell`, which is where the atomic type
-alone was not enough (2026-08-10, S11.9 in `PLAN.md`). Both are
+alone was not enough (`dev/POSTMORTEM.md`, "an atomic field does not
+survive a `&mut` over the struct"). Both are
 `AtomicU32`; `block_pool::store_block_kind` is the only path that writes
 a kind, and because a whole-header struct store would cover the word
 plainly, every commissioning writes its header field by field.
@@ -205,7 +206,8 @@ Three rules distinguish the entity population:
   across populations, so a raw heap can never hand out entity-block
   slots.
 
-`for_each_entity_slot` (the census primitive under `walk.rs`) enumerates
+`for_each_entity_slot` (the census primitive, whose callers are
+`cells::heap_census` and the leak tests, all `#[cfg(test)]`) enumerates
 the registry's regions, skips every non-entity block, and visits
 occupied slots bounded by each block's bump cursor.
 

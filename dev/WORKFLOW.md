@@ -247,9 +247,16 @@ another stage, **the same commit sweeps the number**: the capability
 exists now, so every comment naming it states the contract that replaced
 the absence, or goes. Unlike the four passes below, this one a grep can
 make end to end — pull every `S[0-9]+` token out of `src/`, `benches/`,
-`dev/INDEX.md`, `dev/ARCHITECTURE.md` and this file, and resolve each
-against the `##` sections still in `PLAN.md`; an unresolved number is
-debris. The maps are swept with the code because they carry the same
+`docs/`, `dev/INDEX.md`, `dev/ARCHITECTURE.md` and this file, and resolve
+each against the `##` sections still in `PLAN.md`; an unresolved number is
+debris. `docs/` joined that list on 2026-08-27, when a sweep run from a
+stage that had added citations of its own found seven dangling sites
+there — four dead numbers across four documents — and none anywhere else:
+the earlier runs swept the code and the maps and left the layer documents,
+which carry the same kind of forward claim. Two of the seven cited a
+closed stage as history, which the rule below forbids outright, so they
+went to the journal entry holding the fact rather than to a live number;
+the other five named a stage the plan had deleted that week. The maps are swept with the code because they carry the same
 kind of forward claim; `dev/DECISIONS.md`, `dev/POSTMORTEM.md` and
 `dev/BENCHMARKS.md` are not, an entry there naming the stage of its own
 day being a record rather than a pointer. Grep the bare number, because

@@ -17,7 +17,8 @@ they are the half a reader will ask about.
 > code that produced every measurement below is on the branch
 > `archive/pre-rc-cycle`. The figures stand as the baseline `rc-cycle` is
 > to be measured against, not as a description of what the tree builds
-> today (`PLAN.md`, S30).
+> today (`dev/DECISIONS.md`, "where the two deleted collectors live:
+> `archive/pre-rc-cycle`").
 
 
 ## What this case does not claim
@@ -146,7 +147,7 @@ over fresh narrow stores cost ≈ 3.0 ns per store — measured directly
 by a scratch-branch revert, a per-occurrence penalty of which only
 ≈ 0.6 ns hides under independent work ("the failed store-forward is
 the stall itself, not the log serialized behind it", 2026-08-16) —
-and the S24.2 narrowing that removed them took `heap → arena` from
+and the narrowing that removed them took `heap → arena` from
 4.82 to 1.53 ns (`dev/DECISIONS.md`, 2026-08-15, "a header is read as
 narrowly as it is written, and through the helpers only"). The width
 rule the decompositions cite on their contract rows is what that
