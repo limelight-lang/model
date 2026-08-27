@@ -1,8 +1,10 @@
-//! Four populations reach the trace through one child pointer, and the
-//! block's kind is the only thing that separates them. What each test
-//! here pins is the row's **identity**: a descent that terminates
-//! proves nothing, because arithmetic that returns a neighbour's row
-//! terminates just as cleanly and decrements a live entity's count.
+//! Four populations reach the trace through one child pointer. The
+//! block's kind separates three of them; an entity past one block
+//! payload shares its kind with the arena, and the memory category is
+//! what separates that one. What each test here pins is the row's
+//! **identity**: a descent that terminates proves nothing, because
+//! arithmetic that returns a neighbour's row terminates just as cleanly
+//! and decrements a live entity's count.
 
 use super::*;
 use crate::memory::block_pool::{
@@ -126,12 +128,11 @@ fn two_sizes_in_one_retained_block_resolve_to_distinct_rows() {
         rows.push(resolved);
     }
 
-    // No `assert_ne!` between the two rows: each is already pinned to
-    // its own position in an array of distinct sorted addresses, so
-    // distinctness follows and an assertion of it could not fail. What
-    // refutes a stride implementation is the comparison above — a
-    // stride derivation answers with byte-offset quotients, and those
-    // are not positions.
+    // The distinctness the name promises follows from the two
+    // assertions above: each row is pinned to its own position in an
+    // array of distinct sorted addresses, so an `assert_ne!` here could
+    // not fail. A stride implementation is refuted by the same pair,
+    // since a stride answers with byte-offset quotients.
 
     unsafe {
         assert!(ll_release(holder as *mut RcHeader));
@@ -186,14 +187,13 @@ fn a_large_entity_resolves_to_the_one_row_in_its_own_block() {
     }
 }
 
-/// Every child that is not in the collected heap, and the third case is
-/// the one the block kind cannot answer. An arena entity past one block
-/// payload is allocated by `large_entity` and carries
-/// `BLOCK_KIND_ENTITY_LARGE_RUN`, exactly as a heap one does
-/// (`arena::alloc_entity`), so a dispatch that trusted the kind would
-/// trial-delete an entity the reset is about to free, and a condemned
-/// component would free it a second time. Only the category separates
-/// the two.
+/// Every child outside the collected heap, and the third case is the one
+/// the block kind cannot answer: an arena entity past one block payload
+/// takes the kind a heap one takes, so only the category separates them
+/// (`edge_to`, the large arm). What makes it worth a case of its own is
+/// where a wrong answer lands — the teardown commits half a double free
+/// and the arena's reset completes it, nowhere near the dispatch that
+/// caused it.
 #[test]
 fn a_child_outside_the_gc_heap_stops_the_descent() {
     let _g = test_guard();

@@ -248,6 +248,71 @@ struct BlockRemote {
     remote_free: AtomicPtr<FreeSlot>,
 }
 
+/// The collector's three words about a block, alone on the last cache
+/// line of the block's reserved header line.
+///
+/// **Out here rather than inside [`HeapBlockHeader`] because the
+/// collector writes `shadow`**, and a write into the header's first line
+/// would steal it from under the owner's bump cursor and free list on
+/// every block a trace touches. The two words beside it are written once
+/// at commissioning and never again, so the line the collector dirties
+/// carries nothing the owner reads (`rfc/model/gc/rc-cycle.md`, "Where
+/// the shadow count lives").
+///
+/// Written only for `BLOCK_KIND_ENTITY` blocks. The other two
+/// populations a trace enters — retained and large-entity — carry their
+/// rows elsewhere (`crate::cycle::row`), and a raw heap block's tail is
+/// left as the pool handed it over.
+#[repr(C, align(64))]
+struct BlockCollector {
+    /// This block's shadow row array, or null while no collection has
+    /// touched the block. The one word of a block header a non-owner
+    /// writes. Nothing reserves rows yet — S33.2 of `PLAN.md` is the step
+    /// that allocates them and the step that nulls this again at the end
+    /// of a collection, including on the abort path.
+    shadow: AtomicPtr<u8>,
+    /// `2^32 / stride + 1` for this block's size class, so a row lookup
+    /// is a multiply and a shift rather than a division
+    /// ([`reciprocal_for`]). Written once at commissioning and published
+    /// by the kind's release store, like every other header word.
+    reciprocal: AtomicU32,
+    /// The collector's own copy of the size class index, duplicating
+    /// [`HeapBlockHeader::size_class`] on purpose. No reader yet: S33.2
+    /// of `PLAN.md` sizes a block's row array at `BLOCK_PAYLOAD / stride`
+    /// and wants the stride once it has the reciprocal, and taking it
+    /// from here is what keeps the whole lookup on this line.
+    size_class: AtomicU32,
+}
+
+/// Where a block's collector triple begins: immediately past the header,
+/// which is 192 bytes today because [`BlockRemote`] aligns the header to
+/// 64. Tied to the header's size rather than written as 192, so a header
+/// that grows moves the triple instead of overlapping it.
+const COLLECTOR_TRIPLE_OFFSET: usize = size_of::<HeapBlockHeader>();
+
+const _: () = {
+    assert!(
+        COLLECTOR_TRIPLE_OFFSET % 64 == 0,
+        "the triple must begin a cache line of its own"
+    );
+    assert!(
+        COLLECTOR_TRIPLE_OFFSET + size_of::<BlockCollector>() <= LINE_SIZE,
+        "the triple must fit the block's reserved header line"
+    );
+};
+
+/// The collector triple of `block`.
+///
+/// # Safety
+/// `block` must be the header of a live 64 KiB block, since the triple
+/// is reached by offset from it. The words carry meaning only for a
+/// `BLOCK_KIND_ENTITY` block, which is the only kind [`Heap::refill`]
+/// writes them for.
+#[inline]
+unsafe fn block_collector(block: *mut HeapBlockHeader) -> *mut BlockCollector {
+    unsafe { (block as *mut u8).add(COLLECTOR_TRIPLE_OFFSET) as *mut BlockCollector }
+}
+
 /// Per-block header. Overlays the block's first line; shares offset 0
 /// (`private.kind`) with the pool's `BlockHeader` (tagged union over the
 /// memory).
@@ -272,11 +337,12 @@ struct HeapBlockHeader {
     /// (`dev/DECISIONS.md`, "the block header is split by access rule, not
     /// by topic").
     kind: AtomicU32,
-    /// The block's size class, and the second word a collector reads
-    /// from another thread: written once at commissioning, read by every
-    /// collection. Out here with `kind` and for the same reason — the
-    /// owner's `&mut` over `private` must not cover a word another
-    /// thread is reading.
+    /// The block's size class, written once at commissioning. Out here
+    /// with `kind` rather than in [`BlockPrivate`] for the same reason —
+    /// the owner's `&mut` over `private` must not cover a word another
+    /// thread reads, and `describe_slot` reads this one from wherever it
+    /// is called. A collection reads [`BlockCollector::size_class`]
+    /// instead.
     size_class: AtomicU32,
     private: BlockPrivate,
     shared: BlockShared,
@@ -1161,6 +1227,15 @@ impl Heap {
                 owned_prev: std::ptr::null_mut(),
             });
 
+            // Raw blocks skip it: no trace enters one.
+            if self.block_kind == BLOCK_KIND_ENTITY {
+                (&raw mut *block_collector(block)).write(BlockCollector {
+                    shadow: AtomicPtr::new(std::ptr::null_mut()),
+                    reciprocal: AtomicU32::new(reciprocal_for(class_size)),
+                    size_class: AtomicU32::new(ci as u32),
+                });
+            }
+
             crate::memory::block_pool::store_block_kind(&raw const (*block).kind, self.block_kind);
         }
 
@@ -1967,12 +2042,13 @@ unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
 /// it (`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives").
 ///
 /// The index is derived by a reciprocal multiply rather than by a
-/// division, `recip` being `2^32 / stride + 1`. An index that is off by
-/// one names another live entity's row instead of faulting, so the
-/// arithmetic is proven exhaustively against the division rather than
-/// against an address recomputed from the index — S32.1 of `PLAN.md` is
-/// that proof, and S32.2 is where `recip` stops being recomputed here
-/// and is read from the block's collector triple.
+/// division: the block's collector triple carries `2^32 / stride + 1`,
+/// written there once at commissioning, and the high word of the
+/// multiply is the index. An index that is off by one names another live
+/// entity's row instead of faulting, so the arithmetic is proven
+/// exhaustively against the division rather than against an address
+/// recomputed from the index
+/// (`the_reciprocal_multiply_is_the_division_over_a_whole_block`).
 ///
 /// The caller resolves the block's kind first, and only a block that
 /// reads `BLOCK_KIND_ENTITY` reaches here: the other populations of the
@@ -1981,29 +2057,51 @@ unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
 /// # Safety
 /// `entity` must be a slot of a commissioned `BLOCK_KIND_ENTITY` block.
 pub(crate) unsafe fn entity_slot_index(entity: *mut u8) -> u32 {
-    let block = HeapBlockHeader::of_ptr(entity);
+    let triple = unsafe { block_collector(HeapBlockHeader::of_ptr(entity)) };
     // Relaxed, because the caller's acquire load of the kind published
     // this word: both are written once at commissioning, the kind last
     // and with release (`block_pool::collector_load_block_kind`).
-    let size_class = unsafe { (*block).size_class.load(Ordering::Relaxed) };
+    let reciprocal = unsafe { (*triple).reciprocal.load(Ordering::Relaxed) };
     let offset = (entity as usize & BLOCK_MASK) - LINE_SIZE;
-    slot_index_of_offset(offset, SIZE_CLASSES[size_class as usize])
+    slot_index_by_reciprocal(offset, reciprocal)
 }
 
-/// The slot index an `offset` into a block's payload derives at a given
-/// `stride`, by a reciprocal multiply rather than a division.
+/// The reciprocal a block of this `stride` carries in its collector
+/// triple: `2^32 / stride + 1`.
 ///
-/// `2^32 / stride + 1` is exact for every offset a 64 KiB block can
-/// hold, at every size class: the multiply's error stays below `2^-16`
-/// while a quotient's fraction is at most `(stride - 1) / stride`, so the
-/// two never cross while `stride` is under 65536. Separate from
-/// [`entity_slot_index`] so the claim can be driven over every offset of
-/// every class rather than over the offsets a fixture happens to
-/// allocate.
+/// Exact for every offset a 64 KiB block can hold, at every size class:
+/// the multiply's error stays below `2^-16` while a quotient's fraction
+/// is at most `(stride - 1) / stride`, so the two never cross while
+/// `stride` is under 65536.
+#[inline]
+const fn reciprocal_for(stride: usize) -> u32 {
+    ((1u64 << 32) / stride as u64 + 1) as u32
+}
+
+/// The slot index of `offset` under a reciprocal already in hand — the
+/// form a row lookup takes, the block's triple having paid for the
+/// division once at commissioning.
+///
+/// `offset` is measured from the payload start, `LINE_SIZE` already off
+/// the address, and stays below `BLOCK_PAYLOAD`; `reciprocal` is
+/// [`reciprocal_for`] of that block's stride. Outside either, the result
+/// is arithmetic with no meaning rather than a fault.
+#[inline]
+fn slot_index_by_reciprocal(offset: usize, reciprocal: u32) -> u32 {
+    ((offset as u64 * reciprocal as u64) >> 32) as u32
+}
+
+/// The same index from a `stride` rather than from a reciprocal: the
+/// composition the exhaustive proof is driven over, so that the two
+/// production halves are the ones proven and not a copy of them.
+///
+/// `#[cfg(test)]` because no production path composes them — a row
+/// lookup takes the reciprocal from the block, and the block took it
+/// from [`reciprocal_for`] at commissioning.
+#[cfg(test)]
 #[inline]
 fn slot_index_of_offset(offset: usize, stride: usize) -> u32 {
-    let reciprocal = (1u64 << 32) / stride as u64 + 1;
-    ((offset as u64 * reciprocal) >> 32) as u32
+    slot_index_by_reciprocal(offset, reciprocal_for(stride))
 }
 
 /// Visit every occupied slot of every entity block, process-wide — the

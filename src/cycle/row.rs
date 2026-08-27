@@ -4,10 +4,11 @@
 //! collector's working count for it. No single formula answers that: the
 //! GC heap holds three populations, and one of them — the retained
 //! former-arena block — was filled by a bump allocator at mixed sizes and
-//! has no stride to divide by. So the answer is a dispatch on the block's
-//! kind, which costs nothing: the block header holds the kind at offset
-//! zero, and the trace has to touch that line before it can reach any row
-//! at all (`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives").
+//! has no stride to divide by. So the answer is a dispatch on the
+//! block's kind, whose input is already in hand: the block header holds
+//! the kind at offset zero, and the trace has to touch that line before
+//! it can reach any row at all (`rfc/model/gc/rc-cycle.md`, "Where the
+//! shadow count lives").
 //!
 //! The dispatch sits here rather than in `cells`, one level above the
 //! child enumerator, so that the enumerator keeps knowing entity kinds
@@ -30,9 +31,8 @@ const SOLE_OCCUPANT: u32 = 0;
 ///
 /// It is an identity and not an address. Where the rows themselves are
 /// reserved, and how the index reaches one, is S33.2 of `PLAN.md`; two
-/// entities of one block resolving to one `Row` would be that stage's
-/// defect however the rows are laid out, which is why this pair is what
-/// the dispatch is tested on.
+/// entities of one block resolving to one `Row` is that stage's defect
+/// however the rows are laid out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Row {
     /// The block header's address, 64 KiB-aligned. For a large entity

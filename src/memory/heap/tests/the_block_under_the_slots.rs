@@ -54,6 +54,51 @@ fn block_header_halves_are_laid_out_as_the_design_requires() {
         "header must fit the reserved line: {} > {LINE_SIZE}",
         size_of::<HeapBlockHeader>()
     );
+
+    // The triple takes the free tail of that same line, which the fit
+    // above does not say: a header grown to 256 satisfies it and leaves
+    // the triple nowhere. 192 is what `BlockRemote`'s alignment
+    // produces, so only a literal catches a header that grew into the
+    // tail.
+    assert_eq!(size_of::<HeapBlockHeader>(), 192);
+    assert_eq!(
+        COLLECTOR_TRIPLE_OFFSET + size_of::<BlockCollector>(),
+        LINE_SIZE,
+        "the triple ends where the reserved line does, so no slot moves"
+    );
+}
+
+/// The commissioning writes the triple and no production path reads it
+/// yet — `entity_slot_index` is reached only from
+/// `cycle::row::edge_to`, whose own caller is S35.1 of `PLAN.md`. A
+/// `refill` that skipped the write would leave the pool's previous
+/// contents in the block's tail, and the first row lookup would multiply
+/// by them.
+#[test]
+fn a_commissioned_entity_block_carries_its_collector_triple() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut heap = Heap::new_entity();
+    let class_size = SIZE_CLASSES[5];
+    let slot = heap.alloc(class_size);
+    let triple = unsafe { crate::memory::heap::block_collector(HeapBlockHeader::of_ptr(slot)) };
+
+    unsafe {
+        assert!(
+            (*triple).shadow.load(Ordering::Relaxed).is_null(),
+            "no collection has reserved rows for this block"
+        );
+        assert_eq!(
+            (*triple).reciprocal.load(Ordering::Relaxed),
+            crate::memory::heap::reciprocal_for(class_size)
+        );
+        assert_eq!(
+            SIZE_CLASSES[(*triple).size_class.load(Ordering::Relaxed) as usize],
+            class_size,
+            "the collector's copy names the class the block was cut for"
+        );
+    }
+
+    unsafe { heap.free(slot) };
 }
 
 /// Regression test for the pathology found via a real `larson.cpp`
@@ -199,17 +244,18 @@ fn the_reciprocal_multiply_is_the_division_over_a_whole_block() {
         }
     }
 
-    // The word exhaustive is the claim, and a loop that ran over nothing
-    // passes the assertions above without making it. Ten milliseconds for
-    // two million comparisons is fast enough to look like that.
+    // Walking the whole domain is the claim, and a loop that ran over
+    // nothing passes the assertions above without making it. Ten
+    // milliseconds for two million comparisons is fast enough to look
+    // like that.
     assert_eq!(compared, SIZE_CLASSES.len() * BLOCK_PAYLOAD);
 }
 
 /// The offsets the derivation actually meets: a slot start of a real
 /// block, reached the way the collector reaches it. What this adds to
-/// the exhaustive test above is the two steps around it — the size class
-/// read out of the block header, and `LINE_SIZE` taken off the address —
-/// neither of which that test exercises.
+/// the exhaustive test above is the two steps around it — the reciprocal
+/// read out of the block's collector triple, and `LINE_SIZE` taken off
+/// the address — neither of which that test exercises.
 #[test]
 fn a_slot_of_a_live_block_derives_the_index_its_address_says() {
     let _g = crate::memory::block_pool::test_guard();

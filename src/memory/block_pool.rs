@@ -94,6 +94,12 @@ pub(crate) unsafe fn load_block_kind(kind_field: *const AtomicU32) -> u32 {
 /// (`rfc/model/gc/rc-cycle.md`, "Death while enrolled"). Nothing parks
 /// today; S36.2 of `PLAN.md` is the step that builds the window, and
 /// until it lands this pair is sound only because one thread runs.
+///
+/// # Safety
+/// `kind_field` must be the `kind` word of a block header mapped for the
+/// duration of the load: a block of a carved region, or a run the pool
+/// has not returned to the OS. Any `u32` may come back, including a kind
+/// this crate does not define.
 #[inline]
 pub(crate) unsafe fn collector_load_block_kind(kind_field: *const AtomicU32) -> u32 {
     unsafe { (*kind_field).load(Ordering::Acquire) }

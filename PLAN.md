@@ -107,7 +107,7 @@ line, and the slot index derived from an address is proven exact.
         goes red when the reciprocal loses its `+1`. A second test carries the
         two steps around it, the size class read out of the block header and
         `LINE_SIZE` taken off the address, over a real block's slots.
-- [ ] S32.2 Put the triple in the header's free tail
+- [x] S32.2 Put the triple in the header's free tail
       done: `HeapBlockHeader` occupies 192 bytes of the 256-byte line and the
         triple — shadow pointer, `recip`, the collector's own copy of the size
         class — sits past it on its own cache line; the layout test that pins
@@ -118,7 +118,14 @@ line, and the slot index derived from an address is proven exact.
       tier: T2 · role: Code Reviewer
       handoff: the size class is duplicated on purpose — it is written once at
         commissioning, and the copy is what keeps the lookup off the owner's
-        line.
+        line. `BlockCollector` is that triple, at `COLLECTOR_TRIPLE_OFFSET`,
+        which is `size_of::<HeapBlockHeader>()` rather than 192; `Heap::refill`
+        writes it for `BLOCK_KIND_ENTITY` blocks alone and
+        `entity_slot_index` reads the reciprocal from it. `shadow` starts null
+        and has no writer — S33.2 reserves the rows and owes the nulling, on
+        the abort path too. Two `const` assertions hold the placement, and the
+        one runtime assertion that a shrunk header would meet was driven red by
+        moving the offset a line earlier.
 
 ## S33 — The shadow arena and the per-block rows
 

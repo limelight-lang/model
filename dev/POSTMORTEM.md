@@ -7,6 +7,73 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-27 — a block kind was read as proof of which heap a child lives in
+
+**What happened.** S32.0's edge-to-row dispatch branches on a block's kind, and
+its large-entity arm took `BLOCK_KIND_ENTITY_LARGE` and its `_RUN` twin as proof
+that the child is a GC-heap entity. It is not proof. `arena::alloc_entity` hands
+an entity past one block payload to `large_entity::alloc` — the same allocator
+`heap::entity_alloc` uses — so a `RequestArena` entity carries `_RUN` exactly as
+a heap one does, and the block header records no category. A ring closed through
+such a child would be condemned, and the teardown would free a run the arena's
+reset still holds in its `Log::Larges` and frees again. The Critic round on the
+step named it; the arm now reads
+`MemoryCategory::from_flags(mutator_flags(child))`.
+
+**Why it was possible.** The other two populations make the kind sufficient: an
+entity block and a retained block hold collected-heap entities alone, so two arms
+out of three taught the wrong rule. And `large_entity`'s two kinds read as a
+population rather than as a shape — the module's own predicate is called
+`is_large_entity`, which is true and says nothing about whose heap.
+
+**Why it was not caught earlier.** The step's own external test built its arena
+case from a one-property class, far under `BLOCK_PAYLOAD`, so it landed in a
+`BLOCK_KIND_ARENA` block and exercised the arm that was already right. The
+fixture could not produce the state its doc claimed to pin. Nothing else could
+catch it: no collector calls the dispatch yet, so the defect had no run to fail
+in.
+
+**The rule.** A block kind answers what the memory is shaped like, never which
+heap owns it, wherever one allocator serves two categories. The category bits are
+the answer, and they stay right across a reset — promotion rewrites a surviving
+run's category in place and deliberately leaves its kind alone, because
+restamping it would send a multi-megabyte run to the 64 KiB pool. Written into
+the normative design at `rfc/model/gc/rc-cycle.md`, "A large entity's block kind
+does not say which heap it belongs to".
+
+---
+
+## 2026-08-27 — an acquire load was credited with excluding a stale value
+
+**What happened.** `collector_load_block_kind` was introduced with a paragraph
+saying a relaxed load "would let the reader see the kind of a block whose size
+class is still whatever the previous tenant left". Acquire does not buy that. It
+orders the writes that preceded the paired release relative to the value read; it
+puts no age limit on the value itself, so a reader may legally see an older store
+and then take a relaxed load beside it from a later commissioning. The paragraph
+was rewritten to say what the acquire does buy — the commissioning that
+accompanies the value — and to name the mechanism that actually excludes a
+recycled block: the parking rule, which keeps a block from emptying and reaching
+the pool while a trace is in flight (`rfc/model/gc/rc-cycle.md`, "Death while
+enrolled"). Nothing parks today; `PLAN.md` S36.2 builds the window.
+
+**Why it was possible.** The pairing is real and the ordering it provides is
+real, so the sentence reads correctly at speed. What it did was attribute the
+safety of the whole read to the half of it that a keyword provides, which is the
+attractive mistake: the keyword is in the code and the parking rule is in another
+document and another stage.
+
+**Why it was not caught earlier.** No test separates the two claims, and none
+can: acquire and relaxed produce identical behaviour on x86 for this access, and
+the design's second reader thread does not exist yet. It was caught by the Critic
+reading the paragraph against the memory model.
+
+**The rule.** An ordering comment says what the ordering buys and names the
+separate mechanism that covers the rest. A claim that a memory ordering excludes
+staleness is wrong on every ordering C11 has.
+
+---
+
 ## 2026-08-27 — a scripted rewrite keyed on a field name converted a second type's field
 
 **What happened.** S31.7 routed 187 fixture accesses of `RcHeader.flags` through

@@ -9,6 +9,52 @@ never edited or deleted.
 ---
 
 
+## 2026-08-27 — the collector's triple sits past the header, at the header's own size
+
+**Decision.** A block's shadow-row pointer, the reciprocal that turns an offset
+into a slot index, and a copy of the size class live in `BlockCollector`, laid
+over the block at `COLLECTOR_TRIPLE_OFFSET = size_of::<HeapBlockHeader>()` —
+line 3 of the reserved 256-byte header line. It is written by `Heap::refill` for
+`BLOCK_KIND_ENTITY` blocks alone, and published by the kind's release store like
+every other header word.
+
+**Why past the header rather than inside it.** The collector writes `shadow` at
+a block's first touch, and it is the only word of a block header a non-owner
+writes. Inside `HeapBlockHeader` it would still get its own line under
+`align(64)`, but the offset would then be a consequence of field order rather
+than a stated place, and the `const` assertion that keeps the header from growing
+into the tail becomes circular: `size_of::<HeapBlockHeader>()` would include the
+triple. Overlaid, the two are independent and the assertion has something to say.
+
+**Why the offset is the header's size and not 192.** 192 is what `BlockRemote`'s
+64-byte alignment produces today, not a decision anybody made. Written as a
+literal it would survive a header that grew to 256 — which still satisfies the
+existing "the header fits the line" assertion — and the triple would overlap the
+cold links. Tied to the size, a header that grows moves the triple and trips the
+`const` assertion that it still ends inside 256.
+
+**Why the size class is duplicated.** `HeapBlockHeader::size_class` is four bytes
+from `kind` on line 0, so reading it costs nothing extra while the dispatch is
+reading the kind. The copy is for the step after: a row array's length is
+`BLOCK_PAYLOAD / stride`, and S33.2 needs the stride again after the reciprocal
+has already answered the index. Taking it from line 0 there would put the owner's
+bump cursor and free list back into a lookup that had left them.
+
+**Rejected: the flat literal, and a fourth struct field.** Both are above. Also
+rejected: making the triple's words plain rather than atomic. Two of the three
+are written by the owner and read by a collector on another thread, so plain
+writes are a data race by the model however constant the values are — the same
+medicine `kind` and `size_class` were split out with.
+
+**What is not built.** `shadow` has no writer: nothing reserves rows yet, and the
+step that does — `PLAN.md` S33.2 — also owes nulling it at the end of a
+collection, on the abort path included, because a stale pointer left in a block
+whose arena has been recommissioned makes the next collection decrement live
+payload.
+
+---
+
+
 ## 2026-08-27 — a comment names the plan step that owes it, and the stage's deletion sweeps the number
 
 **Decided (Sage):** a comment that states a capability is absent names the

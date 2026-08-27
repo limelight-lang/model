@@ -75,11 +75,12 @@ Field order here is a contract, pinned by
 `block_header_halves_are_laid_out_as_the_design_requires`:
 
 ```
-line 0   kind, size_class       the two words the collector reads
+line 0   kind, size_class       kind is the pool's discriminant
          BlockPrivate           used, slots, free, bump, linked, next, prev
          BlockShared            owner
 line 1   BlockRemote            remote_free, alone
 line 2   BlockLinks             owned_next, owned_prev
+line 3   BlockCollector         shadow, reciprocal, size_class — the collector's
 ```
 
 Two rules produced that layout, and both were measured:
@@ -106,6 +107,29 @@ survive a `&mut` over the struct"). Both are
 `AtomicU32`; `block_pool::store_block_kind` is the only path that writes
 a kind, and because a whole-header struct store would cover the word
 plainly, every commissioning writes its header field by field.
+
+**Line 3 is the collector's, and it is the one line of a block header a
+non-owner writes.** `BlockCollector` holds a pointer to the block's
+shadow row array, the reciprocal `2^32 / stride + 1` that turns an offset
+into a slot index without a division, and a copy of the size class index.
+The array pointer is written by a collection at the block's first touch,
+so it is out here rather than in the header proper: a write into line 0
+would take the owner's bump cursor and free list with it on every block a
+trace reaches (`rfc/model/gc/rc-cycle.md`, "Where the shadow count
+lives"). The two constants beside it are written once at commissioning
+and published by the kind's release store, which is what lets a row
+lookup read this line alone after the kind.
+
+The size class is duplicated on purpose: the row array's length is
+`BLOCK_PAYLOAD / stride`, so a trace needs the stride as well as the
+reciprocal, and taking it from `HeapBlockHeader` would put line 0 back in
+the lookup. The triple is written only for `BLOCK_KIND_ENTITY` blocks,
+which are the only ones a trace enters, and its offset is
+`size_of::<HeapBlockHeader>()` rather than the literal 192 — 192 being
+what `BlockRemote`'s 64-byte alignment produces rather than a decision
+anybody made — so a header that grows moves the triple instead of
+overlapping it. Two `const` assertions hold that: the offset begins a
+cache line, and the triple ends inside the reserved 256.
 
 ## BlockPool
 
