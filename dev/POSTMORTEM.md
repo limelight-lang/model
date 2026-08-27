@@ -7,6 +7,35 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-27 — a scripted rewrite keyed on a field name converted a second type's field
+
+**What happened.** S31.7 routed 187 fixture accesses of `RcHeader.flags` through
+a `#[cfg(test)]` shorthand, by a scripted rewrite matching the field name. Four
+of the sites it converted read `(*cls).flags` on a **class descriptor**, not on
+a header. `Class.flags` is at offset 0 and `RcHeader.flags` at 4, so each of the
+four began reading the descriptor's first word as a flags word four bytes further
+on. Two tests went red at once, which is what named it; the repaired sites call
+`Class::flags_of`.
+
+**Why it was possible.** `flags` is the obvious name for a bitfield, and two
+types in this crate carry one. A rewrite keyed on the spelling cannot tell them
+apart, and neither can the header guard, which is why the guard's own doc calls
+the spelling its weakest instrument. The pointer form `(*x).flags` hides the type
+of `x` at the site: nothing local says whether `x` is a header or a descriptor.
+
+**Why it was not caught earlier.** It was caught immediately, by the suite, which
+is the part worth recording: the two types' fields sit at different offsets, so a
+wrong conversion reads a different word rather than the same word by another
+route, and the read is wrong in a way an assertion sees. Had the offsets matched,
+all four sites would have compiled, passed and been wrong only under a collector
+that does not exist yet.
+
+**The rule.** A rewrite keyed on a field name is scoped by the type before it
+runs — list the sites, resolve the receiver of each, and convert the ones whose
+receiver is the type meant. A field name is not an address.
+
+---
+
 ## 2026-08-26 — an atomic read needs write provenance, and `&raw const` does not carry it
 
 **What happened.** Taking `RcHeader`'s fields private moved twelve fixture
