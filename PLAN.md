@@ -59,8 +59,10 @@ Goal: candidates reach the collector without the mutator paying for a data
 structure, and an entity that dies while enrolled leaves no dangling pointer.
 
 - [ ] S34.1 The queue against Y12's contract
-      done: **all seven** clauses hold — `questions.md` says "Six clauses" and
-        numbers seven — so a failed growth never drops a root, no allocation
+      done: **all eight** clauses hold — the count and the header agreed on
+        2026-08-27, and the stale "seven against a header saying six" this line
+        used to carry is gone — so a failed growth never drops a root, no
+        allocation
         happens on the enrolling thread's hot path, proven by a `#[cfg(test)]`
         allocation counter bracketing the enrolment call rather than by defining
         the growth path as not hot, and a second reader is either supported or
@@ -70,6 +72,16 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         during enrolment sets the pending flag, and the poll fires at the next
         clean point, returning 0 until S36.7 wires the collection
       tier: T2 · role: Critic
+      handoff: the clause this step could not have been built against was
+        clause 3, and it was ruled on 2026-08-27 (`rfc/dev/PLAN.md` S8.2, and
+        the entry it names in `rfc/dev/DECISIONS.md`). What it hands the code: a
+        segment is one 64 KiB pool block and the queue is a chain of them; the
+        owner holds two spares in two pointer cells filled at thread init and at
+        every poll through the ordinary door, the live segment being a cell the
+        first enrolment swaps in; an overflow with both cells null draws the
+        critical reserve. What no ruling reaches is the reserve being spent too
+        — `rfc/dev/PLAN.md` S8.5 — so this step builds the reserve draw and
+        stops at its edge.
 - [ ] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
         returns a slot; a reader may mark an entry a corpse and pass it on; the
