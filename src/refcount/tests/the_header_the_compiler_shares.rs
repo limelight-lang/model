@@ -73,9 +73,9 @@ fn flags_layout_matches_the_normative_table() {
     // Bit 15 came free when the string's layout became a kind code, and
     // the normative table now calls it free.
     assert_eq!(claimed & (1 << 15), 0, "bit 15 is free");
-    // Bits 16 and above are unclaimed until S31 lays the collector's
-    // epoch, maturation age and reserve there. Nothing may drift into
-    // them meanwhile, which is what this asserts.
+    // Bits 16 and above are unclaimed until S36.6 and S37.1 lay the
+    // collector's epoch, maturation age and reserve there. Nothing may
+    // drift into them meanwhile, which is what this asserts.
     assert_eq!(claimed & 0xFFFF_0000, 0, "nothing claims bits 16-31");
 }
 

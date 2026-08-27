@@ -29,7 +29,7 @@ versions live in `docs/history/`, marked at the top.
   acyclic garbage dies by counting. What survives of the old code and
   why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26;
   the code itself is on the branch `archive/pre-rc-cycle`. `PLAN.md`
-  S31 through S40 build the replacement.
+  S32 through S40 build the replacement.
 - The enrolment gate: `refcount::ENROLMENT_GATE_MASK` and `may_enrol`,
   read on the non-zero decrement in `release_word`. Five conditions in
   one mask, each of them "this bit is zero" — GC-heap category, a kind a
@@ -173,8 +173,8 @@ versions live in `docs/history/`, marked at the top.
   2026-08-07).
   `table.rs` is the core — lookup, insert, remove, growth by doubling or by
   dropping the holes (one body, `move_entries`, and both into a freshly
-  allocated chunk since S13.1: sliding entries inside the published one
-  raced the collector's relaxed loads), and the flood backstop, which is
+  allocated chunk: sliding entries inside the published one raced the
+  collector's relaxed loads), and the flood backstop, which is
   a three-rung ladder: a long chain draws the table's salt and rebuilds
   the index, a second long chain or eight equal identities escalates to a
   keyed hash over the key bytes, and past both an admission whose trigger
@@ -184,7 +184,7 @@ versions live in `docs/history/`, marked at the top.
   storage, and is presized to the entries it replays. It allocates no
   entity and calls no store
   barrier: both are `element.rs`'s, and `Table::insert` hands the
-  displaced element back for that layer to release (S6.1).
+  displaced element back for that layer to release.
   Storage is a **buffer-arena** chunk in the two long-lived categories,
   a request-arena body in a request array and an immortal-region
   allocation in an immortal one; both arenas split by size, so a storage
@@ -219,7 +219,7 @@ versions live in `docs/history/`, marked at the top.
   **through** the box (`barrier::ref_store`), and a copy shares that box
   only while a second name holds it: `entity::element_for_copy` unwraps a
   box whose refcount is one, which is where PHP collapses a reference and
-  the only place it does (`fill_from`, S3.2 in `PLAN.md`).
+  the only place it does (`fill_from`).
   `entity.rs` is the wrapper supplying the `RcHeader`: an array carries no
   class pointer, the same construction as a string, because the entity
   kind already says what it is. Its children — elements **and** string
@@ -250,7 +250,7 @@ versions live in `docs/history/`, marked at the top.
   depth, each child published through `barrier::publish_child` rather
   than retained bare — the retain, the category barrier and the reference
   reconciliation the array's four publications share, `store_into`'s
-  value and key and `fill_from`'s (S6.2). Neither the copy nor the
+  value and key and `fill_from`'s. Neither the copy nor the
   teardown recurses into nesting: both drain a `WorkList` in a buffer-
   arena chunk, because the depth is the caller's input and a frame set
   per level is a stack
@@ -345,7 +345,8 @@ versions live in `docs/history/`, marked at the top.
   soundness rather than economy. A free arriving while a collection
   reads the block must park, and for a run that is soundness rather than
   economy — its memory is unmapped at the free while a trace may still
-  address it. Nothing parks between S30 and S36.2 (`PLAN.md`). The doors
+  address it. Nothing parks until S36.2 builds that window (`PLAN.md`).
+  The doors
   above it are
   `heap::entity_alloc` past `MAX_SMALL` and `Arena::alloc_entity` past
   one block payload; the arena logs the run it takes, so an unpromoted
@@ -620,7 +621,7 @@ creation; the store barrier is funded by a per-thread reserve.
 
 `dev/RESEARCH.md` — what was read in other projects, at which revision,
 and what of it applies here. Entries so far: Concurrency Kit (the seqlock
-that found the version-bracket defect ahead of S2.7, the epoch proof,
+that found the version-bracket defect, the epoch proof,
 event counts, the per-bucket probe bound), `ankerl::unordered_dense` (the
 fingerprint byte, for the array-performance stage), mimalloc and snmalloc
 (the two answers to cross-thread free), and rpmalloc 2.0.1, read from

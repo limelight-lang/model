@@ -37,7 +37,7 @@ cargo bench --no-run
 
 **One configuration since 2026-08-26.** The GC axis went with the two
 collectors: there is no `rc-walk` feature and no `rc-trace` default, so
-the matrix below has lost its second leg (`PLAN.md`, S30). `cargo bench
+the matrix below has lost its second leg. `cargo bench
 --no-run` joined the gate at the same time, because `cargo test --lib`
 builds no bench target and `benches/lifecycle.rs` imports the GC ABI —
 without it a deleted export is found by a release, not by a commit.
@@ -246,9 +246,13 @@ When a stage's section leaves `PLAN.md`, or a debt it carries moves to
 another stage, **the same commit sweeps the number**: the capability
 exists now, so every comment naming it states the contract that replaced
 the absence, or goes. Unlike the four passes below, this one a grep can
-make end to end — pull every `S[0-9]+` token out of `src/` and
-`benches/` and resolve each against the `##` sections still in
-`PLAN.md`; an unresolved number is debris. Grep the bare number, because
+make end to end — pull every `S[0-9]+` token out of `src/`, `benches/`,
+`dev/INDEX.md`, `dev/ARCHITECTURE.md` and this file, and resolve each
+against the `##` sections still in `PLAN.md`; an unresolved number is
+debris. The maps are swept with the code because they carry the same
+kind of forward claim; `dev/DECISIONS.md`, `dev/POSTMORTEM.md` and
+`dev/BENCHMARKS.md` are not, an entry there naming the stage of its own
+day being a record rather than a pointer. Grep the bare number, because
 punctuation hides one: `(S34.3)`, `S34-3`, `marked S34.3`. An
 `#[expect(dead_code, reason = "…S36.2")]` is the self-reporting form of
 the same debt — the attribute goes unfulfilled the moment the caller
@@ -319,7 +323,7 @@ array's vector and ordered hash today, `Map` and the typed vector later —
 the suite stays green while a door reaches for one of them by name,
 because the factory hands out the other. Flip the stamp, run the suite,
 read the failures as the inventory of such doors, and revert the flip
-until the step that owns it. What this found in S7.2, and why no static
+until the step that owns it. What this found, and why no static
 check reports it, is `dev/DECISIONS.md`, "flipping the factory's stamp is
 how a representation-blind door is found".
 

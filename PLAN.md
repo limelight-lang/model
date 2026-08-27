@@ -11,13 +11,13 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-08-26 · Active: S31 — the sections after S40 are the backlog
+Updated: 2026-08-27 · Active: S32 — the sections after S40 are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S30. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S31. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -32,15 +32,14 @@ than whole; the copy tests of that module ran 25 in 59 s.
 
 **The crate collects no cycles.** S30 deleted `rc-walk`, `rc-trace` and
 `rc-satb` on 2026-08-26 and the design in force is unbuilt, so a garbage ring
-is retained and acyclic garbage dies by counting. S31 through S40 build
+is retained and acyclic garbage dies by counting. The stages below build
 `rc-cycle`; what the deletion took, what it kept and why is `dev/DECISIONS.md`
 under that date, and the old code is on `archive/pre-rc-cycle`. S28 was
 abandoned rather than closed by the same ruling, and S29 was split — its
 second half is carried as S39.
 
-**S31 through S40 went through a Critic round and four Sage rulings on
-2026-08-26**, on Edmond's instruction, and the stages below are the amended
-form. The rulings and their reasons are in `dev/DECISIONS.md`.
+**The stages below went through a Critic round and four Sage rulings on
+2026-08-26**, on Edmond's instruction, and are the amended form. The rulings and their reasons are in `dev/DECISIONS.md`.
 
 **Verification is one configuration** since 2026-08-26: the GC axis went with
 the collectors, `hash-folding` and `debug-journal` are what remains, and
@@ -53,405 +52,6 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 Empty.
 
 ---
-
-## S31 — The header's new flag layout
-
-Goal: one collector claims the flags word, so the layout is chosen for the
-paths that read it rather than for a truce between two strategies.
-
-Done when: the layout below is in `refcount.rs` with every constant **that has
-a reader** named, the enrolment gate is one mask, and the kind field is four
-bits wide.
-
-The three collector fields — epoch, maturation age, reserve — get their
-constants from the steps that read them, S36.6 and S37.1, and not from here:
-`EPOCH_BYTE_SHIFT` and `_MASK` were deleted on 2026-08-26 for having no reader
-(`dev/DECISIONS.md`), and `refcount::tests::the_header_the_compiler_shares`
-asserts that nothing claims bits 16-31 so those steps start against a check
-already red for them. Naming them here would mean weakening that check to
-introduce two constants nobody reads.
-
-| bits | field | | bits | field |
-|---|---|---|---|---|
-| 0–1 | memory category | | 12 | has weak references |
-| 2–5 | entity kind (4 bits) | | 13 | destructor pending |
-| 6 | copy-on-write | | 14 | destructor ran |
-| 7 | arena reset mark | | 15 | free |
-| 8 | acyclic gate | | 16–17 | epoch |
-| 9 | ownership mark | | 18–19 | maturation age |
-| 10 | enrolled | | 20–23 | collector reserve |
-| 11 | live escapee | | 24–31 | free |
-
-- [x] S31.0 Write the new layout into `classes.md`   *(before S31.1)*
-      done: `rfc/model/classes.md`'s "Flags layout" table carries the layout
-        below rather than the two-collector one — no GC-state field, no colour
-        bits, no buffered bit, no candidate index — and the prose under it that
-        names bit positions moves with it: the kind field is bits 2–5, the
-        eight codes are named with 8–15 free and 0–3 reserved for ring-closing
-        kinds, and the parenthesis about the candidate buffer's membership test
-        goes; `rfc/model/lowering.md`'s C mirror of the flags word is rewritten
-        to match, being what a consumer transcribes; `linkcheck.php` clean
-      tier: T1 · role: —
-      handoff: `refcount.rs` names that table **authoritative** and
-        `lowering.md` names it the same, so writing the code first would put
-        the crate in contradiction with the document it cites — which is the
-        failure S30 spent a day repairing. The decision itself is already
-        recorded (`rfc/dev/DECISIONS.md`, 2026-08-26, "the flags word is
-        re-laid for one collector"); what is missing is the normative table.
-      handoff: closed 2026-08-26 by `rfc` `1000e9d`. Four more documents named
-        positions that moved and were taken with it — `lowering.md`'s C mirror,
-        `layouts.md`'s diagram, `arena-reset.md`'s promotion step and
-        `weak-references.md`'s eight mentions of bit 7. `cycle/questions.md`
-        Y7 got a superseding note instead: its bit accounting reasoned about
-        the old positions, and what it settles is which bits have customers.
-- [x] S31.1 Renumber the entity kinds so the predicates become masks
-      done: `Object 0, Lazy 1, Array 2, Reference 3, String 8, StringDynamic 9,
-        Box 10, WeakRef 11`, codes 4–7 held free for ring-closing kinds and
-        12–15 free for the rest; the category keeps bits 0–1 because
-        more surviving sites read its value than the kind's, and a mask test is
-        position-free; "closes a cycle" is
-        `flags & 0b100000 == 0`, "carries a class at +8" is
-        `flags & 0b111000 == 0`, "is a string" is `flags & 0b111000 == 0b100000`;
-        `CANDIDATE_KINDS`' bitset is replaced by the range test, the codes below
-        eight are declared reserved for ring-closing kinds so a later kind
-        is not silently excluded by a permanent refusal (Y6), and the decision
-        that refused renumbering is superseded in `dev/DECISIONS.md` with its
-        reason; `kind_may_close_a_cycle` gains the caller S31.3 gives it or
-        goes too
-      tier: T2 · role: Critic
-      Critic 2026-08-26: the reserve was 0–3 and its four codes were all
-        assigned, so a fifth ring-closing kind would take code 8 and be refused
-        by the mask forever — Y6's own failure inside the clause written against
-        it. Also: a member list is the bitset again, since a kind never added to
-        the list passes every assertion; three numeric citations missed
-        (`Lazy (6)`, `Kind-5`, `bit-7`); `carries_a_class_word` conflates the
-        weak-referent question with the class-word one, and they diverge at FFI.
-      Sage 2026-08-26: the reserve widens to codes 0–7 in the Critic's
-        assignment; the `rfc` amendment is a precondition and lands first; the
-        exhaustive `match` is necessary and not sufficient, so a `const`
-        assertion ties each kind's classification to its code and a
-        `debug_assert!` in `to_flags` catches a kind the battery never named.
-        `lowering.md` needs no edit — its C mirror names positions, not codes.
-        Final.
-      handoff: closed 2026-08-26. The reserve is four free codes, and that is
-        the whole content of the clause: a full range refuses the next kind for
-        ever and reports nothing. `EntityKind::closes_a_ring` is the
-        classification and `kind_may_close_a_cycle` the mask; the `const`
-        battery is what makes them agree, verified by a standalone `rustc` run
-        in which a ring-closing kind coded at 8 fails the build.
-      handoff: the criterion's clause "the decision that refused renumbering is
-        superseded" was already met by `dev/DECISIONS.md`, 2026-08-26, "the
-        flags word is re-laid for one collector", written in S31.0's session —
-        checked against the criterion rather than carried over from the handoff.
-- [x] S31.2 Fold the string's layout into the kind field
-      done: `STRING_OUT_OF_LINE` is gone, `LLStringDynamic` is selected by kind
-        code 9 — whose meaning is **bytes outside the body, whatever the
-        reason**, not "growable" — and every "is a string" site accepts both
-        codes; the inventory of sites that name one representation is taken by
-        flipping the factory's stamp so every string is out-of-line and reading
-        the failures (`dev/WORKFLOW.md`, Tests), not by grep; a red-first test
-        proves an out-of-line string is still read through `data`
-      tier: T2 · role: —
-      handoff: `promote.rs:461` tests `k == EntityKind::String.to_flags() &&
-        flags & STRING_OUT_OF_LINE != 0`, which is exactly the shape the stamp
-        flip finds and static reading does not.
-      handoff: four sites reach code 9 through a catch-all and the stamp flip
-        finds each only if the suite drives that path, so they are named here
-        rather than left to it: `object.rs`'s `ll_cow_separate`, whose `_` arm
-        returns the original and so writes a **shared** string in place;
-        `escape_copy`'s `unreachable!`; `promote::external_memory`'s
-        `_ => External::None`, which loses a survivor's out-of-line bytes at a
-        reset; and `promote::traceable_in_full`. S31.1 named the code in
-        `cells::sever_cells` already, that arm's answer being mechanical.
-      handoff: closed 2026-08-26. `rfc` `d5ea1b1` went first — `strings.md`
-        still selected the layout with the flag while `classes.md` had already
-        given it a code, and the crate cites both. The stamp flip ran **twice**,
-        which is what the method is worth here: before the fold it finds only
-        sites that name a *representation*, because the kind does not yet
-        discriminate; after it, every string carries code 9 and the kind
-        dispatch is exercised. The second run added exactly one failure over the
-        first, and no production site among them — the four named above were
-        widened before it ran, which is what makes their silence evidence.
-      handoff: the flip's own casualty is worth knowing before re-running it.
-        `the_hash_is_computed_once_on_demand_and_never_zero` poisons bytes by
-        writing at `size_of::<LLString>()`, which in the other layout is the
-        `data` pointer, so the run **aborts** on a misaligned free and hides
-        every later failure. It now asserts the layout it assumes; a future flip
-        still has to skip it, since the assertion is what fires.
-- [x] S31.3 The enrolment gate is one mask
-      done: the release path decides with `flags & 0x723 == 0` — category zero,
-        kind below eight, class not acyclic, ownership not proven, not already
-        enrolled — and a `#[cfg(test)]` counter past the gate proves each of the
-        five conditions rejects on its own; the mask is composed from the named
-        constants rather than written as a literal, and
-        `EntityKind::closes_a_ring` is what its kind term is checked against
-      tier: T2 · role: —
-      handoff: a scenario test covers a pair, never one half — the counter is
-        what sees a condition that never fires.
-      handoff: closed 2026-08-26. The gate decides and counts and stores
-        nothing: `ENROLLED`, `ACYCLIC_GATE` and `OWNERSHIP_MARK` have no writer
-        until S34.1, S37.2 and S37.3, so the mask reads three bits that are
-        always zero today and the clause tests set them by hand. The counter is
-        thread-local, because the harness runs tests in parallel and a global
-        one charges another test's releases to this one.
-      handoff: the clause test was shown non-vacuous by dropping `ACYCLIC_GATE`
-        from the composed mask: both `the_enrolment_gate` tests turn red, one on
-        the admission and one on the mask's own coverage. A `const` assertion
-        ties the composition to the `0x723` the RFC names, so the two cannot
-        part silently.
-- [x] S31.4 Narrow the mutator's header writes, and rule the read side
-      done: the mutator writes the refcount with a 32-bit store and the flags
-        half with stores that stop below byte 2, so no mutator write spans it;
-        the whole-word `mutator_update_flags` is gone, and so is the flags half
-        of `mutator_guard_retain` and `mutator_unguard_release`, which write it
-        in a 64-bit store on the teardown path; the release path's
-        `flags & 0x723` read is narrowed with it, because a 32-bit load at +4
-        against the collector's byte store at +6 is a mixed-size atomic access
-        that Rust's memory model does not define and Miri refuses; a test
-        asserts the collector's byte survives a concurrent flags update, and it
-        is written so the mutator's load precedes the collector's store, since
-        the sequential order passes on today's defective code
-      tier: T2 · role: Critic
-      handoff: today's comment promises the opposite — "may bury a concurrent
-        collector byte store". The Critic round of 2026-08-26 found the clause
-        guarding writes while the day-one defect is a read, and naming one of
-        three writers.
-      Critic 2026-08-26: six production sites read and write a **published**
-        header plainly, through `(*p).flags` rather than an entity struct, so
-        `who_may_read_a_header` cannot match them — `promote.rs` at 242, 608,
-        620, 717 and 759, `barrier.rs` at 69 and 102, `cells.rs:33`. Two of
-        them reach GC-heap entities, not only arena ones. Also: the new
-        interleaving test passes on a *preserving* 32-bit access, which is the
-        defect itself; the `const` battery is a member list with the hole S31.1
-        already paid for; `header_flags` now returns a half and its name says
-        otherwise. All accepted; the first goes to S31.5, the rest are in this
-        step.
-      handoff: closed 2026-08-26, after `rfc` `32af118` — `lowering.md`
-        declared `_Atomic uint32_t flags`, and a consumer transcribing that
-        mirror emits exactly the access this step removes, so the widths went
-        into the declaration first. `header_flags` is now `mutator_flags`,
-        because it answers for bits 0-15 and an S37 caller asking it for the
-        epoch would get zero in every build with nothing red.
-      handoff: what pins the width is `the_widths_the_mutator_uses`, which
-        reads `refcount.rs` — no behaviour separates a two-byte access from a
-        four-byte one that preserves bytes 6-7, and Miri does not either, since
-        it allows a width change on a byte the accessing thread is ordered
-        after. The same test checks the `const` battery against the
-        declarations, so a constant nobody added to the list is caught rather
-        than assumed absent. Both shown red on their own defect.
-      handoff: `publish_header` keeps the one eight-byte store, and its
-        argument is about writers while the counterparty at S38 is a **reader**
-        — S33.2 seeds a row from a four-byte load of the refcount, and a
-        concurrent publication is then a mixed-size pair. Narrowing it is not
-        free: `heap::FreeSlot` preserves a dead entity's final header, so a
-        recycled slot arrives carrying the previous occupant's byte 6, and a
-        narrow publication that does not zero it hands a new entity a stale
-        mature stamp — S37.1 would prune its whole subgraph, permanently and
-        silently. Owner: S38.0, which is where the second thread arrives.
-- [x] S31.5 Every published-header access goes through the helpers
-      done: `promote.rs` and `barrier.rs` reach a published header through
-        `mutator_flags` / `header_refcount` / `update_header_flags` and a
-        counter writer this step names, rather than through `(*p).flags` and
-        `e.refcount`; `cells::entity_kind` does the same; the guard's `READS`
-        gains the `)` spellings — `).flags`, `).refcount`,
-        `).memory_category()` — so the pointer form is an offence like the
-        field form, and the guard is shown red on one of the sites before they
-        are converted
-      tier: T2 · role: Critic
-      handoff: a `&mut RcHeader` is the shape to watch: `barrier.rs` holds one
-        and writes both halves through it, and a `&mut` retag covers the whole
-        struct, so the word has to leave the struct rather than the borrow being
-        narrowed (`dev/POSTMORTEM.md` and the memory of 2026-08-19).
-      handoff: `promote.rs:242` and `:717` run **after** the category rewrite,
-        so they touch heap headers rather than arena ones, and `count_children`
-        at `:759` reads every counted child, GC-heap ones included. The
-        "arena entities are never traced" defence does not cover them, which is
-        what makes this a step rather than a note.
-      Critic 2026-08-26: four accesses the widened grep cannot spell survived
-        the first pass, all eight bytes wide over a header — `is_occupied` in
-        `memory/retained.rs`, which the reset applies to the survivors it has
-        just promoted and which `heap::for_each_entity_slot` reads narrowly at
-        the same addresses; `heap::describe_slot`, twice; and `stdapi`'s
-        `#[cfg(test)]` free-path assertion. Accepted, all four narrowed.
-      Critic 2026-08-26: `Class::flags_of` bound a shared reference, which is
-        the evasion the guard's own doc names, so the change shipped a worked
-        example of it. Accepted — it reads the word at its offset now. The
-        same round found the comment over the category rewrite still naming a
-        GC-state field S31.1 removed; rewritten.
-      Critic 2026-08-26: the guard's test exemption covers 187 accesses in 37
-        files and its stated reason — headers built on the stack — is false for
-        most of them, so the fallback instrument covers nothing there either.
-        Recorded in the guard's doc and in `dev/DECISIONS.md`; the conversion
-        is S31.6's to decide, being the same job as a type change.
-      handoff: closed 2026-08-26 by `5ed9d34`. The guard was red on 29 sites
-        before the conversion, is green after, and its widening carries a
-        fixture of its own, verified by narrowing `READS` back and watching it
-        fail. Gate at that commit: suite 460 three times, `debug-journal` 466
-        three times, `hash-folding` 460, release, benches, `fmt --check`, no
-        unresolved doc link; Miri clean over `refcount::`, `promote::`,
-        `cells::`, `memory::barrier::`, `memory::heap::`, `memory::retained::`,
-        `memory::stdapi::` and `class::`. Test list 462 → 463, the one
-        addition named above.
-- [x] S31.6 Decide whether `RcHeader`'s fields stop being public
-      done: the choice and its reason are in `dev/DECISIONS.md`, naming the
-        price it was weighed against — 187 header accesses in 37 test files,
-        none of them in production and none in `refcount`'s own tests, which
-        keep access as a child module — and saying what becomes of
-        `refcount::tests::who_may_read_a_header`: retired, or kept for what a
-        type cannot reach
-      tier: T2 · role: Sage
-      handoff: raised by S31.5's Critic. The grep has been widened twice and
-        still admits the three evasions its own doc names — a rename, a local,
-        a reference binding — where private fields make all three a compile
-        error at every site, the exempt tests included. The price was measured
-        on 2026-08-26 and is one-sided: 187 accesses in 37 test files break,
-        while production, the benches and `refcount`'s own tests break nowhere.
-        `RcHeader` stays `#[repr(C)]` either way — the layout is published, the
-        field names are not.
-      Sage 2026-08-26: the fields go private — no modifier at all, so `refcount`
-        and its child modules and nothing wider — and the grep is kept rather
-        than retired, because `memory_category` and `lifetime_counted` take
-        `&self` and autoref reaches them past field privacy. Two constraints
-        ride with the conversion: the fixtures' shorthand takes a raw pointer,
-        never `&self`, and its body is the narrow atomic load, never a plain
-        read. `pub(crate)` refused: it breaks the external consumer and leaves
-        the internal problem. Final.
-      handoff: closed 2026-08-26 by `dev/DECISIONS.md`, "`RcHeader`'s fields go
-        private, and the source grep is re-aimed rather than retired". The
-        deciding consequence the Sage named is S38.0: a compile error is the
-        only detector this crate has that fires before the racing code exists.
-        What it accepts losing is the fields as public API, unsurveyed.
-- [x] S31.7 Convert the fixtures to the narrow shorthand
-      done: a `#[cfg(test)]` shorthand in `refcount` takes a raw pointer and
-        loads narrowly, and all 187 accesses in the 37 test files outside
-        `refcount`'s own go through it or through the existing helpers, the
-        fields still `pub` so every batch builds and the suite stays green;
-        the test list is diffed byte for byte at the end and `who_may_read_a_`
-        `header` is unchanged, still red on nothing
-      tier: T2 · role: —
-      handoff: expand before migrate (`skills`, 23.6): this step leaves the
-        production form alone, so nothing is red in the middle of it. The
-        counting is in `dev/DECISIONS.md`, "`RcHeader`'s fields go private".
-      handoff: closed 2026-08-26. Three shorthands — `entity_refcount`,
-        `entity_flags`, `entity_category`, generic over the entity type
-        because `RcHeader` is at offset 0 of every one — took 179 sites; the
-        eight writes went to `set_header_refcount` and `update_header_flags`
-        by hand. Nought remains outside `refcount`'s own tests. The one trap:
-        a rewrite keyed on the field name converted four `(*cls).flags` reads
-        of a **class descriptor**, whose `flags` is at offset 0, not 4 — two
-        tests went red at once and they now call `Class::flags_of`. Gate:
-        suite 460 three times, `debug-journal` 466 three times,
-        `hash-folding` 460, release, benches, `fmt --check`, 42 doc warnings
-        and no unresolved link; test list byte-identical.
-- [x] S31.8 Take the fields private and re-aim the guard
-      done: `refcount` and its child modules are the only readers of `refcount`
-        and `flags` — the modifier is gone, not narrowed — and the crate builds
-        with nothing else naming either field; `who_may_read_a_header` keeps all
-        eight patterns and its doc says which half the type now carries and
-        which two method spellings autoref still reaches; `dev/INDEX.md` and
-        `dev/ARCHITECTURE.md` say the rule is a type now; the full gate passes
-      tier: T2 · role: Critic
-      handoff: the delete half of S31.7's expand. It is the step that proves
-        S31.7 was complete: if a site was missed, the build names it.
-      handoff: closed 2026-08-26. The build named 24 sites in 7 files that no
-        grep pattern covered — bare locals, and four `let rc = &(*s).rc`
-        bindings, which is the reference-over-a-published-header shape the
-        Sage ruled against. The whole-test-tree exemption went with them: the
-        guard now spares `refcount.rs` and `refcount/` alone and is green.
-        Miri, one slice at a time, found a defect of its own: an atomic access
-        retags SharedReadWrite, so a fixture header reached by `&raw const`
-        stops the load — twelve sites now use `&raw mut`, and the shorthand
-        says why. Clean afterwards over `refcount::`, `value::`, `object::`,
-        `string::`, `weak::`, `reference::`, `intern::`, `memory::barrier::`,
-        `cells::`, `promote::`, `array::entity::` and `array::element::`;
-        `array::table::` did not finish inside a 560 s budget and is not
-        evidence either way.
-      Critic 2026-08-26: five findings accepted and repaired. The shorthands
-        asked for `*const T` while their bodies need write provenance, and a
-        `&T` binding coerces to that with no cast to notice — the signature is
-        `*mut T` now. The self-test pinned five of the eight patterns, and the
-        replacement compared two counts that fall together, which was seen
-        doing exactly that before it was written against a literal. The guard
-        forbade a comment naming the spelling, and matched the exemption
-        against the absolute path, so a checkout under a directory called
-        `refcount` would have exempted the crate; both closed, with a floor on
-        the judged-file count. `dev/INDEX.md` and `dev/ARCHITECTURE.md`
-        overstated what privacy carries; corrected.
-      Critic 2026-08-26: the sixth finding is the ruling's own premise —
-        `memory_category` and `lifetime_counted` are `pub fn(&self)` with
-        **zero callers anywhere**, so the pre-publication callers the Sage kept
-        them for do not exist, and `let hdr = &(*slot).rc; hdr.lifetime_`
-        `counted()` evades the type and the grep alike. Sent back to the Sage
-        rather than decided here.
-      Sage 2026-08-26: delete both, and nothing replaces them in the public
-        API — the keep-clause was argued on a premise the sources refute, and
-        with the methods gone a `&RcHeader` reaches a type with private fields
-        and no methods, so the binding has no motive. The capability, if ever
-        wanted, returns as a free function over the flags word, never as
-        `&self`. The grep stays on two grounds only: a revert of the privacy
-        breaks no build, and a `#[cfg]`-disabled branch parses without
-        resolving a name. Final.
-      handoff: closed 2026-08-26. The whole gate ran again after the deletion:
-        suite 461 three times, `debug-journal` 467 three times, `hash-folding`
-        461, release, benches, `fmt --check`, 42 doc warnings and no
-        unresolved link; Miri clean over `refcount::`, `intern::`, `value::`
-        and `memory::barrier::` afterwards. Test list 460 → 461, the addition
-        being the self-test that pins all eight patterns — verified red by
-        dropping one.
-- [x] S31.9 Pay the Code Reviewer's four requirements
-      done: `header_pair` and `mutator_load_header` are one function rather
-        than two names for it, and `object.rs`'s two `let (_, flags)` callers
-        take `mutator_flags` instead of loading a counter nobody reads;
-        `kind_may_close_a_cycle` and `is_string` say at the declaration that
-        they are the layout's named clauses with no production caller, or go;
-        `closes_a_ring` cites a live `dev/DECISIONS.md` entry rather than one
-        whose main clause the 2026-08-26 rulings overturned, and the surviving
-        fact — Lazy answers yes before any factory stamps it — is re-recorded
-        there; `refcount::tests::the_header_the_compiler_shares` no longer
-        says the wide helpers access the word as one, there being none
-      tier: T1 · role: —
-      handoff: returned by the stage's Code Reviewer on 2026-08-26, which
-        edited comments and style itself and handed these back as substance.
-        Item four is a `dev/` edit the role may not make.
-      handoff: closed 2026-08-27 by `3b00acc`. `header_pair` is the surviving
-        name — `mutator_load_header` promised the header while answering for
-        bits 0-15, which is the objection that renamed `header_flags` in S31.4.
-        A third predicate was in the same state and is treated with the other
-        two: `is_object` has no production caller either, and its doc claimed
-        to be the dispatch teardown makes, which matches the whole kind field
-        with an arm per kind.
-      handoff: the surviving fact of the 2026-08-07 candidate-gate entry is
-        re-recorded as `dev/DECISIONS.md`, "a kind's ring classification is
-        written at its declaration, before a factory stamps it", and that is
-        what `closes_a_ring` cites now. The old entry is left unedited: that
-        file's own rule is that a superseded decision is replaced by a new
-        entry rather than corrected, which decided the form here.
-- [x] S31.10 Decide what a comment may cite when it means a step
-      done: choice and reason in `dev/DECISIONS.md`, and `dev/WORKFLOW.md`'s
-        "How a reference is written" agrees with it either way
-      tier: T2 · role: Sage
-      handoff: `dev/WORKFLOW.md` forbids a comment citing a `PLAN.md` stage,
-        because a closed stage is deleted from that file, and the crate does it
-        58 times in 20 non-test files — 11 in `refcount.rs` alone, eight of
-        them added by S31. Practice and rule contradict each other crate-wide,
-        so unpicking one stage's share makes the tree less consistent, not
-        more. What a comment should name instead — an open question in `rfc/`,
-        a `dev/` entry, nothing at all — is the decision.
-      Sage 2026-08-27: the practice stands and the rule is amended. The ban read
-        "a number that gets reissued or removed", one reason over two failure
-        modes: a line number is reissued and misleads, a stage number is never
-        reissued and only dangles. Every other referent binds the comment to the
-        wrong event — an `rfc/` question closes on an answer, a decision entry
-        outlives the build — so only the step's closing coincides with the fact
-        that falsifies the comment, and the number is the handle the closing
-        commit needs to find it. In exchange the deleting commit sweeps the
-        number, which is a grep end to end. No new document. Final.
-      handoff: closed 2026-08-27 by `ffc68bf`. The sweep found twelve dead lines
-        rather than the nine measured over non-test files: `S30` seven times,
-        `S18.3` twice, `S10` twice, `S3` once, every one of them citing a closed
-        stage as history, which the ruling forbids outright. The sweep is clean
-        now and is written into `dev/WORKFLOW.md` as the check to run at any
-        stage deletion.
 
 ## S32 — The block header's collector triple
 
@@ -765,8 +365,9 @@ stage is what makes a trace affordable rather than what tunes it.
       done: a proven-owned entity never enters the candidate set, and the
         compiler's stamp is honoured at bit 9
       tier: T2 · role: —
-      handoff: S31.3's mask already tests bit 9 and no compiler stamps it, so
-        this step's remaining content is the factory-side and FFI-side write.
+      handoff: `refcount::ENROLMENT_GATE_MASK` already tests bit 9 and no
+        compiler stamps it, so this step's remaining content is the
+        factory-side and FFI-side write.
 
 ## S38 — The claim and concurrency
 
@@ -964,9 +565,11 @@ own checkbox.
 - [ ] **`Lazy` (code 1) and `Box` (code 10) have no producer.**
   `ll_entity_die`'s switch serves five; Box waits on the FFI surface and
   Lazy on the compiler, and each reaches a `debug_assert!` meanwhile.
-  `Lazy` nevertheless answers yes to `EntityKind::closes_a_ring`, on the argument recorded
-  in `dev/DECISIONS.md`, 2026-08-07. `StringDynamic` (code 9) has no
-  producer either and is S31.2's, so it is not carried here.
+  `Lazy` nevertheless answers yes to `EntityKind::closes_a_ring`, on the
+  argument recorded in `dev/DECISIONS.md`, "a kind's ring classification is
+  written at its declaration, before a factory stamps it". `StringDynamic`
+  (code 9) is not carried here: `string::reserve` stamps it whenever the
+  placement is out of line, so the kind has a producer.
 - [ ] **The threshold arming policy and the collector-thread accelerator.**
   What is left of the old escalation ladder after S38.4 builds the entry gate
   and the slow-path fire. The arming policy is the compiler's

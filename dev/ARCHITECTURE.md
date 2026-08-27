@@ -128,7 +128,7 @@ teardown.
 |---|---|---|---|---|
 | `array/head` | the words a concurrent walker may read — version, chunk, index-slot count, element count, strategy tag — and the seqlock bracket that makes reading them coherent (`begin_move` / `end_move`, `coherent`) | that a walker validates a reading rather than locking, that each word it reads is written by one atomic store of the same width, and that giving a reading up leaks one epoch rather than freeing early; that both fences are needed and why their ends differ (`version_bracket_model.rs`); and the two rules it states for whoever writes the chunk — `used` never falls while `storage` stays the same, and a release goes through the window like a move | what the words mean: it knows no stride, no entry, no element, and holds no representation — the strategy tag it stores is opaque to it beyond being one of three | nothing but `core` |
 | `array/entry` | the 32-byte entry — `hash_or_key`, `key`, and the element Box whose reserved bytes carry the collision link as a `u32` at +28 — the sentinel `NONE`, which ends a chain and empties an index slot alike, with the `MAX_ENTRIES` cap a `u32` index imposes; and every store into a word the collector reads — the element's second word and the key word, `make_hole` included | that the link shares the element's second word, so tag, flags and link publish as one relaxed atomic store of the width the collector loads; which key states the raw word encodes, the hole among them; that an entry above the published count is filled by the plain setters instead, no reader being able to reach it yet | the index's shape and every operation over the entries: it supplies the sentinel and reads no slot, hashes nothing, and does not know what an element points at | `value`, `string` |
-| `array/table` | one storage allocation (`u32` index slots, then the dense entry array in insertion order) and the operations over it: lookup, insert, remove, growth by doubling or by dropping the holes, both into a fresh chunk, the flood ladder's two rungs, and the bracket it opens around every move of an entry | the memory category, handed to it as a parameter by every allocating call (`array::entity::category_of` reads it, S10) — except at the carry out of a dying arena, which names `GcHeap` because the owner's header still says `RequestArena` until promotion rewrites it; a string key's bytes and its cached hash; that nothing inside the storage points into it, so promotion copies it whole; that the words a walker reads are not its own — the chunk, the two counts, the tag and the version arrive as `head: &StorageHead` on every call that touches them | entities altogether: no kind, no header, no reference. It allocates none, retains none, releases none and calls no store barrier — it states the ownership its callers owe (`insert`'s one reference per stored key, `remove`'s `#[must_use]` pair) and hands the displaced element back for the layer above to act on. It holds no category of its own either, that field having drifted once (2026-08-07), and no storage head, a `&mut Table` being unable to span one (2026-08-11) | `entry`, `refcount`, `value`, `string`, `hash`, `memory/routing`, `memory/arena`, `memory/block_pool` |
+| `array/table` | one storage allocation (`u32` index slots, then the dense entry array in insertion order) and the operations over it: lookup, insert, remove, growth by doubling or by dropping the holes, both into a fresh chunk, the flood ladder's two rungs, and the bracket it opens around every move of an entry | the memory category, handed to it as a parameter by every allocating call (`array::entity::category_of` reads it) — except at the carry out of a dying arena, which names `GcHeap` because the owner's header still says `RequestArena` until promotion rewrites it; a string key's bytes and its cached hash; that nothing inside the storage points into it, so promotion copies it whole; that the words a walker reads are not its own — the chunk, the two counts, the tag and the version arrive as `head: &StorageHead` on every call that touches them | entities altogether: no kind, no header, no reference. It allocates none, retains none, releases none and calls no store barrier — it states the ownership its callers owe (`insert`'s one reference per stored key, `remove`'s `#[must_use]` pair) and hands the displaced element back for the layer above to act on. It holds no category of its own either, that field having drifted once (2026-08-07), and no storage head, a `&mut Table` being unable to span one (2026-08-11) | `entry`, `refcount`, `value`, `string`, `hash`, `memory/routing`, `memory/arena`, `memory/block_pool` |
 | `array/element` | the generic element layer over the table: `canonical_key`, the five operations, the separation composition every write goes through, the element reference box, and the teardown of anything it could not publish | COW separation and the order it publishes in; that an element reference is a `ReferenceBox` because growth moves an entry, and that the box is a heap entity whatever the array's category; that canonicalisation belongs above the table, a map keying exactly | the entry layout, the index, the chains — it names keys and elements, never an entry | `array/table`, `array/entity`, `barrier`, `reference`, `object` (`ll_cow_separate`, `ll_entity_die`), `refcount`, `value`, `string`, `memory/context`, `memory/arena` |
 | `array/entity` | the `RcHeader` over the table — kind Array, COW set, no class pointer — with the factories, the copy for both depths (`separate`), the child walk, the teardown drain that takes a nesting down without the machine stack, and — since the head moved here — the access paths every representation is reached through (`as_table_mut`), the storage's disposal and its carry out of a dying arena | the entity kind, the memory category and the COW state; that a nested array leaves the candidate buffer here, never having reached `ll_entity_die`; which representation the union holds — it owns the tag and asserts it, and it owns the rule that no reference may span the head or the whole entity | classes, an array having none; the element operations above it; the collector's phases | `array/table`, `refcount`, `value`, `barrier`, `object`, `reference`, `string`, `memory/routing`, `memory/arena`, `memory/stdapi`, `journal`; upward: `cells` |
 
@@ -136,7 +136,8 @@ Both upward edges are `array/entity`'s and both are in the table above.
 What `entry` and `table` promise `Map` is that they read no entity but a
 string key, whose bytes they compare and whose cached hash
 `LLString::hash` fills on first use; they allocate none, retain none and
-call no barrier, and since S10 they read no header either — the category
+call no barrier, and they read no header either (`dev/DECISIONS.md`,
+"the table is handed its category and reads no header") — the category
 arrives as a parameter, the way `owner_cat` arrives at the barrier and
 for the same reason, a destination that may have no header at all.
 `element` and `entity` also close a cycle with `object` — the COW doors
@@ -215,9 +216,9 @@ field is lent to):
 - bits 16–31, **free and asserted free**. `rc-trace` kept a candidate
   index across 15–31 and `rc-walk` an epoch byte at 16–23, and both went
   on 2026-08-26. `refcount::tests::the_header_the_compiler_shares`
-  asserts that no constant claims a bit above 15, so S31 — which lays
-  epoch, maturation age and a collector reserve there — starts against a
-  check that is already red for it.
+  asserts that no constant claims a bit above 15, so S36.6 and S37.1 —
+  which lay epoch, maturation age and a collector reserve there — start
+  against a check that is already red for them.
 
 ## End-to-end paths
 
@@ -252,8 +253,10 @@ the class's typed runs) → free by category — arena memory just stays,
 heap memory goes through the size-less `ll_free` funnel (`stdapi`).
 
 A **non-zero** decrement is where a collector enrols a candidate, and
-nothing does today: the enrolment is S31.3's gate and S34's queue, and
-until they land a garbage ring is retained. The free path likewise parks
+nothing does today: the gate is built and decides —
+`refcount::ENROLMENT_GATE_MASK` — but it stores nothing, and S34's queue
+is what it would store into, so until that lands a garbage ring is
+retained. The free path likewise parks
 nothing; S34.3 and S36.2 are its two windows.
 
 **4. Arena reset.** `ll_arena_reset` (`context`) →
@@ -286,7 +289,7 @@ unbuilt, so a garbage ring is retained and acyclic garbage dies by
 counting. The shape the path will take is in
 `rfc/model/gc/rc-cycle.md`: a mutator-fed candidate set, trial deletion
 on shadow counts held off the heap, maturation by age, and a teardown
-whose order is binding ("Cycle teardown"). `PLAN.md` S31 through S40
+whose order is binding ("Cycle teardown"). `PLAN.md` S32 through S40
 build it, and this section is redrawn when the boundaries are real
 rather than before — a path diagram of an unbuilt collector reads as
 structure that exists.
