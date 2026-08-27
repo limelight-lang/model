@@ -687,6 +687,13 @@ Also worth knowing before touching this crate:
 `dev/WORKFLOW.md` — branches, commits, the required verification
 sequence, test rules, Miri invocation.
 
+A comment that says a capability is absent names the `PLAN.md` step that
+builds it, and the commit deleting that stage sweeps the number out of
+`src/` and `benches/`: `dev/WORKFLOW.md`, "How a debt is written". The
+ban this replaced, and why it fell, is `dev/DECISIONS.md`, "a comment
+names the plan step that owes it, and the stage's deletion sweeps the
+number".
+
 Not obvious from the code: `AUDIT.md` and `.idea/` are deliberately
 untracked and must stay so — this repository is public and the audit
 lists unfixed defects. Design lives in the separate `limelight-lang/rfc`

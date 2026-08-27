@@ -9,8 +9,8 @@ use super::*;
 
 /// `$a` with one integer element, `&$a[0]` taken or not and the
 /// binding kept or dropped, then `$b = $a; $b[0] = 3;` — and what the
-/// two names read afterwards. The whole of S3's criterion runs
-/// through this, in both memory categories.
+/// two names read afterwards. The whole matrix runs through this, in
+/// both memory categories.
 ///
 /// The holder is one object with two properties, so both arrays are
 /// named by real slots and every write goes through the layer rather

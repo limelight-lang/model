@@ -9,6 +9,62 @@ never edited or deleted.
 ---
 
 
+## 2026-08-27 — a comment names the plan step that owes it, and the stage's deletion sweeps the number
+
+**Decided (Sage):** a comment that states a capability is absent names the
+`PLAN.md` step that will build it, by number, as a forward reference only. The
+commit that deletes a stage's section from `PLAN.md`, or moves a debt it carries
+to another stage, greps that number over `src/` and `benches/` in the same
+commit and rewrites every comment it finds. A stage is never cited as history:
+what a closed stage did belongs to git or to a journal entry cited by its title.
+`dev/WORKFLOW.md`'s "How a reference is written" is amended to match, and gains
+"How a debt is written" beside it.
+
+**Why:** the ban rested on "a number that gets reissued or removed", one reason
+covering two failure modes it never separated. A line number or a list item is
+reissued, so a stale citation points at the wrong thing and the reader believes
+it. A stage number is never reissued — that is the plan's own rule and this
+crate cannot change it — so a stale citation points at nothing, which the reader
+sees and git resolves. The rule condemned stage numbers for the other class's
+failure.
+
+Every alternative referent binds the comment to the wrong event. An `rfc/`
+question is closed by an answer rather than by a build, and a `dev/DECISIONS.md`
+entry outlives the capability being built, so a comment citing either can dangle
+while it is still true and resolve while it is false. The step's closing is the
+one event that coincides with the fact that falsifies the comment, which is why
+the number is also the grep handle: "documentation follows the logic, in the
+same commit" already obliges the closing commit to rewrite these comments, and
+the number is what lets it find them. Striking the citation would not make the
+comments cheaper to keep — they go stale on the same event either way — it would
+make them unfindable.
+
+**Measured, 2026-08-27:** 54 lines in 23 non-test files and 9 in 8 test files
+name a stage, a step or `PLAN.md`; 21 distinct numbers are cited, of which two
+are already deleted — `S30` seven times as the past end of an interval, `S18.3`
+twice as the review that found a defect. Both are history rather than debt,
+which the ruling forbids, and both are the two sweeps that were skipped. They
+are repaired in the same commit as this entry.
+
+**Rejected:** naming nothing, which destroys the handle the closing commit needs
+without reducing the comment's maintenance by one line, and erases the
+distinction between a scheduled gap and an oversight. An `rfc/` question or
+section, which binds to the wrong event and puts build order into a normative
+specification, making it a second plan. A `dev/` debt ledger, which is `PLAN.md`
+rewritten under another name — two boards to keep in step — and which would need
+a new document and the owner's agreement to buy what the plan step already
+gives.
+
+**Cost:** the sweep is still an act someone has to perform at stage closing, and
+skipping it leaves dangling numbers, as it did twice; what the ruling buys is
+that the failure is dangling-never-wrong and that detection is one grep.
+Comments in `src/` now lawfully depend on a file outside `src/`, paid for by the
+pointer-not-content clause: the sentence says what is absent and what the step
+builds, so it survives its number going dead. And a written rule lost to the
+practice, which is worth saying plainly rather than letting the amendment read
+as tidying — it lost because its stated mechanism is false for this identifier
+class, and for every class where reissuance is real the ban stands unchanged.
+
 ## 2026-08-27 — a kind's ring classification is written at its declaration, before a factory stamps it
 
 **Decided:** `EntityKind::Lazy` classifies as ring-closing although no factory

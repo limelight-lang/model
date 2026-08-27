@@ -8,7 +8,7 @@
 //! while the owner mutates them, and without the annotation that race
 //! is undefined behaviour.
 //!
-//! That reader does not exist between S30 and S38 (`PLAN.md`): the
+//! That reader does not exist until S38 builds it (`PLAN.md`): the
 //! annotation is kept across the gap rather than taken out and put
 //! back. `rc-cycle` collects in-line on the owning thread and adds the
 //! collector thread as an accelerator over the same headers

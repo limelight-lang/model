@@ -14,8 +14,8 @@ use crate::cells::Cell;
 use crate::cells::OutsideCells;
 
 /// A group whose members are distinguishable from any other's. Identity
-/// is what most of these tests read, not behaviour — S18.3 is where a
-/// group is made to work.
+/// is what these tests read rather than behaviour: the members below have
+/// empty bodies, and what is checked is which group a subclass finds.
 static PROBE: OutsideCells = OutsideCells {
     walk_plain: probe_walk,
     sever: probe_sever,

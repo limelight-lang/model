@@ -161,9 +161,9 @@ fn a_request_that_takes_a_reference_ends_holding_nothing() {
 /// like (`dev/DECISIONS.md`, "the `RcHeader` is the only authority
 /// on which memory an entity lives in").
 ///
-/// The table cannot make this test itself since S10: it is handed a
-/// category and routes by it, so what is under test is the write
-/// above it. The array is left empty before the header changes, so
+/// The table cannot make this test itself: it is handed a category and
+/// routes by it (`dev/DECISIONS.md`, "the table is handed its category
+/// and reads no header"), so what is under test is the write above it. The array is left empty before the header changes, so
 /// the first storage is the one measured and no old storage has to be
 /// freed out of an arena block the reset never stamped.
 #[test]

@@ -119,7 +119,7 @@ pub(crate) fn opened() -> Guard {
 /// The frees run **after** the close, so each takes the ordinary route:
 /// with a collection in flight a body parks again, since a trace may
 /// still hold the address, and otherwise it goes back now. Nothing parks
-/// between S30 and S36.2 (`PLAN.md`).
+/// until S36.2 builds the collection's window (`PLAN.md`).
 ///
 /// # Safety
 /// A window must be open on this thread, and every reader of the parked

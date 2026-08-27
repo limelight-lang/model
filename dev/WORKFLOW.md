@@ -227,11 +227,36 @@ either by the entry's title rather than by its date.
 
 **How a reference is written.** By file and named section:
 `rfc/model/gc/rc-cycle.md`, "Cycle teardown". Never by a
-number that gets reissued or removed, which rules out a `PLAN.md` stage
-(closed stages are deleted from that file), a dated `dev/` entry, a line
-number, and an item number from a list that has since been rewritten.
+number that gets reissued, which rules out a line number, a dated `dev/`
+entry, and an item number from a list that has since been rewritten.
 When the section a comment needs does not exist yet, write it and give
 it a name.
+
+**How a debt is written.** A comment that states a capability is absent
+names the `PLAN.md` step that builds it: "nothing parks today; S34.3 is
+the step that builds the parking". Build order is in the plan and
+nowhere else, and a stage number is never reissued, so a stale citation
+dangles rather than misleads — the recoverable failure of the two. The
+number is a pointer and not the content: the sentence says what is
+absent and what the step builds, so it stays readable when the number
+goes dead. A stage is never cited as history — what a closed stage did
+belongs to git, or to a journal entry cited by its title.
+
+When a stage's section leaves `PLAN.md`, or a debt it carries moves to
+another stage, **the same commit sweeps the number**: the capability
+exists now, so every comment naming it states the contract that replaced
+the absence, or goes. Unlike the four passes below, this one a grep can
+make end to end — pull every `S[0-9]+` token out of `src/` and
+`benches/` and resolve each against the `##` sections still in
+`PLAN.md`; an unresolved number is debris. Grep the bare number, because
+punctuation hides one: `(S34.3)`, `S34-3`, `marked S34.3`. An
+`#[expect(dead_code, reason = "…S36.2")]` is the self-reporting form of
+the same debt — the attribute goes unfulfilled the moment the caller
+arrives.
+
+Why the ban on a `PLAN.md` stage was lifted rather than enforced:
+`dev/DECISIONS.md`, "a comment names the plan step that owes it, and the
+stage's deletion sweeps the number".
 
 A **bolded lead-in** counts as a named section, quoted exactly:
 `rfc/model/gc/rc-cycle.md`, "Where the shadow count lives". These

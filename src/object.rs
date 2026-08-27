@@ -733,8 +733,8 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     // `array_die`'s drain and never passes here again
     // (`array::entity::array_die` and `release_children_in_order`, the
     // two sites marked S34.3). A duty added here has to be added there as
-    // well until the two doors are one. Nothing is owed between S30 and
-    // S34.3, which is the step that builds the parking.
+    // well until the two doors are one. Nothing is owed until S34.3
+    // builds the parking.
 
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },

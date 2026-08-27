@@ -180,8 +180,8 @@ pub(crate) unsafe fn block_of(obj: *mut Object) -> *mut u8 {
 /// inside the window a walker validates its reading against.
 ///
 /// One body for both writers, because the window is what a reader trusts
-/// and two copies of a four-step sequence lose a step: the S18.3 review
-/// found the release publishing outside it.
+/// and two copies of a four-step sequence lose a step: written out per
+/// writer, the release published its null outside the window.
 unsafe fn publish_block(base: *mut u8, block: *mut u8) {
     unsafe { open_move(base) };
     unsafe {

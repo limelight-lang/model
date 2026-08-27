@@ -193,7 +193,9 @@ fn a_table_disposed_on_another_thread_leaves_the_owners_block_alive() {
 /// which memory an entity lives in").
 ///
 /// Where the next storage then comes from is no longer the table's to
-/// decide — since S10 it is handed a category and routes by it — so
+/// decide — it is handed a category and routes by it
+/// (`dev/DECISIONS.md`, "the table is handed its category and reads no
+/// header") — so
 /// what it does with a promoted array is measured one layer up, in
 /// `element::tests::crossing_out_of_the_arena::a_promoted_array_takes_its_next_storage_from_the_heap`.
 /// The danger both halves guard is one: an owner still answering

@@ -1016,8 +1016,8 @@ impl Table {
     ///
     /// The old chunk is freed once the window is closed. A trace still
     /// striding it must read intact bytes, which is what the parking of
-    /// buffer-chunk frees during a collection buys; nothing parks between
-    /// S30 and S36.2 (`PLAN.md`).
+    /// buffer-chunk frees during a collection buys; nothing parks until
+    /// S36.2 builds that window (`PLAN.md`).
     fn move_entries(
         &mut self,
         head: &StorageHead,

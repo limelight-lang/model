@@ -1785,9 +1785,9 @@ thread_local! {
 /// memory to give back at that point must leave it for another thread.
 ///
 /// The refusal was written against a parked free, whose backlog the exit
-/// disposed and nothing rebuilt. Nothing parks between S30 and S34.3, so
-/// the refusal is wider than the case that produced it; it stays because
-/// S34.3 and S36.2 bring both parking windows back (`PLAN.md`).
+/// disposed and nothing rebuilt. Nothing parks today, so the refusal is
+/// wider than the case that produced it; it stays because S34.3 and S36.2
+/// bring both parking windows back (`PLAN.md`).
 pub(crate) fn thread_may_free() -> bool {
     EXIT_PHASE.with(|phase| phase.get()) == ExitPhase::Live
 }
