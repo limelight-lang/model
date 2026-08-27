@@ -165,3 +165,72 @@ fn full_block_refills_and_serves_distinct_slots() {
         unsafe { heap.free(p) };
     }
 }
+
+/// The reciprocal multiply the collector reaches a shadow row by is the
+/// division, at every size class and every offset a block payload can
+/// hold — including the offsets between two slot starts, which is where
+/// a reciprocal that is off by one ulp shows up first.
+///
+/// The expectation is the division of the same offset, never the slot
+/// number the offset was built from: an index compared with an address
+/// rebuilt from that index agrees with any reciprocal at all, exact or
+/// not (`PLAN.md`, S32.1).
+///
+/// Wrong by one here is another live entity's row rather than a fault,
+/// so the whole domain is walked rather than sampled: 32 classes over
+/// 65280 offsets, about 2.1 million comparisons, which is a few
+/// milliseconds compiled and minutes interpreted.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "2.1 million integer comparisons and no memory access: Miri sees \
+              nothing here the checked build does not"
+)]
+fn the_reciprocal_multiply_is_the_division_over_a_whole_block() {
+    let mut compared = 0usize;
+    for &stride in SIZE_CLASSES {
+        for offset in 0..BLOCK_PAYLOAD {
+            assert_eq!(
+                crate::memory::heap::slot_index_of_offset(offset, stride),
+                (offset / stride) as u32,
+                "stride {stride}, offset {offset}"
+            );
+            compared += 1;
+        }
+    }
+
+    // The word exhaustive is the claim, and a loop that ran over nothing
+    // passes the assertions above without making it. Ten milliseconds for
+    // two million comparisons is fast enough to look like that.
+    assert_eq!(compared, SIZE_CLASSES.len() * BLOCK_PAYLOAD);
+}
+
+/// The offsets the derivation actually meets: a slot start of a real
+/// block, reached the way the collector reaches it. What this adds to
+/// the exhaustive test above is the two steps around it — the size class
+/// read out of the block header, and `LINE_SIZE` taken off the address —
+/// neither of which that test exercises.
+#[test]
+fn a_slot_of_a_live_block_derives_the_index_its_address_says() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut heap = Heap::new_entity();
+    let stride = SIZE_CLASSES[3];
+    let slots: Vec<*mut u8> = (0..8).map(|_| heap.alloc(stride)).collect();
+    let block = (slots[0] as usize) & !BLOCK_MASK;
+
+    for slot in &slots {
+        assert_eq!(
+            (*slot as usize) & !BLOCK_MASK,
+            block,
+            "the fixture wanted one block"
+        );
+        assert_eq!(
+            unsafe { crate::memory::heap::entity_slot_index(*slot) },
+            ((*slot as usize - block - LINE_SIZE) / stride) as u32
+        );
+    }
+
+    for slot in &slots {
+        unsafe { heap.free(*slot) };
+    }
+}

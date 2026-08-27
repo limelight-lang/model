@@ -1986,9 +1986,23 @@ pub(crate) unsafe fn entity_slot_index(entity: *mut u8) -> u32 {
     // this word: both are written once at commissioning, the kind last
     // and with release (`block_pool::collector_load_block_kind`).
     let size_class = unsafe { (*block).size_class.load(Ordering::Relaxed) };
-    let stride = SIZE_CLASSES[size_class as usize];
-    let reciprocal = (1u64 << 32) / stride as u64 + 1;
     let offset = (entity as usize & BLOCK_MASK) - LINE_SIZE;
+    slot_index_of_offset(offset, SIZE_CLASSES[size_class as usize])
+}
+
+/// The slot index an `offset` into a block's payload derives at a given
+/// `stride`, by a reciprocal multiply rather than a division.
+///
+/// `2^32 / stride + 1` is exact for every offset a 64 KiB block can
+/// hold, at every size class: the multiply's error stays below `2^-16`
+/// while a quotient's fraction is at most `(stride - 1) / stride`, so the
+/// two never cross while `stride` is under 65536. Separate from
+/// [`entity_slot_index`] so the claim can be driven over every offset of
+/// every class rather than over the offsets a fixture happens to
+/// allocate.
+#[inline]
+fn slot_index_of_offset(offset: usize, stride: usize) -> u32 {
+    let reciprocal = (1u64 << 32) / stride as u64 + 1;
     ((offset as u64 * reciprocal) >> 32) as u32
 }
 

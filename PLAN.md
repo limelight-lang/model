@@ -94,12 +94,19 @@ line, and the slot index derived from an address is proven exact.
         when that arm is wrong. Nothing in the production build calls it — the
         `#[expect(dead_code)]` is `cfg(not(test))` because the tests do — and
         S35.1's mark is the caller.
-- [ ] S32.1 Prove the slot index derivation
+- [x] S32.1 Prove the slot index derivation
       done: `((p & BLOCK_MASK) - LINE_SIZE) * recip >> 32` returns the slot's
         own index for every size class and every slot of a block, proven by an
         exhaustive test against the division in `heap::describe_slot` rather
         than against an address recomputed from the index, which is a tautology
       tier: T1 · role: —
+      handoff: the arithmetic is `heap::slot_index_of_offset`, split out of
+        `entity_slot_index` so the claim could be driven over every offset of
+        every class — 2 088 960 comparisons, the count asserted, ten
+        milliseconds compiled and `#[cfg_attr(miri, ignore)]` interpreted. It
+        goes red when the reciprocal loses its `+1`. A second test carries the
+        two steps around it, the size class read out of the block header and
+        `LINE_SIZE` taken off the address, over a real block's slots.
 - [ ] S32.2 Put the triple in the header's free tail
       done: `HeapBlockHeader` occupies 192 bytes of the 256-byte line and the
         triple — shadow pointer, `recip`, the collector's own copy of the size
