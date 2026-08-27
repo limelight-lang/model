@@ -426,7 +426,7 @@ introduce two constants nobody reads.
         what `closes_a_ring` cites now. The old entry is left unedited: that
         file's own rule is that a superseded decision is replaced by a new
         entry rather than corrected, which decided the form here.
-- [ ] S31.10 Decide what a comment may cite when it means a step
+- [x] S31.10 Decide what a comment may cite when it means a step
       done: choice and reason in `dev/DECISIONS.md`, and `dev/WORKFLOW.md`'s
         "How a reference is written" agrees with it either way
       tier: T2 · role: Sage
@@ -437,6 +437,21 @@ introduce two constants nobody reads.
         so unpicking one stage's share makes the tree less consistent, not
         more. What a comment should name instead — an open question in `rfc/`,
         a `dev/` entry, nothing at all — is the decision.
+      Sage 2026-08-27: the practice stands and the rule is amended. The ban read
+        "a number that gets reissued or removed", one reason over two failure
+        modes: a line number is reissued and misleads, a stage number is never
+        reissued and only dangles. Every other referent binds the comment to the
+        wrong event — an `rfc/` question closes on an answer, a decision entry
+        outlives the build — so only the step's closing coincides with the fact
+        that falsifies the comment, and the number is the handle the closing
+        commit needs to find it. In exchange the deleting commit sweeps the
+        number, which is a grep end to end. No new document. Final.
+      handoff: closed 2026-08-27 by `ffc68bf`. The sweep found twelve dead lines
+        rather than the nine measured over non-test files: `S30` seven times,
+        `S18.3` twice, `S10` twice, `S3` once, every one of them citing a closed
+        stage as history, which the ruling forbids outright. The sweep is clean
+        now and is written into `dev/WORKFLOW.md` as the check to run at any
+        stage deletion.
 
 ## S32 — The block header's collector triple
 
