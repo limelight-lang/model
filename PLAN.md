@@ -398,7 +398,7 @@ introduce two constants nobody reads.
         and `memory::barrier::` afterwards. Test list 460 → 461, the addition
         being the self-test that pins all eight patterns — verified red by
         dropping one.
-- [ ] S31.9 Pay the Code Reviewer's four requirements
+- [x] S31.9 Pay the Code Reviewer's four requirements
       done: `header_pair` and `mutator_load_header` are one function rather
         than two names for it, and `object.rs`'s two `let (_, flags)` callers
         take `mutator_flags` instead of loading a counter nobody reads;
@@ -413,6 +413,19 @@ introduce two constants nobody reads.
       handoff: returned by the stage's Code Reviewer on 2026-08-26, which
         edited comments and style itself and handed these back as substance.
         Item four is a `dev/` edit the role may not make.
+      handoff: closed 2026-08-27 by `3b00acc`. `header_pair` is the surviving
+        name — `mutator_load_header` promised the header while answering for
+        bits 0-15, which is the objection that renamed `header_flags` in S31.4.
+        A third predicate was in the same state and is treated with the other
+        two: `is_object` has no production caller either, and its doc claimed
+        to be the dispatch teardown makes, which matches the whole kind field
+        with an arm per kind.
+      handoff: the surviving fact of the 2026-08-07 candidate-gate entry is
+        re-recorded as `dev/DECISIONS.md`, "a kind's ring classification is
+        written at its declaration, before a factory stamps it", and that is
+        what `closes_a_ring` cites now. The old entry is left unedited: that
+        file's own rule is that a superseded decision is replaced by a new
+        entry rather than corrected, which decided the form here.
 - [ ] S31.10 Decide what a comment may cite when it means a step
       done: choice and reason in `dev/DECISIONS.md`, and `dev/WORKFLOW.md`'s
         "How a reference is written" agrees with it either way
