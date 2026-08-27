@@ -20,7 +20,7 @@ use crate::test_support::{POOLED_FILLERS, RUN_FILLERS, wide_class};
 #[test]
 fn every_slot_of_an_entity_block_resolves_to_its_own_row() {
     let _g = test_guard();
-    let class = ClassBuilder::new("S32Slot").prop("x", true).build();
+    let class = ClassBuilder::new("RowSlot").prop("x", true).build();
     let object_size = unsafe { (*class).object_size } as usize;
 
     let mut arena = Arena::new();
@@ -66,14 +66,14 @@ fn every_slot_of_an_entity_block_resolves_to_its_own_row() {
 #[test]
 fn two_sizes_in_one_retained_block_resolve_to_distinct_rows() {
     let _g = test_guard();
-    let narrow = ClassBuilder::new("S32Narrow").prop("x", true).build();
-    let wide = ClassBuilder::new("S32Wide")
+    let narrow = ClassBuilder::new("RowNarrow").prop("x", true).build();
+    let wide = ClassBuilder::new("RowWide")
         .prop("a", true)
         .prop("b", true)
         .prop("c", true)
         .prop("d", true)
         .build();
-    let holder_class = ClassBuilder::new("S32Holder")
+    let holder_class = ClassBuilder::new("RowHolder")
         .prop("first", true)
         .prop("second", true)
         .build();
@@ -158,8 +158,8 @@ fn two_sizes_in_one_retained_block_resolve_to_distinct_rows() {
 fn a_large_entity_resolves_to_the_one_row_in_its_own_block() {
     let _g = test_guard();
     for (name, fillers, kind) in [
-        ("S32Pooled", POOLED_FILLERS, BLOCK_KIND_ENTITY_LARGE),
-        ("S32Run", RUN_FILLERS, BLOCK_KIND_ENTITY_LARGE_RUN),
+        ("RowPooled", POOLED_FILLERS, BLOCK_KIND_ENTITY_LARGE),
+        ("RowRun", RUN_FILLERS, BLOCK_KIND_ENTITY_LARGE_RUN),
     ] {
         let class = wide_class(name, fillers, None);
         let mut arena = Arena::new();
@@ -199,7 +199,7 @@ fn a_large_entity_resolves_to_the_one_row_in_its_own_block() {
 #[test]
 fn a_child_outside_the_gc_heap_stops_the_descent() {
     let _g = test_guard();
-    let class = ClassBuilder::new("S32Outside").prop("x", true).build();
+    let class = ClassBuilder::new("RowOutside").prop("x", true).build();
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
 
@@ -220,7 +220,7 @@ fn a_child_outside_the_gc_heap_stops_the_descent() {
         Edge::External
     );
 
-    let wide = wide_class("S32ArenaRun", RUN_FILLERS, None);
+    let wide = wide_class("RowArenaRun", RUN_FILLERS, None);
     let in_a_run = unsafe { new_constructed(&mut ctx, wide, MemoryCategory::RequestArena) };
     assert_eq!(
         unsafe { block_kind(in_a_run as usize) },

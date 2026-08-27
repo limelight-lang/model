@@ -11,13 +11,13 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-08-27 · Active: S33 — the sections after S40 are the backlog
+Updated: 2026-08-27 · Active: S34 — the sections after S40 are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S32. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S33. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -52,157 +52,6 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 Empty.
 
 ---
-
-## S33 — The shadow arena and the per-block rows
-
-Goal: the collector's working state lives entirely off the heap, and an
-aborted collection costs nothing.
-
-Done when: a collection allocates rows, uses them, and returns everything in
-one reset, with no write into any entity.
-
-- [x] S33.1 The arena
-      done: a bump arena over 64 KB blocks, taken by the collector and returned
-        whole at the end of a collection **including on the abort path**, so a
-        refusal to grow aborts the collection rather than failing the process
-        and rather than leaking the blocks it already holds — the path that runs
-        when memory is short; the abort also nulls the shadow pointer of every
-        block on the touched list, because a stale pointer left in a block whose
-        arena has been recommissioned makes the next collection decrement live
-        payload; where the blocks come from — the ordinary pool or the critical
-        reserve Y14 says the in-line form must draw through, since the ordinary
-        path has already refused — is settled in this step and recorded
-      tier: T2 · role: Critic
-      Sage 2026-08-27: the pool is asked first and the critical reserve second —
-        the in-line collection is the standard form, so most runs begin with no
-        refusal and a full trace's rows are beyond any reserve, while Y14's
-        inadmissibility of the ordinary path binds exactly where that path has
-        refused. A second reserve rather than a wider `memory::reserve`, because
-        `exceptions.md` splits the three so no consumer's worst case is the sum.
-        The page-by-page virtual reservation is refused: a page that fails to
-        materialise reports nothing an abort can catch. Final; both normative
-        documents were amended before the code landed.
-      Critic 2026-08-27: eight findings, all accepted. The sweep of the touched
-        list ran at the arena's reset, which is after the trace token's release
-        — the design says the slot returns follow that store, so a block could
-        be back in the pool and recommissioned before the sweep wrote into its
-        header word; the sweep is now `sweep_touched`, called at the end of
-        scan, and the reset sweeps only what an abort left. `note_touched` was
-        documented to run after the stamp, so its own refusal left a stamped
-        block pointing at rows the abort gave back; the order is inverted and
-        the sweep tolerates an unstamped block. `is_drawn` was a flag no failed
-        first fill ever set, so a thread that started under pressure never
-        refilled and every later collection aborted having traced nothing; it
-        reads the count now, in both reserves. Both reserves kept their blocks
-        in a `Vec`, whose failing push aborts the process — the failure mode the
-        reserve exists to remove; both hold a fixed array. `reset` published its
-        progress after the loop, so an unwind out of a poisoned pool mutex made
-        `Drop` return the head twice. `give_back` trusted a returned block's
-        kind. `alloc` rounded before it bounded. And the sweep test passed with
-        511 of every 512 entries left stamped.
-      handoff: the abort path is the one the Critic round found unexercised and
-        leak-prone, and the touched-list sweep is what closes the staleness the
-        arithmetic form has no tag for. `cycle::arena::ShadowArena` is built on
-        the collecting thread's stack, holds no `Vec` — its blocks thread
-        through their headers and the touched list through the row arrays S33.2
-        reserves — and `Drop` calls `reset`, so an unwind leaks no block.
-        `memory::critical` is the new eight-block reserve, wired at thread init,
-        the safepoint poll, thread exit and the pool's test guard, and
-        `memory::reserve` took the same two repairs the Critic found in its
-        twin. Nothing constructs an arena yet; S33.2 is the first caller, and it
-        enrols a block before it stamps one.
-- [x] S33.2 The per-block row array
-      done: `slots × 4` bytes reserved at a block's first touch **without being
-        zeroed**, the pointer stamped into the block's triple, the block pushed
-        onto the touched list; the met flag lives in a bitmap of one bit per
-        group of eight slots, only the bitmap and a touched group are
-        initialised, and the row is colour 2 plus working count 30; the colour
-        assignment names its reserved code, so a met, condemned, zero-count row
-        is distinguishable from an untouched slot and a second reach cannot
-        re-initialise it from the refcount; what `slots` means for a retained
-        block, which has mixed sizes and no stride, and what the bitmap's groups
-        group there are settled in this step; a large entity, which gets one row
-        in its own block header and no group, carries its met flag in that row
-      tier: T2 · role: — (Critic called anyway: the step is what S35 and S36
-        are built on, and the plan's dash was written before its five debts)
-      Critic 2026-08-27: `meet` wrote the met colour and answered with a bare
-        pointer, so the caller could not learn whether this collection had seen
-        the entity before — the bit the mark's descent turns on, and one no
-        fifth colour code could carry. Accepted: `Met::Row` carries
-        `first_reach`. The subtraction the mark performs per edge had no
-        operation, and the open-coded form wraps at zero into a saturated count,
-        which reads as conservatively live: accepted, `shadow::subtract`
-        saturates and keeps the colour. `Heap::refill` wrote the collector
-        triple with one struct store, which now covers a word a non-owner
-        writes: accepted, field by field like the kind. The sweep's wildcard arm
-        would send a fourth population to the collector line: accepted, the
-        match is exhaustive. Claim "enrolment cannot fail once the rows exist"
-        is false for a large entity, whose row exists from commissioning:
-        accepted as a documentation defect, the arm is safe by the ordering
-        test-colour → enrol → write-colour and now says so. Three test gaps
-        closed — `Met::Unplaced`, the retained arm's single enrolment, and a
-        second collection over a block the first swept. Rejected with reason: a
-        `debug_assert` walking the touched list for a duplicate enrolment, which
-        is O(n) per touch on a list that reaches thousands of blocks; and a
-        proof that `sweep_touched` holds the trace token, which S38 is the step
-        that builds the token.
-      handoff: `cycle::shadow` is the row and the array; `ShadowArena::meet` is
-        the one entry, and it reserves, enrols and initialises in that order.
-        The Critic's prologue was taken: the touched list threads through a
-        24-byte `{ block, next, slots, population }` head on the array itself,
-        so `note_touched` and its refusal are gone and enrolment cannot fail
-        once the rows exist. A retained block's index space is its occupant
-        index, asked once per block through `retained::occupant_count`; a large
-        entity's row is `LargeEntityHeader::row`, zeroed at commissioning and by
-        the sweep, and its block takes a prologue with no rows. `promote` nulls
-        the collector line before it stamps `BLOCK_KIND_RETAINED`, because a
-        block's previous life leaves an array pointer there. Reasons in
-        `dev/DECISIONS.md`, 2026-08-27, "a block's rows and its place on the
-        touched list are one allocation". Twenty-one tests, each seen failing
-        against one of twenty-two mutations of the behaviour it names; the test
-        list was diffed byte for byte in all three configurations. Miri is the
-        stage's, not this step's: its run over `cycle::` and
-        `memory::retained::` had reported 20 of 39 with no diagnostic when the
-        step landed, and the completed run belongs to S33.4. One of those
-        mutations is worth keeping in mind: the round-trip test held under a
-        colour field of three bits, because it read the width from the constant
-        it was testing, and the design's two-plus-thirty split is pinned by an
-        assertion of its own now.
-- [x] S33.3 Name the saturation clause
-      done: a working count that would exceed the field saturates, saturation
-        reads as "external references exist, conservatively live", and a test
-        drives an entity past the bound
-      tier: T1 · role: —
-      handoff: the clause turned out to have a second half the step's wording
-        did not carry, and it is the half that is load-bearing: **saturation is
-        absorbing**. A saturated count is a floor rather than a total, so
-        `shadow::subtract` leaves it alone and no scan may condemn it —
-        otherwise a refcount of 2^31 meets at the bound and 2^30 internal edges
-        walk the row to zero while a billion external references stand, on a
-        16 GiB heap. `rfc/model/gc/rc-cycle.md` was amended before the code
-        (`7d0fb35` there), because the rule binds every stage that touches a
-        row and not this crate alone. `shadow::is_saturated` is what the scan
-        asks; three tests, each seen failing.
-- [x] S33.4 Hold the row at four bytes
-      done: no captured count is stored anywhere — not in the row and not in a
-        parallel array — because the commit stage judges again rather than
-        comparing with a captured value; a probe on the collector's own path
-        counts bytes written per touched block at first touch and shows the
-        figure proportional to the bitmap and not to `slots × 4`, which a
-        standalone memset benchmark cannot show, since it reports the same two
-        numbers whether or not the array was zeroed (1.4 ms against 41–76 ms
-        measured for the 717 MiB case)
-      tier: T1 · role: —
-      handoff: decided 2026-08-26 by the ruling that phase 2 is a second
-        judgement. Storing a captured value would have doubled the row and the
-        design's memory with it, and the assertion that catches such a value
-        arriving is `a_slot_costs_four_bytes_and_a_bit`: every size class takes
-        four bytes a slot beside the head and the bitmap, so a second word per
-        slot moves the figure. The probe is `shadow::WRITTEN_BYTES`, a
-        per-thread count at the two write sites; at the widest block a first
-        touch writes 121 bytes against the 16 320 its rows reserve, and a
-        second slot of the same group writes none (`dev/BENCHMARKS.md`,
-        2026-08-27).
 
 ## S34 — The root queue, enrolment and parking
 
@@ -265,20 +114,18 @@ Goal: trial deletion runs entirely in the shadow rows.
       tier: T2 · role: —
       handoff: this clause stands verbatim against S37: the maturation stamp is
         written by commit and only read by the trace, so no write into an entity
-        happens during a mark. Carried from S33.2: a retained block's edge still
-        takes the registry mutex once per edge in `retained::occupant_index`,
-        and this is the step that gives the trace a per-block visit to hold the
-        index's `Arc` over — the row array already holds the length that visit
-        would bound against. The "retired on contact" clause that contradicted
+        happens during a mark. A retained block's edge still takes the registry
+        mutex once per edge in `retained::occupant_index`, and this is the step
+        that gives the trace a per-block visit to hold the index's `Arc` over —
+        the row array already holds the length that visit would bound against. The "retired on contact" clause that contradicted
         it was withdrawn 2026-08-26. Open, from the Critic round over the
         block-kind dispatch: `Edge` has
         two variants, and the age prune is a third answer — a child inside the
         GC heap, with a row, that must not be descended into. Either the mark
         resolves the prune before calling `edge_to`, and the "one dispatch per
         child" clause the dispatch was built under becomes two, or `Edge`
-        grows a variant and
-        S33.2's touched-block list can still tell a matured child from a child
-        outside the heap.
+        grows a variant and the touched-block list can still tell a matured
+        child from a child outside the heap.
 - [ ] S35.2 Scan
       done: a non-zero working count marks its reachable set live, a zero one
         leaves it white, and the pair is proven on two graphs — a ring with an
@@ -357,7 +204,7 @@ the exact test confirmed. The teardown is here in full: the Critic round of
       handoff: commit is the only writer because a mature stamp suppresses
         descent, which is a reduction of future suspicion and therefore the
         owner's by the law of S34.2 — and because S35.1's zero-write mark is
-        what makes S33.1's abort free.
+        what makes an aborted collection free.
 - [ ] S36.7 Wire the collection into the ABI
       done: `ll_gc_collect_cycles` runs a collection and reports what it
         reclaimed, and `ll_gc_maybe_collect` fires on the armed pending flag and

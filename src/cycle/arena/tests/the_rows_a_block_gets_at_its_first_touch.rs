@@ -151,14 +151,14 @@ fn two_slots_of_one_block_share_its_array_and_take_their_own_rows() {
 fn a_retained_block_gets_one_row_for_each_occupant() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
-    let narrow = ClassBuilder::new("S33Narrow").prop("x", true).build();
-    let wide = ClassBuilder::new("S33Wide")
+    let narrow = ClassBuilder::new("ShadowNarrow").prop("x", true).build();
+    let wide = ClassBuilder::new("ShadowWide")
         .prop("a", true)
         .prop("b", true)
         .prop("c", true)
         .prop("d", true)
         .build();
-    let holder_class = ClassBuilder::new("S33Holder")
+    let holder_class = ClassBuilder::new("ShadowHolder")
         .prop("first", true)
         .prop("second", true)
         .build();
@@ -225,7 +225,7 @@ fn a_retained_block_gets_one_row_for_each_occupant() {
 fn a_large_entity_is_met_in_its_own_header_and_swept_from_it() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
-    let class = wide_class("S33Sole", RUN_FILLERS, None);
+    let class = wide_class("ShadowSole", RUN_FILLERS, None);
     let mut request = Arena::new();
     let mut ctx = LLContext {
         arena: &mut request,
@@ -306,7 +306,7 @@ fn a_large_entity_is_met_in_its_own_header_and_swept_from_it() {
 fn retention_publishes_a_block_with_no_rows() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
-    let class = ClassBuilder::new("S33Stale").prop("x", true).build();
+    let class = ClassBuilder::new("ShadowStale").prop("x", true).build();
 
     let mut request = Arena::new();
     let mut ctx = LLContext {
@@ -470,7 +470,7 @@ fn a_second_collection_meets_a_slotted_block_at_the_refcount_again() {
 fn an_entity_referenced_past_the_field_is_met_at_the_bound() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
-    let class = ClassBuilder::new("S33Saturated").prop("x", true).build();
+    let class = ClassBuilder::new("ShadowSaturated").prop("x", true).build();
     let mut request = Arena::new();
     let mut ctx = LLContext {
         arena: &mut request,
