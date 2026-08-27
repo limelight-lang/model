@@ -9,6 +9,7 @@ pub mod block_pool;
 pub mod buffer;
 pub mod buffer_arena;
 pub mod context;
+pub(crate) mod critical;
 pub mod heap;
 pub mod immortal;
 pub(crate) mod large_entity;

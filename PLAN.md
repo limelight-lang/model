@@ -61,7 +61,7 @@ aborted collection costs nothing.
 Done when: a collection allocates rows, uses them, and returns everything in
 one reset, with no write into any entity.
 
-- [ ] S33.1 The arena
+- [x] S33.1 The arena
       done: a bump arena over 64 KB blocks, taken by the collector and returned
         whole at the end of a collection **including on the abort path**, so a
         refusal to grow aborts the collection rather than failing the process
@@ -73,9 +73,44 @@ one reset, with no write into any entity.
         reserve Y14 says the in-line form must draw through, since the ordinary
         path has already refused — is settled in this step and recorded
       tier: T2 · role: Critic
+      Sage 2026-08-27: the pool is asked first and the critical reserve second —
+        the in-line collection is the standard form, so most runs begin with no
+        refusal and a full trace's rows are beyond any reserve, while Y14's
+        inadmissibility of the ordinary path binds exactly where that path has
+        refused. A second reserve rather than a wider `memory::reserve`, because
+        `exceptions.md` splits the three so no consumer's worst case is the sum.
+        The page-by-page virtual reservation is refused: a page that fails to
+        materialise reports nothing an abort can catch. Final; both normative
+        documents were amended before the code landed.
+      Critic 2026-08-27: eight findings, all accepted. The sweep of the touched
+        list ran at the arena's reset, which is after the trace token's release
+        — the design says the slot returns follow that store, so a block could
+        be back in the pool and recommissioned before the sweep wrote into its
+        header word; the sweep is now `sweep_touched`, called at the end of
+        scan, and the reset sweeps only what an abort left. `note_touched` was
+        documented to run after the stamp, so its own refusal left a stamped
+        block pointing at rows the abort gave back; the order is inverted and
+        the sweep tolerates an unstamped block. `is_drawn` was a flag no failed
+        first fill ever set, so a thread that started under pressure never
+        refilled and every later collection aborted having traced nothing; it
+        reads the count now, in both reserves. Both reserves kept their blocks
+        in a `Vec`, whose failing push aborts the process — the failure mode the
+        reserve exists to remove; both hold a fixed array. `reset` published its
+        progress after the loop, so an unwind out of a poisoned pool mutex made
+        `Drop` return the head twice. `give_back` trusted a returned block's
+        kind. `alloc` rounded before it bounded. And the sweep test passed with
+        511 of every 512 entries left stamped.
       handoff: the abort path is the one the Critic round found unexercised and
         leak-prone, and the touched-list sweep is what closes the staleness the
-        arithmetic form has no tag for.
+        arithmetic form has no tag for. `cycle::arena::ShadowArena` is built on
+        the collecting thread's stack, holds no `Vec` — its blocks thread
+        through their headers and the touched list is a segment chain in its own
+        memory — and `Drop` calls `reset`, so an unwind leaks no block.
+        `memory::critical` is the new eight-block reserve, wired at thread init,
+        the safepoint poll, thread exit and the pool's test guard, and
+        `memory::reserve` took the same two repairs the Critic found in its
+        twin. Nothing constructs an arena yet; S33.2 is the first caller, and it
+        enrols a block before it stamps one.
 - [ ] S33.2 The per-block row array
       done: `slots × 4` bytes reserved at a block's first touch **without being
         zeroed**, the pointer stamped into the block's triple, the block pushed
@@ -99,7 +134,13 @@ one reset, with no write into any entity.
         a lock to learn a number. Reaching them through the `Arc<[usize]>` the
         index already holds matches the lengths by construction and takes the
         lock once per block instead of once per edge, which is also what
-        `retained::occupant_index` owes.
+        `retained::occupant_index` owes. A fifth, from S33.1's Critic round:
+        threading the touched list through a 16-byte prologue on the row array
+        itself — `{ block, next }` ahead of the rows — removes the second
+        allocation and with it `note_touched`'s refusal, so the enrolment cannot
+        fail after the rows exist. It is also cheaper where it matters, 16 bytes
+        a touched block against the 4 KiB the first block's segment costs
+        today.
 - [ ] S33.3 Name the saturation clause
       done: a working count that would exceed the field saturates, saturation
         reads as "external references exist, conservatively live", and a test

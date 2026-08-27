@@ -32,7 +32,12 @@ versions live in `docs/history/`, marked at the top.
   S33 through S40 build the replacement, and `src/cycle/` is where it
   is going: today it holds `row::edge_to` alone, which answers which
   shadow row a traced edge lands on by dispatching on the block's kind,
-  and no production caller reaches it until S35.1's mark.
+  and no production caller reaches it until S35.1's mark. Beside it,
+  `arena::ShadowArena` is the collection's working memory: a bump over
+  64 KiB blocks, the ordinary pool first and `memory::critical`'s
+  eight-block per-thread reserve on refusal, every block returned at the
+  end and on the abort alike, and the shadow pointer of every block it
+  stamped nulled before they go. Nothing constructs one yet.
 - The enrolment gate: `refcount::ENROLMENT_GATE_MASK` and `may_enrol`,
   read on the non-zero decrement in `release_word`. Five conditions in
   one mask, each of them "this bit is zero" — GC-heap category, a kind a

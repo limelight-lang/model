@@ -16,4 +16,17 @@
 //! blocks and no kinds. This module is the one place that knows both, and
 //! it knows them only through their two interfaces.
 
+// Nothing constructs a `ShadowArena` in the production build: the
+// collection that takes one is S33.2's first touch of a block and
+// S35.1's mark. `cfg(not(test))` because the tests inside it do
+// construct one, which would leave an unconditional expectation
+// unfulfilled.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the collection that takes an arena is S33.2 and S35.1"
+    )
+)]
+pub(crate) mod arena;
 pub(crate) mod row;

@@ -537,6 +537,38 @@ refused *destructor* record instead fails the object's creation
 Design and the compiler-side contract it rests on:
 `rfc/runtime/exceptions.md`, "The log reserve protocol".
 
+### The critical reserve
+
+A second reserve, eight blocks per thread (`memory::critical`), and it
+stands beside the log reserve rather than inside it: `exceptions.md`
+splits the reserve in three so that no consumer's worst case is the sum
+of the others', and a collection that drained the barrier's two blocks
+would turn its own abort into a store barrier that cannot fail and does.
+Its protocol is the log reserve's, verbatim — filled at
+`ll_thread_init`, drawn only after the pool refuses, refilled at the
+safepoint poll, drained at thread exit.
+
+Its one customer today is the cycle collection's working memory, and the
+draw order is the pool first. The in-line collection has been the
+standard form since 2026-08-26 rather than the emergency one, so most of
+its runs begin with no refusal anywhere, and a full trace's rows are far
+beyond any reserve; the critical door is the fallback, which on the
+memory-pressure path is the first draw because the refusal is what
+triggered the collection. The two other customers the design names — the
+enrolment queue's growth and the mutator that cannot collect — arrive
+with `PLAN.md` S34.1 and S38.4, and no partition among the three is built
+until one of their shares can be derived.
+
+Eight blocks is 512 KiB, which is the design's 500 KB figure read at
+block granularity; the figure is a starting one and what would settle it
+is a workload. At four bytes a row it funds about thirty blocks of the
+smallest size class traced, more at the middle classes, and on the
+pressure path that capacity **is** the collection's trace budget:
+exhausting it aborts the collection into the retry-then-raise
+`exceptions.md` promises, rather than failing the process.
+
+Design: `rfc/model/memory/critical-reserve.md`.
+
 ## Arena reset: the settling loop
 
 Not "move the bump pointer back". Resetting an arena runs a fixpoint,

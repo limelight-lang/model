@@ -618,6 +618,7 @@ impl Drop for TestGuard {
         // block-accounting tests count what is out — so it goes back
         // here too, rather than sitting on two blocks per test thread.
         crate::memory::reserve::drain_for_test();
+        crate::memory::critical::drain_for_test();
         crate::memory::heap::ll_thread_exit();
     }
 }

@@ -60,6 +60,16 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         let _ = crate::memory::reserve::replenish();
     }
 
+    // The critical reserve refills here too, and for a reason of its own:
+    // a collection returns what it drew at its own end, so the reserve is
+    // usually full by the time this runs, and what it catches is the
+    // collection that ended by refusing — the retry after an abort wants
+    // a door that is open (`rfc/model/memory/critical-reserve.md`,
+    // "Filling, refilling, and leaving reserve mode").
+    if crate::memory::critical::is_drawn() {
+        let _ = crate::memory::critical::replenish();
+    }
+
     0
 }
 

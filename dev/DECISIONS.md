@@ -9,6 +9,69 @@ never edited or deleted.
 ---
 
 
+## 2026-08-27 — the shadow arena asks the pool first and the critical reserve second, and the virtual reservation goes
+
+**Decision (Sage, final).** The cycle collection's working memory is a bump
+arena over 64 KiB pool blocks with two doors in a fixed order: the ordinary
+`BlockPool`, and on a null from it a new per-thread critical reserve of eight
+blocks (`memory::critical`). Every block comes back at the collection's end and
+on its abort alike; what the critical door lent goes back to the reserve before
+the pool sees a block. The per-block row array is a plain bump allocation of the
+whole `slots × 4` plus its met bitmap, unzeroed. Nothing is lazily mapped.
+
+**Why the ordinary door comes first.** Y14's sentence that the ordinary path is
+inadmissible is written on the premise that it has already refused, and since
+2026-08-26 the in-line collection is the **standard** form rather than the
+emergency one. A collection with no refusal behind it may legitimately want
+hundreds of megabytes of rows — the measured full-trace case is 717 MiB, about
+eleven thousand blocks — which no reserve funds and the pool funds trivially.
+Drawing the reserve while the pool serves is what `critical-reserve.md` forbids
+in the other direction: it converts the reserve into ordinary memory with extra
+steps. On the pressure path the pool's `get` is a fast fail, so every draw that
+matters there is the reserve's and the design's sentence stays true exactly
+where it was written.
+
+**Why a second reserve rather than a larger `memory::reserve`.** That module is
+`exceptions.md`'s log reserve, and its whole guarantee is that the store barrier
+cannot fail; its two blocks are sized from the poll contract. A collection that
+drained them would convert an aborted collection into an unreportable barrier
+failure. `exceptions.md` splits the reserve in three precisely so that no
+consumer's worst case is the sum of all three.
+
+**Rejected: an OS-direct mapping materialised page by page**, which is what
+`rc-cycle.md` described until today. A page that fails to materialise reports
+nothing a caller can catch: under ordinary overcommit the mapping succeeds and
+the failure arrives as a kill at first touch, on the path that runs because
+memory is short, in a process built `panic = "abort"`. The step's load-bearing
+requirement is that a refusal aborts the collection rather than the process, and
+only a call that returns null can carry that. Blocks returned at an abort also
+re-enter the pool, where the very allocation that triggered the collection can
+be served; a mapping would leave the process instead.
+
+**What the bump form pays.** The whole row array of a sparsely touched block —
+up to 16 320 bytes for one traced entity at the smallest class. That is the
+twenty-fourth entry of 2026-08-25's objection to per-block arrays back at half
+its size, the row having lost its captured count. Accepted, and bounded by the
+touched-block list. The chunked form stays the recorded alternative and is
+revisited only if a measured traced density lands below 29 %; no such
+measurement exists.
+
+**The figure.** Eight blocks, 512 KiB, which is `critical-reserve.md`'s 500 KB
+read at block granularity — a starting figure, not a derived one. At four bytes
+a row it funds about thirty smallest-class blocks, more at the middle classes.
+On the pressure path that capacity is the collection's trace budget, and
+exhausting it aborts into the retry-then-raise `exceptions.md` promises. No
+partition among the reserve's three named customers is built: two of them do not
+exist in the crate, and no share is derivable without a workload.
+
+**Both normative documents moved with the ruling**, in `rfc` at `27417f2`:
+`rc-cycle.md`'s "The rows are not zeroed greedily" lost the virtual reservation,
+and `critical-reserve.md`'s "The three customers" and "Sizing" gained the draw
+order and lost the sentence that called the funding open.
+
+---
+
+
 ## 2026-08-27 — the collector's triple sits past the header, at the header's own size
 
 **Decision.** A block's shadow-row pointer, the reciprocal that turns an offset

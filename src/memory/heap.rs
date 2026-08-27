@@ -1675,6 +1675,7 @@ fn retire_the_journal() {
     // flushes.
 
     crate::memory::reserve::drain();
+    crate::memory::critical::drain();
     crate::memory::block_pool::drain_thread_cache();
 
     crate::journal::retire_thread_ring();
@@ -1795,6 +1796,10 @@ pub extern "C" fn ll_thread_init() {
         // store barrier has no channel at all
         // (`crate::memory::reserve`).
         let _ = crate::memory::reserve::replenish();
+        // And the collection's, on the same terms: a thread whose
+        // allocation fails has no other door to the memory a trace needs
+        // (`crate::memory::critical`).
+        let _ = crate::memory::critical::replenish();
         // Failing to arm the guard is the right outcome: the thread is
         // already exiting, and its blocks are reclaimed by the teardown in
         // progress.
@@ -2035,6 +2040,53 @@ unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
     }
 
     unsafe { (*h).alloc(size) }
+}
+
+/// Null the shadow-row pointer of an entity block, which every
+/// collection owes for every block it stamped — at its end and on its
+/// abort alike.
+///
+/// A stale pointer left behind names an arena that has since been
+/// recommissioned, so the next collection would decrement rows that now
+/// hold live payload (`rfc/model/gc/rc-cycle.md`, "Where the shadow
+/// count lives"). The store is a release, and the acquire half is the
+/// load S33.2 of `PLAN.md` adds when a collection first touches a block.
+///
+/// # Safety
+/// `block` must be the header of a live `BLOCK_KIND_ENTITY` block.
+pub(crate) unsafe fn clear_block_shadow(block: *mut u8) {
+    let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe {
+        (*triple)
+            .shadow
+            .store(std::ptr::null_mut(), Ordering::Release)
+    };
+}
+
+/// The shadow-row pointer of an entity block, null when no collection
+/// holds rows for it.
+///
+/// # Safety
+/// As [`clear_block_shadow`].
+#[cfg(test)]
+pub(crate) unsafe fn block_shadow(block: *mut u8) -> *mut u8 {
+    let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*triple).shadow.load(Ordering::Acquire) }
+}
+
+/// Stamp a block's shadow-row pointer.
+///
+/// `#[cfg(test)]` because nothing in the production build reserves rows
+/// yet: S33.2 of `PLAN.md` is the step that allocates them and the step
+/// that turns this into the production writer. Until it lands, the only
+/// caller is the test that drives an abort over a stamped block.
+///
+/// # Safety
+/// As [`clear_block_shadow`].
+#[cfg(test)]
+pub(crate) unsafe fn set_block_shadow(block: *mut u8, rows: *mut u8) {
+    let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*triple).shadow.store(rows, Ordering::Release) };
 }
 
 /// The slot index of `entity` inside its own entity block: which row of
