@@ -288,6 +288,13 @@ re-run after any deletion of a module, a document or a feature:
    `retained-block-walk.md`, `walk/questions.md`, `gc-horizon-v2/questions.md`
    — do not contain the deleted strategy's name at all. `dev/tools/linkcheck.php`
    in `rfc` does not cover this: it reads only `rfc`, and only bracketed links.
+
+   **What a hit means depends on where it stands.** A dated journal —
+   `DECISIONS.md`, `BENCHMARKS.md`, `POSTMORTEM.md` — names the document of
+   its own day, and so does a note under a deletion banner, as
+   `dev/design/pure-destructors.md` carries one. Those hits are records and
+   stay; a hit anywhere else is debris. That is the distinction the stage
+   sweep above draws, and it is drawn for the same reason.
 2. **Every module path a comment cites, resolved against the modules that
    exist.** `` `walk::` ``, `` `collector::` ``, `` `epoch::` ``. A rename
    leaves nine of these behind and no build reports one, since a comment is
@@ -303,8 +310,14 @@ re-run after any deletion of a module, a document or a feature:
    table had never listed, and one listed edge that was doc links with no call
    behind them.
 
-The first three returned empty at `06ddd1e`. A count is not the check — the
-question is which sites, and the passes name them.
+Passes 2 and 3 returned empty on 2026-08-27, and pass 1 returned seven hits,
+every one of them a record: `rfc/model/gc/rc-walk.md` from `DECISIONS.md`, from
+`BENCHMARKS.md` and from `dev/design/pure-destructors.md`, and the four horizon
+and walk documents once each from the first two. The note here used to say the
+first three passes returned empty at `06ddd1e`; that commit is 2026-08-26 14:42
+and `rfc` deleted those documents at 12:26, so the run behind the claim cannot
+have covered `dev/` whatever its description said. A count is not the check —
+the question is which sites, and the passes name them.
 
 ## Tests
 
