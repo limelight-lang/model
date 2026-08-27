@@ -16,7 +16,9 @@
 //! mapping materialised page by page: a page that fails to materialise
 //! reports nothing a caller can catch, and the release profile is built
 //! `panic = "abort"` (`rfc/model/gc/rc-cycle.md`, "Where the shadow
-//! count lives"; the ruling of 2026-08-27 in `dev/DECISIONS.md`).
+//! count lives"; `dev/DECISIONS.md`, "the shadow arena asks the pool
+//! first and the critical reserve second, and the virtual reservation
+//! goes").
 //!
 //! # What the arena owes back
 //!

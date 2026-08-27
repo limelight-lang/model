@@ -32,13 +32,18 @@
 //! +16  slots      rows the index space holds, the bounds check
 //! +20  population what the sweep owes this block
 //! +24  rows       4 bytes each, dirty until their group is met
-//! +24+4*n  groups one bit per group of eight rows, zeroed at allocation
+//! +24+4*R  groups one bit per group of eight rows, zeroed at allocation
 //! ```
+//!
+//! `R` is `slots` rounded up to a whole group, so a group init writes
+//! eight rows without ever running past the last one: the bitmap begins
+//! after the rounding and not after `slots`.
 //!
 //! The touched list threads through the arrays themselves rather than
 //! through runs of its own, so enrolling a block and reserving its rows
 //! are one allocation and one refusal: after the rows exist, nothing
-//! about the enrolment can fail (`arena.rs`, the ruling of 2026-08-27).
+//! about the enrolment can fail (`crate::cycle::arena`, "Enrolment
+//! cannot fail after the rows exist").
 //!
 //! Rows come before the bitmap so that a row's address is
 //! `array + 24 + 4 × index`, one multiply-add. The bitmap's width varies
@@ -59,8 +64,9 @@ const COUNT_BITS: u32 = 30;
 /// [`is_saturated`] is how the trace asks. The clause that follows is
 /// that a saturated row is conservatively live and stays so: subtracting
 /// an edge leaves it saturated ([`subtract`]), because the count it
-/// holds is a floor and not a total (`rfc/model/gc/rc-cycle.md`, "Where
-/// the shadow count lives").
+/// holds is a floor and not a total (`rfc/model/gc/rc-cycle.md`,
+/// "Saturation is absorbing, and that is a rule for every stage that
+/// touches a row").
 ///
 /// Without the clause the entity is condemnable: a refcount of `2^31`
 /// meets at `2^30 - 1`, and a trace that finds `2^30` internal edges to
@@ -72,8 +78,12 @@ pub(crate) const COUNT_MAX: u32 = (1 << COUNT_BITS) - 1;
 /// What the trace has decided about one entity, and the reserved zero
 /// that says it has decided nothing.
 ///
-/// The three working codes are assigned by mark and scan (S35 of
-/// `PLAN.md`); what this step fixes is that none of them is zero.
+/// No working code is zero, so a group the init has just cleared reads
+/// as [`Untouched`](Colour::Untouched) for every slot in it.
+/// [`Met`](Colour::Met) is written by
+/// [`ShadowArena::meet`](crate::cycle::arena::ShadowArena::meet); the
+/// other two have no writer, and S35.2 of `PLAN.md` is the step that
+/// builds the scan that assigns them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub(crate) enum Colour {
@@ -115,8 +125,9 @@ pub(crate) fn count(row: u32) -> u32 {
 /// makes the entity conservatively live whatever the trace subtracts
 /// from it ([`COUNT_MAX`]).
 ///
-/// The scan asks this rather than comparing against the constant, so the
-/// clause has one reader and one name.
+/// One name for the reading, so the clause is not spelled out as a
+/// comparison at each site: no scan judges a row yet, and S35.2 of
+/// `PLAN.md` is the step that asks this of every row it reaches.
 #[inline]
 pub(crate) fn is_saturated(row: u32) -> bool {
     count(row) == COUNT_MAX
@@ -203,10 +214,11 @@ pub(crate) struct RowArray {
     /// The next array in this collection's touched list, or null at the
     /// end of the chain.
     pub(crate) next: *mut RowArray,
-    /// Rows this array holds, which is the size of the block's index
-    /// space: slots for an entity block, occupants for a retained one,
-    /// and **zero for a large entity**, whose single row is a word of
-    /// its own block header and needs no array (`crate::cycle::row`).
+    /// The block's index space, and the bound a row index is checked
+    /// against: slots for an entity block, occupants for a retained
+    /// one, and **zero for a large entity**, whose single row is a word
+    /// of its own block header and needs no array (`crate::cycle::row`).
+    /// The array reserves past this, up to a whole group ([`bytes_for`]).
     pub(crate) slots: u32,
     /// Which of the three populations the block belongs to, so that the
     /// sweep knows which word it owes a null: the array pointer in the
@@ -236,20 +248,18 @@ pub(crate) const fn bytes_for(slots: u32) -> usize {
 /// touch actually costs (tests only).
 ///
 /// Counted where the writes are rather than measured from outside, and
-/// per thread rather than globally, because the tests that write rows run
-/// beside each other. What it prices is the design's reason for the group
-/// bitmap: the array a block reserves is `slots × 4` bytes, and what a
-/// collection writes into it is the prologue, the bitmap, and one group
-/// per group the trace reaches (`rfc/model/gc/rc-cycle.md`, "The rows are
-/// not zeroed greedily"). A `memset` benchmark cannot show the difference
-/// — it reports the same two numbers whether or not the array was zeroed.
+/// per thread rather than globally, because the tests that write rows
+/// run beside each other. What it counts is the prologue and the bitmap
+/// at a block's reservation, and one group at each group's first touch;
+/// what the figures are and why they are counted here rather than timed
+/// is `dev/BENCHMARKS.md`, "what a block's first touch writes".
 #[cfg(test)]
 thread_local! {
     static WRITTEN_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Add `bytes` to the probe above. Compiles to nothing without
-/// `cfg(test)`.
+/// Add `bytes` to `WRITTEN_BYTES`, and nothing at all without
+/// `cfg(test)`: the two write sites call it either way.
 #[inline]
 fn note_written(bytes: usize) {
     #[cfg(test)]

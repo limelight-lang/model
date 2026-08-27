@@ -529,10 +529,8 @@ fn an_entity_referenced_past_the_field_is_met_at_the_bound() {
 /// the figure this test pins is two orders below that: the prologue, the
 /// bitmap, and one group per group the trace reaches.
 ///
-/// **A `memset` benchmark cannot show this**, which is why the probe is
-/// inside the crate: it reports the same two numbers whether or not the
-/// array was zeroed, and what the design bought with the bitmap is the
-/// zeroing that never happens.
+/// Why the probe is inside the crate rather than a benchmark beside it:
+/// `dev/BENCHMARKS.md`, "what a block's first touch writes".
 #[test]
 fn a_first_touch_writes_the_bitmap_and_the_groups_it_reaches() {
     let _g = test_guard();

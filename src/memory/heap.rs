@@ -1229,13 +1229,19 @@ impl Heap {
 
             // Raw blocks skip it: no trace enters one.
             //
-            // Field by field for the reason the kind is written that way:
-            // a struct store covers `shadow` plainly, and `shadow` is the
-            // one word of a block header a **non-owner** writes — a
-            // collection stamps it at a block's first touch and nulls it
-            // at its sweep, both with release ordering. The other two are
-            // this thread's alone and published by the kind's release
-            // store below.
+            // **What makes any of these stores sound is the publication
+            // below**, not their width: until `store_block_kind` runs, no
+            // collector can reach this block, so nothing races the line.
+            // `kind` is the exception the helper exists for, and it is
+            // read for every block of every carved region whether the
+            // block is published or not.
+            //
+            // Field by field all the same, and the reason is `shadow`:
+            // it is the one word of a block header a **non-owner** later
+            // writes — a collection stamps it at the block's first touch
+            // and nulls it at its sweep — so the narrow store is the
+            // shape that stays right if this ever moves after the
+            // publication.
             if self.block_kind == BLOCK_KIND_ENTITY {
                 let triple = block_collector(block);
                 (&raw mut (*triple).reciprocal).write(AtomicU32::new(reciprocal_for(class_size)));
@@ -2090,10 +2096,9 @@ pub(crate) unsafe fn block_shadow(block: *mut u8) -> *mut u8 {
     unsafe { (*triple).shadow.load(Ordering::Acquire) }
 }
 
-/// Stamp a block's shadow-row pointer, which the collection does after
-/// it has enrolled the block for the sweep and never before: the
-/// enrolment can fail and this store cannot, so the other order leaves a
-/// stamped block behind on the abort path (`crate::cycle::arena`).
+/// Stamp a block's shadow-row pointer. **The caller owes the enrolment
+/// first**, and why that order rather than the other is
+/// `crate::cycle::arena`, "Enrolment cannot fail after the rows exist".
 ///
 /// # Safety
 /// As [`clear_block_shadow`].
