@@ -61,7 +61,7 @@ line the owner writes.
 Done when: the triple sits in the free tail of the block's 256-byte header
 line, and the slot index derived from an address is proven exact.
 
-- [ ] S32.0 Dispatch on the block's kind before any row
+- [x] S32.0 Dispatch on the block's kind before any row
       done: the trace reads the block header first and branches — ordinary
         entity block by arithmetic, retained block by binary search over the
         occupancy index, large entity to a row in its own block header, and any
@@ -73,15 +73,31 @@ line, and the slot index derived from an address is proven exact.
         differently sized occupants of one retained block resolve to distinct
         rows
       tier: T2 · role: Critic
-      handoff: the arithmetic covers one population of three. A retained block
-        was filled by an arena's bump — mixed sizes, no stride — and this is
-        what `memory/retained.rs` was built for. The row-identity assertion is
-        owed because four smoke calls that only prove the descent terminated
-        pass while the arithmetic returns another entity's row.
+      Critic 2026-08-27: the large-entity arms read the block kind as proof of
+        the GC heap, and it is not one — `arena::alloc_entity` hands an entity
+        past one block payload to the same allocator the heap uses, so an arena
+        entity carries `BLOCK_KIND_ENTITY_LARGE_RUN` too and only its category
+        separates them. A ring closed through such a child would be condemned
+        and freed while the arena's own reset still holds the run in its log.
+        Accepted: the arm reads the child's category, and the external test
+        drives an arena run, verified failing without the read. Six lesser
+        findings accepted with it — a `debug_assert!` where a retained miss hid
+        a disagreement with `promote`'s classification, the acquire's
+        justification rewritten because acquire bounds no staleness and the
+        parking rule is what does, two test assertions that could not fail
+        removed or re-aimed, and the safety contract tightened to what the
+        category read needs.
+      handoff: `src/cycle/` is the module the rest of the stages build in, and
+        `row::edge_to` is all of it today: block kind first, then arithmetic,
+        binary search, or the sole-occupant row, with the large arm alone also
+        reading the category. Each of the four arms has a test proven to fail
+        when that arm is wrong. Nothing in the production build calls it — the
+        `#[expect(dead_code)]` is `cfg(not(test))` because the tests do — and
+        S35.1's mark is the caller.
 - [ ] S32.1 Prove the slot index derivation
       done: `((p & BLOCK_MASK) - LINE_SIZE) * recip >> 32` returns the slot's
         own index for every size class and every slot of a block, proven by an
-        exhaustive test against the division already at `heap.rs:2127` rather
+        exhaustive test against the division in `heap::describe_slot` rather
         than against an address recomputed from the index, which is a tautology
       tier: T1 · role: —
 - [ ] S32.2 Put the triple in the header's free tail
@@ -136,7 +152,14 @@ one reset, with no write into any entity.
       handoff: three holes the Critic round opened. Without the reserved code a
         condemned zero row reads as unmet; without a met bit the large entity is
         condemned live on the first ring it joins; and `slots × 4` has no
-        subject in a retained block.
+        subject in a retained block. A fourth, from S32.0's Critic round on
+        2026-08-27: a retained block's index space is the only one of the three
+        that the block cannot state — its length is `occupants.len()`, behind
+        the registry mutex — so sizing and bounds-checking its rows means taking
+        a lock to learn a number. Reaching them through the `Arc<[usize]>` the
+        index already holds matches the lengths by construction and takes the
+        lock once per block instead of once per edge, which is also what
+        `retained::occupant_index` owes.
 - [ ] S33.3 Name the saturation clause
       done: a working count that would exceed the field saturates, saturation
         reads as "external references exist, conservatively live", and a test
@@ -218,7 +241,13 @@ Goal: trial deletion runs entirely in the shadow rows.
       handoff: this clause stands verbatim against S37: the maturation stamp is
         written by commit and only read by the trace, so no write into an entity
         happens during a mark. The "retired on contact" clause that contradicted
-        it was withdrawn 2026-08-26.
+        it was withdrawn 2026-08-26. Open, from S32.0's Critic round: `Edge` has
+        two variants, and the age prune is a third answer — a child inside the
+        GC heap, with a row, that must not be descended into. Either the mark
+        resolves the prune before calling `edge_to`, and the "one dispatch per
+        child" clause of S32.0 becomes two, or `Edge` grows a variant and
+        S33.2's touched-block list can still tell a matured child from a child
+        outside the heap.
 - [ ] S35.2 Scan
       done: a non-zero working count marks its reachable set live, a zero one
         leaves it white, and the pair is proven on two graphs — a ring with an

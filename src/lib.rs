@@ -29,6 +29,7 @@
 pub mod array;
 pub(crate) mod cells;
 pub mod class;
+pub(crate) mod cycle;
 pub mod gc;
 pub mod hash;
 pub mod intern;

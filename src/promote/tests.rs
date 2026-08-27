@@ -5,34 +5,9 @@ use crate::memory::block_pool::BLOCK_KIND_ARENA;
 use crate::memory::context::{LLContext, set_current_context};
 use crate::object::{ll_object_die, new_constructed};
 use crate::refcount::{DESTRUCTOR_PENDING, DESTRUCTOR_RAN};
-use crate::test_support::RUN_FILLERS;
+use crate::test_support::{RUN_FILLERS, entity_checked, store_prop};
 use crate::value::{Tag, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// Entity pointer behind a Box slot, or null for scalar/null Boxes.
-fn entity_checked(v: &Value) -> *mut RcHeader {
-    if v.is_refcounted() {
-        v.entity_ptr()
-    } else {
-        std::ptr::null_mut()
-    }
-}
-
-/// Store `value` into `holder`'s slot at `offset` through the real
-/// barrier, as generated code would.
-unsafe fn store_prop(arena: *mut Arena, holder: *mut Object, offset: u32, value: *mut Object) {
-    unsafe {
-        let slot = Object::prop_at(holder, offset);
-        let old = entity_checked(&*slot);
-        let new = if value.is_null() {
-            Value::null()
-        } else {
-            Value::entity(Tag::Object, value as *mut RcHeader)
-        };
-
-        assert!(ref_store(arena, holder as *mut RcHeader, slot, old, new));
-    }
-}
 
 /// The kind stamped on the block holding `memory`, read the way every
 /// concurrent reader of that word reads it.

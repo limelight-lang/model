@@ -50,8 +50,8 @@ const FLUSH_MAX: usize = THREAD_CACHE_CAPACITY / 2 + 1;
 /// writes one**. The store is a **release**, and its reader is a
 /// collector enumerating the blocks of every carved region: the release
 /// ordering publishes a commissioned block's other header fields before
-/// its kind says "entity". No such reader exists until S32 gives the
-/// collector a per-block triple to load (`PLAN.md`).
+/// its kind says "entity". That reader loads through
+/// [`collector_load_block_kind`], the acquire half of the pair.
 ///
 /// The field is an [`AtomicU32`] in every header that overlays offset 0,
 /// and it sits outside the half `Heap::alloc` borrows — position, not
@@ -72,6 +72,31 @@ pub(crate) unsafe fn store_block_kind(kind_field: *const AtomicU32, kind: u32) {
 #[inline]
 pub(crate) unsafe fn load_block_kind(kind_field: *const AtomicU32) -> u32 {
     unsafe { (*kind_field).load(Ordering::Relaxed) }
+}
+
+/// Read a block header's `kind` from a thread that does not own the
+/// block, which is the collector resolving the child of a traced edge to
+/// the population it belongs to (`rfc/model/gc/rc-cycle.md`, "Where the
+/// shadow count lives").
+///
+/// The load is an **acquire** and pairs with [`store_block_kind`]'s
+/// release. What that buys is the commissioning that accompanies the
+/// value read: a kind read as `BLOCK_KIND_ENTITY` guarantees the size
+/// class beside it, the cursor and the zeroed slot headers of *that*
+/// commissioning are visible without a second ordered load.
+///
+/// **It bounds nothing about staleness**, so it is not what keeps a
+/// reader off a block that has since been recycled under a different
+/// size class: acquire orders what accompanies a value and places no age
+/// limit on the value itself. What excludes that is the parking rule —
+/// a slot returns only when the collection that could be reading its row
+/// is over, so a block cannot empty and reach the pool mid-trace
+/// (`rfc/model/gc/rc-cycle.md`, "Death while enrolled"). Nothing parks
+/// today; S36.2 of `PLAN.md` is the step that builds the window, and
+/// until it lands this pair is sound only because one thread runs.
+#[inline]
+pub(crate) unsafe fn collector_load_block_kind(kind_field: *const AtomicU32) -> u32 {
+    unsafe { (*kind_field).load(Ordering::Acquire) }
 }
 
 /// Block kinds stored in the header.

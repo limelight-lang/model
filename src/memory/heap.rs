@@ -1962,6 +1962,36 @@ unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
     unsafe { (*h).alloc(size) }
 }
 
+/// The slot index of `entity` inside its own entity block: which row of
+/// that block's shadow array carries the collector's working count for
+/// it (`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives").
+///
+/// The index is derived by a reciprocal multiply rather than by a
+/// division, `recip` being `2^32 / stride + 1`. An index that is off by
+/// one names another live entity's row instead of faulting, so the
+/// arithmetic is proven exhaustively against the division rather than
+/// against an address recomputed from the index — S32.1 of `PLAN.md` is
+/// that proof, and S32.2 is where `recip` stops being recomputed here
+/// and is read from the block's collector triple.
+///
+/// The caller resolves the block's kind first, and only a block that
+/// reads `BLOCK_KIND_ENTITY` reaches here: the other populations of the
+/// GC heap have no stride to divide by (`crate::cycle::row::edge_to`).
+///
+/// # Safety
+/// `entity` must be a slot of a commissioned `BLOCK_KIND_ENTITY` block.
+pub(crate) unsafe fn entity_slot_index(entity: *mut u8) -> u32 {
+    let block = HeapBlockHeader::of_ptr(entity);
+    // Relaxed, because the caller's acquire load of the kind published
+    // this word: both are written once at commissioning, the kind last
+    // and with release (`block_pool::collector_load_block_kind`).
+    let size_class = unsafe { (*block).size_class.load(Ordering::Relaxed) };
+    let stride = SIZE_CLASSES[size_class as usize];
+    let reciprocal = (1u64 << 32) / stride as u64 + 1;
+    let offset = (entity as usize & BLOCK_MASK) - LINE_SIZE;
+    ((offset as u64 * reciprocal) >> 32) as u32
+}
+
 /// Visit every occupied slot of every entity block, process-wide — the
 /// census primitive a whole-heap pass is built on. Nothing in the
 /// production build calls it: its callers are `cells::heap_census` and

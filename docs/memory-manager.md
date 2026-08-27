@@ -590,6 +590,14 @@ arena — and a survivor that later dies leaves refcount 0 behind, which
 is the walk's own occupancy test, so a stale entry is skipped like a
 free slot.
 
+The index has a second reader since 2026-08-27: the cycle collector
+resolves a traced edge to a shadow row through it, an occupant's
+position in the sorted array standing in for the slot index arithmetic
+gives an entity block (`retained::occupant_index`,
+`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives"). Which of the
+two a child gets is decided by its block's kind, above this module in
+`cycle::row::edge_to`.
+
 Not built yet, per RFC phasing: sparse-block evacuation, gated on the
 escapee-reference fixup. Promotion today is retention only, which the
 RFC calls the whole of the first implementation. The Immix-shaped

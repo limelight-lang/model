@@ -5,6 +5,11 @@
 //! once here is a dependency every reader of the test has to follow.
 
 use crate::class::{Class, ClassBuilder};
+use crate::memory::arena::Arena;
+use crate::memory::barrier::ref_store;
+use crate::object::Object;
+use crate::refcount::RcHeader;
+use crate::value::{Tag, Value};
 
 pub(crate) mod outside_block;
 
@@ -75,4 +80,34 @@ pub(crate) fn wide_class(
         "the instance fits one block, so it takes no OS-direct run"
     );
     class
+}
+
+/// Entity pointer behind a Box slot, or null for scalar/null Boxes.
+pub(crate) fn entity_checked(v: &Value) -> *mut RcHeader {
+    if v.is_refcounted() {
+        v.entity_ptr()
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
+/// Store `value` into `holder`'s slot at `offset` through the real
+/// barrier, as generated code would.
+pub(crate) unsafe fn store_prop(
+    arena: *mut Arena,
+    holder: *mut Object,
+    offset: u32,
+    value: *mut Object,
+) {
+    unsafe {
+        let slot = Object::prop_at(holder, offset);
+        let old = entity_checked(&*slot);
+        let new = if value.is_null() {
+            Value::null()
+        } else {
+            Value::entity(Tag::Object, value as *mut RcHeader)
+        };
+
+        assert!(ref_store(arena, holder as *mut RcHeader, slot, old, new));
+    }
 }

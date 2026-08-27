@@ -306,6 +306,32 @@ pub(crate) fn pinned_payloads(block: usize) -> usize {
         .map_or(0, |index| index.payloads)
 }
 
+/// Where `addr` sits in retained block `block`'s occupant index, which
+/// is the slot index the collector's shadow row array is keyed by: a
+/// bump-filled block has mixed sizes and no stride, so position in the
+/// sorted index stands in for the arithmetic an entity block's row uses
+/// (`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives").
+///
+/// `None` for an address the index does not name and for a block held
+/// for bytes alone, which carries no index ([`pin`]). The collector
+/// reads that as an external live reference rather than as an error,
+/// which is the conservative direction: an edge whose row cannot be
+/// found keeps its referent alive instead of condemning it.
+///
+/// **One registry lock per resolved edge, and that is the cost until a
+/// trace holds a block's index for the length of its visit.** The
+/// touched list S33.2 of `PLAN.md` builds is where the index is taken
+/// once per block; the search itself is over an `Arc` slice and does not
+/// need the lock, only reaching it does.
+pub(crate) fn occupant_index(block: usize, addr: usize) -> Option<usize> {
+    registry()
+        .lock()
+        .expect("retained index registry poisoned")
+        .get(&block)
+        .filter(|index| index.indexed)
+        .and_then(|index| index.occupants.binary_search(&addr).ok())
+}
+
 /// Every retained block and its index, as `(block address, occupants)`.
 ///
 /// The `Arc`s are cloned under the lock and read outside it, so a
