@@ -95,6 +95,15 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
       handoff: clause 4 and the law of 2026-08-26 contradicted each other, and
         both were in the plan. The Sage ruled for the law: clearing on acquittal
         is the permanent miss, because enrolment is edge-triggered.
+      handoff: the instant this step's test waits for was ruled on 2026-08-27
+        (`rfc/dev/PLAN.md` S8.3, and the entry it names in
+        `rfc/dev/DECISIONS.md`). An acquitted root parks in the owner's own
+        suspects buffer with its bit set, and the owner splices that buffer onto
+        its live queue at the first safepoint poll that finds the maturation
+        epoch counter moved. The test therefore forces the counter forward
+        through a `#[cfg(test)]` shorthand, runs the poll, runs a collection and
+        asserts the ring reclaimed, which is the assertion this step demands
+        instead of "the bit is still set".
 - [ ] S34.3 Parking a slot that dies enrolled
       done: death runs in full — weak cells cleared first, then `__destruct`,
         then children released — and the slot is withheld from the allocator
