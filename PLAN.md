@@ -11,13 +11,13 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-08-27 · Active: S32 — the sections after S40 are the backlog
+Updated: 2026-08-27 · Active: S33 — the sections after S40 are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S31. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S32. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -52,80 +52,6 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 Empty.
 
 ---
-
-## S32 — The block header's collector triple
-
-Goal: the collector reaches a block's shadow array without touching the cache
-line the owner writes.
-
-Done when: the triple sits in the free tail of the block's 256-byte header
-line, and the slot index derived from an address is proven exact.
-
-- [x] S32.0 Dispatch on the block's kind before any row
-      done: the trace reads the block header first and branches — ordinary
-        entity block by arithmetic, retained block by binary search over the
-        occupancy index, large entity to a row in its own block header, and any
-        other kind stops the descent with the child read as an external live
-        reference; the dispatch runs in the collector's per-child visit, above
-        the enumerator, so `cells.rs` keeps no knowledge of rows; a test drives
-        one entity of each population and asserts that the row resolved for an
-        entity is the row that entity's own address derives, and that two
-        differently sized occupants of one retained block resolve to distinct
-        rows
-      tier: T2 · role: Critic
-      Critic 2026-08-27: the large-entity arms read the block kind as proof of
-        the GC heap, and it is not one — `arena::alloc_entity` hands an entity
-        past one block payload to the same allocator the heap uses, so an arena
-        entity carries `BLOCK_KIND_ENTITY_LARGE_RUN` too and only its category
-        separates them. A ring closed through such a child would be condemned
-        and freed while the arena's own reset still holds the run in its log.
-        Accepted: the arm reads the child's category, and the external test
-        drives an arena run, verified failing without the read. Six lesser
-        findings accepted with it — a `debug_assert!` where a retained miss hid
-        a disagreement with `promote`'s classification, the acquire's
-        justification rewritten because acquire bounds no staleness and the
-        parking rule is what does, two test assertions that could not fail
-        removed or re-aimed, and the safety contract tightened to what the
-        category read needs.
-      handoff: `src/cycle/` is the module the rest of the stages build in, and
-        `row::edge_to` is all of it today: block kind first, then arithmetic,
-        binary search, or the sole-occupant row, with the large arm alone also
-        reading the category. Each of the four arms has a test proven to fail
-        when that arm is wrong. Nothing in the production build calls it — the
-        `#[expect(dead_code)]` is `cfg(not(test))` because the tests do — and
-        S35.1's mark is the caller.
-- [x] S32.1 Prove the slot index derivation
-      done: `((p & BLOCK_MASK) - LINE_SIZE) * recip >> 32` returns the slot's
-        own index for every size class and every slot of a block, proven by an
-        exhaustive test against the division in `heap::describe_slot` rather
-        than against an address recomputed from the index, which is a tautology
-      tier: T1 · role: —
-      handoff: the arithmetic is `heap::slot_index_of_offset`, split out of
-        `entity_slot_index` so the claim could be driven over every offset of
-        every class — 2 088 960 comparisons, the count asserted, ten
-        milliseconds compiled and `#[cfg_attr(miri, ignore)]` interpreted. It
-        goes red when the reciprocal loses its `+1`. A second test carries the
-        two steps around it, the size class read out of the block header and
-        `LINE_SIZE` taken off the address, over a real block's slots.
-- [x] S32.2 Put the triple in the header's free tail
-      done: `HeapBlockHeader` occupies 192 bytes of the 256-byte line and the
-        triple — shadow pointer, `recip`, the collector's own copy of the size
-        class — sits past it on its own cache line; the layout test that pins
-        the header's halves is extended rather than replaced, and a `const`
-        assertion ties the triple's offset to `size_of::<HeapBlockHeader>()`,
-        because 192 is today's number by `BlockRemote`'s 64-byte alignment and
-        the existing test only asserts the header fits the line
-      tier: T2 · role: Code Reviewer
-      handoff: the size class is duplicated on purpose — it is written once at
-        commissioning, and the copy is what keeps the lookup off the owner's
-        line. `BlockCollector` is that triple, at `COLLECTOR_TRIPLE_OFFSET`,
-        which is `size_of::<HeapBlockHeader>()` rather than 192; `Heap::refill`
-        writes it for `BLOCK_KIND_ENTITY` blocks alone and
-        `entity_slot_index` reads the reciprocal from it. `shadow` starts null
-        and has no writer — S33.2 reserves the rows and owes the nulling, on
-        the abort path too. Two `const` assertions hold the placement, and the
-        one runtime assertion that a shrunk header would meet was driven red by
-        moving the offset a line earlier.
 
 ## S33 — The shadow arena and the per-block rows
 
@@ -166,8 +92,8 @@ one reset, with no write into any entity.
       handoff: three holes the Critic round opened. Without the reserved code a
         condemned zero row reads as unmet; without a met bit the large entity is
         condemned live on the first ring it joins; and `slots × 4` has no
-        subject in a retained block. A fourth, from S32.0's Critic round on
-        2026-08-27: a retained block's index space is the only one of the three
+        subject in a retained block. A fourth, from the Critic round on
+        2026-08-27 over the block-kind dispatch: a retained block's index space is the only one of the three
         that the block cannot state — its length is `occupants.len()`, behind
         the registry mutex — so sizing and bounds-checking its rows means taking
         a lock to learn a number. Reaching them through the `Arc<[usize]>` the
@@ -246,7 +172,7 @@ Goal: trial deletion runs entirely in the shadow rows.
       done: the trace decrements children's working counts in their rows and
         writes nothing into any entity; children are enumerated through
         `cells::trace_cells` — the tracer moved at S30.2, not a second stride —
-        and S32.0's block-kind dispatch runs per yielded child in the
+        and `cycle::row::edge_to` runs per yielded child in the
         collector's visit; an aborted mark leaves the heap byte-identical,
         proven by hashing every block on the touched list before and after, with
         the abort forced at a depth past the first descent rather than at the
@@ -255,11 +181,13 @@ Goal: trial deletion runs entirely in the shadow rows.
       handoff: this clause stands verbatim against S37: the maturation stamp is
         written by commit and only read by the trace, so no write into an entity
         happens during a mark. The "retired on contact" clause that contradicted
-        it was withdrawn 2026-08-26. Open, from S32.0's Critic round: `Edge` has
+        it was withdrawn 2026-08-26. Open, from the Critic round over the
+        block-kind dispatch: `Edge` has
         two variants, and the age prune is a third answer — a child inside the
         GC heap, with a row, that must not be descended into. Either the mark
         resolves the prune before calling `edge_to`, and the "one dispatch per
-        child" clause of S32.0 becomes two, or `Edge` grows a variant and
+        child" clause the dispatch was built under becomes two, or `Edge`
+        grows a variant and
         S33.2's touched-block list can still tell a matured child from a child
         outside the heap.
 - [ ] S35.2 Scan
@@ -422,7 +350,8 @@ both, and the losing side never deadlocks.
         and answers nothing else — no storage version and no give-up, because a
         torn read costs at most a phantom edge or a missed one, and a child
         mapping to no GC-heap block already ends the descent as an external live
-        reference (S32.0); the collector-thread trace instantiates `trace_cells`
+        reference (`cycle::row::edge_to`); the collector-thread trace
+        instantiates `trace_cells`
         with it, and a Miri slice drives it over an object with outside cells
         and over an array mid-move
       tier: T2 · role: Critic
@@ -804,7 +733,8 @@ names what would have to be measured first.
   `benches/alloc.rs` stops at 8192. The metric is `blocks_out` and RSS
   rather than operations per second.
   **Settle separately:** entities past 8 KiB take the same path and are
-  reached by their own block header's row rather than by a stride (S32.0);
+  reached by their own block header's row rather than by a stride
+  (`cycle::row::edge_to`);
   a uniform stride would make them walkable, which `rc-walk` decided the
   other way and `rc-cycle` re-decided by dispatching on the block's kind.
 

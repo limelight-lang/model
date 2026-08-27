@@ -10,7 +10,8 @@
 //! survivor into a vector. This module keeps it as one sorted array of
 //! addresses per retained block and hands it to the enumerator that
 //! needs it, `heap::for_each_entity_slot`. The collector's own
-//! enumerator is S32.0's (`PLAN.md`).
+//! enumerator resolves one child at a time instead, through
+//! [`occupant_index`] (`crate::cycle::row`).
 //!
 //! # What this module does not know
 //!

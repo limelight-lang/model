@@ -151,7 +151,7 @@ teardown they run call back out — which is why `object` names
 |---|---|---|---|---|
 | `gc` | the GC C ABI and the safepoint: `ll_gc_collect_cycles`, `ll_gc_maybe_collect`, `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`, and the log-reserve refill inside the poll | that the checkpoint bracket is emitted in every build, collector or none | the arming policy (compiler's); any collector's internals — the two collecting entries report zero until S36.7 | `reserve` |
 | `cells` | the kind-dispatched tracer (`trace_entity`, `trace_cells`), the single sever dispatch, and a `#[cfg(test)]` heap census | entity kinds and each kind's out-edges; the outside-cell group's four behaviours | slots, blocks, occupancy — the heap's side of the split | `heap`, `refcount`, `object`, `value`, `class`, `array/entry`, `array/table`, `array/head`, `array/vector`, `array/entity` |
-| `cycle` | `rc-cycle` as `PLAN.md`'s S32 through S40 build it. Today one thing: which shadow row a traced edge lands on (`row::edge_to`), a dispatch on the block's kind because the GC heap holds three populations and only one of them has a stride | which block kinds carry rows; that a retained block places an occupant by its position in the reset's index and a large entity by being alone in its block; that an edge out of the GC heap is an external live reference rather than an error | strides, size classes and slot occupancy, which are `heap`'s; entity kinds and out-edges, which are `cells`'; how the index it searches was built, which is `promote`'s | `memory/block_pool`, `memory/heap`, `memory/retained`, `refcount` |
+| `cycle` | `rc-cycle` as `PLAN.md`'s S33 through S40 build it. Today one thing: which shadow row a traced edge lands on (`row::edge_to`), a dispatch on the block's kind because the GC heap holds three populations and only one of them has a stride | which block kinds carry rows; that a retained block places an occupant by its position in the reset's index and a large entity by being alone in its block; that an edge out of the GC heap is an external live reference rather than an error | strides, size classes and slot occupancy, which are `heap`'s; entity kinds and out-edges, which are `cells`'; how the index it searches was built, which is `promote`'s | `memory/block_pool`, `memory/heap`, `memory/retained`, `refcount` |
 | `promote` | arena death with promotion (retention only): the destructor/escapee fixpoint, internal-edge counting, in-place category rewrite to GcHeap, `BLOCK_KIND_RETAINED` stamping, the survivor list handed on as each retained block's object index, the release-at-reset log | escapee hold-count semantics; the retained block kind | copying / evacuation (future); who mounted the arena; how the index is read | `arena`, `block_pool`, `object`, `refcount`, `weak`, `retained`, `array/entity` (a survivor's storage carries out with it) |
 
 ## Shared resources
@@ -172,7 +172,8 @@ Three rows left this table on 2026-08-26 with the collectors that owned
 them: `rc-trace`'s candidate buffer, `rc-walk`'s confirmation queue and
 handshake, and its GC activity flag with the parked lists. `rc-cycle`'s
 replacements are a per-thread root queue (S34), per-block shadow rows in
-an arena of their own (S32, S33) and a single process claim word (S38.1).
+an arena of their own (S33; the triple that reaches them is on each
+block's header line already) and a single process claim word (S38.1).
 
 **The header flag word is itself a shared resource.** `refcount` owns
 the layout (its constants are normative; this ledger records who each
@@ -290,7 +291,7 @@ unbuilt, so a garbage ring is retained and acyclic garbage dies by
 counting. The shape the path will take is in
 `rfc/model/gc/rc-cycle.md`: a mutator-fed candidate set, trial deletion
 on shadow counts held off the heap, maturation by age, and a teardown
-whose order is binding ("Cycle teardown"). `PLAN.md` S32 through S40
+whose order is binding ("Cycle teardown"). `PLAN.md` S33 through S40
 build it, and this section is redrawn when the boundaries are real
 rather than before — a path diagram of an unbuilt collector reads as
 structure that exists.

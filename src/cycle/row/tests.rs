@@ -10,7 +10,10 @@ use crate::test_support::store_prop;
 /// The row a slot's own address derives, by the division the crate
 /// already performs on this shape (`heap::describe_slot`) rather than by
 /// the reciprocal multiply under test. That the two agree for every size
-/// class and every slot is S32.1's exhaustive proof; here the division
+/// class and every slot is
+/// `heap::tests::the_block_under_the_slots::`
+/// `the_reciprocal_multiply_is_the_division_over_a_whole_block`; here
+/// the division
 /// is the independent witness that the dispatch reached the entity's own
 /// row and not merely a row.
 ///

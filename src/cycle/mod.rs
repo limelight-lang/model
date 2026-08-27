@@ -1,7 +1,7 @@
 //! `rc-cycle`: cycle collection from a mutator-fed candidate set.
 //!
 //! The design is `rfc/model/gc/rc-cycle.md` and is normative; this module
-//! is its implementation as `PLAN.md`'s S32 through S40 build it. Nothing
+//! is its implementation as `PLAN.md`'s S33 through S40 build it. Nothing
 //! here collects yet: the crate retains a garbage ring and reclaims
 //! acyclic garbage by counting, and `gc::ll_gc_collect_cycles` reports
 //! zero until S36.7 wires a collection in.

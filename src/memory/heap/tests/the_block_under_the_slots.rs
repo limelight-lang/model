@@ -219,7 +219,7 @@ fn full_block_refills_and_serves_distinct_slots() {
 /// The expectation is the division of the same offset, never the slot
 /// number the offset was built from: an index compared with an address
 /// rebuilt from that index agrees with any reciprocal at all, exact or
-/// not (`PLAN.md`, S32.1).
+/// not.
 ///
 /// Wrong by one here is another live entity's row rather than a fault,
 /// so the whole domain is walked rather than sampled: 32 classes over

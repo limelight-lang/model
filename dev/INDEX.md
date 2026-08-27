@@ -29,7 +29,7 @@ versions live in `docs/history/`, marked at the top.
   acyclic garbage dies by counting. What survives of the old code and
   why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26;
   the code itself is on the branch `archive/pre-rc-cycle`. `PLAN.md`
-  S32 through S40 build the replacement, and `src/cycle/` is where it
+  S33 through S40 build the replacement, and `src/cycle/` is where it
   is going: today it holds `row::edge_to` alone, which answers which
   shadow row a traced edge lands on by dispatching on the block's kind,
   and no production caller reaches it until S35.1's mark.
