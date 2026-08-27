@@ -1687,6 +1687,11 @@ fn retire_the_journal() {
     // is `BlockPool::put`, which can push into the cache the next call
     // flushes.
 
+    // The enrolment queue before the critical reserve, because its
+    // segments go back through that reserve's return path
+    // (`crate::cycle::queue::drain`): draining the reserve first would
+    // strand them in a reserve nothing drains again.
+    crate::cycle::queue::drain();
     crate::memory::reserve::drain();
     crate::memory::critical::drain();
     crate::memory::block_pool::drain_thread_cache();
@@ -1774,6 +1779,18 @@ pub extern "C" fn ll_thread_init() {
     // not check whether the slot has been reserved (see its doc), so this
     // is the call that establishes that invariant.
     tls::ensure_slot();
+
+    // The three reserves first, and **before** the heap allocation below,
+    // which returns early when the OS refuses it. A thread that comes out
+    // of here heapless is still alive and still releases entities
+    // allocated elsewhere, so it still reaches the enrolment queue — and
+    // the queue's second door is the critical reserve, which a thread that
+    // has never touched it reaches for the first time from `ll_release`,
+    // where nothing can report. Filling them here needs no heap.
+    let _ = crate::memory::reserve::replenish();
+    let _ = crate::memory::critical::replenish();
+    let _ = crate::cycle::queue::replenish();
+
     if tls::get_raw().is_null() {
         // Not `Box::new`: its failure mode is `handle_alloc_error`, which
         // aborts — an abort nobody chose and no caller can see coming.
@@ -1804,15 +1821,6 @@ pub extern "C" fn ll_thread_init() {
             return;
         }
 
-        // Fill the barrier's reserve while a refusal is still reportable:
-        // from here the thread's first allocation reports null, and the
-        // store barrier has no channel at all
-        // (`crate::memory::reserve`).
-        let _ = crate::memory::reserve::replenish();
-        // And the collection's, on the same terms: a thread whose
-        // allocation fails has no other door to the memory a trace needs
-        // (`crate::memory::critical`).
-        let _ = crate::memory::critical::replenish();
         // Failing to arm the guard is the right outcome: the thread is
         // already exiting, and its blocks are reclaimed by the teardown in
         // progress.

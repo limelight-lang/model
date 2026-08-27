@@ -563,15 +563,27 @@ Its protocol is the log reserve's, verbatim — filled at
 `ll_thread_init`, drawn only after the pool refuses, refilled at the
 safepoint poll, drained at thread exit.
 
-Its one customer today is the cycle collection's working memory, and the
-draw order is the pool first. The in-line collection has been the
-standard form since 2026-08-26 rather than the emergency one, so most of
-its runs begin with no refusal anywhere, and a full trace's rows are far
-beyond any reserve; the critical door is the fallback, which on the
-memory-pressure path is the first draw because the refusal is what
-triggered the collection. The two other customers the design names — the
-enrolment queue's growth and the mutator that cannot collect — arrive
-with `PLAN.md` S34.1 and S38.4, and no partition among the three is built
+It has two customers today, and the draw order is the pool first for
+both. The **cycle collection's working memory** is one: the in-line
+collection has been the standard form since 2026-08-26 rather than the
+emergency one, so most of its runs begin with no refusal anywhere, and a
+full trace's rows are far beyond any reserve; the critical door is the
+fallback, which on the memory-pressure path is the first draw because the
+refusal is what triggered the collection.
+
+The **enrolment queue's growth** is the other, and it reaches this door
+on a different condition: the queue's two spare cells are both empty,
+which means the poll's own refill through the ordinary door was already
+refused. The draw is one block, and it puts the runtime in reserve mode.
+Its segments come back through `give_back` like the collection's, which
+is why thread exit drains the queue before this reserve
+(`memory::heap::ll_thread_exit`). What an overflow does when this door
+refuses too is undecided: the crate undoes the enrolled bit so the entity
+stays enrollable, and `rfc/model/memory/critical-reserve.md`, "When the
+reserve is spent too" carries what else it may owe as an open question.
+
+The third customer the design names, the mutator that cannot collect,
+arrives with `PLAN.md` S38.4, and no partition among the three is built
 until one of their shares can be derived.
 
 Eight blocks is 512 KiB, which is the design's 500 KB figure read at

@@ -103,11 +103,13 @@ pub const ACYCLIC_GATE: u32 = 1 << 8;
 /// stamp and the factory-side write are S37.3's.
 pub const OWNERSHIP_MARK: u32 = 1 << 9;
 
-/// A root-queue entry names this entity. Cleared by the owner at death
-/// and at no other point — **never at acquittal**, because enrolment is
-/// edge-triggered and clearing it there is a permanent miss (S34.2,
-/// `rfc/model/gc/rc-cycle.md`). **No producer yet:** the queue is
-/// S34.1's, so today the bit is only read, by the gate below.
+/// A root-queue entry names this entity. Set by the release path before
+/// it writes the entry (`crate::cycle::queue`), and cleared by the owner
+/// at death and at no other point — **never at acquittal**, because
+/// enrolment is edge-triggered and clearing it there is a permanent miss
+/// (S34.2, `rfc/model/gc/rc-cycle.md`). The one other clearing is the
+/// undo of an enrolment whose entry never landed, which is the same
+/// owner reducing the same incomplete state.
 pub const ENROLLED: u32 = 1 << 10;
 
 /// Entity has weak references (side table exists).
@@ -691,12 +693,32 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
 
     // A decrement that does not reach zero is the one event that can
     // leave a garbage ring behind, so it is where a candidate is
-    // enrolled (`rfc/model/gc/rc-cycle.md`). The queue that receives one
-    // is S34.1's; until it exists the decision is made and counted and
-    // nothing is stored, which is also why the bit the gate reads has no
-    // writer yet.
+    // enrolled (`rfc/model/gc/rc-cycle.md`).
     if refcount != 0 && may_enrol(flags) {
         note_admission();
+
+        // The bit goes down **before** the queue write, which Y12
+        // clause 4 requires: set after it, a second decrement landing in
+        // the window between the two enrols the same entity twice. The
+        // word written is the one loaded above, so this store carries
+        // every other mutator flag forward unchanged — which is sound
+        // for the same reason the counter store above is, the entity's
+        // own thread being its only writer.
+        unsafe { flags_store(entity, flags | ENROLLED) };
+
+        // A false answer means both funding doors refused and no entry
+        // names the entity, so the bit comes back down: the owner is
+        // undoing its own incomplete enrolment on an exact reading,
+        // which the law of 2026-08-26 allows it, and it leaves the
+        // entity enrollable at a later decrement instead of reserving it
+        // an examination that will never come. What else that boundary
+        // owes is undecided, and `rfc/model/memory/critical-reserve.md`,
+        // "When the reserve is spent too" both says so and says why the
+        // ordinary answer there does not reach this caller: raising
+        // memory-exhausted needs a frame, and this one holds none.
+        if !unsafe { crate::cycle::queue::enrol(entity) } {
+            unsafe { flags_store(entity, flags) };
+        }
     }
 
     refcount == 0 && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap

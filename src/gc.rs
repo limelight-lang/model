@@ -22,6 +22,48 @@
 //! collect nothing and report zero. Cyclic garbage is retained; acyclic
 //! garbage dies by counting as it always did.
 
+thread_local! {
+    /// Whether this thread owes a collection at its next clean point.
+    ///
+    /// Per thread because what arms it is per thread: the enrolment
+    /// queue's growth, which is one thread's release path drawing on
+    /// one thread's reserve (`crate::cycle::queue`). A process-wide bit
+    /// would send every thread through a collection because one of them
+    /// ran short, and would leave the thread that needs the memory
+    /// waiting behind threads that do not.
+    ///
+    /// `Cell<bool>` has no drop glue, which is the rule for anything a
+    /// thread exit can reach (`memory::heap::ll_thread_exit`).
+    static DUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Arm this thread for a collection at its next clean point.
+///
+/// What arms it today is the enrolment queue running out of room in a
+/// spare cell: a reserve draw, or a refusal at both doors. Neither can
+/// collect where it stands, `ll_release` holding no frame, so the arming
+/// is how the poll hears about it (`rfc/model/gc/strategies.md`,
+/// "Triggering: arm vs fire").
+pub(crate) fn arm() {
+    DUE.with(|due| due.set(true));
+}
+
+/// Whether this thread was armed, and disarm it.
+#[inline]
+fn take_due() -> bool {
+    DUE.with(|due| due.replace(false))
+}
+
+/// Whether this thread is armed, without disarming it.
+///
+/// A test's only window on the arming: the poll disarms as it fires, so
+/// a test that read the flag through the poll would read the same zero
+/// whether the arming happened or not.
+#[cfg(test)]
+pub(crate) fn is_armed() -> bool {
+    DUE.with(|due| due.get())
+}
+
 /// ABI: run a cycle collection now, whether or not one was armed. Returns
 /// entities reclaimed.
 ///
@@ -70,7 +112,23 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         let _ = crate::memory::critical::replenish();
     }
 
-    0
+    // And the enrolment queue's spare cells, which is the same protocol
+    // one layer up: the overflow may not allocate, so somebody else
+    // takes the segment it swaps in, and this is where that somebody
+    // stands (`rfc/model/gc/cycle/questions.md`, Y12 clause 3).
+    if crate::cycle::queue::is_short() {
+        let _ = crate::cycle::queue::replenish();
+    }
+
+    if !take_due() {
+        return 0;
+    }
+
+    // Armed, so fire — which reports zero until S36.7 wires a collection
+    // in. The disarm above happens whether or not the fire collects
+    // anything: an arming is an event and not a state, and a thread that
+    // stayed armed would fire at every poll for the rest of its life.
+    unsafe { ll_gc_collect_cycles() }
 }
 
 /// ABI: serve the collector's checkpoint now. The compiler emits it once

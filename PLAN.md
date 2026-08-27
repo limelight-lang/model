@@ -58,11 +58,13 @@ Empty.
 Goal: candidates reach the collector without the mutator paying for a data
 structure, and an entity that dies while enrolled leaves no dangling pointer.
 
-- [ ] S34.1 The queue against Y12's contract
-      done: **all eight** clauses hold — the count and the header agreed on
-        2026-08-27, and the stale "seven against a header saying six" this line
-        used to carry is gone — so a failed growth never drops a root, no
-        allocation
+- [x] S34.1 The queue against Y12's contract
+      done: **all eight** clauses hold, and where a clause constrains a reader
+        that does not exist yet "hold" means the code contradicts none of it and
+        says which half it does not build — clause 6 is the one that needs
+        saying, its reserve draw being built and its reserve *mode* not, there
+        being no collection to walk a root; so a failed growth never drops a
+        root, no allocation
         happens on the enrolling thread's hot path, proven by a `#[cfg(test)]`
         allocation counter bracketing the enrolment call rather than by defining
         the growth path as not hot, and a second reader is either supported or
@@ -72,6 +74,27 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         during enrolment sets the pending flag, and the poll fires at the next
         clean point, returning 0 until S36.7 wires the collection
       tier: T2 · role: Critic
+      Critic 2026-08-27: eleven findings, and the two that changed the code are
+        the first two. `critical::draw` is a `try_with` on a thread-local with
+        drop glue, so its first touch registers a destructor and S34.1 put that
+        call on the release path where nothing can report — `ll_thread_init`
+        now fills all three reserves before the heap allocation that returns
+        early, and the residue is S34.5. And thread exit strands `ENROLLED` on
+        entities that outlive the thread through the abandoned list, which the
+        gate then refuses for ever: a permanent miss and not the "loss of
+        candidates" the comment called it, so the comment is rewritten and
+        S39.1 is told what it is choosing against.
+      Critic 2026-08-27: the rest were the instrument and the fixtures, and
+        four are now mutation-checked regressions that were not detectable
+        before — the drain test held no spare at the drain, the allocation
+        probe bracketed the growth path twice and the hot path never,
+        `FORCE_OOM` in the refusal test closed a door the path never knocks on
+        and hid an "ask the pool" fallback, and `fill_live_segment` set a count
+        over 8159 recycled words that S34.3's corpse rule would have
+        dereferenced. Also taken: the second `arm()` was unreachable, so the
+        draw and the refusal now arm independently and each has a test; a held
+        spare read `BLOCK_KIND_FREE`, now stamped at acquisition; and three
+        comments said what had stopped being true. Nothing was rejected.
       handoff: the clause this step could not have been built against was
         clause 3, and it was ruled on 2026-08-27 (`rfc/dev/PLAN.md` S8.2, and
         the entry it names in `rfc/dev/DECISIONS.md`). What it hands the code: a
@@ -82,6 +105,50 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         critical reserve. What no ruling reaches is the reserve being spent too
         — `rfc/dev/PLAN.md` S8.5 — so this step builds the reserve draw and
         stops at its edge.
+      handoff: closed 2026-08-27. `cycle::queue` is the owner's side of the
+        contract: a chain of 64 KiB pool segments, two spare cells filled at
+        `ll_thread_init` and at every `ll_gc_maybe_collect`, the live segment a
+        cell the first enrolment swaps in, `critical::draw` when both cells are
+        empty, and the enrolled bit undone when both doors refuse. `refcount`'s
+        release path is its one caller and the edge is in `dev/ARCHITECTURE.md`.
+      handoff: verified at 514 tests — one run, three at four threads,
+        `hash-folding` 514, `debug-journal` 520 three times, release with no
+        warnings, `cargo bench --no-run`, `fmt --check`. Miri over `cycle::queue`
+        is clean at 10 tests, 10.73 s on its own clock. Every new test was seen
+        failing against a mutation of what it names, fifteen mutations in all.
+        Miri found the stage's one defect and it was the fixture's: a raw
+        pointer taken before a `&mut` call, invalidated by the retag —
+        `dev/WORKFLOW.md`'s rule about that was scoped to reentrancy tests and
+        is widened.
+      handoff: what this step did **not** build, and who owns it. The read side
+        is S35.1's and the accelerator's swap S38.1's, so nothing yet agrees
+        with a detaching reader about the fill cell — `rfc/dev/PLAN.md` S8.7.
+        The drain at thread exit returns blocks and drops entries, which S39.1
+        turns into a chosen fate. The corpse rule and the marks a reader writes
+        into an entry's low bits are S34.3's and S35's; the four bits are free
+        and nothing writes them today.
+- [ ] S34.5 Decide what the critical reserve's first touch may cost
+      done: `memory::critical`'s thread-local is reachable from `ll_release`
+        without the process depending on what registering a TLS destructor
+        costs — either its payload loses its drop glue and the blocks a thread
+        that never ran `ll_thread_exit` holds are returned another way, or the
+        cost is measured on this platform and recorded as acceptable with the
+        measurement named
+      tier: T2 · role: Critic
+      handoff: raised by the Critic on S34.1, 2026-08-27. `critical::draw` is a
+        `try_with` on a `thread_local!` whose payload has a `Drop`, so its
+        **first** touch on a thread registers a destructor, and on glibc that
+        registration allocates and terminates the process when it cannot. S34.1
+        put that call on the release path, where nothing can report.
+      handoff: what S34.1 did about it, and what it did not. `ll_thread_init`
+        now fills all three reserves before the heap allocation that can return
+        early, so every thread it runs on has touched the reserve while a
+        refusal was still reportable. What is left is the thread that never
+        calls `ll_thread_init` at all — a population `Critical::drop` and
+        `ThreadCache::drop` both say the crate serves — and for that one the
+        first touch is still `ll_release`'s. The claim about glibc is the
+        Critic's reading and is **not verified on this box**; verifying it is
+        part of this step.
 - [ ] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
         returns a slot; a reader may mark an entry a corpse and pass it on; the
@@ -147,6 +214,19 @@ Goal: trial deletion runs entirely in the shadow rows.
         child" clause the dispatch was built under becomes two, or `Edge`
         grows a variant and the touched-block list can still tell a matured
         child from a child outside the heap.
+- [ ] S35.0 Repoint what `dev/INDEX.md` says about tracing an array
+      done: the paragraph on the array's tracing stride names a mechanism that
+        exists — no `collector::Epoch::storage_versions`, no per-walked-row
+        version kept by an epoch, no `collector::tests::…::measure_parked_memory`
+        — and says instead what the version bracket is read by now, or says that
+        nothing reads it yet and which step gives it a reader
+      tier: T1 · role: —
+      handoff: found 2026-08-27 by the pass-2 check of `dev/WORKFLOW.md`, which
+        the previous run reported empty. Two of the four sites were the
+        mechanical rename `walk::trace_cells` → `cells::trace_cells` and are
+        repaired; the other two describe the deleted epoch's own machinery, and
+        repairing those means saying what reads a storage version in `rc-cycle`,
+        which is this stage's question and not a rename.
 - [ ] S35.2 Scan
       done: a non-zero working count marks its reachable set live, a zero one
         leaves it white, and the pair is proven on two graphs — a ring with an

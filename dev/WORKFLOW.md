@@ -260,7 +260,18 @@ the other five named a stage the plan had deleted that week. The maps are swept 
 kind of forward claim; `dev/DECISIONS.md`, `dev/POSTMORTEM.md` and
 `dev/BENCHMARKS.md` are not, an entry there naming the stage of its own
 day being a record rather than a pointer. Grep the bare number, because
-punctuation hides one: `(S34.3)`, `S34-3`, `marked S34.3`. An
+punctuation hides one: `(S34.3)`, `S34-3`, `marked S34.3`.
+
+**An `S<n>` in this tree is this plan's, and a debt the `rfc` plan owns is
+never written as one.** The two plans number independently and both delete
+closed stages, so `rfc`'s live S8 and this plan's deleted S8 are the same
+token; a sweep run here reads the citation as debris and the next one deletes
+it. A debt that belongs over there is cited the way any other cross-repository
+fact is — by the `rfc` document and its named section, which is where the
+question stands anyway. Found on 2026-08-27, when S34.1's comments named
+`rfc/dev/PLAN.md` S8.5 in four places and the sweep reported a dead stage.
+
+An
 `#[expect(dead_code, reason = "…S36.2")]` is the self-reporting form of
 the same debt — the attribute goes unfulfilled the moment the caller
 arrives.
@@ -432,11 +443,19 @@ permissive provenance in the most pointer-heavy modules, so a clean run
 is weaker evidence there than elsewhere. Tree Borrows cannot run at all
 until those casts go away — it requires strict provenance.
 
-**Tests that exercise reentrancy must keep one raw pointer per arena
-and per context and reuse it**, which is the shape generated code
-actually has. Taking a fresh `&mut` per call retags and invalidates the
-pointer `set_current_context` parked in TLS, producing a failure that
-is an artefact of the test, not of the runtime.
+**A test keeps one raw pointer per object and reuses it**, which is the
+shape generated code actually has. Taking a fresh `&mut` per call retags
+and invalidates every raw pointer taken before it, producing a failure
+that is an artefact of the test rather than of the runtime.
+
+Reentrancy is where this was first paid — a fresh `&mut` per call
+invalidates the pointer `set_current_context` parked in TLS — but the rule
+is not about reentrancy. On 2026-08-27 it caught S34.1's queue tests,
+which took `&raw mut header`, released through `&mut header`, and then
+read the flags back through the first pointer: three lines, one local, no
+TLS and no arena. **Anything a test holds a raw pointer to is released,
+retained and read through that pointer**, never through a borrow of the
+binding beside it.
 
 ## ThreadSanitizer
 

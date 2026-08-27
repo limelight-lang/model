@@ -243,6 +243,22 @@ static CARVE_LOCK: Mutex<()> = Mutex::new(());
 pub(crate) static FORCE_OOM: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+// Blocks this thread has asked the pool for, whichever tier served it.
+// Counted rather than inferred from the global allocator, because a
+// request the thread cache serves allocates nothing and still takes the
+// pool's word — and a path that may not lock is judged by requests, not
+// by allocations (`crate::test_support::allocation_probe`).
+#[cfg(test)]
+thread_local! {
+    static POOL_REQUESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Pool requests on this thread, and zero the count.
+#[cfg(test)]
+pub(crate) fn take_pool_requests() -> usize {
+    POOL_REQUESTS.with(|c| c.replace(0))
+}
+
 thread_local! {
     static THREAD_CACHE: RefCell<ThreadCache> =
         const { RefCell::new(ThreadCache { blocks: Vec::new() }) };
@@ -368,6 +384,9 @@ impl BlockPool {
         if FORCE_OOM.load(Ordering::Relaxed) {
             return std::ptr::null_mut();
         }
+
+        #[cfg(test)]
+        POOL_REQUESTS.with(|c| c.set(c.get() + 1));
 
         self.blocks_out.fetch_add(1, Ordering::Relaxed);
         let cached = THREAD_CACHE

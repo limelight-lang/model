@@ -30,8 +30,19 @@ versions live in `docs/history/`, marked at the top.
   why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26;
   the code itself is on the branch `archive/pre-rc-cycle`. `PLAN.md`
   S34 through S40 build the replacement, and `src/cycle/` is where it
-  is going, with no production caller until S35.1's mark. Three parts
-  today. `row::edge_to` answers which shadow row a traced edge lands on,
+  is going. Four parts today, and one of them has a production caller:
+  **`queue` is the per-thread enrolment queue**, a chain of 64 KiB pool
+  segments that the release path writes an entity pointer into at every
+  non-final decrement the enrolment gate admits. It grows by a pointer
+  swap out of two spare cells the safepoint poll fills through the
+  ordinary door, draws `memory::critical` when both cells are empty and
+  arms the poll when it does, and undoes the enrolled bit when both doors
+  refuse — the entity staying enrollable rather than reserved an
+  examination that will never come. What it does beyond the undo at that
+  boundary is undecided (`rfc/model/memory/critical-reserve.md`, "When the
+  reserve is spent too"). The other three have no
+  production caller until S35.1's mark. `row::edge_to` answers which
+  shadow row a traced edge lands on,
   dispatching on the block's kind and carrying the population out of
   that read. `shadow` is the row and the block's array of them: four
   bytes, two of colour over thirty of working count, with colour zero
@@ -121,8 +132,8 @@ versions live in `docs/history/`, marked at the top.
   instance's and not the class's, the count is read from the shape — and
   since the walk-duplication refactor it is read there in **one** place,
   `object::for_each_counted_cell`, which serves the quiescent tracer, the
-  collector's relaxed one and the sever alike (`walk::trace_cells`,
-  `walk::sever_cells`). It was three strides, each branching on
+  collector's relaxed one and the sever alike (`cells::trace_cells`,
+  `cells::sever_cells`). It was three strides, each branching on
   `CLASS_TEMPLATE` separately, and a walk that strides an object's slots
   without knowing this leaks rather than crashes — which is why the third
   one was found by review and not by the suite. `flatten` measures
@@ -253,7 +264,7 @@ versions live in `docs/history/`, marked at the top.
   `entity.rs` is the wrapper supplying the `RcHeader`: an array carries no
   class pointer, the same construction as a string, because the entity
   kind already says what it is. Its children — elements **and** string
-  keys — come from the one tracing stride, `walk::trace_cells`' Array arm,
+  keys — come from the one tracing stride, `cells::trace_cells`' Array arm,
   which reads the entries through `StorageHead::coherent` and
   `Table::entries_of`: a version counter brackets every move of an entry,
   and a walker that cannot get a coherent reading skips the array for that

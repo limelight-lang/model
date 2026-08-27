@@ -11,6 +11,7 @@ use crate::object::Object;
 use crate::refcount::RcHeader;
 use crate::value::{Tag, Value};
 
+pub(crate) mod allocation_probe;
 pub(crate) mod outside_block;
 
 /// What the buffer arena hands out for `capacity` **in critical pressure

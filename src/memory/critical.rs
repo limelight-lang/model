@@ -12,16 +12,23 @@
 //!
 //! # Who draws, and when
 //!
-//! One customer exists in this crate: the cycle collection's shadow
-//! arena (`crate::cycle::arena`). It asks the ordinary pool first — the
+//! Two customers exist in this crate. The cycle collection's shadow
+//! arena (`crate::cycle::arena`) asks the ordinary pool first — the
 //! in-line collection is the standard form rather than the emergency
 //! one, and most of its runs begin with no refusal anywhere — and
 //! reaches here only on a null from the pool, which on the pressure path
 //! is its first draw because the refusal is what triggered the
-//! collection. The other two customers `critical-reserve.md` names, the
-//! enrolment queue's growth and the mutator that cannot collect, arrive
-//! with S34.1 and S38.4 of `PLAN.md`; no partition among the three is
-//! built until one of their shares can be derived.
+//! collection. The enrolment queue's growth
+//! (`crate::cycle::queue`) reaches here on a different condition: its
+//! two spare cells are both empty, which means a poll's refill was
+//! already refused, and the draw puts the runtime in reserve mode. The
+//! third customer `critical-reserve.md` names, the mutator that cannot
+//! collect, arrives with S38.4 of `PLAN.md`; no partition among the
+//! three is built until one of their shares can be derived.
+//!
+//! **The queue is also the second caller of [`give_back`]**, its
+//! segments coming back at thread exit, which is why that drain runs
+//! before this reserve's own (`memory::heap::ll_thread_exit`).
 //!
 //! # What a drawn block owes
 //!
@@ -171,10 +178,11 @@ pub(crate) fn give_back(block: *mut BlockHeader) {
             }
 
             // Stamped here rather than trusted: every block the reserve
-            // hands out is assumed to carry this kind already, and the
-            // only thing enforcing that today is that the arena's reset
-            // is `give_back`'s one caller. A release store on a cold path
-            // is cheaper than an invariant living in another file.
+            // hands out is assumed to carry this kind already, and what
+            // enforces that is each caller stamping its own — the arena's
+            // reset and the enrolment queue's drain, which are the two.
+            // A release store on a cold path is cheaper than an invariant
+            // living in two other files.
             unsafe {
                 crate::memory::block_pool::store_block_kind(
                     &raw const (*block).kind,

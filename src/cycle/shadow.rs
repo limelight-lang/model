@@ -244,15 +244,15 @@ pub(crate) const fn bytes_for(slots: u32) -> usize {
     size_of::<RowArray>() + padded(slots) * size_of::<u32>() + group_bytes(slots)
 }
 
-/// Bytes this thread has written into row arrays, which is what a first
-/// touch actually costs (tests only).
-///
-/// Counted where the writes are rather than measured from outside, and
-/// per thread rather than globally, because the tests that write rows
-/// run beside each other. What it counts is the prologue and the bitmap
-/// at a block's reservation, and one group at each group's first touch;
-/// what the figures are and why they are counted here rather than timed
-/// is `dev/BENCHMARKS.md`, "what a block's first touch writes".
+// Bytes this thread has written into row arrays, which is what a first
+// touch actually costs (tests only).
+//
+// Counted where the writes are rather than measured from outside, and
+// per thread rather than globally, because the tests that write rows
+// run beside each other. What it counts is the prologue and the bitmap
+// at a block's reservation, and one group at each group's first touch;
+// what the figures are and why they are counted here rather than timed
+// is `dev/BENCHMARKS.md`, "what a block's first touch writes".
 #[cfg(test)]
 thread_local! {
     static WRITTEN_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

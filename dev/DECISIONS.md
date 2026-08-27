@@ -9,6 +9,65 @@ never edited or deleted.
 ---
 
 
+## 2026-08-27 — the enrolment queue is a chain of pool segments, and its live segment is a spare cell
+
+**Decision.** A queue segment is one 64 KiB pool block, the queue is a chain of
+them threaded through `BlockHeader::next`, and growth links the full segment in
+rather than copying out of it. Only the live segment is partly filled — an
+overflow is the one way a segment leaves that position — so the chain carries no
+per-segment length and the fill is one cell beside it. A thread holds **no live
+segment until its first enrolment**, which finds no room by construction and
+takes the overflow path, so the empty-queue case is the overflow case and a
+thread that never enrols holds two segments instead of three.
+
+**Why.** The design fixes the segment at one pool block, that being the only
+unit both funding doors dispense (`rfc/model/gc/cycle/questions.md`, Y12
+clause 3). Everything else follows from wanting the write to be a store: a
+per-segment header would put a second load on the hot path, and a lazily taken
+live segment removes the arm that would otherwise test for one.
+
+**The undo of the enrolled bit is this step's own, and it decides nothing
+beyond itself.** With both cells empty and the critical reserve spent, no entry
+lands, and the release path puts the bit back down. That is legal under the law
+of 2026-08-26 — the owner reducing its own incomplete enrolment on an exact
+reading — and it leaves the entity enrollable at a later decrement rather than
+reserved an examination that will never come. What the runtime owes beyond it is
+`rfc/dev/PLAN.md` S8.5 and is nobody's ruling yet, so the branch carries a
+`#[cfg(test)]` counter and no reporting.
+
+**Cost.** Two 64 KiB blocks resident per thread from `ll_thread_init`, and a
+third from the first enrolment. One narrow store into the flags half on the
+release path, where the loaded word is reused, plus the queue's own store. Not
+measured: what the enrolment adds to a non-final decrement, there being no
+benchmark that isolates one.
+
+**Rejected: a `RefCell` around the queue.** The write is the hottest path in the
+runtime and the borrow flag buys nothing, the queue having one writer by
+contract and no path that re-enters it. **Rejected: keeping the fill inside the
+block.** It is a second cache line on the write path for a number only the live
+segment has.
+
+
+## 2026-08-27 — the test binary counts allocations through a global allocator
+
+**Decision.** `test_support::allocation_probe` installs a `#[cfg(test)]`
+`#[global_allocator]` over `System` that counts allocations per thread, and
+`block_pool` counts requests for a block the same way. A test asserts that a
+path allocated nothing by bracketing it with both counters.
+
+**Why.** The clause under test is that enrolment never allocates and never
+locks, and the path proves it by calling no allocator by name. A probe threaded
+through the call sites would see only the calls somebody remembered to thread it
+through — the property would be assumed by the instrument meant to check it.
+The pool counter is the second half: a request the thread cache serves allocates
+nothing and still takes the pool's word, and a path that may not lock is judged
+by requests rather than by allocations.
+
+**Cost.** One thread-local increment on every allocation in the test binary, and
+a global allocator where the crate had none. The release build is untouched.
+
+
+
 ## 2026-08-27 — a block's rows and its place on the touched list are one allocation
 
 **Decision.** The touched list threads through a 24-byte prologue on the row
