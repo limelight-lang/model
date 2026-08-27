@@ -9,6 +9,37 @@ never edited or deleted.
 ---
 
 
+## 2026-08-27 — a kind's ring classification is written at its declaration, before a factory stamps it
+
+**Decided:** `EntityKind::Lazy` classifies as ring-closing although no factory
+stamps its code yet, and a kind added later is classified the same way — at the
+declaration, from the slots the kind holds, rather than when a producer for it
+is built.
+
+**Why:** waiting for a producer is what left the ReferenceBox outside the
+candidate gate until 2026-08-07, and that gap leaked `$a['x'] = &$a`: the box
+holds the array, the array's element holds the box, and the frame's release
+decrements the box from two to one. Nothing else is decremented and the box was
+not admitted, so no candidate exists and the ring is never freed. A Lazy proxy's
+slots are already traversed on both paths that would reach them —
+`ll_entity_die` sends it through `ll_object_die`, and `cells::trace_cells`
+strides it like an object — so the classification states what the layout is, and
+only the factory is missing.
+
+**What this replaces:** the fact was recorded on 2026-08-07 under "the candidate
+gate is a set of kinds, not a mask over their codes", whose main clause the
+renumbering of 2026-08-26 overturned — the codes were reassigned so that the
+gate is a mask again — and which states the fact as "kind 6", a code the same
+renumbering moved. `EntityKind::closes_a_ring` cites this entry instead, so the
+one sentence the code still needs from that day is not read out of an entry
+whose argument no longer holds.
+
+**Cost:** a kind classified before its producer exists is a classification no
+test drives. The `const` battery in `refcount.rs` ties each kind's answer to its
+code and `to_flags`'s `debug_assert!` catches a kind the battery never named;
+neither can see whether the slots are really there. Lazy's own test is owed to
+the stage that builds the factory.
+
 ## 2026-08-26 — the keep-clause of the field-privacy ruling is retired: both `&self` readers are deleted
 
 The same Sage amends the entry below. Its main clause stands — the fields are

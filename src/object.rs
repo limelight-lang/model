@@ -504,7 +504,7 @@ pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
     // an object must not run it (`rfc/runtime/object-lifecycle.md`).
 
     {
-        let (_, flags) = unsafe { crate::refcount::mutator_load_header(obj as *const RcHeader) };
+        let flags = unsafe { crate::refcount::mutator_flags(obj as *const RcHeader) };
         if flags & DESTRUCTOR_PENDING == 0 || flags & DESTRUCTOR_RAN != 0 {
             return false;
         }
@@ -565,7 +565,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
         // `rc 0 → 1 → 0` is visible to it. A count read high is the safe
         // direction — the entity reads as externally referenced and
         // survives one collection.
-        let (_, flags) = unsafe { crate::refcount::mutator_load_header(obj as *const RcHeader) };
+        let flags = unsafe { crate::refcount::mutator_flags(obj as *const RcHeader) };
         let counted = MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap;
         if counted {
             unsafe { crate::refcount::mutator_guard_retain(obj as *mut RcHeader) };

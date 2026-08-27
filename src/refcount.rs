@@ -289,8 +289,9 @@ impl EntityKind {
     /// elements and string keys, and a ReferenceBox's one Value.
     /// `ll_entity_die` sends `Lazy` through `ll_object_die` and
     /// `cells::trace_cells` strides it like an object, which is why it
-    /// answers yes before any factory stamps it (`dev/DECISIONS.md`, "the
-    /// candidate gate is a set of kinds, not a mask over their codes").
+    /// answers yes before any factory stamps it (`dev/DECISIONS.md`, "a
+    /// kind's ring classification is written at its declaration, before a
+    /// factory stamps it").
     /// A string, an FFI Box and a weak cell own nothing a ring can pass
     /// through.
     ///
@@ -345,11 +346,14 @@ const _: () = {
 /// word rather than the entity, because every caller holds it in a
 /// register already.
 ///
-/// **No production caller**: the release path reads this same bit inside
-/// [`ENROLMENT_GATE_MASK`], which answers the kind clause and four others
-/// in one test. Here the kind clause stands alone, and
-/// `refcount::tests::the_header_the_compiler_shares` is what holds it to
-/// [`EntityKind::closes_a_ring`].
+/// **No production caller, and kept as one of the three questions the kind
+/// codes were assigned to answer in a single mask test** — the other two
+/// are [`carries_a_class_word`] and [`is_string`], and that assignment is
+/// the whole argument for a four-bit field ([`ENTITY_KIND_SHIFT`]). The
+/// release path reads this same bit inside [`ENROLMENT_GATE_MASK`], which
+/// answers the kind clause and four others in one test; here the clause
+/// stands alone, and `refcount::tests::the_header_the_compiler_shares` is
+/// what holds it to [`EntityKind::closes_a_ring`].
 #[inline]
 pub fn kind_may_close_a_cycle(flags: u32) -> bool {
     flags & KIND_ABOVE_THE_RING_RESERVE == 0
@@ -401,15 +405,29 @@ pub fn carries_a_class_word(flags: u32) -> bool {
 /// One mask rather than two comparisons because the two codes differ in
 /// the kind field's low bit alone, which is what their assignment was
 /// chosen for.
+///
+/// **No production caller, and kept on the same footing as
+/// [`kind_may_close_a_cycle`]**: it is the second of the three questions
+/// that assignment answers. The string paths ask the narrower
+/// `string::bytes_are_out_of_line` instead, and every other site reaches
+/// the kind through a `match` on the whole field, so the pair-wide
+/// question has no site of its own today;
+/// `refcount::tests::the_header_the_compiler_shares` is what holds it to
+/// the two codes.
 #[inline]
 pub fn is_string(flags: u32) -> bool {
     flags & KIND_TOP_THREE == EntityKind::String.to_flags()
 }
 
-/// True when the entity kind field is `Object` (the zero default). The
-/// dispatch every teardown and trace path makes on a bare header, and a
-/// flags-word predicate rather than a header one because most call sites
-/// hold a raw `*mut RcHeader` and have the flags in a register already.
+/// True when the entity kind field is `Object` (the zero default). A
+/// flags-word predicate rather than a header one because a caller holding
+/// a raw `*mut RcHeader` has the flags in a register already.
+///
+/// **No production caller**, on the same footing as
+/// [`kind_may_close_a_cycle`] and [`is_string`]: teardown and promotion
+/// dispatch on the whole kind field through a `match` with an arm per
+/// kind (`object::ll_entity_die`, `promote::external_memory`), which
+/// needs no separate test for the zero code.
 #[inline]
 pub fn is_object(flags: u32) -> bool {
     flags & ENTITY_KIND_MASK == 0
@@ -766,13 +784,21 @@ pub(crate) unsafe fn set_header_refcount(header: *mut RcHeader, value: u32) {
     unsafe { refcount_store(header, value) };
 }
 
-/// The count and the mutator's flags together, for a caller that wants
-/// both — [`cow_separation_needed`] is the predicate over the pair.
-/// [`mutator_load_header`]'s two narrow loads; the cost of the second is
-/// unmeasured.
+/// The count and the mutator's half of the flags together, for a caller
+/// that wants both — [`cow_separation_needed`] is the predicate over the
+/// pair.
+///
+/// **Two narrow loads rather than one wide one**, which is a change of
+/// width and not of economy: an 8-byte load at +0 overlaps the
+/// collector's byte store at +6 without covering it, and a mixed-size
+/// atomic access is undefined in Rust's model whatever it costs. The wide
+/// form was measured cheaper where nothing narrow precedes it
+/// (`dev/BENCHMARKS.md`, "the barrier's header reads go narrow"), and what
+/// that measurement priced is no longer on offer. What the second load
+/// costs beside the first is unmeasured.
 #[inline]
 pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
-    unsafe { mutator_load_header(header) }
+    unsafe { (refcount_load(header), flags_load(header)) }
 }
 
 /// Rewrite the flags of a **published** header — the write twin of
@@ -790,21 +816,6 @@ pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
 pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
     let flags = unsafe { flags_load(header) };
     unsafe { flags_store(header, f(flags)) };
-}
-
-/// Mutator-side relaxed header read: the counter, then the mutator's
-/// half of the flags.
-///
-/// **Two narrow loads rather than one wide one**, which is a change of
-/// width and not of economy: an 8-byte load at +0 overlaps the
-/// collector's byte store at +6 without covering it, and a mixed-size
-/// atomic access is undefined in Rust's model whatever it costs. The
-/// wide form was measured cheaper where nothing narrow precedes it
-/// (`dev/BENCHMARKS.md`, "the barrier's header reads go narrow"), and
-/// what that measurement priced is no longer on offer.
-#[inline]
-pub(crate) unsafe fn mutator_load_header(header: *const RcHeader) -> (u32, u32) {
-    unsafe { (refcount_load(header), flags_load(header)) }
 }
 
 /// The teardown guard's `+1`, as a narrow counter store: the flags half
