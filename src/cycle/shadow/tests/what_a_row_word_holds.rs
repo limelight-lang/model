@@ -35,15 +35,47 @@ fn a_row_carries_a_colour_and_a_count_without_either_reaching_the_other() {
 
 /// The saturation the field's width forces: a count past the bound is
 /// held at the bound rather than wrapped into the colour, which would
-/// turn a live entity's row into a condemned one. What the saturated
-/// value *means* to the judgement is S33.3 of `PLAN.md`.
+/// turn a live entity's row into a condemned one.
 #[test]
 fn a_count_past_the_field_saturates_instead_of_wrapping() {
     for value in [COUNT_MAX + 1, COUNT_MAX + 2, u32::MAX] {
         let word = compose(Colour::Met, value);
         assert_eq!(count(word), COUNT_MAX);
         assert_eq!(colour(word), Colour::Met, "the colour survives the clamp");
+        assert!(is_saturated(word));
     }
+
+    assert!(
+        !is_saturated(compose(Colour::Met, COUNT_MAX - 1)),
+        "a count the field holds exactly is a total, not a floor"
+    );
+}
+
+/// What the saturated value means, which is the whole of the clause: the
+/// count is a floor, so every subtraction leaves it a floor and the
+/// entity stays conservatively live. Without this a refcount above the
+/// field is condemnable — the row starts at the bound and enough
+/// internal edges walk it to zero while the external references it could
+/// not count are still there.
+#[test]
+fn a_saturated_count_absorbs_every_subtraction() {
+    let mut word = compose(Colour::Met, u32::MAX);
+    let row = &raw mut word;
+    assert!(is_saturated(unsafe { *row }));
+
+    assert_eq!(unsafe { subtract(row, 1) }, COUNT_MAX);
+    assert_eq!(unsafe { subtract(row, COUNT_MAX) }, COUNT_MAX);
+    assert!(
+        is_saturated(unsafe { *row }),
+        "the entity is externally referenced whatever the trace found"
+    );
+    assert_eq!(colour(unsafe { *row }), Colour::Met);
+
+    // One below the bound is an ordinary count and answers ordinarily,
+    // which is what makes the clause a clause rather than a ceiling.
+    let mut ordinary = compose(Colour::Met, COUNT_MAX - 1);
+    let row = &raw mut ordinary;
+    assert_eq!(unsafe { subtract(row, 1) }, COUNT_MAX - 2);
 }
 
 /// The reserved code. A zeroed row is untouched and nothing else, so a

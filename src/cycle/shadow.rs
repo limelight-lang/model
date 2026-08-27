@@ -51,9 +51,22 @@ use crate::cycle::row::Population;
 /// Bits of one row given to the working count. The rest are the colour.
 const COUNT_BITS: u32 = 30;
 
-/// The largest working count a row can hold. A count above it saturates
-/// and the saturated row reads as "externally referenced, conservatively
-/// live" — the clause S33.3 of `PLAN.md` names and tests.
+/// The largest working count a row can hold, and **"at least this many"
+/// rather than "exactly this many"**.
+///
+/// A refcount above it is met at this value, so the row says the entity
+/// has external references without saying how many, and
+/// [`is_saturated`] is how the trace asks. The clause that follows is
+/// that a saturated row is conservatively live and stays so: subtracting
+/// an edge leaves it saturated ([`subtract`]), because the count it
+/// holds is a floor and not a total (`rfc/model/gc/rc-cycle.md`, "Where
+/// the shadow count lives").
+///
+/// Without the clause the entity is condemnable: a refcount of `2^31`
+/// meets at `2^30 - 1`, and a trace that finds `2^30` internal edges to
+/// it drives the row to zero while a billion external references stand.
+/// That heap is 16 GiB at the smallest size class, so the case is
+/// reachable on a large machine rather than absurd.
 pub(crate) const COUNT_MAX: u32 = (1 << COUNT_BITS) - 1;
 
 /// What the trace has decided about one entity, and the reserved zero
@@ -98,6 +111,17 @@ pub(crate) fn count(row: u32) -> u32 {
     row & COUNT_MAX
 }
 
+/// Whether `row`'s working count is a floor rather than a total, which
+/// makes the entity conservatively live whatever the trace subtracts
+/// from it ([`COUNT_MAX`]).
+///
+/// The scan asks this rather than comparing against the constant, so the
+/// clause has one reader and one name.
+#[inline]
+pub(crate) fn is_saturated(row: u32) -> bool {
+    count(row) == COUNT_MAX
+}
+
 /// A row of this colour and this count, the count **saturated** at
 /// [`COUNT_MAX`] rather than wrapped into the colour.
 #[inline]
@@ -122,6 +146,10 @@ pub(crate) fn compose(colour: Colour, count: u32) -> u32 {
 /// (`rfc/model/gc/rc-cycle.md`, "Who judges, and what a trace is
 /// worth"). So the floor is a saturation and not an error.
 ///
+/// **A saturated count is absorbing** and this call leaves it alone: it
+/// is a floor, so what the subtraction knows about the remainder is
+/// still "at least [`COUNT_MAX`]" ([`is_saturated`]).
+///
 /// # Safety
 /// `row` is a row of a met entity, reached through
 /// [`ShadowArena::meet`](crate::cycle::arena::ShadowArena::meet).
@@ -135,6 +163,10 @@ pub(crate) fn compose(colour: Colour, count: u32) -> u32 {
 #[inline]
 pub(crate) unsafe fn subtract(row: *mut u32, edges: u32) -> u32 {
     let word = unsafe { *row };
+    if is_saturated(word) {
+        return COUNT_MAX;
+    }
+
     let left = count(word).saturating_sub(edges);
     let updated = compose(colour(word), left);
     unsafe { row.write(updated) };

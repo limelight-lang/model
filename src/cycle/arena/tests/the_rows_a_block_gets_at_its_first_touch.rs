@@ -459,3 +459,66 @@ fn a_second_collection_meets_a_slotted_block_at_the_refcount_again() {
     unsafe { heap.free(slot) };
     crate::memory::critical::drain_for_test();
 }
+
+/// The bound, driven from an entity rather than from a constant: a
+/// refcount above what thirty bits hold meets at the bound, and the row
+/// says "at least this many" from then on. The count is written into the
+/// header directly because reaching `2^30` references by retaining takes
+/// longer than a test may run, and what the row reads is the only thing
+/// under test.
+#[test]
+fn an_entity_referenced_past_the_field_is_met_at_the_bound() {
+    let _g = test_guard();
+    crate::memory::critical::drain_for_test();
+    let class = ClassBuilder::new("S33Saturated").prop("x", true).build();
+    let mut request = Arena::new();
+    let mut ctx = LLContext {
+        arena: &mut request,
+    };
+    let entity: *mut Object = unsafe { new_constructed(&mut ctx, class, MemoryCategory::GcHeap) };
+    let header = entity as *mut RcHeader;
+    let block = (entity as usize & !BLOCK_MASK) as *mut u8;
+
+    let held = shadow::COUNT_MAX as u64 + 8;
+    unsafe { crate::refcount::set_header_refcount(header, held as u32) };
+    let refcount = unsafe { crate::refcount::header_refcount(header) };
+    assert!(
+        refcount > shadow::COUNT_MAX,
+        "the fixture is past the bound"
+    );
+
+    let mut arena = ShadowArena::new();
+    let row = met(unsafe {
+        arena.meet(
+            slot_row(
+                block,
+                crate::memory::heap::entity_slot_index(entity as *mut u8),
+            ),
+            refcount,
+        )
+    });
+    assert!(
+        shadow::is_saturated(unsafe { *row }),
+        "the row holds a floor rather than a total"
+    );
+
+    // Every edge the trace could find, and the entity is still live: the
+    // subtraction cannot walk a floor down to zero.
+    for _ in 0..4 {
+        assert_eq!(
+            unsafe { shadow::subtract(row, 1_000_000) },
+            shadow::COUNT_MAX
+        );
+    }
+
+    assert!(shadow::count(unsafe { *row }) > 0, "conservatively live");
+
+    arena.reset();
+    unsafe { crate::refcount::set_header_refcount(header, 1) };
+    unsafe {
+        assert!(ll_release(header));
+        ll_object_die(entity);
+    }
+
+    crate::memory::critical::drain_for_test();
+}

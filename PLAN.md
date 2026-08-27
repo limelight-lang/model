@@ -168,11 +168,21 @@ one reset, with no write into any entity.
         colour field of three bits, because it read the width from the constant
         it was testing, and the design's two-plus-thirty split is pinned by an
         assertion of its own now.
-- [ ] S33.3 Name the saturation clause
+- [x] S33.3 Name the saturation clause
       done: a working count that would exceed the field saturates, saturation
         reads as "external references exist, conservatively live", and a test
         drives an entity past the bound
       tier: T1 · role: —
+      handoff: the clause turned out to have a second half the step's wording
+        did not carry, and it is the half that is load-bearing: **saturation is
+        absorbing**. A saturated count is a floor rather than a total, so
+        `shadow::subtract` leaves it alone and no scan may condemn it —
+        otherwise a refcount of 2^31 meets at the bound and 2^30 internal edges
+        walk the row to zero while a billion external references stand, on a
+        16 GiB heap. `rfc/model/gc/rc-cycle.md` was amended before the code
+        (`7d0fb35` there), because the rule binds every stage that touches a
+        row and not this crate alone. `shadow::is_saturated` is what the scan
+        asks; three tests, each seen failing.
 - [ ] S33.4 Hold the row at four bytes
       done: no captured count is stored anywhere — not in the row and not in a
         parallel array — because the commit stage judges again rather than
