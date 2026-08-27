@@ -522,3 +522,67 @@ fn an_entity_referenced_past_the_field_is_met_at_the_bound() {
 
     crate::memory::critical::drain_for_test();
 }
+
+/// What a first touch costs in bytes written, counted on the collector's
+/// own path. The block is the widest one there is — 4080 slots at the
+/// smallest size class — so its array reserves 16 320 bytes of rows, and
+/// the figure this test pins is two orders below that: the prologue, the
+/// bitmap, and one group per group the trace reaches.
+///
+/// **A `memset` benchmark cannot show this**, which is why the probe is
+/// inside the crate: it reports the same two numbers whether or not the
+/// array was zeroed, and what the design bought with the bitmap is the
+/// zeroing that never happens.
+#[test]
+fn a_first_touch_writes_the_bitmap_and_the_groups_it_reaches() {
+    let _g = test_guard();
+    crate::memory::critical::drain_for_test();
+    let (mut heap, slot, block) = an_entity_block();
+
+    let slots = unsafe { crate::memory::heap::collector_block_slots(block) };
+    assert_eq!(slots, 4080, "the fixture takes the widest block there is");
+
+    let prologue = size_of::<shadow::RowArray>();
+    // One bit per group, rounded up to a byte — computed here rather than
+    // asked of the module, so the test does not agree with itself.
+    let bitmap = (slots as usize / shadow::GROUP as usize).div_ceil(8);
+    assert_eq!(bitmap, 64, "510 groups fit 64 bytes of bitmap");
+    let group = size_of::<u8>() + shadow::GROUP as usize * size_of::<u32>();
+
+    let before = shadow::written_bytes();
+    let mut arena = ShadowArena::new();
+    met(unsafe { arena.meet(slot_row(block, 0), 1) });
+    assert_eq!(
+        shadow::written_bytes() - before,
+        prologue + bitmap + group,
+        "the block's first touch writes its head, its bitmap and one group"
+    );
+
+    met(unsafe { arena.meet(slot_row(block, 7), 1) });
+    assert_eq!(
+        shadow::written_bytes() - before,
+        prologue + bitmap + group,
+        "a second slot of the same group writes nothing further"
+    );
+
+    met(unsafe { arena.meet(slot_row(block, 8), 1) });
+    let written = shadow::written_bytes() - before;
+    assert_eq!(
+        written,
+        prologue + bitmap + 2 * group,
+        "and a slot of the next group writes that group"
+    );
+
+    // The figure the design is written against: what a touched block
+    // costs follows the bitmap and the trace, not the block's width.
+    let greedy = slots as usize * size_of::<u32>();
+    assert_eq!(greedy, 16_320);
+    assert!(
+        written * 50 < greedy,
+        "{written} bytes written against {greedy} the array holds"
+    );
+
+    arena.reset();
+    unsafe { heap.free(slot) };
+    crate::memory::critical::drain_for_test();
+}

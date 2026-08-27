@@ -183,7 +183,7 @@ one reset, with no write into any entity.
         (`7d0fb35` there), because the rule binds every stage that touches a
         row and not this crate alone. `shadow::is_saturated` is what the scan
         asks; three tests, each seen failing.
-- [ ] S33.4 Hold the row at four bytes
+- [x] S33.4 Hold the row at four bytes
       done: no captured count is stored anywhere — not in the row and not in a
         parallel array — because the commit stage judges again rather than
         comparing with a captured value; a probe on the collector's own path
@@ -195,7 +195,14 @@ one reset, with no write into any entity.
       tier: T1 · role: —
       handoff: decided 2026-08-26 by the ruling that phase 2 is a second
         judgement. Storing a captured value would have doubled the row and the
-        design's memory with it.
+        design's memory with it, and the assertion that catches such a value
+        arriving is `a_slot_costs_four_bytes_and_a_bit`: every size class takes
+        four bytes a slot beside the head and the bitmap, so a second word per
+        slot moves the figure. The probe is `shadow::WRITTEN_BYTES`, a
+        per-thread count at the two write sites; at the widest block a first
+        touch writes 121 bytes against the 16 320 its rows reserve, and a
+        second slot of the same group writes none (`dev/BENCHMARKS.md`,
+        2026-08-27).
 
 ## S34 — The root queue, enrolment and parking
 

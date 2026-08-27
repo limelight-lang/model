@@ -232,6 +232,38 @@ pub(crate) const fn bytes_for(slots: u32) -> usize {
     size_of::<RowArray>() + padded(slots) * size_of::<u32>() + group_bytes(slots)
 }
 
+/// Bytes this thread has written into row arrays, which is what a first
+/// touch actually costs (tests only).
+///
+/// Counted where the writes are rather than measured from outside, and
+/// per thread rather than globally, because the tests that write rows run
+/// beside each other. What it prices is the design's reason for the group
+/// bitmap: the array a block reserves is `slots × 4` bytes, and what a
+/// collection writes into it is the prologue, the bitmap, and one group
+/// per group the trace reaches (`rfc/model/gc/rc-cycle.md`, "The rows are
+/// not zeroed greedily"). A `memset` benchmark cannot show the difference
+/// — it reports the same two numbers whether or not the array was zeroed.
+#[cfg(test)]
+thread_local! {
+    static WRITTEN_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Add `bytes` to the probe above. Compiles to nothing without
+/// `cfg(test)`.
+#[inline]
+fn note_written(bytes: usize) {
+    #[cfg(test)]
+    WRITTEN_BYTES.with(|written| written.set(written.get() + bytes));
+    #[cfg(not(test))]
+    let _ = bytes;
+}
+
+/// What the probe holds for this thread.
+#[cfg(test)]
+pub(crate) fn written_bytes() -> usize {
+    WRITTEN_BYTES.with(std::cell::Cell::get)
+}
+
 /// Write the array's header and clear its group bitmap.
 ///
 /// The rows themselves are left as the bump handed them over. Their
@@ -259,6 +291,8 @@ pub(crate) unsafe fn init(
         (&raw mut (*array).population).write(population);
         groups(array).write_bytes(0, group_bytes(slots));
     }
+
+    note_written(size_of::<RowArray>() + group_bytes(slots));
 }
 
 /// The row at `index`, whose group has been met.
@@ -293,6 +327,8 @@ pub(crate) unsafe fn meet_group(array: *mut RowArray, index: u32) {
         *byte |= bit;
         row(array, group * GROUP).write_bytes(0, GROUP as usize);
     }
+
+    note_written(size_of::<u8>() + GROUP as usize * size_of::<u32>());
 }
 
 /// The group bitmap, which sits past the rows.

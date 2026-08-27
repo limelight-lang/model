@@ -100,6 +100,38 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-27 — what a block's first touch writes: 121 bytes against the 16 320 its rows reserve
+
+**Counted, not timed.** `cycle::shadow`'s `WRITTEN_BYTES` probe adds up the
+bytes written into a row array at their two sites — the array's head plus its
+bitmap when the block is reserved, and one group of eight rows when the trace
+first reaches that group. The test is
+`cycle::arena::tests::the_rows_a_block_gets_at_its_first_touch::`
+`a_first_touch_writes_the_bitmap_and_the_groups_it_reaches`, and it runs in the
+ordinary suite because the figure is deterministic.
+
+At the smallest size class, which cuts a 64 KiB block into 4080 slots:
+
+| what the trace does | bytes written |
+|---|---|
+| first touch of the block, one slot | 121 = 24 head + 64 bitmap + 33 group |
+| a second slot of the same group | 0 |
+| a slot of the next group | 33 |
+| what the array reserves | 16 320 |
+
+**Why it is counted here rather than measured with a `memset` benchmark.** A
+standalone memset reports the same two numbers whether or not the array was
+zeroed; what the group bitmap bought is the zeroing that never happens, and
+only a probe on the collector's own path can see it. The design's own figures
+for the 717 MiB case — 41–76 ms to zero already-mapped rows against 1.4 ms for
+the bitmaps — are `rfc/model/gc/rc-cycle.md`'s and were measured before the
+crate had rows at all; this entry is the unit-level shape of the same ratio,
+not a re-measurement of it.
+
+**What it does not say.** Nothing about time, and nothing about a real trace's
+density: how many groups of a touched block a collection reaches is what
+`PLAN.md` S40.1 measures, and the chunked row form waits on that number.
+
 ## 2026-08-22 — the young-free exemption: an entity is exempt until the second walk that meets it
 
 Node C2 of `rfc/model/gc/walk/questions.md`.

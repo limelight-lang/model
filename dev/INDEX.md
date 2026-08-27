@@ -52,6 +52,14 @@ versions live in `docs/history/`, marked at the top.
   population's: an entity block's array is sized by its size class, a
   retained block's by its occupant count, and a large entity has one row
   in its own block header. Nothing constructs an arena yet.
+
+  Two numbers about a row, both pinned by tests rather than by prose: a
+  count at the field's bound is a floor and absorbs every subtraction, so
+  an entity referenced more times than thirty bits hold is conservatively
+  live and no scan may condemn it (`shadow::is_saturated`); and a block's
+  first touch writes 121 bytes at the widest size class against the
+  16 320 its rows reserve, which is what the group bitmap bought
+  (`dev/BENCHMARKS.md`, 2026-08-27).
 - The enrolment gate: `refcount::ENROLMENT_GATE_MASK` and `may_enrol`,
   read on the non-zero decrement in `release_word`. Five conditions in
   one mask, each of them "this bit is zero" — GC-heap category, a kind a

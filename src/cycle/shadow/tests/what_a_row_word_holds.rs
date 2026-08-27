@@ -119,6 +119,27 @@ fn an_array_for_any_size_class_fits_one_block() {
     );
 }
 
+/// Four bytes a slot and nothing beside them. The design keeps no
+/// captured count — the commit stage judges again rather than comparing
+/// with a value the trace stored — and a captured count is exactly what
+/// would show up here, as a second word per slot in this array or as a
+/// parallel one (`rfc/model/gc/rc-cycle.md`, "Where the shadow count
+/// lives"; `PLAN.md` S33.4).
+#[test]
+fn a_slot_costs_four_bytes_and_a_bit() {
+    for &class in crate::memory::heap::SIZE_CLASSES {
+        let slots = (crate::memory::block_pool::BLOCK_PAYLOAD / class) as u32;
+        let padded = (slots as usize).next_multiple_of(GROUP as usize);
+        let bitmap = (padded / GROUP as usize).div_ceil(8);
+
+        assert_eq!(
+            bytes_for(slots) - size_of::<RowArray>() - bitmap,
+            padded * size_of::<u32>(),
+            "{slots} slots take four bytes each, plus the head and the bitmap"
+        );
+    }
+}
+
 /// The mark's own operation, and the floor that keeps it from turning a
 /// condemned row into a live one. `count - 1` at zero wraps to
 /// `u32::MAX`, which [`compose`] clamps to [`COUNT_MAX`] — the value the
