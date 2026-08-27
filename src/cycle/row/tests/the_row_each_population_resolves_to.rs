@@ -122,7 +122,8 @@ fn two_sizes_in_one_retained_block_resolve_to_distinct_rows() {
             resolved,
             Edge::Interior(Row {
                 block,
-                index: position as u32
+                index: position as u32,
+                population: Population::Retained,
             })
         );
         rows.push(resolved);
@@ -176,7 +177,8 @@ fn a_large_entity_resolves_to_the_one_row_in_its_own_block() {
             unsafe { edge_to(entity as *mut RcHeader) },
             Edge::Interior(Row {
                 block,
-                index: SOLE_OCCUPANT
+                index: SOLE_OCCUPANT,
+                population: Population::Sole,
             })
         );
 

@@ -307,6 +307,28 @@ pub(crate) fn pinned_payloads(block: usize) -> usize {
         .map_or(0, |index| index.payloads)
 }
 
+/// How many occupants retained block `block` is indexed for, which is
+/// the size of the index space [`occupant_index`] answers in — and so
+/// the number of shadow rows the block needs (`crate::cycle::arena`).
+///
+/// `None` for a block with no index, which is a block held for bytes
+/// alone ([`pin`]) or one whose reset has not registered it yet. The
+/// collector treats that as an edge it cannot place, the same answer
+/// [`occupant_index`] gives it.
+///
+/// The count is stable for as long as a trace holds it: an index is
+/// replaced only by a reset of an arena that has taken this block, and a
+/// block cannot leave the pool for an arena while a trace can still
+/// address it (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
+pub(crate) fn occupant_count(block: usize) -> Option<usize> {
+    registry()
+        .lock()
+        .expect("retained index registry poisoned")
+        .get(&block)
+        .filter(|index| index.indexed)
+        .map(|index| index.occupants.len())
+}
+
 /// Where `addr` sits in retained block `block`'s occupant index, which
 /// is the slot index the collector's shadow row array is keyed by: a
 /// bump-filled block has mixed sizes and no stride, so position in the
@@ -320,10 +342,11 @@ pub(crate) fn pinned_payloads(block: usize) -> usize {
 /// found keeps its referent alive instead of condemning it.
 ///
 /// **One registry lock per resolved edge, and that is the cost until a
-/// trace holds a block's index for the length of its visit.** The
-/// touched list S33.2 of `PLAN.md` builds is where the index is taken
-/// once per block; the search itself is over an `Arc` slice and does not
-/// need the lock, only reaching it does.
+/// trace holds a block's index for the length of its visit.** S35.1 of
+/// `PLAN.md` is the step that gives the trace a visit to hold it over —
+/// [`occupant_count`] already takes it once per block, and the search
+/// itself is over an `Arc` slice and does not need the lock, only
+/// reaching it does.
 pub(crate) fn occupant_index(block: usize, addr: usize) -> Option<usize> {
     registry()
         .lock()

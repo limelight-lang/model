@@ -9,6 +9,69 @@ never edited or deleted.
 ---
 
 
+## 2026-08-27 — a block's rows and its place on the touched list are one allocation
+
+**Decision.** The touched list threads through a 24-byte prologue on the row
+array itself — `{ block, next, slots, population }` ahead of the rows — so a
+collection's first touch of a block reserves its rows and enrols it for the
+sweep in one call to the arena. The 512-entry segment chain that the arena
+landed with on the same day is gone, and with it `note_touched` and its refusal
+path.
+
+**Why.** The enrolment must precede the stamp, because the enrolment can fail
+and the stamp cannot: a block stamped with rows an abort then gives back is the
+stale pointer the sweep exists to prevent, and it is reached exactly when memory
+is short. Two allocations make that an ordering rule anybody can break; one
+allocation makes it unreachable — after the rows exist there is nothing left to
+refuse. The cost moves the same way: a touched block pays 24 bytes rather than
+its share of a 4 KiB segment, and the first touched block of a sparse collection
+paid a whole segment for one entry.
+
+**What it costs.** A large entity has no array — its single row is a word of its
+own block header — so it takes a prologue with no rows behind it, 24 bytes for
+the sake of the sweep alone. The alternative was to leave large-entity blocks
+off the list and have the sweep find them another way, which means a second
+enumeration of exactly the blocks the list already names.
+
+**Also settled here: a retained block's index space.** It is the block's object
+index, so the array holds one row per occupant and a row is found by the
+occupant's position in it — the same number `retained::occupant_index` answers
+in. The length lives behind the registry mutex, so it is asked once per block at
+the first touch (`occupant_count`) rather than once per edge; the per-edge lock
+in `occupant_index` stays until S35.1 gives the trace a per-block visit to hold
+an `Arc` over. The row lookup bounds-checks the index against the recorded
+length and answers "no row" above it, which keeps the referent alive rather than
+condemning it on a row the trace guessed.
+
+**And the reserved colour.** A row is two bits of colour over thirty of working
+count, and colour zero means "not met in this collection". Without a code
+reserved for it, a condemned member — count zero, met — would read exactly like
+a slot the trace never reached, and the second edge into it would re-initialise
+the row from the refcount and acquit the component. The same zero is what a
+group init writes, and what a large entity's block header carries from its
+commissioning.
+
+**The meeting hands the reserved colour's answer back before it destroys it.**
+`meet` writes the met colour itself, so after the call the row can no longer
+say whether this collection had seen the entity before — and that is exactly
+the bit the mark's descent turns on, an edge into an already-expanded entity
+taking the decrement and stopping. Four colour codes are all two bits hold, so
+there is no fifth for "expanded", and the caller cannot pre-read a row of a
+block that has no array yet. `Met::Row` therefore carries `first_reach`
+(Critic, 2026-08-27).
+
+**The subtraction lives beside the row rather than at the call site.** The
+open-coded form is `compose(colour(r), count(r) - 1)`, and at a count of zero it
+wraps to `u32::MAX`, which `compose` clamps to `COUNT_MAX` — the value reserved
+for "externally referenced, conservatively live". A row that should read
+condemned would read maximally live, and the ring it belongs to would survive
+every collection. `shadow::subtract` saturates at zero and carries the colour it
+found. The floor is a saturation and not an error because a dirty pass may read
+more in-edges than the refcount held, which the design permits: the exact test
+on the owner's thread is what turns a candidate into a verdict.
+
+---
+
 ## 2026-08-27 — the shadow arena asks the pool first and the critical reserve second, and the virtual reservation goes
 
 **Decision (Sage, final).** The cycle collection's working memory is a bump

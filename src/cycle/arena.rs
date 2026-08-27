@@ -43,31 +43,64 @@
 //!
 //! A `Vec`, a `HashMap`, or anything else that reaches the global
 //! allocator. Both of the arena's own lists live in its own memory: the
-//! blocks thread through their headers, and the touched list is a
-//! segment chain bumped out of them. A collection that grew a `Vec`
+//! blocks thread through their headers, and the touched list threads
+//! through the row arrays themselves. A collection that grew a `Vec`
 //! would allocate through the very door that has already refused, and an
 //! allocation failure inside `Vec` aborts the process
 //! (`rfc/model/gc/cycle/questions.md`, Y14, "Its working memory must be
 //! sized before it is needed").
+//!
+//! # Enrolment cannot fail after the rows exist
+//!
+//! A block's rows and its entry in the touched list are **one
+//! allocation**: the entry is a 24-byte prologue on the row array
+//! (`crate::cycle::shadow`). One refusal point serves both, and it
+//! stands before either exists, so the state the sweep exists to undo —
+//! a block stamped with rows the abort has given back — cannot be
+//! reached. The recorded alternative is a chain of 512-entry segments
+//! beside the arrays: it allocates a second time, and that allocation's
+//! refusal arrives after the stamp, which is the state above; it also
+//! costs 4 KiB at the first touched block against the prologue's 24
+//! bytes.
+//!
+//! A large entity is the one population with no array, its single row
+//! being a word of its own block header, and it takes a prologue with no
+//! rows behind it for the sake of the sweep. There the refusal is kept
+//! harmless by an ordering instead: the row is written only after the
+//! enrolment is in hand, so a refused enrolment leaves the row at zero
+//! ([`ShadowArena::meet`]).
 
+use crate::cycle::row::{Population, Row};
+use crate::cycle::shadow::{self, Colour, RowArray};
 use crate::memory::block_pool::{BLOCK_KIND_ARENA, BLOCK_PAYLOAD, BlockHeader, BlockPool};
 
-/// Block addresses one segment of the touched list holds. 512 makes a
-/// segment 4 KiB, so a segment costs a sixteenth of a block and a
-/// collection that touches few blocks pays for one.
-const TOUCHED_PER_SEGMENT: usize = 512;
-
-/// One run of the touched list, bumped out of the arena's own memory.
-///
-/// The list is walked once, at reset, and never searched, so a chain of
-/// filled runs is the whole of what it needs to be.
-#[repr(C)]
-struct TouchedSegment {
-    next: *mut TouchedSegment,
-    len: usize,
-    /// Block header addresses. Live only below `len`: the rest is
-    /// whatever the bump handed over, and is written before it is read.
-    blocks: [*mut u8; TOUCHED_PER_SEGMENT],
+/// What one meeting of an entity answers: its row, or the two reasons
+/// there is none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Met {
+    /// The entity's row, met — its colour is not
+    /// [`Colour::Untouched`] and its working count is the refcount less
+    /// whatever the trace has already subtracted. The caller writes
+    /// through it.
+    ///
+    /// **`first_reach` is the answer to "had this collection seen the
+    /// entity before?"**, and it is carried out of the meeting because
+    /// the meeting is what destroys it: after the call the row's colour
+    /// says met whichever reach this was. The mark's descent turns on
+    /// it — an edge into an entity already expanded takes the
+    /// decrement and stops, and a trace that expanded again on every
+    /// in-edge would not terminate on a ring
+    /// (`rfc/model/gc/rc-cycle.md`, "What replaces the walk").
+    Row { row: *mut u32, first_reach: bool },
+    /// The block cannot place this index, which is a retained block
+    /// whose object index no longer names the entity. The caller counts
+    /// the edge as an external live reference, the same answer
+    /// `row::edge_to` gives an address it cannot place.
+    Unplaced,
+    /// Both memory doors refused. The caller aborts the collection,
+    /// which costs nothing beyond the work already done: the trace
+    /// writes into no entity.
+    Refused,
 }
 
 /// One collection's memory. Built on the collecting thread's stack,
@@ -83,9 +116,9 @@ pub(crate) struct ShadowArena {
     /// The bump cursor into the newest block, and the bytes left in it.
     cursor: *mut u8,
     left: usize,
-    /// Newest segment of the touched list, or null while nothing is
-    /// stamped.
-    touched: *mut TouchedSegment,
+    /// Newest array of the touched list, or null while no block has
+    /// been touched.
+    touched: *mut RowArray,
 }
 
 impl ShadowArena {
@@ -106,8 +139,9 @@ impl ShadowArena {
     ///
     /// A request larger than one block payload is refused outright: no
     /// allocation this arena serves comes near it — a smallest-class
-    /// block's rows are 16 320 bytes and a touched segment 4 KiB — and a
-    /// run of blocks would give the abort path a second shape to return.
+    /// block's array is 16 408 bytes, the largest any population asks
+    /// for — and a run of blocks would give the abort path a second
+    /// shape to return.
     ///
     /// The memory is **not zeroed**. A row array arrives dirty by
     /// design, its met bitmap being what says which rows have meaning
@@ -138,53 +172,116 @@ impl ShadowArena {
         granted
     }
 
-    /// Enrol `block` for the sweep, **before** its shadow-row pointer is
-    /// stamped. False when the list cannot grow, which aborts the
-    /// collection like any other refusal.
+    /// The shadow row of one entity the trace has just reached, **met**:
+    /// initialised from `refcount` on this collection's first reach of it
+    /// and left as it stands on every later one, so a second edge into
+    /// the same entity subtracts from the count rather than restoring it.
     ///
-    /// **The order is the contract, and the other one has a hole.** This
-    /// call can fail; the stamp cannot. Stamp first and a refusal here
-    /// leaves a block pointing at rows the abort is about to give back to
-    /// the pool, which is the stale pointer the list exists to prevent —
-    /// and it fails exactly when memory is short, which is when the abort
-    /// runs. Enrolling first costs nothing: the sweep of a block that was
-    /// never stamped stores null over null.
+    /// `row` comes from [`row::edge_to`](crate::cycle::row::edge_to) and
+    /// `refcount` is the entity's, read by the caller: this module places
+    /// rows and knows nothing about entity headers.
     ///
-    /// A block enrolled twice is swept twice, which is the same store
-    /// again. One never enrolled is the defect.
+    /// The block's rows are reserved here, at its first touch, and the
+    /// block enrolled for the sweep with them — one allocation, so a
+    /// refusal cannot land between the two (module doc). What it does not
+    /// do is zero the rows: only the touched group is written, and the
+    /// group bitmap is what says which groups those are
+    /// (`crate::cycle::shadow`).
+    ///
+    /// **A large entity is safe by an ordering rather than by that
+    /// structure**, its row being a block header word that exists from
+    /// the block's commissioning: the colour is tested, then the
+    /// enrolment allocated, then the colour written, so a refusal leaves
+    /// the row at zero and an unenrolled block is also an unwritten one.
+    /// An edit that wrote the row before enrolling would leave the next
+    /// collection reading this one's count.
     ///
     /// # Safety
-    /// `block` must be the header of a live `BLOCK_KIND_ENTITY` block,
-    /// and must stay mapped until [`sweep_touched`](Self::sweep_touched)
-    /// runs — which it does, a trace in flight being what keeps a block
-    /// from reaching the pool (`rfc/model/gc/rc-cycle.md`, "Death while
-    /// enrolled"). It may go home at any time after that.
-    pub(crate) unsafe fn note_touched(&mut self, block: *mut u8) -> bool {
-        let full = self.touched.is_null() || unsafe { (*self.touched).len } == TOUCHED_PER_SEGMENT;
-        if full {
-            let segment = self.alloc(size_of::<TouchedSegment>()) as *mut TouchedSegment;
-            if segment.is_null() {
-                return false;
+    /// `row` must name a live entity of the collected heap, resolved from
+    /// its own address by `edge_to`, and its block must stay mapped until
+    /// [`sweep_touched`](Self::sweep_touched) runs — which it does, a
+    /// trace in flight being what keeps a block from reaching the pool
+    /// (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
+    pub(crate) unsafe fn meet(&mut self, row: Row, refcount: u32) -> Met {
+        let block = row.block as *mut u8;
+        let word = if row.population == Population::Sole {
+            // The one population whose row is a block header word rather
+            // than an array, so its enrolment has no allocation to ride
+            // on and takes a prologue of its own. The row's own colour is
+            // what says whether that has happened: nothing but a meeting
+            // writes it, and the tail below writes it before returning.
+            debug_assert_eq!(
+                row.index,
+                crate::cycle::row::SOLE_OCCUPANT,
+                "a large entity's block holds one row and this names another"
+            );
+            let word = unsafe { crate::memory::large_entity::shadow_row(block) };
+            if shadow::colour(unsafe { *word }) == Colour::Untouched
+                && self.enrol(block, 0, Population::Sole).is_null()
+            {
+                return Met::Refused;
             }
 
-            // Field by field and written rather than assigned: the bump
-            // hands over memory with no value in it, so a `*segment = ..`
-            // that dropped the old contents would read what was never
-            // written.
-            unsafe {
-                (&raw mut (*segment).next).write(self.touched);
-                (&raw mut (*segment).len).write(0);
+            word
+        } else {
+            let mut array = unsafe { crate::memory::heap::block_shadow(block) } as *mut RowArray;
+            if array.is_null() {
+                let Some(slots) = (unsafe { index_space(row) }) else {
+                    return Met::Unplaced;
+                };
+
+                array = self.enrol(block, slots, row.population);
+                if array.is_null() {
+                    return Met::Refused;
+                }
+
+                // After the enrolment and never before: this store cannot
+                // fail and the one above can, so the other order stamps a
+                // block the abort would then leave pointing at memory it
+                // has given back (module doc).
+                unsafe { crate::memory::heap::set_block_shadow(block, array as *mut u8) };
             }
-            self.touched = segment;
+
+            if row.index >= unsafe { (*array).slots } {
+                // A retained block whose object index has been rebuilt
+                // under this trace is the only way here, and the trace
+                // token forbids it. Conservative rather than fatal all
+                // the same: an edge with no row keeps its referent alive.
+                debug_assert!(false, "row {} is past the block's index space", row.index);
+                return Met::Unplaced;
+            }
+
+            unsafe { shadow::meet_group(array, row.index) };
+            unsafe { shadow::row(array, row.index) }
+        };
+
+        let first_reach = shadow::colour(unsafe { *word }) == Colour::Untouched;
+        if first_reach {
+            unsafe { word.write(shadow::compose(Colour::Met, refcount)) };
         }
 
-        unsafe {
-            let segment = self.touched;
-            let filled = (*segment).len;
-            (&raw mut (*segment).blocks[filled]).write(block);
-            (&raw mut (*segment).len).write(filled + 1);
+        Met::Row {
+            row: word,
+            first_reach,
         }
-        true
+    }
+
+    /// Reserve `slots` rows for `block` and enrol it for the sweep, or
+    /// null when both memory doors have refused.
+    ///
+    /// The array is linked into the touched list here, which is the
+    /// enrolment: it is the same memory, so the two cannot come apart.
+    /// `slots` is zero for a large entity, whose row is elsewhere and
+    /// whose prologue is enrolment alone.
+    fn enrol(&mut self, block: *mut u8, slots: u32, population: Population) -> *mut RowArray {
+        let array = self.alloc(shadow::bytes_for(slots)) as *mut RowArray;
+        if array.is_null() {
+            return array;
+        }
+
+        unsafe { shadow::init(array, block, slots, population, self.touched) };
+        self.touched = array;
+        array
     }
 
     /// End the collection's hold on memory: give every block back, the
@@ -245,19 +342,32 @@ impl ShadowArena {
     /// entity, so the pointer is the whole of what a collection leaves in
     /// the heap.
     pub(crate) fn sweep_touched(&mut self) {
-        let mut segment = self.touched;
+        let mut array = self.touched;
         // Emptied first: the walk below runs to the end of the chain,
         // and a second call must find nothing rather than repeat it.
         self.touched = std::ptr::null_mut();
 
-        while !segment.is_null() {
-            let filled = unsafe { (*segment).len };
-            for i in 0..filled {
-                let block = unsafe { (*segment).blocks[i] };
-                unsafe { crate::memory::heap::clear_block_shadow(block) };
+        while !array.is_null() {
+            let block = unsafe { (*array).block };
+            match unsafe { (*array).population } {
+                // The large entity's row is the block's own header word,
+                // so what a stale one costs is not a wild pointer but a
+                // count: the next collection would read the entity as met
+                // and subtract from a working count this one left behind.
+                Population::Sole => unsafe {
+                    crate::memory::large_entity::shadow_row(block)
+                        .write(shadow::compose(Colour::Untouched, 0))
+                },
+                // Listed rather than a wildcard: a fourth population
+                // would otherwise be swept as though its rows hung off
+                // the collector line, which is a store into a header word
+                // that may be another module's.
+                Population::Slotted | Population::Retained => unsafe {
+                    crate::memory::heap::clear_block_shadow(block)
+                },
             }
 
-            segment = unsafe { (*segment).next };
+            array = unsafe { (*array).next };
         }
     }
 
@@ -296,6 +406,22 @@ impl ShadowArena {
         true
     }
 
+    /// Blocks enrolled for the sweep. Tests only, and the instrument for
+    /// a defect nothing else reports: a block enrolled twice is swept
+    /// twice, which is the same store again, so only the length of the
+    /// chain shows it.
+    #[cfg(test)]
+    pub(crate) fn touched_blocks(&self) -> usize {
+        let mut count = 0;
+        let mut array = self.touched;
+        while !array.is_null() {
+            count += 1;
+            array = unsafe { (*array).next };
+        }
+
+        count
+    }
+
     /// Blocks this arena holds. Tests only: the number is what a leak
     /// looks like from outside.
     #[cfg(test)]
@@ -307,6 +433,32 @@ impl ShadowArena {
             block = unsafe { (*block).next };
         }
         count
+    }
+}
+
+/// How many rows `row`'s block needs, or `None` for a retained block
+/// that has no object index — a block held for a payload alone, or one
+/// whose reset has not registered it yet.
+///
+/// The two populations answer from different places, and only one of them
+/// takes a lock: an entity block states its size class in its own
+/// collector line, while a retained block's index space is the length of
+/// an array behind the registry's mutex, which is why it is asked once
+/// per block here rather than once per edge.
+///
+/// # Safety
+/// `row`'s block must be commissioned as the population says it is.
+unsafe fn index_space(row: Row) -> Option<u32> {
+    match row.population {
+        Population::Slotted => {
+            Some(unsafe { crate::memory::heap::collector_block_slots(row.block as *mut u8) })
+        }
+        Population::Retained => {
+            crate::memory::retained::occupant_count(row.block).map(|count| count as u32)
+        }
+        // Unreachable: `meet` answers the sole occupant's row from its
+        // block header without asking where an array would go.
+        Population::Sole => None,
     }
 }
 

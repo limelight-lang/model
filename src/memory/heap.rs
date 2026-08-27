@@ -267,9 +267,9 @@ struct BlockRemote {
 struct BlockCollector {
     /// This block's shadow row array, or null while no collection has
     /// touched the block. The one word of a block header a non-owner
-    /// writes. Nothing reserves rows yet — S33.2 of `PLAN.md` is the step
-    /// that allocates them and the step that nulls this again at the end
-    /// of a collection, including on the abort path.
+    /// writes: a collection reserves the array at its first touch of the
+    /// block and nulls this again at the end of the collection, on the
+    /// abort path as well (`crate::cycle::arena::ShadowArena::meet`).
     shadow: AtomicPtr<u8>,
     /// `2^32 / stride + 1` for this block's size class, so a row lookup
     /// is a multiply and a shift rather than a division
@@ -277,10 +277,10 @@ struct BlockCollector {
     /// by the kind's release store, like every other header word.
     reciprocal: AtomicU32,
     /// The collector's own copy of the size class index, duplicating
-    /// [`HeapBlockHeader::size_class`] on purpose. No reader yet: S33.2
-    /// of `PLAN.md` sizes a block's row array at `BLOCK_PAYLOAD / stride`
-    /// and wants the stride once it has the reciprocal, and taking it
-    /// from here is what keeps the whole lookup on this line.
+    /// [`HeapBlockHeader::size_class`] on purpose:
+    /// [`collector_block_slots`] sizes a block's row array at
+    /// `BLOCK_PAYLOAD / stride`, and taking the stride from here is what
+    /// keeps the whole lookup on this line.
     size_class: AtomicU32,
 }
 
@@ -1228,12 +1228,19 @@ impl Heap {
             });
 
             // Raw blocks skip it: no trace enters one.
+            //
+            // Field by field for the reason the kind is written that way:
+            // a struct store covers `shadow` plainly, and `shadow` is the
+            // one word of a block header a **non-owner** writes — a
+            // collection stamps it at a block's first touch and nulls it
+            // at its sweep, both with release ordering. The other two are
+            // this thread's alone and published by the kind's release
+            // store below.
             if self.block_kind == BLOCK_KIND_ENTITY {
-                (&raw mut *block_collector(block)).write(BlockCollector {
-                    shadow: AtomicPtr::new(std::ptr::null_mut()),
-                    reciprocal: AtomicU32::new(reciprocal_for(class_size)),
-                    size_class: AtomicU32::new(ci as u32),
-                });
+                let triple = block_collector(block);
+                (&raw mut (*triple).reciprocal).write(AtomicU32::new(reciprocal_for(class_size)));
+                (&raw mut (*triple).size_class).write(AtomicU32::new(ci as u32));
+                (&raw mut (*triple).shadow).write(AtomicPtr::new(std::ptr::null_mut()));
             }
 
             crate::memory::block_pool::store_block_kind(&raw const (*block).kind, self.block_kind);
@@ -2042,18 +2049,27 @@ unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
     unsafe { (*h).alloc(size) }
 }
 
-/// Null the shadow-row pointer of an entity block, which every
-/// collection owes for every block it stamped — at its end and on its
-/// abort alike.
+/// Null the shadow-row pointer of a block that can carry rows, which
+/// every collection owes for every block it stamped — at its end and on
+/// its abort alike.
 ///
 /// A stale pointer left behind names an arena that has since been
 /// recommissioned, so the next collection would decrement rows that now
 /// hold live payload (`rfc/model/gc/rc-cycle.md`, "Where the shadow
-/// count lives"). The store is a release, and the acquire half is the
-/// load S33.2 of `PLAN.md` adds when a collection first touches a block.
+/// count lives"). The store is a release, and the acquire half is
+/// [`block_shadow`].
+///
+/// **It is also how a block is commissioned into a row-carrying kind.**
+/// The word is written once at an entity block's `refill` and never
+/// again, but a former-arena block is stamped `BLOCK_KIND_RETAINED`
+/// over whatever its previous life left in the collector line, so
+/// `promote` nulls it there before the kind's release store publishes
+/// the block to a trace.
 ///
 /// # Safety
-/// `block` must be the header of a live `BLOCK_KIND_ENTITY` block.
+/// `block` must be the header of a live 64 KiB block whose collector
+/// line is the collector's: `BLOCK_KIND_ENTITY`, `BLOCK_KIND_RETAINED`,
+/// or a block about to be stamped one of them.
 pub(crate) unsafe fn clear_block_shadow(block: *mut u8) {
     let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
     unsafe {
@@ -2063,27 +2079,24 @@ pub(crate) unsafe fn clear_block_shadow(block: *mut u8) {
     };
 }
 
-/// The shadow-row pointer of an entity block, null when no collection
-/// holds rows for it.
+/// The shadow-row pointer of a block, null when no collection holds rows
+/// for it — which is what a collection's first touch of the block reads
+/// to know it owes the block an array (`crate::cycle::arena`).
 ///
 /// # Safety
 /// As [`clear_block_shadow`].
-#[cfg(test)]
 pub(crate) unsafe fn block_shadow(block: *mut u8) -> *mut u8 {
     let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
     unsafe { (*triple).shadow.load(Ordering::Acquire) }
 }
 
-/// Stamp a block's shadow-row pointer.
-///
-/// `#[cfg(test)]` because nothing in the production build reserves rows
-/// yet: S33.2 of `PLAN.md` is the step that allocates them and the step
-/// that turns this into the production writer. Until it lands, the only
-/// caller is the test that drives an abort over a stamped block.
+/// Stamp a block's shadow-row pointer, which the collection does after
+/// it has enrolled the block for the sweep and never before: the
+/// enrolment can fail and this store cannot, so the other order leaves a
+/// stamped block behind on the abort path (`crate::cycle::arena`).
 ///
 /// # Safety
 /// As [`clear_block_shadow`].
-#[cfg(test)]
 pub(crate) unsafe fn set_block_shadow(block: *mut u8, rows: *mut u8) {
     let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
     unsafe { (*triple).shadow.store(rows, Ordering::Release) };
@@ -2116,6 +2129,26 @@ pub(crate) unsafe fn entity_slot_index(entity: *mut u8) -> u32 {
     let reciprocal = unsafe { (*triple).reciprocal.load(Ordering::Relaxed) };
     let offset = (entity as usize & BLOCK_MASK) - LINE_SIZE;
     slot_index_by_reciprocal(offset, reciprocal)
+}
+
+/// How many slots an entity block holds, which is how many rows its
+/// shadow array needs (`crate::cycle::arena`).
+///
+/// The size class comes from the collector's own copy in the block's
+/// triple rather than from [`HeapBlockHeader::size_class`]: the whole
+/// row lookup is meant to touch one cache line, and the owner's half of
+/// the header is borrowed as `&mut` by every allocation, which a
+/// collector's read of it would sit under.
+///
+/// # Safety
+/// `block` must be the header of a commissioned `BLOCK_KIND_ENTITY`
+/// block.
+pub(crate) unsafe fn collector_block_slots(block: *mut u8) -> u32 {
+    let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    // Relaxed for the reason `entity_slot_index` loads its reciprocal
+    // relaxed: the caller's acquire load of the kind published it.
+    let class = unsafe { (*triple).size_class.load(Ordering::Relaxed) } as usize;
+    (BLOCK_PAYLOAD / SIZE_CLASSES[class]) as u32
 }
 
 /// The reciprocal a block of this `stride` carries in its collector

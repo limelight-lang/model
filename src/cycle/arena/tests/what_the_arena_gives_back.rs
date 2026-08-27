@@ -143,11 +143,8 @@ fn an_abort_nulls_the_shadow_of_every_block_it_stamped() {
     let (mut heap, slot, block) = an_entity_block();
 
     let mut arena = ShadowArena::new();
-    let rows = arena.alloc(64);
-    assert!(!rows.is_null());
-    unsafe { crate::memory::heap::set_block_shadow(block, rows) };
-    assert!(unsafe { arena.note_touched(block) });
-    assert_eq!(unsafe { crate::memory::heap::block_shadow(block) }, rows);
+    met(unsafe { arena.meet(slot_row(block, 0), 1) });
+    assert!(!unsafe { crate::memory::heap::block_shadow(block) }.is_null());
 
     // The abort is the reset, reached before anything was judged.
     arena.reset();
@@ -161,19 +158,13 @@ fn an_abort_nulls_the_shadow_of_every_block_it_stamped() {
     crate::memory::critical::drain_for_test();
 }
 
-/// The touched list outgrows one segment, and the sweep still reaches
-/// the far end of the chain. A list that only ever nulled its newest
-/// run would pass every test above and leave the first blocks stamped.
-///
-/// **Three blocks at three positions, because fewer prove less.** The
-/// chain is newest-first, so the block enrolled first ends furthest from
-/// the head. One block enrolled everywhere would let a walk of the head
-/// segment alone read as a walk of the chain; two at the ends would let
-/// a walk that visited only index 0 of each segment read the same way.
-/// The third sits at the far end of the full segment, where only a walk
-/// of every entry reaches it.
+/// The sweep walks the whole chain rather than its head. Three blocks,
+/// because two prove less: the list is newest-first, so a sweep that
+/// stopped after one entry would still null the last block touched, and
+/// one that stopped after two would null the last two. The block touched
+/// first is the one only a full walk reaches.
 #[test]
-fn the_sweep_reaches_every_entry_of_every_segment() {
+fn the_sweep_reaches_every_block_of_the_chain() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
     let (mut first_heap, first_slot, first) = an_entity_block();
@@ -184,35 +175,23 @@ fn the_sweep_reaches_every_entry_of_every_segment() {
     assert_ne!(first, last);
 
     let mut arena = ShadowArena::new();
-    let rows = arena.alloc(64);
-    assert!(!rows.is_null());
     for block in [first, middle, last] {
-        unsafe { crate::memory::heap::set_block_shadow(block, rows) };
+        met(unsafe { arena.meet(slot_row(block, 0), 1) });
     }
 
-    // `first` at index 0 of the far segment, `middle` at its last index,
-    // `last` alone in the head segment.
-    assert!(unsafe { arena.note_touched(first) });
-    for _ in 0..TOUCHED_PER_SEGMENT - 2 {
-        assert!(unsafe { arena.note_touched(last) });
-    }
-
-    assert!(unsafe { arena.note_touched(middle) });
-    assert!(unsafe { arena.note_touched(last) });
+    assert_eq!(arena.touched_blocks(), 3, "one entry per touched block");
 
     arena.reset();
-    assert!(
-        unsafe { crate::memory::heap::block_shadow(last) }.is_null(),
-        "the head of the chain was walked"
-    );
-    assert!(
-        unsafe { crate::memory::heap::block_shadow(first) }.is_null(),
-        "and the first entry of the run behind it"
-    );
-    assert!(
-        unsafe { crate::memory::heap::block_shadow(middle) }.is_null(),
-        "and its last entry, which only a full walk reaches"
-    );
+    for (block, position) in [
+        (last, "the head of the chain"),
+        (middle, "its middle"),
+        (first, "its far end"),
+    ] {
+        assert!(
+            unsafe { crate::memory::heap::block_shadow(block) }.is_null(),
+            "{position} was walked"
+        );
+    }
 
     assert_eq!(arena.blocks_held(), 0);
     unsafe { first_heap.free(first_slot) };
@@ -233,10 +212,7 @@ fn a_swept_list_is_not_swept_again_at_reset() {
     let (mut heap, slot, block) = an_entity_block();
 
     let mut arena = ShadowArena::new();
-    let rows = arena.alloc(64);
-    assert!(!rows.is_null());
-    assert!(unsafe { arena.note_touched(block) });
-    unsafe { crate::memory::heap::set_block_shadow(block, rows) };
+    let rows = met(unsafe { arena.meet(slot_row(block, 0), 1) }) as *mut u8;
 
     arena.sweep_touched();
     assert!(unsafe { crate::memory::heap::block_shadow(block) }.is_null());
@@ -256,26 +232,43 @@ fn a_swept_list_is_not_swept_again_at_reset() {
     crate::memory::critical::drain_for_test();
 }
 
-/// A block enrolled and never stamped is swept all the same, which is
-/// what makes enrolling before stamping the safe order: the call that
-/// can fail runs first, and the sweep of an unstamped block stores null
-/// over null.
+/// The refusal lands before the block is stamped, which is what makes
+/// one allocation for the rows and the enrolment worth its shape: there
+/// is no instant at which a block points at rows the abort is about to
+/// give back. Both doors refuse, so the first touch answers
+/// [`Met::Refused`] and the block's shadow word is untouched.
 #[test]
-fn an_enrolled_block_that_was_never_stamped_is_swept_harmlessly() {
+fn a_refused_first_touch_stamps_nothing() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
     let mut arena = ShadowArena::new();
-    assert!(unsafe { arena.note_touched(block) });
+    FORCE_OOM.store(true, Ordering::Relaxed);
     assert!(
-        unsafe { crate::memory::heap::block_shadow(block) }.is_null(),
-        "nothing stamped it"
+        BlockPool::global().get().is_null(),
+        "the ordinary door is refusing"
+    );
+    assert_eq!(
+        crate::memory::critical::blocks_held(),
+        0,
+        "and the critical door has nothing to serve"
     );
 
-    arena.reset();
-    assert!(unsafe { crate::memory::heap::block_shadow(block) }.is_null());
+    assert_eq!(
+        unsafe { arena.meet(slot_row(block, 0), 1) },
+        Met::Refused,
+        "a first touch with no memory aborts the collection"
+    );
+    FORCE_OOM.store(false, Ordering::Relaxed);
 
+    assert!(
+        unsafe { crate::memory::heap::block_shadow(block) }.is_null(),
+        "and leaves the block unstamped"
+    );
+    assert_eq!(arena.touched_blocks(), 0, "and unenrolled");
+
+    arena.reset();
     unsafe { heap.free(slot) };
     crate::memory::critical::drain_for_test();
 }

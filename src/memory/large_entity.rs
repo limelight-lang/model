@@ -38,6 +38,18 @@ pub(crate) struct LargeEntityHeader {
     /// Bytes the system allocator granted, for the matching `dealloc`.
     /// Zero in the pooled form, which goes back to the block pool.
     run_bytes: usize,
+    /// The collector's shadow row for the one entity this block holds,
+    /// in the header's free tail rather than in an array of one
+    /// (`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives").
+    ///
+    /// Zero — [`Colour::Untouched`](crate::cycle::shadow::Colour) — from
+    /// commissioning until a collection meets the entity, and nulled
+    /// again by that collection's sweep, so a block whose life outlasts
+    /// a collection carries no row from it. Plain rather than atomic
+    /// like every other field here: the commissioning write is published
+    /// by the kind's release store, and the trace token is what keeps
+    /// two collectors off it.
+    row: u32,
 }
 
 /// True for the two kinds this module owns. Callers that dispatch on a
@@ -46,6 +58,20 @@ pub(crate) struct LargeEntityHeader {
 #[inline]
 pub(crate) fn is_large_entity(kind: u32) -> bool {
     kind == BLOCK_KIND_ENTITY_LARGE || kind == BLOCK_KIND_ENTITY_LARGE_RUN
+}
+
+/// The shadow row of the entity `block` holds, which is one word of the
+/// block's own header (`LargeEntityHeader::row`).
+///
+/// The collection writes through it while it holds the trace token, and
+/// its sweep zeroes it; between collections it reads zero, which is the
+/// untouched colour.
+///
+/// # Safety
+/// `block` must be the header of a live large-entity block, of either
+/// kind.
+pub(crate) unsafe fn shadow_row(block: *mut u8) -> *mut u32 {
+    unsafe { &raw mut (*(block as *mut LargeEntityHeader)).row }
 }
 
 /// Allocate one entity of `size` bytes in a block-aligned allocation of
@@ -114,6 +140,7 @@ unsafe fn commission(block: *mut u8, size: usize, run_bytes: usize, kind: u32) -
         (&raw mut (*header)._pad).write(0);
         (&raw mut (*header).size).write(size);
         (&raw mut (*header).run_bytes).write(run_bytes);
+        (&raw mut (*header).row).write(0);
         let entity = block.add(LINE_SIZE);
         (entity as *mut u64).write(0);
         store_block_kind(&raw const (*header).kind, kind);

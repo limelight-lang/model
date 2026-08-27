@@ -28,6 +28,7 @@ fn row_by_division(entity: *mut Object, object_size: usize) -> Row {
     Row {
         block,
         index: ((address - block - LINE_SIZE) / stride) as u32,
+        population: Population::Slotted,
     }
 }
 

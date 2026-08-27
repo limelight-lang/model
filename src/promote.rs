@@ -200,11 +200,8 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     let header = payload_block as *mut BlockHeader;
                     if retained.insert(payload_block) {
                         unsafe {
-                            crate::memory::block_pool::store_block_kind(
-                                &raw const (*header).kind,
-                                BLOCK_KIND_RETAINED,
-                            )
-                        };
+                            retain_block(header);
+                        }
                     }
 
                     // Pinned, and not merely retained: this block is held
@@ -277,12 +274,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 // neither is asked of a dead entity.
                 by_block.entry(block).or_default().push(surv as usize);
                 if retained.insert(block) {
-                    unsafe {
-                        crate::memory::block_pool::store_block_kind(
-                            &raw const (*(block as *mut BlockHeader)).kind,
-                            BLOCK_KIND_RETAINED,
-                        )
-                    };
+                    unsafe { retain_block(block as *mut BlockHeader) };
                 }
             }
         }
@@ -379,6 +371,29 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         survivors.len() as u64,
         retained.len() as u64
     );
+}
+
+/// Take `block` out of circulation as a retained former-arena block: the
+/// one place the reset stamps `BLOCK_KIND_RETAINED`.
+///
+/// **The collector line is cleared before the kind is published**, and
+/// that is the whole reason this is a function. A retained block is
+/// traced through a shadow row array like an entity block is, and the
+/// pointer to that array lives in a word this block's previous life may
+/// have written: an entity block writes it at every collection that
+/// touches it, and only its own commissioning nulls it again. The kind's
+/// release store publishes the null, so a trace that reads
+/// `BLOCK_KIND_RETAINED` reads "no rows yet" with it
+/// (`memory::heap::clear_block_shadow`).
+///
+/// # Safety
+/// `block` is the header of a live 64 KiB block whose arena is being
+/// reset, and which holds either a survivor or a survivor's payload.
+unsafe fn retain_block(block: *mut BlockHeader) {
+    unsafe {
+        crate::memory::heap::clear_block_shadow(block as *mut u8);
+        crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_RETAINED);
+    }
 }
 
 /// Bring a survivor's out-of-line memory with it, if it has any.

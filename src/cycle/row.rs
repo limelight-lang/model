@@ -24,15 +24,42 @@ use crate::refcount::{MemoryCategory, RcHeader, mutator_flags};
 /// own block or run and gets one row in that block's header rather than
 /// an array (`rfc/model/gc/rc-cycle.md`, "Where the shadow count
 /// lives").
-const SOLE_OCCUPANT: u32 = 0;
+pub(crate) const SOLE_OCCUPANT: u32 = 0;
 
-/// The shadow row of one entity: the block whose rows carry it, and the
-/// entity's index among them.
+/// Which of the three GC-heap populations a block belongs to, and with
+/// it where the block's rows are and how many of them there are.
+///
+/// The trace reads the block's kind before it can reach any row, so the
+/// answer is carried out of that read rather than taken again: the two
+/// readings could differ only if the block changed hands mid-trace,
+/// which the trace token forbids, and one dispatch is what the row
+/// lookup was measured at (`rfc/model/gc/rc-cycle.md`, "Where the
+/// shadow count lives").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u32)]
+pub(crate) enum Population {
+    /// An ordinary entity block: one row per slot, indexed by the
+    /// reciprocal multiply, and the array is reached through the
+    /// block's collector triple.
+    Slotted,
+    /// A retained former-arena block: one row per **occupant** of its
+    /// object index, indexed by position in it, and the array is reached
+    /// through the same triple. The index space is the index's length,
+    /// which is the only one of the three a block cannot state itself
+    /// (`crate::memory::retained`).
+    Retained,
+    /// A large entity, the sole occupant of its block: one row, held in
+    /// the block's own header rather than in an array
+    /// (`crate::memory::large_entity`).
+    Sole,
+}
+
+/// The shadow row of one entity: the block whose rows carry it, the
+/// entity's index among them, and which population the block belongs to.
 ///
 /// It is an identity and not an address. Where the rows themselves are
-/// reserved, and how the index reaches one, is S33.2 of `PLAN.md`; two
-/// entities of one block resolving to one `Row` is that stage's defect
-/// however the rows are laid out.
+/// reserved is `crate::cycle::arena`; two entities of one block
+/// resolving to one `Row` is a defect however the rows are laid out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Row {
     /// The block header's address, 64 KiB-aligned. For a large entity
@@ -43,6 +70,8 @@ pub(crate) struct Row {
     /// entity block, its position in the occupant index of a retained
     /// block, and [`SOLE_OCCUPANT`] for a large entity.
     pub index: u32,
+    /// Where those rows are, which the block's kind has already said.
+    pub population: Population,
 }
 
 /// What the trace does with one edge it has just read.
@@ -102,12 +131,14 @@ pub(crate) unsafe fn edge_to(child: *mut RcHeader) -> Edge {
         BLOCK_KIND_ENTITY => Edge::Interior(Row {
             block,
             index: unsafe { crate::memory::heap::entity_slot_index(child as *mut u8) },
+            population: Population::Slotted,
         }),
         BLOCK_KIND_RETAINED => {
             match crate::memory::retained::occupant_index(block, child as usize) {
                 Some(position) => Edge::Interior(Row {
                     block,
                     index: position as u32,
+                    population: Population::Retained,
                 }),
                 None => {
                     // Two states answer alike here and only one of them
@@ -147,6 +178,7 @@ pub(crate) unsafe fn edge_to(child: *mut RcHeader) -> Edge {
                 Edge::Interior(Row {
                     block,
                     index: SOLE_OCCUPANT,
+                    population: Population::Sole,
                 })
             } else {
                 Edge::External

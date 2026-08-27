@@ -30,14 +30,28 @@ versions live in `docs/history/`, marked at the top.
   why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26;
   the code itself is on the branch `archive/pre-rc-cycle`. `PLAN.md`
   S33 through S40 build the replacement, and `src/cycle/` is where it
-  is going: today it holds `row::edge_to` alone, which answers which
-  shadow row a traced edge lands on by dispatching on the block's kind,
-  and no production caller reaches it until S35.1's mark. Beside it,
-  `arena::ShadowArena` is the collection's working memory: a bump over
-  64 KiB blocks, the ordinary pool first and `memory::critical`'s
-  eight-block per-thread reserve on refusal, every block returned at the
-  end and on the abort alike, and the shadow pointer of every block it
-  stamped nulled before they go. Nothing constructs one yet.
+  is going, with no production caller until S35.1's mark. Three parts
+  today. `row::edge_to` answers which shadow row a traced edge lands on,
+  dispatching on the block's kind and carrying the population out of
+  that read. `shadow` is the row and the block's array of them: four
+  bytes, two of colour over thirty of working count, with colour zero
+  reserved for "not met in this collection" — the row array is never
+  zeroed whole, a group of eight rows is zeroed at its own first touch,
+  and one bit per group is what says which. `arena::ShadowArena` is the
+  collection's working memory: a bump over 64 KiB blocks, the ordinary
+  pool first and `memory::critical`'s eight-block per-thread reserve on
+  refusal, every block returned at the end and on the abort alike, and
+  the shadow pointer of every block it stamped nulled before they go.
+  `meet` is its one entry: it reserves a block's rows at the first touch,
+  enrols the block for the sweep in the same allocation — the touched
+  list threads through a prologue on the arrays themselves, so nothing
+  about the enrolment can fail once the rows exist — and initialises a
+  row from the refcount once, never twice. It answers with `first_reach`
+  beside the row, because writing the met colour is what destroys that
+  answer and the mark's descent is what needs it. Where the rows are is the
+  population's: an entity block's array is sized by its size class, a
+  retained block's by its occupant count, and a large entity has one row
+  in its own block header. Nothing constructs an arena yet.
 - The enrolment gate: `refcount::ENROLMENT_GATE_MASK` and `may_enrol`,
   read on the non-zero decrement in `release_word`. Five conditions in
   one mask, each of them "this bit is zero" — GC-heap category, a kind a

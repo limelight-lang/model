@@ -123,13 +123,21 @@ lookup read this line alone after the kind.
 The size class is duplicated on purpose: the row array's length is
 `BLOCK_PAYLOAD / stride`, so a trace needs the stride as well as the
 reciprocal, and taking it from `HeapBlockHeader` would put line 0 back in
-the lookup. The triple is written only for `BLOCK_KIND_ENTITY` blocks,
-which are the only ones a trace enters, and its offset is
-`size_of::<HeapBlockHeader>()` rather than the literal 192 — 192 being
-what `BlockRemote`'s 64-byte alignment produces rather than a decision
-anybody made — so a header that grows moves the triple instead of
-overlapping it. Two `const` assertions hold that: the offset begins a
-cache line, and the triple ends inside the reserved 256.
+the lookup. Its offset is `size_of::<HeapBlockHeader>()` rather than the
+literal 192 — 192 being what `BlockRemote`'s 64-byte alignment produces
+rather than a decision anybody made — so a header that grows moves the
+triple instead of overlapping it. Two `const` assertions hold that: the
+offset begins a cache line, and the triple ends inside the reserved 256.
+
+`refill` writes all three words for a `BLOCK_KIND_ENTITY` block, and a
+**retained** block carries the array pointer alone: the reset nulls that
+word before `store_block_kind` publishes the block as retained
+(`promote::retain_block`), because the block's previous life may have
+left a collection's array pointer in it and the reciprocal and size class
+of a bump-filled block would mean nothing. Rows for such a block are
+sized by its occupant count instead (`memory/retained.rs`,
+`occupant_count`). A raw heap block's line 3 is left as the pool handed
+it over, no trace entering one.
 
 ## BlockPool
 
@@ -250,6 +258,13 @@ cells. The pooled half rides the region scan; a run lies outside every
 region and is found from the module's own registry, which is why its
 free parks during an epoch like everything else that can put memory back
 in circulation.
+
+Its shadow row is one word of that first line, `LargeEntityHeader::row`,
+zeroed at commissioning and zeroed again by the sweep of every
+collection that meets the entity. One row needs no array and no group
+bitmap, so the row's own colour is its met flag, and a block with no
+array is enrolled for the sweep through a prologue of its own
+(`cycle::arena`).
 
 ### Deferred free — deleted 2026-08-26 with `rc-walk`
 
@@ -652,7 +667,10 @@ position in the sorted array standing in for the slot index arithmetic
 gives an entity block (`retained::occupant_index`,
 `rfc/model/gc/rc-cycle.md`, "Where the shadow count lives"). Which of the
 two a child gets is decided by its block's kind, above this module in
-`cycle::row::edge_to`.
+`cycle::row::edge_to`. The index is also the block's row **count**: the
+array a collection reserves at its first touch holds one row per
+occupant, asked for once per block through `occupant_count` rather than
+once per edge, since the length lives behind the registry's mutex.
 
 Not built yet, per RFC phasing: sparse-block evacuation, gated on the
 escapee-reference fixup. Promotion today is retention only, which the

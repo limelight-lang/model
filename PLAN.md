@@ -104,14 +104,14 @@ one reset, with no write into any entity.
         leak-prone, and the touched-list sweep is what closes the staleness the
         arithmetic form has no tag for. `cycle::arena::ShadowArena` is built on
         the collecting thread's stack, holds no `Vec` — its blocks thread
-        through their headers and the touched list is a segment chain in its own
-        memory — and `Drop` calls `reset`, so an unwind leaks no block.
+        through their headers and the touched list through the row arrays S33.2
+        reserves — and `Drop` calls `reset`, so an unwind leaks no block.
         `memory::critical` is the new eight-block reserve, wired at thread init,
         the safepoint poll, thread exit and the pool's test guard, and
         `memory::reserve` took the same two repairs the Critic found in its
         twin. Nothing constructs an arena yet; S33.2 is the first caller, and it
         enrols a block before it stamps one.
-- [ ] S33.2 The per-block row array
+- [x] S33.2 The per-block row array
       done: `slots × 4` bytes reserved at a block's first touch **without being
         zeroed**, the pointer stamped into the block's triple, the block pushed
         onto the touched list; the met flag lives in a bitmap of one bit per
@@ -123,24 +123,51 @@ one reset, with no write into any entity.
         block, which has mixed sizes and no stride, and what the bitmap's groups
         group there are settled in this step; a large entity, which gets one row
         in its own block header and no group, carries its met flag in that row
-      tier: T2 · role: —
-      handoff: three holes the Critic round opened. Without the reserved code a
-        condemned zero row reads as unmet; without a met bit the large entity is
-        condemned live on the first ring it joins; and `slots × 4` has no
-        subject in a retained block. A fourth, from the Critic round on
-        2026-08-27 over the block-kind dispatch: a retained block's index space is the only one of the three
-        that the block cannot state — its length is `occupants.len()`, behind
-        the registry mutex — so sizing and bounds-checking its rows means taking
-        a lock to learn a number. Reaching them through the `Arc<[usize]>` the
-        index already holds matches the lengths by construction and takes the
-        lock once per block instead of once per edge, which is also what
-        `retained::occupant_index` owes. A fifth, from S33.1's Critic round:
-        threading the touched list through a 16-byte prologue on the row array
-        itself — `{ block, next }` ahead of the rows — removes the second
-        allocation and with it `note_touched`'s refusal, so the enrolment cannot
-        fail after the rows exist. It is also cheaper where it matters, 16 bytes
-        a touched block against the 4 KiB the first block's segment costs
-        today.
+      tier: T2 · role: — (Critic called anyway: the step is what S35 and S36
+        are built on, and the plan's dash was written before its five debts)
+      Critic 2026-08-27: `meet` wrote the met colour and answered with a bare
+        pointer, so the caller could not learn whether this collection had seen
+        the entity before — the bit the mark's descent turns on, and one no
+        fifth colour code could carry. Accepted: `Met::Row` carries
+        `first_reach`. The subtraction the mark performs per edge had no
+        operation, and the open-coded form wraps at zero into a saturated count,
+        which reads as conservatively live: accepted, `shadow::subtract`
+        saturates and keeps the colour. `Heap::refill` wrote the collector
+        triple with one struct store, which now covers a word a non-owner
+        writes: accepted, field by field like the kind. The sweep's wildcard arm
+        would send a fourth population to the collector line: accepted, the
+        match is exhaustive. Claim "enrolment cannot fail once the rows exist"
+        is false for a large entity, whose row exists from commissioning:
+        accepted as a documentation defect, the arm is safe by the ordering
+        test-colour → enrol → write-colour and now says so. Three test gaps
+        closed — `Met::Unplaced`, the retained arm's single enrolment, and a
+        second collection over a block the first swept. Rejected with reason: a
+        `debug_assert` walking the touched list for a duplicate enrolment, which
+        is O(n) per touch on a list that reaches thousands of blocks; and a
+        proof that `sweep_touched` holds the trace token, which S38 is the step
+        that builds the token.
+      handoff: `cycle::shadow` is the row and the array; `ShadowArena::meet` is
+        the one entry, and it reserves, enrols and initialises in that order.
+        The Critic's prologue was taken: the touched list threads through a
+        24-byte `{ block, next, slots, population }` head on the array itself,
+        so `note_touched` and its refusal are gone and enrolment cannot fail
+        once the rows exist. A retained block's index space is its occupant
+        index, asked once per block through `retained::occupant_count`; a large
+        entity's row is `LargeEntityHeader::row`, zeroed at commissioning and by
+        the sweep, and its block takes a prologue with no rows. `promote` nulls
+        the collector line before it stamps `BLOCK_KIND_RETAINED`, because a
+        block's previous life leaves an array pointer there. Reasons in
+        `dev/DECISIONS.md`, 2026-08-27, "a block's rows and its place on the
+        touched list are one allocation". Twenty-one tests, each seen failing
+        against one of twenty-two mutations of the behaviour it names; the test
+        list was diffed byte for byte in all three configurations. Miri is the
+        stage's, not this step's: its run over `cycle::` and
+        `memory::retained::` had reported 20 of 39 with no diagnostic when the
+        step landed, and the completed run belongs to S33.4. One of those
+        mutations is worth keeping in mind: the round-trip test held under a
+        colour field of three bits, because it read the width from the constant
+        it was testing, and the design's two-plus-thirty split is pinned by an
+        assertion of its own now.
 - [ ] S33.3 Name the saturation clause
       done: a working count that would exceed the field saturates, saturation
         reads as "external references exist, conservatively live", and a test
@@ -221,7 +248,11 @@ Goal: trial deletion runs entirely in the shadow rows.
       tier: T2 · role: —
       handoff: this clause stands verbatim against S37: the maturation stamp is
         written by commit and only read by the trace, so no write into an entity
-        happens during a mark. The "retired on contact" clause that contradicted
+        happens during a mark. Carried from S33.2: a retained block's edge still
+        takes the registry mutex once per edge in `retained::occupant_index`,
+        and this is the step that gives the trace a per-block visit to hold the
+        index's `Arc` over — the row array already holds the length that visit
+        would bound against. The "retired on contact" clause that contradicted
         it was withdrawn 2026-08-26. Open, from the Critic round over the
         block-kind dispatch: `Edge` has
         two variants, and the age prune is a third answer — a child inside the
