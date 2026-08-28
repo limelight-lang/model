@@ -176,6 +176,11 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         ruling's and not a choice, and what a Critic would attack here — the
         escrow's size and the abort behind it — is named in the ruling and in
         `dev/DECISIONS.md` rather than decided in this step.
+      handoff: *(storage amended 2026-08-28.)* The escrow leaves the TLS image
+        for one allocator-issued floor block held for the thread's life; the
+        rework is S34.8, the ruling `rfc/dev/DECISIONS.md` "the escrow's floor
+        is allocator-issued". The 99.4 % TLS figure above stands as the
+        measurement that motivated the move.
 - [x] S34.7 Give the bulk release loop a poll of its own
       done: `ll_release_vector` polls on its backedge every `POLL_STRIDE`
         iterations, so a run of any length refills the queue's funding and
@@ -196,6 +201,21 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         rests on a precondition `rfc/model/memory/bulk-operations.md` now
         states: the caller severs every traced edge to an entry before
         submitting the vector.
+- [ ] S34.8 Move the escrow out of the TLS image into an allocator-issued floor
+      done: the escrow's storage is one 64 KiB pool block drawn at
+        `ll_thread_init` before the best-effort reserve fills and returned in
+        `retire_the_journal` after `queue::drain`; a refused draw fails thread
+        init through `ll_thread_init`'s new status return; a thread that never
+        ran init draws its floor lazily at first enrol, through the ordinary
+        door, and its refusal aborts; the lazy draw checks the exit phase and
+        aborts past `ll_thread_exit` instead of drawing; the block is stamped
+        `BLOCK_KIND_ARENA`; `ESCROW_ENTRIES`, `POLL_STRIDE` and the poll order
+        are unchanged, and the accounting tests name the floor block
+      tier: T2 · role: Critic
+      handoff: the ruling is `rfc/dev/DECISIONS.md` "the escrow's floor is
+        allocator-issued" (2026-08-28): per-life floor, a re-birth refusal
+        refuses the new life through the status return, and memory-hard
+        thread creation is a recorded trade, not a derivation.
 - [ ] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
         returns a slot; a reader may mark an entry a corpse and pass it on; the
@@ -449,8 +469,12 @@ both, and the losing side never deadlocks.
         is what it breaks. And **`dev/WORKFLOW.md`'s ThreadSanitizer run has
         selected no test since 2026-08-26**, its only one having lived in the
         deleted `collector::`, so the instrument that reports
-        plain-against-atomic is unavailable until this step gives it a pairing
+        plain-against-atomic is         unavailable until this step gives it a pairing
         to watch.
+      handoff: the collector thread's birth is this step's to name — startup
+        or first pressure — with its floor refusal following it; a mandatory
+        floor drawn at first pressure is the worst moment
+        (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued").
 - [ ] S38.1 The claim
       done: one word for the process, three states, CAS from free; it covers the
         **trace** — the arena, the block triples and the touched list — while
