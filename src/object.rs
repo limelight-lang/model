@@ -235,6 +235,22 @@ pub unsafe extern "C" fn ll_object_new_in(cell: *mut u8, class: *const Class) ->
 pub unsafe extern "C" fn ll_release_vector(entities: *const *mut RcHeader, count: usize) {
     unsafe { crate::gc::ll_gc_checkpoint_ack() };
     for i in 0..count {
+        // The poll contract binds this loop too, and it is the runtime's
+        // to keep here: `count` is the caller's, the compiler emits its
+        // poll only after the call, and every iteration can enrol a
+        // candidate. Without this the queue's funding is never refilled
+        // mid-run and a large enough clear reaches the escrow's abort
+        // with memory free (`rfc/dev/DECISIONS.md`, "a runtime loop
+        // carries the poll contract it broke").
+        //
+        // On the backedge, where refcounts and edges agree: iteration
+        // `i - 1` has fully returned, its death and destructor with it,
+        // and `entities[i]` has not been read
+        // (`rfc/model/gc/strategies.md`, "Triggering: arm vs fire").
+        if i != 0 && i % crate::cycle::queue::POLL_STRIDE == 0 {
+            unsafe { crate::gc::ll_gc_maybe_collect() };
+        }
+
         let entity = unsafe { *entities.add(i) };
         if unsafe { crate::refcount::ll_release_batch(entity) } {
             unsafe { ll_entity_die(entity) };

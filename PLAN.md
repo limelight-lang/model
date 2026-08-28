@@ -149,6 +149,53 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         first touch is still `ll_release`'s. The claim about glibc is the
         Critic's reading and is **not verified on this box**; verifying it is
         part of this step.
+- [x] S34.6 Make the enrolment unfailable, and delete the undo
+      done: `enrol` answers nothing and every door refusing lands the entry in
+        an escrow the same thread-local holds; the release path has no branch
+        left in which a set enrolled bit names no entry; the poll refills,
+        drains the escrow and only then fires, and a drain with no room leaves
+        the entries where they are rather than losing them or looping
+      tier: T2 · role: —
+      handoff: Edmond ruled on 2026-08-28 that nothing may be lost — the
+        mutator either collects itself or waits for the collector — and the
+        mechanism was ruled beside it (`rfc/dev/PLAN.md` S8.5, and the entry it
+        names in `rfc/dev/DECISIONS.md`). S34.1 had shipped the branch the
+        ruling forbids: it undid the bit and lost the edge, which is Y6's
+        permanent miss whenever that decrement was the ring's last external
+        release.
+      handoff: the escrow is one segment's capacity, 65 280 bytes of
+        thread-local per thread, sized on clause 3's own poll argument.
+        Overflowing it aborts, which is the funded class's last resort and is
+        the one state this module has no answer for.
+      handoff: the cost is measured and it is eager. `readelf -S` puts the test
+        binary's `.tbss` at 65 680 bytes, so the escrow is 99.4 % of the crate's
+        zero-initialised TLS image, and glibc allocates and zeroes that image
+        per thread. Trimming it is one constant and wants the ABI's poll bound
+        first (`rfc/runtime/exceptions.md`).
+      handoff: role `—` rather than Critic, unlike S34.1: the shape is a
+        ruling's and not a choice, and what a Critic would attack here — the
+        escrow's size and the abort behind it — is named in the ruling and in
+        `dev/DECISIONS.md` rather than decided in this step.
+- [x] S34.7 Give the bulk release loop a poll of its own
+      done: `ll_release_vector` polls on its backedge every `POLL_STRIDE`
+        iterations, so a run of any length refills the queue's funding and
+        drains its escrow mid-run; a test releases a vector longer than the
+        stride with every door spent and finds the escrow empty and every
+        candidate queued at the end
+      tier: T2 · role: —
+      handoff: found by the consolidation pass on the ruling, not by a test.
+        The escrow was sized on "a whole segment cannot fill between two
+        polls", and that argument quantifies over loops the compiler emits;
+        `ll_release_vector`'s count is the caller's and the compiler polls only
+        after the call, so a container clear enrolled without bound. Before
+        this, a clear of some ninety thousand shared elements aborted with
+        memory free — eleven segments of funding and then the escrow.
+      handoff: the backedge is a legal fire point because iteration `i - 1` has
+        fully returned and `entities[i]` is unread, which is
+        `rfc/model/gc/strategies.md`'s own "between mutator operations". It
+        rests on a precondition `rfc/model/memory/bulk-operations.md` now
+        states: the caller severs every traced edge to an entry before
+        submitting the vector.
 - [ ] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
         returns a slot; a reader may mark an entry a corpse and pass it on; the

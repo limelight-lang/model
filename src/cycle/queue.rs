@@ -60,6 +60,31 @@
 //! refilling the reserve unconditionally at the next safepoint. What
 //! exists is the draw and the arming.
 //!
+//! # Why an enrolment cannot fail
+//!
+//! Edmond ruled on 2026-08-28 that nothing may be lost, so below the
+//! reserve sits a tier that cannot refuse: the **escrow**, a fixed array
+//! in this same thread-local, `const`-constructible and never grown. A
+//! refused entry lands there by a store and an increment, which keeps
+//! clause 3's three prohibitions through the last tier, and [`enrol`]
+//! therefore answers nothing — it has no failure to report.
+//!
+//! The escrow is emptied at the next safepoint poll, which is also where
+//! the thread does what the ruling asks: collect, or wait for the
+//! collector. Nothing happens inside `ll_release`, and that is not
+//! timidity — a collection mid-mutation walks a stale edge and frees a
+//! live object (`rfc/model/gc/cycle/questions.md`, Y14, "Where it fires,
+//! and where it must not"). The escrow is what carries the root from the
+//! refusal to the first lawful instant.
+//!
+//! It holds one segment's worth of entries, on the argument clause 3
+//! makes for the two cells: a whole segment cannot fill between two
+//! polls at any entry size. That argument quantifies over loops the
+//! compiler emits, and one loop it does not — `ll_release_vector`, whose
+//! count is the caller's — broke it, so that loop now carries a poll of
+//! its own every [`POLL_STRIDE`] iterations. Overflowing the escrow
+//! therefore takes sustained pool refusal rather than a long run.
+//!
 //! The live segment is a cell too: a thread holds none until its first
 //! enrolment, which finds no room by construction and takes the overflow
 //! path. So a thread that never enrols holds two segments and not three,
@@ -67,12 +92,13 @@
 //!
 //! # What the poll owes this module
 //!
-//! Two things, and [`crate::gc::ll_gc_maybe_collect`] does both. It
-//! refills the spare cells, asking [`is_short`] — the count itself,
-//! never a flag a draw sets, because a thread whose fill at init was
-//! refused has never drawn and would never be asked again. And it fires
-//! a collection when [`crate::gc::take_due`] answers true, which a
-//! growth refusal or a reserve draw arms.
+//! Three things, and [`crate::gc::ll_gc_maybe_collect`] does them in
+//! order. It refills the spare cells, asking [`is_short`] — the count
+//! itself, never a flag a draw sets, because a thread whose fill at init
+//! was refused has never drawn and would never be asked again. It then
+//! drains the escrow into the queue, which is why the refill comes
+//! first. And it fires a collection when [`crate::gc::take_due`] answers
+//! true, which a reserve draw or an escrow landing arms.
 
 use std::cell::Cell;
 
@@ -82,6 +108,28 @@ use crate::refcount::RcHeader;
 /// Entries one segment holds. Every segment but the live one holds
 /// exactly this many, which is what lets the chain carry no length.
 pub(crate) const SEGMENT_CAPACITY: usize = BLOCK_PAYLOAD / size_of::<*mut RcHeader>();
+
+/// Entries the escrow holds — one segment's worth.
+///
+/// Sized on the argument [`SPARE_SEGMENTS`] is sized on: a whole segment
+/// cannot fill between two polls at any entry size, so a run that
+/// overflows the escrow is a run with no poll in it at all. The figure is
+/// deliberately generous; what would license a smaller one is the ABI's
+/// bound on operations between two polls, which is unwritten
+/// (`rfc/runtime/exceptions.md`).
+pub(crate) const ESCROW_ENTRIES: usize = SEGMENT_CAPACITY;
+
+/// Iterations a runtime-owned bulk loop may run between two safepoint
+/// polls of its own.
+///
+/// Half the escrow, so that a loop obeying it can never fill the escrow
+/// between two of its polls whatever the compiler's own bound turns out
+/// to be. The loop that needs it is `object::ll_release_vector`, whose
+/// count is the caller's and whose body the compiler never sees inside:
+/// without a poll of its own it enrols without bound and reaches the
+/// abort below with memory free (`rfc/dev/DECISIONS.md`, "a runtime loop
+/// carries the poll contract it broke").
+pub(crate) const POLL_STRIDE: usize = ESCROW_ENTRIES / 2;
 
 /// Spare segments a thread keeps ahead of an overflow.
 ///
@@ -109,6 +157,11 @@ struct Queue {
     /// Segments taken ahead of an overflow, `held` of them valid.
     spares: [Cell<*mut BlockHeader>; SPARE_SEGMENTS],
     held: Cell<usize>,
+    /// Entries no door could fund a segment for, `escrowed` of them
+    /// valid. The tier that cannot refuse, so that an enrolment cannot
+    /// fail (`rfc/dev/DECISIONS.md`, "an enrolment cannot fail").
+    escrow: [Cell<*mut RcHeader>; ESCROW_ENTRIES],
+    escrowed: Cell<usize>,
 }
 
 thread_local! {
@@ -118,6 +171,8 @@ thread_local! {
             filled: Cell::new(0),
             spares: [const { Cell::new(std::ptr::null_mut()) }; SPARE_SEGMENTS],
             held: Cell::new(0),
+            escrow: [const { Cell::new(std::ptr::null_mut()) }; ESCROW_ENTRIES],
+            escrowed: Cell::new(0),
         }
     };
 }
@@ -135,29 +190,27 @@ fn entries(segment: *mut BlockHeader) -> *mut *mut RcHeader {
 /// write: a bit set afterwards lets a second decrement enrol the same
 /// entity twice in the window between the two.
 ///
-/// **Answers whether the entry landed.** False means both funding doors
-/// refused and the entity is not in any queue, and the caller owes it
-/// the undo of the bit — [`crate::refcount`] is the one caller and does
-/// exactly that. Nothing else may treat false as ordinary: a root that
-/// leaves no entry behind is a garbage ring no later collection can
-/// find, enrolment being edge-triggered
-/// (`rfc/model/gc/cycle/questions.md`, Y6).
+/// **It cannot fail, and answers nothing.** Every door refusing puts the
+/// entry in the escrow instead, because a root that leaves no entry
+/// behind is a garbage ring no later collection can name, enrolment
+/// being edge-triggered (`rfc/model/gc/cycle/questions.md`, Y6), and
+/// Edmond ruled on 2026-08-28 that nothing may be lost.
 ///
 /// # Safety
 /// `entity` points to a live heap entity beginning with `RcHeader`, and
 /// stays live at least until this thread's next safepoint.
-pub(crate) unsafe fn enrol(entity: *mut RcHeader) -> bool {
+pub(crate) unsafe fn enrol(entity: *mut RcHeader) {
     QUEUE.with(|q| {
         let live = q.live.get();
         let filled = q.filled.get();
 
         if live.is_null() || filled == SEGMENT_CAPACITY {
-            return unsafe { grow_and_write(q, entity) };
+            unsafe { grow_and_write(q, entity) };
+            return;
         }
 
         unsafe { entries(live).add(filled).write(entity) };
         q.filled.set(filled + 1);
-        true
     })
 }
 
@@ -165,8 +218,10 @@ pub(crate) unsafe fn enrol(entity: *mut RcHeader) -> bool {
 /// the entry into it.
 ///
 /// The full segment stays reachable through the fresh one's
-/// [`BlockHeader::next`], so growth links and never copies.
-unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) -> bool {
+/// [`BlockHeader::next`], so growth links and never copies. No door
+/// funding one puts the entry in the escrow, which is why this answers
+/// nothing either.
+unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) {
     let full = q.live.get();
 
     let fresh = match take_spare(q) {
@@ -196,12 +251,12 @@ unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) -> bool {
     };
 
     if fresh.is_null() {
-        note_refusal();
-        // The refusal arms too, on its own: the refill the poll performs
-        // is unconditional, so what the arming buys here is the fire, not
-        // the cells.
+        escrow(q, entity);
+        // The escrow landing arms on its own: the refill the poll
+        // performs is unconditional, so what the arming buys here is the
+        // fire, not the cells.
         crate::gc::arm();
-        return false;
+        return;
     }
 
     // Stamped here as well as at acquisition, because the block may have
@@ -217,7 +272,54 @@ unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) -> bool {
     unsafe { entries(fresh).write(entity) };
     q.live.set(fresh);
     q.filled.set(1);
-    true
+}
+
+/// The tier below the reserve: park the entry where nothing can refuse
+/// it, and count it.
+///
+/// Aborts when the escrow is full, which is the last resort the funded
+/// class already keeps (`rfc/runtime/exceptions.md`, the store barrier's
+/// reserve). What stands between an ordinary program and it is the poll
+/// contract, which every loop obeys — the compiler's emitted ones and,
+/// since it is a loop the compiler cannot see inside,
+/// `object::ll_release_vector`'s own ([`POLL_STRIDE`]). What is left
+/// behind that is a conjunction: the pool refusing across polls, and
+/// either a gate closed for the whole run or a collection that ran and
+/// lost, and then thousands of further non-final decrements.
+fn escrow(q: &Queue, entity: *mut RcHeader) {
+    let escrowed = q.escrowed.get();
+    if escrowed == ESCROW_ENTRIES {
+        // Nothing to report it through: `ll_release` holds no frame, and
+        // the poll that would raise is what this thread has not reached.
+        std::process::abort();
+    }
+
+    q.escrow[escrowed].set(entity);
+    q.escrowed.set(escrowed + 1);
+}
+
+/// Move escrowed entries back into the queue, as far as the room a poll
+/// has just made allows.
+///
+/// The poll calls it after the cells are refilled and before it fires,
+/// and it takes no door of its own: with the cells still empty an entry
+/// would land straight back in the escrow, so the drain stops instead and
+/// waits for the collection the same poll is about to run.
+pub(crate) fn drain_escrow() {
+    QUEUE.with(|q| {
+        while q.escrowed.get() > 0 {
+            let live = q.live.get();
+            let has_room = !live.is_null() && q.filled.get() < SEGMENT_CAPACITY;
+            if !has_room && q.held.get() == 0 {
+                return;
+            }
+
+            let escrowed = q.escrowed.get() - 1;
+            let entity = q.escrow[escrowed].replace(std::ptr::null_mut());
+            q.escrowed.set(escrowed);
+            unsafe { enrol(entity) };
+        }
+    });
 }
 
 /// Take one spare, or null when both cells are empty.
@@ -286,8 +388,9 @@ pub(crate) fn replenish() -> bool {
 /// from a known queue: the queue holds pool blocks, and a dying thread
 /// must not take them with it.
 ///
-/// **The entries go with the segments and their entities keep the
-/// enrolled bit, which is a permanent miss and not a deferral.** A block
+/// **The entries go with the segments — the escrow's too — and their
+/// entities keep the enrolled bit, which is a permanent miss and not a
+/// deferral.** A block
 /// with live occupants is handed to the abandoned list and adopted by
 /// another thread (`memory::heap::ll_thread_exit`), so the entity
 /// outlives its queue carrying a bit that names an entry nobody holds —
@@ -318,31 +421,18 @@ pub(crate) fn drain() {
             let block = cell.replace(std::ptr::null_mut());
             crate::memory::critical::give_back(block);
         }
+
+        let escrowed = q.escrowed.replace(0);
+        for cell in &q.escrow[..escrowed] {
+            cell.set(std::ptr::null_mut());
+        }
     });
 }
 
-// Enrolments this thread refused because both funding doors had
-// nothing. A counter because the branch has no other witness: what the
-// runtime does at that boundary is undecided, so there is no observable
-// behaviour a scenario test could read. The decision is
-// `rfc/model/memory/critical-reserve.md`, "When the reserve is spent
-// too" — the thirteenth ruling of 2026-08-25 funded "never dropped" out
-// of the reserve and stopped at the reserve running out.
+/// Entries this thread's escrow is holding.
 #[cfg(test)]
-thread_local! {
-    static REFUSED: Cell<usize> = const { Cell::new(0) };
-}
-
-#[inline]
-fn note_refusal() {
-    #[cfg(test)]
-    REFUSED.with(|c| c.set(c.get() + 1));
-}
-
-/// Refusals on this thread since the last call, and zero the count.
-#[cfg(test)]
-pub(crate) fn take_refusals() -> usize {
-    REFUSED.with(|c| c.replace(0))
+pub(crate) fn escrowed_count() -> usize {
+    QUEUE.with(|q| q.escrowed.get())
 }
 
 /// Entries this thread's queue holds, walking the chain.

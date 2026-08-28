@@ -9,6 +9,70 @@ never edited or deleted.
 ---
 
 
+## 2026-08-28 — the bulk release loop polls on its own backedge
+
+**The poll contract binds this loop too.** `ll_release_vector` runs its loop
+inside the runtime over a count the caller chose, and the compiler emits its
+poll only after the call — so nothing refilled the queue's spare cells or the
+critical reserve mid-run, and every iteration could enrol. A clear of some
+ninety thousand shared elements therefore exhausted eleven segments of funding
+and then the escrow, and aborted with memory free. The loop now calls
+`ll_gc_maybe_collect` every `POLL_STRIDE` iterations, which is half the escrow.
+
+**Why the backedge is a legal fire point**, and it is ruled rather than
+assumed: iteration `i - 1` has fully returned, its death and destructor with
+it, and `entities[i]` has not been read — `rfc/model/gc/strategies.md`'s
+"between mutator operations, after the current store or teardown has
+completed". It rests on a precondition `rfc/model/memory/bulk-operations.md`
+now states, that the caller severs every traced edge to an entry before
+submitting the vector. Inside a teardown the gate is closed and the poll fires
+nothing, which is the reentrancy guard that document already licenses.
+
+**Cost.** One compare-and-branch per iteration of the bulk path, and a full
+poll every 4080 iterations. Unmeasured, and no figure is offered: the crate has
+no bench that isolates a vector release.
+
+
+
+## 2026-08-28 — an enrolment cannot fail, and the undo of the enrolled bit is deleted
+
+**Superseding the undo the entry below records.** Edmond ruled that nothing may
+be lost, so the release path no longer has a branch in which no entry names an
+entity: below the live segment, the two spare cells and the critical reserve
+sits an **escrow** in the same thread-local — a fixed array of one segment's
+capacity, `const`-constructible and never grown — and a refused entry lands
+there by a store and an increment. `enrol` answers nothing, and a set enrolled
+bit always names an entry. The design side is `rfc/dev/DECISIONS.md`, "an
+enrolment cannot fail", which also carries the Sage's mechanism for the poll.
+
+**Why the undo had to go rather than be narrowed.** It left the entity
+enrollable at a *later* decrement, which is not the same as keeping this one:
+if the decrement that was refused was the ring's last external release, no
+later decrement comes and the ring is unreachable garbage for ever. That is
+Y6's permanent miss, and it is what the ruling refuses.
+
+**What the poll does with the escrow**, in `gc::ll_gc_maybe_collect` and in this
+order: refill the two cells, drain the escrow into the queue as far as the room
+allows, then fire if armed. The order is load-bearing — a drain before the
+refill puts the entries straight back. A drain that finds no room stops rather
+than looping, leaving the entries for the collection the same poll is about to
+run.
+
+**Cost, measured.** 65 280 bytes of thread-local per thread, on top of the two
+spare segments and the critical reserve's eight blocks — and they are committed
+at thread creation rather than on first touch. `readelf -S` on the test binary
+at this commit puts `.tbss` at 65 680 bytes, so the escrow is 99.4 % of the
+crate's whole zero-initialised TLS image, and that image is what glibc
+allocates and zeroes for every thread it starts. The
+hot path gains nothing: the escrow sits after the reserve's refusal, which sits
+after both cells. Overflowing the escrow aborts, which is the last resort the
+funded class already keeps (`rfc/runtime/exceptions.md`) and is reachable only
+by a run of enrolments long enough to fill a whole segment with no safepoint
+poll in it.
+
+
+
+
 ## 2026-08-27 — the enrolment queue is a chain of pool segments, and its live segment is a spare cell
 
 **Decision.** A queue segment is one 64 KiB pool block, the queue is a chain of

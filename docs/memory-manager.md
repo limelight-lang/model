@@ -577,10 +577,11 @@ which means the poll's own refill through the ordinary door was already
 refused. The draw is one block, and it puts the runtime in reserve mode.
 Its segments come back through `give_back` like the collection's, which
 is why thread exit drains the queue before this reserve
-(`memory::heap::ll_thread_exit`). What an overflow does when this door
-refuses too is undecided: the crate undoes the enrolled bit so the entity
-stays enrollable, and `rfc/model/memory/critical-reserve.md`, "When the
-reserve is spent too" carries what else it may owe as an open question.
+(`memory::heap::ll_thread_exit`). **This door refusing does not refuse the
+enrolment**: below it sits the queue's own escrow, a fixed array that cannot
+refuse, and the report is the next safepoint poll's — which refills, drains the
+escrow, and then collects or raises from a frame that has one
+(`rfc/dev/DECISIONS.md`, "an enrolment cannot fail").
 
 The third customer the design names, the mutator that cannot collect,
 arrives with `PLAN.md` S38.4, and no partition among the three is built

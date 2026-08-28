@@ -125,56 +125,133 @@ fn a_growth_with_no_spare_draws_the_reserve_and_arms_the_poll() {
     reset();
 }
 
-/// Both doors refused: no entry lands, the bit comes back down so the
-/// entity is still enrollable, and the poll is armed.
+/// Every door refused: the entry lands in the escrow rather than
+/// nowhere, the bit stays down where it was put, and the poll is armed.
 ///
-/// **The enrolment's two doors are the spare cells and the critical
-/// reserve, and nothing here closes the pool**, deliberately.
+/// **The enrolment's doors are the spare cells and the critical reserve,
+/// and nothing here closes the pool**, deliberately.
 /// `block_pool::FORCE_OOM` would refuse before the request is even
 /// counted, so a growth that grew a "then ask the pool" fallback — the
 /// regression that would break clause 3 — would look identical. Emptying
 /// the cells and the reserve by hand leaves the pool open, and the pool
 /// counter below is what sees the fallback appear.
 #[test]
-fn a_refusal_at_both_doors_leaves_the_entity_enrollable() {
+fn every_door_refused_puts_the_entry_in_the_escrow() {
     let _g = test_guard();
     reset();
     assert_eq!(spares_held(), 0);
     crate::memory::critical::drain_for_test();
-    let _ = take_refusals();
     let _ = allocation_probe::take_all();
 
-    // Three holders, because this header is released twice: the refusal
-    // below and the enrolment after it, and a second decrement from two
-    // would be a death rather than a candidate.
-    let mut header = candidate(3);
+    let mut header = candidate(2);
     let entity = &raw mut header;
-    assert!(unsafe { !release(entity) });
+    unsafe { release(entity) };
 
-    assert_eq!(
-        take_refusals(),
-        1,
-        "the refusal was the queue's, not a door's"
-    );
+    assert_eq!(escrowed_count(), 1, "the entry is parked, not lost");
+    assert_eq!(enrolled_count(), 0, "and not in the queue, which has none");
+    assert_eq!(segment_count(), 0, "nothing was swapped in");
     assert_eq!(
         allocation_probe::take_all(),
         (0, 0),
-        "and it refused rather than reaching past its own two doors"
+        "the escrow is a store; it reaches past no door"
     );
-    assert_eq!(segment_count(), 0, "nothing was swapped in");
-    assert!(crate::gc::is_armed(), "a refusal asks for a collection too");
-    assert_eq!(
+    assert_ne!(
         unsafe { mutator_flags(entity) } & ENROLLED,
         0,
-        "the bit came back down: no entry names this entity"
+        "the bit stays: an entry names this entity, in the escrow"
+    );
+    assert!(
+        crate::gc::is_armed(),
+        "an escrow landing asks for a collection"
     );
 
-    // And the entity is a candidate again, which is the whole point of
-    // the undo: a bit left set would have reserved it an examination no
-    // decrement could ever ask for again.
-    assert!(replenish());
-    assert!(unsafe { !release(entity) });
-    assert_eq!(enrolled_count(), 1);
+    reset();
+}
+
+/// And the poll takes it out again, in the order that makes room first.
+#[test]
+fn the_poll_drains_the_escrow_into_the_queue() {
+    let _g = test_guard();
+    reset();
+    assert_eq!(spares_held(), 0);
+    crate::memory::critical::drain_for_test();
+
+    let mut header = candidate(2);
+    let entity = &raw mut header;
+    unsafe { release(entity) };
+    assert_eq!(escrowed_count(), 1);
+
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+
+    assert_eq!(escrowed_count(), 0, "the poll emptied it");
+    assert_eq!(
+        enrolled_count(),
+        1,
+        "into the queue the refill made room in"
+    );
+    assert_eq!(
+        live_entry(0),
+        entity,
+        "and the entry still names the entity"
+    );
+
+    reset();
+}
+
+/// A drain with no room puts nothing back and loses nothing: the poll
+/// that finds every door still spent leaves the entries where they are
+/// for the collection it is about to run.
+#[test]
+fn a_drain_with_no_room_leaves_the_escrow_alone() {
+    let _g = test_guard();
+    reset();
+    crate::memory::critical::drain_for_test();
+
+    let mut header = candidate(2);
+    unsafe { release(&raw mut header) };
+    assert_eq!(escrowed_count(), 1);
+
+    crate::cycle::queue::drain_escrow();
+    assert_eq!(
+        escrowed_count(),
+        1,
+        "no cell and no live segment, so the entry stays parked"
+    );
+
+    reset();
+}
+
+/// A bulk release longer than the poll stride refills its own funding
+/// mid-run, so the escrow it starts filling is emptied before the run
+/// ends.
+///
+/// The loop is `ll_release_vector`'s, whose `count` is the caller's and
+/// whose body the compiler never sees inside — so without a poll of its
+/// own it enrols without bound. Started with every door spent, this run
+/// escrows until its first backedge poll and queues everything after it.
+#[test]
+fn a_bulk_release_polls_on_its_own_backedge() {
+    let _g = test_guard();
+    reset();
+    crate::memory::critical::drain_for_test();
+    assert_eq!(spares_held(), 0, "every door starts spent");
+
+    let count = POLL_STRIDE + 1;
+    let mut headers: Vec<RcHeader> = (0..count).map(|_| candidate(2)).collect();
+    let entities: Vec<*mut RcHeader> = headers.iter_mut().map(|h| &raw mut *h).collect();
+
+    unsafe { crate::object::ll_release_vector(entities.as_ptr(), count) };
+
+    assert_eq!(
+        escrowed_count(),
+        0,
+        "the backedge poll refilled the cells and drained what had escrowed"
+    );
+    assert_eq!(
+        enrolled_count(),
+        count,
+        "and every candidate is in the queue"
+    );
 
     reset();
 }

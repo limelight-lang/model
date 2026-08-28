@@ -36,11 +36,12 @@ versions live in `docs/history/`, marked at the top.
   non-final decrement the enrolment gate admits. It grows by a pointer
   swap out of two spare cells the safepoint poll fills through the
   ordinary door, draws `memory::critical` when both cells are empty and
-  arms the poll when it does, and undoes the enrolled bit when both doors
-  refuse — the entity staying enrollable rather than reserved an
-  examination that will never come. What it does beyond the undo at that
-  boundary is undecided (`rfc/model/memory/critical-reserve.md`, "When the
-  reserve is spent too"). The other three have no
+  arms the poll when it does, and **cannot fail**: every door refusing puts
+  the entry in an escrow of one segment's capacity in the same thread-local,
+  which the poll drains once a refill has made room. Edmond ruled on
+  2026-08-28 that nothing may be lost, and the escrow is the tier that
+  keeps it (`rfc/dev/DECISIONS.md`, "an enrolment cannot fail"). The other
+  three have no
   production caller until S35.1's mark. `row::edge_to` answers which
   shadow row a traced edge lands on,
   dispatching on the block's kind and carrying the population out of

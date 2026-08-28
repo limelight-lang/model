@@ -120,6 +120,12 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         let _ = crate::cycle::queue::replenish();
     }
 
+    // And then what the refill made room for: entries that landed in the
+    // queue's escrow because every door had refused them. The order is
+    // load-bearing — a drain before the refill would put them straight
+    // back (`rfc/model/gc/cycle/questions.md`, Y12 clause 3).
+    crate::cycle::queue::drain_escrow();
+
     if !take_due() {
         return 0;
     }

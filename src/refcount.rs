@@ -706,19 +706,12 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
         // own thread being its only writer.
         unsafe { flags_store(entity, flags | ENROLLED) };
 
-        // A false answer means both funding doors refused and no entry
-        // names the entity, so the bit comes back down: the owner is
-        // undoing its own incomplete enrolment on an exact reading,
-        // which the law of 2026-08-26 allows it, and it leaves the
-        // entity enrollable at a later decrement instead of reserving it
-        // an examination that will never come. What else that boundary
-        // owes is undecided, and `rfc/model/memory/critical-reserve.md`,
-        // "When the reserve is spent too" both says so and says why the
-        // ordinary answer there does not reach this caller: raising
-        // memory-exhausted needs a frame, and this one holds none.
-        if !unsafe { crate::cycle::queue::enrol(entity) } {
-            unsafe { flags_store(entity, flags) };
-        }
+        // No undo, because there is nothing to undo: the enrolment
+        // cannot fail. Every door refusing puts the entry in the queue's
+        // escrow, and the report is the next safepoint poll's, from a
+        // frame that has one (`rfc/dev/DECISIONS.md`, "an enrolment
+        // cannot fail"). A bit set here therefore always names an entry.
+        unsafe { crate::cycle::queue::enrol(entity) };
     }
 
     refcount == 0 && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap
