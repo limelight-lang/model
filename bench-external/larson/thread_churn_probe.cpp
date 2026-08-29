@@ -36,7 +36,7 @@
 extern "C" {
     void *ll_malloc(size_t size);
     void ll_c_free(void *ptr);
-    void ll_thread_init(void);
+    bool ll_thread_init(void);
     void ll_thread_exit(void);
     struct MemoryStats {
         size_t regions_carved, resident_bytes, blocks_out, active_bytes, blocks_free;
@@ -62,7 +62,10 @@ struct Work {
 
 static DWORD WINAPI worker(LPVOID p) {
     Work *w = (Work *)p;
-    if (!w->use_mi) ll_thread_init();
+    if (!w->use_mi && !ll_thread_init()) {
+        fprintf(stderr, "ll_thread_init refused: the runtime did not start this thread\n");
+        return 1;
+    }
     // Symmetric with init: a thread that allocated must hand its blocks back
     // before it dies, or every block it owned is stranded. This is the whole
     // point of the probe.
@@ -86,7 +89,13 @@ static DWORD WINAPI worker(LPVOID p) {
 // Run TOTAL_ROUNDS split across `threads` sequential OS threads, each handing
 // the live set to the next -- larson's shape, with the churn rate as a knob.
 static double run(size_t threads, bool use_mi, size_t *regions_out) {
-    ll_thread_init();
+    // A negative time is the refusal: the runtime would not start this
+    // thread, and a probe that measured on anyway would time null
+    // allocations as if they were allocations.
+    if (!ll_thread_init()) {
+        fprintf(stderr, "ll_thread_init refused: the runtime did not start this thread\n");
+        return -1.0;
+    }
     Rng rng{4141};
     std::vector<void *> live(LIVE_SET);
     for (auto &p : live) {

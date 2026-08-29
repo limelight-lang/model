@@ -23,7 +23,10 @@ fn a_refused_ring_is_not_asked_for_a_second_time() {
     let start = mark();
 
     let identity = std::thread::spawn(|| {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         FORCE_OOM.store(true, Ordering::Relaxed);
         record(ANY_KIND, 0, 1, 0, 0);
         FORCE_OOM.store(false, Ordering::Relaxed);
@@ -69,7 +72,10 @@ fn a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring() {
     let start = mark();
 
     let identity = std::thread::spawn(|| {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         FORCE_GUARD_UNARMED.store(true, Ordering::Relaxed);
         record(ANY_KIND, 0, 5, 0, 0);
         let identity = this_thread_identity();
@@ -116,7 +122,10 @@ fn a_refused_threads_later_records_are_not_counted_as_losses() {
     let (announce, announced) = std::sync::mpsc::channel();
     let (go, wait) = std::sync::mpsc::channel();
     let refused = std::thread::spawn(move || {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         FORCE_OOM.store(true, Ordering::Relaxed);
         record(ANY_KIND, 0, 1, 0, 0);
         FORCE_OOM.store(false, Ordering::Relaxed);
@@ -157,7 +166,10 @@ fn a_thread_refused_a_ring_is_counted_since_it_is_in_no_window() {
     let start = mark();
 
     std::thread::spawn(|| {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         FORCE_OOM.store(true, Ordering::Relaxed);
         record(ANY_KIND, 0, 3, 0, 0);
         FORCE_OOM.store(false, Ordering::Relaxed);

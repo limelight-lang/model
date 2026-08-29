@@ -149,6 +149,12 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         first touch is still `ll_release`'s. The claim about glibc is the
         Critic's reading and is **not verified on this box**; verifying it is
         part of this step.
+      handoff: S34.8 added a second registration on the same path, and it is
+        the same question. The lazy floor draw asks
+        `heap::thread_exit_will_run`, whose call is the arming of `EXIT_GUARD`
+        — a `thread_local!` with drop glue, so its first touch registers a
+        destructor exactly as `critical::draw`'s does, and from the same
+        release path on a thread that never ran `ll_thread_init`.
 - [x] S34.6 Make the enrolment unfailable, and delete the undo
       done: `enrol` answers nothing and every door refusing lands the entry in
         an escrow the same thread-local holds; the release path has no branch
@@ -201,7 +207,7 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         rests on a precondition `rfc/model/memory/bulk-operations.md` now
         states: the caller severs every traced edge to an entry before
         submitting the vector.
-- [ ] S34.8 Move the escrow out of the TLS image into an allocator-issued floor
+- [x] S34.8 Move the escrow out of the TLS image into an allocator-issued floor
       done: the escrow's storage is one 64 KiB pool block drawn at
         `ll_thread_init` before the best-effort reserve fills and returned in
         `retire_the_journal` after `queue::drain`; a refused draw fails thread
@@ -216,6 +222,40 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         allocator-issued" (2026-08-28): per-life floor, a re-birth refusal
         refuses the new life through the status return, and memory-hard
         thread creation is a recorded trade, not a derivation.
+      Critic 2026-08-29 round 1: five findings, every one verified before it was
+        executed. `draw_floor` was not re-entrancy-safe and leaked a block per
+        registered thread under `debug-journal`; the ignore on the unregistered
+        thread's test gave a false reason; the status return had no enforcing
+        mechanism; a superseded TLS figure was quoted fresh in the module doc;
+        the drain test passed for a shallower reason. All five repaired.
+      Critic 2026-08-29 round 2, against those repairs: `ll_thread_init` funded
+        the thread without first asking whether anything would run its
+        teardown — the same question `draw_floor_or_abort` asks three lines
+        away — so a thread past the destruction of its guard's slot kept a
+        floor, two spares and two reserves for the life of the process; the new
+        leak test's exact count was unstable under a full `debug-journal` run,
+        the registry's deferred ring frees landing inside its bracket; and
+        `#[must_use]` stops at the crate boundary, where every `bench-external`
+        probe called the new signature bare. All three repaired; the device is
+        dropped here, at two rounds.
+      handoff: closed 2026-08-29 at 530 tests — three runs at four threads,
+        `hash-folding` 530, `debug-journal` 535, release with no warnings,
+        `cargo bench --no-run`, `cargo build --examples`, `cargo fmt --check`
+        clean. Every new test was seen failing against a mutation of what it
+        names: the floor never returned, the floor unstamped, the drain taking
+        it, init ignoring the refusal, the lazy draw arming nothing, the
+        re-entrancy re-check deleted, the teardown check deleted.
+      handoff: the measurement the ruling asked for is `dev/BENCHMARKS.md`,
+        "the escrow's move out of TLS": `.tbss` 65 784 bytes before against 496
+        after, both arms taken back to back on this box. What replaces them is
+        one 64 KiB block per live thread, so every exact `blocks_out` counts one
+        more per thread — the accounting tests say so where it matters.
+      handoff: `ll_thread_init` now answers `bool`, and `false` has two causes:
+        a refused floor, and a thread whose teardown will never run. Three
+        self-initialising paths are exempt from reading it
+        (`dev/DECISIONS.md`, "`ll_thread_init` answers"); everything else
+        asserts. The re-entrancy trap that produced the round-one leak is
+        `dev/POSTMORTEM.md`, "a draw re-entered itself through the journal".
 - [x] S34.9 Take the pool's memory from the OS, and delete Rust's allocator from its path
       done: `carve_region` and the large-run path map their memory from the
         operating system — `mmap` on unix, `VirtualAlloc` on windows — and
@@ -263,6 +303,30 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         `off_t`; linux mips defines `MAP_ANONYMOUS` as 0x800 and slipped
         through the gate built to stop it; the fault arming leaked on a panic
         and became RAII.
+- [ ] S34.10 Give Miri back a tree it can run
+      done: a targeted Miri run over a module that carves a region completes
+        instead of reporting undefined behaviour at `memory::os::map_aligned`,
+        and `dev/WORKFLOW.md`'s Miri section states what the arm costs — which
+        UB class Miri stops seeing in exchange
+      tier: T2 · role: Critic
+      handoff: found on 2026-08-29 while running Miri over S34.8's own pointer
+        writes. `map_aligned` over-maps and trims the head and the tail with
+        two partial `munmap`s, which is correct POSIX and which Miri's shim
+        does not model: it reports "incorrect layout on deallocation" and stops
+        the run. The first `BlockPool::get` of any test carves a region, so
+        this reaches every test that allocates — `refcount::tests::`
+        `who_may_read_a_header` passes only because it never asks the pool.
+      handoff: it is S34.9's debt, found after that step closed. Before it,
+        regions came from `std::alloc::alloc` and Miri ran; the WORKFLOW's Miri
+        section still describes a capability the tree has not had since.
+      handoff: what was tried and works, as a local patch that was **not**
+        committed: `#[cfg(not(miri))]` around the two trims and a `#[cfg(miri)]`
+        no-op `unmap`, which leaves the over-map in place and leans on
+        `-Zmiri-ignore-leaks`, the flag the WORKFLOW already prescribes. Under
+        it, `cycle::queue` ran 18 tests and `memory::heap` 20, both clean. The
+        cost is that Miri stops seeing anything about unmapping, which is the
+        trade the step has to state rather than assume.
+
 - [ ] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
         returns a slot; a reader may mark an entry a corpse and pass it on; the

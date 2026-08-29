@@ -1692,6 +1692,11 @@ fn retire_the_journal() {
     // (`crate::cycle::queue::drain`): draining the reserve first would
     // strand them in a reserve nothing drains again.
     crate::cycle::queue::drain();
+    // Then the floor, which the drain above leaves alone: the drain is
+    // also how a live thread empties its queue, and the floor is the one
+    // block this thread holds for its whole life rather than for its
+    // queue's contents (`crate::cycle::queue::release_floor`).
+    crate::cycle::queue::release_floor();
     crate::memory::reserve::drain();
     crate::memory::critical::drain();
     crate::memory::block_pool::drain_thread_cache();
@@ -1773,12 +1778,37 @@ impl Drop for ExitGuard {
 ///
 /// Also installs the TLS guard that returns this thread's blocks when it
 /// exits, so [`ll_thread_exit`] need not be called by hand.
+///
+/// **Answers whether the thread started**, and `false` is a refusal the
+/// caller must act on: the task does not run on this thread, and the
+/// process lives. Only one stock can produce it — the enrolment queue's
+/// floor, which carries the guarantee that a release can never lose a
+/// cycle root and is the one stock no later poll can make good
+/// (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued").
+/// A thread whose *heap* the OS refuses still answers `true`: it is
+/// registered, it releases entities allocated elsewhere, and its own
+/// allocations report null, which is the state this module already
+/// models ([`thread_heap`]).
+///
+/// The second refusal is a thread whose teardown will never run, which
+/// is TLS teardown having destroyed the exit guard's slot
+/// ([`thread_exit_will_run`]). Such a thread cannot be funded at all:
+/// nothing would give the memory back.
 #[unsafe(no_mangle)]
-pub extern "C" fn ll_thread_init() {
+#[must_use = "a thread whose floor was refused never started; run the work elsewhere"]
+pub extern "C" fn ll_thread_init() -> bool {
     // Must precede the first `tls::get()` anywhere: `get` deliberately does
     // not check whether the slot has been reserved (see its doc), so this
     // is the call that establishes that invariant.
     tls::ensure_slot();
+
+    // The floor before the best-effort fills below, and before anything
+    // that would have to be undone: it is the only draw here whose
+    // refusal ends the thread, so it is the one that runs while nothing
+    // is yet built.
+    if !crate::cycle::queue::take_floor() {
+        return false;
+    }
 
     // The three reserves first, and **before** the heap allocation below,
     // which returns early when the OS refuses it. A thread that comes out
@@ -1791,6 +1821,25 @@ pub extern "C" fn ll_thread_init() {
     let _ = crate::memory::critical::replenish();
     let _ = crate::cycle::queue::replenish();
 
+    // Whether anything will run this thread's teardown, asked once,
+    // because the call is also the arming: standing here it registers the
+    // guard last of this crate's three destructors, which is what makes
+    // the guard run first under glibc's reverse order — the order the
+    // sequence in [`ll_thread_exit`] describes.
+    //
+    // A false is a thread nothing will unfund: TLS teardown has already
+    // destroyed the guard's slot, and nothing rebuilds one. Everything
+    // drawn above goes straight back, and the thread is reported as not
+    // started rather than left holding a floor, two spare segments and
+    // two reserves for the life of the process.
+    if !thread_exit_will_run() {
+        crate::cycle::queue::drain();
+        crate::cycle::queue::release_floor();
+        crate::memory::reserve::drain();
+        crate::memory::critical::drain();
+        return false;
+    }
+
     if tls::get_raw().is_null() {
         // Not `Box::new`: its failure mode is `handle_alloc_error`, which
         // aborts — an abort nobody chose and no caller can see coming.
@@ -1800,7 +1849,7 @@ pub extern "C" fn ll_thread_init() {
         let layout = std::alloc::Layout::new::<ThreadHeaps>();
         let heap = unsafe { std::alloc::alloc(layout) } as *mut ThreadHeaps;
         if heap.is_null() {
-            return;
+            return true;
         }
 
         unsafe {
@@ -1818,7 +1867,7 @@ pub extern "C" fn ll_thread_init() {
             // already report as null.
             unsafe { std::ptr::drop_in_place(heap) };
             unsafe { std::alloc::dealloc(heap as *mut u8, layout) };
-            return;
+            return true;
         }
 
         // Failing to arm the guard is the right outcome: the thread is
@@ -1847,6 +1896,8 @@ pub extern "C" fn ll_thread_init() {
         // retired.
         journal_event!(crate::journal::kinds::KIND_THREAD_START, 0, 0, 0);
     }
+
+    true
 }
 
 /// Where a thread stands with respect to its own teardown.
@@ -2014,7 +2065,10 @@ pub unsafe extern "C" fn ll_entity_reserve(
 ) -> usize {
     let h = thread_entity_heap();
     let h = if h.is_null() {
-        ll_thread_init();
+        // Not read here, for the reason `stdapi::ll_alloc_init` gives:
+        // this is the self-initialising path and it reports a refusal as
+        // a null heap, which the line below reads.
+        let _ = ll_thread_init();
         let h = thread_entity_heap();
         if h.is_null() {
             unsafe { *contiguous_len = 0 };
@@ -2054,7 +2108,8 @@ pub unsafe extern "C" fn ll_entity_cells_return(cells: *const *mut u8, count: us
 #[cold]
 #[inline(never)]
 unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
-    ll_thread_init();
+    // Not read here, for the reason `stdapi::ll_alloc_init` gives.
+    let _ = ll_thread_init();
     let h = thread_entity_heap();
     if h.is_null() {
         return std::ptr::null_mut();

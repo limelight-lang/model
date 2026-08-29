@@ -34,7 +34,10 @@ fn a_destructor_at_thread_exit_is_recorded_before_the_ring_retires() {
             record(ANY_KIND, 0, SUBJECT, 0, 0);
         }
 
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         let identity = {
             record(ANY_KIND, 0, 0, 0, 0);
             this_thread_identity()
@@ -123,7 +126,10 @@ fn a_dying_threads_block_handovers_are_inside_its_own_ring() {
     let start = mark();
 
     let identity = std::thread::spawn(|| {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         // Something to hand back: the reserve is filled at init, and
         // a small allocation and its free leave a block cached.
         let p = unsafe { crate::memory::stdapi::ll_malloc(64) };
@@ -175,7 +181,10 @@ fn the_exit_hands_back_the_reserve_and_the_block_cache_itself() {
     let _quiet = kinds::disable_sites_for_test();
     let _g = crate::memory::block_pool::test_guard();
     let (reserve, cache) = std::thread::spawn(|| {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         // Something to hand back: the reserve is filled at init, and
         // a small allocation and its free leave a block cached.
         let p = unsafe { crate::memory::stdapi::ll_malloc(64) };
@@ -230,7 +239,10 @@ fn a_destructor_running_after_the_exit_is_recorded_or_counted() {
     std::thread::spawn(|| {
         // Registered first, so destroyed last.
         LATE_CELL.with(|_| {});
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         record(ANY_KIND, 0, 0, 0, 0);
     })
     .join()
@@ -279,7 +291,10 @@ fn a_thread_inside_its_own_exit_takes_no_ring_to_free() {
     );
 
     let taken = std::thread::spawn(|| {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         crate::memory::heap::ll_thread_exit();
         // Both doors into the pending list go through this.
         let mut registry = locked();

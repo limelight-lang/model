@@ -806,7 +806,10 @@ pub(crate) fn test_guard() -> TestGuard {
     // thread queued on the lock move the global block count under the
     // test that is currently running and counting.
     let guard = TestGuard(LOCK.lock().unwrap_or_else(|e| e.into_inner()));
-    crate::memory::heap::ll_thread_init();
+    assert!(
+        crate::memory::heap::ll_thread_init(),
+        "the runtime started this thread"
+    );
     // The ring too, and for the same reason as the init above: it is a
     // block, so the record that allocates it draws one out of this
     // thread's cache, and a test that names a block cannot have that

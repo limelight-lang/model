@@ -69,7 +69,7 @@
 #include <vector>
 
 extern "C" {
-void ll_thread_init();
+bool ll_thread_init();
 void* ll_reference_new();
 void ll_retain(void* entity);
 bool ll_release(void* entity);
@@ -280,7 +280,10 @@ int main() {
     // thread clears the flag for the rest of the process.
     std::thread([] {}).join();
 
-    ll_thread_init();
+    if (!ll_thread_init()) {
+        fprintf(stderr, "ll_thread_init refused: the runtime did not start this thread\n");
+        return 1;
+    }
     for (size_t i = 0; i < kWide; i++) {
         ll_children[i] = ll_reference_new();
         ll_dup_children[i] = ll_reference_new();

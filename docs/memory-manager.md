@@ -578,10 +578,14 @@ refused. The draw is one block, and it puts the runtime in reserve mode.
 Its segments come back through `give_back` like the collection's, which
 is why thread exit drains the queue before this reserve
 (`memory::heap::ll_thread_exit`). **This door refusing does not refuse the
-enrolment**: below it sits the queue's own escrow, a fixed array that cannot
-refuse, and the report is the next safepoint poll's — which refills, drains the
-escrow, and then collects or raises from a frame that has one
-(`rfc/dev/DECISIONS.md`, "an enrolment cannot fail").
+enrolment**: below it sits the queue's own escrow, whose storage is a block the
+thread already holds — the floor, drawn at `ll_thread_init` and given back at
+thread exit — so the tier below the reserve asks no door at all. The report is
+the next safepoint poll's, which refills, drains the escrow, and then collects
+or raises from a frame that has one (`rfc/dev/DECISIONS.md`, "an enrolment
+cannot fail", and "the escrow's floor is allocator-issued"). The floor's own
+draw can be refused, and then the thread does not start: `ll_thread_init`
+answers `false` and the task runs elsewhere.
 
 The third customer the design names, the mutator that cannot collect,
 arrives with `PLAN.md` S38.4, and no partition among the three is built

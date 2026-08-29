@@ -100,6 +100,33 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-08-29 — the escrow's move out of TLS: `.tbss` from 65 784 bytes to 496
+
+**Read from the binary, not timed.** `readelf -S` on the test binary
+(`target/debug/deps/ll_model-*`, `cargo test --lib --no-run`), section `.tbss`,
+which is the crate's zero-initialised TLS image — what glibc allocates and
+zeroes for every thread the process creates, whether or not the thread ever
+touches any of it.
+
+| tree | `.tbss` |
+|---|---|
+| before, `79b22fa` | 65 784 bytes |
+| after, the escrow on an allocator-issued floor | 496 bytes |
+
+Both arms taken back to back on this box in one sitting, the before arm through
+`git stash push -u` and a rebuild in the same profile. The 65 680 figure
+recorded on 2026-08-28 was measured on another day's tree and is superseded by
+the pair above rather than compared with it.
+
+**What replaces the bytes.** One 64 KiB pool block per live thread, drawn at
+`ll_thread_init` and returned at `ll_thread_exit` — 132 times the TLS image it
+removes, and paid only by threads the runtime registers, in memory the pool
+already had mapped. What that costs a thread-churning workload in RSS and in
+respawn time is not measured here: `larson.cpp` respawns its worker every
+~20 ms, and the probe for it is `bench-external/larson/thread_churn_probe.cpp`,
+which is a Windows program — it includes `windows.h` and does not compile on
+this box at all.
+
 ## 2026-08-27 — what a block's first touch writes: 121 bytes against the 16 320 its rows reserve
 
 **Counted, not timed.** `cycle::shadow`'s `WRITTEN_BYTES` probe adds up the

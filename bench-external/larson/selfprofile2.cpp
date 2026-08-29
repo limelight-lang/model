@@ -21,7 +21,7 @@
 extern "C" {
     void *ll_malloc(size_t size);
     void ll_c_free(void *ptr);
-    void ll_thread_init(void);
+    bool ll_thread_init(void);
 }
 #define ALLOC(sz) ll_malloc(sz)
 #define FREE(p) ll_c_free(p)
@@ -45,7 +45,10 @@ struct Rng {
 
 static DWORD WINAPI worker(LPVOID) {
 #ifndef PROFILE_MIMALLOC
-    ll_thread_init();
+    if (!ll_thread_init()) {
+        fprintf(stderr, "ll_thread_init refused: the runtime did not start this thread\n");
+        return 1;
+    }
 #endif
     Rng rng{4141};
     std::vector<void *> live(LIVE_SET);

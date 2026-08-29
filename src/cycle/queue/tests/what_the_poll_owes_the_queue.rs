@@ -48,6 +48,12 @@ fn an_unarmed_poll_still_refills() {
 
 /// Thread exit hands back every segment and every cell, which is what
 /// keeps a dying thread from taking pool blocks with it.
+///
+/// The floor is out of the pool on both sides of the bracket and so
+/// cancels in it: it is the one block the thread holds for its life
+/// rather than for its queue's contents, and `release_floor` rather than
+/// [`drain`] is what gives it back
+/// (`the_floor_the_escrow_stands_on`).
 #[test]
 fn a_drain_returns_every_segment_and_every_spare() {
     let _g = test_guard();

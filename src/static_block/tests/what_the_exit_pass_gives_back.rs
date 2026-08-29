@@ -137,7 +137,10 @@ fn a_weak_referenced_object_held_by_a_static_notifies_at_thread_exit() {
     std::thread::spawn(move || {
         let cls = cls as *const Class;
         let layout = layout as *const Class;
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
         let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };

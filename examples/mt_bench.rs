@@ -105,7 +105,7 @@ fn independent(which: Which, slots: usize, rounds: usize) -> f64 {
     let handles: Vec<_> = (0..THREADS)
         .map(|t| {
             thread::spawn(move || {
-                ll_thread_init();
+                assert!(ll_thread_init(), "the runtime started this thread");
                 let mut rng = Rng(0x1234_5678 ^ (t as u64 + 1).wrapping_mul(0x9E37));
                 let mut live: Vec<(*mut u8, usize)> = Vec::with_capacity(slots);
                 for _ in 0..slots {
@@ -159,7 +159,7 @@ fn bleeding(which: Which, rounds: usize) -> f64 {
             let rx = rxs[t].take().unwrap();
             let done = done.clone();
             thread::spawn(move || {
-                ll_thread_init();
+                assert!(ll_thread_init(), "the runtime started this thread");
                 let mut rng = Rng(0x0BADF00D ^ (t as u64 + 1).wrapping_mul(0x2545F491));
                 let mut freed = 0usize;
                 for _ in 0..rounds {

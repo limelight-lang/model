@@ -59,7 +59,10 @@ fn events(windows: Vec<Window>) -> Vec<Event> {
 /// exit sequence, as a dying thread does. Returns its ring identity.
 fn a_journaling_thread(subject: u64) -> u64 {
     std::thread::spawn(move || {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         record(ANY_KIND, 0, subject, 0, 0);
         let identity = this_thread_identity();
         crate::memory::heap::ll_thread_exit();

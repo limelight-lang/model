@@ -25,7 +25,7 @@
 extern "C" {
     void *ll_malloc(size_t size);
     void ll_c_free(void *ptr);
-    void ll_thread_init(void);
+    bool ll_thread_init(void);
 }
 #include <mimalloc.h>
 
@@ -64,7 +64,10 @@ static double run(size_t live_set, A alloc, F freep) {
 }
 
 int main() {
-    ll_thread_init();
+    if (!ll_thread_init()) {
+        fprintf(stderr, "ll_thread_init refused: the runtime did not start this thread\n");
+        return 1;
+    }
     const size_t sets[] = {50, 200, 1000, 5000, 20000, 80000};
 
     printf("larson-shaped workload, sizes 8..1000, %zu rounds each\n", ROUNDS);

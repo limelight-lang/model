@@ -31,7 +31,7 @@
 extern "C" {
     void *ll_malloc(size_t size);
     void ll_c_free(void *ptr);
-    void ll_thread_init(void);
+    bool ll_thread_init(void);
 }
 
 // --- larson's RNG, verbatim -------------------------------------------------
@@ -136,7 +136,10 @@ static void step(const char *name, Opts o) {
 }
 
 int main() {
-    ll_thread_init();
+    if (!ll_thread_init()) {
+        fprintf(stderr, "ll_thread_init refused: the runtime did not start this thread\n");
+        return 1;
+    }
     printf("live %zu, %zu rounds, sizes %zu..%zu, one thread, best-of-3\n\n",
            LIVE, ROUNDS, MIN_SIZE, MAX_SIZE);
     printf("%-34s %10s %10s %8s\n", "variant", "ours", "mimalloc", "ratio");

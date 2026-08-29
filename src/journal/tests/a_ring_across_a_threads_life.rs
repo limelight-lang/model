@@ -62,7 +62,10 @@ fn a_thread_that_journals_after_its_exit_starts_no_second_ring() {
     let start = mark();
 
     let identity = std::thread::spawn(|| {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         record(ANY_KIND, 0, BEFORE_EXIT, 0, 0);
         let identity = this_thread_identity();
         crate::memory::heap::ll_thread_exit();
@@ -116,12 +119,18 @@ fn a_second_life_on_one_thread_journals_into_a_ring_of_its_own() {
     let start = mark();
 
     let (first, second) = std::thread::spawn(|| {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         record(ANY_KIND, 0, FIRST, 0, 0);
         let first = this_thread_identity();
         crate::memory::heap::ll_thread_exit();
 
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         record(ANY_KIND, 0, SECOND, 0, 0);
         let second = this_thread_identity();
         crate::memory::heap::ll_thread_exit();

@@ -37,10 +37,14 @@ versions live in `docs/history/`, marked at the top.
   swap out of two spare cells the safepoint poll fills through the
   ordinary door, draws `memory::critical` when both cells are empty and
   arms the poll when it does, and **cannot fail**: every door refusing puts
-  the entry in an escrow of one segment's capacity in the same thread-local,
-  which the poll drains once a refill has made room. Edmond ruled on
+  the entry in an escrow of one block's capacity, which the poll drains once
+  a refill has made room. Edmond ruled on
   2026-08-28 that nothing may be lost, and the escrow is the tier that
-  keeps it (`rfc/dev/DECISIONS.md`, "an enrolment cannot fail"). The other
+  keeps it (`rfc/dev/DECISIONS.md`, "an enrolment cannot fail"). Its
+  storage is the **floor**, one pool block drawn at `ll_thread_init` and
+  returned at thread exit, so a thread whose floor the pool refuses is a
+  thread that never starts — which is what `ll_thread_init`'s status
+  return reports, and what puts a floor under every registered thread. The other
   three have no
   production caller until S35.1's mark. `row::edge_to` answers which
   shadow row a traced edge lands on,

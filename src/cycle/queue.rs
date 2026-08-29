@@ -63,11 +63,32 @@
 //! # Why an enrolment cannot fail
 //!
 //! Edmond ruled on 2026-08-28 that nothing may be lost, so below the
-//! reserve sits a tier that cannot refuse: the **escrow**, a fixed array
-//! in this same thread-local, `const`-constructible and never grown. A
-//! refused entry lands there by a store and an increment, which keeps
-//! clause 3's three prohibitions through the last tier, and [`enrol`]
-//! therefore answers nothing — it has no failure to report.
+//! reserve sits a tier that cannot refuse: the **escrow**, whose storage
+//! is the **floor** — one 64 KiB pool block the thread holds for one
+//! init→exit life and writes entries into directly. A refused entry
+//! lands there by a store and an increment, which keeps clause 3's three
+//! prohibitions through the last tier, and [`enrol`] therefore answers
+//! nothing — it has no failure to report.
+//!
+//! **What makes the storage certain is the draw, not the address space.**
+//! The escrow was a fixed array in this same thread-local until
+//! 2026-08-28, and it was almost the whole of the crate's
+//! zero-initialised TLS image, which every thread pays at birth whether
+//! it enrols or not: `.tbss` measures 496 bytes with the floor against
+//! 65 784 without it (`dev/BENCHMARKS.md`, "the escrow's move out of
+//! TLS"). The floor is drawn instead, at thread init and before the
+//! best-effort fills, and its refusal is a thread that never starts
+//! (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued").
+//! The invariant every later tier rests on comes out of that coupling:
+//! every registered thread has a floor, because a thread whose floor was
+//! refused is a thread the runtime never registered.
+//!
+//! Entity work also reaches threads the runtime never registered —
+//! self-initialising allocation, a releaser-only FFI consumer — and such
+//! a thread draws its floor at its first enrolment instead, through the
+//! ordinary door ([`grow_and_write`]). That draw refusing aborts, which
+//! is the funded class's last resort reached one door earlier than the
+//! escrow's own overflow below.
 //!
 //! The escrow is emptied at the next safepoint poll, which is also where
 //! the thread does what the ruling asks: collect, or wait for the
@@ -77,18 +98,20 @@
 //! and where it must not"). The escrow is what carries the root from the
 //! refusal to the first lawful instant.
 //!
-//! It holds one segment's worth of entries, on the argument clause 3
-//! makes for the two cells: a whole segment cannot fill between two
-//! polls at any entry size. That argument quantifies over loops the
-//! compiler emits, and one loop it does not — `ll_release_vector`, whose
-//! count is the caller's — broke it, so that loop now carries a poll of
-//! its own every [`POLL_STRIDE`] iterations. Overflowing the escrow
-//! therefore takes sustained pool refusal rather than a long run.
+//! It holds one segment's worth of entries, which is what a block holds
+//! and what clause 3's argument for the two cells asks for: a whole
+//! segment cannot fill between two polls at any entry size. That argument
+//! quantifies over loops the compiler emits, and one loop it does not —
+//! `ll_release_vector`, whose count is the caller's — broke it, so that
+//! loop now carries a poll of its own every [`POLL_STRIDE`] iterations.
+//! Overflowing the escrow therefore takes sustained pool refusal rather
+//! than a long run.
 //!
 //! The live segment is a cell too: a thread holds none until its first
 //! enrolment, which finds no room by construction and takes the overflow
-//! path. So a thread that never enrols holds two segments and not three,
-//! and the empty-queue case needs no arm of its own.
+//! path. So a thread that never enrols holds its floor and two spare
+//! segments rather than three segments, and the empty-queue case needs no
+//! arm of its own.
 //!
 //! # What the poll owes this module
 //!
@@ -109,14 +132,17 @@ use crate::refcount::RcHeader;
 /// exactly this many, which is what lets the chain carry no length.
 pub(crate) const SEGMENT_CAPACITY: usize = BLOCK_PAYLOAD / size_of::<*mut RcHeader>();
 
-/// Entries the escrow holds — one segment's worth.
+/// Entries the escrow holds — one block's worth, the floor being one
+/// block.
 ///
-/// Sized on the argument [`SPARE_SEGMENTS`] is sized on: a whole segment
-/// cannot fill between two polls at any entry size, so a run that
-/// overflows the escrow is a run with no poll in it at all. The figure is
-/// deliberately generous; what would license a smaller one is the ABI's
-/// bound on operations between two polls, which is unwritten
-/// (`rfc/runtime/exceptions.md`).
+/// The size the ruling asks for is the size the storage has: a whole
+/// segment cannot fill between two polls at any entry size, which is the
+/// argument [`SPARE_SEGMENTS`] is sized on, so a run that overflows the
+/// escrow is a run with no poll in it at all. The figure is deliberately
+/// generous; what would license a smaller one is the ABI's bound on
+/// operations between two polls, which is unwritten
+/// (`rfc/runtime/exceptions.md`) — and a smaller one buys nothing while
+/// the storage is a whole block either way.
 pub(crate) const ESCROW_ENTRIES: usize = SEGMENT_CAPACITY;
 
 /// Iterations a runtime-owned bulk loop may run between two safepoint
@@ -157,10 +183,13 @@ struct Queue {
     /// Segments taken ahead of an overflow, `held` of them valid.
     spares: [Cell<*mut BlockHeader>; SPARE_SEGMENTS],
     held: Cell<usize>,
-    /// Entries no door could fund a segment for, `escrowed` of them
-    /// valid. The tier that cannot refuse, so that an enrolment cannot
+    /// The escrow's storage, or null on a thread that has neither run
+    /// `ll_thread_init` nor enrolled. Held for one init→exit life and
+    /// given back by [`release_floor`].
+    floor: Cell<*mut BlockHeader>,
+    /// Entries in the floor no door could fund a segment for, the oldest
+    /// first. The tier that cannot refuse, so that an enrolment cannot
     /// fail (`rfc/dev/DECISIONS.md`, "an enrolment cannot fail").
-    escrow: [Cell<*mut RcHeader>; ESCROW_ENTRIES],
     escrowed: Cell<usize>,
 }
 
@@ -171,13 +200,14 @@ thread_local! {
             filled: Cell::new(0),
             spares: [const { Cell::new(std::ptr::null_mut()) }; SPARE_SEGMENTS],
             held: Cell::new(0),
-            escrow: [const { Cell::new(std::ptr::null_mut()) }; ESCROW_ENTRIES],
+            floor: Cell::new(std::ptr::null_mut()),
             escrowed: Cell::new(0),
         }
     };
 }
 
-/// Where a segment's entries begin.
+/// Where a block's entries begin — a segment's, and the floor's, which
+/// hold the same thing and are the same size.
 #[inline]
 fn entries(segment: *mut BlockHeader) -> *mut *mut RcHeader {
     BlockHeader::payload_start(segment) as *mut *mut RcHeader
@@ -222,6 +252,19 @@ pub(crate) unsafe fn enrol(entity: *mut RcHeader) {
 /// funding one puts the entry in the escrow, which is why this answers
 /// nothing either.
 unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) {
+    // The floor before anything else, because the tier at the bottom of
+    // this function is the one that may not refuse. A registered thread
+    // has held one since `ll_thread_init`, so this is a predictable
+    // branch on a cold path; a thread that never ran init draws here, at
+    // its first enrolment, which is this path by construction — the live
+    // segment is a cell, so a thread's first enrolment finds no room.
+    // Drawing at the first refusal instead would draw exactly when every
+    // other door has already found the pool empty.
+    let floor = match q.floor.get() {
+        f if !f.is_null() => f,
+        _ => draw_floor_or_abort(q),
+    };
+
     let full = q.live.get();
 
     let fresh = match take_spare(q) {
@@ -251,7 +294,7 @@ unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) {
     };
 
     if fresh.is_null() {
-        escrow(q, entity);
+        escrow(q, floor, entity);
         // The escrow landing arms on its own: the refill the poll
         // performs is unconditional, so what the arming buys here is the
         // fire, not the cells.
@@ -286,7 +329,7 @@ unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) {
 /// behind that is a conjunction: the pool refusing across polls, and
 /// either a gate closed for the whole run or a collection that ran and
 /// lost, and then thousands of further non-final decrements.
-fn escrow(q: &Queue, entity: *mut RcHeader) {
+fn escrow(q: &Queue, floor: *mut BlockHeader, entity: *mut RcHeader) {
     let escrowed = q.escrowed.get();
     if escrowed == ESCROW_ENTRIES {
         // Nothing to report it through: `ll_release` holds no frame, and
@@ -294,8 +337,119 @@ fn escrow(q: &Queue, entity: *mut RcHeader) {
         std::process::abort();
     }
 
-    q.escrow[escrowed].set(entity);
+    // The floor is this thread's and non-null, which is the caller's to
+    // establish and the reason it is a parameter rather than a second
+    // load: every path here comes through [`grow_and_write`], which draws
+    // one before it takes any door.
+    unsafe { entries(floor).add(escrowed).write(entity) };
     q.escrowed.set(escrowed + 1);
+}
+
+/// Put a floor under this thread, or answer null when the pool refuses.
+///
+/// Through the ordinary door, and idempotent: a thread that holds one
+/// answers with it and draws nothing.
+fn draw_floor(q: &Queue) -> *mut BlockHeader {
+    let floor = q.floor.get();
+    if !floor.is_null() {
+        return floor;
+    }
+
+    let block = BlockPool::global().get();
+    if block.is_null() {
+        return block;
+    }
+
+    // Stamped for the reason a spare is stamped at acquisition: the block
+    // is out of the pool, and the collector acquire-loads the kind of
+    // every block in every carved region, so a floor left reading `FREE`
+    // is a block counted out and read as free.
+    unsafe {
+        crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_ARENA)
+    };
+
+    // **The cell is read again rather than trusted across the draw.**
+    // `BlockPool::get` raises a record, and a thread's first record runs
+    // `ll_thread_init` from inside the journal (`journal::mod`, "A thread
+    // can reach a record site without ever having initialised the
+    // runtime") — which comes back here and installs a floor of its own.
+    // Writing over it would strand that block for the life of the
+    // process, one per registered thread. The two memory reserves are
+    // safe from the same re-entry for a reason this cell does not have:
+    // their `RefCell` is borrowed across the draw, so the inner call
+    // refuses and returns.
+    if !q.floor.get().is_null() {
+        crate::memory::critical::give_back(block);
+        return q.floor.get();
+    }
+
+    q.floor.set(block);
+    block
+}
+
+/// Draw the floor of a thread the runtime never registered, and abort
+/// when it cannot be drawn.
+///
+/// Two refusals answer the same way, because there is no continuation
+/// from here that keeps the root: [`crate::refcount::ENROLLED`] is set
+/// before this call and nothing unsets it, so an enrolment that returned
+/// without an entry would be Y6's permanent miss with the bit left
+/// standing. The abort is the funded class's last resort, reached
+/// one door earlier than [`escrow`]'s own (`rfc/dev/DECISIONS.md`, "the
+/// escrow's floor is allocator-issued").
+///
+/// **Asking whether the exit will run is also what arms it**
+/// (`crate::memory::heap::thread_exit_will_run`), which is what this
+/// thread needs: nothing else has registered a guard for it, and without
+/// one the floor would be a block the process never sees again. The
+/// registration is a TLS destructor, and what its first touch costs on
+/// this platform is `PLAN.md` S34.5's — the same question
+/// [`crate::memory::critical::draw`] raises on this same path.
+fn draw_floor_or_abort(q: &Queue) -> *mut BlockHeader {
+    if !crate::memory::heap::thread_exit_will_run() {
+        // Past `ll_thread_exit`, with nothing left to run another: the
+        // floor would go back to no one.
+        std::process::abort();
+    }
+
+    let floor = draw_floor(q);
+    if floor.is_null() {
+        std::process::abort();
+    }
+
+    floor
+}
+
+/// Take this thread's floor, and report whether it has one.
+///
+/// `false` is the thread that never starts: the floor is the one stock a
+/// later poll cannot make good, because the guarantee it carries — that
+/// an enrolment cannot fail — would be suspended between birth and that
+/// poll. [`crate::memory::heap::ll_thread_init`] calls it before its
+/// best-effort fills and reports the refusal to its own caller.
+pub(crate) fn take_floor() -> bool {
+    QUEUE.with(|q| !draw_floor(q).is_null())
+}
+
+/// Give the floor back, leaving the thread without one.
+///
+/// Called by `memory::heap::retire_the_journal` after [`drain`], and by
+/// nothing else: the floor is per life, while [`drain`] is also how a
+/// test starts from a known queue — a live thread stripped of its floor
+/// there would draw a second one at its next enrolment and hold two.
+///
+/// Through [`crate::memory::critical::give_back`], the route the segments
+/// take, so a reserve below capacity is refilled before the pool sees
+/// anything.
+pub(crate) fn release_floor() {
+    QUEUE.with(|q| {
+        let floor = q.floor.replace(std::ptr::null_mut());
+        if floor.is_null() {
+            return;
+        }
+
+        crate::memory::critical::give_back(floor);
+    });
 }
 
 /// Move escrowed entries back into the queue, as far as the room a poll
@@ -315,7 +469,9 @@ pub(crate) fn drain_escrow() {
             }
 
             let escrowed = q.escrowed.get() - 1;
-            let entity = q.escrow[escrowed].replace(std::ptr::null_mut());
+            // The floor exists wherever the count is above zero, one
+            // having been drawn before the first entry was written.
+            let entity = unsafe { entries(q.floor.get()).add(escrowed).read() };
             q.escrowed.set(escrowed);
             unsafe { enrol(entity) };
         }
@@ -373,7 +529,18 @@ pub(crate) fn replenish() -> bool {
                 )
             };
 
+            // The count is read again after the draw, and a full pair
+            // sends the block straight back: the record `BlockPool::get`
+            // raises can run `ll_thread_init` on this thread, and that
+            // call fills these same cells, so an index taken before the
+            // draw would be past the end of the array
+            // ([`draw_floor`] carries the same re-entry and why).
             let held = q.held.get();
+            if held == SPARE_SEGMENTS {
+                crate::memory::critical::give_back(block);
+                return true;
+            }
+
             q.spares[held].set(block);
             q.held.set(held + 1);
         }
@@ -422,10 +589,12 @@ pub(crate) fn drain() {
             crate::memory::critical::give_back(block);
         }
 
-        let escrowed = q.escrowed.replace(0);
-        for cell in &q.escrow[..escrowed] {
-            cell.set(std::ptr::null_mut());
-        }
+        // The escrow empties by its count, which is the only bound on the
+        // floor's contents exactly as `filled` is the only bound on the
+        // live segment's. The floor itself stays: it belongs to the
+        // thread's life rather than to the queue's contents, and
+        // [`release_floor`] is what ends that life.
+        q.escrowed.set(0);
     });
 }
 
@@ -474,6 +643,14 @@ pub(crate) fn segment_count() -> usize {
 #[cfg(test)]
 pub(crate) fn spares_held() -> usize {
     QUEUE.with(|q| q.held.get())
+}
+
+/// This thread's floor, or null when it holds none. One block, out of
+/// the pool for the thread's whole life, so an exact `blocks_out` names
+/// it.
+#[cfg(test)]
+pub(crate) fn floor() -> *mut BlockHeader {
+    QUEUE.with(|q| q.floor.get())
 }
 
 /// Fill the live segment to capacity with `filler`, so the next

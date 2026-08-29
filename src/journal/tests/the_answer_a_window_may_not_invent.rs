@@ -119,7 +119,10 @@ fn a_window_that_ended_before_the_close_is_not_reclassified_by_it() {
     let (sender, receiver) = std::sync::mpsc::channel();
     let (go, wait) = std::sync::mpsc::channel();
     let journaling = std::thread::spawn(move || {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         record(ANY_KIND, 0, SUBJECT, 0, 0);
         sender
             .send(this_thread_identity())

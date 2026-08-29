@@ -53,6 +53,7 @@ fn reset() {
     crate::memory::critical::drain_for_test();
 }
 
+mod the_floor_the_escrow_stands_on;
 mod what_an_enrolment_writes;
 mod what_the_poll_owes_the_queue;
 mod where_a_full_segment_comes_from;

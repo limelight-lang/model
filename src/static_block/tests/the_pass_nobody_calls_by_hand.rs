@@ -33,7 +33,10 @@ fn a_thread_that_just_ends_releases_its_static_blocks() {
     std::thread::spawn(move || {
         let cls = cls as *const Class;
         let layout = layout as *const Class;
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
 
@@ -99,7 +102,10 @@ fn a_thread_that_just_ends_frees_a_static_strings_payload() {
 
     std::thread::spawn(move || {
         let layout = layout as *const Class;
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         let mut arena = Arena::new();
         let mut ctx = LLContext { arena: &mut arena };
 

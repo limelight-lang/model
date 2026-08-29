@@ -14,7 +14,7 @@
 extern "C" {
     void *ll_malloc(size_t size);
     void ll_c_free(void *ptr);
-    void ll_thread_init(void);
+    bool ll_thread_init(void);
 }
 
 static std::atomic<bool> g_done{false};
@@ -22,7 +22,10 @@ static const size_t N = 8'000'000;
 static const size_t OBJ_SIZE = 64;
 
 static DWORD WINAPI worker(LPVOID) {
-    ll_thread_init();
+    if (!ll_thread_init()) {
+        fprintf(stderr, "ll_thread_init refused: the runtime did not start this thread\n");
+        return 1;
+    }
     for (size_t i = 0; i < N; i++) {
         void *p = ll_malloc(OBJ_SIZE);
         *(volatile uint64_t *)p = i;

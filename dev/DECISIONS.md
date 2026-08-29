@@ -9,6 +9,39 @@ never edited or deleted.
 ---
 
 
+## 2026-08-29 — `ll_thread_init` answers, and three self-initialising paths are the only callers that may not read the answer
+
+**The status is `#[must_use]`.** The ABI gained a return so that a refused
+floor could end a thread rather than the process (`rfc/dev/DECISIONS.md`, "the
+escrow's floor is allocator-issued"), and a status nobody is obliged to read
+ends nothing: every Rust caller in the tree discarded it, so the ruled soft
+path — the task runs elsewhere — was unreachable and the refusal degenerated
+into the lazy draw's abort. The attribute puts the choice at each call site;
+the thirty-one test and example sites assert it, which is also the premise each
+of them depends on.
+
+**It is a Rust lint and stops at the crate boundary**, which is where the
+population it was built for lives: an embedder calling through the C ABI is
+told nothing by an attribute. The tree's own C callers are the demonstration —
+every probe in `bench-external/` declared the new signature and went on calling
+it bare — so each of them now reads the answer by hand and refuses to measure a
+thread the runtime would not start.
+
+**Three exemptions, and they are the self-initialising paths**:
+`stdapi::ll_alloc_init`, `heap::ll_entity_reserve` and `heap::entity_alloc_init`.
+Their contract is a null allocation on any refusal, which they report by
+reading the heap after the call, and that report covers a refused floor exactly
+as it covers a refused heap. A fourth caller, the journal's registration inside
+`ring_for_writing`, discards it deliberately: what it needs from the call is
+the exit guard, which it asks for on the next line.
+
+**The floor is returned by `release_floor` and not by `drain`.** `drain` is
+also how a live thread empties its queue — every test in the module starts and
+ends with it — and a live thread stripped of its floor would draw a second one
+at its next enrolment. So `retire_the_journal` calls the two in order, the
+floor after the segments and before the critical reserve drains, which is the
+order every other block of the queue's already takes.
+
 ## 2026-08-28 — the bulk release loop polls on its own backedge
 
 **The poll contract binds this loop too.** `ll_release_vector` runs its loop

@@ -35,7 +35,7 @@ fn h9_exiting_thread_returns_its_blocks_without_an_explicit_call() {
 
     for _ in 0..3 {
         std::thread::spawn(|| {
-            ll_thread_init();
+            assert!(ll_thread_init(), "the runtime started this thread");
             let p = unsafe { crate::memory::stdapi::ll_alloc(40, 16) };
             assert!(!p.is_null());
             unsafe { crate::memory::stdapi::ll_free(p) };
@@ -109,7 +109,7 @@ fn a_thread_without_a_tls_slot_reports_instead_of_dying() {
         // The refusal has to be *said*, not swallowed: a silent miss
         // leaves the caller believing the pointer was stored.
         let told = !tls::set(std::ptr::null_mut());
-        ll_thread_init();
+        assert!(ll_thread_init(), "the runtime started this thread");
         let heapless = thread_heap().is_null();
         let p = unsafe { crate::memory::stdapi::ll_alloc(40, 16) };
         tls::FORCE_TLS_FAILURE.store(0, Ordering::Relaxed);

@@ -25,7 +25,7 @@
 extern "C" {
     void *ll_malloc(size_t size);
     void ll_c_free(void *ptr);
-    void ll_thread_init(void);
+    bool ll_thread_init(void);
     // [entries, retries, unlinks, links]; entries counts block examinations,
     // retries counts the cold-path re-entries among them.
     void ll_probe_counters(uint64_t *out);
@@ -40,7 +40,10 @@ struct Rng {
 int main(int argc, char **argv) {
     size_t ls = argc > 1 ? strtoull(argv[1], nullptr, 10) : 5000;
     const size_t ROUNDS = 2'000'000;
-    ll_thread_init();
+    if (!ll_thread_init()) {
+        fprintf(stderr, "ll_thread_init refused: the runtime did not start this thread\n");
+        return 1;
+    }
 
     Rng rng{4141};
     std::vector<void *> live(ls);

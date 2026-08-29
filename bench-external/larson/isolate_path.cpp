@@ -10,7 +10,7 @@
 extern "C" {
     void *ll_malloc(size_t size);
     void ll_c_free(void *ptr);
-    void ll_thread_init(void);
+    bool ll_thread_init(void);
     // Diagnostic-only: isolates TLS cost from FFI-boundary + algorithm cost.
     void *ll_diag_heap_new(void);
     void *ll_diag_alloc_raw(void *heap, size_t size);
@@ -33,7 +33,11 @@ int main() {
     const size_t N = 20'000'000;
     const size_t SIZE = 64;
 
-    ll_thread_init(); // explicit, cold, one-time -- see heap.rs::ll_thread_init
+    // explicit, cold, one-time -- see heap.rs::ll_thread_init
+    if (!ll_thread_init()) {
+        fprintf(stderr, "ll_thread_init refused: the runtime did not start this thread\n");
+        return 1;
+    }
 
     {
         double t0 = now_ms();

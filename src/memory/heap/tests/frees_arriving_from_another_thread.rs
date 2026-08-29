@@ -18,7 +18,7 @@ fn cross_thread_free_is_correct() {
     // hand the pointer to the consumer, and keep allocating (so its
     // slow path drains the incoming cross-thread frees concurrently).
     let producer = thread::spawn(move || {
-        ll_thread_init();
+        assert!(ll_thread_init(), "the runtime started this thread");
         unsafe {
             with_thread_heap(|h| {
                 for i in 0..N {
@@ -35,7 +35,7 @@ fn cross_thread_free_is_correct() {
 
     // Consumer (this thread): verify each value survived, then free
     // cross-thread (posts to the producer's remote stack).
-    ll_thread_init();
+    assert!(ll_thread_init(), "the runtime started this thread");
     let mut count = 0u64;
     for _ in 0..N {
         let p = rx.recv().unwrap() as *mut u8;
@@ -85,7 +85,7 @@ fn many_threads_freeing_into_one_owner_lose_no_slots() {
         let (tx, rx) = mpsc::channel::<usize>();
         txs.push(tx);
         freers.push(thread::spawn(move || {
-            ll_thread_init();
+            assert!(ll_thread_init(), "the runtime started this thread");
             let mut n = 0usize;
             for p in rx {
                 let p = p as *mut u8;
@@ -106,7 +106,7 @@ fn many_threads_freeing_into_one_owner_lose_no_slots() {
     // This thread owns the blocks. Hand slots out round-robin so all
     // four freers contend on the same block, and keep churning so the
     // drain path runs while their pushes are arriving.
-    ll_thread_init();
+    assert!(ll_thread_init(), "the runtime started this thread");
     unsafe {
         with_thread_heap(|h| {
             for i in 0..(FREERS * PER) {
@@ -142,7 +142,7 @@ fn many_threads_alloc_free_no_corruption() {
     let handles: Vec<_> = (0..8)
         .map(|t| {
             thread::spawn(move || {
-                ll_thread_init();
+                assert!(ll_thread_init(), "the runtime started this thread");
                 unsafe {
                     with_thread_heap(|h| {
                         let mut live = Vec::new();

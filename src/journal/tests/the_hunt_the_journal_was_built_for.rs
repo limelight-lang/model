@@ -48,7 +48,10 @@ fn which_strings_died_inside_the_window_is_answered_from_the_journal() {
     kill(inside);
     let here = this_thread_identity();
     let (there, elsewhere) = std::thread::spawn(move || {
-        crate::memory::heap::ll_thread_init();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
         let mut arena = crate::memory::arena::Arena::new();
         let mut ctx = crate::memory::context::LLContext { arena: &mut arena };
         let s =

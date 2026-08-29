@@ -11,7 +11,7 @@
 extern "C" {
     void *ll_malloc(size_t size);
     void ll_c_free(void *ptr);
-    void ll_thread_init(void);
+    bool ll_thread_init(void);
 
     struct MemoryStats {
         size_t regions_carved;
@@ -40,7 +40,10 @@ struct Rng {
 int main(int argc, char **argv) {
     if (argc < 2) { printf("usage: blocks_probe <live_set>\n"); return 1; }
     size_t ls = strtoull(argv[1], nullptr, 10);
-    ll_thread_init();
+    if (!ll_thread_init()) {
+        fprintf(stderr, "ll_thread_init refused: the runtime did not start this thread\n");
+        return 1;
+    }
 
     Rng rng{4141};
     std::vector<void *> live(ls);

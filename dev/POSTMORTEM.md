@@ -7,6 +7,43 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-29 — a draw re-entered itself through the journal, and a `Cell` has no refusal to give
+
+**What happened.** S34.8 put the escrow's floor draw at the head of
+`ll_thread_init`, which made it the thread's first `BlockPool::get`. That `get`
+raises `KIND_BLOCK_COMMISSIONED`, and a thread's first record runs
+`ll_thread_init` from inside `journal::ring_for_writing` — so the inner call
+reached `draw_floor` while the outer one was still inside its own `get`, drew a
+block, and installed it. The outer call then wrote its own block over the cell.
+One 64 KiB block stranded per registered thread, in the `debug-journal` build,
+which is the build turned on to investigate memory. Measured on a copy of the
+crate: two blocks out across a thread's life where one was expected, and one
+after the repair — the one being the retired ring, which the registry keeps by
+design. The Critic round on the step named it; `draw_floor` now reads the cell
+again after the `get` returns and hands the surplus block back.
+
+**Why it was possible.** The two memory reserves are safe from the same
+re-entry, and by accident rather than by design: `reserve::replenish` and
+`critical::replenish` hold a `RefCell` borrow across the draw, so the inner
+call takes the `Err(_)` arm and gives up. The queue holds its state in bare
+`Cell`s, chosen because the enrolment write is the hottest path in the runtime
+and a borrow flag on it buys nothing — and a `Cell` has no refusal to give. So
+"a pool draw is re-entrant through the journal" was a rule enforced by one
+module's synchronisation choice and written down nowhere.
+
+**Why it was not caught.** No test counted blocks across a whole thread's life
+under `debug-journal`; that arm's tests count records. The ordinary arm cannot
+see it at all, the record sites not being compiled. And the accounting tests
+that do count blocks bracket a live thread, where the floor is out on both
+sides and cancels.
+
+**The same shape was latent next door.** `queue::replenish` took its cell index
+before the draw and wrote at it afterwards, which under the same re-entry is a
+write one past the end of a two-cell array rather than a leak. It was
+unreachable only because `reserve::replenish` ran first and absorbed the
+thread's first record; the floor draw moving to the head of `ll_thread_init` is
+exactly what would have made it reachable. Both now re-read after the draw.
+
 ## 2026-08-27 — a block kind was read as proof of which heap a child lives in
 
 **What happened.** S32.0's edge-to-row dispatch branches on a block's kind, and

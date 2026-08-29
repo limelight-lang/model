@@ -122,7 +122,10 @@ pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
 #[cold]
 #[inline(never)]
 unsafe fn ll_alloc_init(size: usize) -> *mut u8 {
-    crate::memory::heap::ll_thread_init();
+    // The status is not read here: this is the self-initialising path,
+    // whose contract is a null allocation on any refusal — which the heap
+    // read below reports, for a refused floor as for a refused heap.
+    let _ = crate::memory::heap::ll_thread_init();
     // Building the heap can itself be refused, and then there is no heap
     // to allocate from — report it the same way as any other exhaustion.
     let h = crate::memory::heap::thread_heap();
