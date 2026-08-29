@@ -341,12 +341,15 @@ pub(crate) fn occupant_count(block: usize) -> Option<usize> {
 /// which is the conservative direction: an edge whose row cannot be
 /// found keeps its referent alive instead of condemning it.
 ///
-/// **One registry lock per resolved edge, and that is the cost until a
-/// trace holds a block's index for the length of its visit.** S35.1 of
-/// `PLAN.md` is the step that gives the trace a visit to hold it over —
-/// [`occupant_count`] already takes it once per block, and the search
-/// itself is over an `Arc` slice and does not need the lock, only
-/// reaching it does.
+/// **One registry lock per resolved edge, and that is what the mark
+/// pays today**: `cycle::mark` resolves each child through
+/// `cycle::row::edge_to`, which reaches this function with nothing held
+/// from the child before it. No step builds the per-block visit that
+/// would hold the index's `Arc` over a block's edges — `PLAN.md`, "The
+/// retained arm's per-edge registry lock" carries it — and the shape it
+/// would take is there already: [`occupant_count`] takes the lock once
+/// per block, and the search itself is over an `Arc` slice and needs
+/// only the reaching.
 pub(crate) fn occupant_index(block: usize, addr: usize) -> Option<usize> {
     registry()
         .lock()

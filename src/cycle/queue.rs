@@ -4,8 +4,9 @@
 //! The contract is `rfc/model/gc/cycle/questions.md`, Y12, and every
 //! clause of it is normative here. What this module builds is the
 //! **owner's side** of that contract: the write, the growth and the
-//! funding. The read side belongs to whoever holds the trace token, and
-//! arrives with the mark of `PLAN.md` S35.1; the accelerator that reads
+//! funding. The read side belongs to whoever holds the trace token:
+//! `cycle::mark` traces from one root, and the collection that draws
+//! those roots out of this queue is S36.7's. The accelerator that reads
 //! another thread's queue arrives at S38.1, with the claim it needs.
 //!
 //! # The shape

@@ -30,7 +30,7 @@ versions live in `docs/history/`, marked at the top.
   why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26;
   the code itself is on the branch `archive/pre-rc-cycle`. `PLAN.md`
   S34 through S40 build the replacement, and `src/cycle/` is where it
-  is going. Four parts today, and one of them has a production caller:
+  is going. Five parts today, and one of them has a production caller:
   **`queue` is the per-thread enrolment queue**, a chain of 64 KiB pool
   segments that the release path writes an entity pointer into at every
   non-final decrement the enrolment gate admits. It grows by a pointer
@@ -45,8 +45,8 @@ versions live in `docs/history/`, marked at the top.
   returned at thread exit, so a thread whose floor the pool refuses is a
   thread that never starts — which is what `ll_thread_init`'s status
   return reports, and what puts a floor under every registered thread. The other
-  three have no
-  production caller until S35.1's mark. `row::edge_to` answers which
+  four have no
+  production caller until S36.7 wires a collection in. `row::edge_to` answers which
   shadow row a traced edge lands on,
   dispatching on the block's kind and carrying the population out of
   that read. `shadow` is the row and the block's array of them: four
@@ -67,7 +67,16 @@ versions live in `docs/history/`, marked at the top.
   answer and the mark's descent is what needs it. Where the rows are is the
   population's: an entity block's array is sized by its size class, a
   retained block's by its occupant count, and a large entity has one row
-  in its own block header. Nothing constructs an arena yet.
+  in its own block header. `mark` is the trace over those rows: it meets
+  a root's row from the entity's refcount, expands the entity through
+  `cells::trace_cells`, subtracts one from the row of every child
+  `row::edge_to` places inside the GC heap, and descends into a child
+  only on the meeting's `first_reach`, which is what terminates it on a
+  ring. It writes into no entity, so a refusal at either memory door
+  aborts the collection and leaves the heap byte-identical; its worklist
+  is a chain of 512-entry segments drawn from the same arena, and a
+  segment that empties is kept for the next crossing rather than
+  abandoned. Nothing constructs an arena or runs a mark yet.
 
   Two numbers about a row, both pinned by tests rather than by prose: a
   count at the field's bound is a floor and absorbs every subtraction, so
@@ -448,8 +457,8 @@ versions live in `docs/history/`, marked at the top.
   `#[cfg(test)]` heap census over `memory::heap::for_each_entity_slot`;
   entity blocks and the region registry are in `heap.rs`/`block_pool.rs`.
   It is the upper half of the deleted `walk.rs`, moved on 2026-08-26
-  under a name that is not a collector's, and S35.1 traces through it
-  rather than growing a stride of its own.
+  under a name that is not a collector's, and `cycle::mark` traces
+  through it rather than growing a stride of its own.
 - Cells a class owns **outside** the object body: `src/cells.rs`'s
   `OutsideCells`, a group of four behaviours — the walk, the sever, the
   free and the arena carry — reached through

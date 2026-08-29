@@ -18,7 +18,7 @@
 //! The collector, its census and its Phase 4 drain are readable at
 //! `git show archive/pre-rc-cycle:src/walk.rs`; `rc-cycle`'s mark traces
 //! through [`trace_cells`] rather than growing a stride of its own
-//! (`PLAN.md`, S35.1).
+//! (`crate::cycle::mark`).
 
 use crate::object::Object;
 use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind, RcHeader};
@@ -29,7 +29,7 @@ use crate::value::Value;
 /// # Safety
 /// `e` must point to a live entity header.
 #[inline]
-unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
+pub(crate) unsafe fn entity_kind(e: *mut RcHeader) -> u32 {
     (unsafe { crate::refcount::mutator_flags(e) } & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT
 }
 

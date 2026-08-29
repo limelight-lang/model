@@ -22,16 +22,23 @@
 //! neither, holding entity pointers it never dereferences and pool
 //! blocks it never carves.
 
-// Nothing constructs a `ShadowArena` in the production build: the
-// collection that takes one is S35.1's mark, which is also the first
-// caller of the rows it reserves. `cfg(not(test))` because the tests
-// inside it do construct one, which would leave an unconditional
-// expectation unfulfilled.
+// Nothing constructs a `ShadowArena` in the production build: the mark
+// takes one and has no production caller either, the collection that
+// runs it being S36.7's. `cfg(not(test))` because the tests inside it do
+// construct one, which would leave an unconditional expectation
+// unfulfilled.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "the collection that takes an arena is S35.1")
+    expect(dead_code, reason = "the collection that takes an arena is S36.7")
 )]
 pub(crate) mod arena;
+// Nothing marks in the production build either: the collection that
+// runs a trace is S36.7's, and this module is what it will run.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the collection that marks is S36.7")
+)]
+pub(crate) mod mark;
 pub(crate) mod queue;
 pub(crate) mod row;
 pub(crate) mod shadow;

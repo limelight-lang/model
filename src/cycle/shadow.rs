@@ -164,13 +164,6 @@ pub(crate) fn compose(colour: Colour, count: u32) -> u32 {
 /// # Safety
 /// `row` is a row of a met entity, reached through
 /// [`ShadowArena::meet`](crate::cycle::arena::ShadowArena::meet).
-// Not `#[expect]` unconditionally: the tests subtract, so under
-// `cfg(test)` the lint would not fire and the expectation itself would
-// warn. A release build is where the debt has to report.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the mark that subtracts an edge is S35.1")
-)]
 #[inline]
 pub(crate) unsafe fn subtract(row: *mut u32, edges: u32) -> u32 {
     let word = unsafe { *row };

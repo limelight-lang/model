@@ -9,7 +9,8 @@ use crate::refcount::{ACYCLIC_GATE, ENROLLED, EntityKind, MemoryCategory, mutato
 ///
 /// A bare header rather than an allocated entity, which is what the
 /// gate's own tests use and for the same reason: nothing on this path
-/// dereferences the entry it writes, the reader that will being S35.1's.
+/// dereferences the entry it writes, the reader that will being
+/// `cycle::mark`.
 fn candidate(holders: u32) -> RcHeader {
     candidate_with(holders, 0)
 }

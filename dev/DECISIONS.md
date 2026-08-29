@@ -9,6 +9,44 @@ never edited or deleted.
 ---
 
 
+## 2026-08-29 — the maturation prune sits above the block dispatch, and the mark carries its own worklist
+
+Two questions S35.1 was left holding, both answered while building the mark.
+
+**Decided: the age prune of S37.1 is evaluated at the head of
+`cycle::mark::visit_child`, above `cycle::row::edge_to`, and `Edge` grows no
+third variant.** A matured child is read as an opaque live external, which is
+the answer `Edge::External` already carries — no row, no subtraction, no
+descent — so the prune adds a header test and no second dispatch, and the
+"one dispatch per child" clause the dispatch was built under stands.
+
+**Why**, and it is an argument the Critic round did not have: the prune is
+evaluated on the target of an edge and never on a root
+(`rfc/model/gc/rc-cycle.md`, "What it is"), while `edge_to` is asked about a
+root as well — `mark::meet_root` asks it to place the root's own row. A prune
+inside the dispatch would therefore prune roots, and a ring whose own root had
+matured would go uncollected until its epoch turned, which is the failure the
+edge-side reading exists to avoid. The alternative kept the touched-block list
+able to tell a matured child from a child outside the heap; nothing reads that
+distinction, and the retained arm would take the registry lock before finding
+out the child was matured.
+
+**Decided: the descent's worklist is a chain of 512-entry segments drawn from
+the collection's arena, and a segment that empties is kept rather than
+abandoned.**
+
+**Why:** recursion was refused on the closure's own size — the subgraph
+reachable from a median candidate root measures at the whole object
+population, 381 of 381 — so a chain deep enough to exhaust the native stack is
+an ordinary graph rather than an adversarial one. The arena is a bump with no
+free, so an abandoned segment is memory the collection never gets back: a
+trace whose depth oscillates across one boundary would take a page per
+crossing, and nothing but the segment count reports it, the entries coming
+back correctly either way. Its refusal is the arena's own, so the mark aborts
+at a refused segment exactly as it aborts at a refused row array, and the
+heap is byte-identical either way.
+
+
 ## 2026-08-29 — what the first touch of a thread-local with drop glue may cost, and where it is allowed to happen
 
 **Read off this box, not assumed.** The claim the Critic raised on S34.1 — that

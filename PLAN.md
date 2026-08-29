@@ -479,7 +479,7 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
 
 Goal: trial deletion runs entirely in the shadow rows.
 
-- [ ] S35.1 Mark
+- [x] S35.1 Mark
       done: the trace decrements children's working counts in their rows and
         writes nothing into any entity; children are enumerated through
         `cells::trace_cells` — the tracer moved at S30.2, not a second stride —
@@ -503,6 +503,30 @@ Goal: trial deletion runs entirely in the shadow rows.
         child" clause the dispatch was built under becomes two, or `Edge`
         grows a variant and the touched-block list can still tell a matured
         child from a child outside the heap.
+      handoff: **the block-kind question is answered the first way**, and one
+        argument settles it that the Critic round did not have: the prune is
+        evaluated on the target of an edge and never on a root, while
+        `edge_to` is asked about a root too — `mark::meet_root` asks it — so a
+        prune inside the dispatch would prune roots. It is a header test and
+        not a dispatch, so the "one dispatch per child" clause stands; the
+        seat is named at the head of `mark::visit_child`, above `edge_to`.
+      handoff: the worklist is a chain of 512-entry segments out of the same
+        arena, and an emptied segment is kept for the next crossing — the
+        arena is a bump with no free, so a depth that oscillates across a
+        boundary would otherwise take a page per crossing. Recursion was
+        refused for the closure's own size: 381 of 381 objects from a median
+        root.
+      handoff: the byte-identical proof folds **every live entity in the
+        process** — each header word, and the traced graph's objects whole —
+        rather than every byte of a touched block. A payload runs past its
+        bump cursor into memory nothing has written, so a fold over the whole
+        of one reads uninitialised bytes and Miri stops the run; the
+        substitution covers more blocks and fewer bytes of each.
+      handoff: **the retained arm's per-edge registry lock was not
+        discharged**, though the stage's note expected this step to give the
+        trace a per-block visit to hold the `Arc` over. It is outside the
+        done clause and it changes `edge_to`'s interface; carried below as
+        "The retained arm's per-edge registry lock".
 - [ ] S35.0 Repoint what `dev/INDEX.md` says about tracing an array
       done: the paragraph on the array's tracing stride names a mechanism that
         exists — no `collector::Epoch::storage_versions`, no per-walked-row
@@ -1024,6 +1048,16 @@ in `dev/INDEX.md`. What it did not do is below.
   cannot obtain is an `*mut Arena`, every arena in the crate being made
   by Rust code inside tests. An embedder needs that door before anything
   outside this crate exercises the arena paths.
+- [ ] **The retained arm's per-edge registry lock.** `cycle::mark` resolves
+  every child through `cycle::row::edge_to`, and the retained arm of that
+  dispatch reaches `memory::retained::occupant_index`, which takes the
+  registry mutex to find the block's index before searching it. One lock per
+  retained edge, where a per-block visit holding the index's `Arc` would take
+  one per block: `occupant_count` already takes it that way at the block's
+  first touch, and the search itself is over an `Arc` slice and needs no lock.
+  S35.1's stage note expected that step to build the visit; it did not, the
+  visit being outside its done clause and a change to `edge_to`'s interface.
+  No measurement of what the lock costs a trace exists.
 
 Memory manager, still open:
 

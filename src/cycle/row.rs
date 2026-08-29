@@ -112,13 +112,6 @@ pub(crate) enum Edge {
 /// `child` must be a live entity header. Its block must be mapped and
 /// commissioned, and its own flags word readable, which the large arm
 /// depends on.
-// Not `#[expect]` unconditionally: the tests below call it, so under
-// `cfg(test)` the lint would not fire and the expectation itself would
-// warn. A release build is where the debt has to report.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the mark that traces these edges is S35.1")
-)]
 pub(crate) unsafe fn edge_to(child: *mut RcHeader) -> Edge {
     // Through `BlockHeader::of_ptr` rather than a mask of its own: the
     // address-to-block step is an integer-to-pointer cast, which puts
