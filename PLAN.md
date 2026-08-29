@@ -523,31 +523,39 @@ both, and the losing side never deadlocks.
         floor drawn at first pressure is the worst moment
         (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued").
 - [ ] S38.1 The claim
-      done: one word **per mutator thread**, three states, CAS from free; it
-        covers the **trace** over that thread's graph — the arena, the block
+      done: one flag **per mutator thread**, free or held, taken by CAS and
+        released by one store; a waiter blocks on a mutex rather than spinning;
+        it covers the **trace** over that thread's graph — the arena, the block
         triples and the touched list — while each owner's exact judgement runs
-        at its own checkpoint; the third
-        state's only entrant in this plan is a `#[cfg(test)]` seizure, named in
-        this criterion, because no collector thread exists here; the claim
-        carries a thread-local held flag so self-re-entry is distinguishable
-        from contention, and a test proves a held claim blocks collection entry
-        on the claimed thread alone while enrolment, release, allocation **and
-        a second collector's trace of another thread** proceed
+        at its own checkpoint; a test proves a held flag blocks collection
+        entry on the claimed thread alone while enrolment, release, allocation
+        **and a second collector's trace of another thread** proceed
       tier: T2 · role: Critic
       handoff: the word was per process until 2026-08-29, when Edmond ruled the
         exclusion per thread (`rfc/dev/DECISIONS.md`, "a trace stays inside the
-        blocks of the thread it claimed"). What licenses the narrowing: a
-        counted edge does not leave a thread, a crossing reference is a borrow,
-        the trace does not follow a borrow, and a block belongs to one thread's
-        heap — so two collectors never meet in a block, a triple or a row.
+        blocks of the thread it claimed"). What licenses the narrowing is the
+        transfer rule: `thread_move` and `thread_clone` require the graph
+        arriving in a thread to hold no reference to an object that stays in
+        the source, so no thread names an entity in another thread's blocks,
+        and a block belongs to one thread's heap. Two collectors therefore
+        never meet in a block, a triple or a row.
+      handoff: the mechanism is Edmond's, 2026-08-29: the flag is the mutator
+        thread's own, a collector going to judge that mutator takes it, and CAS
+        with a mutex to wait on is the whole of it. That settles a
+        contradiction this step had carried since it was written — it asked for
+        three states and a thread-local held flag, which the ruling of
+        2026-08-27 (`rfc/dev/DECISIONS.md`, "the trace token covers the trace
+        alone") had already rejected by name. The narrowing to one thread does
+        not revive them: a thread meets its own flag held only by a collector,
+        never by itself, because mark and scan run no user code and the
+        teardown that does runs with the flag released and the entry gate shut.
 - [ ] S38.4 The entry gate and the slow-path fire   *(before S38.2)*
       done: the GC-heap slot allocation slow path, on a forced refusal that
-        names which allocation refused, waits on a held claim by any holder but
-        itself, takes the claim, runs the in-line collection, retries once and
-        reports null only after; a shortage at teardown depth ≥ 1, or under a
-        claim this thread already holds, collects nothing and reports; a heap of
-        one size class full of cyclic garbage serves the allocation with no
-        explicit collect call
+        names which allocation refused, waits on this thread's own claim while
+        it is held, takes it, runs the in-line collection, retries once and
+        reports null only after; a shortage at teardown depth ≥ 1 collects
+        nothing and reports; a heap of one size class full of cyclic garbage
+        serves the allocation with no explicit collect call
       tier: T2 · role: Critic
       handoff: Y14's clause "a thread that finds the token taken does not wait"
         was argued from the handshake deadlock, and the amendment of 2026-08-26
@@ -556,6 +564,13 @@ both, and the losing side never deadlocks.
         recorded in `rfc` (Y14 and `rc-cycle.md`, Concurrency) as well as in
         `dev/DECISIONS.md`; it is a decision of the round, not of the design of
         record as it stood.
+      handoff: "any holder but itself" and "a claim this thread already holds"
+        were the process-wide word's phrasing, where a holder could be another
+        thread's collection. With the flag per thread (S38.1, Edmond
+        2026-08-29) the only holder of this thread's flag is a collector
+        judging it, so the wait needs no holder identity and the self-held arm
+        has no entrant; what stops a collection at teardown depth is the gate,
+        which is unchanged.
 - [ ] S38.2 The working wait
       done: an in-line collection needs no verdict list, no handshake and no
         second phase — it is exact with respect to the counts because the owner
@@ -657,8 +672,9 @@ retract than to publish.
 
 The crate's identifiers and test file names follow the glossary
 `rfc/dev/PLAN.md` S9 builds; nothing here is renamed before S9.1 rules on it.
-Two words are already marked for rename. `door` stands at 109 occurrences in
-the code and 79 in the documents, `escrow` at 88 and 32, counted 2026-08-29.
+Two words are already marked for rename. Counted in this crate on 2026-08-29,
+after commit 8208815: `door` at 110 occurrences in the code and 80 in the
+documents, `escrow` at 88 and 34.
 `ResetWindow::escrow` in `src/memory/reset_window.rs` names deferred count
 corrections rather than the queue's overflow buffer and takes a different name.
 
