@@ -358,6 +358,21 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         cost is that Miri stops seeing anything about unmapping, which is the
         trade the step has to state rather than assume.
 
+- [ ] S34.3 Parking a slot that dies enrolled
+      done: death runs in full — weak cells cleared first, then `__destruct`,
+        then children released — and the slot is withheld from the allocator
+        while a queue entry names it; the drain reads the refcount, retires a
+        zero-count entry, clears the bit and returns the slot without touching
+        the body; the return is the crate's single slot-return path and the
+        block's `used` falls **there and never at the parking**, proven by a test
+        that empties a block around a parked corpse and shows the block reaching
+        the pool only at the return
+      tier: T2 · role: —
+- [ ] S34.4 Prove the corpse rule against arena reuse
+      done: a red-first test enrols, kills, resets the arena and drains, and the
+        category-zero clause is what makes it pass
+      tier: T1 · role: —
+
 - [ ] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
         returns a slot; a reader may mark an entry a corpse and pass it on; the
@@ -380,20 +395,17 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         through a `#[cfg(test)]` shorthand, runs the poll, runs a collection and
         asserts the ring reclaimed, which is the assertion this step demands
         instead of "the bit is still set".
-- [ ] S34.3 Parking a slot that dies enrolled
-      done: death runs in full — weak cells cleared first, then `__destruct`,
-        then children released — and the slot is withheld from the allocator
-        while a queue entry names it; the drain reads the refcount, retires a
-        zero-count entry, clears the bit and returns the slot without touching
-        the body; the return is the crate's single slot-return path and the
-        block's `used` falls **there and never at the parking**, proven by a test
-        that empties a block around a parked corpse and shows the block reaching
-        the pool only at the return
-      tier: T2 · role: —
-- [ ] S34.4 Prove the corpse rule against arena reuse
-      done: a red-first test enrols, kills, resets the arena and drains, and the
-        category-zero clause is what makes it pass
-      tier: T1 · role: —
+      handoff: **it waits on three later stages, and the plan's order had it
+        first.** Every clause but one is about code that does not exist: the
+        dirty pass is S35's, the corpse mark S34.3's and commit's free S36.6's.
+        The one clause that is about today's code — the bit is never cleared at
+        acquittal — holds vacuously, nothing in the crate clearing `ENROLLED`
+        at all (checked 2026-08-29; `refcount.rs` only sets it). And the test
+        the step demands needs a collection to assert reclamation, which
+        `gc::ll_gc_collect_cycles` does not have until S36.7, plus the
+        maturation counter of S37.1 and the suspects buffer of S37.4 for the
+        instant it waits for. Moved last in the stage for that reason; the work
+        order takes it after S37.4.
 
 ## S35 — Mark and scan
 
