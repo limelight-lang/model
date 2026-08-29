@@ -9,6 +9,42 @@ never edited or deleted.
 ---
 
 
+## 2026-08-29 — the exact test compares two sums, and a component arrives as its own member list
+
+S36.1, and both choices are about the judgement that stands between a trace and
+a free.
+
+**Decided: `cycle::exact::judge` compares the sum of a component's refcounts
+against the sum of the edges its members hold of each other, instead of testing
+`RC(m) = IN(m) + guard` member by member.**
+
+**Why:** the per-member form needs one in-degree counter per member, and there
+is nowhere to keep it. The trace token is released before the exact test of any
+component and the arena returns with it, so the allocator that funded every
+other collection-private array has gone (`rfc/model/gc/rc-cycle.md`, "The
+release obliges a readership rule"). `rc-walk` built a `HashMap` per component;
+a door that can refuse leaves the component unjudged exactly when memory is
+short, and the sums need no memory at all. They answer the same question,
+because `RC(m) >= IN(m) + guard` holds for each member on its own — every
+in-component edge is a counted reference a member holds, and the guard is one
+more. A debug build checks that premise member by member, quadratically: the
+sum cannot see a defect that invents an in-edge into one member and loses a
+real one in another, and such a defect frees a component a live reference
+holds.
+
+**Decided: the member slice is sorted by address in place, and membership is a
+binary search over it.**
+
+**Why:** a linear scan per traced edge costs the component's size per edge, and
+a component here can be the whole reachable population — 381 objects of 381 on
+the corpus measured 2026-08-25 (`rfc/model/gc/rc-cycle.md`, "What it is").
+Neither form allocates, and neither was measured; what decides is the bound.
+The price is the caller's order, which the sort destroys: nothing may be held
+parallel to the slice by index, and an entry array indexed after the call names
+a different member — which would clear the enrolment bit of a live entity, the
+permanent miss of `rfc/model/gc/cycle/questions.md`, Y6.
+
+
 ## 2026-08-29 — the scan re-reads a colour it may have written, and its row lookup cannot write one
 
 Two choices S35.2 made, both about the instant a verdict is read rather than

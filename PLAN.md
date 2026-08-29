@@ -486,7 +486,7 @@ Goal: only the owning thread frees, and it frees what the judge condemned and
 the exact test confirmed. The teardown is here in full: the Critic round of
 2026-08-26 found the stage claiming the frees while building none of them.
 
-- [ ] S36.1 The exact test on the owner's thread
+- [x] S36.1 The exact test on the owner's thread
       done: current fields are re-read on the owning thread before any free, and
         the test opens with the corpse rule — a member read at count zero drops
         the component whole before any guard or field write — exercised by a
@@ -495,7 +495,35 @@ the exact test confirmed. The teardown is here in full: the Critic round of
         verdict, and by a positive control in which the same scenario without
         the mutation does free
       tier: T2 · role: Critic
+      Critic 2026-08-29: eight findings. Taken — the safety contract names a
+        member whose slot is still its own rather than a live entity, since the
+        corpse rule reads a count of zero; the corpse test compares the state
+        before the call against the state after it instead of asserting a
+        residue the runtime never holds; the control arm builds the keeper it
+        does not write into, so the two arms differ by the store alone; the
+        sum's premise is checked member by member in a debug build, the sum
+        being unable to see a defect that invents one in-edge and loses
+        another; an empty component, a member outside the GC heap and a zero
+        count under a guard are debug-asserted. Refused — naming the corpse in
+        the answer: the disposition of an entry belongs to the queue drain,
+        which sorts entries rather than members
+        (`rfc/model/gc/cycle/questions.md`, Y12 clause 5). Verified and not a
+        defect — `row::edge_to` places a `LongLived` entity on an interior row,
+        which its own comment covers: the category is out of use.
+      handoff: `src/cycle/exact.rs` is `judge(members, discount)`, and the
+        tests are under `src/cycle/exact/tests/`; four source mutations were
+        run and each was caught by the test that owns it. Two debts leave with
+        this step. **Nothing derives a member list from the condemned rows**,
+        no step of this plan owns that, and the design leaves the vehicle for
+        that memory unnamed (`rfc/model/gc/rc-cycle.md`, "The release obliges
+        a readership rule"). And a member of a kind other than an object or an
+        array is untested — `Reference`, `Lazy`, a template, a class with cells
+        outside itself.
 - [ ] S36.2 The epoch parking
+      note: S36.1's Critic round found the window this step has to cover. A
+        member that never took a non-final decrement has no queue entry, so
+        nothing names its slot; what keeps its header readable for the corpse
+        rule is this step's collection window and not the entry.
       done: a slot freed inside a collection waits for its end, releases into
         S34.3's single return path, and that path refuses while **either**
         window is open — a queue entry naming the slot, or a collection in

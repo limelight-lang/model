@@ -89,7 +89,21 @@ versions live in `docs/history/`, marked at the top.
   read-only twin of `meet`: no allocation, and no row at all for a group
   this collection never zeroed or for a colour still untouched, so an
   entity the mark never met cannot be judged on a row nobody wrote.
-  Nothing constructs an arena, marks or scans yet.
+  `exact` is the owner's judgement over one component, and the only
+  reading a free may stand on: given the component as its own member
+  list, it re-reads every member's refcount
+  on the owning thread and compares their sum against the edges the
+  members hold of each other, one guard per member discounted when the
+  re-verify runs. A member reading zero died ordinarily since it was
+  proposed, so the component is dropped whole before any field is read —
+  the corpse rule. It reads no shadow row and writes nothing at all: the
+  trace token is released before the first exact test, and the arena
+  goes back with it, which is why a component arrives as a list rather
+  than as a colour (`rfc/model/gc/rc-cycle.md`, "The release obliges a
+  readership rule"). The sum stands for the design's per-member identity
+  because no member can carry fewer references than the component holds
+  of it. Nothing constructs an arena, marks, scans or judges yet, and
+  nothing derives a member list from the condemned rows.
 
   Two numbers about a row, both pinned by tests rather than by prose: a
   count at the field's bound is a floor and absorbs every subtraction, so
@@ -304,7 +318,7 @@ versions live in `docs/history/`, marked at the top.
   leaves the head. Nothing keeps one per walked row, and no cell the
   trace read is re-read against one — a cell is read a second time on
   the owning thread, which re-reads the current fields before any free
-  (`PLAN.md` S36.1), and the collector-thread reader answers no version
+  (`cycle::exact`), and the collector-thread reader answers no version
   either, a torn read costing at most a phantom edge or a missed one
   (`PLAN.md` S38.0). `entity::for_each_counted_child` is an
   adapter over it, and `ll_entity_die`'s Array arm goes through that; the

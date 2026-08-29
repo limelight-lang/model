@@ -5,10 +5,10 @@
 //! internal edges the trace found, and the scan is what reads that
 //! count. A row above zero is held by a reference the trace never saw,
 //! so it survives and so does everything reachable from it; a row at
-//! zero that no such reference reaches is condemned. Nothing judges
-//! that set yet: `PLAN.md` S36.1 is the step that builds the exact
-//! test, which re-reads the current fields on the owning thread before
-//! any free.
+//! zero that no such reference reaches is condemned. A colour is a
+//! proposal and never a verdict: what judges the set is
+//! `crate::cycle::exact`, which re-reads a component's current fields
+//! on the owning thread before any free.
 //!
 //! **It runs after every root has been marked, never between two
 //! marks.** A mark subtracts from rows, so one that ran after a scan

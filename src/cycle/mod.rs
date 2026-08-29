@@ -32,6 +32,16 @@
     expect(dead_code, reason = "the collection that takes an arena is S36.7")
 )]
 pub(crate) mod arena;
+// The judgement over a component the scan condemned, and dead until the
+// teardown that opens with it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the teardown that opens with the exact test is `PLAN.md` S36.3's"
+    )
+)]
+pub(crate) mod exact;
 // Nothing marks in the production build either: the collection that
 // runs a trace is S36.7's, and this module is what it will run.
 #[cfg_attr(
