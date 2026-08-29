@@ -109,23 +109,23 @@ fn immortal_alloc_run(size: usize) -> *mut u8 {
         None => return std::ptr::null_mut(),
     };
 
-    let layout = match std::alloc::Layout::from_size_align(run_bytes, BLOCK_SIZE) {
-        Ok(l) => l,
-        Err(_) => return std::ptr::null_mut(),
-    };
+    if run_bytes > isize::MAX as usize {
+        return std::ptr::null_mut();
+    }
 
-    let block = unsafe { std::alloc::alloc(layout) } as *mut BlockHeader;
+    let block = crate::memory::os::map_aligned(run_bytes, BLOCK_SIZE) as *mut BlockHeader;
     if block.is_null() {
         // Same discipline as the pooled path: report, do not abort.
         return std::ptr::null_mut();
     }
 
     // Through the one write path like every other kind, though nothing
-    // reads this one across threads: the run comes from the system
-    // allocator and lies inside no carved region, so the collector's
-    // scan — which walks a region's blocks and nothing else — never
-    // reaches it. Uniform anyway, because a discriminant punned across
-    // five header types with two disciplines needs casts at the seams.
+    // reads this one across threads: the run is its own mapping, it lies
+    // inside no carved region, and it is registered nowhere the
+    // enumerator reads — not the region registry, not the retained index,
+    // not `large_entity`'s run list — so no scan reaches it. Uniform
+    // anyway, because a discriminant punned across five header types with
+    // two disciplines needs casts at the seams.
     unsafe {
         crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_IMMORTAL);
         BlockHeader::payload_start(block)

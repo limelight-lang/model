@@ -216,6 +216,53 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         allocator-issued" (2026-08-28): per-life floor, a re-birth refusal
         refuses the new life through the status return, and memory-hard
         thread creation is a recorded trade, not a derivation.
+- [x] S34.9 Take the pool's memory from the OS, and delete Rust's allocator from its path
+      done: `carve_region` and the large-run path map their memory from the
+        operating system — `mmap` on unix, `VirtualAlloc` on windows — and
+        answer null when it refuses; no path reachable from `BlockPool::get`
+        calls Rust's global allocator, the refill batch and the thread cache
+        being fixed arrays and the region registry living in mappings
+        of its own rather than in a growable collection; a test forces the operating system to refuse
+        both mappings this path makes — the region and the registry's
+        chunk — and reads a report instead of losing the process, and a
+        refused carve is driven through `BlockPool::get` so the refill
+        loop's own accounting runs on the refusal branch
+      tier: T2 · role: Critic
+      handoff: ruled by Edmond 2026-08-29. `BlockPool::get`'s own contract says
+        "nothing on this path aborts", and three sites break it, because a
+        `Vec` that cannot allocate calls `handle_alloc_error`:
+        `Vec::with_capacity(REFILL_BATCH)` in `take_block`, the thread cache's
+        `blocks.append`, and `regions.push` in `carve_region`.
+        `memory/critical.rs` and `memory/heap.rs` already refuse that failure
+        mode by hand and say why.
+      handoff: it also pays a debt `memory/stdapi.rs` records in its own module
+        doc: while regions come from `std::alloc::alloc`, this manager cannot
+        be installed as Rust's `#[global_allocator]`, because region carving
+        would re-enter `ll_alloc` with an alignment it refuses.
+      handoff: S34.8 depends on it. That step reports a refused floor block
+        through `ll_thread_init`'s new status return, and the report is only
+        true once the draw can refuse without killing the process.
+      handoff: closed 2026-08-29 at 524 tests — three runs at four threads,
+        `hash-folding` 524, `debug-journal` 530, release with no warnings,
+        `cargo bench --no-run`, `cargo fmt --check` clean once rustfmt was
+        installed on this toolchain. Every new test was seen failing against a
+        mutation of what it names: the chain built newest-first, the registry
+        refusal ignored, a refused region reported as carved, the `blocks_out`
+        undo deleted, the short batch's remainder dropped.
+      handoff: two Critic rounds on Fable, and the second found the first's
+        repairs wanting, which is why the device is dropped here rather than
+        after one. Round one: the `MAP_ANONYMOUS` fallback was wrong on
+        android and solaris, the criterion's refusal test did not exist and
+        had no seam to be written through, `bases()` rebuilt the `Vec` abort
+        under the registry lock, and `CachedBlocks::extend` could fill the
+        slot `put` needs. Round two, against those repairs: the visitor form
+        ran arbitrary code under a lock the allocator takes — the rule
+        `memory/large_entity.rs` states — so the registry's read path became
+        lock-free, `len` and `next` atomics published by release stores;
+        `mmap`'s `offset` was declared `i64` where 32-bit unix has a 32-bit
+        `off_t`; linux mips defines `MAP_ANONYMOUS` as 0x800 and slipped
+        through the gate built to stop it; the fault arming leaked on a panic
+        and became RAII.
 - [ ] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
         returns a slot; a reader may mark an entry a corpse and pass it on; the

@@ -2230,7 +2230,7 @@ fn slot_index_of_offset(offset: usize, stride: usize) -> u32 {
 /// the concurrent collector adds its snapshot discipline in build
 /// step 3).
 pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::RcHeader)) {
-    for region in BlockPool::global().regions() {
+    BlockPool::global().for_each_region(|region| {
         for i in 0..BLOCKS_PER_REGION {
             let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut HeapBlockHeader;
             // The kind gates every further header read: only `kind` (and
@@ -2275,7 +2275,7 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
                 }
             }
         }
-    }
+    });
 
     // Retained former-arena blocks carry no stride, so they are
     // enumerated from the object index the reset left behind rather

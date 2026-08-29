@@ -3,12 +3,15 @@
 //! Limelight memory manager, so the allocator can run the real C benchmark
 //! suites unchanged and be reused outside the runtime.
 //!
-//! **Not yet usable as a Rust `#[global_allocator]`**, despite the impl at
-//! the bottom of this file: regions come from `std::alloc::alloc` with
-//! block alignment (`block_pool::carve_region`), so installing this
-//! globally makes region carving re-enter `ll_alloc` with an alignment it
-//! refuses, and every allocation reports null. It becomes true once
-//! regions come from `VirtualAlloc` or `mmap` directly.
+//! **The manager's own memory comes from the operating system**, not from
+//! Rust's allocator: regions, large runs, immortal runs and the region
+//! registry are `mmap`/`VirtualAlloc` mappings (`memory::os`). That is what
+//! lets the impl at the bottom of this file be installed as a
+//! `#[global_allocator]` — while regions came from `std::alloc::alloc`,
+//! carving one re-entered `ll_alloc` with an alignment the small path
+//! refuses and every allocation reported null. What is still owed before
+//! the install is the crate's remaining `Vec` and `Box` users outside this
+//! manager, which re-enter it the same way.
 //!
 //! **Size-less free works**, and the size split it routes on is
 //! `docs/memory-manager.md`, "Layers". The small path additionally needs
@@ -182,19 +185,16 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
             None => return std::ptr::null_mut(),
         };
 
-        // `Layout` refuses a size past `isize::MAX`, which the checked
-        // arithmetic above lets through — it only catches a wrap near
-        // `usize::MAX`. Between the two lies the whole top half of the
-        // range, and a caller that lost a sign lands in it. Unwrapping
-        // here would panic across `extern "C"` and abort, where this
-        // module's contract is to report null (`immortal_alloc_run` takes
-        // the same call the same way).
-        let layout = match Layout::from_size_align(run_bytes, BLOCK_SIZE) {
-            Ok(layout) => layout,
-            Err(_) => return std::ptr::null_mut(),
-        };
+        // A size past `isize::MAX` is refused here, because the checked
+        // arithmetic above only catches a wrap near `usize::MAX`. Between
+        // the two lies the whole top half of the range, and a caller that
+        // lost a sign lands in it (`immortal_alloc_run` takes the same
+        // call the same way).
+        if run_bytes > isize::MAX as usize {
+            return std::ptr::null_mut();
+        }
 
-        let block = unsafe { std::alloc::alloc(layout) } as *mut LargeHeader;
+        let block = crate::memory::os::map_aligned(run_bytes, BLOCK_SIZE) as *mut LargeHeader;
         if block.is_null() {
             return std::ptr::null_mut();
         }
@@ -339,8 +339,7 @@ unsafe fn ll_free_large(block: *mut u8, kind: u32) {
         BLOCK_KIND_LARGE_RUN => {
             let hdr = block as *mut LargeHeader;
             let run_bytes = unsafe { (*hdr).run_bytes };
-            let layout = Layout::from_size_align(run_bytes, BLOCK_SIZE).unwrap();
-            unsafe { std::alloc::dealloc(block, layout) };
+            crate::memory::os::unmap(block, run_bytes);
         }
         crate::memory::block_pool::BLOCK_KIND_BUFFER => {
             // A buffer-arena chunk carries no metadata, so its size lives

@@ -15,7 +15,6 @@
 //! pointer that is the caller's data. `Heap::refill` zeroes an entity
 //! block's slots for the same reason.
 
-use std::alloc::Layout;
 use std::collections::BTreeSet;
 use std::sync::atomic::AtomicU32;
 use std::sync::{Mutex, OnceLock};
@@ -35,7 +34,7 @@ pub(crate) struct LargeEntityHeader {
     /// The entity's size in bytes — what a heap block records as a size
     /// class, for a population whose class is one entity wide.
     pub(crate) size: usize,
-    /// Bytes the system allocator granted, for the matching `dealloc`.
+    /// Bytes the operating system mapped, which [`free`] unmaps.
     /// Zero in the pooled form, which goes back to the block pool.
     run_bytes: usize,
     /// The collector's shadow row for the one entity this block holds,
@@ -77,8 +76,8 @@ pub(crate) unsafe fn shadow_row(block: *mut u8) -> *mut u32 {
 /// Allocate one entity of `size` bytes in a block-aligned allocation of
 /// its own, and hand back the entity's address.
 ///
-/// **Null on refusal**, which is pool exhaustion or the system allocator
-/// saying no, and on a size whose block round-up would overflow. The
+/// **Null on refusal**, which is pool exhaustion or the operating system
+/// refusing a mapping, and on a size whose block round-up would overflow. The
 /// caller publishes an `RcHeader` into the first 8 bytes, which this
 /// function leaves zeroed.
 ///
@@ -104,11 +103,11 @@ pub(crate) fn alloc(size: usize) -> *mut u8 {
             return std::ptr::null_mut();
         };
 
-        let Ok(layout) = Layout::from_size_align(run_bytes, BLOCK_SIZE) else {
+        if run_bytes > isize::MAX as usize {
             return std::ptr::null_mut();
-        };
+        }
 
-        let block = unsafe { std::alloc::alloc(layout) };
+        let block = crate::memory::os::map_aligned(run_bytes, BLOCK_SIZE);
         if block.is_null() {
             return std::ptr::null_mut();
         }
@@ -150,8 +149,7 @@ unsafe fn commission(block: *mut u8, size: usize, run_bytes: usize, kind: u32) -
 
 /// Give a large entity's memory back. The pooled form returns its block
 /// to the pool, which re-stamps the kind on the way in; a run leaves the
-/// registry and then goes to the system allocator with the layout it was
-/// granted.
+/// registry and is then unmapped, at the size its commissioning recorded.
 ///
 /// # Safety
 /// `block` is the block header of a live large-entity allocation whose
@@ -166,9 +164,7 @@ pub(crate) unsafe fn free(block: *mut u8, kind: u32) {
             // `memory/retained.rs` states for its own index.
             runs().lock().unwrap().remove(&(block as usize));
             let run_bytes = unsafe { (*(block as *const LargeEntityHeader)).run_bytes };
-            let layout = Layout::from_size_align(run_bytes, BLOCK_SIZE)
-                .expect("a run's layout was accepted when it was allocated");
-            unsafe { std::alloc::dealloc(block, layout) };
+            crate::memory::os::unmap(block, run_bytes);
         }
         _ => debug_assert!(false, "not a large-entity block: kind {kind}"),
     }
@@ -193,9 +189,9 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// **A returned address may be dereferenced, and the reason is worth
 /// stating here rather than at the three sites that rely on it.** Unlike
 /// every other address either enumerator holds, a run's memory can be
-/// **unmapped**: [`free`] hands it to the system allocator. Three things
+/// **unmapped**: [`free`] returns it to the operating system. Three things
 /// together make the read sound — the registry entry is removed strictly
-/// before the `dealloc`, a free during a collection parks instead of
+/// before the unmap, a free during a collection parks instead of
 /// running, and a collection does not begin reading a thread's blocks
 /// until that thread has entered it. The second and third are S36.2's
 /// and S38.1's (`PLAN.md`), so today only the first holds and a caller
@@ -203,7 +199,7 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 ///
 /// **A visitor must not free a run while walking this list.** The
 /// addresses are a snapshot, so a run freed during the walk leaves
-/// whichever element names it pointing at memory the system allocator
+/// whichever element names it pointing at memory the operating system
 /// has taken back. The retained index tolerates it — former arena memory
 /// is never unmapped — and this one does not.
 pub(crate) fn snapshot() -> Vec<usize> {

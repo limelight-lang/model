@@ -9,10 +9,9 @@
 //! Phase 1 simplification: regions are never returned to the OS
 //! (the lazy purge policy from the doc arrives later).
 
-use std::alloc::{Layout, alloc};
 use std::cell::RefCell;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use crate::journal::kinds::journal_event;
 
@@ -207,6 +206,35 @@ struct FreeList {
 // the mutex is what serialises access to the chain.
 unsafe impl Send for FreeList {}
 
+/// Region bases the registry holds in one chunk. The chunk is one block,
+/// so a chunk records 8 190 regions — 16 GB of them — and a second is
+/// mapped only past that.
+const REGISTRY_CHUNK_ENTRIES: usize = (BLOCK_SIZE - 2 * size_of::<usize>()) / size_of::<usize>();
+
+/// One link of the region registry, mapped from the operating system
+/// rather than allocated: a `Vec` that cannot grow aborts the process,
+/// and the registry is written on the one path whose whole contract is
+/// that a refusal is reported (`memory::os`).
+///
+/// **Read without a lock**, which is what `len` and `next` are atomics
+/// for. A reader acquire-loads `len` and sees every base the matching
+/// release store published; a chunk is never rewritten and never
+/// unmapped, so nothing it has read can go away underneath it.
+struct RegistryChunk {
+    next: AtomicPtr<RegistryChunk>,
+    len: AtomicUsize,
+    bases: [usize; REGISTRY_CHUNK_ENTRIES],
+}
+
+/// The writer's end of the chain, serialised by the pool's registry lock.
+/// Null until the first region is carved.
+struct RegistryTail(*mut RegistryChunk);
+
+// SAFETY: the chunks are OS mappings owned by the pool alone and never
+// unmapped; the mutex around this pointer is what serialises the appends
+// that move it.
+unsafe impl Send for RegistryTail {}
+
 pub struct BlockPool {
     free: Mutex<FreeList>,
     regions_carved: AtomicUsize,
@@ -222,7 +250,17 @@ pub struct BlockPool {
     /// OS-direct `BLOCK_KIND_LARGE_RUN` allocations are not regions and
     /// are not here — huge objects stay outside such a pass,
     /// conservatively.
-    regions: Mutex<Vec<usize>>,
+    ///
+    /// Two fields rather than one, and the split is what keeps the
+    /// enumeration lock-free: readers walk from `registry_head` taking
+    /// nothing, and the mutex serialises appends alone. A reader that
+    /// took a lock would run its visitor under a lock the allocator
+    /// takes, which `memory/large_entity.rs` states as the rule this
+    /// crate keeps — and once this manager is Rust's
+    /// `#[global_allocator]`, a visitor that allocated would re-enter
+    /// `carve_region` and deadlock on the lock its own walk held.
+    registry_head: AtomicPtr<RegistryChunk>,
+    registry_tail: Mutex<RegistryTail>,
 }
 
 static GLOBAL_POOL: BlockPool = BlockPool {
@@ -231,7 +269,8 @@ static GLOBAL_POOL: BlockPool = BlockPool {
     }),
     regions_carved: AtomicUsize::new(0),
     blocks_out: AtomicUsize::new(0),
-    regions: Mutex::new(Vec::new()),
+    registry_head: AtomicPtr::new(std::ptr::null_mut()),
+    registry_tail: Mutex::new(RegistryTail(std::ptr::null_mut())),
 };
 
 /// Serializes region carving only (rare path).
@@ -260,12 +299,89 @@ pub(crate) fn take_pool_requests() -> usize {
 }
 
 thread_local! {
-    static THREAD_CACHE: RefCell<ThreadCache> =
-        const { RefCell::new(ThreadCache { blocks: Vec::new() }) };
+    static THREAD_CACHE: RefCell<ThreadCache> = const {
+        RefCell::new(ThreadCache {
+            blocks: CachedBlocks {
+                blocks: [std::ptr::null_mut(); THREAD_CACHE_CAPACITY + 1],
+                len: 0,
+            },
+        })
+    };
+}
+
+/// The thread cache's storage: a fixed array, never a `Vec`.
+///
+/// A `Vec` that cannot grow calls `handle_alloc_error`, which aborts, and
+/// this cache sits on the path whose whole contract is that exhaustion is
+/// reported (`BlockPool::get`). The array is one wider than
+/// [`THREAD_CACHE_CAPACITY`] because [`BlockPool::put`] pushes first and
+/// flushes after, so the cache is over its capacity by exactly one block
+/// for the length of that borrow.
+struct CachedBlocks {
+    blocks: [*mut BlockHeader; THREAD_CACHE_CAPACITY + 1],
+    /// Valid entries, occupying `blocks[..len]`.
+    len: usize,
+}
+
+impl CachedBlocks {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Caller must have checked there is room: the array's width is a
+    /// contract of the flush policy, not a runtime condition.
+    fn push(&mut self, block: *mut BlockHeader) {
+        debug_assert!(self.len < self.blocks.len(), "the thread cache overflowed");
+        self.blocks[self.len] = block;
+        self.len += 1;
+    }
+
+    fn pop(&mut self) -> Option<*mut BlockHeader> {
+        if self.len == 0 {
+            return None;
+        }
+
+        self.len -= 1;
+        Some(self.blocks[self.len])
+    }
+
+    /// Append as many of `blocks` as the array still has room for, and
+    /// answer how many were left behind — the caller owns those and hands
+    /// them back to the global list.
+    fn extend(&mut self, blocks: &[*mut BlockHeader]) -> usize {
+        // Capacity, not the array's width: the extra slot belongs to
+        // [`BlockPool::put`], which pushes before it flushes. A refill
+        // that filled it would leave the next `put` indexing past the
+        // array, and a slice-bounds panic under `panic = "abort"` ends
+        // the process on the one path whose contract is that nothing
+        // does.
+        let room = THREAD_CACHE_CAPACITY - self.len;
+        let taken = room.min(blocks.len());
+        self.blocks[self.len..self.len + taken].copy_from_slice(&blocks[..taken]);
+        self.len += taken;
+
+        blocks.len() - taken
+    }
+
+    /// Copy `count` entries starting at `from` into `out` and close the
+    /// gap, which is the flush half of the overflow policy.
+    fn drain_into(&mut self, from: usize, count: usize, out: &mut [*mut BlockHeader]) {
+        out[..count].copy_from_slice(&self.blocks[from..from + count]);
+        self.blocks.copy_within(from + count..self.len, from);
+        self.len -= count;
+    }
+
+    /// Every entry, oldest first, leaving the cache empty.
+    fn take(&mut self) -> ([*mut BlockHeader; THREAD_CACHE_CAPACITY + 1], usize) {
+        let len = self.len;
+        self.len = 0;
+
+        (self.blocks, len)
+    }
 }
 
 struct ThreadCache {
-    blocks: Vec<*mut BlockHeader>,
+    blocks: CachedBlocks,
 }
 
 impl Drop for ThreadCache {
@@ -275,7 +391,8 @@ impl Drop for ThreadCache {
     ///
     /// A dying thread must not take cached blocks with it either way.
     fn drop(&mut self) {
-        for &block in &self.blocks {
+        let (blocks, len) = self.blocks.take();
+        for &block in &blocks[..len] {
             GLOBAL_POOL.push_global(block);
         }
     }
@@ -302,10 +419,10 @@ pub(crate) fn thread_cache_len() -> usize {
 /// `try_with`, because it can be reached from a destructor after this
 /// cell's own has run. Idempotent: a flushed cache flushes nothing.
 pub(crate) fn drain_thread_cache() {
-    let blocks = THREAD_CACHE
-        .try_with(|cache| std::mem::take(&mut cache.borrow_mut().blocks))
-        .unwrap_or_default();
-    for block in blocks {
+    let (blocks, len) = THREAD_CACHE
+        .try_with(|cache| cache.borrow_mut().blocks.take())
+        .unwrap_or(([std::ptr::null_mut(); THREAD_CACHE_CAPACITY + 1], 0));
+    for &block in &blocks[..len] {
         GLOBAL_POOL.push_global(block);
     }
 }
@@ -327,16 +444,86 @@ impl BlockPool {
         self.blocks_out.load(Ordering::Relaxed)
     }
 
-    /// Snapshot of the region registry: every 2 MB region base, in carve
-    /// order. Indices are stable handles (append-only, never unmapped).
-    /// Cold: a clone of a handful of words under the registry lock.
+    /// Every 2 MB region base, in carve order, handed to `visit` one at a
+    /// time. Carve order is what makes a region's position a stable handle
+    /// — the registry is append-only and a region is never unmapped.
+    ///
+    /// **No lock is held while `visit` runs**, so a visitor may allocate,
+    /// take locks of its own and re-enter this pool. A region carved
+    /// during the walk may or may not be seen; one carved before it began
+    /// always is.
+    pub fn for_each_region(&self, mut visit: impl FnMut(*mut u8)) {
+        let mut chunk = self.registry_head.load(Ordering::Acquire);
+        while !chunk.is_null() {
+            // Acquire against the release store that published it: every
+            // base below `len` was written before that store.
+            let len = unsafe { (*chunk).len.load(Ordering::Acquire) };
+            for i in 0..len {
+                let base = unsafe { (*chunk).bases[i] };
+                visit(base as *mut u8);
+            }
+
+            chunk = unsafe { (*chunk).next.load(Ordering::Acquire) };
+        }
+    }
+
+    /// Record a carved region, answering false when the operating system
+    /// refuses the chunk a new link needs. A false answer leaves the
+    /// registry exactly as it was, so the caller's own undo has a
+    /// consistent state to return to.
+    fn register_region(&self, base: usize) -> bool {
+        let mut tail = self.registry_tail.lock().unwrap();
+        let full = tail.0.is_null()
+            || unsafe { (*tail.0).len.load(Ordering::Relaxed) } == REGISTRY_CHUNK_ENTRIES;
+        if full && !self.grow_registry(&mut tail) {
+            return false;
+        }
+
+        // The base first, then the length that publishes it: a reader
+        // acquire-loading this length sees the write above it.
+        unsafe {
+            let len = (*tail.0).len.load(Ordering::Relaxed);
+            let bases = std::ptr::addr_of_mut!((*tail.0).bases) as *mut usize;
+            bases.add(len).write(base);
+            (*tail.0).len.store(len + 1, Ordering::Release);
+        }
+
+        true
+    }
+
+    /// Map one more chunk and link it at the tail.
+    #[cold]
+    fn grow_registry(&self, tail: &mut RegistryTail) -> bool {
+        let chunk = crate::memory::os::map_aligned(BLOCK_SIZE, BLOCK_SIZE) as *mut RegistryChunk;
+        if chunk.is_null() {
+            return false;
+        }
+
+        // The mapping arrives zeroed, so `next` and `len` already read
+        // what a fresh chunk needs; only the link into the chain is owed,
+        // and it is a release store because it publishes them.
+        if tail.0.is_null() {
+            self.registry_head.store(chunk, Ordering::Release);
+        } else {
+            unsafe { (*tail.0).next.store(chunk, Ordering::Release) };
+        }
+
+        tail.0 = chunk;
+        true
+    }
+
+    /// The same walk collected into a vector.
+    ///
+    /// Tests only, and it knowingly breaks the visitor's own rule by
+    /// allocating under the lock: a test has no global allocator installed
+    /// over this pool, so neither the abort nor the re-entry that rule
+    /// guards against can happen there.
+    #[cfg(test)]
     pub fn regions(&self) -> Vec<*mut u8> {
-        self.regions
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|&base| base as *mut u8)
-            .collect()
+        let mut out = Vec::new();
+        self.for_each_region(|base| out.push(base));
+
+        out
     }
 
     /// Get a free block: thread cache → global stack → carve a region.
@@ -397,11 +584,17 @@ impl BlockPool {
         }
 
         // Refill the cache in a batch, return one. A refused region stops
-        // the loop rather than spinning on it — see `carve_region`.
-        let mut batch = Vec::with_capacity(REFILL_BATCH);
-        while batch.len() < REFILL_BATCH {
+        // the loop rather than spinning on it — see `carve_region`. The
+        // batch is a stack array: a `Vec` here would abort the process on
+        // the one path built to report exhaustion instead.
+        let mut batch = [std::ptr::null_mut::<BlockHeader>(); REFILL_BATCH];
+        let mut filled = 0;
+        while filled < REFILL_BATCH {
             match self.pop_global() {
-                Some(b) => batch.push(b),
+                Some(b) => {
+                    batch[filled] = b;
+                    filled += 1;
+                }
                 None => {
                     if !self.carve_region() {
                         break;
@@ -410,20 +603,24 @@ impl BlockPool {
             }
         }
 
-        let Some(block) = batch.pop() else {
+        if filled == 0 {
             // Nothing anywhere: undo the optimistic count and report.
             self.blocks_out.fetch_sub(1, Ordering::Relaxed);
             return std::ptr::null_mut();
-        };
+        }
 
-        if THREAD_CACHE
-            .try_with(|c| c.borrow_mut().blocks.append(&mut batch))
-            .is_err()
-        {
-            // No cache to put them in (see `get`'s note) — hand them back.
-            for b in batch {
-                self.push_global(b);
-            }
+        filled -= 1;
+        let block = batch[filled];
+
+        let spare = &batch[..filled];
+        let left_over = THREAD_CACHE
+            .try_with(|c| c.borrow_mut().blocks.extend(spare))
+            .unwrap_or(filled);
+
+        // No cache to put them in (see `get`'s note), or no room in it —
+        // hand the remainder back.
+        for &b in &spare[filled - left_over..] {
+            self.push_global(b);
         }
 
         block
@@ -490,12 +687,7 @@ impl BlockPool {
                 "the cache overflowed by more than one put"
             );
             let taken = excess.min(FLUSH_MAX);
-            for (slot, b) in flushed
-                .iter_mut()
-                .zip(cache.blocks.drain(keep..keep + taken))
-            {
-                *slot = b;
-            }
+            cache.blocks.drain_into(keep, taken, &mut flushed);
 
             taken
         });
@@ -563,16 +755,21 @@ impl BlockPool {
             return true;
         }
 
-        let layout = Layout::from_size_align(REGION_SIZE, BLOCK_SIZE).unwrap();
-        let region = unsafe { alloc(layout) };
+        let region = crate::memory::os::map_aligned(REGION_SIZE, BLOCK_SIZE);
         if region.is_null() {
             return false;
         }
 
         // Register before any block is handed out: the walker may
         // enumerate the registry at any time, and a block it cannot map
-        // back to a region would be invisible to the census.
-        self.regions.lock().unwrap().push(region as usize);
+        // back to a region would be invisible to the census. A registry
+        // that cannot record it therefore refuses the whole region —
+        // handing out blocks the census cannot reach is worse than
+        // reporting exhaustion one region early.
+        if !self.register_region(region as usize) {
+            crate::memory::os::unmap(region, REGION_SIZE);
+            return false;
+        }
 
         for i in 0..BLOCKS_PER_REGION {
             let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut BlockHeader;
