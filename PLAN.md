@@ -394,10 +394,27 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         death left. Every `S34.3` citation in `src/`, `docs/` and the two maps
         was swept in the same commit — the sites that named two windows now
         name the one that is left, which is S36.2's.
-- [ ] S34.4 Prove the corpse rule against arena reuse
+- [x] S34.4 Prove the corpse rule against arena reuse
       done: a red-first test enrols, kills, resets the arena and drains, and the
         category-zero clause is what makes it pass
       tier: T1 · role: —
+      handoff: closed 2026-08-29.
+        `cycle::queue::tests::an_arena_entity_leaves_no_entry` builds a real
+        arena object, takes it through the decrement the gate judges, resets
+        the arena and watches a fresh one be handed the same block. Red against
+        the gate with `MEMORY_CATEGORY_MASK` removed: an entry appears, naming
+        a slot the reset then gives away.
+      handoff: **the first fixture was green against that mutation** and had to
+        be rebuilt. `release_word` returns before the decrement for a non-zero
+        category unless `COW` is set, so a plain arena object never reaches the
+        gate at all and the test proved nothing. The entity is shared on write
+        for that reason, which is the construction `the_enrolment_gate` uses
+        for the same clause; the test says so where it does it.
+      handoff: what the clause is worth, in one line, since the step exists to
+        record it: a GC-heap slot that dies enrolled is withheld by the free
+        (S34.3), and an arena slot has no free to withhold it — `ll_arena_reset`
+        returns the block whole — so an entry naming one would survive into the
+        next request's memory.
 
 - [ ] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
