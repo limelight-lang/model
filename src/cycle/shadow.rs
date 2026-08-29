@@ -332,11 +332,8 @@ pub(crate) unsafe fn row(array: *mut RowArray, index: u32) -> *mut u32 {
 /// As [`row`].
 #[inline]
 pub(crate) unsafe fn meet_group(array: *mut RowArray, index: u32) {
-    // Two eights meet here and they are different numbers: `GROUP` rows
-    // to a group, and `u8::BITS` groups to a byte of the bitmap.
     let group = index / GROUP;
-    let byte = unsafe { groups(array).add((group / u8::BITS) as usize) };
-    let bit = 1u8 << (group % u8::BITS);
+    let (byte, bit) = unsafe { group_bit(array, index) };
     if unsafe { *byte } & bit != 0 {
         return;
     }
@@ -358,10 +355,23 @@ pub(crate) unsafe fn meet_group(array: *mut RowArray, index: u32) {
 /// As [`row`].
 #[inline]
 pub(crate) unsafe fn group_is_met(array: *mut RowArray, index: u32) -> bool {
+    let (byte, bit) = unsafe { group_bit(array, index) };
+    let bits = unsafe { *byte };
+    bits & bit != 0
+}
+
+/// The bitmap byte carrying the group of `index`, and the bit inside it.
+///
+/// Two eights meet here and they are different numbers: [`GROUP`] rows
+/// to a group, and `u8::BITS` groups to a byte of the bitmap.
+///
+/// # Safety
+/// As [`row`].
+#[inline]
+unsafe fn group_bit(array: *mut RowArray, index: u32) -> (*mut u8, u8) {
     let group = index / GROUP;
     let byte = unsafe { groups(array).add((group / u8::BITS) as usize) };
-    let bits = unsafe { *byte };
-    bits & (1u8 << (group % u8::BITS)) != 0
+    (byte, 1u8 << (group % u8::BITS))
 }
 
 /// The group bitmap, which sits past the rows.

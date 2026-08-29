@@ -121,7 +121,7 @@
 //! itself, never a flag a draw sets, because a thread whose fill at init
 //! was refused has never drawn and would never be asked again. It then
 //! drains the escrow into the queue, which is why the refill comes
-//! first. And it fires a collection when [`crate::gc::take_due`] answers
+//! first. And it fires a collection when `gc::take_due` answers
 //! true, which a reserve draw or an escrow landing arms.
 
 use std::cell::Cell;

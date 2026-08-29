@@ -1,22 +1,12 @@
-//! What the collector's tests read out of a shadow row, and the offset
-//! the graphs they build stand on.
+//! What the collector's tests read out of a shadow row.
 //!
-//! Two test trees ask the same two questions — the mark's and the
-//! scan's — and a second copy of the row lookup would be a second
-//! opinion about where a row is. Test builds only.
+//! Two test trees ask the same question — the mark's and the scan's —
+//! and a second copy of the row lookup would be a second opinion about
+//! where a row is. Test builds only.
 
 use crate::cycle::row::{Edge, Row, edge_to};
 use crate::cycle::shadow::{self, Colour, RowArray};
 use crate::refcount::RcHeader;
-
-/// The offset of a class's `index`-th declared property. The collector's
-/// tests build their graphs out of one-Value properties, which is the
-/// layout `ClassBuilder` gives a boxed slot: the header and the class
-/// word take the first sixteen bytes, and each property takes sixteen
-/// after them.
-pub(crate) fn prop_offset(index: u32) -> u32 {
-    16 + 16 * index
-}
 
 /// The row word the trace left for `entity`, read the way the scan
 /// reads it — through the block's own shadow pointer. A meeting would

@@ -10,7 +10,9 @@
 //! (`cycle::row::edge_to`).
 
 use super::*;
-use crate::refcount::EntityKind;
+use crate::memory::block_pool::{BlockPool, FORCE_OOM, test_guard};
+use crate::refcount::{EntityKind, MemoryCategory};
+use std::sync::atomic::Ordering;
 
 /// Headers the tests queue, `count` of them, distinct and each carrying
 /// a live pointer's provenance.
@@ -124,4 +126,29 @@ fn a_push_with_both_doors_shut_answers_false() {
 
     arena.reset();
     crate::memory::critical::drain_for_test();
+}
+
+/// A stack that outlives its arena's reset forgets its segments, which
+/// is the contract that keeps it from climbing into a block the pool has
+/// handed to someone else. The retry after an aborted collection is the
+/// caller this exists for.
+#[test]
+fn a_stack_reset_with_its_arena_holds_no_segment() {
+    let _g = test_guard();
+    let mut headers = slab(1);
+    let base = headers.as_mut_ptr();
+
+    let mut arena = ShadowArena::new();
+    let mut stack = TraceStack::new();
+    assert!(stack.push(&mut arena, unsafe { entry(base, 1) }));
+    assert_eq!(stack.segments_held(), 1);
+
+    arena.reset();
+    stack.reset();
+    assert_eq!(stack.segments_held(), 0, "no segment of the old arena");
+    assert_eq!(stack.pop(), None, "and nothing queued in one");
+
+    assert!(stack.push(&mut arena, unsafe { entry(base, 1) }));
+    assert_eq!(stack.pop(), Some(unsafe { entry(base, 1) }));
+    arena.reset();
 }

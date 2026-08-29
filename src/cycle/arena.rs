@@ -183,6 +183,9 @@ impl ShadowArena {
     /// `refcount` is the entity's, read by the caller: this module places
     /// rows and knows nothing about entity headers.
     ///
+    /// **Change this, change [`met_row`] too:** the two find the same row
+    /// in the same two places, and only this one may create it.
+    ///
     /// The block's rows are reserved here, at its first touch, and the
     /// block enrolled for the sweep with them — one allocation, so a
     /// refusal cannot land between the two (module doc). What it does not
@@ -299,6 +302,12 @@ impl ShadowArena {
     /// under a profile that unwinds leaks no block. The release profile
     /// aborts instead, so on that build every exit of a collection owes
     /// this call explicitly.
+    ///
+    /// **Change this, change the worklist too:** a
+    /// [`TraceStack`](crate::cycle::stack::TraceStack) that drew
+    /// segments from this arena names memory the pool has taken back
+    /// from the moment this returns, and its own `reset` is what says
+    /// so.
     pub(crate) fn reset(&mut self) {
         self.sweep_touched();
 
@@ -456,10 +465,25 @@ impl ShadowArena {
 pub(crate) unsafe fn met_row(row: Row) -> Option<*mut u32> {
     let block = row.block as *mut u8;
     let word = if row.population == Population::Sole {
+        debug_assert_eq!(
+            row.index,
+            crate::cycle::row::SOLE_OCCUPANT,
+            "a large entity's block holds one row and this names another"
+        );
         unsafe { crate::memory::large_entity::shadow_row(block) }
     } else {
         let array = unsafe { crate::memory::heap::block_shadow(block) } as *mut RowArray;
-        if array.is_null() || row.index >= unsafe { (*array).slots } {
+        if array.is_null() {
+            return None;
+        }
+
+        if row.index >= unsafe { (*array).slots } {
+            // The state `meet` asserts on, and it is asserted here for
+            // the same reason: only a retained block whose object index
+            // was rebuilt under this trace reaches it, which the trace
+            // token forbids. A silent `None` here would leave the mark
+            // aborting loudly on the state and the scan passing over it.
+            debug_assert!(false, "row {} is past the block's index space", row.index);
             return None;
         }
 

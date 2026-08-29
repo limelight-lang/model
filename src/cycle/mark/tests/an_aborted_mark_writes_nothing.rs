@@ -86,7 +86,7 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
     // finds the arena empty and both doors shut.
     let room = granted(shadow::bytes_for(unsafe {
         crate::memory::heap::collector_block_slots(near_block)
-    })) + granted(size_of::<StackSegment>());
+    })) + granted(crate::cycle::stack::SEGMENT_BYTES);
     let mut shadow_arena = ShadowArena::new();
     assert!(!shadow_arena.alloc(BLOCK_PAYLOAD - room).is_null());
 

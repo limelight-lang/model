@@ -5,16 +5,17 @@
 //! internal edges the trace found, and the scan is what reads that
 //! count. A row above zero is held by a reference the trace never saw,
 //! so it survives and so does everything reachable from it; a row at
-//! zero that no such reference reaches is condemned, and the condemned
-//! set is what the exact test on the owning thread judges (`PLAN.md`
-//! S36.1 is that test).
+//! zero that no such reference reaches is condemned. Nothing judges
+//! that set yet: `PLAN.md` S36.1 is the step that builds the exact
+//! test, which re-reads the current fields on the owning thread before
+//! any free.
 //!
 //! **It runs after every root has been marked, never between two
 //! marks.** A mark subtracts from rows, so one that ran after a scan
 //! would leave a verdict standing on a count that was not final — and a
 //! second root reaching into the first one's closure is the ordinary
-//! case rather than a rare one (`rfc/model/gc/rc-cycle.md`, "Who judges,
-//! and what a trace is worth").
+//! case rather than a rare one (`rfc/model/gc/rc-cycle.md`, "What it
+//! is").
 //!
 //! **No entity is written here either.** The colours go into the shadow
 //! rows, so a scan that gives up halfway leaves the heap byte-identical
@@ -33,14 +34,24 @@
 //! popped, and between the two another path into it can raise it from
 //! condemned to live. So the expansion reads the colour again rather
 //! than carrying it on the worklist: what decides the children is the
-//! colour the entity holds now, and a stale copy would leave a live
-//! entity's children condemned.
+//! colour the entity holds now (`dev/DECISIONS.md`, "the scan re-reads a
+//! colour it may have written").
+//!
+//! # The descent is the mark's, written twice
+//!
+//! Pop, load the kind, hand the entity to `cells::trace_cells`, answer a
+//! per-child question, abort on a refusal: the loop below is
+//! `crate::cycle::mark`'s with one bool and one enum changed. Sharing it
+//! would take a trait over the per-child answer for two callers, and the
+//! two answers have nothing in common — one subtracts and one colours.
+//! What the copy costs is that a change to the refusal handling has to
+//! be made in both files.
 
 use crate::cells::{self, PlainCells};
 use crate::cycle::arena::{ShadowArena, met_row};
-use crate::cycle::mark::TraceStack;
 use crate::cycle::row::{Edge, edge_to};
 use crate::cycle::shadow::{self, Colour};
+use crate::cycle::stack::TraceStack;
 use crate::refcount::RcHeader;
 
 /// What a scan from one root answered.
@@ -122,10 +133,8 @@ pub(crate) unsafe fn scan(
 /// The three colours a met row can carry answer differently. `Met` is
 /// undecided, and the count decides it — an edge from a live parent
 /// decides it live whatever the count says. `Condemned` is decided and
-/// not final: a live parent raises it, which is the whole of what a ring
-/// held by one reference into its middle turns on, its first member
-/// having been reached and condemned before that reference was found.
-/// `Live` is final, and stopping there is what terminates the scan.
+/// not final: a live parent raises it. `Live` is final, and stopping
+/// there is what terminates the scan.
 ///
 /// # Safety
 /// As [`scan`], and `entity` is a root or a counted child

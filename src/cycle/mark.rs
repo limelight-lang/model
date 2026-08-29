@@ -22,37 +22,15 @@
 //! carried out of the meeting because the meeting is what destroys it
 //! (`crate::cycle::arena::ShadowArena::meet`).
 //!
-//! # Why the worklist is explicit
-//!
-//! Recursion would put the closure's depth on the native stack, and the
-//! closure is not small: the subgraph reachable from a median candidate
-//! root measures at the whole object population, 381 of 381
-//! (`rfc/model/gc/rc-cycle.md`, "What it is"). So the descent carries a
-//! stack of its own, drawn from the arena the rows come from — one
-//! refusal point for both, and a refused segment aborts the collection
-//! exactly as a refused row array does.
-//!
-//! A segment is **kept when it empties** rather than abandoned. The
-//! arena is a bump with no free, so a trace whose depth crosses a
-//! segment boundary repeatedly would take a fresh segment at every
-//! crossing.
+//! The descent carries an explicit worklist rather than the native
+//! stack, and why is `crate::cycle::stack`.
 
 use crate::cells::{self, PlainCells};
 use crate::cycle::arena::{Met, ShadowArena};
 use crate::cycle::row::{Edge, edge_to};
 use crate::cycle::shadow;
+use crate::cycle::stack::TraceStack;
 use crate::refcount::{RcHeader, header_refcount};
-
-/// Entries one stack segment holds: 512 pointers, one page of worklist
-/// behind the two links.
-///
-/// It is a trade between two costs the arena pays. Smaller, and a deep
-/// trace crosses a boundary often; larger, and a shallow trace's first
-/// push reserves memory the collection never uses — against a row array
-/// of up to 16 408 bytes that a block's first touch reserves anyway
-/// (`crate::cycle::shadow::bytes_for`), a page is the smaller of the
-/// two claims.
-const SEGMENT_ENTRIES: usize = 512;
 
 /// What a mark from one root answered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,156 +42,6 @@ pub(crate) enum Marked {
     /// Both memory doors refused, so the collection aborts. The heap is
     /// byte-identical and the arena's reset is the whole of the debt.
     Refused,
-}
-
-/// One segment of the descent's worklist, allocated from the arena.
-///
-/// The two links are the segment's own, so the stack needs no vector and
-/// no second allocation: `below` is the chain the depth came up, `above`
-/// the segment kept for the next crossing of this boundary.
-#[repr(C)]
-struct StackSegment {
-    below: *mut StackSegment,
-    above: *mut StackSegment,
-    entries: [*mut RcHeader; SEGMENT_ENTRIES],
-}
-
-/// The descent's worklist: entities met but not yet expanded.
-///
-/// Built on the collecting thread's stack and spent by one collection,
-/// like the arena it draws its segments from — and freed with that
-/// arena, which is why it has no [`Drop`] of its own.
-///
-/// One worklist serves the mark and the scan that follows it
-/// (`crate::cycle::scan`). The segments a deep mark drew are what the
-/// scan's own depth then reuses, the arena being a bump with no free.
-pub(crate) struct TraceStack {
-    /// The segment the next push writes into, or null until the first
-    /// push has drawn one.
-    top: *mut StackSegment,
-    /// Entries used in `top`, which is [`SEGMENT_ENTRIES`] when the
-    /// segment is full and the next push has to climb.
-    used: usize,
-}
-
-impl TraceStack {
-    /// An empty worklist. Allocates nothing: a root whose entity has no
-    /// counted children pays for no segment.
-    pub(crate) fn new() -> Self {
-        Self {
-            top: std::ptr::null_mut(),
-            used: 0,
-        }
-    }
-
-    /// Queue `entity` for expansion, or answer **false** when both
-    /// memory doors refused — which is the caller's signal to abort the
-    /// collection, and the only way this can fail.
-    pub(crate) fn push(&mut self, arena: &mut ShadowArena, entity: *mut RcHeader) -> bool {
-        if self.top.is_null() || self.used == SEGMENT_ENTRIES {
-            if !self.climb(arena) {
-                return false;
-            }
-        }
-
-        unsafe { entries_of(self.top).add(self.used).write(entity) };
-        self.used += 1;
-        true
-    }
-
-    /// The next entity to expand, or `None` when the closure is
-    /// exhausted.
-    pub(crate) fn pop(&mut self) -> Option<*mut RcHeader> {
-        if self.used == 0 {
-            let below = if self.top.is_null() {
-                std::ptr::null_mut()
-            } else {
-                unsafe { (*self.top).below }
-            };
-
-            if below.is_null() {
-                return None;
-            }
-
-            self.top = below;
-            self.used = SEGMENT_ENTRIES;
-        }
-
-        self.used -= 1;
-        Some(unsafe { entries_of(self.top).add(self.used).read() })
-    }
-
-    /// Move onto the segment above the current one, reusing the one an
-    /// earlier crossing left there or drawing a new one from `arena`.
-    /// False when the arena refused.
-    fn climb(&mut self, arena: &mut ShadowArena) -> bool {
-        let kept = if self.top.is_null() {
-            std::ptr::null_mut()
-        } else {
-            unsafe { (*self.top).above }
-        };
-
-        if !kept.is_null() {
-            self.top = kept;
-            self.used = 0;
-            return true;
-        }
-
-        let segment = arena.alloc(size_of::<StackSegment>()) as *mut StackSegment;
-        if segment.is_null() {
-            return false;
-        }
-
-        // Field by field and written rather than assigned: the arena
-        // bumps memory with no value in it, so an assignment would drop a
-        // `StackSegment` that was never constructed. The entries stay as
-        // the bump handed them over, `used` being what says which of them
-        // have meaning.
-        unsafe {
-            (&raw mut (*segment).below).write(self.top);
-            (&raw mut (*segment).above).write(std::ptr::null_mut());
-            if !self.top.is_null() {
-                (&raw mut (*self.top).above).write(segment);
-            }
-        }
-
-        self.top = segment;
-        self.used = 0;
-        true
-    }
-
-    /// Segments drawn from the arena, emptied ones included. Tests only,
-    /// and the instrument for the one defect the entries cannot show: a
-    /// stack that abandoned an emptied segment answers every push and
-    /// pop correctly while spending a page per boundary crossing.
-    #[cfg(test)]
-    pub(crate) fn segments_held(&self) -> usize {
-        if self.top.is_null() {
-            return 0;
-        }
-
-        let mut bottom = self.top;
-        while !unsafe { (*bottom).below }.is_null() {
-            bottom = unsafe { (*bottom).below };
-        }
-
-        let mut count = 0;
-        while !bottom.is_null() {
-            count += 1;
-            bottom = unsafe { (*bottom).above };
-        }
-
-        count
-    }
-}
-
-/// The entry array of `segment`, which follows its two links.
-///
-/// # Safety
-/// `segment` is a segment a [`TraceStack`] drew, hence non-null.
-#[inline]
-unsafe fn entries_of(segment: *mut StackSegment) -> *mut *mut RcHeader {
-    (unsafe { &raw mut (*segment).entries }) as *mut *mut RcHeader
 }
 
 /// Trial-delete the component reachable from `root`, leaving the verdict

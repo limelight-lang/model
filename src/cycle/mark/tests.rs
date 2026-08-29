@@ -1,13 +1,13 @@
 use super::*;
 use crate::class::ClassBuilder;
 use crate::cycle::shadow::Colour;
-use crate::cycle::testing::{prop_offset, row_word};
+use crate::cycle::testing::row_word;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockPool, FORCE_OOM, test_guard};
 use crate::memory::context::LLContext;
 use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, ll_release, ll_retain};
-use crate::test_support::store_prop;
+use crate::test_support::{prop_offset, store_prop};
 use std::sync::atomic::Ordering;
 
 /// The working count the trace left for `entity`, with its colour
@@ -80,5 +80,4 @@ fn fold(state: u64, word: u64) -> u64 {
 }
 
 mod an_aborted_mark_writes_nothing;
-mod the_descent_carries_its_own_stack;
 mod what_the_trace_subtracts;

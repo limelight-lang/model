@@ -9,6 +9,38 @@ never edited or deleted.
 ---
 
 
+## 2026-08-29 — the scan re-reads a colour it may have written, and its row lookup cannot write one
+
+Two choices S35.2 made, both about the instant a verdict is read rather than
+about what a verdict means.
+
+**Decided: the scan carries no colour on its worklist and reads the row's
+colour again when it expands an entity.**
+
+**Why:** a condemned entity can be raised to live between the two instants,
+and that is the ordinary case rather than a corner. A ring held by one
+reference into its middle has the member the trace reaches first condemned
+before the held member is found; the raise is what spares the ring, and a
+colour copied at push time is stale in exactly that case, so the raised
+member's children would keep a condemnation nothing stands behind. The cost is
+one row load per popped entity, against a wider worklist entry and a verdict
+that would depend on the order the graph was walked in.
+
+**Decided: the scan reaches a row through `cycle::arena::met_row`, a
+read-only twin of `meet`, rather than through `meet` itself.**
+
+**Why:** `meet` initialises a row from the entity's refcount when the colour
+says untouched, and it reserves a block's rows at the first touch. Both are
+wrong after the counting is over: the scan judges what the mark counted, so an
+entity the mark never met has no count to judge, and a lookup that allocated
+could abort a collection whose counting had already finished. `met_row`
+answers `None` for an unenrolled block, an index past the array, a group this
+collection never zeroed, and a colour still untouched. The group check is the
+one that is not redundant on paper: the arena recycles pool blocks, so the
+rows under an unzeroed group are the last tenant's, and one of the colours it
+may carry is a verdict.
+
+
 ## 2026-08-29 — the maturation prune sits above the block dispatch, and the mark carries its own worklist
 
 Two questions S35.1 was left holding, both answered while building the mark.

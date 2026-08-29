@@ -92,6 +92,14 @@ pub(crate) fn entity_checked(v: &Value) -> *mut RcHeader {
     }
 }
 
+/// The offset of a class's `index`-th declared property, which is the
+/// `offset` [`store_prop`] takes. A `ClassBuilder` property is one
+/// `Value`: the header and the class word take the first sixteen bytes
+/// of an object, and each property takes sixteen after them.
+pub(crate) fn prop_offset(index: u32) -> u32 {
+    16 + 16 * index
+}
+
 /// Store `value` into `holder`'s slot at `offset` through the real
 /// barrier, as generated code would.
 pub(crate) unsafe fn store_prop(

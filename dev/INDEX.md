@@ -30,7 +30,7 @@ versions live in `docs/history/`, marked at the top.
   why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26;
   the code itself is on the branch `archive/pre-rc-cycle`. `PLAN.md`
   S34 through S40 build the replacement, and `src/cycle/` is where it
-  is going. Five parts today, and one of them has a production caller:
+  is going. Six parts today, and one of them has a production caller:
   **`queue` is the per-thread enrolment queue**, a chain of 64 KiB pool
   segments that the release path writes an entity pointer into at every
   non-final decrement the enrolment gate admits. It grows by a pointer
@@ -45,7 +45,7 @@ versions live in `docs/history/`, marked at the top.
   returned at thread exit, so a thread whose floor the pool refuses is a
   thread that never starts — which is what `ll_thread_init`'s status
   return reports, and what puts a floor under every registered thread. The other
-  four have no
+  five have no
   production caller until S36.7 wires a collection in. `row::edge_to` answers which
   shadow row a traced edge lands on,
   dispatching on the block's kind and carrying the population out of
@@ -74,9 +74,22 @@ versions live in `docs/history/`, marked at the top.
   only on the meeting's `first_reach`, which is what terminates it on a
   ring. It writes into no entity, so a refusal at either memory door
   aborts the collection and leaves the heap byte-identical; its worklist
-  is a chain of 512-entry segments drawn from the same arena, and a
-  segment that empties is kept for the next crossing rather than
-  abandoned. Nothing constructs an arena or runs a mark yet.
+  is `stack::TraceStack`, a chain of 512-entry segments drawn from the
+  same arena, where a segment that empties is kept for the next crossing
+  rather than abandoned and the whole chain is forgotten when the arena
+  resets — the segments being the arena's memory, and the retry after an
+  abort the caller that would otherwise climb into a recommissioned
+  block. `scan` is the verdict over the same rows: a row above zero
+  is held by a reference the trace never saw, so it is coloured live and
+  so is everything reachable from it, and a row at zero that no live row
+  reaches is condemned. A condemned row is raised when a live one reaches
+  it afterwards, which is what a ring held by one reference into its
+  middle needs — the member the trace reaches first is condemned before
+  that reference is found. It reads a row through `arena::met_row`, the
+  read-only twin of `meet`: no allocation, and no row at all for a group
+  this collection never zeroed or for a colour still untouched, so an
+  entity the mark never met cannot be judged on a row nobody wrote.
+  Nothing constructs an arena, marks or scans yet.
 
   Two numbers about a row, both pinned by tests rather than by prose: a
   count at the field's bound is a floor and absorbs every subtraction, so
@@ -516,8 +529,10 @@ versions live in `docs/history/`, marked at the top.
   `tests/` directory at the crate root: every test is a unit test and
   reads crate-internal state. A fixture a second module needs is in
   `src/test_support.rs` or a submodule of it — `test_support::outside_block`
-  is the class three modules build on — and one only the array modules
-  need is in `src/array/testing.rs`. The two `loom` models are outside this layout
+  is the class three modules build on, and `prop_offset` the offset its
+  `store_prop` takes — and what one family of modules needs is beside
+  those modules: `src/array/testing.rs`, and `src/cycle/testing.rs` for
+  the two readers that say what the trace left in a shadow row. The two `loom` models are outside this layout
   and stay so: each is a hand-written copy of a protocol rather than a
   group of tests over a module, and each is compiled only under
   `--cfg loom`.

@@ -41,14 +41,21 @@ pub(crate) mod arena;
 pub(crate) mod mark;
 pub(crate) mod queue;
 pub(crate) mod row;
-// Nothing scans in the production build for the same reason nothing
-// marks: the collection that runs a trace is S36.7's.
+// The verdict over the rows the mark counted, and dead until a
+// collection runs one.
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "the collection that scans is S36.7")
 )]
 pub(crate) mod scan;
 pub(crate) mod shadow;
+// The worklist both phases of a trace share, and dead for the same
+// reason they are.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the collection that traces is S36.7")
+)]
+pub(crate) mod stack;
 // The row readers the mark's tests and the scan's tests share. Test
 // builds only.
 #[cfg(test)]
