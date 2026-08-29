@@ -11,13 +11,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-08-27 · Active: S34 — the sections after S40 are the backlog
+Updated: 2026-08-29 · Active: S36 — the sections after S40 are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S33. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S33, and
+S35. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -121,11 +122,12 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         `dev/WORKFLOW.md`'s rule about that was scoped to reentrancy tests and
         is widened.
       handoff: what this step did **not** build, and who owns it. The read side
-        is S35.1's and the accelerator's swap S38.1's, so nothing yet agrees
+        is the collection's, S36.7, and the accelerator's swap S38.1's, so
+        nothing yet agrees
         with a detaching reader about the fill cell — `rfc/dev/PLAN.md` S8.7.
         The drain at thread exit returns blocks and drops entries, which S39.1
         turns into a chosen fate. The corpse rule and the marks a reader writes
-        into an entry's low bits are S34.3's and S35's; the four bits are free
+        into an entry's low bits are S34.3's and the trace's; the four bits are free
         and nothing writes them today.
 - [x] S34.5 Decide what the critical reserve's first touch may cost
       done: `memory::critical`'s thread-local is reachable from `ll_release`
@@ -396,7 +398,8 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
       handoff: **the criterion was amended on 2026-08-29 and the clause that
         moved is named here.** It said "the drain reads the refcount, retires a
         zero-count entry"; what the drain is has no answer yet — the reader
-        that drains a queue is S35.1's, and `cycle::queue::drain` is thread
+        that drains a queue is the collection's, S36.7, and
+        `cycle::queue::drain` is thread
         exit's, whose fate for an entry S39.1 owns. Wiring the retirement into
         that drain today would dereference entries, and the queue's own test
         fixture writes bare `RcHeader`s on the stack rather than allocated
@@ -464,8 +467,10 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         asserts the ring reclaimed, which is the assertion this step demands
         instead of "the bit is still set".
       handoff: **it waits on three later stages, and the plan's order had it
-        first.** Every clause but one is about code that does not exist: the
-        dirty pass is S35's, the corpse mark S34.3's and commit's free S36.6's.
+        first.** Every clause but one was about code that did not exist when
+        the step was written: the dirty pass exists now — `cycle::mark` and
+        `cycle::scan` — the corpse mark landed with S34.3, and commit's free
+        is S36.6's.
         The one clause that is about today's code — the bit is never cleared at
         acquittal — holds vacuously, nothing in the crate clearing `ENROLLED`
         at all (checked 2026-08-29; `refcount.rs` only sets it). And the test
@@ -474,111 +479,6 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         maturation counter of S37.1 and the suspects buffer of S37.4 for the
         instant it waits for. Moved last in the stage for that reason; the work
         order takes it after S37.4.
-
-## S35 — Mark and scan
-
-Goal: trial deletion runs entirely in the shadow rows.
-
-- [x] S35.1 Mark
-      done: the trace decrements children's working counts in their rows and
-        writes nothing into any entity; children are enumerated through
-        `cells::trace_cells` — the tracer moved at S30.2, not a second stride —
-        and `cycle::row::edge_to` runs per yielded child in the
-        collector's visit; an aborted mark leaves the heap byte-identical,
-        proven by hashing every block on the touched list before and after, with
-        the abort forced at a depth past the first descent rather than at the
-        first instruction
-      tier: T2 · role: —
-      handoff: this clause stands verbatim against S37: the maturation stamp is
-        written by commit and only read by the trace, so no write into an entity
-        happens during a mark. A retained block's edge still takes the registry
-        mutex once per edge in `retained::occupant_index`, and this is the step
-        that gives the trace a per-block visit to hold the index's `Arc` over —
-        the row array already holds the length that visit would bound against. The "retired on contact" clause that contradicted
-        it was withdrawn 2026-08-26. Open, from the Critic round over the
-        block-kind dispatch: `Edge` has
-        two variants, and the age prune is a third answer — a child inside the
-        GC heap, with a row, that must not be descended into. Either the mark
-        resolves the prune before calling `edge_to`, and the "one dispatch per
-        child" clause the dispatch was built under becomes two, or `Edge`
-        grows a variant and the touched-block list can still tell a matured
-        child from a child outside the heap.
-      handoff: **the block-kind question is answered the first way**, and one
-        argument settles it that the Critic round did not have: the prune is
-        evaluated on the target of an edge and never on a root, while
-        `edge_to` is asked about a root too — `mark::meet_root` asks it — so a
-        prune inside the dispatch would prune roots. It is a header test and
-        not a dispatch, so the "one dispatch per child" clause stands; the
-        seat is named at the head of `mark::visit_child`, above `edge_to`.
-      handoff: the worklist is a chain of 512-entry segments out of the same
-        arena, and an emptied segment is kept for the next crossing — the
-        arena is a bump with no free, so a depth that oscillates across a
-        boundary would otherwise take a page per crossing. Recursion was
-        refused for the closure's own size: 381 of 381 objects from a median
-        root.
-      handoff: the byte-identical proof folds **every live entity in the
-        process** — each header word, and the traced graph's objects whole —
-        rather than every byte of a touched block. A payload runs past its
-        bump cursor into memory nothing has written, so a fold over the whole
-        of one reads uninitialised bytes and Miri stops the run; the
-        substitution covers more blocks and fewer bytes of each.
-      handoff: **the retained arm's per-edge registry lock was not
-        discharged**, though the stage's note expected this step to give the
-        trace a per-block visit to hold the `Arc` over. It is outside the
-        done clause and it changes `edge_to`'s interface; carried below as
-        "The retained arm's per-edge registry lock".
-- [x] S35.0 Repoint what `dev/INDEX.md` says about tracing an array
-      done: the paragraph on the array's tracing stride names a mechanism that
-        exists — no `collector::Epoch::storage_versions`, no per-walked-row
-        version kept by an epoch, no `collector::tests::…::measure_parked_memory`
-        — and says instead what the version bracket is read by now, or says that
-        nothing reads it yet and which step gives it a reader
-      tier: T1 · role: —
-      handoff: found 2026-08-27 by the pass-2 check of `dev/WORKFLOW.md`, which
-        the previous run reported empty. Two of the four sites were the
-        mechanical rename `walk::trace_cells` → `cells::trace_cells` and are
-        repaired; the other two describe the deleted epoch's own machinery, and
-        repairing those means saying what reads a storage version in `rc-cycle`,
-        which is this stage's question and not a rename.
-      handoff: the paragraph now says the version is read inside
-        `StorageHead::coherent`'s bracket and nowhere else, the give-up being
-        its whole answer, and it names the two steps a second reading was
-        expected from: S36.1 re-reads the current fields on the owning thread,
-        and S38.0's reader answers no version either. Nothing keeps a version
-        per walked row and no step gives one a reader.
-      handoff: the same pass-2 sweep found four more dead paths, repaired in
-        the same commit — `walk::trace_entity` and two probes in the deleted
-        `collector::` in `dev/INDEX.md`, `benches/lifecycle.rs`'s "both
-        configs", and a comment in `src/cells.rs` describing `Cell`'s `raw`
-        word, which went with `rc-walk`, plus `CellReader::walk_outside`'s
-        promise to answer a storage version it has no return value for.
-- [x] S35.2 Scan
-      done: a non-zero working count marks its reachable set live, a zero one
-        leaves it white, and the pair is proven on two graphs — a ring with an
-        external reference into its middle, which must survive, and the same
-        ring without that reference, which must go white — because a scan that
-        marks everything live passes the first alone
-      tier: T2 · role: —
-      handoff: `cycle::scan` colours the closure of a root: a met row above
-        zero is `Live` and spreads that colour to everything reachable from
-        it, and a row at zero that no live row reaches is `Condemned`. The
-        raise is what the pair of rings turns on — the first member is
-        condemned before the held member is found, and raised when it is —
-        so the expansion re-reads the colour out of the row instead of
-        carrying it on the worklist, where it would be stale.
-      handoff: `arena::met_row` is the read-only twin of `meet` and is how
-        the scan reaches a row: it allocates nothing, refuses a group this
-        collection never zeroed and refuses an untouched colour, so an
-        entity the mark never met cannot be judged on a row nobody wrote.
-        `MarkStack` is `TraceStack` now, one worklist serving both phases
-        and the scan reusing the segments the mark drew.
-      handoff: verified at 548 tests — one plain run, three at four threads,
-        `hash-folding` 548, `debug-journal` 552 three times, release with no
-        warnings, `cargo bench --no-run`, `fmt --check`. Miri over
-        `cycle::scan` is clean at 4 tests, 6.63 s on its own clock. Each new
-        test was seen failing against a mutation of what it names: no raise
-        of a condemned row, every row coloured live, and `met_row` without
-        its group check and without its colour check.
 
 ## S36 — Commit
 
@@ -649,8 +549,8 @@ the exact test confirmed. The teardown is here in full: the Critic round of
       tier: T2 · role: —
       handoff: commit is the only writer because a mature stamp suppresses
         descent, which is a reduction of future suspicion and therefore the
-        owner's by the law of S34.2 — and because S35.1's zero-write mark is
-        what makes an aborted collection free.
+        owner's by the law of S34.2 — and because the mark writes into no
+        entity, which is what makes an aborted collection free.
 - [ ] S36.7 Wire the collection into the ABI
       done: `ll_gc_collect_cycles` runs a collection and reports what it
         reclaimed, and `ll_gc_maybe_collect` fires on the armed pending flag and
@@ -1087,9 +987,18 @@ in `dev/INDEX.md`. What it did not do is below.
   retained edge, where a per-block visit holding the index's `Arc` would take
   one per block: `occupant_count` already takes it that way at the block's
   first touch, and the search itself is over an `Arc` slice and needs no lock.
-  S35.1's stage note expected that step to build the visit; it did not, the
+  The step that built the mark expected to build the visit and did not, the
   visit being outside its done clause and a change to `edge_to`'s interface.
   No measurement of what the lock costs a trace exists.
+  **The scan doubled the exposure**: `cycle::scan` resolves a popped
+  entity's row a second time, to read the colour it may itself have
+  raised, so a retained entity costs one lock per in-edge and one more
+  for its own expansion. The recorded alternative for that half is a row
+  pointer on the worklist beside the entity, the pointer being stable for
+  the collection's life; it doubles a worklist entry and is not weighed
+  in `dev/DECISIONS.md`, "the scan re-reads a colour it may have
+  written", which weighed the colour alone (found by the Code Reviewer,
+  2026-08-29).
 
 Memory manager, still open:
 
