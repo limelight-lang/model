@@ -675,11 +675,13 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
         0
     );
     // The teardown bracket that guarded this window died with the two
-    // collectors it belonged to. `rc-cycle` owes the same guarantee by a
-    // different mechanism — a slot that dies while enrolled is parked,
-    // and only the owner un-parks it on an exact reading
-    // (`rfc/model/gc/rc-cycle.md`, "Death while enrolled") — and S34.3
-    // is where it is built. Until then this window is unguarded.
+    // collectors it belonged to, and `rc-cycle` guards it by another
+    // mechanism: a slot that dies while a queue entry names it is
+    // withheld from the allocator by the free below, and only the
+    // retirement of that entry returns it (`rfc/model/gc/rc-cycle.md`,
+    // "Death while enrolled"; `memory::stdapi::ll_free`). So the body a
+    // reader may still reach through the entry stays where the death
+    // left it.
 
     let dispose: DisposeFn = unsafe { std::mem::transmute((*(*obj).class).dispose) };
     if unsafe { dispose(obj) } {
@@ -691,10 +693,11 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
         // after `dispose` rather than before it, because `__destruct`
         // can enrol the object afresh — a transient `$this` inside it is
         // a retain and a release, and that release is a non-zero
-        // decrement. `rc-cycle` cannot withdraw a queue entry at all, so
-        // the same fact is paid for by parking the slot instead (S34.3).
-        // The ordering argument survives the buffer: whatever S34.3
-        // builds runs after `dispose`, never before.
+        // decrement. `rc-cycle` cannot withdraw a queue entry at all and
+        // pays the same fact by withholding the slot instead, which the
+        // free in phase 3 below does. The ordering the buffer needed is
+        // kept by where that free stands: after `dispose`, never
+        // before.
 
         // Phase 3 — memory, by category. Arenas reclaim at reset; the
         // long-lived policy is TBD; only the GC heap frees here.
@@ -747,10 +750,11 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     // free, so this door is the array's too — with one exception owing
     // the same duty at its own site: a **nested** array is torn down by
     // `array_die`'s drain and never passes here again
-    // (`array::entity::array_die` and `release_children_in_order`, the
-    // two sites marked S34.3). A duty added here has to be added there as
-    // well until the two doors are one. Nothing is owed until S34.3
-    // builds the parking.
+    // (`array::entity::array_die` and `release_children_in_order`). A
+    // duty added here has to be added there as well until the two doors
+    // are one. The one duty a dying enrolled slot has today is owed by
+    // neither: it is the free's, and every route reaches the same free
+    // (`memory::stdapi::ll_free`, the parking).
 
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },

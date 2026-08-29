@@ -556,8 +556,10 @@ refilled at `ll_gc_maybe_collect`. Design in
 `src/memory/deferred_free.rs` was deleted on 2026-08-26 with `rc-walk`,
 whose epoch-wide parking it was. `rc-cycle` parks per slot instead, on
 two windows of different widths — a queue entry naming the slot, and a
-collection in flight — and S34.3 and S36.2 build them. Every call site
-that used to park names one of those steps in a comment meanwhile.
+collection in flight. The first is built: `memory::stdapi::ll_free`
+withholds an entity slot whose header still carries `ENROLLED`, and
+nothing is recorded anywhere, the queue entry being the record. The
+second is S36.2's, and the call sites that wait for it name it.
 
 Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's
 out-of-line body lives: a string's payload and an array's table storage.

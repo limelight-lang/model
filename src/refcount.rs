@@ -833,6 +833,39 @@ pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u
     unsafe { flags_store(header, f(flags)) };
 }
 
+/// Whether a queue entry names this entity — the bit the release path
+/// set before it wrote the entry ([`ENROLLED`]).
+///
+/// The free path asks it of every dying entity: a slot a queue entry
+/// names is withheld from the allocator instead of returned, because the
+/// entry is a raw pointer and whoever retires it reads the count out of
+/// the body (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
+#[inline]
+pub(crate) unsafe fn is_enrolled(header: *const RcHeader) -> bool {
+    unsafe { mutator_flags(header) & ENROLLED != 0 }
+}
+
+/// Take the enrolment bit down, which only the retirement of the entry
+/// that set it may do.
+///
+/// **Never at acquittal**: enrolment is edge-triggered, so an entity
+/// whose bit is cleared while it is still alive is one no later
+/// decrement can enrol again, and the ring it closes is a permanent miss
+/// (`rfc/model/gc/cycle/questions.md`, Y6). The two lawful clearings are
+/// the corpse retirement in [`crate::cycle::queue::drain`] and the free
+/// a collection's commit performs, which is `PLAN.md` S36.6's.
+#[inline]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the retirement that clears it is `PLAN.md` S39.1's, and                   the commit's free S36.6's"
+    )
+)]
+pub(crate) unsafe fn clear_enrolled(header: *mut RcHeader) {
+    unsafe { update_header_flags(header, |flags| flags & !ENROLLED) };
+}
+
 /// The teardown guard's `+1`, as a narrow counter store: the flags half
 /// is not read and not written, so nothing the collector puts there can
 /// be buried by it.

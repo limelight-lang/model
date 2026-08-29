@@ -270,8 +270,8 @@ array is enrolled for the sweep through a prologue of its own
 
 *What follows described `deferred_free.rs`, which is gone.* `rc-cycle` parks
 per slot on two windows of different widths — a queue entry naming the slot,
-and a collection in flight — rather than epoch-wide, and stages S34.3 and
-S36.2 build it. The lesson that survives is the last paragraph of this
+and a collection in flight — rather than epoch-wide. The first is built into
+`stdapi::ll_free`; the second is S36.2's. The lesson that survives is the last paragraph of this
 section: parking is out of band, and the parked memory is not written.
 
 While an rc-walk collection epoch was in flight, a free **parked** instead

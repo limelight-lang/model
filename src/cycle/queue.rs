@@ -664,8 +664,8 @@ pub(crate) fn floor() -> *mut BlockHeader {
 /// reaches is three lines and the entries before it prove nothing about
 /// them. **It writes the entries rather than only the count**, because
 /// the count is what bounds a segment's contents and a test that lied
-/// about it would hand the first reader — S34.3's corpse rule — 8159
-/// recycled words to dereference.
+/// about it would hand a reader applying the corpse rule 8159 recycled
+/// words to dereference.
 #[cfg(test)]
 pub(crate) fn fill_live_segment(filler: *mut RcHeader) {
     QUEUE.with(|q| {

@@ -63,9 +63,11 @@ point:
 | `refcount → cycle::queue` | `release_word`, the non-final decrement the enrolment gate admits | the candidate set is fed from the release path and nowhere else, enrolment being edge-triggered (`rfc/model/gc/cycle/questions.md`, Y6). `refcount` learns one thing about the queue and it is a boolean: whether the entry landed, which decides whether the enrolled bit stays down |
 
 **What a collector will add back.** A dying enrolled slot owes the
-collector a duty at two doors (`object::ll_entity_die` and
-`array::entity`'s drain, both marked S34.3), and those two edges are not
-there yet. The release path's is: S34.1 gave the enrolment gate a queue
+collector one thing today and it is the free's rather than a door's: the
+slot is withheld while an entry names it, and every route — the
+bare-pointer door, `array::entity`'s drain — reaches the same free. A
+duty that is not the free's would still be owed at both doors, which is
+why the pair is named where they stand. The release path's is: S34.1 gave the enrolment gate a queue
 to post to, and the row above is that edge. Both were design events
 before they landed rather than table entries added quietly, which is what
 the rule below asks.
@@ -261,8 +263,9 @@ A **non-zero** decrement is where a collector enrols a candidate, and
 nothing does today: the gate is built and decides —
 `refcount::ENROLMENT_GATE_MASK` — but it stores nothing, and S34's queue
 is what it would store into, so until that lands a garbage ring is
-retained. The free path likewise parks
-nothing; S34.3 and S36.2 are its two windows.
+retained. The free path parks one
+window of the two: a slot a queue entry names is withheld, and the
+collection in flight is S36.2's.
 
 **4. Arena reset.** `ll_arena_reset` (`context`) →
 `promote::arena_reset_full` drives the whole discipline, draining the

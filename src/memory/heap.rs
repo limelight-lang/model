@@ -1939,9 +1939,11 @@ thread_local! {
 /// memory to give back at that point must leave it for another thread.
 ///
 /// The refusal was written against a parked free, whose backlog the exit
-/// disposed and nothing rebuilt. Nothing parks today, so the refusal is
-/// wider than the case that produced it; it stays because S34.3 and S36.2
-/// bring both parking windows back (`PLAN.md`).
+/// disposed and nothing rebuilt. What parks today is one slot at a time
+/// and holds no backlog — a slot a queue entry names is simply withheld
+/// (`memory::stdapi::ll_free`) — so the refusal is still wider than the
+/// case that produced it; it stays because S36.2's window, a collection
+/// in flight, brings a backlog back (`PLAN.md`).
 pub(crate) fn thread_may_free() -> bool {
     EXIT_PHASE.with(|phase| phase.get()) == ExitPhase::Live
 }
@@ -2090,9 +2092,11 @@ pub unsafe extern "C" fn ll_entity_reserve(
 
 /// Return unused reserved cells (`rfc/model/memory/bulk-operations.md`):
 /// each goes back through the ordinary size-less free path, which routes
-/// it to its block's free list, exactly like any other free. Nothing
-/// parks today; S34.3 and S36.2 give the free path its two windows back
-/// (`PLAN.md`).
+/// it to its block's free list, exactly like any other free — including
+/// its parking: an unconsumed cell carries no published header and no
+/// enrolment, so it is never withheld, while a cell a caller published
+/// and enrolled is (`memory::stdapi::ll_free`). The second window, a
+/// collection in flight, is S36.2's (`PLAN.md`).
 ///
 /// # Safety
 /// Every element must be an unconsumed cell from [`ll_entity_reserve`].

@@ -233,8 +233,8 @@ When the section a comment needs does not exist yet, write it and give
 it a name.
 
 **How a debt is written.** A comment that states a capability is absent
-names the `PLAN.md` step that builds it: "nothing parks today; S34.3 is
-the step that builds the parking". Build order is in the plan and
+names the `PLAN.md` step that builds it: "nothing parks for a collection
+in flight; S36.2 is the step that builds that window". Build order is in the plan and
 nowhere else, and a stage number is never reissued, so a stale citation
 dangles rather than misleads — the recoverable failure of the two. The
 number is a pointer and not the content: the sentence says what is
@@ -260,7 +260,7 @@ the other five named a stage the plan had deleted that week. The maps are swept 
 kind of forward claim; `dev/DECISIONS.md`, `dev/POSTMORTEM.md` and
 `dev/BENCHMARKS.md` are not, an entry there naming the stage of its own
 day being a record rather than a pointer. Grep the bare number, because
-punctuation hides one: `(S34.3)`, `S34-3`, `marked S34.3`.
+punctuation hides one: `(S36.2)`, `S36-2`, `marked S36.2`.
 
 **An `S<n>` in this tree is this plan's, and a debt the `rfc` plan owns is
 never written as one.** The two plans number independently and both delete

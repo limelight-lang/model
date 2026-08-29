@@ -294,8 +294,27 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // circulation stood here while `rc-walk` ran, and went with it.
     // `rc-cycle` parks per slot rather than per epoch, on two windows
     // that are not the same width — a queue entry naming the slot, and a
-    // collection in flight — and neither exists yet: S34.3 and S36.2
-    // build them (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
+    // collection in flight. The first is below; the second is S36.2's.
+    //
+    // **A slot a queue entry names is withheld from the allocator**
+    // (`rfc/model/gc/rc-cycle.md`, "Death while enrolled"). The entry is
+    // a raw pointer and carries nothing of its own, so whoever retires it
+    // reads the count out of the body — which a recycled slot no longer
+    // holds. Withholding is the whole of the parking: nothing is
+    // recorded, because the entry *is* the record, and the block's `used`
+    // therefore falls at the return and never here, which is what keeps a
+    // block with a parked corpse out of the pool (`dev/DECISIONS.md`, "a
+    // block's `used` falls at the slot's return").
+    //
+    // The bit is cleared and the slot returned by the retirement, which
+    // is `cycle::queue::drain`'s today and a collection's commit later
+    // (`PLAN.md` S36.6). Only the entity populations are asked: a raw
+    // heap block carries no header to ask.
+    if (kind == BLOCK_KIND_ENTITY || crate::memory::large_entity::is_large_entity(kind))
+        && unsafe { crate::refcount::is_enrolled(ptr as *const crate::refcount::RcHeader) }
+    {
+        return;
+    }
 
     if kind == BLOCK_KIND_HEAP {
         let h = crate::memory::heap::thread_heap();

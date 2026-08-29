@@ -358,16 +358,42 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         cost is that Miri stops seeing anything about unmapping, which is the
         trade the step has to state rather than assume.
 
-- [ ] S34.3 Parking a slot that dies enrolled
+- [x] S34.3 Parking a slot that dies enrolled
       done: death runs in full — weak cells cleared first, then `__destruct`,
         then children released — and the slot is withheld from the allocator
-        while a queue entry names it; the drain reads the refcount, retires a
-        zero-count entry, clears the bit and returns the slot without touching
-        the body; the return is the crate's single slot-return path and the
-        block's `used` falls **there and never at the parking**, proven by a test
-        that empties a block around a parked corpse and shows the block reaching
-        the pool only at the return
+        while a queue entry names it; the retirement reads the refcount, clears
+        the bit and returns the slot without touching the body; the return is
+        the crate's single slot-return path and the block's `used` falls
+        **there and never at the parking**, proven by a test that empties a
+        block around a parked corpse and shows the block reaching the pool only
+        at the return
       tier: T2 · role: —
+      handoff: **the criterion was amended on 2026-08-29 and the clause that
+        moved is named here.** It said "the drain reads the refcount, retires a
+        zero-count entry"; what the drain is has no answer yet — the reader
+        that drains a queue is S35.1's, and `cycle::queue::drain` is thread
+        exit's, whose fate for an entry S39.1 owns. Wiring the retirement into
+        that drain today would dereference entries, and the queue's own test
+        fixture writes bare `RcHeader`s on the stack rather than allocated
+        entities, deliberately and with a comment saying why: "nothing on this
+        path dereferences the entry it writes". A drain that read them would
+        read freed stack memory. So the mechanism is here and the wiring is
+        S39.1's, together with the fixture change it needs.
+      handoff: what landed. `memory::stdapi::ll_free` withholds an entity slot
+        whose header carries `ENROLLED`, ahead of every route and after the
+        reset window's own two guards — one door, because every slot return in
+        the crate reaches that one. Nothing is recorded: the queue entry is the
+        record, so `used` falls at the return and never at the parking, which
+        is what keeps such a block out of the pool. `refcount::is_enrolled` and
+        `clear_enrolled` are the two accessors, the second carrying an
+        `expect(dead_code)` naming S39.1 until a caller arrives.
+      handoff: two tests in `memory::stdapi::tests::`
+        `the_slot_a_queue_entry_names`, both seen failing with the parking
+        deleted: a block emptied around a parked corpse reaches the pool only
+        when the last slot returns, and a parked body still reads the count the
+        death left. Every `S34.3` citation in `src/`, `docs/` and the two maps
+        was swept in the same commit — the sites that named two windows now
+        name the one that is left, which is S36.2's.
 - [ ] S34.4 Prove the corpse rule against arena reuse
       done: a red-first test enrols, kills, resets the arena and drains, and the
         category-zero clause is what makes it pass
@@ -698,12 +724,23 @@ both, and the losing side never deadlocks.
 ## S39 — Thread exit  (carried from S29.2)
 
 - [ ] S39.1 Exit drains its own queue
-      done: `ll_thread_exit` retires its queue before handing the heap over, and
-        the fate of a live enrolled entity at exit is **chosen** — which of
-        collect, hand over or leak, and why — rather than described in a
-        comment, with the test that observes the chosen fate named; a red-first
-        test kills a thread between enrolment and collection
+      done: `ll_thread_exit` retires its queue before handing the heap over,
+        which for a zero-count entry means reading the refcount, clearing
+        `ENROLLED` and returning the parked slot; and the fate of a **live**
+        enrolled entity at exit is **chosen** — which of collect, hand over or
+        leak, and why — rather than described in a comment, with the test that
+        observes the chosen fate named; a red-first test kills a thread between
+        enrolment and collection
       tier: T2 · role: —
+      handoff: the corpse half arrived from S34.3 on 2026-08-29, which built
+        the parking and the two accessors it needs
+        (`refcount::clear_enrolled`, whose `expect(dead_code)` names this step)
+        and could not wire them. Two obstacles, both this step's: a parked slot
+        that is never retired leaks for the life of the process, and the
+        queue's test fixture writes bare `RcHeader`s on the stack, so a drain
+        that dereferenced entries would read freed stack memory — the fixture
+        has to allocate real entities first, and `cycle/queue/tests.rs` says in
+        its own words why it does not today.
       handoff: the criterion previously read "named rather than left to the
         reader", which a doc comment saying "these leak" satisfies with S29.2's
         defect intact.
