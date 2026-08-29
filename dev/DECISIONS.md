@@ -9,6 +9,70 @@ never edited or deleted.
 ---
 
 
+## 2026-08-29 — what the first touch of a thread-local with drop glue may cost, and where it is allowed to happen
+
+**Read off this box, not assumed.** The claim the Critic raised on S34.1 — that
+registering a TLS destructor allocates and kills the process when it cannot —
+holds here exactly, and the mechanism is worth writing down because nothing in
+Rust reports it. The test binary carries a weak reference to
+`__cxa_thread_atexit_impl`; `std::sys::thread_local::destructors::`
+`linux_like::register` calls it and discards the result. In Ubuntu GLIBC
+2.39-0ubuntu8.7 that function `calloc`s 32 bytes per registration and, on a
+null, jumps to `__libc_fatal` with the string "Fatal glibc error: failed to
+register TLS destructor: out of memory". It never returns a failure, so the
+discarded result costs nothing: there is nothing to discard.
+
+**So the touch is moved, not made cheap, and moving it does not change the
+class of death.** This is the part worth stating precisely, because the
+neighbouring ruling invites the wrong reading: a refused floor ends a *thread*
+and `ll_thread_init` answers `false`, while a refused registration ends the
+*process* through `__libc_fatal` before init can answer anything. No arm
+removes that while the exit guard is a `thread_local!`, and the guard has to be
+one — it exists to be a destructor. What moving the touches buys is therefore
+narrower than a class change: every registration a release would have made now
+happens in one call, at a fixed place, before the thread has done any work, so
+the death is deterministic in location rather than scattered across the release
+path. `ll_thread_init` touches all four: the pool's thread cache at the first
+`BlockPool::get`, which is `queue::take_floor`'s; the barrier reserve and the
+critical reserve at their own fills; and the exit guard at
+`thread_exit_will_run`, which is last, and which is what makes the guard the
+first destructor to run under glibc's reverse order.
+
+**What is left on the release path is one population**, the thread the runtime
+never registered. Its first registration is the exit guard's, inside
+`cycle::queue::draw_floor_or_abort`, and `critical::draw` two lines later is
+the second. Both stand beside an abort that thread already takes — the refused
+floor — but they are **not the same edge**: the floor's abort answers a block
+pool with nothing left, and the registration's fatal answers glibc's heap
+with nothing left, and one can be exhausted while the other is not. What is
+true is weaker and is what is accepted here: under exhaustion deep enough to
+starve either, an unregistered thread doing entity work ends the process, and
+this runtime has no reporting path for that thread at all.
+`memory::critical::tests::where_the_first_touch_happens` pins the placement,
+which is what a test can reach — the registration itself cannot be observed
+from inside a process that the failing case has already killed.
+
+**Four is the whole inventory**, and it is small because of the rule of
+2026-08-03: every per-thread structure a thread exit can reach was converted to
+a raw pointer in a `Cell`, which has no drop glue and so registers nothing. The
+four that remain are the two reserves, whose `Drop` is the fallback for a
+thread that never ran `ll_thread_exit`; the pool's thread cache, for the same
+reason; and the exit guard, which exists to be a destructor. A fifth would put
+the ground back in question, so `memory::critical::tests::`
+`where_the_first_touch_happens` carries a census of every `thread_local!` in
+`src/` against a literal list: adding one fails that test, which is a
+convention held by a list rather than a mechanism, and it is written there as
+one.
+
+**The other arm was priced in its narrow reading only.** Dropping `Critical`'s
+drop glue buys nothing while the guard next door keeps its own, and the guard's
+registration comes first on the release path anyway — that much is settled. Not
+priced: a guard built on a `pthread_key_create` key taken once at process
+start, where the failure is reportable and per-thread arming may allocate
+nothing. It would need FFI plumbing and a per-target story, and glibc's
+`pthread_setspecific` allocation behaviour was not read, so it stands as an
+unexamined option rather than a rejected one.
+
 ## 2026-08-29 — `ll_thread_init` answers, and three self-initialising paths are the only callers that may not read the answer
 
 **The status is `#[must_use]`.** The ABI gained a return so that a refused

@@ -1603,17 +1603,19 @@ pub extern "C" fn ll_thread_exit() {
     // is unspecified and nothing here may rest on it.
     //
     // What the registration order is, since the answer is easy to get
-    // backwards: `ll_thread_init` calls `reserve::replenish` before it
-    // registers `EXIT_GUARD`, and that call touches both of this crate's
-    // `thread_local!`s that have drop glue — the barrier reserve and the
-    // pool's thread cache. On glibc, which destroys in reverse
-    // registration order, this guard runs first of the three and both are
-    // alive while it runs.
+    // backwards: `ll_thread_init` registers `EXIT_GUARD` last of the four
+    // `thread_local!`s this crate gives drop glue — the pool's thread
+    // cache at the first `BlockPool::get`, which is `queue::take_floor`'s,
+    // then the barrier reserve, then the critical reserve, then the guard
+    // at `thread_exit_will_run`. On glibc, which destroys in reverse
+    // registration order, this guard therefore runs first of the four and
+    // the other three are alive while it runs (`dev/DECISIONS.md`, "what
+    // the first touch of a thread-local with drop glue may cost").
     //
     // Nothing below is built on that. Every structure this function
     // disposes is a no-drop-glue cell freed by hand (`dev/DECISIONS.md`,
     // "thread exit owns the order its per-thread state dies in"), and the
-    // two that do have drop glue are reached through `try_with` on every
+    // three that do have drop glue are reached through `try_with` on every
     // non-test path, so a destroyed slot is reported rather than panicked
     // on. A panic here cannot unwind out of a destructor, and under
     // `panic = "abort"` it ends the process.

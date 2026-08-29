@@ -273,12 +273,13 @@ unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) {
             // Both cells empty, so the reserve — the draw clause 6
             // funds. It is a fixed-array pop on any thread that has
             // touched `memory::critical` before, which `ll_thread_init`
-            // arranges for every thread it runs on; what the very first
-            // touch of that thread-local costs is the platform's, its
-            // payload having drop glue and therefore a destructor to
-            // register. A thread that never ran `ll_thread_init` reaches
-            // that first touch from here, and S34.5 is the step that owes
-            // it an answer.
+            // arranges for every thread it runs on. A thread that never
+            // ran it reaches that first touch from here, and on glibc the
+            // registration it performs kills the process when it cannot
+            // allocate 32 bytes — which is the abort this same thread
+            // already takes one door earlier, at its floor
+            // (`dev/DECISIONS.md`, "what the first touch of a
+            // thread-local with drop glue may cost").
             let block = crate::memory::critical::draw();
             if !block.is_null() {
                 // A draw is pressure, and pressure is what asks for a
@@ -402,9 +403,11 @@ fn draw_floor(q: &Queue) -> *mut BlockHeader {
 /// (`crate::memory::heap::thread_exit_will_run`), which is what this
 /// thread needs: nothing else has registered a guard for it, and without
 /// one the floor would be a block the process never sees again. The
-/// registration is a TLS destructor, and what its first touch costs on
-/// this platform is `PLAN.md` S34.5's — the same question
-/// [`crate::memory::critical::draw`] raises on this same path.
+/// registration is a TLS destructor, and its first touch on this
+/// platform can end the process rather than report — the same edge
+/// [`crate::memory::critical::draw`] stands on two lines below, and the
+/// same one this call is about to take anyway (`dev/DECISIONS.md`, "what
+/// the first touch of a thread-local with drop glue may cost").
 fn draw_floor_or_abort(q: &Queue) -> *mut BlockHeader {
     if !crate::memory::heap::thread_exit_will_run() {
         // Past `ll_thread_exit`, with nothing left to run another: the

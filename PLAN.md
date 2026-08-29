@@ -127,7 +127,7 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         turns into a chosen fate. The corpse rule and the marks a reader writes
         into an entry's low bits are S34.3's and S35's; the four bits are free
         and nothing writes them today.
-- [ ] S34.5 Decide what the critical reserve's first touch may cost
+- [x] S34.5 Decide what the critical reserve's first touch may cost
       done: `memory::critical`'s thread-local is reachable from `ll_release`
         without the process depending on what registering a TLS destructor
         costs — either its payload loses its drop glue and the blocks a thread
@@ -155,6 +155,37 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         — a `thread_local!` with drop glue, so its first touch registers a
         destructor exactly as `critical::draw`'s does, and from the same
         release path on a thread that never ran `ll_thread_init`.
+      Critic 2026-08-29: five findings against the decision, not the code. The
+        two that mattered were about the record: the entry claimed a
+        registration death at init belongs to the class the floor's ruling
+        accepts, when that ruling accepts a *thread* refusal and a registration
+        failure kills the process; and it called the registration and the
+        floor's abort "the same edge", when one answers an empty block pool and
+        the other an empty glibc heap. Both rewritten. The census pin, the
+        second test's framing and the unpriced `pthread_key` arm were the other
+        three, all taken. One round: nothing was disputed.
+      handoff: closed 2026-08-29, and the arm taken is the second — the cost is
+        measured and recorded rather than removed. Verified on this box, not
+        assumed: the binary carries a weak `__cxa_thread_atexit_impl`, the
+        toolchain's `linux_like::register` discards its result, and Ubuntu
+        GLIBC 2.39-0ubuntu8.7 `calloc`s 32 bytes there and calls `__libc_fatal`
+        on a null — "Fatal glibc error: failed to register TLS destructor: out
+        of memory". It never returns a failure, so there is nothing for Rust to
+        have checked.
+      handoff: what the decision rests on, in `dev/DECISIONS.md`, "what the
+        first touch of a thread-local with drop glue may cost". Four
+        thread-locals in this crate have drop glue and `ll_thread_init` touches
+        all four, so the death is deterministic in place rather than scattered
+        over the release path — it is **not** converted into a refusable one,
+        and the entry says so. Three tests in
+        `memory::critical::tests::where_the_first_touch_happens`, the third a
+        census of every `thread_local!` in `src/` against a literal list, so a
+        fifth cannot appear unnoticed.
+      handoff: not priced, and named rather than dismissed: a guard built on a
+        `pthread_key_create` key taken once at process start, where the failure
+        is reportable. It would remove the unreportable class from both paths
+        if `pthread_setspecific` allocates nothing per thread, which was not
+        read. Whoever picks it up owns the per-target story too.
 - [x] S34.6 Make the enrolment unfailable, and delete the undo
       done: `enrol` answers nothing and every door refusing lands the entry in
         an escrow the same thread-local holds; the release path has no branch

@@ -780,7 +780,11 @@ thread_local! {
     /// This thread's persistent buffer arena, behind a raw pointer in a
     /// `Cell` rather than a `RefCell<BufferArena>` — the shape every
     /// thread-local reachable from thread exit was converted to on
-    /// 2026-08-03, `weak::WEAK_TABLE` being the one still standing.
+    /// 2026-08-03. What keeps drop glue is the four structures that
+    /// need a destructor of their own: the two memory reserves, the
+    /// pool's thread cache and the exit guard (`dev/DECISIONS.md`,
+    /// "what the first touch of a thread-local with drop glue may
+    /// cost").
     ///
     /// The thread-exit path reaches this arena: static-block teardown
     /// runs `__destruct` bodies, those release entities, and a dying
