@@ -39,7 +39,7 @@ fn every_internal_edge_comes_off_the_row_it_points_at() {
     assert!(!unsafe { ll_release(middle as *mut RcHeader) });
 
     let mut shadow_arena = ShadowArena::new();
-    let mut stack = MarkStack::new();
+    let mut stack = TraceStack::new();
     assert_eq!(
         unsafe { mark(&mut shadow_arena, &mut stack, root as *mut RcHeader) },
         Marked::Complete
@@ -99,7 +99,7 @@ fn a_ring_no_one_holds_reads_internally_balanced() {
     }
 
     let mut shadow_arena = ShadowArena::new();
-    let mut stack = MarkStack::new();
+    let mut stack = TraceStack::new();
     assert_eq!(
         unsafe { mark(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
         Marked::Complete
@@ -149,7 +149,7 @@ fn a_ring_held_from_outside_keeps_the_holder_s_count() {
     }
 
     let mut shadow_arena = ShadowArena::new();
-    let mut stack = MarkStack::new();
+    let mut stack = TraceStack::new();
     assert_eq!(
         unsafe { mark(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
         Marked::Complete
@@ -197,7 +197,7 @@ fn a_second_root_already_met_leaves_every_count_where_it_was() {
     }
 
     let mut shadow_arena = ShadowArena::new();
-    let mut stack = MarkStack::new();
+    let mut stack = TraceStack::new();
     assert_eq!(
         unsafe { mark(&mut shadow_arena, &mut stack, root as *mut RcHeader) },
         Marked::Complete

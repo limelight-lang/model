@@ -1,7 +1,7 @@
 use super::*;
 use crate::class::ClassBuilder;
-use crate::cycle::row::Row;
-use crate::cycle::shadow::{Colour, RowArray};
+use crate::cycle::shadow::Colour;
+use crate::cycle::testing::{prop_offset, row_word};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockPool, FORCE_OOM, test_guard};
 use crate::memory::context::LLContext;
@@ -9,34 +9,6 @@ use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, ll_release, ll_retain};
 use crate::test_support::store_prop;
 use std::sync::atomic::Ordering;
-
-/// The offset of a class's `index`-th declared property. The tests here
-/// build their graphs out of one-Value properties, which is the layout
-/// `ClassBuilder` gives a boxed slot: the header and the class word take
-/// the first sixteen bytes, and each property takes sixteen after them.
-fn prop_offset(index: u32) -> u32 {
-    16 + 16 * index
-}
-
-/// The row word the trace left for `entity`, read the way the scan will
-/// read it — through the block's own shadow pointer. A second meeting
-/// would answer too, and would be the wrong instrument: it initialises a
-/// row the trace never reached, so a test built on it cannot tell an
-/// untouched row from a met one.
-unsafe fn row_word(entity: *mut RcHeader) -> u32 {
-    let Edge::Interior(Row {
-        block,
-        index,
-        population: _,
-    }) = (unsafe { edge_to(entity) })
-    else {
-        panic!("the fixture's entity is not a GC-heap entity");
-    };
-
-    let array = unsafe { crate::memory::heap::block_shadow(block as *mut u8) } as *mut RowArray;
-    assert!(!array.is_null(), "the trace touched this entity's block");
-    unsafe { *shadow::row(array, index) }
-}
 
 /// The working count the trace left for `entity`, with its colour
 /// asserted met: a count read off an untouched row is whatever the

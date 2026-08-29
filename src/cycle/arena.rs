@@ -438,6 +438,44 @@ impl ShadowArena {
     }
 }
 
+/// The shadow row of an entity this collection has **met**, or `None`
+/// when it has not: a block the trace never touched, a group it never
+/// zeroed, an index past the block's array, or a row still coloured
+/// [`Colour::Untouched`].
+///
+/// The read-only twin of [`ShadowArena::meet`] — same three populations
+/// and same two places a row can be — and it neither allocates nor
+/// writes, which is what the scan needs: a meeting would initialise the
+/// row of an entity the mark never reached from a refcount nothing has
+/// subtracted from, and that row would then be condemned or spared on a
+/// count the trace never computed.
+///
+/// # Safety
+/// `row` names a live entity of the collected heap, resolved from its
+/// own address by `edge_to`, and its block is still this collection's.
+pub(crate) unsafe fn met_row(row: Row) -> Option<*mut u32> {
+    let block = row.block as *mut u8;
+    let word = if row.population == Population::Sole {
+        unsafe { crate::memory::large_entity::shadow_row(block) }
+    } else {
+        let array = unsafe { crate::memory::heap::block_shadow(block) } as *mut RowArray;
+        if array.is_null() || row.index >= unsafe { (*array).slots } {
+            return None;
+        }
+
+        if !unsafe { shadow::group_is_met(array, row.index) } {
+            return None;
+        }
+
+        unsafe { shadow::row(array, row.index) }
+    };
+
+    match shadow::colour(unsafe { *word }) {
+        Colour::Untouched => None,
+        _ => Some(word),
+    }
+}
+
 /// How many rows `row`'s block needs, or `None` for a retained block
 /// that has no object index — a block held for a payload alone, or one
 /// whose reset has not registered it yet.

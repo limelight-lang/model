@@ -46,7 +46,7 @@ fn a_depth_past_one_segment_pops_in_the_order_it_pushed() {
     let base = headers.as_mut_ptr();
 
     let mut arena = ShadowArena::new();
-    let mut stack = MarkStack::new();
+    let mut stack = TraceStack::new();
     for i in 1..=depth {
         assert!(
             stack.push(&mut arena, unsafe { entry(base, i) }),
@@ -76,7 +76,7 @@ fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
     let base = headers.as_mut_ptr();
 
     let mut arena = ShadowArena::new();
-    let mut stack = MarkStack::new();
+    let mut stack = TraceStack::new();
     for crossing in 0..4 {
         for i in 1..=depth {
             assert!(stack.push(&mut arena, unsafe { entry(base, i) }));
@@ -106,7 +106,7 @@ fn a_push_with_both_doors_shut_answers_false() {
     let base = headers.as_mut_ptr();
 
     let mut arena = ShadowArena::new();
-    let mut stack = MarkStack::new();
+    let mut stack = TraceStack::new();
 
     FORCE_OOM.store(true, Ordering::Relaxed);
     assert!(

@@ -101,7 +101,7 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
         "and the critical door has nothing to serve"
     );
 
-    let mut stack = MarkStack::new();
+    let mut stack = TraceStack::new();
     let answer = unsafe { mark(&mut shadow_arena, &mut stack, head as *mut RcHeader) };
     FORCE_OOM.store(false, Ordering::Relaxed);
 

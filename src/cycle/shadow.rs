@@ -81,9 +81,9 @@ pub(crate) const COUNT_MAX: u32 = (1 << COUNT_BITS) - 1;
 /// No working code is zero, so a group the init has just cleared reads
 /// as [`Untouched`](Colour::Untouched) for every slot in it.
 /// [`Met`](Colour::Met) is written by
-/// [`ShadowArena::meet`](crate::cycle::arena::ShadowArena::meet); the
-/// other two have no writer, and S35.2 of `PLAN.md` is the step that
-/// builds the scan that assigns them.
+/// [`ShadowArena::meet`](crate::cycle::arena::ShadowArena::meet), and
+/// the two verdicts by [`crate::cycle::scan`], which is the only writer
+/// that reads a colour before it writes one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub(crate) enum Colour {
@@ -126,8 +126,10 @@ pub(crate) fn count(row: u32) -> u32 {
 /// from it ([`COUNT_MAX`]).
 ///
 /// One name for the reading, so the clause is not spelled out as a
-/// comparison at each site: no scan judges a row yet, and S35.2 of
-/// `PLAN.md` is the step that asks this of every row it reaches.
+/// comparison at each site. The scan asks it of no row: it condemns on a
+/// working count of zero, and a floor of [`COUNT_MAX`] is above zero, so
+/// the absorbing clause is kept there by the same test that reads an
+/// ordinary count.
 #[inline]
 pub(crate) fn is_saturated(row: u32) -> bool {
     count(row) == COUNT_MAX
@@ -175,6 +177,19 @@ pub(crate) unsafe fn subtract(row: *mut u32, edges: u32) -> u32 {
     let updated = compose(colour(word), left);
     unsafe { row.write(updated) };
     left
+}
+
+/// Give `row` this colour, keeping its working count: the scan decides
+/// a colour from the count the mark left and never changes that count.
+///
+/// # Safety
+/// `row` is a row of a met entity, reached through
+/// [`ShadowArena::meet`](crate::cycle::arena::ShadowArena::meet) or
+/// [`met_row`](crate::cycle::arena::met_row).
+#[inline]
+pub(crate) unsafe fn recolour(row: *mut u32, colour: Colour) {
+    let word = unsafe { *row };
+    unsafe { row.write(compose(colour, count(word))) };
 }
 
 /// Rows one group covers, and the number of rows a group init writes at
@@ -332,6 +347,21 @@ pub(crate) unsafe fn meet_group(array: *mut RowArray, index: u32) {
     }
 
     note_written(size_of::<u8>() + GROUP as usize * size_of::<u32>());
+}
+
+/// Whether the group carrying `index` has been zeroed in this
+/// collection, which is what makes its row readable: an untouched
+/// group's rows are whatever the block that held this memory before left
+/// in them.
+///
+/// # Safety
+/// As [`row`].
+#[inline]
+pub(crate) unsafe fn group_is_met(array: *mut RowArray, index: u32) -> bool {
+    let group = index / GROUP;
+    let byte = unsafe { groups(array).add((group / u8::BITS) as usize) };
+    let bits = unsafe { *byte };
+    bits & (1u8 << (group % u8::BITS)) != 0
 }
 
 /// The group bitmap, which sits past the rows.

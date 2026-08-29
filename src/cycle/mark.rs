@@ -83,7 +83,11 @@ struct StackSegment {
 /// Built on the collecting thread's stack and spent by one collection,
 /// like the arena it draws its segments from — and freed with that
 /// arena, which is why it has no [`Drop`] of its own.
-pub(crate) struct MarkStack {
+///
+/// One worklist serves the mark and the scan that follows it
+/// (`crate::cycle::scan`). The segments a deep mark drew are what the
+/// scan's own depth then reuses, the arena being a bump with no free.
+pub(crate) struct TraceStack {
     /// The segment the next push writes into, or null until the first
     /// push has drawn one.
     top: *mut StackSegment,
@@ -92,7 +96,7 @@ pub(crate) struct MarkStack {
     used: usize,
 }
 
-impl MarkStack {
+impl TraceStack {
     /// An empty worklist. Allocates nothing: a root whose entity has no
     /// counted children pays for no segment.
     pub(crate) fn new() -> Self {
@@ -105,7 +109,7 @@ impl MarkStack {
     /// Queue `entity` for expansion, or answer **false** when both
     /// memory doors refused — which is the caller's signal to abort the
     /// collection, and the only way this can fail.
-    fn push(&mut self, arena: &mut ShadowArena, entity: *mut RcHeader) -> bool {
+    pub(crate) fn push(&mut self, arena: &mut ShadowArena, entity: *mut RcHeader) -> bool {
         if self.top.is_null() || self.used == SEGMENT_ENTRIES {
             if !self.climb(arena) {
                 return false;
@@ -119,7 +123,7 @@ impl MarkStack {
 
     /// The next entity to expand, or `None` when the closure is
     /// exhausted.
-    fn pop(&mut self) -> Option<*mut RcHeader> {
+    pub(crate) fn pop(&mut self) -> Option<*mut RcHeader> {
         if self.used == 0 {
             let below = if self.top.is_null() {
                 std::ptr::null_mut()
@@ -206,7 +210,7 @@ impl MarkStack {
 /// The entry array of `segment`, which follows its two links.
 ///
 /// # Safety
-/// `segment` is a segment a [`MarkStack`] drew, hence non-null.
+/// `segment` is a segment a [`TraceStack`] drew, hence non-null.
 #[inline]
 unsafe fn entries_of(segment: *mut StackSegment) -> *mut *mut RcHeader {
     (unsafe { &raw mut (*segment).entries }) as *mut *mut RcHeader
@@ -237,7 +241,7 @@ unsafe fn entries_of(segment: *mut StackSegment) -> *mut *mut RcHeader {
 /// on the owning thread, with no mutator running beside it.
 pub(crate) unsafe fn mark(
     arena: &mut ShadowArena,
-    stack: &mut MarkStack,
+    stack: &mut TraceStack,
     root: *mut RcHeader,
 ) -> Marked {
     if !unsafe { meet_root(arena, stack, root) } {
@@ -283,7 +287,7 @@ pub(crate) unsafe fn mark(
 ///
 /// # Safety
 /// As [`mark`].
-unsafe fn meet_root(arena: &mut ShadowArena, stack: &mut MarkStack, root: *mut RcHeader) -> bool {
+unsafe fn meet_root(arena: &mut ShadowArena, stack: &mut TraceStack, root: *mut RcHeader) -> bool {
     let Edge::Interior(row) = (unsafe { edge_to(root) }) else {
         // The enrolment gate admits none: an entity outside the GC heap
         // never reaches the queue (`rfc/model/gc/rc-cycle.md`, "Death
@@ -329,7 +333,7 @@ unsafe fn meet_root(arena: &mut ShadowArena, stack: &mut MarkStack, root: *mut R
 /// yielded, hence a live entity header.
 unsafe fn visit_child(
     arena: &mut ShadowArena,
-    stack: &mut MarkStack,
+    stack: &mut TraceStack,
     child: *mut RcHeader,
 ) -> bool {
     let Edge::Interior(row) = (unsafe { edge_to(child) }) else {

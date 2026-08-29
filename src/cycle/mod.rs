@@ -41,4 +41,15 @@ pub(crate) mod arena;
 pub(crate) mod mark;
 pub(crate) mod queue;
 pub(crate) mod row;
+// Nothing scans in the production build for the same reason nothing
+// marks: the collection that runs a trace is S36.7's.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the collection that scans is S36.7")
+)]
+pub(crate) mod scan;
 pub(crate) mod shadow;
+// The row readers the mark's tests and the scan's tests share. Test
+// builds only.
+#[cfg(test)]
+pub(crate) mod testing;

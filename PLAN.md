@@ -552,13 +552,33 @@ Goal: trial deletion runs entirely in the shadow rows.
         configs", and a comment in `src/cells.rs` describing `Cell`'s `raw`
         word, which went with `rc-walk`, plus `CellReader::walk_outside`'s
         promise to answer a storage version it has no return value for.
-- [ ] S35.2 Scan
+- [x] S35.2 Scan
       done: a non-zero working count marks its reachable set live, a zero one
         leaves it white, and the pair is proven on two graphs — a ring with an
         external reference into its middle, which must survive, and the same
         ring without that reference, which must go white — because a scan that
         marks everything live passes the first alone
       tier: T2 · role: —
+      handoff: `cycle::scan` colours the closure of a root: a met row above
+        zero is `Live` and spreads that colour to everything reachable from
+        it, and a row at zero that no live row reaches is `Condemned`. The
+        raise is what the pair of rings turns on — the first member is
+        condemned before the held member is found, and raised when it is —
+        so the expansion re-reads the colour out of the row instead of
+        carrying it on the worklist, where it would be stale.
+      handoff: `arena::met_row` is the read-only twin of `meet` and is how
+        the scan reaches a row: it allocates nothing, refuses a group this
+        collection never zeroed and refuses an untouched colour, so an
+        entity the mark never met cannot be judged on a row nobody wrote.
+        `MarkStack` is `TraceStack` now, one worklist serving both phases
+        and the scan reusing the segments the mark drew.
+      handoff: verified at 548 tests — one plain run, three at four threads,
+        `hash-folding` 548, `debug-journal` 552 three times, release with no
+        warnings, `cargo bench --no-run`, `fmt --check`. Miri over
+        `cycle::scan` is clean at 4 tests, 6.63 s on its own clock. Each new
+        test was seen failing against a mutation of what it names: no raise
+        of a condemned row, every row coloured live, and `met_row` without
+        its group check and without its colour check.
 
 ## S36 — Commit
 
