@@ -386,9 +386,14 @@ write them. Each is load-bearing for at least two modules.
 14. **Class descriptor addresses are process-stable** (immortal): the
     foundation for inline caches; dispatch tables stay pure
     code-pointer arrays with no embedded headers.
-15. **One collection at a time in the process** — the `amSolo` rule.
-    `rc-walk`'s non-nesting epochs were the same constraint under
-    another name, and `rc-cycle` keeps it because the shadow rows are
-    one collection's scratch and a second would read the first's
-    decrements (`rfc/model/gc/rc-cycle.md`, "Concurrency"). The claim
-    word that enforces it is S38.1's.
+15. **One trace at a time per mutator thread**, the claim being that
+    thread's rather than the process's (ruled 2026-08-29,
+    `rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of the
+    thread it claimed"). A trace never reaches another thread's blocks,
+    because a transfer leaves no reference behind: the graph arriving in
+    a thread holds no reference to an object that stays in the source
+    (`rfc/dev/DECISIONS.md`, "a transfer leaves no reference behind").
+    So the rows two collectors touch are disjoint and several collectors
+    run at once on different threads. What the claim does not cover is a
+    block changing threads through `abandon_all` and `adopt`. The process-wide form, `amSolo`, is withdrawn
+    with the premise it rested on. The claim word is S38.1's.

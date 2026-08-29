@@ -476,15 +476,23 @@ both, and the losing side never deadlocks.
         floor drawn at first pressure is the worst moment
         (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued").
 - [ ] S38.1 The claim
-      done: one word for the process, three states, CAS from free; it covers the
-        **trace** — the arena, the block triples and the touched list — while
-        each owner's exact judgement runs at its own checkpoint; the third
+      done: one word **per mutator thread**, three states, CAS from free; it
+        covers the **trace** over that thread's graph — the arena, the block
+        triples and the touched list — while each owner's exact judgement runs
+        at its own checkpoint; the third
         state's only entrant in this plan is a `#[cfg(test)]` seizure, named in
         this criterion, because no collector thread exists here; the claim
         carries a thread-local held flag so self-re-entry is distinguishable
         from contention, and a test proves a held claim blocks collection entry
-        alone while enrolment, release and allocation on other threads proceed
+        on the claimed thread alone while enrolment, release, allocation **and
+        a second collector's trace of another thread** proceed
       tier: T2 · role: Critic
+      handoff: the word was per process until 2026-08-29, when Edmond ruled the
+        exclusion per thread (`rfc/dev/DECISIONS.md`, "a trace stays inside the
+        blocks of the thread it claimed"). What licenses the narrowing: a
+        counted edge does not leave a thread, a crossing reference is a borrow,
+        the trace does not follow a borrow, and a block belongs to one thread's
+        heap — so two collectors never meet in a block, a triple or a row.
 - [ ] S38.4 The entry gate and the slow-path fire   *(before S38.2)*
       done: the GC-heap slot allocation slow path, on a forced refusal that
         names which allocation refused, waits on a held claim by any holder but
@@ -597,6 +605,15 @@ question is smaller than that. So this is not a task waiting for someone
 to pick it up: it waits for a machine that can resolve it, and measuring
 here would produce a number indistinguishable from noise and harder to
 retract than to publish.
+
+## The vocabulary
+
+The crate's identifiers and test file names follow the glossary
+`rfc/dev/PLAN.md` S9 builds; nothing here is renamed before S9.1 rules on it.
+Two words are already marked for rename. `door` stands at 109 occurrences in
+the code and 79 in the documents, `escrow` at 88 and 32, counted 2026-08-29.
+`ResetWindow::escrow` in `src/memory/reset_window.rs` names deferred count
+corrections rather than the queue's overflow buffer and takes a different name.
 
 ## Beside the hashtable: the memory categories
 
