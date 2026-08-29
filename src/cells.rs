@@ -214,11 +214,8 @@ pub(crate) enum OutsideCarry {
 /// dangling pointer with no provenance.
 pub(crate) trait CellReader {
     /// Walk a class's cells outside its own body with this reader's
-    /// member of the group, and answer the storage version they came out
-    /// of. The trait is the one place the two readers differ, so the
-    /// choice belongs here — and so does the difference in what each
-    /// member may answer: the racing walk may give the entity up, the
-    /// plain one has no way to say it.
+    /// member of the group. The trait is the one place the two readers
+    /// differ, so the choice belongs here.
     ///
     /// # Safety
     /// As the group's own members: `base` addresses a live region laid
@@ -429,9 +426,8 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 // the sentinels below the limit are an integer key and a
                 // hole, and neither is a cell. The child is the masked
                 // pointer, because the collector looks an edge up by the
-                // entity's true address — while `raw` keeps the tag: the
-                // recheck compares this word against a re-read of the
-                // same cell (`array/entry.rs`, the key word's encoding).
+                // entity's true address (`array/entry.rs`, the key word's
+                // encoding).
                 let key = unsafe { R::ptr(at.add(KEY_OFFSET)) };
                 if key as usize >= crate::array::entry::KEY_SENTINEL_LIMIT {
                     visit(Cell {

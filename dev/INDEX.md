@@ -281,16 +281,19 @@ versions live in `docs/history/`, marked at the top.
   keys — come from the one tracing stride, `cells::trace_cells`' Array arm,
   which reads the entries through `StorageHead::coherent` and
   `Table::entries_of`: a version counter brackets every move of an entry,
-  and a walker that cannot get a coherent reading skips the array for that
-  epoch rather than striding a fresh count over a stale chunk. Both ends of that bracket are ordered by
+  and a walker that cannot get a coherent reading gives the array up for
+  that collection rather than striding a fresh count over a stale chunk. Both ends of that bracket are ordered by
   a fence rather than by a release store and an acquire load, and
   `version_bracket_model.rs` is the loom model that exhibits what the
-  other shape admits (`dev/WORKFLOW.md`, "Loom"). The version travels
-  out with the reading: the walk answers with it, the epoch keeps one
-  per walked row (`collector::Epoch::storage_versions`), and Phase 3
-  asks it before re-reading any recorded cell — an address inside a
-  chunk the array has left reads the walk's own value back, the epoch
-  having parked the free (`Epoch::row_still_has_its_cells`). `entity::for_each_counted_child` is an
+  other shape admits (`dev/WORKFLOW.md`, "Loom"). The version is read
+  inside that bracket and nowhere else: `coherent` reads it, the four
+  words, and it again, so the give-up is its whole answer and no version
+  leaves the head. Nothing keeps one per walked row, and no cell the
+  trace read is re-read against one — a cell is read a second time on
+  the owning thread, which re-reads the current fields before any free
+  (`PLAN.md` S36.1), and the collector-thread reader answers no version
+  either, a torn read costing at most a phantom edge or a missed one
+  (`PLAN.md` S38.0). `entity::for_each_counted_child` is an
   adapter over it, and `ll_entity_die`'s Array arm goes through that; the
   release side uses the barrier's `drop_ref`, so a child the array held
   last is torn down rather than only decremented. An arena array that
@@ -529,21 +532,20 @@ versions live in `docs/history/`, marked at the top.
   is `bench-external/canary/` (`pair_canary.cpp` + `accept.sh`, the
   disassembly acceptance re-run per rebuild); the strategy's record is
   `dev/DECISIONS.md`, "the performance case's external comparand is a
-  canary, not a self-authored floor". Collector-side counts:
-  `collector::tests::the_epoch_as_a_whole::measure_parked_memory`
-  (parked records per death, deterministic).
+  canary, not a self-authored floor". No collector-side count exists: the
+  epoch's parked-memory probe went with the two collectors on
+  2026-08-26, and `PLAN.md` S40.1 is the step that measures the trace.
 - Benches: `benches/alloc.rs`, `benches/standard.rs`,
   `benches/barrier.rs` (the store barrier's three directions and the
   arena logging inside them; it resets the arena between timed regions,
   because a log segment comes out of the arena's own bump and only
   `finish_reset` gives it back),
-  `benches/lifecycle.rs` (object create/release GC-protocol tax, both
-  configs), `benches/strings.rs` (hash across the function's branch
+  `benches/lifecycle.rs` (object create/release GC-protocol tax, one
+  configuration since 2026-08-26), `benches/strings.rs` (hash across the function's branch
   boundaries, create-hash-die, and the append loop in both memory
   categories — the harness the bump-top growth optimization was blocked
-  on); collector-side epoch cost probe:
-  `collector::tests::the_epoch_as_a_whole::measure_epoch_cost` (ignored, run with
-  `--ignored`, release mode); external probes in `bench-external/`.
+  on); no collector-side probe since the two collectors were deleted on
+  2026-08-26; external probes in `bench-external/`.
   Store-side probe, same shape and same reason:
   `memory::barrier::tests::what_a_store_costs_by_working_set::measure_store_cost`
   — inside the lib, because a bench is a separate crate and reaches every
@@ -589,7 +591,7 @@ searches the free lists of the whole owned chain under one budget
 (`dev/DECISIONS.md`, 2026-08-05).
 
 Arena reset and promotion: `src/promote.rs` — the fixpoint, the counting
-pass and block retention. Children come from `walk::trace_entity`, so a
+pass and block retention. Children come from `cells::trace_entity`, so a
 reference box's referent is promoted with it; a COW survivor's count is
 left alone during the fixpoint (destructors read it) and settled once
 afterwards by `reconcile_cow_counts` (`dev/DECISIONS.md`, 2026-08-04).

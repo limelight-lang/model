@@ -527,7 +527,7 @@ Goal: trial deletion runs entirely in the shadow rows.
         trace a per-block visit to hold the `Arc` over. It is outside the
         done clause and it changes `edge_to`'s interface; carried below as
         "The retained arm's per-edge registry lock".
-- [ ] S35.0 Repoint what `dev/INDEX.md` says about tracing an array
+- [x] S35.0 Repoint what `dev/INDEX.md` says about tracing an array
       done: the paragraph on the array's tracing stride names a mechanism that
         exists — no `collector::Epoch::storage_versions`, no per-walked-row
         version kept by an epoch, no `collector::tests::…::measure_parked_memory`
@@ -540,6 +540,18 @@ Goal: trial deletion runs entirely in the shadow rows.
         repaired; the other two describe the deleted epoch's own machinery, and
         repairing those means saying what reads a storage version in `rc-cycle`,
         which is this stage's question and not a rename.
+      handoff: the paragraph now says the version is read inside
+        `StorageHead::coherent`'s bracket and nowhere else, the give-up being
+        its whole answer, and it names the two steps a second reading was
+        expected from: S36.1 re-reads the current fields on the owning thread,
+        and S38.0's reader answers no version either. Nothing keeps a version
+        per walked row and no step gives one a reader.
+      handoff: the same pass-2 sweep found four more dead paths, repaired in
+        the same commit — `walk::trace_entity` and two probes in the deleted
+        `collector::` in `dev/INDEX.md`, `benches/lifecycle.rs`'s "both
+        configs", and a comment in `src/cells.rs` describing `Cell`'s `raw`
+        word, which went with `rc-walk`, plus `CellReader::walk_outside`'s
+        promise to answer a storage version it has no return value for.
 - [ ] S35.2 Scan
       done: a non-zero working count marks its reachable set live, a zero one
         leaves it white, and the pair is proven on two graphs — a ring with an
