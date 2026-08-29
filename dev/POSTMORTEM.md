@@ -7,6 +7,44 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-08-29 — a liveness assertion a starved reader cannot satisfy, and a `grep` that let it through
+
+**What happened.** `array::table::tests::what_a_walker_reads_while_the_storage_`
+`is_released::disposing_hands_out_no_state_the_array_never_had` failed once in
+an ordinary run and then 18 times in 30 under the load `dev/WORKFLOW.md`
+prescribes — two spinners on the two cores the run is pinned to, four test
+threads. What failed was not the safety assertion, which held every time, but
+the one below it: "the reader saw only one side of the release, so it raced
+nothing". The reader is a spinner on another core and the arrangement it has to
+catch is a window of two stores; starved of a core it can run through a whole
+pass of 4096 rounds on one side of the release. The pass now repeats until both
+sides have been seen, up to 32 of them, which leaves both assertions exactly as
+they were and only gives the arrangement more chances: 0 failures in 30 under
+the same load.
+
+**Why it was possible.** A test that asserts a race *was observed* has a
+liveness clause, and a liveness clause is a scheduling assumption. This one was
+written against a machine with cores to spare — the module doc records seven
+runs reporting 13 to 275 mixed readings, all on such a machine — and the
+assumption went in unnamed. The safety clause has no such problem: it holds
+whether the reader runs or not.
+
+**Why it was not caught.** The commit gate runs four threads on sixteen cores
+and never starves anything, and the load method exists in `WORKFLOW.md` for
+reproducing a flake rather than for finding one. Nothing runs it routinely, so
+a test whose liveness clause needs a core is green until the day the box is
+busy.
+
+**The second half, and it is worse.** The failing run was let through to
+`origin` by a shell chain of the form `cargo test --lib 2>&1 | grep "^test
+result" && git push`: the suite printed "FAILED", `grep` matched that line and
+exited 0, and the push ran on a red tree. `WORKFLOW.md` already forbids this in
+those words — "never pipe into a filter that can swallow a failure and let a
+commit through on a red suite" — and records that it happened once before, on
+2026-07-27. It is now twice. The rule needs no amendment; what it needs is that
+the exit status of a test command is the thing read, and a pipeline's status is
+its last command's.
+
 ## 2026-08-29 — a draw re-entered itself through the journal, and a `Cell` has no refusal to give
 
 **What happened.** S34.8 put the escrow's floor draw at the head of

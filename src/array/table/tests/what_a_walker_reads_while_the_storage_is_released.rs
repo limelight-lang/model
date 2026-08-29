@@ -80,12 +80,27 @@ fn disposing_hands_out_no_state_the_array_never_had() {
         })
     };
 
-    for _ in 0..rounds {
-        for i in 0..ENTRIES {
-            assert!(m.insert(Key::Int(i), Value::int(i)).is_some());
+    // The pass repeats until the reader has seen both sides of the
+    // release, up to a bound. What it has to catch is a window of two
+    // stores, and catching it needs a core: pinned against a busy machine
+    // the reader can run through a whole pass on one side of the release
+    // and satisfy nothing the second assertion below asks. Measured that
+    // way — two spinners on the two cores the run is pinned to, four test
+    // threads — one pass failed 18 times in 30. The bound is what keeps
+    // a starved reader a failure rather than a hang.
+    const PASSES: usize = 32;
+    for _ in 0..PASSES {
+        for _ in 0..rounds {
+            for i in 0..ENTRIES {
+                assert!(m.insert(Key::Int(i), Value::int(i)).is_some());
+            }
+
+            m.dispose();
         }
 
-        m.dispose();
+        if empty.load(Ordering::Relaxed) > 0 && filled.load(Ordering::Relaxed) > 0 {
+            break;
+        }
     }
 
     stop.store(true, Ordering::Relaxed);
