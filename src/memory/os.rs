@@ -132,8 +132,8 @@ mod imp {
     // `EBADF`, the pool reports exhaustion, and every allocation in the
     // process fails on a machine with all its memory free — a report
     // indistinguishable from real exhaustion. An unported platform stops
-    // the build instead, the way S27.1 stopped it for the per-process
-    // key's Windows door.
+    // the build instead, the way the per-process key's own unix-only door
+    // does (`PLAN.md`, "The per-process key's Windows door").
     //
     // Linux carries the architecture in the condition as well as the
     // operating system: mips defines the flag as 0x0800, and 0x20 there
