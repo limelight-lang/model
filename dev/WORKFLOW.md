@@ -424,6 +424,49 @@ background run outlives the session that started it with nobody to stop
 it. Take a submodule at a time — `array::entry`, `array::table`,
 `array::element`, `array::entity` — each under a `timeout`.
 
+**The region carve has an arm of its own, and it is why Miri runs at
+all.** `memory::os::map_aligned` cuts an aligned span out of an oversized
+mapping by unmapping the head and the tail, which POSIX allows and Miri's
+`munmap` shim does not model — it reports "incorrect layout on
+deallocation" and ends the run. Since the first `BlockPool::get` of any
+test carves a region, every test that allocates was unrunnable under Miri
+from 2026-08-26, when the pool started taking its memory from the
+operating system, until 2026-08-29. Under `cfg(miri)` the trim does not
+happen; a table in `os.rs` remembers where each untrimmed mapping starts,
+and `unmap` hands back the whole of it, which is the exact-layout
+deallocation the shim does accept.
+
+**What that costs, stated rather than assumed: an apron.** The live
+mapping is `bytes + align` where the crate's object is `bytes`, so every
+region and every large run is flanked by up to 64 KiB of mapped, readable
+memory that does not belong to it. An access just past the end of a
+region — an off-by-one in a block walk, a header written one stride too
+far — lands outside a mapping on Linux and inside a live allocation under
+Miri, so the run comes back clean. Miri remains the instrument for edge
+overruns *inside* a region and is not one for overruns *past* it.
+
+**Why the table is there rather than a no-op unmap:** with a no-op, an
+unmap would stop being an unmap and every question about returned memory
+would leave Miri's view. With it, `munmap` runs on the whole mapping and
+the shim accepts it — which the `memory::large_entity` run of 2026-08-29
+shows, five tests through the unmap path with neither an "incorrect
+layout" report nor the panic `unmap` raises when the table has no entry
+for a pointer.
+
+**Three tests claim Miri as their whole regression, and none of them has
+been able to run under it since 2026-08-26.**
+`promote::tests::the_reset_reads_no_corpse`'s
+`a_large_survivor_killed_by_the_drain_is_not_read_by_the_reconcile` and
+its two neighbours guard the reset window against reading a large run
+after it was unmapped, and their doc comments say `cargo test` passes the
+defect by construction. They can run again now. Whether each still
+*exhibits* its defect is unverified: on 2026-08-29 the reconcile one was
+run under Miri with `reset_window::park_large` returning false — a build
+whose window parks nothing, which its neighbour's comment names as the
+condition — and it passed, in 176 s. Either the mutation is not the one
+those comments mean, or a second half of the arrangement is missing.
+Re-arming them is nobody's step yet.
+
 Three things about the command itself are load-bearing:
 
 - **UNIX target.** The Windows TLS fast path is inline `asm!`, which

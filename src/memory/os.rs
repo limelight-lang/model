@@ -224,21 +224,99 @@ mod imp {
         let base = base as usize;
         let aligned = (base + align - 1) & !(align - 1);
 
-        let head = aligned - base;
-        if head != 0 {
-            unsafe { munmap(base as *mut c_void, head) };
-        }
+        // **Under Miri the oversized mapping is kept whole**, and
+        // [`whole`] remembers it so that [`unmap`] can hand back the
+        // same span it was given. Trimming means unmapping part of a
+        // mapping, which POSIX allows and Miri's `munmap` shim does not
+        // model: it reports "incorrect layout on deallocation" and ends
+        // the run, and since the first `BlockPool::get` of any test
+        // carves a region that put the whole crate out of reach of the
+        // one tool that sees its formal-UB class. What the arm costs is
+        // stated where the command is (`dev/WORKFLOW.md`, Miri): the
+        // mapping is wider than the object at both ends, so an access
+        // just past a region or a run lands inside a live allocation
+        // instead of outside one.
+        #[cfg(miri)]
+        whole::remember(aligned, base, over);
 
-        let tail = over - head - bytes;
-        if tail != 0 {
-            unsafe { munmap((aligned + bytes) as *mut c_void, tail) };
+        #[cfg(not(miri))]
+        {
+            let head = aligned - base;
+            if head != 0 {
+                unsafe { munmap(base as *mut c_void, head) };
+            }
+
+            let tail = over - head - bytes;
+            if tail != 0 {
+                unsafe { munmap((aligned + bytes) as *mut c_void, tail) };
+            }
         }
 
         aligned as *mut u8
     }
 
+    /// The mappings this module made and has not returned, under Miri
+    /// only.
+    ///
+    /// It exists because Miri's `munmap` refuses a partial call: the
+    /// trim [`map_aligned`] performs everywhere else cannot run there, so
+    /// the aligned span a caller holds is smaller than the mapping it
+    /// sits in and only this table knows where that mapping starts.
+    /// Keeping it is what lets an unmap stay an unmap under Miri, rather
+    /// than becoming a leak the interpreter cannot see past.
+    ///
+    /// A vector and a linear scan: the population is regions and large
+    /// runs, tens of entries, and Miri costs orders of magnitude more per
+    /// instruction than the scan does.
+    #[cfg(miri)]
+    mod whole {
+        use std::sync::Mutex;
+
+        /// `(aligned, base, over)` — what was handed out, where the
+        /// mapping starts, and how long it is.
+        static MAPPINGS: Mutex<Vec<(usize, usize, usize)>> = Mutex::new(Vec::new());
+
+        pub(super) fn remember(aligned: usize, base: usize, over: usize) {
+            MAPPINGS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((aligned, base, over));
+        }
+
+        /// The mapping an aligned pointer sits in, forgotten as it is
+        /// answered. `None` says the caller is unmapping something this
+        /// module never handed out — a sub-range, or a pointer from
+        /// somewhere else — which is a design error the `unmap` above
+        /// turns into a panic under Miri and no other build can see.
+        pub(super) fn take(aligned: usize) -> Option<(usize, usize)> {
+            let mut mappings = MAPPINGS.lock().unwrap_or_else(|e| e.into_inner());
+            let at = mappings.iter().position(|(a, _, _)| *a == aligned)?;
+            let (_, base, over) = mappings.swap_remove(at);
+            Some((base, over))
+        }
+    }
+
     pub(super) fn unmap(ptr: *mut u8, bytes: usize) {
-        unsafe { munmap(ptr as *mut c_void, bytes) };
+        // Under Miri the span this caller holds is part of the untrimmed
+        // mapping [`map_aligned`] made, and `over > bytes` always — so
+        // the `munmap` a caller's own figures describe is the partial one
+        // the shim refuses. The whole mapping goes back instead, which is
+        // the exact-layout deallocation the shim accepts, and that keeps
+        // a read of returned memory an error Miri reports — which is what
+        // three tests in `promote::tests::the_reset_reads_no_corpse` are,
+        // Miri being their whole regression.
+        #[cfg(miri)]
+        {
+            let _ = bytes;
+            let (base, over) =
+                whole::take(ptr as usize).expect("unmap of a span this module did not hand out");
+            unsafe { munmap(base as *mut c_void, over) };
+        }
+
+        #[cfg(not(miri))]
+        unsafe {
+            munmap(ptr as *mut c_void, bytes)
+        };
     }
 }
 

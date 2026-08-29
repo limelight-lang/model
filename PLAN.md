@@ -334,7 +334,7 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         `off_t`; linux mips defines `MAP_ANONYMOUS` as 0x800 and slipped
         through the gate built to stop it; the fault arming leaked on a panic
         and became RAII.
-- [ ] S34.10 Give Miri back a tree it can run
+- [x] S34.10 Give Miri back a tree it can run
       done: a targeted Miri run over a module that carves a region completes
         instead of reporting undefined behaviour at `memory::os::map_aligned`,
         and `dev/WORKFLOW.md`'s Miri section states what the arm costs — which
@@ -357,6 +357,31 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         it, `cycle::queue` ran 18 tests and `memory::heap` 20, both clean. The
         cost is that Miri stops seeing anything about unmapping, which is the
         trade the step has to state rather than assume.
+      Critic 2026-08-29: four findings. The no-op `unmap` above would have
+        disarmed three tests in `promote::tests::the_reset_reads_no_corpse`
+        that name Miri as their whole regression, which is rule 4's
+        prohibition applied to a tool rather than an assertion; the stated
+        cost was incomplete, an untrimmed mapping leaving a 64 KiB readable
+        apron at each end where an overrun past a region becomes invisible;
+        the evidence exercised only the mapping half; and the `unmap`
+        comment gave the wrong reason for the shim's refusal. All four taken.
+      handoff: closed 2026-08-29, and **not** by the patch the line above
+        describes. Under `cfg(miri)` the trims are skipped and a table in
+        `os.rs` remembers `(aligned, base, over)`, so `unmap` hands back the
+        whole mapping — an exact-layout deallocation the shim accepts, which
+        keeps an unmap an unmap. Verified by running: `cycle::queue` 20 tests,
+        `memory::stdapi` 14, `memory::large_entity` 5 — the last being the
+        module that returns mappings, and neither an "incorrect layout" report
+        nor the panic `unmap` raises on a missing table entry appeared.
+      handoff: **what is not verified, and it is the Critic's first finding
+        turned into a question.** The three `promote` tests can run again, but
+        whether they still exhibit their defect is unknown: the reconcile one
+        was run with `reset_window::park_large` returning false and passed in
+        176 s. Either that is not the mutation their comments mean, or the
+        arrangement needs a second half. They have been unrunnable under Miri
+        since 2026-08-26, so the claim in their doc comments has been stale
+        for three days and is not this arm's doing. Re-arming them is nobody's
+        step.
 
 - [x] S34.3 Parking a slot that dies enrolled
       done: death runs in full — weak cells cleared first, then `__destruct`,
