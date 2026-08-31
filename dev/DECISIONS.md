@@ -8,6 +8,45 @@ never edited or deleted.
 
 ---
 
+## 2026-08-31 — a trace window owns its row arena and physical returns replay through one door
+
+S36.2.
+
+**Decided:** the in-line trace's slot-reuse window and its `ShadowArena` are
+one `cycle::parking::TraceWindow`. Its close first resets the arena and nulls
+every block shadow, then lowers the owner-local active flag, then replays every
+parked return through `memory::stdapi::ll_free`. The guard is must-use,
+thread-bound and non-nestable in every build.
+
+**Why:** a row is indexed by address. Returning a slot before the row sweep lets
+the next occupant inherit the dead one's working count and verdict; returning
+the block before the sweep makes the sweep itself write into recommissioned
+memory. Owning both resources makes the order a property of the type rather
+than of S36.7's future call site. The trace window ends after the final scan
+read and before exact validation; calling it a collection window would invite
+holding it across the user-code teardown that the trace token explicitly does
+not cover.
+
+**Decided:** the physical-return gate covers every population that can lose a
+row address: ordinary entity slots, retained blocks, pooled large entities and
+OS-direct entity runs. The header-reading gate is narrower. In particular,
+`promote::arena_reset_full` calls `ll_free(block)` for a retained block already
+empty at registration; that pointer is a block-return sentinel, not an entity
+header, and may be parked but must never be read for a refcount or `ENROLLED`.
+
+**Why:** the last retained occupant returns the whole block even though the
+population has no per-slot free list, and a large run is unmapped. Both lose
+identity as completely as reusing one slotted address. One predicate for
+physical identity and another for legal header access prevents the block kind
+at offset zero from being mistaken for a live refcount.
+
+**Cost and boundary:** parked pointers live in an out-of-band owner-local
+`Vec`; its cold trace-only allocation is the cost accepted by the later
+2026-07-27 decision that superseded the intrusive list. This TLS form is only
+the synchronous owner-side substrate. Before the accelerator exists,
+S38.1/S38.3 must move the state where a worker can address its owner and solve
+RFC audit A3's generation/handoff race; this step claims neither.
+
 
 ## 2026-08-29 — the exact test compares two sums, and a component arrives as its own member list
 

@@ -193,9 +193,9 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// together make the read sound — the registry entry is removed strictly
 /// before the unmap, a free during a collection parks instead of
 /// running, and a collection does not begin reading a thread's blocks
-/// until that thread has entered it. The second and third are S36.2's
-/// and S38.1's (`PLAN.md`), so today only the first holds and a caller
-/// outside those rules is reading memory that may be gone.
+/// until that thread has entered it. The owner-side parking is S36.2's;
+/// S38.1/S38.3 must make the claim and parking owner-addressable before a
+/// worker may rely on all three (`PLAN.md`).
 ///
 /// **A visitor must not free a run while walking this list.** The
 /// addresses are a snapshot, so a run freed during the walk leaves

@@ -248,9 +248,9 @@ struct Registry {
     /// reaches structures that exit has already disposed. Testing for
     /// the exit at the eviction does not fix it: the two are ordered by
     /// nothing. So a retiring thread drops the rings here, and the next
-    /// thread to journal or to take a mark — a live one — frees them.
-    /// The parking S36.2 rebuilds lands on this same path, which is why
-    /// the shape is kept rather than simplified while nothing parks.
+    /// thread to journal or to take a mark — a live one — frees them. The
+    /// vector is therefore an exit handoff, not the trace-window parking in
+    /// `cycle::parking`.
     pending_free: Vec<*mut Ring>,
 }
 

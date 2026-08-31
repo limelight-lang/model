@@ -256,8 +256,8 @@ a block, and that count is soundness rather than economy: dividing the
 payload by a class size there fabricates rows out of the object's own
 cells. The pooled half rides the region scan; a run lies outside every
 region and is found from the module's own registry, which is why its
-free parks during an epoch like everything else that can put memory back
-in circulation.
+free parks during a trace like everything else that can put row-addressed
+memory back in circulation.
 
 Its shadow row is one word of that first line, `LargeEntityHeader::row`,
 zeroed at commissioning and zeroed again by the sweep of every
@@ -266,13 +266,32 @@ bitmap, so the row's own colour is its met flag, and a block with no
 array is enrolled for the sweep through a prologue of its own
 (`cycle::arena`).
 
-### Deferred free — deleted 2026-08-26 with `rc-walk`
+### Trace-window physical return
 
-*What follows described `deferred_free.rs`, which is gone.* `rc-cycle` parks
-per slot on two windows of different widths — a queue entry naming the slot,
-and a collection in flight — rather than epoch-wide. The first is built into
-`stdapi::ll_free`; the second is S36.2's. The lesson that survives is the last paragraph of this
-section: parking is out of band, and the parked memory is not written.
+`rc-cycle` parks on two windows of different widths — a queue entry naming an
+entity, and a trace that may still address the entity's shadow row. Both are
+built into `stdapi::ll_free`. A refused queue-window return needs no second
+record because the entry is its record. A refused trace-window return is
+recorded out of band by `cycle::parking`; closing the trace replays it through
+the same `ll_free`, so whichever window closes last performs the physical
+return.
+
+`TraceWindow` owns the `ShadowArena`: close first resets it and nulls every
+block's row pointer, then lowers the owner-local active flag, then replays the
+returns. The window covers mark and scan alone and ends before exact validation
+and teardown. Today it is the in-line owner's TLS state; the collector-worker
+form waits on S38's owner-addressable token and parking handoff.
+
+The gate covers ordinary entity slots, retained blocks and both large entity
+kinds. A retained block rides at block granularity — its last occupant can
+return the whole block — and an OS-direct entity run would otherwise be
+unmapped under its header row. A retained block pointer used as the reset's
+empty-block return sentinel is parkable but is not an entity header, so the
+refcount and `ENROLLED` tests explicitly exclude it.
+
+#### Historical rc-walk mechanism
+
+*What follows described `deferred_free.rs`, which was deleted with `rc-walk`.*
 
 While an rc-walk collection epoch was in flight, a free **parked** instead
 of recycling (`deferred_free.rs`): one relaxed load of a global activity

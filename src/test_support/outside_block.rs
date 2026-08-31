@@ -94,8 +94,8 @@ pub(crate) fn class(name: &str) -> *const Class {
 }
 
 /// Give `obj` a fresh block, carrying over what the old one held, and
-/// free the old one — through the same category-routed door, so a
-/// collection in flight parks it instead of recycling (S36.2).
+/// free the old one — through the same category-routed door, which S38.3 must
+/// hold back while a worker trace may still be striding it.
 ///
 /// Answers the new block, whose granted capacity the object keeps. The
 /// cells of a fresh block are written plainly: no walker can reach a

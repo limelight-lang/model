@@ -22,15 +22,8 @@
 //! neither, holding entity pointers it never dereferences and pool
 //! blocks it never carves.
 
-// Nothing constructs a `ShadowArena` in the production build: the mark
-// takes one and has no production caller either, the collection that
-// runs it being S36.7's. `cfg(not(test))` because the tests inside it do
-// construct one, which would leave an unconditional expectation
-// unfulfilled.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the collection that takes an arena is S36.7")
-)]
+// `TraceWindow` owns the `ShadowArena`, fixing reset-before-replay even before
+// the production collection opens one in S36.7.
 pub(crate) mod arena;
 // The judgement over a component the scan condemned, and dead until the
 // teardown that opens with it.
@@ -49,6 +42,17 @@ pub(crate) mod exact;
     expect(dead_code, reason = "the collection that marks is S36.7")
 )]
 pub(crate) mod mark;
+// Physical slot return waits while a trace can still address the slot's
+// shadow row. The production trace that opens the window arrives in S36.7; S36.2
+// builds the window and the return-path half first.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the production trace that opens this window is `PLAN.md` S36.7's"
+    )
+)]
+pub(crate) mod parking;
 pub(crate) mod queue;
 pub(crate) mod row;
 // The verdict over the rows the mark counted, and dead until a

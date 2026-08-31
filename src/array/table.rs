@@ -1014,10 +1014,9 @@ impl Table {
     /// The chunk being replaced is only read here, so a collector striding
     /// it races nothing.
     ///
-    /// The old chunk is freed once the window is closed. A trace still
-    /// striding it must read intact bytes, which is what the parking of
-    /// buffer-chunk frees during a collection buys; nothing parks until
-    /// S36.2 builds that window (`PLAN.md`).
+    /// The old chunk is freed once the window is closed. A worker trace still
+    /// striding it must read intact bytes; S38.3 owns the buffer-chunk parking
+    /// that extends this protection across another thread's trace (`PLAN.md`).
     fn move_entries(
         &mut self,
         head: &StorageHead,

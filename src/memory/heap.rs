@@ -1626,12 +1626,18 @@ pub extern "C" fn ll_thread_exit() {
     //    context, weak table.
     crate::static_block::run_thread_exit_teardown();
 
-    // 2. The weak table, after every death that could still need a row.
+    // 2. The trace parking list, while the heaps that allocated its Vec are
+    //    still mounted. A trace cannot span thread exit, so the list is empty;
+    //    disposing it here returns its own allocation locally rather than
+    //    posting it to an ownerless block after the heaps are abandoned.
+    crate::cycle::parking::dispose();
+
+    // 3. The weak table, after every death that could still need a row.
     //    `weak.rs` pinned this position against the day static-block
     //    teardown existed; this is that day.
     crate::weak::dispose();
 
-    // 3. The buffer arena last of the disposals, because every step above can
+    // 4. The buffer arena last of the disposals, because every step above can
     //    still free a buffer into it: a static block's teardown reaches
     //    `string_die`, which returns a dynamic string's payload here, and
     //    the parked backlog's flush routes payload frees the same way.
@@ -1940,10 +1946,10 @@ thread_local! {
 ///
 /// The refusal was written against a parked free, whose backlog the exit
 /// disposed and nothing rebuilt. What parks today is one slot at a time
-/// and holds no backlog — a slot a queue entry names is simply withheld
-/// (`memory::stdapi::ll_free`) — so the refusal is still wider than the
-/// case that produced it; it stays because S36.2's window, a collection
-/// in flight, brings a backlog back (`PLAN.md`).
+/// uses two forms — a slot a queue entry names is simply withheld, while
+/// S36.2's trace window records physical returns out of band
+/// (`memory::stdapi::ll_free`). The refusal therefore still protects a
+/// real backlog during thread exit.
 pub(crate) fn thread_may_free() -> bool {
     EXIT_PHASE.with(|phase| phase.get()) == ExitPhase::Live
 }
@@ -2095,8 +2101,8 @@ pub unsafe extern "C" fn ll_entity_reserve(
 /// it to its block's free list, exactly like any other free — including
 /// its parking: an unconsumed cell carries no published header and no
 /// enrolment, so it is never withheld, while a cell a caller published
-/// and enrolled is (`memory::stdapi::ll_free`). The second window, a
-/// collection in flight, is S36.2's (`PLAN.md`).
+/// and enrolled is (`memory::stdapi::ll_free`). The second window, a trace
+/// in flight, is S36.2's (`PLAN.md`).
 ///
 /// # Safety
 /// Every element must be an unconsumed cell from [`ll_entity_reserve`].

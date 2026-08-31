@@ -235,7 +235,7 @@ impl BufferArena {
     /// `live` is untouched — one chunk before, one chunk after. So is the
     /// free list: nothing is released here, which is the second thing this
     /// path is worth. The growth it replaces frees the old payload, and a
-    /// payload freed while a collection is in flight has to park (S36.2);
+    /// payload freed while a worker trace is in flight has to park (S38.3);
     /// a payload that never moves has nothing to park.
     ///
     /// # Safety
@@ -756,9 +756,9 @@ fn pop_fit_in(
 ///
 /// The link is written into the freed chunk itself, which is sound for
 /// the same reason the owner's free list is — the chunk is dead, and its
-/// first 16 bytes are the arena's by contract. A chunk a collector may
-/// still be reading must not reach here — the parking that held such a
-/// call back went with `rc-walk`, and S36.2 rebuilds it (`PLAN.md`).
+/// first 16 bytes are the arena's by contract. A chunk a worker trace may
+/// still be reading must not reach here — S38.3 owns that cross-thread
+/// parking (`PLAN.md`).
 ///
 /// # Safety
 /// `(ptr, size)` is a live chunk of `block`, freed by this call.
@@ -957,11 +957,11 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         // event, which is what the block was waiting for. With its last
         // occupant and its last payload gone the block goes home.
         //
-        // A collection in flight has to stop this: the trace holds
+        // A worker trace in flight has to stop this: the trace holds
         // addresses inside the block, and a block handed to the pool is
         // re-stamped as another kind under them. `rc-walk` parked the
-        // whole call for the length of its epoch; `rc-cycle`'s equivalent
-        // is S36.2 and is not built.
+        // whole call for the length of its epoch; S38.3 owns `rc-cycle`'s
+        // narrower per-owner replacement and is not built.
         let block = (ptr as usize) & !BLOCK_MASK;
         if crate::memory::retained::payload_freed(block) {
             unsafe { crate::memory::retained::give_block_back(block) };
@@ -970,8 +970,8 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         // The same hazard as the retained arm above, and the same gap:
         // `free` decrements the block's live count, and an emptied block
         // goes back to the global pool to be re-stamped as another kind
-        // while a trace still holds addresses inside it. The parking that
-        // covered it went with `rc-walk`; S36.2 rebuilds it.
+        // while a trace still holds addresses inside it. S38.3 owns the
+        // replacement parking for this buffer-chunk path.
         unsafe { free_chunk(ptr, capacity) };
     } else {
         // OS-direct run: the standard path frees it by mask.

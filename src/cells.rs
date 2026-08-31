@@ -81,10 +81,10 @@ pub(crate) enum CellShape {
 /// **The storage these yield cells from is drawn under the instance's own
 /// memory category**, through [`crate::memory::routing::body_alloc`], the
 /// way a table's storage is. Two obligations meet in that one rule. The
-/// storage must be parkable — a block whose cells a trace is reading may
-/// not be freed under it (S36.2), and the parking
-/// machinery takes a freeable block kind or a buffer-arena chunk, never an
-/// allocation from `std::alloc`. And the category is what decides who
+/// storage must be parkable — a block whose cells a worker trace is reading
+/// may not be freed under it (S38.3), and that parking machinery must take a
+/// freeable block kind or a buffer-arena chunk, never an allocation from
+/// `std::alloc`. And the category is what decides who
 /// frees the storage of an instance that dies without a teardown: an
 /// arena object gets phase 1 only at reset, so storage drawn under any
 /// other category is storage nothing ever gives back.

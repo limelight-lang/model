@@ -520,18 +520,42 @@ stage claiming the frees while building none of them.
         a readership rule"). And a member of a kind other than an object or an
         array is untested — `Reference`, `Lazy`, a template, a class with cells
         outside itself.
-- [ ] S36.2 The epoch parking
+- [x] S36.2 The trace-window parking
       note: S36.1's Critic round found the window this step has to cover. A
         member that never took a non-final decrement has no queue entry, so
         nothing names its slot; what keeps its header readable for the corpse
-        rule is this step's collection window and not the entry.
-      done: a slot freed inside a collection waits for its end, releases into
+        rule is this step's trace window and not the entry.
+      done: a slot freed while mark or scan may still address its row waits for
+        the trace's end, releases into
         S34.3's single return path, and that path refuses while **either**
-        window is open — a queue entry naming the slot, or a collection in
+        window is open — a queue entry naming the slot, or a trace in
         flight; a red-first test shows the defect it prevents, a reused slot
         inheriting the dead occupant's row, and overlaps the two windows in both
         orders
       tier: T2 · role: —
+      handoff: `cycle::parking::TraceWindow` owns the `ShadowArena`, so its
+        drop order is not a caller convention: first reset and null every row,
+        then lower the owner-local active flag, then replay the out-of-band
+        returns through `stdapi::ll_free`. It is `#[must_use]`, cannot move to
+        another thread, and a nested open fails in release as well as debug.
+      handoff: all three row populations wait. A retained block has no slot
+        free list, but its last occupant returns the whole block; pooled large
+        entities return a block and OS-direct ones unmap a run. Seven tests
+        cover those three routes, a slotted address inheriting a corpse's row,
+        and both orders of the queue/trace windows. The retained work also
+        repaired S34.3's older omission: its `ENROLLED` test had named only
+        slotted and large entities. The block-return sentinel is deliberately
+        distinguished from a retained entity pointer before any header read.
+      handoff: this is the synchronous owner-side substrate only. S38.1/S38.3
+        must replace the TLS active state and list with owner-addressable state
+        before a worker traces another thread; the generation/handoff problem
+        remains RFC audit A3 and is not claimed closed here.
+      handoff: Critic and Sage reviews 2026-08-31 found the retained omission,
+        the arena-before-replay ordering, an impossible first version of the
+        reverse-overlap fixture, the movable/nestable guard and the exit order.
+        All were taken; the old objection to a `Vec` allocation was withdrawn
+        against the later decision that explicitly accepts the cold,
+        trace-only allocation.
 - [ ] S36.3 The guard and the weak window
       done: after the exact test confirms, every member takes the teardown
         guard, then every weak cell naming any member is nulled, all members

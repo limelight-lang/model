@@ -117,9 +117,9 @@ pub(crate) fn opened() -> Guard {
 /// Close the innermost window and free what it parked.
 ///
 /// The frees run **after** the close, so each takes the ordinary route:
-/// with a collection in flight a body parks again, since a trace may
-/// still hold the address, and otherwise it goes back now. Nothing parks
-/// until S36.2 builds the collection's window (`PLAN.md`).
+/// with a trace in flight an entity body parks again, since a shadow row may
+/// still hold the address, and otherwise it goes back now. The owner-side
+/// trace window is S36.2's (`PLAN.md`).
 ///
 /// # Safety
 /// A window must be open on this thread, and every reader of the parked

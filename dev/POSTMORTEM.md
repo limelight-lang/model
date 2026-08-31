@@ -130,7 +130,8 @@ was rewritten to say what the acquire does buy — the commissioning that
 accompanies the value — and to name the mechanism that actually excludes a
 recycled block: the parking rule, which keeps a block from emptying and reaching
 the pool while a trace is in flight (`rfc/model/gc/rc-cycle.md`, "Death while
-enrolled"). Nothing parks today; `PLAN.md` S36.2 builds the window.
+enrolled"). At the time nothing parked; `PLAN.md` S36.2 subsequently built
+the owner-side trace window.
 
 **Why it was possible.** The pairing is real and the ordering it provides is
 real, so the sentence reads correctly at speed. What it did was attribute the

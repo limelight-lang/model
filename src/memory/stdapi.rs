@@ -37,8 +37,9 @@ use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::AtomicU32;
 
 use crate::memory::block_pool::{
-    BLOCK_KIND_ENTITY, BLOCK_KIND_HEAP, BLOCK_KIND_LARGE, BLOCK_KIND_LARGE_RUN, BLOCK_MASK,
-    BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader, BlockPool, LINE_SIZE, load_block_kind,
+    BLOCK_KIND_ENTITY, BLOCK_KIND_HEAP, BLOCK_KIND_LARGE, BLOCK_KIND_LARGE_RUN,
+    BLOCK_KIND_RETAINED, BLOCK_MASK, BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader, BlockPool, LINE_SIZE,
+    load_block_kind,
 };
 use crate::memory::heap::MAX_SMALL;
 
@@ -60,6 +61,32 @@ struct LargeHeader {
 #[inline]
 fn block_of(ptr: *mut u8) -> *mut u8 {
     ((ptr as usize) & !BLOCK_MASK) as *mut u8
+}
+
+/// Whether `kind` houses an entity whose address can name a shadow row.
+///
+/// Retained former-arena blocks belong here although they have no per-slot
+/// free list: the last occupant returns the whole block to the pool, which is
+/// the same address-identity loss at block granularity.
+#[inline]
+fn can_lose_trace_identity(kind: u32) -> bool {
+    kind == BLOCK_KIND_ENTITY
+        || kind == BLOCK_KIND_RETAINED
+        || crate::memory::large_entity::is_large_entity(kind)
+}
+
+/// Whether this pointer is an entity header rather than the retained block
+/// sentinel `promote::arena_reset_full` passes to `ll_free` when a newly
+/// indexed block is already empty.
+///
+/// The sentinel still has to wait for the trace window, because returning the
+/// whole block loses every row address in it. It must not pass the refcount or
+/// enrolled tests: offset zero is a `BlockHeader`, not an `RcHeader`.
+#[inline]
+fn points_to_gc_entity(kind: u32, ptr: *mut u8, block: *mut u8) -> bool {
+    kind == BLOCK_KIND_ENTITY
+        || crate::memory::large_entity::is_large_entity(kind)
+        || (kind == BLOCK_KIND_RETAINED && ptr != block)
 }
 
 /// Round `n` up to a whole number of blocks, or `None` if that would
@@ -252,7 +279,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // another thread half an hour later (`dev/POSTMORTEM.md`, "an entity
     // killed at refcount 1").
     #[cfg(test)]
-    if kind == BLOCK_KIND_ENTITY || crate::memory::large_entity::is_large_entity(kind) {
+    if points_to_gc_entity(kind, ptr, block) {
         let refcount =
             unsafe { crate::refcount::header_refcount(ptr as *const crate::refcount::RcHeader) };
         assert_eq!(
@@ -294,7 +321,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // circulation stood here while `rc-walk` ran, and went with it.
     // `rc-cycle` parks per slot rather than per epoch, on two windows
     // that are not the same width — a queue entry naming the slot, and a
-    // collection in flight. The first is below; the second is S36.2's.
+    // trace in flight. The first is below; the second is S36.2's.
     //
     // **A slot a queue entry names is withheld from the allocator**
     // (`rfc/model/gc/rc-cycle.md`, "Death while enrolled"). The entry is
@@ -310,9 +337,18 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // is `cycle::queue::drain`'s today and a collection's commit later
     // (`PLAN.md` S36.6). Only the entity populations are asked: a raw
     // heap block carries no header to ask.
-    if (kind == BLOCK_KIND_ENTITY || crate::memory::large_entity::is_large_entity(kind))
+    if points_to_gc_entity(kind, ptr, block)
         && unsafe { crate::refcount::is_enrolled(ptr as *const crate::refcount::RcHeader) }
     {
+        return;
+    }
+
+    // The queue entry above and a trace's shadow rows are independent
+    // identifiers of the same slot. A return refused by the first is recorded
+    // by that entry; a return refused here is recorded out of band and replayed
+    // through this same door when the trace closes. Whichever window
+    // closes last performs the physical return (`cycle::parking`).
+    if can_lose_trace_identity(kind) && unsafe { crate::cycle::parking::park_if_active(ptr) } {
         return;
     }
 

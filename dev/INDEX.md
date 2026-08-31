@@ -30,7 +30,7 @@ versions live in `docs/history/`, marked at the top.
   why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26;
   the code itself is on the branch `archive/pre-rc-cycle`. `PLAN.md`
   S34 through S40 build the replacement, and `src/cycle/` is where it
-  is going. Six parts today, and one of them has a production caller:
+  is going. Eight parts today, and two have a production caller:
   **`queue` is the per-thread enrolment queue**, a chain of 64 KiB pool
   segments that the release path writes an entity pointer into at every
   non-final decrement the enrolment gate admits. It grows by a pointer
@@ -44,9 +44,15 @@ versions live in `docs/history/`, marked at the top.
   storage is the **floor**, one pool block drawn at `ll_thread_init` and
   returned at thread exit, so a thread whose floor the pool refuses is a
   thread that never starts — which is what `ll_thread_init`'s status
-  return reports, and what puts a floor under every registered thread. The other
-  five have no
-  production caller until S36.7 wires a collection in. `row::edge_to` answers which
+  return reports, and what puts a floor under every registered thread.
+  **`parking::TraceWindow` is the in-line trace's physical-reuse barrier**:
+  it owns the shadow arena so its close nulls every row before lowering the
+  owner-local active flag and replaying out-of-band returns through the one
+  `ll_free` door. That door refuses both a queue entry and a live trace, across
+  slotted, retained and both large-entity populations. Its TLS form is
+  synchronous-only; S38 replaces it before a worker can trace another owner.
+  The other six have no production caller until S36.7 wires a collection in.
+  `row::edge_to` answers which
   shadow row a traced edge lands on,
   dispatching on the block's kind and carrying the population out of
   that read. `shadow` is the row and the block's array of them: four
@@ -102,7 +108,7 @@ versions live in `docs/history/`, marked at the top.
   than as a colour (`rfc/model/gc/rc-cycle.md`, "The release obliges a
   readership rule"). The sum stands for the design's per-member identity
   because no member can carry fewer references than the component holds
-  of it. Nothing constructs an arena, marks, scans or judges yet, and
+  of it. Nothing opens a trace window, marks, scans or judges yet, and
   nothing derives a member list from the condemned rows.
 
   Two numbers about a row, both pinned by tests rather than by prose: a
@@ -427,10 +433,11 @@ versions live in `docs/history/`, marked at the top.
   allocation. Discovery follows the split: the pooled half rides the
   region scan both enumerators already perform, a run is found from that
   registry and nowhere else, and both carry `slots = 1`, which is
-  soundness rather than economy. A free arriving while a collection
+  soundness rather than economy. A free arriving while a trace
   reads the block must park, and for a run that is soundness rather than
   economy — its memory is unmapped at the free while a trace may still
-  address it. Nothing parks until S36.2 builds that window (`PLAN.md`).
+  address it. `cycle::parking` parks that return and owns the
+  arena-before-replay order (`PLAN.md` S36.2).
   The doors
   above it are
   `heap::entity_alloc` past `MAX_SMALL` and `Arena::alloc_entity` past
@@ -595,11 +602,12 @@ refilled at `ll_gc_maybe_collect`. Design in
 
 `src/memory/deferred_free.rs` was deleted on 2026-08-26 with `rc-walk`,
 whose epoch-wide parking it was. `rc-cycle` parks per slot instead, on
-two windows of different widths — a queue entry naming the slot, and a
-collection in flight. The first is built: `memory::stdapi::ll_free`
+two windows of different widths — a queue entry naming the slot, and a trace
+in flight. Both are built: `memory::stdapi::ll_free`
 withholds an entity slot whose header still carries `ENROLLED`, and
-nothing is recorded anywhere, the queue entry being the record. The
-second is S36.2's, and the call sites that wait for it name it.
+nothing is recorded anywhere, the queue entry being the record. For the
+second, `cycle::parking::TraceWindow` records physical returns out of band and
+replays them only after its shadow arena has reset (S36.2).
 
 Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's
 out-of-line body lives: a string's payload and an array's table storage.
