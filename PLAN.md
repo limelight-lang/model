@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-08-31 · Active: S36 — the sections after S40 are the backlog
+Updated: 2026-09-01 · Active: S36 — the sections after S40 are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
@@ -41,6 +41,24 @@ second half is carried as S39.
 
 **The stages below went through a Critic round and four Sage rulings on
 2026-08-26**, on Edmond's instruction, and are the amended form. The rulings and their reasons are in `dev/DECISIONS.md`.
+
+**Every cycle-GC improvement has two review gates.** Before the first code
+edit, the Sage reviews its operation count, manager-allocation budget,
+cache-working set, lifetime and refusal model, and records the pre-change
+counter/benchmark baseline the step would otherwise erase. A red test is then seen failing;
+after the implementation, the Critic reviews the repair and its mutations
+before the step can be checked. Both findings are recorded in the step's
+handoff. This applies to S36.9 onward and to the performance steps in S37/S40;
+one broad review does not waive a later step's gate.
+
+**Every byte owned for cycle collection comes from the memory manager and is
+identifiable there as GC memory.** Production collection paths use no
+allocator-owning Rust containers — no `Box`, `Vec`, `HashMap`, `BTreeMap`,
+`Arc` backing allocation or hidden `GlobalAlloc`. Plain `#[repr(C)]` layouts,
+fixed arrays, slices and raw links are representation, not ownership; their
+backing blocks come through the manager. S36.9 makes this executable rather
+than aspirational and audits the existing retained-index boundary before the
+collector may cache it.
 
 **Verification is one configuration** since 2026-08-26: the GC axis went with
 the collectors, `hash-folding` and `debug-journal` are what remains, and
@@ -447,30 +465,33 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
 - [ ] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
         returns a slot; a reader may mark an entry a corpse and pass it on; the
-        bit is cleared only at death — the drain's corpse rule, or commit's
-        free — and **never at acquittal**, which supersedes Y12 clause 4's
+        bit is cleared only by the owner consuming the one token that names a
+        dead entity — the drain's corpse rule, or S36.5 commit for an in-flight
+        root — and **never by death itself or at acquittal**, which supersedes
+        Y12 clause 4's
         "cleared after the root is walked"; a test proves the acquittal case —
         ring A↔B with an external X→B that is released after the trace read the
         count — does not lose the ring, and the assertion is that a later
         collection reclaims it, not merely that the bit is still set
-      tier: T2 · role: Critic
+      tier: T2 · role: Sage → Critic
       handoff: clause 4 and the law of 2026-08-26 contradicted each other, and
         both were in the plan. The Sage ruled for the law: clearing on acquittal
         is the permanent miss, because enrolment is edge-triggered.
       handoff: the instant this step's test waits for was ruled on 2026-08-27
         (`rfc/dev/PLAN.md` S8.3, and the entry it names in
         `rfc/dev/DECISIONS.md`). An acquitted root parks in the owner's own
-        suspects buffer with its bit set, and the owner splices that buffer onto
-        its live queue at the first safepoint poll that finds the maturation
-        epoch counter moved. The test therefore forces the counter forward
-        through a `#[cfg(test)]` shorthand, runs the poll, runs a collection and
+        suspects buffer with its bit set, and the first collection after the
+        maturation epoch counter moves detaches that dormant lane beside the
+        active lane as one composite in-flight batch. The test therefore forces
+        the counter forward through a `#[cfg(test)]` shorthand, runs the poll,
+        runs a collection and
         asserts the ring reclaimed, which is the assertion this step demands
         instead of "the bit is still set".
       handoff: **it waits on three later stages, and the plan's order had it
         first.** Every clause but one was about code that did not exist when
         the step was written: the dirty pass exists now — `cycle::mark` and
         `cycle::scan` — the corpse mark landed with S34.3, and commit's free
-        is S36.6's.
+        is S36.5's.
         The one clause that is about today's code — the bit is never cleared at
         acquittal — holds vacuously, nothing in the crate clearing `ENROLLED`
         at all (checked 2026-08-29; `refcount.rs` only sets it). And the test
@@ -556,6 +577,122 @@ stage claiming the frees while building none of them.
         All were taken; the old objection to a `Vec` allocation was withdrawn
         against the later decision that explicitly accepts the cold,
         trace-only allocation.
+- [ ] S36.9 The GC-memory contract   *(before S36.3)*
+      done: every block owned by the candidate queue or a collection is drawn
+        through one memory-manager wrapper, carries
+        `BLOCK_KIND_GC_METADATA` while held, and is counted by role — queue
+        floor, queue segment, workspace base and workspace overflow; pool and
+        critical-reserve handoffs restamp both directions, physical
+        current/peak blocks and bytes are observable without double counting,
+        and thread exit returns the direct count to zero. A second accounting
+        axis records logical current/high-water bytes for rows, worklist,
+        members, parking, deferred drops and suspects inside those blocks
+      done: the production collection path contains no allocator-owning Rust
+        container or hidden global allocation. The source audit covers
+        `cycle`, its parking and deferred-drop storage, the weak registry and
+        disposal path S36.3 reaches, and every registry the collector proposes
+        to retain or cache; a collection run under a denying/counting global
+        allocator covers ordinary, retained, weak, parking and abort paths and
+        performs zero global allocations. A source/ownership audit catches
+        backing allocated before the denying window opened
+      tier: T2 · role: Sage → Critic
+      handoff: this supersedes S36.2's acceptance of `Box<Vec>` parking. A
+        manager-issued block stamped merely `ARENA` is not enough: the manager
+        must be able to answer how many bytes GC owns and for which role.
+        Control headers live in the manager block's header/payload; TLS holds
+        only the non-owning pointer that finds the owner state. The present
+        queue `Cell`s therefore move out of TLS into its floor header, and the
+        queue capacity, poll stride and between-polls guarantee are re-derived
+        and statically checked against the resulting layout.
+      handoff: the ownership audit must settle the retained registry before a
+        cache is built. Its present `BTreeMap`, `Arc<[usize]>` and snapshot
+        `Vec` may not be smuggled into the collection under the claim that an
+        `Arc` clone itself allocates nothing. Either their backing moves under
+        the manager or the registry is redesigned at its owning layer; there
+        is no cycle-path exemption.
+- [ ] S36.10 The persistent per-owner workspace   *(before S36.3)*
+      done: thread init draws one mandatory 64 KiB workspace base from the
+        ordinary block pool, after the queue floor and before registration is
+        published; a refusal rolls the partial init back and refuses the
+        thread. The base is rewound between collections and returned only at
+        thread exit. It is never drawn permanently from the critical reserve;
+        overflow asks the pool and then the reserve and returns after every
+        commit or abort
+      done: the workspace is a typed `Idle → Trace → Commit → Idle` ownership
+        transition. Trace end filters members while rows are readable, sweeps
+        every block shadow, lowers the active flag and replays parking, but
+        does not rewind bytes the commit still names; commit or abort performs
+        the final rewind. Nested use and a phase-invalid pointer fail in every
+        build
+      tier: T2 · role: Sage → Critic
+      handoff: mandatory direct cycle memory becomes 131,072 bytes per
+        registered thread — one 65,536-byte queue floor and one workspace
+        base. The two best-effort queue spares make the nominal/maximum direct
+        baseline 262,144 bytes when both are present. The separate critical
+        reserve has capacity up to 524,288 bytes and is not guaranteed resident
+        or workspace capacity. Initially exactly one workspace block is
+        retained; retaining warm overflow waits on S40.3.
+      handoff: a dense 381-entity shape needs 23,568 bytes (about 23.0 KiB)
+        for the widest block's rows, one present-day stack segment and member
+        pointers, so it fits the base by calculation; one entity in each of
+        381 widest blocks reserves 6,251,448 row-array bytes, or 6,258,608
+        bytes (about 5.97 MiB) with that stack and 381 member pointers. Neither
+        number is a workload measurement.
+- [ ] S36.11 The managed lists and the small worklist   *(before S36.3)*
+      done: one manager-backed segmented primitive serves collection-owned
+        pointer records with explicit `read`/`used` bounds and no drop glue;
+        parking, condemned members and S36.5's deferred drops use it, while a
+        small fixed worklist in the workspace serves leaf and small traces and
+        grows into the same managed segments only on overflow
+      done: the Sage gate names the fixed small-worklist and pre-reserved
+        parking capacities from the 65,280-byte payload before code begins;
+        boundary tests exercise exactly capacity and capacity plus one, and
+        the documented budget accounts for the other base-workspace residents
+      done: parking no longer owns a `Box<Vec>` and never writes a link into a
+        corpse. Its base capacity is reserved before a trace; overflow asks
+        pool then critical, and exhaustion takes the documented hard-failure
+        path rather than losing a physical return. Replay still goes through
+        `stdapi::ll_free` after the row sweep
+      tier: T2 · role: Sage → Critic
+      handoff: the current first worklist push reserves 4,112 bytes for 512
+        pointers even for a leaf, and current non-empty parking performs global
+        allocation. Red tests show a small trace makes no manager overflow
+        draw, two collections reuse the same base, corpse bytes remain intact,
+        critical capacity is restored, and success and abort both return GC
+        bytes to the per-thread baseline.
+- [ ] S36.12 The in-flight batch and condemned membership   *(before S36.3)*
+      done: collection detaches the active candidate chain as one in-flight
+        batch whose bounds travel with it; every first-reached entity appends
+        one manager-backed member record, all roots mark before any root scans,
+        and final colours compact the records while rows are still readable;
+        the resulting storage survives the trace close through commit
+      done: refusal after detach or after any member append aborts the whole
+        trace, sweeps its rows and restores every in-flight token to its source
+        lane without allocation. No `ENROLLED` bit is left without exactly one
+        logical record and no record exists in two lanes
+      tier: T2 · role: Sage → Critic
+      handoff: choose and test the commit unit here. A single condemned batch
+        is safe under the aggregate exact sum but resurrection in one connected
+        part conservatively retains the others; if teardown promises
+        per-component behaviour, this step must extract components instead of
+        silently passing their union to `exact::judge`.
+      handoff: an enrolled death does not clear the bit or retire its record.
+        Teardown finishes and physical return waits; only the consumer that
+        still owns the record may observe count zero, clear `ENROLLED`, return
+        the slot and retire the token. The reverse order creates a dangling
+        queue pointer that can name a new occupant.
+- [ ] S36.13 The retained-block visit   *(after S36.12, before S36.7)*
+      done: the first reach into a retained block acquires its immutable
+        occupant index once under the registry lock and records a
+        manager-owned, trace-bounded visit; every later mark and scan lookup in
+        that block searches it without the registry mutex, and no handle
+        survives the trace token
+      tier: T2 · role: Sage → Critic
+      handoff: this starts only after S36.9 settles who owns the retained index;
+        cloning the present `Arc` is not compliance. The counter proves one
+        registry acquisition per touched retained block rather than today's
+        approximate `2E + V + B` acquisitions for a retained-only trace. Its
+        Sage gate records that old counter before changing the lookup.
 - [ ] S36.3 The guard and the weak window
       done: after the exact test confirms, every member takes the teardown
         guard, then every weak cell naming any member is nulled, all members
@@ -668,18 +805,36 @@ stage is what makes a trace affordable rather than what tunes it.
         it missing.
 - [ ] S37.4 The suspects buffer and the turnover re-offer
       done: acquittal never clears the enrolment bit; a proven-live root parks
-        in the suspects buffer with its bit set, and every suspect is re-offered
-        at the first collection after the heap's epoch advances; red tests prove
+        its **one existing token** in the owner's dormant suspects queue, and
+        every suspect is re-offered at the first collection after the heap's
+        epoch advances by detaching the due dormant lane beside the active lane
+        as one composite in-flight batch, never by enrolling or copying the
+        entity a second time; red tests prove
         that a matured ring losing its last external reference mid-epoch is
         collected at that re-offer and not before, and that a ring whose mates
         carry unequal ages is likewise collected, so maturing apart costs recall
         rather than a permanent miss
-      tier: T2 · role: Critic
+      tier: T2 · role: Sage → Critic
       handoff: this is the backstop the withdrawn "retired on contact" clause
         was supposed to be and never was — eager clearing fires only when a
         trace touches the entity, and the stamp that wraps is exactly the one no
         trace touched for four epochs. It also collects YRC's 56 % saving on
         re-registration.
+      handoff: `ENROLLED` means exactly one logical token in exactly one state:
+        `active → in-flight → dormant`, or consumer-retired after death;
+        epoch turnover detaches active and due-dormant heads/tails in O(1), and
+        an abort restores each sub-batch to the lane it came from without
+        allocation. A decrement while dormant sees the standing bit and cannot
+        add a duplicate. Store original enrolled
+        roots only — adding every traced live member manufactures tokens, and
+        collapsing two roots in one component can miss it after a later split.
+      handoff: current queue segments cannot be spliced after filtering: only
+        the live head has a fill bound and every segment behind it is assumed
+        full. S36.12's per-batch/per-segment `read` and `used` bounds, or an
+        equivalent in-place compaction restoring full segments, are a hard
+        prerequisite. Tests count one token across active + in-flight + dormant
+        after repeated decrements, acquittals, partial segments, abort and
+        turnover; a dormant corpse keeps identity until its consumer retires it.
 - [ ] S37.2 The acyclic gate
       done: the factory stamps bit 8 from the class's own answer — waits on
         `rfc` `model/classes.md` declaring a target per pointer slot
@@ -845,6 +1000,27 @@ Goal: the one number the design still lacks.
         reads as structure that exists. It sits here rather than earlier
         because the boundaries are not real until S38 closes; S40 is simply
         the last stage that will still be open.
+- [ ] S40.3 Count the workspace and the cache traffic   *(before S40.2)*
+      done: per collection counters report unique roots, `V`, `E`, touched
+        blocks and groups, row bytes reserved and written, distinct row/group
+        lines touched, worklist/member/parking high-water, arena requested,
+        granted and abandoned-tail bytes, base hits, overflow draws and
+        returns, suspect parks/re-offers, exact passes and probes, retained
+        registry acquisitions, physical GC current/peak blocks by funding role,
+        and logical current/high-water bytes by workspace consumer
+      done: pinned back-to-back runs over component sizes 2, 16, 256 and 381,
+        dense and one-entity-per-block, ordinary and retained, record
+        instructions, cycles, L1D/LLC/dTLB and branch misses plus manager draws;
+        the control protocol is `dev/BENCHMARKS.md`'s and every cache conclusion
+        remains a hypothesis until these counters measure it
+      tier: T2 · role: Sage → Critic
+      handoff: a widest flat row array reserves 16,408 bytes, or 257
+        line-equivalents and 257–258 physical cache lines depending on
+        alignment. First touch is proven only to write 121 bytes; how many
+        distinct lines those writes address is fixture-dependent and measured
+        here. A persistent 64 KiB block removes manager churn, not cache fills
+        and not the sparse-row cost. S40.2 changes representation only from
+        these data.
 - [ ] S40.2 Decide chunks or not
       done: below 29 % density the chunked form replaces the flat array and the
         measurement is quoted in the decision, with its denominator; above it

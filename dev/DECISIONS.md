@@ -8,6 +8,86 @@ never edited or deleted.
 
 ---
 
+## 2026-09-01 — cycle GC owns persistent manager-visible memory and one token per candidate
+
+Plan prerequisites S36.9–S36.13 and S37.4, before S36.3.
+
+**Decided:** every production byte owned for cycle collection is issued by the
+project memory manager and remains identifiable there as GC metadata. A new
+`BLOCK_KIND_GC_METADATA` distinguishes those blocks from request arenas, and a
+physical accounting layer distinguishes queue floor and segments from
+workspace base and overflow without double counting. A second, logical axis
+counts current/high-water bytes for rows, worklist, members, parking, deferred
+drops and suspects within those blocks. Allocator-owning Rust containers
+(`Box`, `Vec`, maps, `Arc` backing storage and hidden `GlobalAlloc`) are not a
+collection-memory mechanism. Plain fixed layouts and raw links are allowed;
+their backing is manager memory. This supersedes the 2026-08-31 acceptance of
+the parking `Box<Vec>`.
+
+**Why:** “the manager happened to supply the bytes” is weaker than ownership.
+Today queue and shadow blocks read `BLOCK_KIND_ARENA`, so neither a census nor
+the manager's counters can say what the collector holds, while parking bypasses
+the manager altogether. The rule is executable: current and peak GC bytes are
+counted by role, collection tests deny the global allocator, and thread exit
+returns the direct count to zero. A source/ownership audit covers allocations
+made before that denial begins, including the weak registry/disposal path and
+the retained registry; cloning the current retained `Arc` would preserve an
+allocation the manager never saw and therefore does not satisfy the rule. The
+queue's present TLS `Cell`s move into its manager-issued floor header, leaving
+TLS only a non-owning pointer; capacity and poll bounds are re-derived from the
+new layout.
+
+**Decided:** every registered owner keeps one ordinary-pool 64 KiB
+`CycleWorkspace` block from init to exit. Collection overflow may draw the pool
+and then the critical reserve, but returns after commit or abort; a permanent
+base never consumes the critical reserve. The workspace moves through typed
+`Idle → Trace → Commit → Idle` phases. Ending the trace filters members while
+rows are readable, sweeps block shadow pointers, lowers the active flag and
+replays parking. Only the later commit/abort rewind may reuse bytes still named
+by the member list.
+
+**Cost:** mandatory direct cycle memory is 131,072 bytes per registered thread:
+one 65,536-byte queue floor and one workspace. The two best-effort queue spares
+make the nominal/maximum direct baseline 262,144 bytes when both are present.
+The distinct critical reserve has capacity up to 524,288 bytes and is neither
+guaranteed resident nor workspace capacity. One base block is the fixed policy;
+a warm-overflow cache needs S40.3's measurement. A calculated dense 381-entity
+shape uses 23,568 bytes (about 23.0 KiB) of the present row, stack and member
+forms; sparse placement across 381 widest blocks reserves 6,251,448 row-array
+bytes, or 6,258,608 bytes (about 5.97 MiB) with that stack and 381 member
+pointers. These are bounds from layouts, not workload results.
+
+**Decided:** `ENROLLED` denotes one logical candidate token in exactly one of
+three owner states: active queue, detached in-flight batch, or dormant
+suspects. Acquittal moves the token to dormant without clearing the bit; epoch
+turnover detaches the due dormant lane beside the active lane as a composite
+in-flight batch without a second enrolment or a second token. Abort restores
+each sub-batch to its source lane without allocation. Repeated decrements while
+dormant see the bit and add nothing. An enrolled
+death leaves its record and identity standing; only the consumer that owns the
+record may observe count zero, clear the bit, physically return the slot and
+retire the token.
+
+**Why:** clearing on acquittal is an edge-triggered permanent miss, while
+copying into both active and suspects is a duplicate raw pointer whose two
+consumers can retire different occupants of a recycled slot. Moving one token
+preserves recall and identity together. Current queue chains cannot splice a
+partially filled suspect chain because only their live head carries a bound;
+the replacement therefore carries explicit `read`/`used` bounds or compacts
+back to full segments before any O(1) move.
+
+**Review:** the Sage counted allocation and cache traffic before this plan was
+written. Queue entries consume one new 64-byte line per eight enrolments;
+widest flat rows reserve 16,408 bytes — 257 line-equivalents and 257–258
+physical lines depending on alignment — while first touch is proven only to
+write 121 bytes; its distinct addressed lines remain to measure. Persistent
+backing removes manager churn, not those cache fills. The Critic required zero-allocation batch restore,
+ordinary-pool funding for the permanent base, consumer-owned corpse retirement,
+member filtering before the row sweep and an explicit choice between component
+and conservative condemned-batch commit. Each implementation step repeats the
+Sage-before-code and Critic-after-repair gates; this review does not pre-approve
+their code.
+
 ## 2026-08-31 — a trace window owns its row arena and physical returns replay through one door
 
 S36.2.
