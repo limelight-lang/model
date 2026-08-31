@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ll-model · RC Cycle</title>
+  <style>
+    :root { color-scheme: dark; --ink:#f4f0e8; --muted:#9ca5b6; --line:#29313e; --cyan:#58d6d0; --amber:#ffbd69; --red:#ff6b6b; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-width:320px; background:#0b0e13; color:var(--ink); font:14px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; }
+    main { width:min(1480px, 100%); margin:auto; padding:24px clamp(14px,3vw,42px) 32px; }
+    header { display:flex; align-items:end; justify-content:space-between; gap:20px; margin-bottom:15px; }
+    .eyebrow { color:var(--cyan); font:700 11px/1 ui-monospace,monospace; letter-spacing:.16em; text-transform:uppercase; }
+    h1 { margin:7px 0 3px; font-size:clamp(25px,4vw,46px); line-height:1; letter-spacing:-.04em; }
+    .dek { color:var(--muted); max-width:720px; margin:0; }
+    .header-tools { display:flex; align-items:center; gap:8px; flex:none; }
+    .status { border:1px solid #674b27; border-radius:99px; padding:7px 11px; color:var(--amber); background:#1b160f; font:700 11px/1 ui-monospace,monospace; }
+    .lang { border-color:#4e5c70; color:var(--ink); background:#161e29; font-family:ui-monospace,monospace; }
+    .frame { position:relative; overflow:hidden; border:1px solid var(--line); border-radius:18px; background:#10151d; box-shadow:0 24px 80px #0008; }
+    canvas { display:block; width:100%; height:min(72vh,760px); min-height:560px; }
+    .toolbar { display:flex; gap:8px; align-items:center; padding:12px; border-top:1px solid var(--line); overflow:auto; background:#0e1218; }
+    button { appearance:none; border:1px solid #303a49; color:#b9c1ce; background:#151b24; border-radius:99px; padding:8px 12px; white-space:nowrap; cursor:pointer; font:600 12px/1 system-ui,sans-serif; }
+    button:hover, button:focus-visible { border-color:#647086; outline:none; }
+    button.active { color:#071316; background:var(--cyan); border-color:var(--cyan); }
+    .hint { margin-left:auto; color:#6f7989; white-space:nowrap; font-size:12px; }
+    footer { display:flex; justify-content:space-between; gap:24px; color:#747e8d; margin-top:12px; font-size:11px; }
+    footer code { color:#98a3b4; }
+    @media (max-width:760px) { header { align-items:start; flex-direction:column; } .header-tools{align-self:flex-start} .hint{display:none} footer{display:block} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <div class="eyebrow" data-i18n="eyebrow">Limelight runtime · ll-model</div>
+      <h1 data-i18n="title">RC cycle, без магии</h1>
+      <p class="dek" data-i18n="dek">Как нефинальный decrement становится кандидатом, shadow-count отделяет внешние ссылки от внутренних, а право на free остаётся у owning mutator.</p>
+    </div>
+    <div class="header-tools"><button class="lang" id="lang" aria-label="Switch to English">RU / EN</button><div class="status" data-i18n="status">СЕЙЧАС: PIPELINE НЕ ПОДКЛЮЧЁН</div></div>
+  </header>
+  <section class="frame" aria-label="Интерактивная схема алгоритма RC cycle">
+    <canvas id="diagram" role="img" aria-label="Схема из шести этапов: release, candidate queue, mark, scan, exact validation и reclaim или re-offer"></canvas>
+    <div class="toolbar" aria-label="Выбор этапа">
+      <button data-step="-1" class="active" data-nav="all">Вся схема</button>
+      <button data-step="0" data-nav="release">1 · Release</button><button data-step="1" data-nav="queue">2 · Queue</button>
+      <button data-step="2" data-nav="mark">3 · Mark</button><button data-step="3" data-nav="scan">4 · Scan</button>
+      <button data-step="4" data-nav="exact">5 · Exact</button><button data-step="5" data-nav="outcome">6 · Outcome</button>
+      <span class="hint" data-i18n="hint">Наведи на карточку → детали</span>
+    </div>
+  </section>
+  <footer>
+    <span data-i18n="sources">Основано на текущих <code>src/cycle/*</code>, <code>src/refcount.rs</code> и <code>src/gc.rs</code>.</span>
+    <span data-i18n="legend">Бирюзовый = реализовано · пунктир = ещё не orchestrated</span>
+  </footer>
+</main>
+<script>
+(() => {
+  'use strict';
+  const canvas = document.querySelector('#diagram');
+  const ctx = canvas.getContext('2d');
+  const stepsRu = [
+    { n:'01', tag:'MUTATOR', title:'Нефинальный release', sub:'RC уменьшается, но остаётся > 0', detail:'Gate пропускает только GC-heap, cycle-capable, без acyclic/ownership proof и ещё не enrolled.', state:'LIVE', color:'#58d6d0', built:true },
+    { n:'02', tag:'PERSISTENT', title:'Candidate queue', sub:'Указатель сохраняется без потерь', detail:'64 KiB сегменты → 2 spare cells → critical reserve → escrow. Safepoint пополняет запас и дренирует escrow.', state:'LIVE', color:'#58d6d0', built:true },
+    { n:'03', tag:'TRIAL DELETE', title:'Mark в shadow rows', sub:'shadow(v) ← RC(v); −1 на in-edge', detail:'Heap не изменяется. first_reach останавливает обход кольца; saturated 30-bit count остаётся консервативно live.', state:'BUILT · IDLE', color:'#ffbd69', built:false },
+    { n:'04', tag:'CLASSIFY', title:'Scan: live / condemned', sub:'shadow > 0 → внешний владелец', detail:'Live распространяется по рёбрам. Ноль без пути из live — лишь condemned proposal, ещё не разрешение на free.', state:'BUILT · IDLE', color:'#ffbd69', built:false },
+    { n:'05', tag:'OWNER ONLY', title:'Exact validation', sub:'Σ current RC = internal edges + guards', detail:'Owning mutator перечитывает count и fields. RC=0 включает corpse rule: весь component отклоняется до чтения полей.', state:'BUILT · IDLE', color:'#ffbd69', built:false },
+    { n:'06', tag:'COMMIT', title:'Reclaim или re-offer', sub:'Exact равенство → finalize + free', detail:'Внешняя ссылка или stale proposal → candidate bit остаётся, root предлагается снова. Сейчас этот orchestration не написан.', state:'MISSING', color:'#ff6b6b', built:false }
+  ];
+  const stepsEn = [
+    { n:'01', tag:'MUTATOR', title:'Non-final release', sub:'RC decreases, but remains > 0', detail:'The gate admits GC-heap, cycle-capable entities without acyclic/ownership proof that are not already enrolled.', state:'LIVE', color:'#58d6d0', built:true },
+    { n:'02', tag:'PERSISTENT', title:'Candidate queue', sub:'The pointer is recorded without loss', detail:'64 KiB segments → 2 spare cells → critical reserve → escrow. A safepoint refills reserves and drains escrow.', state:'LIVE', color:'#58d6d0', built:true },
+    { n:'03', tag:'TRIAL DELETE', title:'Mark into shadow rows', sub:'shadow(v) ← RC(v); −1 per in-edge', detail:'The heap is untouched. first_reach terminates ring traversal; a saturated 30-bit count stays conservatively live.', state:'BUILT · IDLE', color:'#ffbd69', built:false },
+    { n:'04', tag:'CLASSIFY', title:'Scan: live / condemned', sub:'shadow > 0 → external owner exists', detail:'Live propagates along edges. Zero without a path from live is only a condemned proposal, not permission to free.', state:'BUILT · IDLE', color:'#ffbd69', built:false },
+    { n:'05', tag:'OWNER ONLY', title:'Exact validation', sub:'Σ current RC = internal edges + guards', detail:'The owning mutator rereads counts and fields. RC=0 triggers the corpse rule: reject the entire component before reading fields.', state:'BUILT · IDLE', color:'#ffbd69', built:false },
+    { n:'06', tag:'COMMIT', title:'Reclaim or re-offer', sub:'Exact equality → finalize + free', detail:'External reference or stale proposal → keep the candidate bit and re-offer the root. This orchestration is not implemented yet.', state:'MISSING', color:'#ff6b6b', built:false }
+  ];
+  const copy = {
+    ru:{eyebrow:'Limelight runtime · ll-model',title:'RC cycle, без магии',dek:'Как нефинальный decrement становится кандидатом, shadow-count отделяет внешние ссылки от внутренних, а право на free остаётся у owning mutator.',status:'СЕЙЧАС: PIPELINE НЕ ПОДКЛЮЧЁН',hint:'Наведи на карточку → детали',sources:'Основано на текущих <code>src/cycle/*</code>, <code>src/refcount.rs</code> и <code>src/gc.rs</code>.',legend:'Бирюзовый = реализовано · пунктир = ещё не orchestrated',nav:{all:'Вся схема',release:'1 · Release',queue:'2 · Queue',mark:'3 · Mark',scan:'4 · Scan',exact:'5 · Exact',outcome:'6 · Outcome'}},
+    en:{eyebrow:'Limelight runtime · ll-model',title:'RC cycle, demystified',dek:'How a non-final decrement becomes a candidate, shadow counts separate external references from internal edges, and only the owning mutator may free.',status:'NOW: PIPELINE NOT WIRED',hint:'Hover over a card → details',sources:'Based on current <code>src/cycle/*</code>, <code>src/refcount.rs</code>, and <code>src/gc.rs</code>.',legend:'Teal = in production · dashed = not orchestrated yet',nav:{all:'Full flow',release:'1 · Release',queue:'2 · Queue',mark:'3 · Mark',scan:'4 · Scan',exact:'5 · Exact',outcome:'6 · Outcome'}}
+  };
+  let lang='ru';
+  const steps=()=>lang==='ru'?stepsRu:stepsEn;
+  let selected = -1, hover = -1, boxes = [], W=0, H=0, dpr=1;
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  function rr(x,y,w,h,r){ r=Math.min(r,w/2,h/2); ctx.beginPath(); ctx.roundRect(x,y,w,h,r); }
+  function text(s,x,y,size,color,weight='400',align='left',family='Inter,system-ui,sans-serif') { ctx.font=`${weight} ${size}px ${family}`; ctx.fillStyle=color; ctx.textAlign=align; ctx.textBaseline='alphabetic'; ctx.fillText(s,x,y); }
+  function wrap(s,x,y,max,width,line=18,color='#aab3c2',weight='400') { ctx.font=`${weight} ${max}px Inter,system-ui,sans-serif`; ctx.fillStyle=color; ctx.textAlign='left'; const words=s.split(' '); let row='', yy=y; for(const word of words){const test=row+word+' '; if(ctx.measureText(test).width>width&&row){ctx.fillText(row.trim(),x,yy);row=word+' ';yy+=line}else row=test} ctx.fillText(row.trim(),x,yy); return yy; }
+  function arrow(x1,y1,x2,y2,active=false,dashed=false){ctx.save();ctx.strokeStyle=active?'#58d6d0':'#3b4656';ctx.fillStyle=ctx.strokeStyle;ctx.lineWidth=active?2:1.3;if(dashed)ctx.setLineDash([5,6]);ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.setLineDash([]);const a=Math.atan2(y2-y1,x2-x1);ctx.beginPath();ctx.moveTo(x2,y2);ctx.lineTo(x2-8*Math.cos(a-.45),y2-8*Math.sin(a-.45));ctx.lineTo(x2-8*Math.cos(a+.45),y2-8*Math.sin(a+.45));ctx.closePath();ctx.fill();ctx.restore();}
+  function drawGraph(cx,cy,r){
+    ctx.save(); ctx.translate(cx,cy);
+    const pts=[[-r*.72,-r*.25],[r*.48,-r*.68],[r*.72,r*.48],[-r*.48,r*.68]];
+    for(let i=0;i<4;i++){const a=pts[i],b=pts[(i+1)%4];arrow(a[0],a[1],b[0],b[1],true)}
+    pts.forEach((p,i)=>{ctx.beginPath();ctx.arc(p[0],p[1],14,0,Math.PI*2);ctx.fillStyle='#111c22';ctx.fill();ctx.strokeStyle='#58d6d0';ctx.lineWidth=2;ctx.stroke();text(String.fromCharCode(65+i),p[0],p[1]+4,11,'#dffdfb','700','center','ui-monospace,monospace')});
+    ctx.restore();
+  }
+  function draw(){
+    ctx.clearRect(0,0,W,H); ctx.fillStyle='#10151d';ctx.fillRect(0,0,W,H);
+    const glow=ctx.createRadialGradient(W*.12,H*.2,0,W*.12,H*.2,W*.65);glow.addColorStop(0,'#15343b66');glow.addColorStop(1,'#10151d00');ctx.fillStyle=glow;ctx.fillRect(0,0,W,H);
+    const pad=clamp(W*.035,20,52), top=30, small=W<850;
+    text(lang==='ru'?'ЗАЧЕМ RC НУЖЕН ВТОРОЙ ПУТЬ':'WHY RC NEEDS A SECOND PATH',pad,top,10,'#788394','700','left','ui-monospace,monospace');
+    if(!small){ drawGraph(pad+76,top+91,58); text('A → B → C → D → A',pad+160,top+69,13,'#f4f0e8','700'); wrap(lang==='ru'?'Внешних ссылок уже нет, но каждый RC всё ещё равен числу внутренних рёбер.':'External references are gone, but every RC still equals its internal incoming edges.',pad+160,top+94,12,255,18,'#8f9aaa'); }
+    else { text(lang==='ru'?'Кольцо: RC > 0, хотя внешних ссылок нет':'Ring: RC > 0 with no external references',pad,top+30,13,'#f4f0e8','700'); }
+    const metricX=small?pad:W-410;
+    text(lang==='ru'?'КЛЮЧЕВАЯ ПРОВЕРКА':'THE KEY TEST',metricX,top,10,'#788394','700','left','ui-monospace,monospace');
+    text('shadow RC = real RC − internal IN',metricX,top+32,small?15:18,'#ffbd69','700','left','ui-monospace,monospace');
+    wrap(lang==='ru'?'0 → возможно цикл · > 0 → есть внешний владелец':'0 → possible cycle · > 0 → external owner exists',metricX,top+56,12,360,18,'#9ca5b6');
+    const y0=small?135:165, gap=14, cols=small?1:3, rows=small?6:2;
+    const cardW=(W-pad*2-gap*(cols-1))/cols, available=H-y0-76, cardH=(available-gap*(rows-1))/rows;
+    boxes=[];
+    steps().forEach((s,i)=>{
+      const col=i%cols,row=Math.floor(i/cols),x=pad+col*(cardW+gap),y=y0+row*(cardH+gap);boxes.push({x,y,w:cardW,h:cardH});
+      const focus=selected<0||selected===i, hot=hover===i;
+      ctx.save();ctx.globalAlpha=focus?1:.28;rr(x,y,cardW,cardH,13);ctx.fillStyle=hot?'#19222d':'#141a23';ctx.fill();ctx.strokeStyle=hot?s.color:(s.built?'#285158':'#3a3d43');ctx.lineWidth=hot?2:1;ctx.stroke();
+      ctx.fillStyle=s.color;ctx.fillRect(x,y,4,cardH);
+      text(s.n,x+18,y+27,11,s.color,'800','left','ui-monospace,monospace');text(s.tag,x+50,y+27,10,'#768191','700','left','ui-monospace,monospace');
+      text(s.title,x+18,y+56,clamp(cardW*.052,15,21),'#f4f0e8','750');
+      wrap(s.sub,x+18,y+80,12,cardW-36,17,'#b3bdca','600');
+      if(cardH>150) wrap(s.detail,x+18,y+118,11,cardW-36,16,'#7f8a9a');
+      text(s.state,x+cardW-15,y+cardH-16,9,s.color,'800','right','ui-monospace,monospace');ctx.restore();
+      if(i<steps().length-1){const nbCol=(i+1)%cols, nbRow=Math.floor((i+1)/cols);if(nbRow===row)arrow(x+cardW,y+cardH/2,x+cardW+gap-2,y+cardH/2,selected===i||selected===i+1,!s.built);}
+    });
+    if(!small){const a=boxes[2],b=boxes[3];arrow(a.x+a.w/2,a.y+a.h,a.x+a.w/2,b.y,selected===2||selected===3,true);}
+    const bottom=H-35;
+    ctx.strokeStyle='#29313e';ctx.beginPath();ctx.moveTo(pad,bottom-18);ctx.lineTo(W-pad,bottom-18);ctx.stroke();
+    text('SAFETY',pad,bottom,10,'#58d6d0','800','left','ui-monospace,monospace');
+    text(lang==='ru'?'live RC не трогаем':'live RC is untouched',pad+65,bottom,11,'#98a3b4','600');
+    if(!small){text(lang==='ru'?'·  abort = reset scratch':'·  abort = reset scratch',pad+205,bottom,11,'#98a3b4','600');text(lang==='ru'?'·  free только после owner exact-check':'·  free only after owner exact-check',pad+390,bottom,11,'#98a3b4','600');text(lang==='ru'?'РЕАЛИЗОВАНО  2/6 production stages':'IMPLEMENTED  2/6 production stages',W-pad,bottom,10,'#ffbd69','700','right','ui-monospace,monospace');}
+  }
+  function resize(){dpr=Math.min(devicePixelRatio||1,2);const r=canvas.getBoundingClientRect();W=r.width;H=r.height;canvas.width=Math.round(W*dpr);canvas.height=Math.round(H*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);draw()}
+  function locate(e){const r=canvas.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;return boxes.findIndex(b=>x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h)}
+  canvas.addEventListener('pointermove',e=>{const n=locate(e);if(n!==hover){hover=n;canvas.style.cursor=n<0?'default':'pointer';draw()}});
+  canvas.addEventListener('pointerleave',()=>{hover=-1;draw()});
+  canvas.addEventListener('click',e=>{const n=locate(e);if(n>=0)setStep(n)});
+  function setStep(n){selected=n;document.querySelectorAll('button[data-step]').forEach(b=>b.classList.toggle('active',Number(b.dataset.step)===n));draw()}
+  document.querySelectorAll('button[data-step]').forEach(b=>b.addEventListener('click',()=>setStep(Number(b.dataset.step))));
+  document.querySelector('#lang').addEventListener('click',()=>{lang=lang==='ru'?'en':'ru';document.documentElement.lang=lang;const c=copy[lang];document.querySelectorAll('[data-i18n]').forEach(el=>el.innerHTML=c[el.dataset.i18n]);document.querySelectorAll('[data-nav]').forEach(el=>el.textContent=c.nav[el.dataset.nav]);canvas.setAttribute('aria-label',lang==='ru'?'Схема из шести этапов алгоритма RC cycle':'Six-stage RC cycle algorithm diagram');document.querySelector('#lang').setAttribute('aria-label',lang==='ru'?'Switch to English':'Переключить на русский');draw()});
+  new ResizeObserver(resize).observe(canvas); resize();
+})();
+</script>
+</body>
+</html>

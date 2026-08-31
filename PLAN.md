@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-08-29 · Active: S36 — the sections after S40 are the backlog
+Updated: 2026-08-31 · Active: S36 — the sections after S40 are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
@@ -482,9 +482,10 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
 
 ## S36 — Commit
 
-Goal: only the owning thread frees, and it frees what the judge condemned and
-the exact test confirmed. The teardown is here in full: the Critic round of
-2026-08-26 found the stage claiming the frees while building none of them.
+Goal: only the owning thread frees. An in-line owner trace may commit what its
+stable mark/scan proved; a speculative trace must first pass the owner's exact
+test. The teardown is here in full: the Critic round of 2026-08-26 found the
+stage claiming the frees while building none of them.
 
 - [x] S36.1 The exact test on the owner's thread
       done: current fields are re-read on the owning thread before any free, and
@@ -587,6 +588,25 @@ the exact test confirmed. The teardown is here in full: the Critic round of
         deferred-fire contract the dying `gc/tests/where_a_collection_may_fire.rs`
         carried
       tier: T2 · role: —
+- [ ] S36.8 Elide the redundant exact test after an in-line owner trace
+      done: when mark and scan run synchronously on the owning mutator at one
+        consistent point, a condemned component proceeds directly to the owner
+        commit — guard acquisition, weak invalidation and finalization — without
+        `exact::judge` re-reading the same counts and fields first; the
+        speculative/off-thread path still calls `exact::judge`, because its
+        shortlist may combine observations from different instants; tests count
+        exact-test entries and prove zero before teardown for the in-line path,
+        one for a posted speculative result, and no behavioural difference on
+        a ring with an external keeper; a benchmark records the saved member
+        and edge reads for component sizes 2, 16 and 256
+      tier: T2 · role: Critic
+      handoff: this removes only the pre-teardown confirmation. S36.4's exact
+        re-verify after any `__destruct` remains mandatory in both paths: user
+        code ran with a guarded `$this` and may have resurrected a member. The
+        in-line shortcut is valid only while the owner has not released the
+        collection's consistency window between the final scan decision and
+        guard acquisition; encode that boundary in the API so a future caller
+        cannot pass a stale condemned list as an in-line proof.
 
 ## S37 — Maturation and the two class gates
 
