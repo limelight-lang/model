@@ -1242,20 +1242,31 @@ stage claiming the frees while building none of them.
         collector worker waits on (`rfc/dev/ALGORITHM-AUDIT.md`, A4)
 
 - [ ] S36.10 The persistent per-owner workspace   *(before S36.3)*
-      done: thread init draws one mandatory 64 KiB workspace base from the
-        ordinary block pool, after the queue floor and before registration is
-        published; a refusal rolls the partial init back and refuses the
-        thread. The base is rewound between collections and returned only at
-        thread exit. It is never drawn permanently from the critical reserve;
-        overflow asks the pool and then the reserve and returns after every
-        commit or abort
-      done: the workspace is a typed `Idle → Trace → Commit → Idle` ownership
-        transition. Trace end filters members while rows are readable, sweeps
-        every block shadow, lowers the active flag and replays parking, but
-        does not rewind bytes the commit still names; commit or abort performs
-        the final rewind. Nested use and a phase-invalid pointer fail in every
-        build
+      done: the first collection on a thread draws one 64 KiB workspace base
+        through `gc_metadata::acquire` from the ordinary block pool, and the
+        thread holds it from then until exit; a refusal is a collection that
+        does not start, `None` at the open as today, and thread init draws
+        nothing new. The base is rewound at every trace close and returned
+        at thread exit, after the queue's blocks and before `critical::drain`.
+        It is never drawn from the critical reserve; overflow asks the pool
+        and then the reserve and returns after every close or abort; the base
+        stands outside the arena's returnable block list
+      done: the workspace is a typed `Idle → Trace → Idle` ownership
+        transition with one representation of "a trace is open". Trace end
+        sweeps every block shadow and replays the withheld returns, then
+        rewinds; an abort keeps its own sweep and rewinds the same way.
+        Nested use and a phase-invalid pointer fail in every build. The
+        Commit phase — bytes the commit still names after the trace close —
+        is S36.12's, taken when its commit unit is chosen
       tier: T2 · role: Sage → Critic
+      Edmond 2026-09-01: a dedicated block for the algorithm is acceptable on
+        one condition — every block is explicitly requested from the memory
+        manager. Mandatory-at-init or first-collection was left to the
+        architect: first collection, because the `rfc`'s one-mandatory-block
+        contract then stands as written and a refused draw loses no guarantee
+        a collection did not already lack (`dev/DECISIONS.md`, "the workspace
+        base is drawn at the first collection"). The Commit phase moves to
+        S36.12 on the same ruling: it had no consumer here (F6). Final.
       Sage 2026-09-01 (pre-change gate, run by session L2, every cited line
         checked against the file): nine findings and three escalations, no
         code touched. Taken as rulings for the code — one representation of
