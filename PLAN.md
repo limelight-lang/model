@@ -11,7 +11,8 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-01 · Active: S36 — the sections after S40 are the backlog
+Updated: 2026-09-01 · Active: S41, and the rest of S36 after it — the sections
+after S40 are the backlog
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
@@ -83,6 +84,118 @@ Empty.
 
 ---
 
+## S41 — The cycle vocabulary   *(before the rest of S36)*
+
+Goal: every identifier and comment in `src/cycle` and its direct callers names
+the state or the operation it denotes, and the crate agrees with the RFC
+glossary rather than with metaphors that entered through a commit subject and
+spread by agreement with the text already written.
+
+Ordered by Edmond on 2026-09-01. Two audits stand behind it and neither is
+repeated here: `dev/CYCLE-TERMINOLOGY-AUDIT.md` carries the `cycle` mapping,
+the comment standard and the documentation boundary, and
+`dev/PROJECT-TERMINOLOGY-AUDIT.md` carries the groups outside `cycle` and the
+migration order across both repositories. Both are drafts against
+`rfc/dev/GLOSSARY.md`, which wins on conflict. The `rfc` documents' own rename
+stays with that repository's plan, under "The vocabulary" — the question
+graph, the lifecycle documents, the hash-table design, the `zero-abstraction`
+filename migration and `heap-design.md`'s status defect are all over there.
+What this stage takes is the crate half of both audits.
+
+Two things the project audit names are already owned and stay out: renaming
+`MemoryCategory::LongLived`, which the backlog's "Rename the memory
+categories" holds and which waits on region ownership, and redrawing
+`docs/architecture.md`, which is S40.0.
+
+**The stage runs before the rest of S36** so that S36.9's remaining slices and
+S36.10 onward are written in the names that survive rather than renamed after
+them. **Every commit here is rename and comment only**: layout, allocation,
+synchronization and algorithm stay where they are, and a structural change the
+audit happens to name — `cycle::parking`'s `Box<Vec<_>>` is the one — belongs
+to the step that owns it.
+
+- [ ] S41.1 Decide: the mapping is synchronized with the RFC glossary
+      done: every row of the audit's tables carries a verdict against
+        `rfc/dev/GLOSSARY.md` — kept, amended to the glossary's word, or raised
+        as a gap the glossary has to answer — and each verdict is recorded in
+        the audit itself; a term the glossary does not cover is named rather
+        than settled here
+      tier: T2 · role: Sage
+      handoff: the glossary is built by the `rfc` plan and read by this step
+        rather than written. Three words are already known to be used as terms
+        with nothing defining them — `door`, `escrow` and `floor` — and
+        `ResetWindow::escrow` outside `cycle` names deferred count corrections
+        and takes a name of its own.
+- [ ] S41.2 The retired-identifier test, seen failing first
+      done: a source audit over `src/` fails on any identifier the ratified
+        mapping retires, allowing a string that quotes a document heading
+        verbatim; it is seen red on this tree before the first rename and green
+        after each one
+      tier: T2 · role: —
+      handoff: `refcount::tests::who_may_read_a_header` is the pattern for a
+        test that reads the crate's own sources.
+- [ ] S41.3 The candidate queue and the manager boundary
+      done: `src/cycle/queue.rs` and `src/memory/gc_metadata.rs` carry the
+        ratified names, the module contract states the three storage paths the
+        audit names, and no metaphor from the audit's list survives in either;
+        the gate is green and no existing test changed an assertion to get
+        there
+      tier: T2 · role: Critic
+- [ ] S41.4 Row resolution, the trace scratch, mark, scan, the stack, deferred reuse and validation
+      done: `row`, `arena`, `shadow`, `mark`, `scan`, `stack`, `parking` and
+        `exact` carry the ratified names, module by module with a compile at
+        each boundary; `parking` becomes `deferred_reuse` and `exact` becomes
+        `validation`, and neither module changes what it does
+      tier: T2 · role: Critic
+- [ ] S41.5 The tests and the current maps
+      done: no test file name, test name, helper or assertion uses a retired
+        term; `dev/INDEX.md` and `dev/ARCHITECTURE.md` name what the code names;
+        the historical records the audit lists as out of scope are untouched,
+        and an active citation of an old heading keeps the heading exactly with
+        the current name outside the quotation
+      tier: T1 · role: —
+- [ ] S41.6 The comments, the residue and the gate
+      done: every module header of `cycle` states purpose, ownership and
+        lifetime, allocation and failure behaviour, ordering invariants and its
+        design references; every remaining occurrence of a retired word is
+        classified as a historical citation, unrelated English or a defect, and
+        the defects are gone; the full gate passes and a Critic has read the
+        pass for terminology, for the safety contracts it had to preserve, and
+        for an accidental change of meaning
+      tier: T2 · role: Critic
+
+- [ ] S41.7 Allocation outcomes, and the `door` sites by semantic class
+      done: an allocation failure, an unsupported placement, an admission
+        denial, a carry that left storage in its source block and an
+        unobserved journal thread each carry a name of their own —
+        `InsertOutcome`, `Placement`, `ExternalCarry`, `OutsideCarry` and the
+        journal `Window` among them — and every `door` site is classified as
+        an allocation path, an entry point, a store-barrier form, a channel,
+        an ownership boundary or the named OS resource; the difference between
+        a memory failure and a result a caller can act on survives every
+        rename, which a test asserts rather than a reading
+      tier: T2 · role: Critic
+      handoff: 76 sites over those five types, counted 2026-09-01 with `grep
+        -rn` over `src/`.
+- [ ] S41.8 The hash table's collision defence
+      done: the metaphor is gone from `src/array/` and its tests — collision-
+        defence state, a chain-length threshold, an equal-hash threshold, a
+        salted rebuild, a keyed-hash escalation and a terminal admission
+        denial name what each was; the admission denial stays a result the
+        caller can catch and does not become an allocation failure, which is
+        the one distinction the rename can destroy silently
+      tier: T2 · role: Critic
+      handoff: `ladder`, `rung` and `trigger` are 176 occurrences in `src/`,
+        counted 2026-09-01; the design half is `rfc`'s.
+- [ ] S41.9 The lifecycle, ownership and platform words in the crate's prose
+      done: `death`, `destructor`, `teardown`, `dispose`, `drop` and
+        `reclamation` each name one of the five phases the project audit
+        separates, and no comment presents them as one ordering; `native`
+        resolves to machine code, standard PHP, the machine stack or foreign
+        code at each of its sites; `owner` in a cross-module contract says
+        which owner it means
+      tier: T1 · role: —
+      handoff: `native` is 14 occurrences in `src/`, counted 2026-09-01.
 ## S34 — The root queue, enrolment and parking
 
 Goal: candidates reach the collector without the mutator paying for a data
