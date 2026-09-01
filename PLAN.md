@@ -68,24 +68,13 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 
 ## Fog
 
-Raised by the review of 2026-09-01 over `52b2cbf` and `0416e83`. A line here
-is an unresolved question rather than a step: it carries no criterion, and it
-leaves the list when it gets one or when it is ruled on.
+A line here is an unresolved question rather than a step: it carries no
+criterion, and it leaves when it gets one or when it is ruled on.
 
-Five of the six left on the day they arrived, four by Edmond's rulings of
-2026-09-01 and one by the repair those rulings prompted. The free that reaches
-a traced address is S38.3's, and with it go its two neighbours — a cross-thread
-free that never sees the window, and a retained block returned past the gate —
-the same hazard in the same step. The dead workspace role went with the role
-split itself, which he ended. The weak tests of S36.9a were rebuilt and their
-repair is recorded under that step.
-
-- **The parking `Vec`'s record has a dangling citation.** The entry of
-  2026-08-31 cites a 2026-07-27 decision as what superseded the intrusive
-  list; no such entry exists, and the 2026-07-26 decision it would have
-  superseded forbids the allocation in as many words. The container itself is
-  settled — the entry of 2026-09-01 puts parking on manager memory and S36.9
-  slice c builds it — so what is open is the record, not the code.
+Empty. The six the review of 2026-09-01 raised over `52b2cbf` and `0416e83`
+left the same day — four by Edmond's rulings, recorded in `dev/DECISIONS.md`
+and in the `done:` clause of S38.3, and two by the repairs they prompted,
+recorded under S36.9.
 
 ---
 
