@@ -1,11 +1,11 @@
 use super::*;
 use crate::class::ClassBuilder;
-use crate::cycle::arena::ShadowArena;
-use crate::cycle::mark::{Marked, mark};
-use crate::cycle::scan::{Scanned, scan};
-use crate::cycle::shadow::Colour;
+use crate::cycle::arena::TraceScratchArena;
+use crate::cycle::mark::{MarkResult, mark};
+use crate::cycle::scan::{ScanResult, scan};
+use crate::cycle::shadow::Color;
 use crate::cycle::stack::TraceStack;
-use crate::cycle::testing::row_colour;
+use crate::cycle::testing::row_color;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
@@ -19,22 +19,22 @@ use crate::test_support::{entity_checked, prop_offset, store_prop};
 /// The arena comes back so the caller resets it before judging: the rows
 /// die at the token's release and the exact test runs after it
 /// (`rfc/model/gc/rc-cycle.md`, "Concurrency").
-unsafe fn condemned_from(root: *mut Object, expected: &[*mut Object]) -> ShadowArena {
-    let mut arena = ShadowArena::new();
+unsafe fn condemned_from(root: *mut Object, expected: &[*mut Object]) -> TraceScratchArena {
+    let mut arena = TraceScratchArena::new();
     let mut stack = TraceStack::new();
     assert_eq!(
         unsafe { mark(&mut arena, &mut stack, root as *mut RcHeader) },
-        Marked::Complete
+        MarkResult::Complete
     );
     assert_eq!(
         unsafe { scan(&mut arena, &mut stack, root as *mut RcHeader) },
-        Scanned::Complete
+        ScanResult::Complete
     );
 
     for &entity in expected {
         assert_eq!(
-            unsafe { row_colour(entity as *mut RcHeader) },
-            Colour::Condemned,
+            unsafe { row_color(entity as *mut RcHeader) },
+            Color::PotentiallyUnreachable,
             "the trace condemned this entity"
         );
     }

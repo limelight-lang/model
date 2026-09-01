@@ -256,8 +256,8 @@ a block, and that count is soundness rather than economy: dividing the
 payload by a class size there fabricates rows out of the object's own
 cells. The pooled half rides the region scan; a run lies outside every
 region and is found from the module's own registry, which is why its
-free parks during a trace like everything else that can put row-addressed
-memory back in circulation.
+free has its reuse deferred during a trace like everything else that can put
+row-addressed memory back in circulation.
 
 Its shadow row is one word of that first line, `LargeEntityHeader::row`,
 zeroed at commissioning and zeroed again by the sweep of every
@@ -268,26 +268,28 @@ array is enrolled for the sweep through a prologue of its own
 
 ### Trace-window physical return
 
-`rc-cycle` parks on two windows of different widths — a queue entry naming an
-entity, and a trace that may still address the entity's shadow row. Both are
+`rc-cycle` defers a slot's reuse on two windows of different widths — a queue
+entry naming an entity, and a trace that may still address the entity's shadow
+row. Both are
 built into `stdapi::ll_free`. A refused queue-window return needs no second
 record because the entry is its record. A refused trace-window return is
-recorded out of band by `cycle::parking`; closing the trace replays it through
-the same `ll_free`, so whichever window closes last performs the physical
-return.
+recorded out of band by `cycle::deferred_slot_reuse`; closing the trace replays
+it through the same `ll_free`, so whichever window closes last performs the
+physical return.
 
-`TraceWindow` owns the `ShadowArena`: close first resets it and nulls every
-block's row pointer, then lowers the owner-local active flag, then replays the
-returns. The window covers mark and scan alone and ends before exact validation
-and teardown. Today it is the in-line owner's TLS state; the collector-worker
-form waits on S38's owner-addressable token and parking handoff.
+`ActiveTrace` owns the `TraceScratchArena`: close first resets it and nulls
+every block's row pointer, then lowers the owner-local active flag, then
+replays the returns. The window covers mark and scan alone and ends before
+exact validation and teardown. Today it is the in-line owner's TLS state; the
+collector-worker form waits on S38's owner-addressable token and deferred-reuse
+handoff.
 
 The gate covers ordinary entity slots, retained blocks and both large entity
 kinds. A retained block rides at block granularity — its last occupant can
 return the whole block — and an OS-direct entity run would otherwise be
 unmapped under its header row. A retained block pointer used as the reset's
-empty-block return sentinel is parkable but is not an entity header, so the
-refcount and `CANDIDATE_BIT` tests explicitly exclude it.
+empty-block return sentinel can have its reuse deferred but is not an entity
+header, so the refcount and `CANDIDATE_BIT` tests explicitly exclude it.
 
 #### Historical rc-walk mechanism
 
@@ -606,8 +608,8 @@ the block and end GC accounting exactly once; the kind stamp makes a return of
 a block collection never owned a hard invariant failure rather than a counter
 underflow.
 
-What remains in PLAN S36.9 is the removal of allocator-owned parking, weak and
-retained-index storage.
+What remains in PLAN S36.9 is the removal of allocator-owned deferred-reuse,
+weak and retained-index storage.
 
 ### The critical reserve
 

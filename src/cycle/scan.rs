@@ -7,7 +7,7 @@
 //! so it survives and so does everything reachable from it; a row at
 //! zero that no such reference reaches is condemned. A colour is a
 //! proposal and never a verdict: what judges the set is
-//! `crate::cycle::exact`, which re-reads a component's current fields
+//! `crate::cycle::validation`, which re-reads a component's current fields
 //! on the owning thread before any free.
 //!
 //! **It runs after every root has been marked, never between two
@@ -19,7 +19,7 @@
 //!
 //! **No entity is written here either.** The colours go into the shadow
 //! rows, so a scan that gives up halfway leaves the heap byte-identical
-//! and owes nothing but `ShadowArena::reset`, exactly as the mark does.
+//! and owes nothing but `TraceScratchArena::reset`, exactly as the mark does.
 //!
 //! # Why a condemned row is not a verdict yet
 //!
@@ -48,32 +48,32 @@
 //! be made in both files.
 
 use crate::cells::{self, PlainCells};
-use crate::cycle::arena::{ShadowArena, met_row};
-use crate::cycle::row::{Edge, edge_to};
-use crate::cycle::shadow::{self, Colour};
+use crate::cycle::arena::{TraceScratchArena, find_initialized_row};
+use crate::cycle::row::{EdgeTarget, resolve_edge_target};
+use crate::cycle::shadow::{self, Color};
 use crate::cycle::stack::TraceStack;
 use crate::refcount::RcHeader;
 
 /// What a scan from one root answered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Scanned {
+pub(crate) enum ScanResult {
     /// Every entity the root reaches through a met row carries a
-    /// verdict: [`Colour::Condemned`] or [`Colour::Live`].
+    /// verdict: [`Color::PotentiallyUnreachable`] or [`Color::Live`].
     Complete,
     /// Both memory doors refused the worklist a segment, so the
     /// collection aborts. The heap is byte-identical and the arena's
     /// reset is the whole of the debt.
-    Refused,
+    AllocationFailed,
 }
 
 /// Colour the closure of `root`: every entity it reaches through the
 /// rows this collection met.
 ///
 /// A row above zero is held from outside the trace, so it is coloured
-/// [`Colour::Live`] and so is everything reachable from it; a row at
-/// zero that no live row reaches is [`Colour::Condemned`]. An entity the
-/// mark never met is left alone, which is where an edge out of the GC
-/// heap and an address the retained population cannot place both end.
+/// [`Color::Live`] and so is everything reachable from it; a row at zero that
+/// no live row reaches is [`Color::PotentiallyUnreachable`]. An entity the mark
+/// never met is left alone, which is where an edge out of the GC heap and an
+/// address the retained population cannot place both end.
 ///
 /// `arena` and `stack` are the collection's, as they are for the mark,
 /// and every root must have been marked before the first scan runs.
@@ -83,23 +83,23 @@ pub(crate) enum Scanned {
 /// the trace runs where `cells::trace_cells` may read an entity's cells
 /// plainly — on the owning thread, with no mutator running beside it.
 pub(crate) unsafe fn scan(
-    arena: &mut ShadowArena,
+    arena: &mut TraceScratchArena,
     stack: &mut TraceStack,
     root: *mut RcHeader,
-) -> Scanned {
-    if !unsafe { decide(arena, stack, root, false) } {
-        return Scanned::Refused;
+) -> ScanResult {
+    if !unsafe { classify_and_schedule_entity(arena, stack, root, false) } {
+        return ScanResult::AllocationFailed;
     }
 
     while let Some(entity) = stack.pop() {
-        let Some(word) = (unsafe { met_row_of(entity) }) else {
+        let Some(word) = (unsafe { find_initialized_row_for_entity(entity) }) else {
             // Queued only after its row answered, and a row neither
             // moves nor unmeets inside a collection.
             debug_assert!(false, "a queued entity has no met row");
             continue;
         };
 
-        let live = shadow::colour(unsafe { *word }) == Colour::Live;
+        let live = shadow::color(unsafe { *word }) == Color::Live;
         // The kind is loaded here and passed down rather than read
         // inside the tracer, which is the contract `trace_cells` states.
         let kind = unsafe { cells::entity_kind(entity) };
@@ -114,46 +114,47 @@ pub(crate) unsafe fn scan(
                     return;
                 }
 
-                refused = !decide(arena, stack, cell.child, live);
+                refused = !classify_and_schedule_entity(arena, stack, cell.child, live);
             })
         };
 
         if refused {
-            return Scanned::Refused;
+            return ScanResult::AllocationFailed;
         }
     }
 
-    Scanned::Complete
+    ScanResult::Complete
 }
 
 /// Colour one entity the scan has reached and queue it when the colour
-/// changed, `from_live` saying whether the edge came from a row already
+/// changed, `reached_from_live` saying whether the edge came from a row already
 /// known to be held from outside. False when both memory doors refused.
 ///
-/// The three colours a met row can carry answer differently. `Met` is
-/// undecided, and the count decides it — an edge from a live parent
-/// decides it live whatever the count says. `Condemned` is decided and
-/// not final: a live parent raises it. `Live` is final, and stopping
+/// The three colours a met row can carry answer differently.
+/// `Color::Unclassified` is undecided, and the count decides it — an edge
+/// from a live parent decides it live whatever the count says.
+/// `Color::PotentiallyUnreachable` is decided and not final: a live parent
+/// raises it. `Live` is final, and stopping
 /// there is what terminates the scan.
 ///
 /// # Safety
 /// As [`scan`], and `entity` is a root or a counted child
 /// `cells::trace_cells` yielded, hence a live entity header.
-unsafe fn decide(
-    arena: &mut ShadowArena,
+unsafe fn classify_and_schedule_entity(
+    arena: &mut TraceScratchArena,
     stack: &mut TraceStack,
     entity: *mut RcHeader,
-    from_live: bool,
+    reached_from_live: bool,
 ) -> bool {
-    let Some(word) = (unsafe { met_row_of(entity) }) else {
+    let Some(word) = (unsafe { find_initialized_row_for_entity(entity) }) else {
         return true;
     };
 
     let row = unsafe { *word };
-    // `Colour::Untouched` does not reach here: an unmet row is what
-    // `met_row` answers `None` for.
-    let colour = shadow::colour(row);
-    if colour == Colour::Live || (colour == Colour::Condemned && !from_live) {
+    // `Color::Untouched` does not reach here: an unmet row is what
+    // `find_initialized_row` answers `None` for.
+    let color = shadow::color(row);
+    if color == Color::Live || (color == Color::PotentiallyUnreachable && !reached_from_live) {
         return true;
     }
 
@@ -161,13 +162,13 @@ unsafe fn decide(
     // `COUNT_MAX` is above zero, so this test keeps such a row live
     // without asking about saturation separately
     // (`crate::cycle::shadow::is_saturated`).
-    let verdict = if from_live || shadow::count(row) > 0 {
-        Colour::Live
+    let verdict = if reached_from_live || shadow::count(row) > 0 {
+        Color::Live
     } else {
-        Colour::Condemned
+        Color::PotentiallyUnreachable
     };
 
-    unsafe { shadow::recolour(word, verdict) };
+    unsafe { shadow::recolor(word, verdict) };
     stack.push(arena, entity)
 }
 
@@ -179,12 +180,12 @@ unsafe fn decide(
 /// `entity` is a live entity header whose block is still this
 /// collection's.
 #[inline]
-unsafe fn met_row_of(entity: *mut RcHeader) -> Option<*mut u32> {
-    let Edge::Interior(row) = (unsafe { edge_to(entity) }) else {
+unsafe fn find_initialized_row_for_entity(entity: *mut RcHeader) -> Option<*mut u32> {
+    let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(entity) }) else {
         return None;
     };
 
-    unsafe { met_row(row) }
+    unsafe { find_initialized_row(row) }
 }
 
 #[cfg(test)]

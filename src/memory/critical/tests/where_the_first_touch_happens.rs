@@ -123,12 +123,12 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
     /// Sorted, and each name paired with whether its payload has drop
     /// glue — which is what decides where its first touch may happen.
     const DECLARED: &[(&str, bool)] = &[
-        ("ACTIVE", false),
         ("ADMITTED", false),
         ("ALLOCATING", false),
         ("BLOCKS", false),
         ("CRITICAL", true),
         ("CURRENT_CONTEXT", false),
+        ("DEFERRED_SLOTS", false),
         ("DIED", false),
         ("DUE", false),
         ("EXIT_GUARD", true),
@@ -136,13 +136,13 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("HEAP", false),
         ("LATE_CELL", false),
         ("OWNER_STATE", false),
-        ("PARKED", false),
         ("POOL_REQUESTS", false),
         ("RESERVE", true),
         ("RING", false),
         ("THREAD_BUFFER_ARENA", false),
         ("THREAD_CACHE", true),
         ("THREAD_HEAP", false),
+        ("TRACE_ACTIVE", false),
         ("WEAK_TABLE", false),
         ("WINDOW", false),
         ("WRITTEN_BYTES", false),

@@ -16,18 +16,18 @@ fn a_row_carries_a_colour_and_a_count_without_either_reaching_the_other() {
     assert_eq!(size_of::<u32>(), 4, "a row is four bytes");
     assert_eq!(
         COUNT_MAX, 0x3FFF_FFFF,
-        "thirty bits of working count under two of colour"
+        "thirty bits of working count under two of color"
     );
 
     for colour_code in [
-        Colour::Untouched,
-        Colour::Met,
-        Colour::Condemned,
-        Colour::Live,
+        Color::Untouched,
+        Color::Unclassified,
+        Color::PotentiallyUnreachable,
+        Color::Live,
     ] {
         for value in [0, 1, 2, 1023, COUNT_MAX - 1, COUNT_MAX] {
             let word = compose(colour_code, value);
-            assert_eq!(colour(word), colour_code, "colour of {word:#x}");
+            assert_eq!(color(word), colour_code, "color of {word:#x}");
             assert_eq!(count(word), value, "count of {word:#x}");
         }
     }
@@ -39,14 +39,18 @@ fn a_row_carries_a_colour_and_a_count_without_either_reaching_the_other() {
 #[test]
 fn a_count_past_the_field_saturates_instead_of_wrapping() {
     for value in [COUNT_MAX + 1, COUNT_MAX + 2, u32::MAX] {
-        let word = compose(Colour::Met, value);
+        let word = compose(Color::Unclassified, value);
         assert_eq!(count(word), COUNT_MAX);
-        assert_eq!(colour(word), Colour::Met, "the colour survives the clamp");
+        assert_eq!(
+            color(word),
+            Color::Unclassified,
+            "the color survives the clamp"
+        );
         assert!(is_saturated(word));
     }
 
     assert!(
-        !is_saturated(compose(Colour::Met, COUNT_MAX - 1)),
+        !is_saturated(compose(Color::Unclassified, COUNT_MAX - 1)),
         "a count the field holds exactly is a total, not a floor"
     );
 }
@@ -59,7 +63,7 @@ fn a_count_past_the_field_saturates_instead_of_wrapping() {
 /// not count are still there.
 #[test]
 fn a_saturated_count_absorbs_every_subtraction() {
-    let mut word = compose(Colour::Met, u32::MAX);
+    let mut word = compose(Color::Unclassified, u32::MAX);
     let row = &raw mut word;
     assert!(is_saturated(unsafe { *row }));
 
@@ -69,11 +73,11 @@ fn a_saturated_count_absorbs_every_subtraction() {
         is_saturated(unsafe { *row }),
         "the entity is externally referenced whatever the trace found"
     );
-    assert_eq!(colour(unsafe { *row }), Colour::Met);
+    assert_eq!(color(unsafe { *row }), Color::Unclassified);
 
     // One below the bound is an ordinary count and answers ordinarily,
     // which is what makes the clause a clause rather than a ceiling.
-    let mut ordinary = compose(Colour::Met, COUNT_MAX - 1);
+    let mut ordinary = compose(Color::Unclassified, COUNT_MAX - 1);
     let row = &raw mut ordinary;
     assert_eq!(unsafe { subtract(row, 1) }, COUNT_MAX - 2);
 }
@@ -84,11 +88,15 @@ fn a_saturated_count_absorbs_every_subtraction() {
 /// one.
 #[test]
 fn only_a_zero_word_reads_as_untouched() {
-    assert_eq!(colour(0), Colour::Untouched);
-    for colour_code in [Colour::Met, Colour::Condemned, Colour::Live] {
+    assert_eq!(color(0), Color::Untouched);
+    for colour_code in [
+        Color::Unclassified,
+        Color::PotentiallyUnreachable,
+        Color::Live,
+    ] {
         assert_ne!(
-            colour(compose(colour_code, 0)),
-            Colour::Untouched,
+            color(compose(colour_code, 0)),
+            Color::Untouched,
             "a met row with a zero count is not an untouched slot"
         );
     }
@@ -97,7 +105,7 @@ fn only_a_zero_word_reads_as_untouched() {
 /// The array fits the one block the arena grants for it, at every size
 /// class a block can be cut into — the smallest class is the widest
 /// array, and it is the one an `alloc` above `BLOCK_PAYLOAD` would
-/// refuse outright (`cycle::arena::ShadowArena::alloc`).
+/// refuse outright (`cycle::arena::TraceScratchArena::alloc`).
 #[test]
 fn an_array_for_any_size_class_fits_one_block() {
     use crate::memory::block_pool::BLOCK_PAYLOAD;
@@ -105,10 +113,10 @@ fn an_array_for_any_size_class_fits_one_block() {
     let widest = BLOCK_PAYLOAD / crate::memory::heap::SIZE_CLASSES[0];
     assert_eq!(widest, 4080, "the smallest class cuts a block into 4080");
     for &class in crate::memory::heap::SIZE_CLASSES {
-        let slots = (BLOCK_PAYLOAD / class) as u32;
+        let row_count = (BLOCK_PAYLOAD / class) as u32;
         assert!(
-            bytes_for(slots) <= BLOCK_PAYLOAD,
-            "an array for {slots} rows is past one block"
+            bytes_for(row_count) <= BLOCK_PAYLOAD,
+            "an array for {row_count} rows is past one block"
         );
     }
 
@@ -128,14 +136,14 @@ fn an_array_for_any_size_class_fits_one_block() {
 #[test]
 fn a_slot_costs_four_bytes_and_a_bit() {
     for &class in crate::memory::heap::SIZE_CLASSES {
-        let slots = (crate::memory::block_pool::BLOCK_PAYLOAD / class) as u32;
-        let padded = (slots as usize).next_multiple_of(GROUP as usize);
+        let row_count = (crate::memory::block_pool::BLOCK_PAYLOAD / class) as u32;
+        let padded = (row_count as usize).next_multiple_of(GROUP as usize);
         let bitmap = (padded / GROUP as usize).div_ceil(8);
 
         assert_eq!(
-            bytes_for(slots) - size_of::<RowArray>() - bitmap,
+            bytes_for(row_count) - size_of::<RowArray>() - bitmap,
             padded * size_of::<u32>(),
-            "{slots} slots take four bytes each, plus the head and the bitmap"
+            "{row_count} rows take four bytes each, plus the head and the bitmap"
         );
     }
 }
@@ -147,12 +155,12 @@ fn a_slot_costs_four_bytes_and_a_bit() {
 /// the subtraction has to stop at zero itself.
 #[test]
 fn a_subtraction_stops_at_zero_and_keeps_the_colour() {
-    let mut word = compose(Colour::Met, 3);
+    let mut word = compose(Color::Unclassified, 3);
     let row = &raw mut word;
 
     assert_eq!(unsafe { subtract(row, 1) }, 2);
     assert_eq!(unsafe { subtract(row, 2) }, 0);
-    assert_eq!(colour(unsafe { *row }), Colour::Met);
+    assert_eq!(color(unsafe { *row }), Color::Unclassified);
 
     // More in-edges than the refcount held, which a dirty pass may read
     // and the exact test on the owner's thread is what corrects.
@@ -162,14 +170,14 @@ fn a_subtraction_stops_at_zero_and_keeps_the_colour() {
         0,
         "and does not come back as a saturated count"
     );
-    assert_eq!(colour(unsafe { *row }), Colour::Met);
+    assert_eq!(color(unsafe { *row }), Color::Unclassified);
 
-    let mut condemned = compose(Colour::Condemned, 0);
+    let mut condemned = compose(Color::PotentiallyUnreachable, 0);
     let row = &raw mut condemned;
     assert_eq!(unsafe { subtract(row, 7) }, 0);
     assert_eq!(
-        colour(unsafe { *row }),
-        Colour::Condemned,
-        "a subtraction carries the colour it found"
+        color(unsafe { *row }),
+        Color::PotentiallyUnreachable,
+        "a subtraction carries the color it found"
     );
 }

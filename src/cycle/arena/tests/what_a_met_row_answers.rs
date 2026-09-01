@@ -1,14 +1,14 @@
-//! The read-only twin of `meet`, and both of its refusals. What it must
+//! The read-only twin of `ensure_row`, and both of its refusals. What it must
 //! never do is answer with a row that carries no verdict of this
 //! collection's: the scan reads a colour through it and frees on what it
 //! reads, so a row from an unzeroed group is the last tenant's opinion
 //! about somebody else's entity.
 
 use super::*;
-use crate::cycle::shadow::{self, Colour, RowArray};
+use crate::cycle::shadow::{self, Color, RowArray};
 use crate::memory::block_pool::test_guard;
 
-/// The slots of `block`, which is the index space `met_row` bounds
+/// The slots of `block`, which is the index space `find_initialized_row` bounds
 /// against.
 fn slots_of(block: *mut u8) -> u32 {
     unsafe { crate::memory::heap::collector_block_slots(block) }
@@ -25,20 +25,20 @@ fn only_the_slot_the_trace_met_carries_a_row() {
     let slots = slots_of(block);
     assert!(slots > 2 * shadow::GROUP, "the block holds several groups");
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let met_index = 3;
-    let row = met(unsafe { arena.meet(slot_row(block, met_index), 7) });
-    assert_eq!(shadow::colour(unsafe { *row }), Colour::Met);
+    let row = met(unsafe { arena.ensure_row(slot_row(block, met_index), 7) });
+    assert_eq!(shadow::color(unsafe { *row }), Color::Unclassified);
 
     let with_a_row = (0..slots)
-        .filter(|&index| unsafe { met_row(slot_row(block, index)) }.is_some())
+        .filter(|&index| unsafe { find_initialized_row(slot_row(block, index)) }.is_some())
         .count();
     assert_eq!(
         with_a_row, 1,
         "one entity was met, so one slot of the block carries a row"
     );
     assert_eq!(
-        unsafe { met_row(slot_row(block, met_index)) },
+        unsafe { find_initialized_row(slot_row(block, met_index)) },
         Some(row),
         "and it is the slot that was met, at the row the meeting answered"
     );
@@ -80,14 +80,14 @@ fn a_row_whose_group_was_never_zeroed_is_not_a_met_row() {
 
     let dirty = slot_row(block, shadow::GROUP);
     assert!(
-        unsafe { met_row(dirty) }.is_none(),
+        unsafe { find_initialized_row(dirty) }.is_none(),
         "the group's bit is clear, so the row under it is the last tenant's"
     );
 
-    unsafe { shadow::meet_group(array, dirty.index) };
+    unsafe { shadow::ensure_group_initialized(array, dirty.index) };
     assert!(
-        unsafe { met_row(dirty) }.is_none(),
-        "and once the group is zeroed the colour is what says the trace never came"
+        unsafe { find_initialized_row(dirty) }.is_none(),
+        "and once the group is zeroed the color is what says the trace never came"
     );
 
     unsafe { crate::memory::heap::clear_block_shadow(block) };

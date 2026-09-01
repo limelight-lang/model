@@ -22,8 +22,8 @@
 //! neither, holding entity pointers it never dereferences and pool
 //! blocks it never carves.
 
-// `TraceWindow` owns the `ShadowArena`, fixing reset-before-replay even before
-// the production collection opens one in S36.7.
+// `ActiveTrace` owns the `TraceScratchArena`, fixing reset-before-replay even
+// before the production collection opens one in S36.7.
 pub(crate) mod arena;
 // The judgement over a component the scan condemned, and dead until the
 // teardown that opens with it.
@@ -31,10 +31,10 @@ pub(crate) mod arena;
     not(test),
     expect(
         dead_code,
-        reason = "the teardown that opens with the exact test is `PLAN.md` S36.3's"
+        reason = "the teardown that opens with the validation test is `PLAN.md` S36.3's"
     )
 )]
-pub(crate) mod exact;
+pub(crate) mod validation;
 // Nothing marks in the production build either: the collection that
 // runs a trace is S36.7's, and this module is what it will run.
 #[cfg_attr(
@@ -42,8 +42,8 @@ pub(crate) mod exact;
     expect(dead_code, reason = "the collection that marks is S36.7")
 )]
 pub(crate) mod mark;
-// Physical slot return waits while a trace can still address the slot's
-// shadow row. The production trace that opens the window arrives in S36.7; S36.2
+// Physical slot return waits while a trace can still address the slot's shadow
+// row. The production trace that opens the window arrives in S36.7; S36.2
 // builds the window and the return-path half first.
 #[cfg_attr(
     not(test),
@@ -52,7 +52,7 @@ pub(crate) mod mark;
         reason = "the production trace that opens this window is `PLAN.md` S36.7's"
     )
 )]
-pub(crate) mod parking;
+pub(crate) mod deferred_slot_reuse;
 pub(crate) mod queue;
 pub(crate) mod row;
 // The verdict over the rows the mark counted, and dead until a

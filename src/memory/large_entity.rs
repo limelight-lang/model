@@ -41,7 +41,7 @@ pub(crate) struct LargeEntityHeader {
     /// in the header's free tail rather than in an array of one
     /// (`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives").
     ///
-    /// Zero — [`Colour::Untouched`](crate::cycle::shadow::Colour) — from
+    /// Zero — [`Color::Untouched`](crate::cycle::shadow::Color) — from
     /// commissioning until a collection meets the entity, and nulled
     /// again by that collection's sweep, so a block whose life outlasts
     /// a collection carries no row from it. Plain rather than atomic

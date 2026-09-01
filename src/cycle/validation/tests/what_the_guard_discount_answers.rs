@@ -39,13 +39,13 @@ fn a_guarded_ring_is_condemned_under_the_discount_and_acquitted_without_it() {
     }
 
     assert_eq!(
-        unsafe { judge(&mut members, 1) },
-        Judged::Condemned,
+        unsafe { validate_component(&mut members, 1) },
+        ValidationResult::Unreachable,
         "the discount takes off the one reference the teardown itself added"
     );
     assert_eq!(
-        unsafe { judge(&mut members, 0) },
-        Judged::Acquitted,
+        unsafe { validate_component(&mut members, 0) },
+        ValidationResult::ExternallyReferenced,
         "undiscounted, the guards read as references from outside"
     );
 

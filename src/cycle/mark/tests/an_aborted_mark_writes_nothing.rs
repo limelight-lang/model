@@ -1,7 +1,7 @@
 //! The abort is free, and "free" is a claim about the heap rather than
-//! about the arena: mark and scan write shadow rows, a met bitmap and a
-//! worklist, all of them in memory the reset gives back, so a collection
-//! that gave up halfway has nothing to undo in the heap.
+//! about the arena: mark and scan write shadow rows, a row-initialization
+//! bitmap and a worklist, all of them in memory the reset gives back, so a
+//! collection that gave up halfway has nothing to undo in the heap.
 //!
 //! The refusal is forced **past the first descent**. An arena refused at
 //! its first allocation proves the claim over a mark that never ran; the
@@ -19,7 +19,7 @@
 use super::*;
 
 /// Bytes the arena hands out for `bytes`, which is the request rounded
-/// up to its eight-byte grain (`ShadowArena::alloc`). The fixture leaves
+/// up to its eight-byte grain (`TraceScratchArena::alloc`). The fixture leaves
 /// the arena an exact remainder, so it has to count in the same units.
 fn granted(bytes: usize) -> usize {
     bytes.next_multiple_of(8)
@@ -87,7 +87,7 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
     let room = granted(shadow::bytes_for(unsafe {
         crate::memory::heap::collector_block_slots(near_block)
     })) + granted(crate::cycle::stack::SEGMENT_BYTES);
-    let mut shadow_arena = ShadowArena::new();
+    let mut shadow_arena = TraceScratchArena::new();
     assert!(!shadow_arena.alloc(BLOCK_PAYLOAD - room).is_null());
 
     let oom = force_oom();
@@ -105,7 +105,7 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
     let answer = unsafe { mark(&mut shadow_arena, &mut stack, head as *mut RcHeader) };
     drop(oom);
 
-    assert_eq!(answer, Marked::Refused);
+    assert_eq!(answer, MarkResult::AllocationFailed);
     assert_eq!(
         unsafe { working_count(middle) },
         1,

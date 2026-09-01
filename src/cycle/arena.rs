@@ -29,14 +29,14 @@
 //!
 //! **The shadow-row pointers are nulled earlier than that, and the
 //! instant is fixed by the design rather than by convenience.**
-//! [`ShadowArena::sweep_touched`] runs at the end of scan, where the
+//! [`TraceScratchArena::clear_touched_rows`] runs at the end of scan, where the
 //! trace token is released and where the last touch of any shadow row
 //! has already happened. Everything after that store runs untokened, and
 //! the slot returns are among it — so a block may reach the pool and be
 //! recommissioned while this collection's teardown is still running, and
 //! a sweep left until then would write into another collection's header
 //! word (`rfc/model/gc/rc-cycle.md`, "Concurrency" and "Death while
-//! enrolled"). [`ShadowArena::reset`] sweeps too, and that is the abort
+//! enrolled"). [`TraceScratchArena::reset`] sweeps too, and that is the abort
 //! path: an abort can only be raised where memory is asked for, which is
 //! inside mark and scan, so an aborting collection has not reached the
 //! release instant.
@@ -70,10 +70,10 @@
 //! rows behind it for the sake of the sweep. There the refusal is kept
 //! harmless by an ordering instead: the row is written only after the
 //! enrolment is in hand, so a refused enrolment leaves the row at zero
-//! ([`ShadowArena::meet`]).
+//! ([`TraceScratchArena::ensure_row`]).
 
-use crate::cycle::row::{Population, Row};
-use crate::cycle::shadow::{self, Colour, RowArray};
+use crate::cycle::row::{Population, RowKey};
+use crate::cycle::shadow::{self, Color, RowArray};
 #[cfg(test)]
 use crate::memory::block_pool::BlockPool;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
@@ -82,13 +82,13 @@ use crate::memory::gc_metadata;
 /// What one meeting of an entity answers: its row, or the two reasons
 /// there is none.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Met {
+pub(crate) enum RowLookup {
     /// The entity's row, met — its colour is not
-    /// [`Colour::Untouched`] and its working count is the refcount less
+    /// [`Color::Untouched`] and its working count is the refcount less
     /// whatever the trace has already subtracted. The caller writes
     /// through it.
     ///
-    /// **`first_reach` is the answer to "had this collection seen the
+    /// **`first_visit` is the answer to "had this collection seen the
     /// entity before?"**, and it is carried out of the meeting because
     /// the meeting is what destroys it: after the call the row's colour
     /// says met whichever reach this was. The mark's descent turns on
@@ -96,21 +96,21 @@ pub(crate) enum Met {
     /// decrement and stops, and a trace that expanded again on every
     /// in-edge would not terminate on a ring
     /// (`rfc/model/gc/rc-cycle.md`, "What replaces the walk").
-    Row { row: *mut u32, first_reach: bool },
+    Ready { row: *mut u32, first_visit: bool },
     /// The block cannot place this index, which is a retained block
     /// whose object index no longer names the entity. The caller counts
     /// the edge as an external live reference, the same answer
-    /// `row::edge_to` gives an address it cannot place.
-    Unplaced,
+    /// `row::resolve_edge_target` gives an address it cannot place.
+    Untracked,
     /// Both memory doors refused. The caller aborts the collection,
     /// which costs nothing beyond the work already done: the trace
     /// writes into no entity.
-    Refused,
+    AllocationFailed,
 }
 
 /// One collection's memory. Built on the collecting thread's stack,
-/// spent by that collection, and returned by [`ShadowArena::reset`].
-pub(crate) struct ShadowArena {
+/// spent by that collection, and returned by [`TraceScratchArena::reset`].
+pub(crate) struct TraceScratchArena {
     /// Blocks held, threaded through `BlockHeader::next`, newest first.
     blocks: *mut BlockHeader,
     /// How many of them came through the critical door, and therefore
@@ -125,12 +125,12 @@ pub(crate) struct ShadowArena {
     /// been touched.
     touched: *mut RowArray,
     /// Bytes of this arena's bump already charged to the manager's
-    /// ledger, so that [`reset`](ShadowArena::reset) discharges exactly
+    /// ledger, so that [`reset`](TraceScratchArena::reset) discharges exactly
     /// what was charged and a re-entered reset discharges nothing.
     published: usize,
 }
 
-impl ShadowArena {
+impl TraceScratchArena {
     /// An arena holding nothing. Allocates no memory: a collection that
     /// finds no candidate pays for no block.
     pub(crate) fn new() -> Self {
@@ -160,8 +160,8 @@ impl ShadowArena {
     /// for — and a run of blocks would give the abort path a second
     /// shape to return.
     ///
-    /// The memory is **not zeroed**. A row array arrives dirty by
-    /// design, its met bitmap being what says which rows have meaning
+    /// The memory is **not zeroed**. A row array arrives dirty by design,
+    /// its row-initialization bitmap being what says which rows have meaning
     /// (`rfc/model/gc/rc-cycle.md`, "The rows are not zeroed greedily").
     pub(crate) fn alloc(&mut self, bytes: usize) -> *mut u8 {
         // Rounded through a checked add, because the refusal below is
@@ -194,12 +194,13 @@ impl ShadowArena {
     /// and left as it stands on every later one, so a second edge into
     /// the same entity subtracts from the count rather than restoring it.
     ///
-    /// `row` comes from [`row::edge_to`](crate::cycle::row::edge_to) and
-    /// `refcount` is the entity's, read by the caller: this module places
-    /// rows and knows nothing about entity headers.
+    /// `row` comes from
+    /// [`row::resolve_edge_target`](crate::cycle::row::resolve_edge_target) and
+    /// `refcount` is the entity's, read by the caller: this module places rows
+    /// and knows nothing about entity headers.
     ///
-    /// **Change this, change [`met_row`] too:** the two find the same row
-    /// in the same two places, and only this one may create it.
+    /// **Change this, change [`find_initialized_row`] too:** the two find the
+    /// same row in the same two places, and only this one may create it.
     ///
     /// The block's rows are reserved here, at its first touch, and the
     /// block enrolled for the sweep with them — one allocation, so a
@@ -217,14 +218,14 @@ impl ShadowArena {
     /// collection reading this one's count.
     ///
     /// # Safety
-    /// `row` must name a live entity of the collected heap, resolved from
-    /// its own address by `edge_to`, and its block must stay mapped until
-    /// [`sweep_touched`](Self::sweep_touched) runs — which it does, a
-    /// trace in flight being what keeps a block from reaching the pool
-    /// (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
-    pub(crate) unsafe fn meet(&mut self, row: Row, refcount: u32) -> Met {
+    /// `row` must name a live entity of the collected heap, resolved
+    /// from its own address by `resolve_edge_target`, and its block must stay
+    /// mapped until [`clear_touched_rows`](Self::clear_touched_rows) runs —
+    /// which it does, a trace in flight being what keeps a block from reaching
+    /// the pool (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
+    pub(crate) unsafe fn ensure_row(&mut self, row: RowKey, refcount: u32) -> RowLookup {
         let block = row.block as *mut u8;
-        let word = if row.population == Population::Sole {
+        let word = if row.population == Population::SingleEntity {
             // The one population whose row is a block header word rather
             // than an array, so its enrolment has no allocation to ride
             // on and takes a prologue of its own. The row's own colour is
@@ -232,27 +233,29 @@ impl ShadowArena {
             // writes it, and the tail below writes it before returning.
             debug_assert_eq!(
                 row.index,
-                crate::cycle::row::SOLE_OCCUPANT,
+                crate::cycle::row::SINGLE_ENTITY_INDEX,
                 "a large entity's block holds one row and this names another"
             );
             let word = unsafe { crate::memory::large_entity::shadow_row(block) };
-            if shadow::colour(unsafe { *word }) == Colour::Untouched
-                && self.enrol(block, 0, Population::Sole).is_null()
+            if shadow::color(unsafe { *word }) == Color::Untouched
+                && self
+                    .allocate_and_attach_row_array(block, 0, Population::SingleEntity)
+                    .is_null()
             {
-                return Met::Refused;
+                return RowLookup::AllocationFailed;
             }
 
             word
         } else {
             let mut array = unsafe { crate::memory::heap::block_shadow(block) } as *mut RowArray;
             if array.is_null() {
-                let Some(slots) = (unsafe { index_space(row) }) else {
-                    return Met::Unplaced;
+                let Some(row_count) = (unsafe { index_space(row) }) else {
+                    return RowLookup::Untracked;
                 };
 
-                array = self.enrol(block, slots, row.population);
+                array = self.allocate_and_attach_row_array(block, row_count, row.population);
                 if array.is_null() {
-                    return Met::Refused;
+                    return RowLookup::AllocationFailed;
                 }
 
                 // After the enrolment and never before: this store cannot
@@ -262,51 +265,56 @@ impl ShadowArena {
                 unsafe { crate::memory::heap::set_block_shadow(block, array as *mut u8) };
             }
 
-            if row.index >= unsafe { (*array).slots } {
+            if row.index >= unsafe { (*array).row_count } {
                 // A retained block whose object index has been rebuilt
                 // under this trace is the only way here, and the trace
                 // token forbids it. Conservative rather than fatal all
                 // the same: an edge with no row keeps its referent alive.
                 debug_assert!(false, "row {} is past the block's index space", row.index);
-                return Met::Unplaced;
+                return RowLookup::Untracked;
             }
 
-            unsafe { shadow::meet_group(array, row.index) };
+            unsafe { shadow::ensure_group_initialized(array, row.index) };
             unsafe { shadow::row(array, row.index) }
         };
 
-        let first_reach = shadow::colour(unsafe { *word }) == Colour::Untouched;
-        if first_reach {
-            unsafe { word.write(shadow::compose(Colour::Met, refcount)) };
+        let first_visit = shadow::color(unsafe { *word }) == Color::Untouched;
+        if first_visit {
+            unsafe { word.write(shadow::compose(Color::Unclassified, refcount)) };
         }
 
-        Met::Row {
+        RowLookup::Ready {
             row: word,
-            first_reach,
+            first_visit,
         }
     }
 
-    /// Reserve `slots` rows for `block` and enrol it for the sweep, or
+    /// Reserve `row_count` rows for `block` and enrol it for the sweep, or
     /// null when both memory doors have refused.
     ///
     /// The array is linked into the touched list here, which is the
     /// enrolment: it is the same memory, so the two cannot come apart.
-    /// `slots` is zero for a large entity, whose row is elsewhere and
+    /// `row_count` is zero for a large entity, whose row is elsewhere and
     /// whose prologue is enrolment alone.
-    fn enrol(&mut self, block: *mut u8, slots: u32, population: Population) -> *mut RowArray {
-        let array = self.alloc(shadow::bytes_for(slots)) as *mut RowArray;
+    fn allocate_and_attach_row_array(
+        &mut self,
+        block: *mut u8,
+        row_count: u32,
+        population: Population,
+    ) -> *mut RowArray {
+        let array = self.alloc(shadow::bytes_for(row_count)) as *mut RowArray;
         if array.is_null() {
             return array;
         }
 
-        unsafe { shadow::init(array, block, slots, population, self.touched) };
+        unsafe { shadow::init(array, block, row_count, population, self.touched) };
         self.touched = array;
         array
     }
 
     /// End the collection's hold on memory: give every block back, the
     /// reserve first, having swept anything
-    /// [`sweep_touched`](Self::sweep_touched) has not.
+    /// [`clear_touched_rows`](Self::clear_touched_rows) has not.
     ///
     /// This is the whole of the abort path. A collection that gave up
     /// halfway calls it and has left nothing behind — the trace writes
@@ -324,7 +332,7 @@ impl ShadowArena {
     /// from the moment this returns, and its own `reset` is what says
     /// so.
     pub(crate) fn reset(&mut self) {
-        self.sweep_touched();
+        self.clear_touched_rows();
 
         // The block still under the bump has no further grant coming, so
         // its consumption is published here; the ones before it were
@@ -381,7 +389,7 @@ impl ShadowArena {
     /// The rows themselves need no undoing: mark and scan write into no
     /// entity, so the pointer is the whole of what a collection leaves in
     /// the heap.
-    pub(crate) fn sweep_touched(&mut self) {
+    pub(crate) fn clear_touched_rows(&mut self) {
         let mut array = self.touched;
         // Emptied first: the walk below runs to the end of the chain,
         // and a second call must find nothing rather than repeat it.
@@ -394,9 +402,9 @@ impl ShadowArena {
                 // so what a stale one costs is not a wild pointer but a
                 // count: the next collection would read the entity as met
                 // and subtract from a working count this one left behind.
-                Population::Sole => unsafe {
+                Population::SingleEntity => unsafe {
                     crate::memory::large_entity::shadow_row(block)
-                        .write(shadow::compose(Colour::Untouched, 0))
+                        .write(shadow::compose(Color::Untouched, 0))
                 },
                 // Listed rather than a wildcard: a fourth population
                 // would otherwise be swept as though its rows hung off
@@ -475,24 +483,25 @@ impl ShadowArena {
 /// The shadow row of an entity this collection has **met**, or `None`
 /// when it has not: a block the trace never touched, a group it never
 /// zeroed, an index past the block's array, or a row still coloured
-/// [`Colour::Untouched`].
+/// [`Color::Untouched`].
 ///
-/// The read-only twin of [`ShadowArena::meet`] — same three populations
-/// and same two places a row can be — and it neither allocates nor
-/// writes, which is what the scan needs: a meeting would initialise the
-/// row of an entity the mark never reached from a refcount nothing has
-/// subtracted from, and that row would then be condemned or spared on a
-/// count the trace never computed.
+/// The read-only twin of [`TraceScratchArena::ensure_row`] — same three
+/// populations and same two places a row can be — and it neither allocates nor
+/// writes, which is what the scan needs: a meeting would initialise the row of
+/// an entity the mark never reached from a refcount nothing has subtracted
+/// from, and that row would then be condemned or spared on a count the trace
+/// never computed.
 ///
 /// # Safety
 /// `row` names a live entity of the collected heap, resolved from its
-/// own address by `edge_to`, and its block is still this collection's.
-pub(crate) unsafe fn met_row(row: Row) -> Option<*mut u32> {
+/// own address by `resolve_edge_target`, and its block is still this
+/// collection's.
+pub(crate) unsafe fn find_initialized_row(row: RowKey) -> Option<*mut u32> {
     let block = row.block as *mut u8;
-    let word = if row.population == Population::Sole {
+    let word = if row.population == Population::SingleEntity {
         debug_assert_eq!(
             row.index,
-            crate::cycle::row::SOLE_OCCUPANT,
+            crate::cycle::row::SINGLE_ENTITY_INDEX,
             "a large entity's block holds one row and this names another"
         );
         unsafe { crate::memory::large_entity::shadow_row(block) }
@@ -502,8 +511,8 @@ pub(crate) unsafe fn met_row(row: Row) -> Option<*mut u32> {
             return None;
         }
 
-        if row.index >= unsafe { (*array).slots } {
-            // The state `meet` asserts on, and it is asserted here for
+        if row.index >= unsafe { (*array).row_count } {
+            // The state `ensure_row` asserts on, and it is asserted here for
             // the same reason: only a retained block whose object index
             // was rebuilt under this trace reaches it, which the trace
             // token forbids. A silent `None` here would leave the mark
@@ -512,15 +521,15 @@ pub(crate) unsafe fn met_row(row: Row) -> Option<*mut u32> {
             return None;
         }
 
-        if !unsafe { shadow::group_is_met(array, row.index) } {
+        if !unsafe { shadow::group_is_initialized(array, row.index) } {
             return None;
         }
 
         unsafe { shadow::row(array, row.index) }
     };
 
-    match shadow::colour(unsafe { *word }) {
-        Colour::Untouched => None,
+    match shadow::color(unsafe { *word }) {
+        Color::Untouched => None,
         _ => Some(word),
     }
 }
@@ -537,7 +546,7 @@ pub(crate) unsafe fn met_row(row: Row) -> Option<*mut u32> {
 ///
 /// # Safety
 /// `row`'s block must be commissioned as the population says it is.
-unsafe fn index_space(row: Row) -> Option<u32> {
+unsafe fn index_space(row: RowKey) -> Option<u32> {
     match row.population {
         Population::Slotted => {
             Some(unsafe { crate::memory::heap::collector_block_slots(row.block as *mut u8) })
@@ -545,15 +554,15 @@ unsafe fn index_space(row: Row) -> Option<u32> {
         Population::Retained => {
             crate::memory::retained::occupant_count(row.block).map(|count| count as u32)
         }
-        // Unreachable: `meet` answers the sole occupant's row from its
+        // Unreachable: `ensure_row` answers the sole occupant's row from its
         // block header without asking where an array would go.
-        Population::Sole => None,
+        Population::SingleEntity => None,
     }
 }
 
-impl Drop for ShadowArena {
+impl Drop for TraceScratchArena {
     /// The net under an unwind. On the contract path the collection has
-    /// already called [`reset`](ShadowArena::reset) and this finds
+    /// already called [`reset`](TraceScratchArena::reset) and this finds
     /// nothing; a test that panics mid-collection would otherwise leave
     /// the pool short for every test after it.
     fn drop(&mut self) {

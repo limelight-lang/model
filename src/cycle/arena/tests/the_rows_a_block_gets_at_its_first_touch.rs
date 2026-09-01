@@ -1,13 +1,13 @@
 //! What a block gets the first time the trace reaches into it, and what
 //! the second reach must not do to it. Every test here reads the row
-//! back through the pointer `meet` answered with, because the row is the
+//! back through the pointer `ensure_row` answered with, because the row is the
 //! only state a collection leaves anywhere: an aborted mark has to be
 //! undoable by nulling pointers alone.
 
 use super::*;
 use crate::class::ClassBuilder;
-use crate::cycle::row::{Population, Row};
-use crate::cycle::shadow::{self, Colour};
+use crate::cycle::row::{Population, RowKey};
+use crate::cycle::shadow::{self, Color};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_MASK, force_oom, test_guard};
 use crate::memory::context::LLContext;
@@ -26,14 +26,14 @@ fn a_first_touch_reserves_rows_stamps_the_block_and_enrols_it() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     assert!(
         unsafe { crate::memory::heap::block_shadow(block) }.is_null(),
         "no collection has touched this block"
     );
 
-    let (row, first_reach) = met_first(unsafe { arena.meet(slot_row(block, 0), 7) });
-    assert!(first_reach, "the collection had not seen this entity");
+    let (row, first_visit) = met_first(unsafe { arena.ensure_row(slot_row(block, 0), 7) });
+    assert!(first_visit, "the collection had not seen this entity");
 
     let stamped = unsafe { crate::memory::heap::block_shadow(block) };
     assert!(!stamped.is_null(), "the block was stamped");
@@ -43,7 +43,7 @@ fn a_first_touch_reserves_rows_stamps_the_block_and_enrols_it() {
         "and the row is the first of that array's rows"
     );
     assert_eq!(arena.touched_blocks(), 1, "and the block is enrolled once");
-    assert_eq!(shadow::colour(unsafe { *row }), Colour::Met);
+    assert_eq!(shadow::color(unsafe { *row }), Color::Unclassified);
     assert_eq!(unsafe { shadow::count(*row) }, 7, "met at the refcount");
 
     arena.reset();
@@ -61,16 +61,16 @@ fn a_second_reach_leaves_the_working_count_alone() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = ShadowArena::new();
-    let row = met(unsafe { arena.meet(slot_row(block, 0), 3) });
+    let mut arena = TraceScratchArena::new();
+    let row = met(unsafe { arena.ensure_row(slot_row(block, 0), 3) });
 
     // What the mark does with the row it is handed.
     assert_eq!(unsafe { shadow::subtract(row, 1) }, 2);
 
-    let (again, first_reach) = met_first(unsafe { arena.meet(slot_row(block, 0), 3) });
+    let (again, first_visit) = met_first(unsafe { arena.ensure_row(slot_row(block, 0), 3) });
     assert_eq!(again, row, "the same slot resolves to the same row");
     assert!(
-        !first_reach,
+        !first_visit,
         "the second reach must not read as a first one, or the mark descends again"
     );
     assert_eq!(
@@ -96,15 +96,15 @@ fn a_condemned_zero_row_is_told_from_an_untouched_slot() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = ShadowArena::new();
-    let row = met(unsafe { arena.meet(slot_row(block, 0), 1) });
-    unsafe { *row = shadow::compose(Colour::Condemned, 0) };
+    let mut arena = TraceScratchArena::new();
+    let row = met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
+    unsafe { *row = shadow::compose(Color::PotentiallyUnreachable, 0) };
 
-    let again = met(unsafe { arena.meet(slot_row(block, 0), 1) });
+    let again = met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
     assert_eq!(
-        shadow::colour(unsafe { *again }),
-        Colour::Condemned,
-        "a met row keeps its colour"
+        shadow::color(unsafe { *again }),
+        Color::PotentiallyUnreachable,
+        "a met row keeps its color"
     );
     assert_eq!(unsafe { shadow::count(*again) }, 0, "and its count");
 
@@ -128,9 +128,9 @@ fn two_slots_of_one_block_share_its_array_and_take_their_own_rows() {
         "the fixture's second slot is in the same block"
     );
 
-    let mut arena = ShadowArena::new();
-    let first_row = met(unsafe { arena.meet(slot_row(block, 0), 4) });
-    let second_row = met(unsafe { arena.meet(slot_row(block, 1), 9) });
+    let mut arena = TraceScratchArena::new();
+    let first_row = met(unsafe { arena.ensure_row(slot_row(block, 0), 4) });
+    let second_row = met(unsafe { arena.ensure_row(slot_row(block, 1), 9) });
 
     assert_ne!(first_row, second_row);
     assert_eq!(arena.touched_blocks(), 1, "one array served both");
@@ -180,17 +180,17 @@ fn a_retained_block_gets_one_row_for_each_occupant() {
     let occupants = crate::memory::retained::occupant_count(block)
         .expect("the reset registered the block's occupant index");
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let mut rows = Vec::new();
     for survivor in [small, large] {
         let position = crate::memory::retained::occupant_index(block, survivor as usize)
             .expect("a survivor is named by its block's index");
-        let row = Row {
+        let row = RowKey {
             block,
             index: position as u32,
             population: Population::Retained,
         };
-        rows.push(met(unsafe { arena.meet(row, 1) }));
+        rows.push(met(unsafe { arena.ensure_row(row, 1) }));
     }
 
     assert_ne!(rows[0], rows[1], "two occupants, two rows");
@@ -202,7 +202,7 @@ fn a_retained_block_gets_one_row_for_each_occupant() {
     let array =
         unsafe { crate::memory::heap::block_shadow(block as *mut u8) } as *mut shadow::RowArray;
     assert_eq!(
-        unsafe { (*array).slots } as usize,
+        unsafe { (*array).row_count } as usize,
         occupants,
         "the array is sized by the index the rows are keyed by"
     );
@@ -234,18 +234,18 @@ fn a_large_entity_is_met_in_its_own_header_and_swept_from_it() {
     let block = (entity as usize & !BLOCK_MASK) as *mut u8;
     let word = unsafe { crate::memory::large_entity::shadow_row(block) };
     assert_eq!(
-        shadow::colour(unsafe { *word }),
-        Colour::Untouched,
+        shadow::color(unsafe { *word }),
+        Color::Untouched,
         "commissioning leaves the row untouched"
     );
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let row = met(unsafe {
-        arena.meet(
-            Row {
+        arena.ensure_row(
+            RowKey {
                 block: block as usize,
                 index: 0,
-                population: Population::Sole,
+                population: Population::SingleEntity,
             },
             5,
         )
@@ -258,27 +258,27 @@ fn a_large_entity_is_met_in_its_own_header_and_swept_from_it() {
         "a block with no array is enrolled all the same"
     );
 
-    let (_, first_reach) = met_first(unsafe {
-        arena.meet(
-            Row {
+    let (_, first_visit) = met_first(unsafe {
+        arena.ensure_row(
+            RowKey {
                 block: block as usize,
                 index: 0,
-                population: Population::Sole,
+                population: Population::SingleEntity,
             },
             5,
         )
     });
-    assert!(!first_reach, "the second reach is not a first one");
+    assert!(!first_visit, "the second reach is not a first one");
     assert_eq!(
         arena.touched_blocks(),
         1,
         "and the second reach enrols it no further"
     );
 
-    arena.sweep_touched();
+    arena.clear_touched_rows();
     assert_eq!(
-        shadow::colour(unsafe { *word }),
-        Colour::Untouched,
+        shadow::color(unsafe { *word }),
+        Color::Untouched,
         "the sweep gives the header word back untouched"
     );
 
@@ -352,9 +352,9 @@ fn a_refusal_on_the_second_block_leaves_the_first_intact() {
     let (mut first_heap, first_slot, first) = an_entity_block();
     let (mut second_heap, second_slot, second) = an_entity_block();
 
-    let mut arena = ShadowArena::new();
-    let row = met(unsafe { arena.meet(slot_row(first, 0), 2) });
-    unsafe { *row = shadow::compose(Colour::Met, 1) };
+    let mut arena = TraceScratchArena::new();
+    let row = met(unsafe { arena.ensure_row(slot_row(first, 0), 2) });
+    unsafe { *row = shadow::compose(Color::Unclassified, 1) };
 
     // The arena's current block still has room, so the refusal has to be
     // driven from a block boundary: shut the door, then spend the block
@@ -363,8 +363,8 @@ fn a_refusal_on_the_second_block_leaves_the_first_intact() {
     while !arena.alloc(1024).is_null() {}
 
     assert_eq!(
-        unsafe { arena.meet(slot_row(second, 0), 2) },
-        Met::Refused,
+        unsafe { arena.ensure_row(slot_row(second, 0), 2) },
+        RowLookup::AllocationFailed,
         "the second block's rows have nowhere to come from"
     );
     drop(oom);
@@ -386,10 +386,10 @@ fn a_refusal_on_the_second_block_leaves_the_first_intact() {
     crate::memory::critical::drain_for_test();
 }
 
-/// A block held for a payload and nothing else has a registry entry and
-/// no object index, so an edge into it cannot be placed. The trace keeps
-/// the referent alive instead of guessing a row: `Met::Unplaced` is the
-/// same conservative answer `row::edge_to` gives an address the index
+/// A block held for a payload and nothing else has a registry entry and no
+/// object index, so an edge into it cannot be placed. The trace keeps the
+/// referent alive instead of guessing a row: `RowLookup::Unplaced` is the same
+/// conservative answer `row::resolve_edge_target` gives an address the index
 /// does not name.
 #[test]
 fn an_edge_into_a_block_with_no_object_index_is_unplaced() {
@@ -405,10 +405,10 @@ fn an_edge_into_a_block_with_no_object_index_is_unplaced() {
         "a pinned block carries no occupant index"
     );
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let answer = unsafe {
-        arena.meet(
-            Row {
+        arena.ensure_row(
+            RowKey {
                 block: block as usize,
                 index: 0,
                 population: Population::Retained,
@@ -416,7 +416,7 @@ fn an_edge_into_a_block_with_no_object_index_is_unplaced() {
             1,
         )
     };
-    assert_eq!(answer, Met::Unplaced);
+    assert_eq!(answer, RowLookup::Untracked);
     assert!(
         unsafe { crate::memory::heap::block_shadow(block) }.is_null(),
         "an edge it cannot place reserves nothing"
@@ -440,15 +440,15 @@ fn a_second_collection_meets_a_slotted_block_at_the_refcount_again() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut first = ShadowArena::new();
-    let row = met(unsafe { first.meet(slot_row(block, 0), 6) });
+    let mut first = TraceScratchArena::new();
+    let row = met(unsafe { first.ensure_row(slot_row(block, 0), 6) });
     assert_eq!(unsafe { shadow::subtract(row, 4) }, 2);
-    first.sweep_touched();
+    first.clear_touched_rows();
     first.reset();
 
-    let mut second = ShadowArena::new();
-    let (row, first_reach) = met_first(unsafe { second.meet(slot_row(block, 0), 6) });
-    assert!(first_reach, "the block came back untouched");
+    let mut second = TraceScratchArena::new();
+    let (row, first_visit) = met_first(unsafe { second.ensure_row(slot_row(block, 0), 6) });
+    assert!(first_visit, "the block came back untouched");
     assert_eq!(
         unsafe { shadow::count(*row) },
         6,
@@ -487,9 +487,9 @@ fn an_entity_referenced_past_the_field_is_met_at_the_bound() {
         "the fixture is past the bound"
     );
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let row = met(unsafe {
-        arena.meet(
+        arena.ensure_row(
             slot_row(
                 block,
                 crate::memory::heap::entity_slot_index(entity as *mut u8),
@@ -548,22 +548,22 @@ fn a_first_touch_writes_the_bitmap_and_the_groups_it_reaches() {
     let group = size_of::<u8>() + shadow::GROUP as usize * size_of::<u32>();
 
     let before = shadow::written_bytes();
-    let mut arena = ShadowArena::new();
-    met(unsafe { arena.meet(slot_row(block, 0), 1) });
+    let mut arena = TraceScratchArena::new();
+    met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
     assert_eq!(
         shadow::written_bytes() - before,
         prologue + bitmap + group,
         "the block's first touch writes its head, its bitmap and one group"
     );
 
-    met(unsafe { arena.meet(slot_row(block, 7), 1) });
+    met(unsafe { arena.ensure_row(slot_row(block, 7), 1) });
     assert_eq!(
         shadow::written_bytes() - before,
         prologue + bitmap + group,
         "a second slot of the same group writes nothing further"
     );
 
-    met(unsafe { arena.meet(slot_row(block, 8), 1) });
+    met(unsafe { arena.ensure_row(slot_row(block, 8), 1) });
     let written = shadow::written_bytes() - before;
     assert_eq!(
         written,

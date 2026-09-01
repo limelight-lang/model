@@ -199,16 +199,44 @@ to the step that owns it.
         name and spares the owning module's own call, and `enrol` is two rows
         — `cycle/arena`'s is `allocate_and_attach_row_array`, which is what
         S41.4 has to apply there.
-- [ ] S41.4 Row resolution, the trace scratch, mark, scan, the stack, deferred reuse and validation
+- [x] S41.4 Row resolution, the trace scratch, mark, scan, the stack, deferred reuse and validation
       done: `row`, `arena`, `shadow`, `mark`, `scan`, `stack`, `parking` and
         `exact` carry the ratified names, module by module with a compile at
         each boundary; `parking` becomes `deferred_slot_reuse` and `exact`
         becomes `validation`, and neither module changes what it does
       tier: T2 · role: Critic
+      Critic 2026-09-01: the code half is complete and rename-only — the
+        mechanical check found no difference beyond `rustfmt`'s line breaks.
+        Every defect was in a comment or a string, and the two scripts that
+        did that half caused them: three tokens carry two ratified names each
+        (`Met`, `Condemned`, `Row`) and the rename took one, which put
+        `RowLookup` where `Color::Unclassified` belonged in the scan's own
+        doc; four string literals took an identifier where an English word
+        stood; eleven doc comments still named an item the tree no longer
+        declares. Taken, with the three ambiguous rows of the guard rewritten
+        to name both senses in the failure message.
+      handoff: `parking` and `exact` are gone as paths — `src/cycle/
+        deferred_slot_reuse.rs` and `src/cycle/validation.rs`, with their test
+        directories. `STILL_TO_MIGRATE` is empty from here, and that measures
+        less than it looks: the guard reads identifiers with comments cut, so
+        a file name, a name that merely contains a retired word
+        (`condemned_from`, `met_first`) and every comment are outside it.
+      handoff: the row-initialization bitmap's accessors (`groups`,
+        `group_bit`, `group_bytes`) still have no ratified name, and the
+        arena's `slots` parameter keeps its name on purpose: it counts the
+        block's slots, which is what `RowArray::row_count` is derived from
+        rather than what it holds.
 - [ ] S41.5 The tests and the current maps
-      done: no test file name, test name, helper or assertion uses a retired
-        term and `STILL_TO_MIGRATE` is empty; `dev/INDEX.md` and
-        `dev/ARCHITECTURE.md` name what the code names;
+      done: no test file name, test name or helper uses a retired term,
+        measured by a guard of its own that reads the crate's **file names and
+        item names** for the audit's metaphor list — condemn, acquit, corpse,
+        judge, park, escrow, floor, climb, enrol, discount — as case-insensitive
+        substrings, which is the axis `Where` cannot express and the reason the
+        whole-token guard sees neither `condemned_from` nor
+        `what_the_guard_discount_answers.rs`. An assertion message stays the
+        whole-token guard's, which already reads string literals, and the
+        `STILL_TO_MIGRATE` half of this clause is spent: S41.4 emptied the list.
+        `dev/INDEX.md` and `dev/ARCHITECTURE.md` name what the code names;
         the historical records the audit lists as out of scope are untouched,
         and an active citation of an old heading keeps the heading exactly with
         the current name outside the quotation
@@ -218,9 +246,13 @@ to the step that owns it.
         lifetime, allocation and failure behaviour, ordering invariants and its
         design references; every remaining occurrence of a retired word is
         classified as a historical citation, unrelated English or a defect, and
-        the defects are gone; the full gate passes and a Critic has read the
-        pass for terminology, for the safety contracts it had to preserve, and
-        for an accidental change of meaning
+        the defects are gone — measured over **comment text**, which no guard
+        of this stage reads today, by S41.5's metaphor list run over comments
+        with each survivor carrying either the document heading it quotes or a
+        line naming why the word is not a metaphor there (`door` is not on the
+        list until S41.7 classifies its sites); the full gate passes and a
+        Critic has read the pass for terminology, for the safety contracts it
+        had to preserve, and for an accidental change of meaning
       tier: T2 · role: Critic
 
 - [ ] S41.7 Allocation outcomes, and the `door` sites by semantic class

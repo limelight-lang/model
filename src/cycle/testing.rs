@@ -4,8 +4,8 @@
 //! and a second copy of the row lookup would be a second opinion about
 //! where a row is. Test builds only.
 
-use crate::cycle::row::{Edge, Row, edge_to};
-use crate::cycle::shadow::{self, Colour, RowArray};
+use crate::cycle::row::{EdgeTarget, RowKey, resolve_edge_target};
+use crate::cycle::shadow::{self, Color, RowArray};
 use crate::refcount::RcHeader;
 
 /// The row word the trace left for `entity`, read the way the scan
@@ -18,11 +18,11 @@ use crate::refcount::RcHeader;
 /// `entity` is a live entity of the GC heap whose block this collection
 /// has touched.
 pub(crate) unsafe fn row_word(entity: *mut RcHeader) -> u32 {
-    let Edge::Interior(Row {
+    let EdgeTarget::Tracked(RowKey {
         block,
         index,
         population: _,
-    }) = (unsafe { edge_to(entity) })
+    }) = (unsafe { resolve_edge_target(entity) })
     else {
         panic!("the fixture's entity is not a GC-heap entity");
     };
@@ -37,6 +37,6 @@ pub(crate) unsafe fn row_word(entity: *mut RcHeader) -> u32 {
 ///
 /// # Safety
 /// As [`row_word`].
-pub(crate) unsafe fn row_colour(entity: *mut RcHeader) -> Colour {
-    shadow::colour(unsafe { row_word(entity) })
+pub(crate) unsafe fn row_color(entity: *mut RcHeader) -> Color {
+    shadow::color(unsafe { row_word(entity) })
 }

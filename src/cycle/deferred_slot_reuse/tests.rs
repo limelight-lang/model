@@ -1,7 +1,7 @@
 use super::*;
 
-use crate::cycle::arena::ShadowArena;
-use crate::cycle::row::{Edge, edge_to};
+use crate::cycle::arena::TraceScratchArena;
+use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
 use crate::memory::Arena;
 use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED, BlockHeader, test_guard};
@@ -29,18 +29,18 @@ unsafe fn live_entity(slot: *mut u8, count: u32) -> *mut RcHeader {
     header
 }
 
-fn met(answer: crate::cycle::arena::Met) -> *mut u32 {
+fn met(answer: crate::cycle::arena::RowLookup) -> *mut u32 {
     match answer {
-        crate::cycle::arena::Met::Row { row, .. } => row,
+        crate::cycle::arena::RowLookup::Ready { row, .. } => row,
         other => panic!("the arena refused a row: {other:?}"),
     }
 }
 
-unsafe fn meet(arena: &mut ShadowArena, entity: *mut RcHeader, count: u32) -> *mut u32 {
-    let Edge::Interior(row) = (unsafe { edge_to(entity) }) else {
+unsafe fn ensure_row(arena: &mut TraceScratchArena, entity: *mut RcHeader, count: u32) -> *mut u32 {
+    let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(entity) }) else {
         panic!("the entity heap did not resolve to a shadow row");
     };
-    met(unsafe { arena.meet(row, count) })
+    met(unsafe { arena.ensure_row(row, count) })
 }
 
 /// Promote one arena object in place so its slot belongs to the retained
@@ -65,8 +65,8 @@ unsafe fn retained_survivor() -> (Arena, *mut Object, *mut RcHeader, *mut BlockH
     (arena, holder, survivor as *mut RcHeader, block)
 }
 
-/// Red without the trace window: the free-list is LIFO, so the allocation
-/// below receives `dead` and `meet` returns the row already initialised from
+/// Red without the trace window: the free-list is LIFO, so the allocation below
+/// receives `dead` and `ensure_row` returns the row already initialised from
 /// the dead occupant's count zero.
 #[test]
 fn a_reused_slot_cannot_inherit_the_dead_occupants_row() {
@@ -75,13 +75,13 @@ fn a_reused_slot_cannot_inherit_the_dead_occupants_row() {
     assert!(!dead.is_null());
     let dead = unsafe { dead_entity(dead) };
 
-    let mut window = TraceWindow::open();
-    let row = unsafe { meet(window.arena(), dead, 0) };
+    let mut window = ActiveTrace::open();
+    let row = unsafe { ensure_row(window.arena(), dead, 0) };
     assert!(!row.is_null());
     assert_eq!(unsafe { shadow::count(*row) }, 0);
 
     unsafe { crate::memory::stdapi::ll_free(dead as *mut u8) };
-    assert_eq!(parked_count(), 1);
+    assert_eq!(deferred_slot_count(), 1);
 
     let fresh = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     assert!(!fresh.is_null());
@@ -90,13 +90,13 @@ fn a_reused_slot_cannot_inherit_the_dead_occupants_row() {
         "the traced slot was reused mid-window"
     );
     let fresh = unsafe { live_entity(fresh, 7) };
-    let fresh_row = unsafe { meet(window.arena(), fresh, 7) };
+    let fresh_row = unsafe { ensure_row(window.arena(), fresh, 7) };
     assert_eq!(unsafe { shadow::count(*fresh_row) }, 7);
 
     unsafe { crate::refcount::set_header_refcount(fresh, 0) };
     unsafe { crate::memory::stdapi::ll_free(fresh as *mut u8) };
     drop(window);
-    assert_eq!(parked_count(), 0);
+    assert_eq!(deferred_slot_count(), 0);
 }
 
 #[test]
@@ -109,13 +109,21 @@ fn the_queue_window_may_close_before_the_trace_window() {
         crate::refcount::update_header_flags(header, |flags| flags | crate::refcount::CANDIDATE_BIT)
     };
 
-    let window = TraceWindow::open();
+    let window = ActiveTrace::open();
     unsafe { crate::memory::stdapi::ll_free(slot) };
-    assert_eq!(parked_count(), 0, "the queue entry is the first record");
+    assert_eq!(
+        deferred_slot_count(),
+        0,
+        "the queue entry is the first record"
+    );
 
     unsafe { crate::refcount::clear_candidate_bit(header) };
     unsafe { crate::memory::stdapi::ll_free(slot) };
-    assert_eq!(parked_count(), 1, "the collection takes over the return");
+    assert_eq!(
+        deferred_slot_count(),
+        1,
+        "the collection takes over the return"
+    );
 
     let other = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     assert_ne!(other, slot, "one closed window released through the other");
@@ -139,12 +147,16 @@ fn the_trace_window_may_close_before_the_queue_window() {
         crate::refcount::update_header_flags(header, |flags| flags | crate::refcount::CANDIDATE_BIT)
     };
 
-    let window = TraceWindow::open();
+    let window = ActiveTrace::open();
     unsafe { crate::memory::stdapi::ll_free(slot) };
-    assert_eq!(parked_count(), 0, "the queue entry is the first record");
+    assert_eq!(
+        deferred_slot_count(),
+        0,
+        "the queue entry is the first record"
+    );
     drop(window);
     assert_eq!(
-        parked_count(),
+        deferred_slot_count(),
         0,
         "the trace close leaves the queue entry standing"
     );
@@ -166,8 +178,8 @@ fn the_trace_window_may_close_before_the_queue_window() {
 fn a_retained_blocks_last_occupant_waits_for_the_trace_row() {
     let _guard = test_guard();
     let (_arena, holder, survivor, block) = unsafe { retained_survivor() };
-    let mut window = TraceWindow::open();
-    let row = unsafe { meet(window.arena(), survivor, 1) };
+    let mut window = ActiveTrace::open();
+    let row = unsafe { ensure_row(window.arena(), survivor, 1) };
     assert_eq!(unsafe { shadow::count(*row) }, 1);
 
     unsafe {
@@ -176,7 +188,7 @@ fn a_retained_blocks_last_occupant_waits_for_the_trace_row() {
     }
     assert_eq!(unsafe { crate::refcount::header_refcount(survivor) }, 0);
     assert_eq!(
-        parked_count(),
+        deferred_slot_count(),
         2,
         "the retained survivor and its heap holder both park"
     );
@@ -187,7 +199,7 @@ fn a_retained_blocks_last_occupant_waits_for_the_trace_row() {
     );
 
     drop(window);
-    assert_eq!(parked_count(), 0);
+    assert_eq!(deferred_slot_count(), 0);
     assert_eq!(
         unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) },
         BLOCK_KIND_FREE,
@@ -235,8 +247,8 @@ fn a_pooled_large_entity_waits_for_its_header_row() {
     let kind = unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) };
     assert_eq!(kind, crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE);
 
-    let mut window = TraceWindow::open();
-    unsafe { meet(window.arena(), entity, 0) };
+    let mut window = ActiveTrace::open();
+    unsafe { ensure_row(window.arena(), entity, 0) };
     unsafe { crate::memory::stdapi::ll_free(entity as *mut u8) };
     assert_eq!(
         unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) },
@@ -260,8 +272,8 @@ fn an_os_direct_large_entity_waits_for_its_header_row() {
     let block = BlockHeader::of_ptr(entity as *const u8) as usize;
     assert!(crate::memory::large_entity::snapshot().contains(&block));
 
-    let mut window = TraceWindow::open();
-    unsafe { meet(window.arena(), entity, 0) };
+    let mut window = ActiveTrace::open();
+    unsafe { ensure_row(window.arena(), entity, 0) };
     unsafe { crate::memory::stdapi::ll_free(entity as *mut u8) };
     assert!(
         crate::memory::large_entity::snapshot().contains(&block),

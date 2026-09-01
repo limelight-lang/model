@@ -29,15 +29,15 @@
 //! ```text
 //! +0   block      the block header this array belongs to
 //! +8   next       the touched list, newest first
-//! +16  slots      rows the index space holds, the bounds check
+//! +16  row_count  rows the index space holds, the bounds check
 //! +20  population what the sweep owes this block
 //! +24  rows       4 bytes each, dirty until their group is met
 //! +24+4*R  groups one bit per group of eight rows, zeroed at allocation
 //! ```
 //!
-//! `R` is `slots` rounded up to a whole group, so a group init writes
+//! `R` is `row_count` rounded up to a whole group, so a group init writes
 //! eight rows without ever running past the last one: the bitmap begins
-//! after the rounding and not after `slots`.
+//! after the rounding and not after `row_count`.
 //!
 //! The touched list threads through the arrays themselves rather than
 //! through runs of its own, so enrolling a block and reserving its rows
@@ -78,26 +78,26 @@ pub(crate) const COUNT_MAX: u32 = (1 << COUNT_BITS) - 1;
 /// What the trace has decided about one entity, and the reserved zero
 /// that says it has decided nothing.
 ///
-/// No working code is zero, so a group the init has just cleared reads
-/// as [`Untouched`](Colour::Untouched) for every slot in it.
-/// [`Met`](Colour::Met) is written by
-/// [`ShadowArena::meet`](crate::cycle::arena::ShadowArena::meet), and
-/// the two verdicts by [`crate::cycle::scan`], which is the only writer
+/// No working code is zero, so a group the init has just cleared reads as
+/// [`Untouched`](Color::Untouched) for every slot in it.
+/// [`Unclassified`](Color::Unclassified) is written by
+/// [`TraceScratchArena::ensure_row`](crate::cycle::arena::TraceScratchArena::ensure_row),
+/// and the two verdicts by [`crate::cycle::scan`], which is the only writer
 /// that reads a colour before it writes one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
-pub(crate) enum Colour {
+pub(crate) enum Color {
     /// The slot has not been met in this collection. The value a group
     /// carries when its bit is set and nothing has been written into it
     /// since, and the value a large entity's block header carries from
     /// its commissioning.
     Untouched = 0,
-    /// Met: the working count is this entity's refcount less the
+    /// Unclassified: the working count is this entity's refcount less the
     /// internal edges the trace has subtracted so far.
-    Met = 1,
+    Unclassified = 1,
     /// The scan reached it with a zero working count and no live
     /// referrer, so it is a member of a candidate component.
-    Condemned = 2,
+    PotentiallyUnreachable = 2,
     /// The scan reached it from a row that had a live external
     /// reference, so the component it belongs to survives.
     Live = 3,
@@ -105,17 +105,17 @@ pub(crate) enum Colour {
 
 /// The colour of `row`.
 #[inline]
-pub(crate) fn colour(row: u32) -> Colour {
+pub(crate) fn color(row: u32) -> Color {
     match row >> COUNT_BITS {
-        0 => Colour::Untouched,
-        1 => Colour::Met,
-        2 => Colour::Condemned,
-        _ => Colour::Live,
+        0 => Color::Untouched,
+        1 => Color::Unclassified,
+        2 => Color::PotentiallyUnreachable,
+        _ => Color::Live,
     }
 }
 
 /// The working count of `row`, which carries meaning only while the
-/// colour is not [`Colour::Untouched`].
+/// colour is not [`Color::Untouched`].
 #[inline]
 pub(crate) fn count(row: u32) -> u32 {
     row & COUNT_MAX
@@ -138,8 +138,8 @@ pub(crate) fn is_saturated(row: u32) -> bool {
 /// A row of this colour and this count, the count **saturated** at
 /// [`COUNT_MAX`] rather than wrapped into the colour.
 #[inline]
-pub(crate) fn compose(colour: Colour, count: u32) -> u32 {
-    ((colour as u32) << COUNT_BITS) | count.min(COUNT_MAX)
+pub(crate) fn compose(color: Color, count: u32) -> u32 {
+    ((color as u32) << COUNT_BITS) | count.min(COUNT_MAX)
 }
 
 /// Take one internal edge off `row`'s working count, keeping its colour.
@@ -165,7 +165,7 @@ pub(crate) fn compose(colour: Colour, count: u32) -> u32 {
 ///
 /// # Safety
 /// `row` is a row of a met entity, reached through
-/// [`ShadowArena::meet`](crate::cycle::arena::ShadowArena::meet).
+/// [`TraceScratchArena::ensure_row`](crate::cycle::arena::TraceScratchArena::ensure_row).
 #[inline]
 pub(crate) unsafe fn subtract(row: *mut u32, edges: u32) -> u32 {
     let word = unsafe { *row };
@@ -174,7 +174,7 @@ pub(crate) unsafe fn subtract(row: *mut u32, edges: u32) -> u32 {
     }
 
     let left = count(word).saturating_sub(edges);
-    let updated = compose(colour(word), left);
+    let updated = compose(color(word), left);
     unsafe { row.write(updated) };
     left
 }
@@ -184,12 +184,12 @@ pub(crate) unsafe fn subtract(row: *mut u32, edges: u32) -> u32 {
 ///
 /// # Safety
 /// `row` is a row of a met entity, reached through
-/// [`ShadowArena::meet`](crate::cycle::arena::ShadowArena::meet) or
-/// [`met_row`](crate::cycle::arena::met_row).
+/// [`TraceScratchArena::ensure_row`](crate::cycle::arena::TraceScratchArena::ensure_row)
+/// or [`find_initialized_row`](crate::cycle::arena::find_initialized_row).
 #[inline]
-pub(crate) unsafe fn recolour(row: *mut u32, colour: Colour) {
+pub(crate) unsafe fn recolor(row: *mut u32, color: Color) {
     let word = unsafe { *row };
-    unsafe { row.write(compose(colour, count(word))) };
+    unsafe { row.write(compose(color, count(word))) };
 }
 
 /// Rows one group covers, and the number of rows a group init writes at
@@ -227,29 +227,29 @@ pub(crate) struct RowArray {
     /// one, and **zero for a large entity**, whose single row is a word
     /// of its own block header and needs no array (`crate::cycle::row`).
     /// The array reserves past this, up to a whole group ([`bytes_for`]).
-    pub(crate) slots: u32,
+    pub(crate) row_count: u32,
     /// Which of the three populations the block belongs to, so that the
     /// sweep knows which word it owes a null: the array pointer in the
     /// block's collector triple, or the large entity's row itself.
     pub(crate) population: Population,
 }
 
-/// Rows the array reserves for `slots`, rounded up to a whole group so
+/// Rows the array reserves for `row_count`, rounded up to a whole group so
 /// that a group init always writes eight rows and never runs past the
 /// last one.
 #[inline]
-const fn padded(slots: u32) -> usize {
-    (slots as usize).next_multiple_of(GROUP as usize)
+const fn padded(row_count: u32) -> usize {
+    (row_count as usize).next_multiple_of(GROUP as usize)
 }
 
-/// Bytes one array needs for `slots` rows: the header, the rows, and one
+/// Bytes one array needs for `row_count` rows: the header, the rows, and one
 /// bit per group.
 ///
 /// Never above 16 408 bytes, at the smallest size class of a 64 KiB
 /// block, so one array always fits the arena's one-block allocation
-/// limit (`ShadowArena::alloc`).
-pub(crate) const fn bytes_for(slots: u32) -> usize {
-    size_of::<RowArray>() + padded(slots) * size_of::<u32>() + group_bytes(slots)
+/// limit (`TraceScratchArena::alloc`).
+pub(crate) const fn bytes_for(row_count: u32) -> usize {
+    size_of::<RowArray>() + padded(row_count) * size_of::<u32>() + group_bytes(row_count)
 }
 
 // Bytes this thread has written into row arrays, which is what a first
@@ -286,16 +286,16 @@ pub(crate) fn written_bytes() -> usize {
 ///
 /// The rows themselves are left as the bump handed them over. Their
 /// group bits say they are dirty, and a group is written before it is
-/// read ([`meet_group`]).
+/// read ([`ensure_group_initialized`]).
 ///
 /// # Safety
-/// `array` points at [`bytes_for(slots)`](bytes_for) bytes of 8-aligned
+/// `array` points at [`bytes_for(row_count)`](bytes_for) bytes of 8-aligned
 /// scratch that outlive this collection, and `block` is the header of
 /// the block those rows belong to.
 pub(crate) unsafe fn init(
     array: *mut RowArray,
     block: *mut u8,
-    slots: u32,
+    row_count: u32,
     population: Population,
     next: *mut RowArray,
 ) {
@@ -305,18 +305,18 @@ pub(crate) unsafe fn init(
     unsafe {
         (&raw mut (*array).block).write(block);
         (&raw mut (*array).next).write(next);
-        (&raw mut (*array).slots).write(slots);
+        (&raw mut (*array).row_count).write(row_count);
         (&raw mut (*array).population).write(population);
-        groups(array).write_bytes(0, group_bytes(slots));
+        groups(array).write_bytes(0, group_bytes(row_count));
     }
 
-    note_written(size_of::<RowArray>() + group_bytes(slots));
+    note_written(size_of::<RowArray>() + group_bytes(row_count));
 }
 
 /// The row at `index`, whose group has been met.
 ///
 /// # Safety
-/// `array` is an initialised array and `index` is below its `slots`.
+/// `array` is an initialised array and `index` is below its `row_count`.
 #[inline]
 pub(crate) unsafe fn row(array: *mut RowArray, index: u32) -> *mut u32 {
     unsafe { (array as *mut u8).add(size_of::<RowArray>()) as *mut u32 }
@@ -325,13 +325,13 @@ pub(crate) unsafe fn row(array: *mut RowArray, index: u32) -> *mut u32 {
 
 /// Zero the whole group `index` belongs to if this is the group's first
 /// touch, so that the row [`row`] hands back reads as
-/// [`Colour::Untouched`] rather than as whatever the block that held
+/// [`Color::Untouched`] rather than as whatever the block that held
 /// this memory before left in it.
 ///
 /// # Safety
 /// As [`row`].
 #[inline]
-pub(crate) unsafe fn meet_group(array: *mut RowArray, index: u32) {
+pub(crate) unsafe fn ensure_group_initialized(array: *mut RowArray, index: u32) {
     let group = index / GROUP;
     let (byte, bit) = unsafe { group_bit(array, index) };
     if unsafe { *byte } & bit != 0 {
@@ -354,7 +354,7 @@ pub(crate) unsafe fn meet_group(array: *mut RowArray, index: u32) {
 /// # Safety
 /// As [`row`].
 #[inline]
-pub(crate) unsafe fn group_is_met(array: *mut RowArray, index: u32) -> bool {
+pub(crate) unsafe fn group_is_initialized(array: *mut RowArray, index: u32) -> bool {
     let (byte, bit) = unsafe { group_bit(array, index) };
     let bits = unsafe { *byte };
     bits & bit != 0
@@ -380,15 +380,15 @@ unsafe fn group_bit(array: *mut RowArray, index: u32) -> (*mut u8, u8) {
 /// As [`row`].
 #[inline]
 unsafe fn groups(array: *mut RowArray) -> *mut u8 {
-    let slots = unsafe { (*array).slots };
-    unsafe { (array as *mut u8).add(size_of::<RowArray>() + padded(slots) * size_of::<u32>()) }
+    let row_count = unsafe { (*array).row_count };
+    unsafe { (array as *mut u8).add(size_of::<RowArray>() + padded(row_count) * size_of::<u32>()) }
 }
 
-/// Bytes the group bitmap of `slots` rows occupies: one bit per group
+/// Bytes the group bitmap of `row_count` rows occupies: one bit per group
 /// of [`GROUP`] rows, rounded up to a whole byte.
 #[inline]
-const fn group_bytes(slots: u32) -> usize {
-    (padded(slots) / GROUP as usize).div_ceil(u8::BITS as usize)
+const fn group_bytes(row_count: u32) -> usize {
+    (padded(row_count) / GROUP as usize).div_ceil(u8::BITS as usize)
 }
 
 #[cfg(test)]

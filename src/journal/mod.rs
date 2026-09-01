@@ -249,8 +249,8 @@ struct Registry {
     /// the exit at the eviction does not fix it: the two are ordered by
     /// nothing. So a retiring thread drops the rings here, and the next
     /// thread to journal or to take a mark — a live one — frees them. The
-    /// vector is therefore an exit handoff, not the trace-window parking in
-    /// `cycle::parking`.
+    /// vector is therefore an exit handoff, not the trace window's deferred
+    /// slot reuse in `cycle::deferred_slot_reuse`.
     pending_free: Vec<*mut Ring>,
 }
 

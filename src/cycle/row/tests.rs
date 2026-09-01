@@ -19,23 +19,23 @@ use crate::test_support::store_prop;
 ///
 /// `object_size` is the class's, because a slot carries no record of the
 /// class it was cut for.
-fn row_by_division(entity: *mut Object, object_size: usize) -> Row {
+fn row_by_division(entity: *mut Object, object_size: usize) -> RowKey {
     let address = entity as usize;
     let block = address & !BLOCK_MASK;
     let stride =
         crate::memory::heap::SIZE_CLASSES[crate::memory::heap::size_class_index(object_size)
             .expect("the fixture's class fits a size class")];
-    Row {
+    RowKey {
         block,
         index: ((address - block - LINE_SIZE) / stride) as u32,
         population: Population::Slotted,
     }
 }
 
-/// The kind stamped on the block holding `address`, read the way its
-/// owning thread reads it. A fixture asserts on this before asking
-/// `edge_to` anything: a test of the retained arm that quietly built an
-/// arena block would pass on the wrong branch.
+/// The kind stamped on the block holding `address`, read the way its owning
+/// thread reads it. A fixture asserts on this before asking
+/// `resolve_edge_target` anything: a test of the retained arm that quietly
+/// built an arena block would pass on the wrong branch.
 unsafe fn block_kind(address: usize) -> u32 {
     let header = crate::memory::block_pool::BlockHeader::of_ptr(address as *const u8);
     unsafe { load_block_kind(&raw const (*header).kind) }

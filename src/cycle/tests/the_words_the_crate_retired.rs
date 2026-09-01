@@ -54,8 +54,11 @@ enum Where {
 ///
 /// The ratified name is carried for the failure message. A guard that only
 /// says "this word is gone" sends its reader back to the audit for the
-/// replacement, and the replacement is what the audit decided.
-const RETIRED: [(&str, &str, Where); 77] = [
+/// replacement, and the replacement is what the audit decided. Three rows
+/// carry two names rather than one, because the audit gives their token two
+/// ratified senses and no scope here separates them; the message names both
+/// and the reader picks.
+const RETIRED: [(&str, &str, Where); 81] = [
     // Candidate registration, whose callers are spread over four modules.
     // `ShadowArena::enrol` is the homonym: the audit maps that one to the
     // allocation it performs, and the glossary's *candidate registration* is
@@ -127,14 +130,29 @@ const RETIRED: [(&str, &str, Where); 77] = [
     // Row resolution.
     ("SOLE_OCCUPANT", "SINGLE_ENTITY_INDEX", Where::Anywhere),
     ("edge_to", "resolve_edge_target", Where::Anywhere),
-    ("Row", "RowKey", Where::Under("cycle")),
+    // First of the three two-sense rows, with `Met` and `Condemned` below:
+    // `Row` was the locator in `row.rs` and the variant `Met::Row` in
+    // `arena.rs`, and a path scope cannot separate two senses that a caller
+    // could write on one line.
+    (
+        "Row",
+        "RowKey for the locator, RowLookup::Ready for the lookup",
+        Where::Under("cycle"),
+    ),
     ("Sole", "SingleEntity", Where::Under("cycle")),
     ("Edge", "EdgeTarget", Where::Under("cycle")),
     ("Interior", "Tracked", Where::Under("cycle")),
+    ("External", "Untracked", Where::Under("cycle")),
     // The trace scratch arena and its shadow rows. `Colour` and its verbs go
     // together: the US spelling reaches the functions, not only the type.
     ("ShadowArena", "TraceScratchArena", Where::Anywhere),
-    ("Met", "RowLookup", Where::Anywhere),
+    // Two senses, as `Row` above: the lookup type was `arena.rs`'s and the
+    // color was `shadow.rs`'s.
+    (
+        "Met",
+        "RowLookup for the lookup type, Color::Unclassified for the color",
+        Where::Anywhere,
+    ),
     ("Unplaced", "Untracked", Where::Anywhere),
     ("first_reach", "first_visit", Where::Anywhere),
     ("met_row", "find_initialized_row", Where::Anywhere),
@@ -177,8 +195,34 @@ const RETIRED: [(&str, &str, Where); 77] = [
     ("park_if_active", "defer_reuse_if_tracing", Where::Anywhere),
     ("parked_count", "deferred_slot_count", Where::Anywhere),
     // Exact validation, whose judicial words are the audit's first rule.
+    // `Refused` went with the rest of the audit's refusal words: inside
+    // `cycle` the only refusal is the allocation's, and S41.7 owns the ones
+    // outside it. The module's own old name carries no row — `--exact` is
+    // libtest's flag, and `exact` is ordinary English everywhere else.
+    ("Refused", "AllocationFailed", Where::Under("cycle")),
+    ("judge", "validate_component", Where::Under("cycle")),
+    // `discount`, `references` and `guards` are renamed with the rest and
+    // carry no row: they are locals of one function, and all three are the
+    // domain's ordinary English in the messages that module's tests assert
+    // with — "the only two references there are" is not a leftover.
+    //
+    // `dispose` is scoped to the module that retired it because every other
+    // `dispose` in the crate is the ABI's or another module's own teardown.
+    (
+        "dispose",
+        "dispose_thread_state",
+        Where::Under("cycle/deferred_slot_reuse"),
+    ),
     ("Judged", "ValidationResult", Where::Anywhere),
-    ("Condemned", "Unreachable", Where::Anywhere),
+    // The third two-sense row: a validation result and a scan proposal are
+    // not the same claim, which is the distinction the audit's first rule is
+    // about.
+    (
+        "Condemned",
+        "ValidationResult::Unreachable for the validation result, \
+         Color::PotentiallyUnreachable for the color",
+        Where::Anywhere,
+    ),
     ("Corpse", "ZeroCountMember", Where::Anywhere),
     ("Acquitted", "ExternallyReferenced", Where::Anywhere),
     (
@@ -189,53 +233,19 @@ const RETIRED: [(&str, &str, Where); 77] = [
 ];
 
 /// The files that still carry a retired name, and the whole of the debt S41
-/// pays. A file leaves this list in the commit that renames it, and the guard
-/// refuses a retired name in every file that is not on it: the vocabulary
-/// holds over the part of the crate already migrated, from the first commit
-/// of the stage rather than the last.
+/// pays. A file left this list in the commit that renamed it, and the guard
+/// refuses a retired name in every file that is not on it.
 ///
-/// The list only shrinks. It is empty when S41.5 closes, and a second test
-/// below refuses a file that has stopped offending, so a rename cannot leave
-/// its entry behind and quietly exempt the file from then on.
-const STILL_TO_MIGRATE: [&str; 37] = [
-    "cycle/arena.rs",
-    "cycle/arena/tests.rs",
-    "cycle/arena/tests/the_rows_a_block_gets_at_its_first_touch.rs",
-    "cycle/arena/tests/what_a_met_row_answers.rs",
-    "cycle/arena/tests/what_the_arena_gives_back.rs",
-    "cycle/exact.rs",
-    "cycle/exact/tests.rs",
-    "cycle/exact/tests/what_a_mutation_racing_the_verdict_costs.rs",
-    "cycle/exact/tests/what_a_ring_through_an_array_reads_as.rs",
-    "cycle/exact/tests/what_an_edge_out_of_the_component_counts_for.rs",
-    "cycle/exact/tests/what_the_corpse_rule_drops.rs",
-    "cycle/exact/tests/what_the_guard_discount_answers.rs",
-    "cycle/mark.rs",
-    "cycle/mark/tests.rs",
-    "cycle/mark/tests/an_aborted_mark_writes_nothing.rs",
-    "cycle/mark/tests/what_the_trace_subtracts.rs",
-    "cycle/mod.rs",
-    "cycle/parking.rs",
-    "cycle/parking/tests.rs",
-    "cycle/queue/tests/what_gc_owns.rs",
-    "cycle/row.rs",
-    "cycle/row/tests.rs",
-    "cycle/row/tests/the_row_each_population_resolves_to.rs",
-    "cycle/scan.rs",
-    "cycle/scan/tests.rs",
-    "cycle/shadow.rs",
-    "cycle/shadow/tests.rs",
-    "cycle/shadow/tests/what_a_first_touch_writes.rs",
-    "cycle/shadow/tests/what_a_row_word_holds.rs",
-    "cycle/stack.rs",
-    "cycle/stack/tests.rs",
-    "cycle/testing.rs",
-    "memory/critical/tests/where_the_first_touch_happens.rs",
-    "memory/gc_metadata/tests.rs",
-    "memory/heap.rs",
-    "memory/stdapi.rs",
-    "memory/stdapi/tests/the_slot_a_queue_entry_names.rs",
-];
+/// **Empty since S41.4, and that measures less than it looks.** What it says
+/// is that no retired identifier stands in code. It says nothing about the
+/// three places this guard does not read: a source file's own name, a name
+/// that merely contains a retired word (`condemned_from`, `met_first`), and
+/// every comment, whose text is cut before the scan. Those are S41.5's and
+/// S41.6's, and they need a measure of their own rather than this one.
+///
+/// A second test below refuses a file that has stopped offending, so a rename
+/// cannot leave its entry behind and quietly exempt the file from then on.
+const STILL_TO_MIGRATE: [&str; 0] = [];
 
 /// Every `.rs` file under `src/`, in no particular order.
 fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
@@ -437,7 +447,7 @@ fn a_migrated_source_keeps_no_retired_name() {
 
         for (number, token, ratified) in found {
             kept.push(format!(
-                "{name}:{number}: `{token}` is retired; the ratified name is `{ratified}`"
+                "{name}:{number}: `{token}` is retired; the audit's name for it: {ratified}"
             ));
         }
     }

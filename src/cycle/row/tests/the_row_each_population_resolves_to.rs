@@ -35,10 +35,10 @@ fn every_slot_of_an_entity_block_resolves_to_its_own_row() {
             unsafe { block_kind(entity as usize) },
             crate::memory::block_pool::BLOCK_KIND_ENTITY
         );
-        let resolved = unsafe { edge_to(entity as *mut RcHeader) };
+        let resolved = unsafe { resolve_edge_target(entity as *mut RcHeader) };
         assert_eq!(
             resolved,
-            Edge::Interior(row_by_division(entity, object_size)),
+            EdgeTarget::Tracked(row_by_division(entity, object_size)),
             "the reciprocal multiply and the division name the same slot"
         );
         rows.push(resolved);
@@ -117,10 +117,10 @@ fn two_sizes_in_one_retained_block_resolve_to_distinct_rows() {
             .iter()
             .position(|&address| address == survivor as usize)
             .expect("a survivor is named by its block's index");
-        let resolved = unsafe { edge_to(survivor as *mut RcHeader) };
+        let resolved = unsafe { resolve_edge_target(survivor as *mut RcHeader) };
         assert_eq!(
             resolved,
-            Edge::Interior(Row {
+            EdgeTarget::Tracked(RowKey {
                 block,
                 index: position as u32,
                 population: Population::Retained,
@@ -174,11 +174,11 @@ fn a_large_entity_resolves_to_the_one_row_in_its_own_block() {
             "the sole occupant starts where the header line ends"
         );
         assert_eq!(
-            unsafe { edge_to(entity as *mut RcHeader) },
-            Edge::Interior(Row {
+            unsafe { resolve_edge_target(entity as *mut RcHeader) },
+            EdgeTarget::Tracked(RowKey {
                 block,
-                index: SOLE_OCCUPANT,
-                population: Population::Sole,
+                index: SINGLE_ENTITY_INDEX,
+                population: Population::SingleEntity,
             })
         );
 
@@ -189,13 +189,13 @@ fn a_large_entity_resolves_to_the_one_row_in_its_own_block() {
     }
 }
 
-/// Every child outside the collected heap, and the third case is the one
-/// the block kind cannot answer: an arena entity past one block payload
-/// takes the kind a heap one takes, so only the category separates them
-/// (`edge_to`, the large arm). What makes it worth a case of its own is
-/// where a wrong answer lands — the teardown commits half a double free
-/// and the arena's reset completes it, nowhere near the dispatch that
-/// caused it.
+/// Every child outside the collected heap, and the third case is the one the
+/// block kind cannot answer: an arena entity past one block payload takes the
+/// kind a heap one takes, so only the category separates them
+/// (`resolve_edge_target`, the large arm). What makes it worth a case of its
+/// own is where a wrong answer lands — the teardown commits half a double free
+/// and the arena's reset completes it, nowhere near the dispatch that caused
+/// it.
 #[test]
 fn a_child_outside_the_gc_heap_stops_the_descent() {
     let _g = test_guard();
@@ -206,8 +206,8 @@ fn a_child_outside_the_gc_heap_stops_the_descent() {
     let in_arena = unsafe { new_constructed(&mut ctx, class, MemoryCategory::RequestArena) };
     assert_eq!(unsafe { block_kind(in_arena as usize) }, BLOCK_KIND_ARENA);
     assert_eq!(
-        unsafe { edge_to(in_arena as *mut RcHeader) },
-        Edge::External
+        unsafe { resolve_edge_target(in_arena as *mut RcHeader) },
+        EdgeTarget::Untracked
     );
 
     let immortal = unsafe { new_constructed(&mut ctx, class, MemoryCategory::Immortal) };
@@ -216,8 +216,8 @@ fn a_child_outside_the_gc_heap_stops_the_descent() {
         BLOCK_KIND_IMMORTAL
     );
     assert_eq!(
-        unsafe { edge_to(immortal as *mut RcHeader) },
-        Edge::External
+        unsafe { resolve_edge_target(immortal as *mut RcHeader) },
+        EdgeTarget::Untracked
     );
 
     let wide = wide_class("RowArenaRun", RUN_FILLERS, None);
@@ -228,8 +228,8 @@ fn a_child_outside_the_gc_heap_stops_the_descent() {
         "an arena entity past one block payload takes the kind a heap one takes"
     );
     assert_eq!(
-        unsafe { edge_to(in_a_run as *mut RcHeader) },
-        Edge::External
+        unsafe { resolve_edge_target(in_a_run as *mut RcHeader) },
+        EdgeTarget::Untracked
     );
 
     // No escapee, so the reset hands back the arena's blocks and frees

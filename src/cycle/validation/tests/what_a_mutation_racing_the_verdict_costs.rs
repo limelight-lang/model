@@ -43,8 +43,8 @@ fn a_reference_taken_after_the_verdict_acquits() {
 
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { judge(&mut members, 0) },
-        Judged::Acquitted,
+        unsafe { validate_component(&mut members, 0) },
+        ValidationResult::ExternallyReferenced,
         "one member carries a reference the component does not hold"
     );
 
@@ -98,8 +98,8 @@ fn the_same_ring_without_the_store_is_condemned() {
 
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { judge(&mut members, 0) },
-        Judged::Condemned,
+        unsafe { validate_component(&mut members, 0) },
+        ValidationResult::Unreachable,
         "every reference into the ring comes from the ring"
     );
 

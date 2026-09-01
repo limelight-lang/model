@@ -336,8 +336,8 @@ corrections, not queue overflow. It needs a separate glossary mapping such as
    citation strings.
 3. Done 2026-09-01 under S41.3: queue and memory-manager terminology, their
    direct callers, and the `refcount` rows derived above.
-4. Apply row, scratch-arena, mark/scan, stack, deferred-reuse, and validation
-   terminology; compile after each module boundary.
+4. Done 2026-09-01 under S41.4: row, scratch-arena, mark/scan, stack,
+   deferred-reuse and validation terminology, with the two module renames.
 5. Rename tests and current API maps.
 6. Rewrite production comments under the standard above.
 7. Classify every remaining legacy occurrence as historical citation,

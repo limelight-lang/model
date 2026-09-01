@@ -12,7 +12,7 @@ fn current() -> usize {
 fn a_shadow_arena_is_gc_owned_until_both_exit_paths_return_it() {
     let _g = test_guard();
     let before = current();
-    let mut arena = crate::cycle::arena::ShadowArena::new();
+    let mut arena = crate::cycle::arena::TraceScratchArena::new();
 
     let byte = arena.alloc(1);
     assert!(!byte.is_null());
@@ -55,7 +55,7 @@ fn a_critical_workspace_draw_is_charged_only_while_the_arena_holds_it() {
     let _g = test_guard();
     assert!(crate::memory::critical::replenish());
     let before = current();
-    let mut arena = crate::cycle::arena::ShadowArena::new();
+    let mut arena = crate::cycle::arena::TraceScratchArena::new();
 
     let oom = force_oom();
     let byte = arena.alloc(1);
@@ -211,7 +211,7 @@ fn an_arena_publishes_its_bump_at_the_reset_and_gives_it_back_there() {
     // exact rise is only assertable from a known floor.
     lower_peak_to_current();
     let before = stats();
-    let mut arena = crate::cycle::arena::ShadowArena::new();
+    let mut arena = crate::cycle::arena::TraceScratchArena::new();
 
     assert!(!arena.alloc(1).is_null());
     assert_eq!(
@@ -234,7 +234,7 @@ fn a_block_crossing_publishes_the_bump_it_abandons() {
     let _g = test_guard();
     lower_peak_to_current();
     let before = stats();
-    let mut arena = crate::cycle::arena::ShadowArena::new();
+    let mut arena = crate::cycle::arena::TraceScratchArena::new();
 
     assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
     assert_eq!(in_use(), before.current_bytes_in_use());
@@ -262,7 +262,7 @@ fn a_second_reset_publishes_nothing_and_the_figure_cannot_underflow() {
     let _g = test_guard();
     lower_peak_to_current();
     let before = stats();
-    let mut arena = crate::cycle::arena::ShadowArena::new();
+    let mut arena = crate::cycle::arena::TraceScratchArena::new();
     assert!(!arena.alloc(64).is_null());
 
     arena.reset();

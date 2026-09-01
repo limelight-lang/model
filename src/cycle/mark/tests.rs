@@ -1,6 +1,6 @@
 use super::*;
 use crate::class::ClassBuilder;
-use crate::cycle::shadow::Colour;
+use crate::cycle::shadow::Color;
 use crate::cycle::testing::row_word;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockPool, force_oom, test_guard};
@@ -15,8 +15,8 @@ use crate::test_support::{prop_offset, store_prop};
 unsafe fn working_count(entity: *mut Object) -> u32 {
     let word = unsafe { row_word(entity as *mut RcHeader) };
     assert_eq!(
-        shadow::colour(word),
-        Colour::Met,
+        shadow::color(word),
+        Color::Unclassified,
         "the trace met this entity"
     );
     shadow::count(word)

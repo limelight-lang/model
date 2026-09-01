@@ -18,7 +18,7 @@
 //! `crate::cycle::scan`, and the segments a deep mark drew are what the
 //! scan's own depth reuses.
 
-use crate::cycle::arena::ShadowArena;
+use crate::cycle::arena::TraceScratchArena;
 use crate::refcount::RcHeader;
 
 /// Entries one stack segment holds: 512 pointers, one page of worklist
@@ -41,12 +41,12 @@ pub(crate) const SEGMENT_BYTES: usize = size_of::<StackSegment>();
 /// One segment of the descent's worklist, allocated from the arena.
 ///
 /// The two links are the segment's own, so the stack needs no vector and
-/// no second allocation: `below` is the chain the depth came up, `above`
+/// no second allocation: `previous` is the chain the depth came up, `next`
 /// the segment kept for the next crossing of this boundary.
 #[repr(C)]
 struct StackSegment {
-    below: *mut StackSegment,
-    above: *mut StackSegment,
+    previous: *mut StackSegment,
+    next: *mut StackSegment,
     entries: [*mut RcHeader; SEGMENT_ENTRIES],
 }
 
@@ -57,7 +57,7 @@ struct StackSegment {
 /// arena, which is why it has no [`Drop`] of its own.
 ///
 /// **Every segment is the arena's memory, so a worklist does not outlive
-/// an arena reset.** `ShadowArena::reset` hands those blocks to the pool
+/// an arena reset.** `TraceScratchArena::reset` hands those blocks to the pool
 /// and to the critical reserve, and a stack used after it would climb
 /// into a block another thread has since recommissioned, writing an
 /// entity pointer into someone else's rows. A collection that resets and
@@ -66,10 +66,10 @@ struct StackSegment {
 pub(crate) struct TraceStack {
     /// The segment the next push writes into, or null until the first
     /// push has drawn one.
-    top: *mut StackSegment,
-    /// Entries used in `top`, which is [`SEGMENT_ENTRIES`] when the
-    /// segment is full and the next push has to climb.
-    used: usize,
+    current: *mut StackSegment,
+    /// Entries used in `current`, which is [`SEGMENT_ENTRIES`] when the
+    /// segment is full and the next push has to advance.
+    current_len: usize,
 }
 
 impl TraceStack {
@@ -77,61 +77,61 @@ impl TraceStack {
     /// counted children pays for no segment.
     pub(crate) fn new() -> Self {
         Self {
-            top: std::ptr::null_mut(),
-            used: 0,
+            current: std::ptr::null_mut(),
+            current_len: 0,
         }
     }
 
     /// Queue `entity` for expansion, or answer **false** when both
     /// memory doors refused — which is the caller's signal to abort the
     /// collection, and the only way this can fail.
-    pub(crate) fn push(&mut self, arena: &mut ShadowArena, entity: *mut RcHeader) -> bool {
-        if self.top.is_null() || self.used == SEGMENT_ENTRIES {
-            if !self.climb(arena) {
+    pub(crate) fn push(&mut self, arena: &mut TraceScratchArena, entity: *mut RcHeader) -> bool {
+        if self.current.is_null() || self.current_len == SEGMENT_ENTRIES {
+            if !self.advance_segment(arena) {
                 return false;
             }
         }
 
-        unsafe { entries_of(self.top).add(self.used).write(entity) };
-        self.used += 1;
+        unsafe { entries_of(self.current).add(self.current_len).write(entity) };
+        self.current_len += 1;
         true
     }
 
     /// The next entity to expand, or `None` when the closure is
     /// exhausted.
     pub(crate) fn pop(&mut self) -> Option<*mut RcHeader> {
-        if self.used == 0 {
-            let below = if self.top.is_null() {
+        if self.current_len == 0 {
+            let previous = if self.current.is_null() {
                 std::ptr::null_mut()
             } else {
-                unsafe { (*self.top).below }
+                unsafe { (*self.current).previous }
             };
 
-            if below.is_null() {
+            if previous.is_null() {
                 return None;
             }
 
-            self.top = below;
-            self.used = SEGMENT_ENTRIES;
+            self.current = previous;
+            self.current_len = SEGMENT_ENTRIES;
         }
 
-        self.used -= 1;
-        Some(unsafe { entries_of(self.top).add(self.used).read() })
+        self.current_len -= 1;
+        Some(unsafe { entries_of(self.current).add(self.current_len).read() })
     }
 
     /// Move onto the segment above the current one, reusing the one an
     /// earlier crossing left there or drawing a new one from `arena`.
     /// False when the arena refused.
-    fn climb(&mut self, arena: &mut ShadowArena) -> bool {
-        let kept = if self.top.is_null() {
+    fn advance_segment(&mut self, arena: &mut TraceScratchArena) -> bool {
+        let kept = if self.current.is_null() {
             std::ptr::null_mut()
         } else {
-            unsafe { (*self.top).above }
+            unsafe { (*self.current).next }
         };
 
         if !kept.is_null() {
-            self.top = kept;
-            self.used = 0;
+            self.current = kept;
+            self.current_len = 0;
             return true;
         }
 
@@ -143,18 +143,18 @@ impl TraceStack {
         // Field by field and written rather than assigned: the arena
         // bumps memory with no value in it, so an assignment would drop a
         // `StackSegment` that was never constructed. The entries stay as
-        // the bump handed them over, `used` being what says which of them
-        // have meaning.
+        // the bump handed them over, `current_len` being what says which of
+        // them have meaning.
         unsafe {
-            (&raw mut (*segment).below).write(self.top);
-            (&raw mut (*segment).above).write(std::ptr::null_mut());
-            if !self.top.is_null() {
-                (&raw mut (*self.top).above).write(segment);
+            (&raw mut (*segment).previous).write(self.current);
+            (&raw mut (*segment).next).write(std::ptr::null_mut());
+            if !self.current.is_null() {
+                (&raw mut (*self.current).next).write(segment);
             }
         }
 
-        self.top = segment;
-        self.used = 0;
+        self.current = segment;
+        self.current_len = 0;
         true
     }
 
@@ -164,10 +164,10 @@ impl TraceStack {
     /// Nothing is freed here and nothing can be: the memory is the
     /// arena's and goes back with it. What this undoes is the stack's
     /// own belief that it has segments to climb into, which after
-    /// `ShadowArena::reset` names memory the pool has taken back.
+    /// `TraceScratchArena::reset` names memory the pool has taken back.
     pub(crate) fn reset(&mut self) {
-        self.top = std::ptr::null_mut();
-        self.used = 0;
+        self.current = std::ptr::null_mut();
+        self.current_len = 0;
     }
 
     /// Segments drawn from the arena, emptied ones included. Tests only,
@@ -175,20 +175,20 @@ impl TraceStack {
     /// stack that abandoned an emptied segment answers every push and
     /// pop correctly while spending a page per boundary crossing.
     #[cfg(test)]
-    pub(crate) fn segments_held(&self) -> usize {
-        if self.top.is_null() {
+    pub(crate) fn segment_count(&self) -> usize {
+        if self.current.is_null() {
             return 0;
         }
 
-        let mut bottom = self.top;
-        while !unsafe { (*bottom).below }.is_null() {
-            bottom = unsafe { (*bottom).below };
+        let mut bottom = self.current;
+        while !unsafe { (*bottom).previous }.is_null() {
+            bottom = unsafe { (*bottom).previous };
         }
 
         let mut count = 0;
         while !bottom.is_null() {
             count += 1;
-            bottom = unsafe { (*bottom).above };
+            bottom = unsafe { (*bottom).next };
         }
 
         count

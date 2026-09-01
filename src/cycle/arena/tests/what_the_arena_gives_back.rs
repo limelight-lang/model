@@ -16,7 +16,7 @@ fn an_arena_returns_every_block_it_took() {
     crate::memory::critical::drain_for_test();
     let before = BlockPool::global().blocks_out();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     // Past one block, so the block list is a list rather than a block.
     for _ in 0..3 {
         assert!(!arena.alloc(BLOCK_PAYLOAD / 2).is_null());
@@ -39,7 +39,7 @@ fn a_refusal_at_both_doors_leaves_nothing_behind() {
     crate::memory::critical::drain_for_test();
     let before = BlockPool::global().blocks_out();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     assert!(!arena.alloc(64).is_null(), "the ordinary door served");
     assert_eq!(arena.blocks_held(), 1);
 
@@ -75,7 +75,7 @@ fn the_reserve_is_untouched_while_the_pool_serves() {
     assert!(crate::memory::critical::replenish());
     let held = crate::memory::critical::blocks_held();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     for _ in 0..4 {
         assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
     }
@@ -101,7 +101,7 @@ fn the_reserve_serves_after_a_refusal_and_is_refilled_at_reset() {
     let held = crate::memory::critical::blocks_held();
     let before = BlockPool::global().blocks_out();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
@@ -142,8 +142,8 @@ fn an_abort_nulls_the_shadow_of_every_block_it_stamped() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = ShadowArena::new();
-    met(unsafe { arena.meet(slot_row(block, 0), 1) });
+    let mut arena = TraceScratchArena::new();
+    met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
     assert!(!unsafe { crate::memory::heap::block_shadow(block) }.is_null());
 
     // The abort is the reset, reached before anything was judged.
@@ -174,9 +174,9 @@ fn the_sweep_reaches_every_block_of_the_chain() {
     assert_ne!(middle, last);
     assert_ne!(first, last);
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     for block in [first, middle, last] {
-        met(unsafe { arena.meet(slot_row(block, 0), 1) });
+        met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
     }
 
     assert_eq!(arena.touched_blocks(), 3, "one entry per touched block");
@@ -211,10 +211,10 @@ fn a_swept_list_is_not_swept_again_at_reset() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = ShadowArena::new();
-    let rows = met(unsafe { arena.meet(slot_row(block, 0), 1) }) as *mut u8;
+    let mut arena = TraceScratchArena::new();
+    let rows = met(unsafe { arena.ensure_row(slot_row(block, 0), 1) }) as *mut u8;
 
-    arena.sweep_touched();
+    arena.clear_touched_rows();
     assert!(unsafe { crate::memory::heap::block_shadow(block) }.is_null());
 
     // What a recommissioning would leave, and what the reset must not
@@ -236,14 +236,14 @@ fn a_swept_list_is_not_swept_again_at_reset() {
 /// one allocation for the rows and the enrolment worth its shape: there
 /// is no instant at which a block points at rows the abort is about to
 /// give back. Both doors refuse, so the first touch answers
-/// [`Met::Refused`] and the block's shadow word is untouched.
+/// [`RowLookup::AllocationFailed`] and the block's shadow word is untouched.
 #[test]
 fn a_refused_first_touch_stamps_nothing() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
@@ -256,8 +256,8 @@ fn a_refused_first_touch_stamps_nothing() {
     );
 
     assert_eq!(
-        unsafe { arena.meet(slot_row(block, 0), 1) },
-        Met::Refused,
+        unsafe { arena.ensure_row(slot_row(block, 0), 1) },
+        RowLookup::AllocationFailed,
         "a first touch with no memory aborts the collection"
     );
     drop(oom);
@@ -284,7 +284,7 @@ fn every_block_the_reserve_lent_comes_back_to_it() {
     assert!(crate::memory::critical::replenish());
     let before = BlockPool::global().blocks_out();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),

@@ -15,23 +15,23 @@ fn an_entity_block() -> (crate::memory::Heap, *mut u8, *mut u8) {
 }
 
 /// The row of slot `index` of an entity block, built the way
-/// `row::edge_to` would build it from an entity's address. The tests
-/// here drive the arena rather than the dispatch, so the row is written
-/// out: an entity block's slot index is its position under the block's
-/// stride, and slot 0 is the first address the payload holds.
-fn slot_row(block: *mut u8, index: u32) -> crate::cycle::row::Row {
-    crate::cycle::row::Row {
+/// `row::resolve_edge_target` would build it from an entity's address. The
+/// tests here drive the arena rather than the dispatch, so the row is written
+/// out: an entity block's slot index is its position under the block's stride,
+/// and slot 0 is the first address the payload holds.
+fn slot_row(block: *mut u8, index: u32) -> crate::cycle::row::RowKey {
+    crate::cycle::row::RowKey {
         block: block as usize,
         index,
         population: crate::cycle::row::Population::Slotted,
     }
 }
 
-/// The row `meet` handed back, or a panic naming what it answered
+/// The row `ensure_row` handed back, or a panic naming what it answered
 /// instead. Every test here asks for a row it expects to get.
-fn met(answer: Met) -> *mut u32 {
+fn met(answer: RowLookup) -> *mut u32 {
     match answer {
-        Met::Row { row, .. } => row,
+        RowLookup::Ready { row, .. } => row,
         other => panic!("the arena refused a row: {other:?}"),
     }
 }
@@ -39,9 +39,9 @@ fn met(answer: Met) -> *mut u32 {
 /// The row and whether this was the collection's first reach of the
 /// entity — the bit the mark's descent turns on, which only the meeting
 /// can answer.
-fn met_first(answer: Met) -> (*mut u32, bool) {
+fn met_first(answer: RowLookup) -> (*mut u32, bool) {
     match answer {
-        Met::Row { row, first_reach } => (row, first_reach),
+        RowLookup::Ready { row, first_visit } => (row, first_visit),
         other => panic!("the arena refused a row: {other:?}"),
     }
 }

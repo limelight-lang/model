@@ -116,7 +116,7 @@ fn a_block_emptied_around_a_parked_corpse_reaches_the_pool_at_the_return() {
     assert!(
         !pool_holds(watched),
         "a block holding a parked corpse reached the pool: its `used` fell \
-         at the parking rather than at the return"
+         when the free was withheld rather than at the return"
     );
 
     // The return, which is the retirement's last act: the bit comes down

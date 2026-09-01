@@ -131,8 +131,8 @@ fn the_entity_row_dispatch_never_enters_gc_metadata() {
     let pretend_child = BlockHeader::payload_start(queue_base()) as *mut RcHeader;
 
     assert_eq!(
-        unsafe { crate::cycle::row::edge_to(pretend_child) },
-        crate::cycle::row::Edge::External
+        unsafe { crate::cycle::row::resolve_edge_target(pretend_child) },
+        crate::cycle::row::EdgeTarget::Untracked
     );
 }
 

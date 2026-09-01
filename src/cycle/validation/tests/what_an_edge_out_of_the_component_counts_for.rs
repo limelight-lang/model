@@ -35,16 +35,16 @@ fn a_reference_the_component_holds_is_no_reference_into_it() {
 
     let mut shadow_arena = unsafe { condemned_from(first, &[first, second]) };
     assert_eq!(
-        unsafe { row_colour(outside as *mut RcHeader) },
-        Colour::Live,
+        unsafe { row_color(outside as *mut RcHeader) },
+        Color::Live,
         "the fixture's own reference is what holds the entity the ring points at"
     );
     shadow_arena.reset();
 
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { judge(&mut members, 0) },
-        Judged::Condemned,
+        unsafe { validate_component(&mut members, 0) },
+        ValidationResult::Unreachable,
         "the ring's own two edges account for both members' counts"
     );
 

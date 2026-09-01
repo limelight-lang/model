@@ -7,7 +7,7 @@
 //! matters to the instrument rather than to the code: one such cast puts
 //! Miri into permissive provenance for the whole run, and the crate
 //! keeps them to the one place that owns block addresses
-//! (`cycle::row::edge_to`).
+//! (`cycle::row::resolve_edge_target`).
 
 use super::*;
 use crate::memory::block_pool::{BlockPool, force_oom, test_guard};
@@ -46,7 +46,7 @@ fn a_depth_past_one_segment_pops_in_the_order_it_pushed() {
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let mut stack = TraceStack::new();
     for i in 1..=depth {
         assert!(
@@ -55,7 +55,7 @@ fn a_depth_past_one_segment_pops_in_the_order_it_pushed() {
         );
     }
 
-    assert_eq!(stack.segments_held(), 2, "the depth crossed one boundary");
+    assert_eq!(stack.segment_count(), 2, "the depth crossed one boundary");
 
     for i in (1..=depth).rev() {
         assert_eq!(stack.pop(), Some(unsafe { entry(base, i) }));
@@ -76,7 +76,7 @@ fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let mut stack = TraceStack::new();
     for crossing in 0..4 {
         for i in 1..=depth {
@@ -84,7 +84,7 @@ fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
         }
 
         assert_eq!(
-            stack.segments_held(),
+            stack.segment_count(),
             2,
             "crossing {crossing} drew no segment of its own"
         );
@@ -106,7 +106,7 @@ fn a_push_with_both_doors_shut_answers_false() {
     let mut headers = slab(1);
     let base = headers.as_mut_ptr();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let mut stack = TraceStack::new();
 
     let oom = force_oom();
@@ -121,7 +121,7 @@ fn a_push_with_both_doors_shut_answers_false() {
 
     assert!(!refused);
     assert_eq!(stack.pop(), None, "and nothing was queued");
-    assert_eq!(stack.segments_held(), 0);
+    assert_eq!(stack.segment_count(), 0);
 
     arena.reset();
     crate::memory::critical::drain_for_test();
@@ -137,14 +137,14 @@ fn a_stack_reset_with_its_arena_holds_no_segment() {
     let mut headers = slab(1);
     let base = headers.as_mut_ptr();
 
-    let mut arena = ShadowArena::new();
+    let mut arena = TraceScratchArena::new();
     let mut stack = TraceStack::new();
     assert!(stack.push(&mut arena, unsafe { entry(base, 1) }));
-    assert_eq!(stack.segments_held(), 1);
+    assert_eq!(stack.segment_count(), 1);
 
     arena.reset();
     stack.reset();
-    assert_eq!(stack.segments_held(), 0, "no segment of the old arena");
+    assert_eq!(stack.segment_count(), 0, "no segment of the old arena");
     assert_eq!(stack.pop(), None, "and nothing queued in one");
 
     assert!(stack.push(&mut arena, unsafe { entry(base, 1) }));

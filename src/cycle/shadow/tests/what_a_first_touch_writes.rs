@@ -17,7 +17,7 @@ fn a_first_touch_zeroes_its_own_group_and_no_other() {
     let mut buffer = dirty_buffer(64);
     let array = array_over(&mut buffer, 64);
 
-    unsafe { meet_group(array, 3) };
+    unsafe { ensure_group_initialized(array, 3) };
     for index in 0..GROUP {
         assert_eq!(
             unsafe { raw(array, index) },
@@ -34,7 +34,7 @@ fn a_first_touch_zeroes_its_own_group_and_no_other() {
         );
     }
 
-    unsafe { meet_group(array, 40) };
+    unsafe { ensure_group_initialized(array, 40) };
     for index in 40..48 {
         assert_eq!(unsafe { raw(array, index) }, 0, "row {index} of group five");
     }
@@ -57,16 +57,19 @@ fn a_group_met_once_is_not_zeroed_again() {
     let mut buffer = dirty_buffer(32);
     let array = array_over(&mut buffer, 32);
 
-    unsafe { meet_group(array, 0) };
-    unsafe { *row(array, 0) = compose(Colour::Met, 11) };
-    unsafe { *row(array, 7) = compose(Colour::Condemned, 0) };
+    unsafe { ensure_group_initialized(array, 0) };
+    unsafe { *row(array, 0) = compose(Color::Unclassified, 11) };
+    unsafe { *row(array, 7) = compose(Color::PotentiallyUnreachable, 0) };
 
     for index in 0..GROUP {
-        unsafe { meet_group(array, index) };
+        unsafe { ensure_group_initialized(array, index) };
     }
 
     assert_eq!(unsafe { count(raw(array, 0)) }, 11);
-    assert_eq!(unsafe { colour(raw(array, 7)) }, Colour::Condemned);
+    assert_eq!(
+        unsafe { color(raw(array, 7)) },
+        Color::PotentiallyUnreachable
+    );
 }
 
 /// The bitmap sits past the rows, so the last group's rows and the first
@@ -77,17 +80,17 @@ fn a_group_met_once_is_not_zeroed_again() {
 /// the boundary.
 #[test]
 fn the_rows_and_the_bitmap_do_not_overlap_at_the_last_group() {
-    let slots = 12;
-    let mut buffer = dirty_buffer(slots);
-    let array = array_over(&mut buffer, slots);
+    let row_count = 12;
+    let mut buffer = dirty_buffer(row_count);
+    let array = array_over(&mut buffer, row_count);
 
-    for index in 0..slots {
-        unsafe { meet_group(array, index) };
-        unsafe { *row(array, index) = compose(Colour::Met, index) };
+    for index in 0..row_count {
+        unsafe { ensure_group_initialized(array, index) };
+        unsafe { *row(array, index) = compose(Color::Unclassified, index) };
     }
 
-    for index in 0..slots {
-        unsafe { meet_group(array, index) };
+    for index in 0..row_count {
+        unsafe { ensure_group_initialized(array, index) };
         assert_eq!(
             unsafe { count(raw(array, index)) },
             index,
@@ -103,16 +106,16 @@ fn the_rows_and_the_bitmap_do_not_overlap_at_the_last_group() {
 /// allocation.
 #[test]
 fn a_partial_last_group_is_reserved_whole() {
-    let slots = 9;
+    let row_count = 9;
     assert_eq!(
-        bytes_for(slots),
+        bytes_for(row_count),
         size_of::<RowArray>() + 16 * size_of::<u32>() + 1,
         "nine rows reserve two whole groups and one bitmap byte"
     );
 
-    let mut buffer = dirty_buffer(slots);
-    let array = array_over(&mut buffer, slots);
-    unsafe { meet_group(array, 8) };
+    let mut buffer = dirty_buffer(row_count);
+    let array = array_over(&mut buffer, row_count);
+    unsafe { ensure_group_initialized(array, 8) };
 
     let last = buffer.len() * size_of::<u64>();
     let past_the_rows = size_of::<RowArray>() + 16 * size_of::<u32>();

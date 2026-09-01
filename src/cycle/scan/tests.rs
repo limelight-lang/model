@@ -9,9 +9,9 @@
 
 use super::*;
 use crate::class::ClassBuilder;
-use crate::cycle::mark::{Marked, mark};
+use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::stack::TraceStack;
-use crate::cycle::testing::row_colour;
+use crate::cycle::testing::row_color;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
@@ -76,25 +76,25 @@ fn a_ring_held_from_outside_scans_live_through_the_member_that_is_held() {
     let mut arena = Arena::new();
     let (first, second) = unsafe { ring(&mut arena, "ScanHeldNode") };
 
-    let mut shadow_arena = ShadowArena::new();
+    let mut shadow_arena = TraceScratchArena::new();
     let mut stack = TraceStack::new();
     assert_eq!(
         unsafe { mark(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
-        Marked::Complete
+        MarkResult::Complete
     );
     assert_eq!(
         unsafe { scan(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
-        Scanned::Complete
+        ScanResult::Complete
     );
 
     assert_eq!(
-        unsafe { row_colour(second as *mut RcHeader) },
-        Colour::Live,
+        unsafe { row_color(second as *mut RcHeader) },
+        Color::Live,
         "the member the fixture holds keeps a working count above zero"
     );
     assert_eq!(
-        unsafe { row_colour(first as *mut RcHeader) },
-        Colour::Live,
+        unsafe { row_color(first as *mut RcHeader) },
+        Color::Live,
         "and the member reachable from it is raised out of its condemnation"
     );
 
@@ -114,21 +114,21 @@ fn a_ring_no_one_holds_is_condemned_whole() {
     // of the difference from the test above.
     assert!(!unsafe { ll_release(second as *mut RcHeader) });
 
-    let mut shadow_arena = ShadowArena::new();
+    let mut shadow_arena = TraceScratchArena::new();
     let mut stack = TraceStack::new();
     assert_eq!(
         unsafe { mark(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
-        Marked::Complete
+        MarkResult::Complete
     );
     assert_eq!(
         unsafe { scan(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
-        Scanned::Complete
+        ScanResult::Complete
     );
 
     for member in [first, second] {
         assert_eq!(
-            unsafe { row_colour(member as *mut RcHeader) },
-            Colour::Condemned,
+            unsafe { row_color(member as *mut RcHeader) },
+            Color::PotentiallyUnreachable,
             "no reference into the ring stands, so no row is above zero"
         );
     }

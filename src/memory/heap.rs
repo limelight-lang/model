@@ -265,11 +265,11 @@ struct BlockRemote {
 /// left as the pool handed it over.
 #[repr(C, align(64))]
 struct BlockCollector {
-    /// This block's shadow row array, or null while no collection has
-    /// touched the block. The one word of a block header a non-owner
-    /// writes: a collection reserves the array at its first touch of the
-    /// block and nulls this again at the end of the collection, on the
-    /// abort path as well (`crate::cycle::arena::ShadowArena::meet`).
+    /// This block's shadow row array, or null while no collection has touched
+    /// the block. The one word of a block header a non-owner writes: a
+    /// collection reserves the array at its first touch of the block and nulls
+    /// this again at the end of the collection, on the abort path as well
+    /// (`crate::cycle::arena::TraceScratchArena::ensure_row`).
     shadow: AtomicPtr<u8>,
     /// `2^32 / stride + 1` for this block's size class, so a row lookup
     /// is a multiply and a shift rather than a division
@@ -917,8 +917,8 @@ impl Heap {
         self.empty_reserve = [std::ptr::null_mut(); NUM_CLASSES];
     }
 
-    /// [`collect_remote`](Self::collect_remote) without touching `self` — for use while the
-    /// abandoned list's lock is held.
+    /// [`collect_remote`](Self::collect_remote) without touching `self` — for
+    /// use while the abandoned list's lock is held.
     fn collect_remote_locked(&self, block: *mut HeapBlockHeader) {
         // Takes the raw block: it needs both halves, and they must be
         // reached separately — the atomic through a shared reference, the
@@ -964,8 +964,8 @@ impl Heap {
         self.alloc(size)
     }
 
-    /// Free a slot from [`alloc`](Self::alloc). If this thread owns the block it is a
-    /// cheap local free; otherwise the slot is posted to the owner's
+    /// Free a slot from [`alloc`](Self::alloc). If this thread owns the block
+    /// it is a cheap local free; otherwise the slot is posted to the owner's
     /// lock-free `remote_free` stack.
     ///
     /// Split fast/cold for the same codegen reason as [`alloc`](Self::alloc)
@@ -1632,7 +1632,7 @@ pub extern "C" fn ll_thread_exit() {
     //    still mounted. A trace cannot span thread exit, so the list is empty;
     //    disposing it here returns its own allocation locally rather than
     //    posting it to an ownerless block after the heaps are abandoned.
-    crate::cycle::parking::dispose();
+    crate::cycle::deferred_slot_reuse::dispose_thread_state();
 
     // 3. The weak table, after every death that could still need a row.
     //    `weak.rs` pinned this position against the day static-block
@@ -2202,9 +2202,9 @@ pub(crate) unsafe fn set_block_shadow(block: *mut u8, rows: *mut u8) {
 /// recomputed from the index
 /// (`the_reciprocal_multiply_is_the_division_over_a_whole_block`).
 ///
-/// The caller resolves the block's kind first, and only a block that
-/// reads `BLOCK_KIND_ENTITY` reaches here: the other populations of the
-/// GC heap have no stride to divide by (`crate::cycle::row::edge_to`).
+/// The caller resolves the block's kind first, and only a block that reads
+/// `BLOCK_KIND_ENTITY` reaches here: the other populations of the GC heap have
+/// no stride to divide by (`crate::cycle::row::resolve_edge_target`).
 ///
 /// # Safety
 /// `entity` must be a slot of a commissioned `BLOCK_KIND_ENTITY` block.

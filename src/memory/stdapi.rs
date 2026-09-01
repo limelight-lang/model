@@ -349,8 +349,10 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // identifiers of the same slot. A return refused by the first is recorded
     // by that entry; a return refused here is recorded out of band and replayed
     // through this same door when the trace closes. Whichever window
-    // closes last performs the physical return (`cycle::parking`).
-    if can_lose_trace_identity(kind) && unsafe { crate::cycle::parking::park_if_active(ptr) } {
+    // closes last performs the physical return (`cycle::deferred_slot_reuse`).
+    if can_lose_trace_identity(kind)
+        && unsafe { crate::cycle::deferred_slot_reuse::defer_reuse_if_tracing(ptr) }
+    {
         return;
     }
 

@@ -24,7 +24,7 @@ use crate::refcount::{MemoryCategory, RcHeader, mutator_flags};
 /// own block or run and gets one row in that block's header rather than
 /// an array (`rfc/model/gc/rc-cycle.md`, "Where the shadow count
 /// lives").
-pub(crate) const SOLE_OCCUPANT: u32 = 0;
+pub(crate) const SINGLE_ENTITY_INDEX: u32 = 0;
 
 /// Which of the three GC-heap populations a block belongs to, and with
 /// it where the block's rows are and how many of them there are.
@@ -51,7 +51,7 @@ pub(crate) enum Population {
     /// A large entity, the sole occupant of its block: one row, held in
     /// the block's own header rather than in an array
     /// (`crate::memory::large_entity`).
-    Sole,
+    SingleEntity,
 }
 
 /// The shadow row of one entity: the block whose rows carry it, the
@@ -59,16 +59,16 @@ pub(crate) enum Population {
 ///
 /// It is an identity and not an address. Where the rows themselves are
 /// reserved is `crate::cycle::arena`; two entities of one block
-/// resolving to one `Row` is a defect however the rows are laid out.
+/// resolving to one `RowKey` is a defect however the rows are laid out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Row {
+pub(crate) struct RowKey {
     /// The block header's address, 64 KiB-aligned. For a large entity
     /// held in an OS-direct run, the run's first block, which is the one
     /// carrying the header.
     pub block: usize,
     /// The entity's index into that block's rows: its slot index in an
     /// entity block, its position in the occupant index of a retained
-    /// block, and [`SOLE_OCCUPANT`] for a large entity.
+    /// block, and [`SINGLE_ENTITY_INDEX`] for a large entity.
     pub index: u32,
     /// Where those rows are, which the block's kind has already said.
     pub population: Population,
@@ -76,15 +76,15 @@ pub(crate) struct Row {
 
 /// What the trace does with one edge it has just read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Edge {
+pub(crate) enum EdgeTarget {
     /// The child is a GC-heap entity with this row: the descent
     /// continues through it and the row takes the decrement.
-    Interior(Row),
+    Tracked(RowKey),
     /// The child is outside the GC heap, so the descent stops and the
     /// edge counts as an external live reference. An arena entity is the
     /// case that matters — a ring through the arena is broken by the
     /// arena's own reset — and an immortal entity answers the same way.
-    External,
+    Untracked,
 }
 
 /// Resolve one traced edge: the row of `child`, or the refusal to
@@ -98,7 +98,7 @@ pub(crate) enum Edge {
 /// class or a cursor there reads uninitialised memory.
 ///
 /// An address the retained population cannot place answers
-/// [`Edge::External`] as well, which keeps its referent alive rather
+/// [`EdgeTarget::Untracked`] as well, which keeps its referent alive rather
 /// than condemning it on a row the trace guessed
 /// (`memory::retained::occupant_index`).
 ///
@@ -112,7 +112,7 @@ pub(crate) enum Edge {
 /// `child` must be a live entity header. Its block must be mapped and
 /// commissioned, and its own flags word readable, which the large arm
 /// depends on.
-pub(crate) unsafe fn edge_to(child: *mut RcHeader) -> Edge {
+pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
     // Through `BlockHeader::of_ptr` rather than a mask of its own: the
     // address-to-block step is an integer-to-pointer cast, which puts
     // Miri into permissive provenance wherever it appears, and the crate
@@ -121,14 +121,14 @@ pub(crate) unsafe fn edge_to(child: *mut RcHeader) -> Edge {
     let block = header as usize;
     let kind = unsafe { collector_load_block_kind(&raw const (*header).kind) };
     match kind {
-        BLOCK_KIND_ENTITY => Edge::Interior(Row {
+        BLOCK_KIND_ENTITY => EdgeTarget::Tracked(RowKey {
             block,
             index: unsafe { crate::memory::heap::entity_slot_index(child as *mut u8) },
             population: Population::Slotted,
         }),
         BLOCK_KIND_RETAINED => {
             match crate::memory::retained::occupant_index(block, child as usize) {
-                Some(position) => Edge::Interior(Row {
+                Some(position) => EdgeTarget::Tracked(RowKey {
                     block,
                     index: position as u32,
                     population: Population::Retained,
@@ -142,14 +142,14 @@ pub(crate) unsafe fn edge_to(child: *mut RcHeader) -> Edge {
                     // is a disagreement between this lookup and the
                     // classification `promote` performs in one place,
                     // and this is the only site in the process that can
-                    // see it — `External` would hide it for the rest of
+                    // see it — `Untracked` would hide it for the rest of
                     // the run.
                     debug_assert!(
                         !crate::memory::retained::has_occupant_index(block)
                             || unsafe { crate::refcount::header_refcount(child) } == 0,
                         "an indexed retained block does not name a live occupant"
                     );
-                    Edge::External
+                    EdgeTarget::Untracked
                 }
             }
         }
@@ -168,16 +168,16 @@ pub(crate) unsafe fn edge_to(child: *mut RcHeader) -> Edge {
             // surviving-run arm).
             if unsafe { MemoryCategory::from_flags(mutator_flags(child)) } == MemoryCategory::GcHeap
             {
-                Edge::Interior(Row {
+                EdgeTarget::Tracked(RowKey {
                     block,
-                    index: SOLE_OCCUPANT,
-                    population: Population::Sole,
+                    index: SINGLE_ENTITY_INDEX,
+                    population: Population::SingleEntity,
                 })
             } else {
-                Edge::External
+                EdgeTarget::Untracked
             }
         }
-        _ => Edge::External,
+        _ => EdgeTarget::Untracked,
     }
 }
 
