@@ -140,14 +140,29 @@ to the step that owns it.
         bitmap's accessors. `door`, `escrow` and `floor` are defined by the
         glossary now, so the rename steps apply those entries rather than
         wait for them.
-- [ ] S41.2 The retired-identifier test, seen failing first
+- [x] S41.2 The retired-identifier test, seen failing first
       done: a source audit over `src/` fails on any identifier the ratified
         mapping retires, allowing a string that quotes a document heading
         verbatim; it is seen red on this tree before the first rename and green
         after each one
       tier: T2 · role: —
-      handoff: `refcount::tests::who_may_read_a_header` is the pattern for a
-        test that reads the crate's own sources.
+      handoff: `cycle::tests::the_words_the_crate_retired` carries the ratified
+        mapping as 72 entries, each scoped `Anywhere`, `Under` a subtree, or
+        `Except` the subtrees owning a homonym — `replenish` is the reserve's
+        and the critical cache's as well as the queue's. It reads identifiers
+        and cuts a line's comment first, so prose stays S41.6's, and it drops a
+        string literal naming a `.md` file, which is the citation exemption.
+      handoff: **the guard stands over a shrinking debt list, not over the
+        whole crate at once.** `STILL_TO_MIGRATE` names the 50 files that still
+        offend; a retired name in any file outside it fails, a file leaves the
+        list in the commit that renames it, and a second test refuses a file
+        that has stopped offending, so the entry cannot be left behind to
+        exempt it. This is the one departure from the `done:` clause above, and
+        it is what lets every commit of the stage stay green: the clause's
+        "green after each one" and `dev/WORKFLOW.md`'s per-commit gate cannot
+        both hold while one test carries the whole mapping. Seen red before the
+        list existed — 992 sites over those 50 files — and both guards were
+        seen firing, on a file taken off the list and on a clean one put on it.
 - [ ] S41.3 The candidate queue and the manager boundary
       done: `src/cycle/queue.rs` and `src/memory/gc_metadata.rs` carry the
         ratified names, the module contract states the three storage paths the
@@ -163,7 +178,8 @@ to the step that owns it.
       tier: T2 · role: Critic
 - [ ] S41.5 The tests and the current maps
       done: no test file name, test name, helper or assertion uses a retired
-        term; `dev/INDEX.md` and `dev/ARCHITECTURE.md` name what the code names;
+        term and `STILL_TO_MIGRATE` is empty; `dev/INDEX.md` and
+        `dev/ARCHITECTURE.md` name what the code names;
         the historical records the audit lists as out of scope are untouched,
         and an active citation of an old heading keeps the heading exactly with
         the current name outside the quotation

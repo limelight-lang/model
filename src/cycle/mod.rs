@@ -74,3 +74,5 @@ pub(crate) mod stack;
 // builds only.
 #[cfg(test)]
 pub(crate) mod testing;
+#[cfg(test)]
+mod tests;
