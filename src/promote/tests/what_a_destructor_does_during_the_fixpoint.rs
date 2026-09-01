@@ -42,7 +42,7 @@ fn destructor_created_escape_survives_already_destructed() {
     // One raw pointer per entity, reused — the shape generated code
     // actually has (an `LLContext*` in a register). Taking a fresh
     // `&mut arena`/`&mut ctx` per call would retag, invalidating the
-    // pointer `set_current_context` parked in TLS.
+    // pointer `set_current_context` stored in TLS.
     let mut arena = Arena::new();
     let arena_ptr: *mut Arena = &mut arena;
     let mut ctx = LLContext { arena: arena_ptr };

@@ -205,7 +205,7 @@ fn a_growth_refusal_inside_the_copy_destroys_the_copy_alone() {
 /// The refusal teardown cannot wait for `ll_release`'s verdict: on
 /// an arena copy the release reports no death, and a verdict-gated
 /// branch leaves every reference the replay published sitting on a
-/// corpse until the reset — a shared COW child then reads an extra
+/// zero-count member until the reset — a shared COW child then reads an extra
 /// holder and separates on every write for the rest of the request.
 /// Seen failing exactly there with the gated teardown.
 #[test]

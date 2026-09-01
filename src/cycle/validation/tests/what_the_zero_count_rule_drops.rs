@@ -1,25 +1,24 @@
-//! The corpse rule: a component holding a member at count zero is
+//! The zero-count rule: a component holding a member at count zero is
 //! dropped before any field of any member is read.
 //!
-//! What produces the corpse is the teardown of another component. The
-//! member it releases dies ordinarily — count zero published, slot
-//! parked — and the component that still names it is judged afterwards
-//! (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 1, and "Death
-//! while enrolled").
+//! What produces the zero-count member is the teardown of another component.
+//! The member it releases dies ordinarily — count zero published, slot withheld
+//! — and the component that still names it is validated afterwards
+//! (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 1, and "Death while
+//! enrolled").
 
 use super::*;
 
-/// A member at count zero drops its component whole: the second member's
-/// count is untouched, and so is the cell the corpse holds it through.
+/// A member at count zero drops its component whole: the second member's count
+/// is untouched, and so is the cell the zero-count member holds it through.
 ///
-/// The fixture is two condemned components — a ring, and the chain the
-/// ring holds — and the ring's teardown is what releases into the chain.
-/// It is modelled by the release alone, because the count is the whole
-/// of what the corpse rule reads. The residue therefore differs from the
-/// one a real teardown leaves — there the corpse's cells are empty and
-/// its children released — so what the assertions below compare is the
-/// state before the call against the state after it, rather than a
-/// residue of their own.
+/// The fixture is two unreachable components — a ring, and the chain the ring
+/// holds — and the ring's teardown is what releases into the chain. It is
+/// modelled by the release alone, because the count is the whole of what the
+/// zero-count rule reads. The residue therefore differs from the one a real
+/// teardown leaves — there the zero-count member's cells are empty and its
+/// children released — so what the assertions below compare is the state before
+/// the call against the state after it, rather than a residue of their own.
 #[test]
 fn a_member_at_count_zero_drops_the_component_whole() {
     let _g = test_guard();
@@ -45,7 +44,8 @@ fn a_member_at_count_zero_drops_the_component_whole() {
         store_prop(&mut arena, head, prop_offset(0), tail);
 
         // From here the graph holds every entity and nothing else does,
-        // which leaves all four rows at zero and condemns both components.
+        // which leaves all four rows at zero and reads both components as
+        // unreachable.
         for entity in [first, second, head, tail] {
             assert!(!ll_release(entity as *mut RcHeader));
         }

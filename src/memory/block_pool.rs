@@ -87,7 +87,7 @@ pub(crate) unsafe fn load_block_kind(kind_field: *const AtomicU32) -> u32 {
 /// **It bounds nothing about staleness**, so it is not what keeps a
 /// reader off a block that has since been recycled under a different
 /// size class: acquire orders what accompanies a value and places no age
-/// limit on the value itself. What excludes that is the parking rule —
+/// limit on the value itself. What excludes that is the withholding rule —
 /// a slot returns only when the collection that could be reading its row
 /// is over, so a block cannot empty and reach the pool mid-trace
 /// (`rfc/model/gc/rc-cycle.md`, "Death while enrolled"). The owner-side
@@ -322,7 +322,7 @@ impl Drop for ForcedOom {
 // Blocks this thread has asked the pool for, whichever tier served it.
 // Counted rather than inferred from the global allocator, because a
 // request the thread cache serves allocates nothing and still takes the
-// pool's word — and a path that may not lock is judged by requests, not
+// pool's word — and a path that may not lock is measured by requests, not
 // by allocations (`crate::test_support::allocation_probe`).
 #[cfg(test)]
 thread_local! {
@@ -780,13 +780,12 @@ impl BlockPool {
         Some(head)
     }
 
-    /// Reserve a 2 MB region from the OS and stack its `BLOCKS_PER_REGION` blocks.
-    /// Returns false if the OS refused the region — the caller must not
-    /// spin. Out of memory is a condition to **report**, not to abort on:
-    /// a request that cannot get memory is the request's problem, and the
-    /// worker goes on to serve the next one. The abort that used to be
-    /// here also disagreed with the huge-allocation path, which has always
-    /// returned null.
+    /// Reserve a 2 MB region from the OS and stack its `BLOCKS_PER_REGION`
+    /// blocks. Returns false if the OS refused the region — the caller must not
+    /// spin. Out of memory is a condition to **report**, not to abort on: a
+    /// request that cannot get memory is the request's problem, and the worker
+    /// goes on to serve the next one. The abort that used to be here also
+    /// disagreed with the huge-allocation path, which has always returned null.
     fn carve_region(&self) -> bool {
         let _guard = CARVE_LOCK.lock().unwrap();
 

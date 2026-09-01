@@ -1,11 +1,11 @@
 //! A component whose members are of two kinds: the ring runs through an
 //! array's element and back through an object's property.
 //!
-//! Every other test here judges plain objects, and the arithmetic goes
-//! through `cells::trace_cells`, which strides each kind differently. An
-//! array is the kind a real component is most likely to hold, and the
-//! only one whose walk can give up on an incoherent head — which reads
-//! as a lost in-edge, so the component acquits rather than frees.
+//! Every other test here validates plain objects, and the arithmetic goes
+//! through `cells::trace_cells`, which strides each kind differently. An array
+//! is the kind a real component is most likely to hold, and the only one whose
+//! walk can give up on an incoherent head — which reads as a lost in-edge, so
+//! the component reads as externally referenced rather than frees.
 
 use super::*;
 use crate::array::entity::ll_array_new;

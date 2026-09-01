@@ -18,7 +18,7 @@ pub(crate) mod outside_block;
 /// mode**, where an allocation searches the free lists of the owned chain
 /// instead of bumping. A chunk a test is following coming back that way is
 /// the free having happened; any other address is that chunk still out,
-/// and a parked one is out.
+/// and a withheld one is out.
 ///
 /// The chunk is given straight back, so the probe leaves the arena as it
 /// found it. Two probes in a row therefore answer in reverse order of

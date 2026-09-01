@@ -235,8 +235,9 @@ impl BufferArena {
     /// `live` is untouched — one chunk before, one chunk after. So is the
     /// free list: nothing is released here, which is the second thing this
     /// path is worth. The growth it replaces frees the old payload, and a
-    /// payload freed while a worker trace is in flight has to park (S38.3);
-    /// a payload that never moves has nothing to park.
+    /// payload freed while a worker trace is in flight has to be withheld
+    /// (S38.3);
+    /// a payload that never moves has nothing to withhold.
     ///
     /// # Safety
     /// `(ptr, old_size)` must be exactly one live allocation of this arena.
@@ -265,8 +266,8 @@ impl BufferArena {
         }
     }
 
-    /// Free a chunk previously handed out by [`alloc`](Self::alloc) on this thread.
-    /// `size` must be the granted capacity (the owner tracks it as the
+    /// Free a chunk previously handed out by [`alloc`](Self::alloc) on this
+    /// thread. `size` must be the granted capacity (the owner tracks it as the
     /// buffer's `capacity` anyway) — the zero-metadata contract.
     ///
     /// # Safety
@@ -545,8 +546,9 @@ impl BufferArena {
     /// otherwise looked at once, on the rotation that claimed it, and a
     /// smaller request later would never see the 63 KiB it came with.
     ///
-    /// Requires every owned cursor to be settled ([`settle_cursor`](Self::settle_cursor)),
-    /// which is what makes the walk read all blocks the same way.
+    /// Requires every owned cursor to be settled
+    /// ([`settle_cursor`](Self::settle_cursor)), which is what makes the walk
+    /// read all blocks the same way.
     ///
     /// O(blocks this arena owns), on the path that would otherwise take a
     /// block from the pool — the same trade `collect_owned` makes, on the
@@ -758,7 +760,7 @@ fn pop_fit_in(
 /// the same reason the owner's free list is — the chunk is dead, and its
 /// first 16 bytes are the arena's by contract. A chunk a worker trace may
 /// still be reading must not reach here — S38.3 owns that cross-thread
-/// parking (`PLAN.md`).
+/// withholding (`PLAN.md`).
 ///
 /// # Safety
 /// `(ptr, size)` is a live chunk of `block`, freed by this call.
@@ -828,7 +830,7 @@ pub fn with_buffer_arena<R>(f: impl FnOnce(&mut BufferArena) -> R) -> R {
 /// Called from `heap::ll_thread_exit` rather than from a TLS destructor,
 /// which is the whole point (see [`THREAD_BUFFER_ARENA`]). Its position
 /// there is **after** every step that can still free a buffer — the
-/// static blocks whose teardown runs user code, and the parked backlog
+/// static blocks whose teardown runs user code, and the withheld backlog
 /// whose flush routes payload frees back here — and the blocks it
 /// returns go to the process-global pool, which outlives every thread.
 ///
@@ -959,7 +961,7 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         //
         // A worker trace in flight has to stop this: the trace holds
         // addresses inside the block, and a block handed to the pool is
-        // re-stamped as another kind under them. `rc-walk` parked the
+        // re-stamped as another kind under them. `rc-walk` held back the
         // whole call for the length of its epoch; S38.3 owns `rc-cycle`'s
         // narrower per-owner replacement and is not built.
         let block = (ptr as usize) & !BLOCK_MASK;
@@ -971,7 +973,7 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         // `free` decrements the block's live count, and an emptied block
         // goes back to the global pool to be re-stamped as another kind
         // while a trace still holds addresses inside it. S38.3 owns the
-        // replacement parking for this buffer-chunk path.
+        // replacement withholding for this buffer-chunk path.
         unsafe { free_chunk(ptr, capacity) };
     } else {
         // OS-direct run: the standard path frees it by mask.

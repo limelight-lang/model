@@ -2,7 +2,8 @@
 //! the scan reads these counts and nothing else. Each test here asserts
 //! a count per entity rather than a shape of the graph, because a mark
 //! that subtracted twice, or subtracted the root's own queue entry,
-//! terminates just as cleanly and condemns a component the counts hold.
+//! terminates just as cleanly and reads a component the counts hold as
+//! unreachable.
 
 use super::*;
 
@@ -126,10 +127,10 @@ fn a_ring_no_one_holds_reads_internally_balanced() {
     }
 }
 
-/// The same ring with one reference into it from outside, which is the
-/// case the collector must not condemn. It is here rather than in the
-/// scan's tests because the difference between the two rings is made
-/// entirely in the mark: the scan reads a count it did not compute.
+/// The same ring with one reference into it from outside, which is the case the
+/// collector must not read as unreachable. It is here rather than in the scan's
+/// tests because the difference between the two rings is made entirely in the
+/// mark: the scan reads a count it did not compute.
 #[test]
 fn a_ring_held_from_outside_keeps_the_holder_s_count() {
     let _g = test_guard();

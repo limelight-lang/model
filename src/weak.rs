@@ -208,13 +208,12 @@ pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
     unsafe { update_header_flags(target, |f| f & !HAS_WEAK_REFERENCES) };
 }
 
-/// A collector's pre-destructor pass: null every member's cell **before
-/// any user code runs** — the binding obligation of
-/// `rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 3 (a weak load is
-/// the one channel that can hand a destructor a pointer counted
-/// references cannot account for). Irrevocable on a later acquittal, by
-/// design. No collector calls it today; S36.3 is where the next one
-/// does (`PLAN.md`).
+/// A collector's pre-destructor pass: null every member's cell **before any
+/// user code runs** — the binding obligation of `rfc/model/gc/rc-cycle.md`,
+/// "Cycle teardown", step 3 (a weak load is the one channel that can hand a
+/// destructor a pointer counted references cannot account for). Irrevocable on
+/// a later externally-referenced reading, by design. No collector calls it
+/// today; S36.3 is where the next one does (`PLAN.md`).
 ///
 /// # Safety
 /// Members must be live entities on their owning thread.

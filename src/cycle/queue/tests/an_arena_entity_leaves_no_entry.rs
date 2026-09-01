@@ -1,16 +1,16 @@
-//! Why the enrolment gate's first clause is the memory category, and
+//! Why the candidate gate's first clause is the memory category, and
 //! what would go wrong without it.
 //!
 //! A GC-heap slot that dies while an entry names it is withheld from the
 //! allocator, which is what lets the entry stay a raw pointer
 //! (`memory::stdapi::ll_free`). **An arena slot has no such door**: it is
 //! reclaimed wholesale by `ll_arena_reset`, which returns the block to
-//! the pool without passing a free, so nothing consults the enrolled bit
+//! the pool without passing a free, so nothing consults the candidate bit
 //! and nothing withholds anything. An entry naming an arena slot would
 //! therefore survive into memory the next request is handed.
 //!
-//! The gate closes that by refusing to enrol anything outside category
-//! zero (`refcount::ENROLMENT_GATE_MASK`, and
+//! The gate closes that by refusing to register anything outside category
+//! zero (`refcount::CANDIDATE_GATE_MASK`, and
 //! `rfc/model/gc/rc-cycle.md`, "Enrolment requires the GC-heap
 //! category"). `the_candidate_gate` proves the clause rejects; this
 //! proves what the rejection is worth — the arrangement it prevents,

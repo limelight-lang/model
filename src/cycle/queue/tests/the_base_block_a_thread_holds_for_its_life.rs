@@ -1,16 +1,16 @@
-//! Where the escrow's storage comes from: one pool block per thread
+//! Where the overflow buffer's storage comes from: one pool block per thread
 //! life, drawn at init and given back at exit.
 //!
 //! What the ruling asks of this module is a coupling rather than a
 //! structure (`rfc/dev/DECISIONS.md`, "the escrow's floor is
-//! allocator-issued"): every registered thread has a floor, because a
-//! thread whose floor was refused never started. So the cases here are
-//! the draw, the refusal that ends a thread, the draw a thread the
-//! runtime never registered makes for itself, and the return.
+//! allocator-issued", which is the base block): every registered thread has
+//! one, because a thread whose base block was refused never started. So the
+//! cases here are the draw, the refusal that ends a thread, the draw a thread
+//! the runtime never registered makes for itself, and the return.
 //!
-//! **The two aborts have no test**, and neither has the abort the
-//! overflow buffer takes when it is full, which predates them: nothing in
-//! this crate ends a process and comes back to report it. What is tested instead is every
+//! **The two aborts have no test**, and neither has the abort the overflow
+//! buffer takes when it is full, which predates them: nothing in this crate
+//! ends a process and comes back to report it. What is tested instead is every
 //! path that reaches them.
 
 use super::*;
@@ -25,14 +25,14 @@ fn kind_of(block: *mut crate::memory::block_pool::BlockHeader) -> u32 {
     unsafe { load_block_kind(&raw const (*block).kind) }
 }
 
-/// The floor is one block, it is out of the pool while the thread holds
+/// The base block is one block, it is out of the pool while the thread holds
 /// it, and it carries the stamp that keeps a trace out of it.
 #[test]
 fn the_base_block_is_one_stamped_block_out_of_the_pool() {
     let _g = test_guard();
     reset();
     // The reserve empties both times so that `blocks_out` sees the
-    // return: the floor goes back through `critical::give_back`, which
+    // return: the base block goes back through `critical::give_back`, which
     // keeps it when the reserve is below capacity.
     crate::memory::critical::drain_for_test();
 
@@ -56,9 +56,9 @@ fn the_base_block_is_one_stamped_block_out_of_the_pool() {
     assert_eq!(kind_of(queue_base()), BLOCK_KIND_GC_METADATA);
 }
 
-/// The drain empties the queue and leaves the floor alone: the floor
+/// The drain empties the queue and leaves the base block alone: the base block
 /// belongs to the thread's life, and a live thread stripped of it would
-/// draw a second one at its next enrolment.
+/// draw a second one at its next registration.
 #[test]
 fn a_segment_release_leaves_the_base_block_where_it_is() {
     let _g = test_guard();
@@ -68,8 +68,8 @@ fn a_segment_release_leaves_the_base_block_where_it_is() {
     assert_eq!(queue_base(), base, "an empty queue's release kept it");
 
     // Funded, so that the release below reaches the queue rather than the
-    // escrow: what this test is about is a drain that has segments to
-    // give back, which is the drain the floor has to survive.
+    // overflow buffer: what this test is about is a drain that has segments to
+    // give back, which is the drain the base block has to survive.
     assert!(refill_spares(), "the cells start full");
     let mut header = candidate(2);
     assert!(unsafe { !release(&raw mut header) });
@@ -87,7 +87,7 @@ fn a_segment_release_leaves_the_base_block_where_it_is() {
     reset();
 }
 
-/// A pool that refuses the floor refuses the thread, and the refusal is
+/// A pool that refuses the base block refuses the thread, and the refusal is
 /// the answer `ll_thread_init` gives its caller.
 #[test]
 fn a_refused_base_block_is_a_thread_that_never_starts() {
@@ -97,8 +97,8 @@ fn a_refused_base_block_is_a_thread_that_never_starts() {
     let base_blocks_before = stats().current_blocks();
 
     // On a thread of its own, because the refusal is about a thread that
-    // has no floor yet and this one has held its since the guard.
-    let (started, floorless) = std::thread::spawn(|| {
+    // has no base block yet and this one has held its since the guard.
+    let (started, without_a_base_block) = std::thread::spawn(|| {
         let oom = force_oom();
         let started = crate::memory::heap::ll_thread_init();
         drop(oom);
@@ -108,29 +108,30 @@ fn a_refused_base_block_is_a_thread_that_never_starts() {
     .unwrap();
 
     assert!(!started, "the thread reports that it did not start");
-    assert!(floorless, "and holds nothing to be given back");
+    assert!(without_a_base_block, "and holds nothing to be given back");
     assert_eq!(pool.blocks_out(), before);
     assert_eq!(stats().current_blocks(), base_blocks_before);
 }
 
-/// A thread the runtime never registered draws its floor at its first
-/// enrolment, and the exit guard that draw armed gives it back.
+/// A thread the runtime never registered draws its base block at its first
+/// registration, and the exit guard that draw armed gives it back.
 ///
-/// This is the population the ruling names: self-initialising allocation
-/// and releaser-only FFI consumers, which reach entity work without ever
-/// calling `ll_thread_init`. Its first release finds no live segment, no
-/// spare and an untouched reserve, so it lands in the escrow — which is
-/// the tier that needs the floor to exist at all.
+/// This is the population the ruling names: self-initialising allocation and
+/// releaser-only FFI consumers, which reach entity work without ever calling
+/// `ll_thread_init`. Its first release finds no live segment, no spare and an
+/// untouched reserve, so it lands in the overflow buffer — which is the tier
+/// that needs the base block to exist at all.
 ///
-/// **The `debug-journal` build cannot hold an unregistered thread**, so
-/// there the case does not exist rather than failing. The first record
-/// site this thread reaches is the one `BlockPool::get` raises inside the
-/// lazy draw itself, and a thread's first record runs `ll_thread_init`
-/// from within the journal (`journal::mod`, "A thread can reach a record
-/// site without ever having initialised the runtime"). That init fills
-/// the spare cells, so the entry lands in a segment rather than in the
-/// escrow: the thread is registered by the time the enrolment finishes,
-/// which is the one thing this test needs it not to be.
+/// **The `debug-journal` build cannot hold an unregistered thread**, so there
+/// the case does not exist rather than failing. The first record site this
+/// thread reaches is the one `BlockPool::get` raises inside the lazy draw
+/// itself, and a thread's first record runs `ll_thread_init` from within the
+/// journal (`journal::mod`, "A thread can reach a record site without ever
+/// having initialised the runtime"). That init fills the spare cells, so the
+/// entry lands in a segment rather than in the overflow buffer: the thread is
+/// registered with the runtime by the time the candidate registration
+/// finishes, which is the one thing
+/// this test needs it not to be.
 #[test]
 #[cfg_attr(
     feature = "debug-journal",
@@ -181,7 +182,7 @@ fn an_unregistered_thread_draws_its_base_block_at_its_first_registration() {
 ///
 /// The re-entry is the `debug-journal` build's: `BlockPool::get` raises a
 /// record, a thread's first record runs `ll_thread_init` from inside the
-/// journal, and that call reaches the floor draw the outer one is still
+/// journal, and that call reaches the base block draw the outer one is still
 /// inside. Without the cell being read again after the draw, the outer
 /// call writes over the inner call's block and strands it for the life of
 /// the process — one per registered thread, in the build turned on to
@@ -227,7 +228,7 @@ fn a_threads_whole_life_gives_every_block_back() {
 ///
 /// The population is a thread reaching the runtime from inside TLS
 /// teardown, past the destruction of the exit guard's slot — nothing
-/// rebuilds one, so a floor drawn for it would be a block the process
+/// rebuilds one, so a base block drawn for it would be a block the process
 /// never sees again. `FORCE_GUARD_UNARMED` is how that state is entered
 /// on demand; it names the guard and nothing else, so the pool, the heap
 /// and the reserves answer normally throughout.

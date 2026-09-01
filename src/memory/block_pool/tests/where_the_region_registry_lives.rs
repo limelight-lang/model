@@ -172,7 +172,7 @@ fn a_refused_carve_reaches_get_as_null() {
 
 /// A carve refused **after** the free list gave what it had: the caller
 /// still gets a block, and the rest of the short batch reaches the thread
-/// cache rather than being dropped on the floor.
+/// cache rather than being discarded.
 #[test]
 fn a_short_batch_keeps_every_block_it_got() {
     let _g = test_guard();

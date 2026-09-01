@@ -4,8 +4,9 @@
 //! Both graphs are traced from the same root and differ in one release,
 //! so what separates them is the working count the mark left. The pair
 //! is the test rather than either half of it: a scan that colours
-//! everything live passes the first alone, and one that condemns every
-//! zero row without raising it afterwards passes the second.
+//! everything live passes the first alone, and one that colours every zero
+//! row potentially unreachable without raising it afterwards passes the
+//! second.
 
 use super::*;
 use crate::class::ClassBuilder;
@@ -68,8 +69,8 @@ unsafe fn drop_ring(arena: &mut Arena, members: (*mut Object, *mut Object), held
 
 /// The ring the fixture still holds by its second member. The trace
 /// reaches the first member before that reference is known — its row is
-/// zero and the scan condemns it — so the verdict on it is the one the
-/// live member has to overturn.
+/// zero and the scan colours it potentially unreachable — so the verdict on
+/// it is the one the live member has to overturn.
 #[test]
 fn a_ring_held_from_outside_scans_live_through_the_member_that_is_held() {
     let _g = test_guard();
@@ -104,7 +105,7 @@ fn a_ring_held_from_outside_scans_live_through_the_member_that_is_held() {
 
 /// The same ring with nothing outside it, which is the case counting
 /// cannot reclaim: every in-edge is internal, so both rows read zero and
-/// both are condemned.
+/// both are unreachable.
 #[test]
 fn a_ring_no_one_holds_is_colored_potentially_unreachable_whole() {
     let _g = test_guard();

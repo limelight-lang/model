@@ -259,13 +259,14 @@ fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// The two guards, which are the places every retired identifier is written on
-/// purpose. `path` is relative to `src/`: matched against an absolute path, a
-/// checkout under a directory of one of these names would exempt the crate.
+/// The three guards, which are the places every retired identifier is written
+/// on purpose. `path` is relative to `src/`: matched against an absolute path,
+/// a checkout under a directory of one of these names would exempt the crate.
 fn exempt_file(path: &Path) -> bool {
     let name = path.to_string_lossy().replace('\\', "/");
     name == "cycle/tests/the_words_the_crate_retired.rs"
         || name == "cycle/tests/the_metaphors_the_names_still_carry.rs"
+        || name == "cycle/tests/the_metaphors_the_comments_still_carry.rs"
 }
 
 /// The code of `line`: its trailing comment removed, and every string literal

@@ -17,8 +17,8 @@ use crate::test_support::{RUN_FILLERS, store_prop, wide_class};
 
 /// The first touch does three things and a test that checked one would
 /// pass on two thirds of an implementation: the block gets an array, the
-/// array is stamped into the block's header, and the block is enrolled
-/// for the sweep. The row itself comes back met, carrying the refcount
+/// array is stamped into the block's header, and the block is enrolled for
+/// the sweep. The row itself comes back met, carrying the refcount
 /// the caller read.
 #[test]
 fn a_first_touch_reserves_rows_stamps_the_block_and_attaches_it() {
@@ -86,10 +86,10 @@ fn a_second_reach_leaves_the_working_count_alone() {
 }
 
 /// The reserved colour, and the case that needs it. A member of a
-/// condemned component reads count zero, and so does a slot the trace
+/// unreachable component reads count zero, and so does a slot the trace
 /// never reached; without a code that says "met", the second reach of a
-/// condemned entity would read it as untouched and re-initialise it from
-/// the refcount, acquitting the component.
+/// unreachable entity would read it as untouched and re-initialise it from
+/// the refcount, leaving the component externally referenced.
 #[test]
 fn a_potentially_unreachable_zero_row_is_told_from_an_untouched_slot() {
     let _g = test_guard();
@@ -220,7 +220,7 @@ fn a_retained_block_gets_one_row_for_each_occupant() {
 /// header, and that word is where its met flag lives too. What the sweep
 /// owes it is that word back at zero — a stale row would leave the next
 /// collection subtracting from a count this one left behind, and the
-/// entity would be condemned live on the first ring it joins.
+/// entity would be read as live on the first ring it joins.
 #[test]
 fn a_large_entity_is_met_in_its_own_header_and_swept_from_it() {
     let _g = test_guard();
@@ -433,7 +433,7 @@ fn an_edge_into_a_block_with_no_object_index_is_unplaced() {
 /// to leave behind. The second one must meet the entity at its refcount
 /// again: a row that survived its collection would carry a count the
 /// first trace had already subtracted from, and the entity would look
-/// condemned on evidence nobody gathered.
+/// unreachable on evidence nobody gathered.
 #[test]
 fn a_second_collection_meets_a_slotted_block_at_the_refcount_again() {
     let _g = test_guard();
@@ -503,7 +503,7 @@ fn an_entity_referenced_past_the_field_is_met_at_the_bound() {
     );
 
     // Every edge the trace could find, and the entity is still live: the
-    // subtraction cannot walk a floor down to zero.
+    // subtraction cannot walk a saturated count down to zero.
     for _ in 0..4 {
         assert_eq!(
             unsafe { shadow::subtract(row, 1_000_000) },

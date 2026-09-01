@@ -217,7 +217,7 @@ fn the_retired_list_keeps_the_newest_and_drops_the_oldest() {
 }
 
 /// A retiring thread frees no ring, because by then it cannot: its
-/// parked backlog is gone, and a ring's free parks while a collector
+/// withheld backlog is gone, and a ring's free is withheld while a collector
 /// collection is in flight. The rings wait for a thread that is not on its
 /// way out — an investigator taking a mark is one.
 #[test]

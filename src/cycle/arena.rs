@@ -489,8 +489,8 @@ impl TraceScratchArena {
 /// populations and same two places a row can be — and it neither allocates nor
 /// writes, which is what the scan needs: a meeting would initialise the row of
 /// an entity the mark never reached from a refcount nothing has subtracted
-/// from, and that row would then be condemned or spared on a count the trace
-/// never computed.
+/// from, and that row would then be read as unreachable or spared on a
+/// count the trace never computed.
 ///
 /// # Safety
 /// `row` names a live entity of the collected heap, resolved from its

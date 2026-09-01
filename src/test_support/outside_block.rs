@@ -13,7 +13,7 @@
 //! `memory::routing::body_alloc`, which is the group's contract
 //! (`crate::cells::OutsideCells`) and the same door a table's storage
 //! takes. For the GcHeap instances these tests build that is a
-//! buffer-arena chunk, which parks during a collection like any other
+//! buffer-arena chunk, which withholds during a collection like any other
 //! body.
 //!
 //! **The block is replaced whole rather than written in place**, and the
@@ -253,11 +253,11 @@ unsafe fn sever(entity: *mut RcHeader, displaced: &mut Vec<*mut RcHeader>) {
 /// pointer left in a slot is one a second reader would free again.
 ///
 /// The null goes through the window like any other pointer store. Both of
-/// today's callers hold an entity whose count has already changed, so a
-/// trace would be acquitted by the count alone — but a class whose block
-/// goes away while the instance lives has no such second answer, and
-/// then an unbracketed null hands a concurrent reader cell addresses in
-/// a freed block.
+/// today's callers hold an entity whose count has already changed, so a trace
+/// would read the entity as externally referenced by the count alone — but a
+/// class whose block goes away while the instance lives has no such second
+/// answer, and then an
+/// unbracketed null hands a concurrent reader cell addresses in a freed block.
 unsafe fn free(entity: *mut RcHeader) {
     let base = entity as *mut u8;
     let block = unsafe { block_at::<PlainCells>(base) };

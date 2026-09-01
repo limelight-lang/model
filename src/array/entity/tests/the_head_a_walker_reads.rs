@@ -2,7 +2,7 @@
 //! a collector thread reads the head's words while the owning thread is
 //! mid-write in the representation beside them.
 //!
-//! **`cargo test` cannot judge this.** Every word the walker reads is
+//! **`cargo test` cannot validate this.** Every word the walker reads is
 //! atomic and the mutator's own writes go elsewhere, so a run reports
 //! nothing whichever placement is in force; what the placement decides is
 //! whether the mutator's `&mut` asserts uniqueness over the bytes the
@@ -23,7 +23,7 @@ unsafe impl Send for Handed {}
 /// for. Nothing here asserts a moment: what a walker sees is any state
 /// the insert sequence passed through, and the coherence of it — a
 /// count no larger than the entries written, and the tag the array was
-/// stamped with — is all a reading can be judged by.
+/// stamped with — is all a reading can be validated by.
 #[test]
 fn a_walker_reads_the_head_while_the_mutator_writes_the_table() {
     const INSERTS: i64 = 32;

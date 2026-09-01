@@ -298,7 +298,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // survivor it holds after its fixpoint, and one of every child their
     // slots still name, so a body whose free would return memory to the
     // system waits for it whether or not this reset ever promoted it.
-    // Ahead of the collection arm below on purpose: parked for a
+    // Ahead of the collection arm below on purpose: withheld for a
     // collection instead, the same body could be freed by that
     // collection's own flush while the reset still runs
     // (`memory::reset_window`).
@@ -308,8 +308,8 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         return;
     }
 
-    // A corpse of the reset in flight, in a block that has no occupant
-    // index yet: the free is absorbed rather than deferred, `register`
+    // A zero-count member of the reset in flight, in a block that has no
+    // occupant index yet: the free is absorbed rather than deferred, `register`
     // having already declined to count it (`memory::reset_window`).
     if kind == crate::memory::block_pool::BLOCK_KIND_RETAINED
         && crate::memory::reset_window::absorbs_retained_free(block as usize)
@@ -317,21 +317,21 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         return;
     }
 
-    // An epoch-wide parking of every free that can put memory back in
+    // An epoch-wide withholding of every free that can put memory back in
     // circulation stood here while `rc-walk` ran, and went with it.
-    // `rc-cycle` parks per slot rather than per epoch, on two windows
+    // `rc-cycle` withholds per slot rather than per epoch, on two windows
     // that are not the same width — a queue entry naming the slot, and a
     // trace in flight. The first is below; the second is S36.2's.
     //
     // **A slot a queue entry names is withheld from the allocator**
-    // (`rfc/model/gc/rc-cycle.md`, "Death while enrolled"). The entry is
-    // a raw pointer and carries nothing of its own, so whoever retires it
-    // reads the count out of the body — which a recycled slot no longer
-    // holds. Withholding is the whole of the parking: nothing is
-    // recorded, because the entry *is* the record, and the block's `used`
-    // therefore falls at the return and never here, which is what keeps a
-    // block with a parked corpse out of the pool (`dev/DECISIONS.md`, "a
-    // block's `used` falls at the slot's return").
+    // (`rfc/model/gc/rc-cycle.md`, "Death while enrolled"). The entry is a raw
+    // pointer and carries nothing of its own, so whoever retires it reads the
+    // count out of the body — which a recycled slot no longer holds.
+    // Withholding is the whole of it: nothing is recorded, because
+    // the entry *is* the record, and the block's `used` therefore falls at the
+    // return and never here, which is what keeps a block with a withheld
+    // zero-count member out of the pool (`dev/DECISIONS.md`, "a block's `used`
+    // falls at the slot's return").
     //
     // The bit is cleared and the slot returned by the retirement, which
     // is `cycle::queue::release_queue_segments`'s today and a collection's

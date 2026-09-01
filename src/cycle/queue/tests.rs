@@ -3,9 +3,9 @@ use super::*;
 use crate::memory::block_pool::test_guard;
 use crate::refcount::{ACYCLIC_GATE, CANDIDATE_BIT, EntityKind, MemoryCategory, mutator_flags};
 
-/// A header the enrolment gate admits, at count `holders`: a heap object
+/// A header the candidate gate admits, at count `holders`: a heap object
 /// with no clause of the gate against it, so a decrement that leaves a
-/// holder behind reaches the enrolment.
+/// holder behind reaches the registration.
 ///
 /// A bare header rather than an allocated entity, which is what the
 /// gate's own tests use and for the same reason: nothing on this path
@@ -29,7 +29,7 @@ fn candidate_with(holders: u32, extra: u32) -> RcHeader {
     header
 }
 
-/// Release once through the ABI, which is the only door enrolment has.
+/// Release once through the ABI, which is the only door registration has.
 ///
 /// **A raw pointer, and the caller keeps one per header and reuses it.**
 /// A fresh `&mut` per call is a Unique retag that invalidates every raw
@@ -47,7 +47,7 @@ unsafe fn release(entity: *mut RcHeader) -> bool {
 ///
 /// Every test here starts and ends with it, because the queue is per
 /// thread and the harness reuses threads: a segment another test left
-/// live would put this one's first enrolment in a half-full segment, and
+/// live would put this one's first registration in a half-full segment, and
 /// a spare it left held would answer this one's pool arithmetic.
 fn reset() {
     release_queue_segments();

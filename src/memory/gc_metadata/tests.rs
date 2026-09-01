@@ -39,7 +39,7 @@ fn a_threads_exit_ends_every_block_it_acquired() {
 
     std::thread::spawn(|| {
         assert!(crate::memory::heap::ll_thread_init());
-        // One floor and the two spare segments the init fills.
+        // One base block and the two spare segments the init fills.
         assert!(current() >= 3);
     })
     .join()
@@ -208,7 +208,7 @@ fn a_block_held_and_empty_is_reservation_and_no_bytes_in_use() {
 fn an_arena_publishes_its_bump_at_the_reset_and_gives_it_back_there() {
     let _g = test_guard();
     // The high-water figure is process-global and never falls, so an
-    // exact rise is only assertable from a known floor.
+    // exact rise is only assertable from a known baseline.
     lower_peak_to_current();
     let before = stats();
     let mut arena = crate::cycle::arena::TraceScratchArena::new();

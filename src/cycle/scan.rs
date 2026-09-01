@@ -5,8 +5,8 @@
 //! internal edges the trace found, and the scan is what reads that
 //! count. A row above zero is held by a reference the trace never saw,
 //! so it survives and so does everything reachable from it; a row at
-//! zero that no such reference reaches is condemned. A colour is a
-//! proposal and never a verdict: what judges the set is
+//! zero that no such reference reaches is unreachable. A colour is a
+//! proposal and never a verdict: what validates the set is
 //! `crate::cycle::validation`, which re-reads a component's current fields
 //! on the owning thread before any free.
 //!
@@ -21,18 +21,18 @@
 //! rows, so a scan that gives up halfway leaves the heap byte-identical
 //! and owes nothing but `TraceScratchArena::reset`, exactly as the mark does.
 //!
-//! # Why a condemned row is not a verdict yet
+//! # Why a potentially unreachable row is not a verdict yet
 //!
-//! Condemning is a decision about one entity, and the trace's unit is a
-//! component: a ring is condemned when every member of it is. The scan
-//! writes the colour per row and the exact test reads the component, so
+//! Reading a row as unreachable is a decision about one entity, and the trace's
+//! unit is a component: a ring is unreachable when every member of it is. The
+//! scan writes the colour per row and the exact test reads the component, so
 //! nothing here needs to know which members belong together.
 //!
 //! # The colour is re-read at expansion
 //!
 //! An entity is queued when its colour changes and expanded when it is
 //! popped, and between the two another path into it can raise it from
-//! condemned to live. So the expansion reads the colour again rather
+//! unreachable to live. So the expansion reads the colour again rather
 //! than carrying it on the worklist: what decides the children is the
 //! colour the entity holds now (`dev/DECISIONS.md`, "the scan re-reads a
 //! colour it may have written").
@@ -46,6 +46,21 @@
 //! two answers have nothing in common — one subtracts and one colours.
 //! What the copy costs is that a change to the refusal handling has to
 //! be made in both files.
+//!
+//! **Nothing here outlives the call.** The rows, the bitmap and the worklist
+//! are the caller's arena. The scan asks that arena for one thing only, a
+//! worklist segment through
+//! [`TraceStack::push`](crate::cycle::stack::TraceStack::push) — it reads rows
+//! through
+//! [`find_initialized_row`](crate::cycle::arena::find_initialized_row), which
+//! allocates nothing — and a refusal there answers
+//! [`ScanResult::AllocationFailed`] and abandons the trace with the heap
+//! untouched.
+//!
+//! The ordering the module rests on is the sweep: every row this file reads is
+//! read before the trace token is released, and the clearing of the shadow
+//! pointers is the last of those reads (`rfc/model/gc/rc-cycle.md`,
+//! "Concurrency").
 
 use crate::cells::{self, PlainCells};
 use crate::cycle::arena::{TraceScratchArena, find_initialized_row};
@@ -158,9 +173,9 @@ unsafe fn classify_and_schedule_entity(
         return true;
     }
 
-    // A saturated count is a floor rather than a total, and a floor of
-    // `COUNT_MAX` is above zero, so this test keeps such a row live
-    // without asking about saturation separately
+    // A saturated count is a lower bound rather than a total, and a lower bound
+    // of `COUNT_MAX` is above zero, so this test keeps such a row live without
+    // asking about saturation separately
     // (`crate::cycle::shadow::is_saturated`).
     let verdict = if reached_from_live || shadow::count(row) > 0 {
         Color::Live

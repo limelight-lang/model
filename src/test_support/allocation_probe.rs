@@ -7,7 +7,7 @@
 //! `format!` would do. [`pool_requests`] counts calls into
 //! [`BlockPool::get`](crate::memory::block_pool::BlockPool::get), which
 //! allocates nothing when the thread cache serves it and still takes a
-//! process-global mutex when it does not — and a lock on the enrolment
+//! process-global mutex when it does not — and a lock on the registration
 //! path is refused by the same clause as an allocation
 //! (`rfc/model/gc/cycle/questions.md`, Y12 clause 3).
 //!
@@ -75,7 +75,7 @@ pub(crate) fn take_pool_requests() -> usize {
 }
 
 /// Both counters at once, zeroed. A test brackets the path it is
-/// judging with two calls and compares.
+/// validating with two calls and compares.
 pub(crate) fn take_all() -> (usize, usize) {
     (take_heap_allocations(), take_pool_requests())
 }

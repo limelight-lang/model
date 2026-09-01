@@ -35,7 +35,7 @@ fn a_row_carries_a_colour_and_a_count_without_either_reaching_the_other() {
 
 /// The saturation the field's width forces: a count past the bound is
 /// held at the bound rather than wrapped into the colour, which would
-/// turn a live entity's row into a condemned one.
+/// turn a live entity's row into an unreachable one.
 #[test]
 fn a_count_past_the_field_saturates_instead_of_wrapping() {
     for value in [COUNT_MAX + 1, COUNT_MAX + 2, u32::MAX] {
@@ -56,9 +56,9 @@ fn a_count_past_the_field_saturates_instead_of_wrapping() {
 }
 
 /// What the saturated value means, which is the whole of the clause: the
-/// count is a floor, so every subtraction leaves it a floor and the
+/// count is a lower bound, so every subtraction leaves it a lower bound and the
 /// entity stays conservatively live. Without this a refcount above the
-/// field is condemnable — the row starts at the bound and enough
+/// field is readable as unreachable — the row starts at the bound and enough
 /// internal edges walk it to zero while the external references it could
 /// not count are still there.
 #[test]
@@ -128,7 +128,7 @@ fn an_array_for_any_size_class_fits_one_block() {
 }
 
 /// Four bytes a slot and nothing beside them. The design keeps no
-/// captured count — the commit stage judges again rather than comparing
+/// captured count — the commit stage validates again rather than comparing
 /// with a value the trace stored — and a captured count is exactly what
 /// would show up here, as a second word per slot in this array or as a
 /// parallel one (`rfc/model/gc/rc-cycle.md`, "Where the shadow count
@@ -148,8 +148,8 @@ fn a_slot_costs_four_bytes_and_a_bit() {
     }
 }
 
-/// The mark's own operation, and the floor that keeps it from turning a
-/// condemned row into a live one. `count - 1` at zero wraps to
+/// The mark's own operation, and the lower bound that keeps it from turning a
+/// potentially unreachable row into a live one. `count - 1` at zero wraps to
 /// `u32::MAX`, which [`compose`] clamps to [`COUNT_MAX`] — the value the
 /// design reserves for "externally referenced, conservatively live" — so
 /// the subtraction has to stop at zero itself.
@@ -172,8 +172,8 @@ fn a_subtraction_stops_at_zero_and_keeps_the_colour() {
     );
     assert_eq!(color(unsafe { *row }), Color::Unclassified);
 
-    let mut condemned = compose(Color::PotentiallyUnreachable, 0);
-    let row = &raw mut condemned;
+    let mut unreachable_row = compose(Color::PotentiallyUnreachable, 0);
+    let row = &raw mut unreachable_row;
     assert_eq!(unsafe { subtract(row, 7) }, 0);
     assert_eq!(
         color(unsafe { *row }),

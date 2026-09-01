@@ -453,8 +453,9 @@ fn try_ensure_queue_base() -> *mut OwnerCycleState {
 /// before this call and nothing unsets it, so a registration that returned
 /// without an entry would be Y6's permanent miss with the bit left
 /// standing. The abort is the funded class's last resort, reached one step
-/// earlier than [`append_to_overflow`]'s own (`rfc/dev/DECISIONS.md`, "the
-/// escrow's floor is allocator-issued", which is this base block).
+/// earlier than [`append_to_overflow`]'s own
+/// (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued", which is
+/// this base block).
 ///
 /// **Asking whether the exit will run is also what arms it**
 /// (`crate::memory::heap::thread_exit_will_run`), which is what this
@@ -778,7 +779,7 @@ pub(crate) fn write_segment() -> *mut BlockHeader {
 /// reaches is three lines and the entries before it prove nothing about
 /// them. **It writes the entries rather than only the count**, because
 /// the count is what bounds a segment's contents and a test that lied
-/// about it would hand a reader applying the corpse rule 8159 recycled
+/// about it would hand a reader applying the zero-count rule 8159 recycled
 /// words to dereference.
 #[cfg(test)]
 pub(crate) fn fill_write_segment(filler: *mut RcHeader) {

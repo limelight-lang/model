@@ -67,7 +67,7 @@ pub(crate) unsafe fn entity_alloc_in(
         // No bound of its own: past one block payload `immortal_alloc`
         // stops bump-packing and serves the request from a block-aligned
         // run, which is the same shape `large_entity` builds minus the
-        // registry and the parking — an immortal entity is never freed
+        // registry and the withholding — an immortal entity is never freed
         // and never walked, so it needs neither.
         MemoryCategory::Immortal => immortal_alloc(size),
     }
@@ -208,7 +208,7 @@ pub(crate) unsafe fn body_free(category: MemoryCategory, ptr: *mut u8, capacity:
         MemoryCategory::RequestArena | MemoryCategory::Immortal => {}
         // Within this population the block kind *is* the dispatch, and
         // `buffer_free_longlived_payload` makes it: a retained block's
-        // bytes are left alone, a chunk parks while a collection reads
+        // bytes are left alone, a chunk is withheld while a collection reads
         // it, and an OS-direct run is unmapped.
         MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
             crate::memory::buffer_arena::buffer_free_longlived_payload(ptr, capacity)

@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 
 /// The metaphors, lowercase, matched as substrings of a lowercased name.
 ///
+/// `judg` rather than `judge`, so that `judging` and the US `judgment` are
+/// read too; the others inflect without losing their stem.
+///
 /// Only words the audit retires *as metaphors* are here. The ordinary-English
 /// half of the mapping — `live`, `held`, `drain`, `top` — is the sibling
 /// guard's, scoped by subtree, because a substring of those is English far
@@ -24,29 +27,54 @@ use std::path::{Path, PathBuf};
 /// `door` joins this list at `PLAN.md` S41.7, which is the step that
 /// classifies its sites; before that classification the word is not yet a
 /// defect wherever it stands.
-const METAPHORS: [&str; 10] = [
-    "condemn", "acquit", "corpse", "judge", "park", "escrow", "floor", "climb", "enrol", "discount",
+pub(super) const METAPHORS: [&str; 10] = [
+    "condemn", "acquit", "corpse", "judg", "park", "escrow", "floor", "climb", "enrol", "discount",
 ];
 
-/// A name that carries a metaphor and keeps it, with the reason.
+/// A subtree, a name in it that carries a metaphor and keeps it, and the
+/// reason.
 ///
 /// The reason is the point: an exemption without one is indistinguishable
 /// from an oversight, and this list is read by whoever finds the next
-/// offence.
-const EXEMPT: [(&str, &str); 4] = [
+/// offence. An empty subtree means the whole crate.
+const EXEMPT: [(&str, &str, &str); 7] = [
     (
+        "",
         "the_arena_keeps_a_ratified_name_of_its_own_for_enrol",
         "names the token it is about, in the sibling guard's own test",
     ),
     (
+        "memory/reset_window",
         "CORPSE_WALKS",
-        "`memory::reset_window`'s own vocabulary. The glossary names no          outcome for its window yet (`PLAN.md`, Fog), and a name invented          here would be a third one",
+        "`memory::reset_window`'s own vocabulary. The glossary names no outcome \
+         for its window yet (`PLAN.md`, Fog), and a name invented here would be \
+         a third one",
     ),
     (
+        "memory/reset_window",
         "park_large",
         "`memory::reset_window`'s, as `CORPSE_WALKS` above",
     ),
     (
+        "promote",
+        "corpse",
+        "the reset's own vocabulary, waiting on the same glossary entry: a \
+         survivor whose refcount reached zero inside the reset is not the \
+         collector's zero-count member",
+    ),
+    (
+        "promote",
+        "corpse_cls",
+        "the fixture class of those bindings",
+    ),
+    (
+        "promote",
+        "corpse_walks",
+        "the binding that reads `memory::reset_window`'s `CORPSE_WALKS`, and \
+         it takes that constant's name",
+    ),
+    (
+        "array",
         "a_copy_of_an_unsalted_table_is_unsalted_and_climbs_its_own_ladder",
         "the hash table's collision defence, which `PLAN.md` S41.8 renames",
     ),
@@ -55,12 +83,16 @@ const EXEMPT: [(&str, &str); 4] = [
 /// This file, which writes every metaphor on purpose.
 const SELF: &str = "cycle/tests/the_metaphors_the_names_still_carry.rs";
 
-/// The declaration keywords whose name is an item name.
-const DECLARATIONS: [&str; 8] = [
-    "fn ", "struct ", "enum ", "const ", "static ", "mod ", "type ", "trait ",
+/// The declaration keywords whose name this guard reads.
+///
+/// `let` is here with the items: a binding is a name a reader meets as often
+/// as a function's, and `let corpse` under a comment that says *zero-count
+/// member* is the same defect one level down.
+const DECLARATIONS: [&str; 9] = [
+    "fn ", "struct ", "enum ", "const ", "static ", "mod ", "type ", "trait ", "let ",
 ];
 
-fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
+pub(super) fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("src/ is readable") {
         let path = entry.expect("a readable directory entry").path();
         if path.is_dir() {
@@ -71,10 +103,14 @@ fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// The metaphor `name` carries, if it carries one and is not exempt.
-fn metaphor_in(name: &str) -> Option<&'static str> {
+/// The metaphor `name` carries, if it carries one and is not exempt where it
+/// stands. `path` is relative to `src/`.
+fn metaphor_in(path: &str, name: &str) -> Option<&'static str> {
     let lowered = name.to_ascii_lowercase();
-    if EXEMPT.iter().any(|(exempt, _)| *exempt == name) {
+    if EXEMPT
+        .iter()
+        .any(|(prefix, exempt, _)| *exempt == name && path.starts_with(prefix))
+    {
         return None;
     }
 
@@ -88,6 +124,12 @@ fn metaphor_in(name: &str) -> Option<&'static str> {
 /// A declaration is found by its keyword, so a name in a call or a type
 /// position is not read: this guard is about what the crate *declares*, and a
 /// caller of a name declared elsewhere is the sibling guard's business.
+///
+/// **What a keyword cannot find is not read**: a closure parameter, a `match`
+/// binding, a struct field and a function parameter carry no keyword of their
+/// own. Two closure parameters named `parked` stood in
+/// `cycle::deferred_slot_reuse` past this guard until a reading found them,
+/// which is the size of the hole.
 fn declared_in(text: &str) -> Vec<(usize, String)> {
     let mut found = Vec::new();
 
@@ -102,12 +144,36 @@ fn declared_in(text: &str) -> Vec<(usize, String)> {
                     continue;
                 }
 
-                let name: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                    .collect();
-                if !name.is_empty() {
-                    found.push((number + 1, name));
+                // `let mut x` names `x`: the binding mode is not a name.
+                let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+                // `let (a, b) = …` names both, and a tuple of results is how a
+                // test carries two answers out of a thread.
+                let names: Vec<String> = if let Some(tuple) = rest.strip_prefix('(') {
+                    tuple
+                        .split([',', ')'])
+                        .map(|part| {
+                            let part = part.trim();
+                            part.strip_prefix("mut ")
+                                .unwrap_or(part)
+                                .chars()
+                                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                                .collect()
+                        })
+                        .collect()
+                } else {
+                    vec![
+                        rest.chars()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                            .collect(),
+                    ]
+                };
+
+                for name in names {
+                    // `let _ = …` names nothing, and neither does `let _x` as
+                    // far as a reader is concerned.
+                    if !name.is_empty() && !name.starts_with('_') {
+                        found.push((number + 1, name));
+                    }
                 }
             }
         }
@@ -136,7 +202,7 @@ fn no_source_file_is_named_after_a_metaphor() {
             continue;
         }
 
-        if let Some(metaphor) = metaphor_in(&name) {
+        if let Some(metaphor) = metaphor_in(&name, &name) {
             kept.push(format!("{name}: `{metaphor}`"));
         }
     }
@@ -171,7 +237,7 @@ fn no_declaration_is_named_after_a_metaphor() {
 
         let text = fs::read_to_string(path).expect("a source file is readable");
         for (number, declared) in declared_in(&text) {
-            if let Some(metaphor) = metaphor_in(&declared) {
+            if let Some(metaphor) = metaphor_in(&name, &declared) {
                 kept.push(format!(
                     "{name}:{number}: `{declared}` carries `{metaphor}`"
                 ));
@@ -191,10 +257,24 @@ fn no_declaration_is_named_after_a_metaphor() {
 /// The guard has to see an offence, or it passes by finding nothing anywhere.
 #[test]
 fn the_guard_reads_a_metaphor_without_its_case_or_its_boundary() {
-    assert_eq!(metaphor_in("what_the_corpse_rule_drops.rs"), Some("corpse"));
-    assert_eq!(metaphor_in("condemned_from"), Some("condemn"));
-    assert_eq!(metaphor_in("TraceWindowEscrow"), Some("escrow"));
-    assert_eq!(metaphor_in("register_candidate"), None);
+    let path = "cycle/queue.rs";
+    assert_eq!(
+        metaphor_in(path, "what_the_corpse_rule_drops.rs"),
+        Some("corpse")
+    );
+    assert_eq!(metaphor_in(path, "condemned_from"), Some("condemn"));
+    assert_eq!(metaphor_in(path, "TraceWindowEscrow"), Some("escrow"));
+    assert_eq!(metaphor_in(path, "register_candidate"), None);
+    assert_eq!(
+        metaphor_in("promote/tests/a.rs", "corpse"),
+        None,
+        "the reset's own vocabulary, where the exemption stands"
+    );
+    assert_eq!(
+        metaphor_in(path, "corpse"),
+        Some("corpse"),
+        "and nowhere else"
+    );
 }
 
 /// A declaration is read by its keyword, and a keyword inside a longer word
@@ -210,4 +290,14 @@ const FLOOR_BYTES: usize = 8;
     let found = declared_in(source);
     let names: Vec<&str> = found.iter().map(|(_, name)| name.as_str()).collect();
     assert_eq!(names, ["Escrow", "park_it", "FLOOR_BYTES"], "{found:?}");
+
+    let bindings = declared_in(
+        "    let mut corpse = 0;\n let judged = 1;\n let (started, floorless) = f();\n",
+    );
+    let names: Vec<&str> = bindings.iter().map(|(_, name)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["corpse", "judged", "started", "floorless"],
+        "{bindings:?}"
+    );
 }

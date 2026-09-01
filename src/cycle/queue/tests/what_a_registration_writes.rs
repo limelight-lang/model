@@ -3,7 +3,7 @@
 //!
 //! The pair is Y12 clause 4, and neither half is worth anything alone —
 //! a bit with no entry reserves an examination that never comes, and an
-//! entry with no bit is enrolled again by the next decrement.
+//! entry with no bit is registered again by the next decrement.
 
 use super::*;
 

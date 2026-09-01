@@ -169,7 +169,7 @@ enum EntryMove {
     DroppingHoles,
 }
 
-/// Entries in the chunk a first growth takes, and the floor of every
+/// Entries in the chunk a first growth takes, and the minimum of every
 /// later size: the growth schedule is this doubled, and a table presized
 /// for a replay lands on the same ladder rather than beside it
 /// ([`Table::presize_for_replay`]).
@@ -1015,8 +1015,9 @@ impl Table {
     /// it races nothing.
     ///
     /// The old chunk is freed once the window is closed. A worker trace still
-    /// striding it must read intact bytes; S38.3 owns the buffer-chunk parking
-    /// that extends this protection across another thread's trace (`PLAN.md`).
+    /// striding it must read intact bytes; S38.3 owns the buffer-chunk
+    /// withholding that extends this protection across another thread's trace
+    /// (`PLAN.md`).
     fn move_entries(
         &mut self,
         head: &StorageHead,

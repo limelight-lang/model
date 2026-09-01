@@ -3,6 +3,14 @@
 //! Two test trees ask the same question — the mark's and the scan's —
 //! and a second copy of the row lookup would be a second opinion about
 //! where a row is. Test builds only.
+//!
+//! It owns nothing, allocates nothing and orders nothing: every function here
+//! reads a row the caller's arena holds, through
+//! [`arena::find_initialized_row`](crate::cycle::arena::find_initialized_row),
+//! and answers a value. A row read after its arena reset is the one thing a
+//! caller can do wrong, and it is the caller's to avoid
+//! (`rfc/model/gc/rc-cycle.md`, "Concurrency"; the row layout it reads is
+//! `crate::cycle::shadow`).
 
 use crate::cycle::row::{EdgeTarget, RowKey, resolve_edge_target};
 use crate::cycle::shadow::{self, Color, RowArray};

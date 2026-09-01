@@ -18,7 +18,7 @@
 //! that has happened, and the zero the group init writes has to mean
 //! "this slot has not been met". So colour zero is reserved for it, and
 //! every meeting writes a colour that is not zero — which is what keeps
-//! a met, condemned, zero-count row distinguishable from a slot the
+//! a met, unreachable, zero-count row distinguishable from a slot the
 //! trace never reached, and what stops a second reach re-initialising a
 //! row from the refcount it has already subtracted from.
 //!
@@ -40,10 +40,15 @@
 //! after the rounding and not after `row_count`.
 //!
 //! The touched list threads through the arrays themselves rather than
-//! through runs of its own, so enrolling a block and reserving its rows
-//! are one allocation and one refusal: after the rows exist, nothing
-//! about the enrolment can fail (`crate::cycle::arena`, "Enrolment
-//! cannot fail after the rows exist").
+//! through runs of its own, so attaching a block to the sweep list and
+//! reserving its rows are one allocation and one refusal: after the rows
+//! exist, nothing about the attachment can fail (`crate::cycle::arena`,
+//! "Enrolment cannot fail after the rows exist").
+//!
+//! **The arrays are the arena's, for one collection.** This module writes
+//! their layout and reads their words; it holds no memory, allocates none and
+//! frees none, so every address it hands back is live exactly as long as the
+//! trace that reserved it (`rfc/model/gc/rc-cycle.md`, "Concurrency").
 //!
 //! Rows come before the bitmap so that a row's address is
 //! `array + 24 + 4 × index`, one multiply-add. The bitmap's width varies
@@ -64,15 +69,15 @@ const COUNT_BITS: u32 = 30;
 /// [`is_saturated`] is how the trace asks. The clause that follows is
 /// that a saturated row is conservatively live and stays so: subtracting
 /// an edge leaves it saturated ([`subtract`]), because the count it
-/// holds is a floor and not a total (`rfc/model/gc/rc-cycle.md`,
+/// holds is a lower bound and not a total (`rfc/model/gc/rc-cycle.md`,
 /// "Saturation is absorbing, and that is a rule for every stage that
 /// touches a row").
 ///
-/// Without the clause the entity is condemnable: a refcount of `2^31`
-/// meets at `2^30 - 1`, and a trace that finds `2^30` internal edges to
-/// it drives the row to zero while a billion external references stand.
-/// That heap is 16 GiB at the smallest size class, so the case is
-/// reachable on a large machine rather than absurd.
+/// Without the clause the entity is readable as unreachable: a refcount of
+/// `2^31` meets at `2^30 - 1`, and a trace that finds `2^30` internal edges to
+/// it drives the row to zero while a billion external references stand. That
+/// heap is 16 GiB at the smallest size class, so the case is reachable on a
+/// large machine rather than absurd.
 pub(crate) const COUNT_MAX: u32 = (1 << COUNT_BITS) - 1;
 
 /// What the trace has decided about one entity, and the reserved zero
@@ -121,13 +126,14 @@ pub(crate) fn count(row: u32) -> u32 {
     row & COUNT_MAX
 }
 
-/// Whether `row`'s working count is a floor rather than a total, which
+/// Whether `row`'s working count is a lower bound rather than a total, which
 /// makes the entity conservatively live whatever the trace subtracts
 /// from it ([`COUNT_MAX`]).
 ///
 /// One name for the reading, so the clause is not spelled out as a
-/// comparison at each site. The scan asks it of no row: it condemns on a
-/// working count of zero, and a floor of [`COUNT_MAX`] is above zero, so
+/// comparison at each site. The scan asks it of no row: it colours a working
+/// count of zero potentially unreachable, and a lower bound of [`COUNT_MAX`]
+/// is above zero, so
 /// the absorbing clause is kept there by the same test that reads an
 /// ordinary count.
 #[inline]
@@ -149,7 +155,7 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 /// here rather than at the call site because the open-coded form —
 /// `compose(colour(r), count(r) - 1)` — turns a count of zero into
 /// `u32::MAX`, which [`compose`] then clamps to [`COUNT_MAX`]: a row
-/// that should read condemned would read maximally live, and the ring it
+/// that should read unreachable would read maximally live, and the ring it
 /// belongs to would survive every collection.
 ///
 /// A count that reaches zero with edges left to subtract means the trace
@@ -157,10 +163,10 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 /// of a dirty pass: the counts it reads may be stale, and the exact test
 /// on the owner's thread is what turns a candidate into a verdict
 /// (`rfc/model/gc/rc-cycle.md`, "Who judges, and what a trace is
-/// worth"). So the floor is a saturation and not an error.
+/// worth"). So the lower bound is a saturation and not an error.
 ///
 /// **A saturated count is absorbing** and this call leaves it alone: it
-/// is a floor, so what the subtraction knows about the remainder is
+/// is a lower bound, so what the subtraction knows about the remainder is
 /// still "at least [`COUNT_MAX`]" ([`is_saturated`]).
 ///
 /// # Safety

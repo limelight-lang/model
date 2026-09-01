@@ -146,7 +146,7 @@ fn an_abort_nulls_the_shadow_of_every_block_it_stamped() {
     met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
     assert!(!unsafe { crate::memory::heap::block_shadow(block) }.is_null());
 
-    // The abort is the reset, reached before anything was judged.
+    // The abort is the reset, reached before anything was validated.
     arena.reset();
     assert!(
         unsafe { crate::memory::heap::block_shadow(block) }.is_null(),

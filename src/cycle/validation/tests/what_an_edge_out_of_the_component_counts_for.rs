@@ -1,6 +1,6 @@
 //! An edge from a member to an entity outside the component: the
 //! component holds the reference rather than carrying it, so the count
-//! it is judged on is the referent's and not its own.
+//! it is validated on is the referent's and not its own.
 //!
 //! Without the membership test this is the direction that frees a live
 //! ring — every out-edge would be subtracted from the component's own

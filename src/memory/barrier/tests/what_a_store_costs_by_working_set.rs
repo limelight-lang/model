@@ -542,8 +542,8 @@ fn evict(scratch: &mut [u8]) {
 
 /// One arm's `ROUNDS` figures reduced to the order statistics the report
 /// prints. The median is the quoted figure; the minimum and maximum decide
-/// between the two accounts of round-to-round spread — a tight floor with a
-/// right tail is interference, a wide spread is layout, each round
+/// between the two accounts of round-to-round spread — a tight minimum with
+/// a right tail is interference, a wide spread is layout, each round
 /// allocating its children and log segments afresh. Under the rotated arm
 /// order the two statistics agree — the fixed order was what held them
 /// 0.38 against 0.72 ns apart on the wide-set record

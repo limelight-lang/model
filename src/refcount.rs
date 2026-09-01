@@ -221,7 +221,7 @@ pub(crate) fn separation_category(owner_cat: MemoryCategory) -> MemoryCategory {
 ///
 /// Four bits rather than three, and adjacent to the category rather than
 /// above the destructor state, because the order is what turns three
-/// questions and the enrolment gate into mask tests: the codes are
+/// questions and the candidate gate into mask tests: the codes are
 /// assigned so that each answer is a range, and a range is a comparison
 /// only while the field's high bits carry it
 /// ([`kind_may_close_a_cycle`], [`carries_a_class_word`], [`is_string`]).
@@ -302,7 +302,7 @@ impl EntityKind {
     /// test the release path runs**, and the two agree by the assertion
     /// below rather than by anyone's care. The match takes no `_` arm on
     /// purpose: a kind added to the enum stops the build here, in the
-    /// file that owns the answer, rather than being refused enrolment
+    /// file that owns the answer, rather than being refused registration
     /// forever by a mask that never heard of it
     /// (`rfc/model/gc/cycle/questions.md`, Y6).
     #[inline]
@@ -320,8 +320,8 @@ impl EntityKind {
 }
 
 // The classification and the code agree, in both directions: a
-// ring-closing kind coded at eight or above would be refused enrolment by
-// the mask, and an inert kind coded below eight would be enrolled and
+// ring-closing kind coded at eight or above would be refused registration by
+// the mask, and an inert kind coded below eight would be registered and
 // traced for children it does not have.
 const _: () = {
     let kinds = [
@@ -363,12 +363,12 @@ pub fn kind_may_close_a_cycle(flags: u32) -> bool {
 }
 
 /// The five conditions a non-zero decrement must satisfy before the
-/// entity is enrolled as a cycle candidate, as one mask: **each of them
+/// entity is registered as a cycle candidate, as one mask: **each of them
 /// is "this bit is zero"**, which is what the flags layout was chosen
 /// for (`rfc/model/classes.md`, "Flags layout").
 ///
 /// - the category is `GcHeap` — an arena entity outlives no reset in a
-///   queue, and the corpse rule would read the count of the slot's next
+///   queue, and the zero-count rule would read the count of the slot's next
 ///   occupant (`rfc/model/gc/rc-cycle.md`, "Enrolment requires the
 ///   GC-heap category");
 /// - the kind is below eight, so a ring can close through it;
@@ -666,9 +666,9 @@ const _: () = assert!(
 /// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
-    // A non-zero decrement is where `rc-cycle` enrols a candidate
+    // A non-zero decrement is where `rc-cycle` registers a candidate
     // (`rfc/model/gc/rc-cycle.md`); the queue that receives it is S34,
-    // so nothing is enrolled yet and a garbage ring is retained until
+    // so nothing is registered yet and a garbage ring is retained until
     // it lands. The epoch handshake this branch used to acknowledge died
     // with the collector that owned it.
     unsafe { release_word(entity) }
@@ -676,7 +676,7 @@ pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
 
 /// The decrement itself: the shared core of [`ll_release`] and
 /// [`ll_release_batch`]. Returns the ABI verdict — the caller must run
-/// teardown. There is no condemned test and no deferral, so the death
+/// teardown. There is no unreachable test and no deferral, so the death
 /// branch is the same narrow counter store as every other release.
 #[inline]
 unsafe fn release_word(entity: *mut RcHeader) -> bool {
@@ -735,7 +735,7 @@ thread_local! {
 }
 
 /// Record one admission. A scenario test observes a pair of conditions
-/// at once — it sees an entity enrolled or not — and can never show that
+/// at once — it sees an entity registered or not — and can never show that
 /// a clause it did not vary rejects on its own. The counter is what sees
 /// a condition that never fires.
 #[inline]
@@ -854,19 +854,19 @@ pub(crate) unsafe fn is_registered_candidate(header: *const RcHeader) -> bool {
 /// Take the candidate bit down, which only the retirement of the entry
 /// that set it may do.
 ///
-/// **Never when a trace finds the entity externally referenced**:
-/// candidate registration is edge-triggered, so an entity whose bit is
-/// cleared while it is still alive is one no later decrement can register
-/// again, and the ring it closes is a permanent miss
-/// (`rfc/model/gc/cycle/questions.md`, Y6). The two lawful clearings are
-/// the corpse retirement in [`crate::cycle::queue::release_queue_segments`]
-/// and the free a collection's commit performs, which is `PLAN.md` S36.6's.
+/// **Never when a trace finds the entity externally referenced**: candidate
+/// registration is edge-triggered, so an entity whose bit is cleared while it
+/// is still alive is one no later decrement can register again, and the ring it
+/// closes is a permanent miss (`rfc/model/gc/cycle/questions.md`, Y6). The two
+/// lawful clearings are the zero-count member retirement in
+/// [`crate::cycle::queue::release_queue_segments`] and the free a collection's
+/// commit performs, which is `PLAN.md` S36.6's.
 #[inline]
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the retirement that clears it is `PLAN.md` S39.1's, and                   the commit's free S36.6's"
+        reason = "the retirement that clears it is `PLAN.md` S39.1's, and the commit's free S36.6's"
     )
 )]
 pub(crate) unsafe fn clear_candidate_bit(header: *mut RcHeader) {
@@ -885,7 +885,7 @@ pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
 /// The teardown guard's `-1`, the counter twin of
 /// [`mutator_guard_retain`]: returns the new refcount. A collection
 /// landing mid-destructor changes nothing here — teardown always
-/// finishes, and the corpse rule drops a component holding a member
+/// finishes, and the zero-count rule drops a component holding a member
 /// already at zero (`rfc/model/gc/rc-cycle.md`, "Cycle teardown",
 /// step 1).
 #[inline]

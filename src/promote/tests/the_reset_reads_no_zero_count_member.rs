@@ -513,8 +513,8 @@ fn a_cow_child_counted_again_in_a_later_round_credits_each_retain() {
 ///
 /// Miri is the second half of it, and it takes both halves of the repair
 /// to see: with the corpse skipped nothing reads the address at all, and
-/// with the window parking the run the address is still mapped when it is
-/// read. Remove the skip on a build whose window parks nothing and Miri
+/// with the window withholding the run the address is still mapped when it is
+/// read. Remove the skip on a build whose window withholds nothing and Miri
 /// reports the read of a returned run (`dev/WORKFLOW.md`, Tests).
 #[test]
 fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_retrace() {
@@ -895,9 +895,9 @@ fn a_survivor_that_resurrects_itself_records_no_death() {
 /// — the corpse among them, because a promoted survivor keeps the log
 /// entry it was given as an arena entity.
 ///
-/// So the run has to outlive the reset that parked it: the inner close
-/// hands its parked bodies outward, and only the outermost close frees
-/// anything. Miri is the regression — with nothing parked it reports the
+/// So the run has to outlive the reset that withheld it: the inner close
+/// hands its withheld bodies outward, and only the outermost close frees
+/// anything. Miri is the regression — with nothing withheld it reports the
 /// weak walk's read of a returned run (`dev/WORKFLOW.md`, Tests).
 #[test]
 fn a_run_withheld_by_a_nested_reset_outlives_the_reset_that_withheld_it() {

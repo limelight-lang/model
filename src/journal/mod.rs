@@ -146,7 +146,7 @@ impl Ring {
     /// read-modify-write of the cursor sound.
     ///
     /// [`KIND_UNSET`] is written as it is: §9.7 forbids this path to
-    /// judge its caller, and a kind-0 record is still inside the window
+    /// check its caller, and a kind-0 record is still inside the window
     /// its position puts it in — the unset kind is what an *unwritten*
     /// slot reads as, and no reader walks below a cursor.
     fn write(&self, kind: Kind, site: u32, subject: u64, a: u64, b: u64) {

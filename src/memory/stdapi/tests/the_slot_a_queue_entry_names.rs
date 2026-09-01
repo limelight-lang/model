@@ -1,17 +1,17 @@
 //! A slot whose entity died while a queue entry named it, and what the
 //! allocator is allowed to do with it.
 //!
-//! The rule is one sentence and the whole of the parking:
+//! The rule is one sentence, and it is the whole mechanism:
 //! [`super::ll_free`] withholds such a slot instead of returning it, so
 //! the entry — a raw pointer carrying nothing of its own — still names a
 //! body whose count can be read (`rfc/model/gc/rc-cycle.md`, "Death while
 //! enrolled"). Nothing is recorded anywhere: the entry is the record.
 //!
-//! What that buys is stated as an accounting invariant, and it is what
-//! this module checks: **a block's `used` falls at the slot's return and
-//! never at the parking**. A block holding a parked corpse therefore
-//! never reads empty, never reaches the pool, and cannot be handed out
-//! under the entry that names one of its slots.
+//! What that buys is stated as an accounting invariant, and it is what this
+//! module checks: **a block's `used` falls at the slot's return and never at
+//! the withholding**. A block holding a withheld zero-count member therefore
+//! never reads empty, never reaches the pool, and cannot be handed out under
+//! the entry that names one of its slots.
 
 use super::*;
 
@@ -60,9 +60,9 @@ fn pool_holds(block: usize) -> bool {
     found
 }
 
-/// The whole rule in one arrangement: a block emptied around a parked
-/// corpse stays out of the pool, and reaches it at the return and not
-/// before.
+/// The whole rule in one arrangement: a block emptied around a withheld
+/// zero-count member stays out of the pool, and reaches it at the return and
+/// not before.
 ///
 /// **Two blocks are filled, and the second is the one watched**, because
 /// `Heap::retire_empty` keeps the first emptied block of a class as that
@@ -91,21 +91,21 @@ fn a_block_emptied_around_a_withheld_zero_count_member_reaches_the_pool_at_the_r
         "the fill has to span two blocks, the first being kept as the spare"
     );
 
-    // The corpse: a slot of the watched block, enrolled and then freed.
-    // Its death is not simulated — what a real one does before it frees
-    // is `ll_object_die`'s business and is unchanged by the parking.
-    let corpse = cells
+    // The zero-count member: a slot of the watched block, registered and then
+    // freed. Its death is not simulated — what a real one does before it frees
+    // is `ll_object_die`'s business and is unchanged by the withholding.
+    let zero_count_member = cells
         .iter()
         .rev()
         .find(|c| **c as usize & !BLOCK_MASK == watched)
         .copied()
         .expect("the watched block holds slots");
-    let header = unsafe { publish(corpse) };
+    let header = unsafe { publish(zero_count_member) };
     unsafe { crate::refcount::update_header_flags(header, |f| f | crate::refcount::CANDIDATE_BIT) };
-    unsafe { ll_free(corpse) };
+    unsafe { ll_free(zero_count_member) };
 
     for cell in &cells {
-        if *cell == corpse {
+        if *cell == zero_count_member {
             continue;
         }
 
@@ -115,14 +115,14 @@ fn a_block_emptied_around_a_withheld_zero_count_member_reaches_the_pool_at_the_r
 
     assert!(
         !pool_holds(watched),
-        "a block holding a parked corpse reached the pool: its `used` fell \
+        "a block holding a parked zero_count_member reached the pool: its `used` fell \
          when the free was withheld rather than at the return"
     );
 
     // The return, which is the retirement's last act: the bit comes down
     // and the same door takes the slot.
     unsafe { crate::refcount::clear_candidate_bit(header) };
-    unsafe { ll_free(corpse) };
+    unsafe { ll_free(zero_count_member) };
 
     assert!(
         pool_holds(watched),
@@ -130,8 +130,8 @@ fn a_block_emptied_around_a_withheld_zero_count_member_reaches_the_pool_at_the_r
     );
 }
 
-/// The parking is a withholding and nothing else: the body is left as
-/// the death wrote it, so the count the retirement reads is still there.
+/// The withholding records nothing of its own: the body is left as the
+/// death wrote it, so the count the retirement reads is still there.
 #[test]
 fn a_withheld_slot_keeps_the_body_the_death_left() {
     let _g = crate::memory::block_pool::test_guard();

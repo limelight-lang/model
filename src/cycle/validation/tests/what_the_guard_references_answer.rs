@@ -1,11 +1,12 @@
-//! The guard discount, on a component whose guards are outstanding.
+//! The guard-reference subtraction, on a component whose guards are
+//! outstanding.
 //!
-//! The re-verify runs with every member guarded, so the count it reads
-//! carries one reference the component does not hold. Discounted, the
-//! same ring reads as it did before the guards; undiscounted, the guards
-//! acquit it and nothing would ever be freed
-//! (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 5). The teardown
-//! that takes the guards and runs the destructor between them is
+//! The re-verify runs with every member guarded, so the count it reads carries
+//! one reference the component does not hold. With the guard references
+//! subtracted, the same ring reads as it did before the guards; without that
+//! subtraction, the guards leave it externally referenced and nothing would
+//! ever be freed (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 5). The
+//! teardown that takes the guards and runs the destructor between them is
 //! `PLAN.md` S36.3's and S36.4's; the fixture takes them by hand.
 
 use super::*;

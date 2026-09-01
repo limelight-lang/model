@@ -589,9 +589,9 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
 
         let ran = unsafe { run_pre_destructor(obj) };
         if counted {
-            // Eager death (2026-07-27): a collection judging this
-            // entity garbage while the destructor ran changes nothing —
-            // teardown always finishes, and the corpse rule drops a
+            // Eager death (2026-07-27): a collection reading this entity
+            // as garbage while the destructor ran changes nothing —
+            // teardown always finishes, and the zero-count rule drops a
             // component holding a member already at zero
             // (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 1).
             let refcount =
@@ -689,15 +689,14 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
         // this is where a reset in flight learns of the death and takes
         // over what the entity held (`memory::reset_window`).
         crate::memory::reset_window::record_death(obj as *mut RcHeader);
-        // Under `rc-trace` the object left the candidate buffer here,
-        // after `dispose` rather than before it, because `__destruct`
-        // can make the object a candidate afresh — a transient `$this`
-        // inside it is a retain and a release, and that release is a
-        // non-zero decrement. `rc-cycle` cannot withdraw a queue entry at all and
-        // pays the same fact by withholding the slot instead, which the
-        // free in phase 3 below does. The ordering the buffer needed is
-        // kept by where that free stands: after `dispose`, never
-        // before.
+        // Under `rc-trace` the object left the candidate buffer here, after
+        // `dispose` rather than before it, because `__destruct` can make the
+        // object a candidate afresh — a transient `$this` inside it is a retain
+        // and a release, and that release is a non-zero decrement. `rc-cycle`
+        // cannot withdraw a queue entry at all and pays the same fact by
+        // withholding the slot instead, which the free in phase 3 below does.
+        // The ordering the buffer needed is kept by where that free stands:
+        // after `dispose`, never before.
 
         // Phase 3 — memory, by category. Arenas reclaim at reset; the
         // long-lived policy is TBD; only the GC heap frees here.
@@ -742,7 +741,7 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     const ARRAY: u32 = EntityKind::Array as u32;
     let flags = unsafe { crate::refcount::mutator_flags(entity) };
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
-    // What a dying enrolled slot owes a collector is done here, for
+    // What a dying registered slot owes a collector is done here, for
     // every kind the gate admits, so a kind that gains counted slots
     // later inherits it without a call site of its own
     // (`refcount::EntityKind::closes_a_ring`). An array runs no
@@ -752,9 +751,9 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     // `array_die`'s drain and never passes here again
     // (`array::entity::array_die` and `release_children_in_order`). A
     // duty added here has to be added there as well until the two doors
-    // are one. The one duty a dying enrolled slot has today is owed by
+    // are one. The one duty a dying registered slot has today is owed by
     // neither: it is the free's, and every route reaches the same free
-    // (`memory::stdapi::ll_free`, the parking).
+    // (`memory::stdapi::ll_free`, the withholding).
 
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },
@@ -786,16 +785,15 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
 /// and could not record on the work list.
 ///
 /// [`ll_entity_die`] rather than a kind's own body, so that the teardown
-/// bracket and the candidate-buffer duty this door carries are paid here
-/// too, and it runs **unconditionally** after the count is dropped,
-/// because the release verdict answers a narrower question than the
-/// caller is asking: an arena entity reports no death at any count, its
-/// cell being the reset's, and a refusal branch that waited for `true`
-/// left every reference the replay published — an arena COW child's
-/// count, a heap child's log record's +1 — held by a corpse until the
-/// reset. On the GC heap the verdict *is* death, which is all the
-/// assertion pins: the callers differ in the category they can arrive
-/// with, never in what they owe.
+/// bracket and the candidate-buffer duty this door carries are paid here too,
+/// and it runs **unconditionally** after the count is dropped, because the
+/// release verdict answers a narrower question than the caller is asking: an
+/// arena entity reports no death at any count, its cell being the reset's, and
+/// a refusal branch that waited for `true` left every reference the replay
+/// published — an arena COW child's count, a heap child's log record's +1 —
+/// held by a zero-count member until the reset. On the GC heap the verdict *is*
+/// death, which is all the assertion pins: the callers differ in the category
+/// they can arrive with, never in what they owe.
 ///
 /// # Safety
 /// `entity` is a live entity at count 1 that no slot has ever named.

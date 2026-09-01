@@ -31,7 +31,7 @@
 //!
 //! Composition in this build (phase 1): RC operations and the category
 //! barrier (`rfc/model/memory/arenas.md`). `rc-cycle` adds no hook here —
-//! it enrols on the release path instead (`rfc/model/gc/rc-cycle.md`).
+//! it registers on the release path instead (`rfc/model/gc/rc-cycle.md`).
 //!
 //! **The four micro-ops are `pub` for the benchmark**, which is a separate
 //! crate and may not reach the `extern "C"` twins at the foot of this file

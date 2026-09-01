@@ -1,5 +1,5 @@
 //! A store that lands between the trace's verdict and the owner's
-//! judgement, and the control that shows the refusal came from the store.
+//! validation, and the control that shows the refusal came from the store.
 //!
 //! This is the staleness the exact test exists to absorb: the trace read
 //! the counts of a ring nobody held, and by the time the owner reads
@@ -9,8 +9,9 @@
 
 use super::*;
 
-/// A reference taken after the scan acquits the component, because what
-/// the owner compares is the count as it stands at its own reading.
+/// A reference taken after the scan reads as externally referenced the
+/// component, because what the owner compares is the count as it stands at its
+/// own reading.
 #[test]
 fn a_reference_taken_after_the_verdict_leaves_the_ring_externally_referenced() {
     let _g = test_guard();
@@ -62,11 +63,11 @@ fn a_reference_taken_after_the_verdict_leaves_the_ring_externally_referenced() {
     }
 }
 
-/// The control: the same ring, judged with nothing stored into it, is
-/// condemned. Without it the refusal above could be the fixture's rather
+/// The control: the same ring, validated with nothing stored into it, is
+/// unreachable. Without it the refusal above could be the fixture's rather
 /// than the store's.
 ///
-/// Condemned is where this step stops — the free is `PLAN.md` S36.5's,
+/// Unreachable is where this step stops — the free is `PLAN.md` S36.5's,
 /// and the fixture tears the ring down by hand.
 #[test]
 fn the_same_ring_without_the_store_is_unreachable() {

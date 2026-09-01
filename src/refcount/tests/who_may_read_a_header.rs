@@ -135,21 +135,21 @@ fn a_header_is_read_through_the_helpers_and_nowhere_else() {
     sources(root.as_path(), &mut files);
     assert!(files.len() > 50, "the source walk found almost nothing");
 
-    // Every path is judged by its place inside `src/`, never by the
+    // Every path is validated by its place inside `src/`, never by the
     // directory the checkout sits in.
-    let judged: Vec<&PathBuf> = files
+    let classified: Vec<&PathBuf> = files
         .iter()
         .filter(|p| !exempt_file(p.strip_prefix(&root).expect("a path under src/")))
         .collect();
     assert!(
-        judged.len() > 40,
-        "the exemption swallowed the crate: {} of {} files judged",
-        judged.len(),
+        classified.len() > 40,
+        "the exemption swallowed the crate: {} of {} files classified",
+        classified.len(),
         files.len()
     );
 
     let mut offences = Vec::new();
-    for path in judged {
+    for path in classified {
         let text = fs::read_to_string(path).expect("a source file is readable");
         for (number, line) in direct_reads(&text) {
             offences.push(format!("{}:{number}: {line}", path.display()));

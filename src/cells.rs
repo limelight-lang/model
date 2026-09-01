@@ -80,29 +80,28 @@ pub(crate) enum CellShape {
 /// without it loads nothing here.
 ///
 /// **The storage these yield cells from is drawn under the instance's own
-/// memory category**, through [`crate::memory::routing::body_alloc`], the
-/// way a table's storage is. Two obligations meet in that one rule. The
-/// storage must be parkable — a block whose cells a worker trace is reading
-/// may not be freed under it (S38.3), and that parking machinery must take a
-/// freeable block kind or a buffer-arena chunk, never an allocation from
-/// `std::alloc`. And the category is what decides who
-/// frees the storage of an instance that dies without a teardown: an
-/// arena object gets phase 1 only at reset, so storage drawn under any
-/// other category is storage nothing ever gives back.
+/// memory category**, through [`crate::memory::routing::body_alloc`], the way a
+/// table's storage is. Two obligations meet in that one rule. The storage must
+/// be withholdable — a block whose cells a worker trace is reading may not be
+/// freed under it (S38.3), and that withholding machinery must take a freeable
+/// block kind or a buffer-arena chunk, never an allocation from `std::alloc`.
+/// And the category is what decides who frees the storage of an instance that
+/// dies without a teardown: an arena object gets phase 1 only at reset, so
+/// storage drawn under any other category is storage nothing ever gives back.
 ///
-/// The category rule covers the corpse, whose storage dies with the
+/// The category rule covers the zero-count member, whose storage dies with the
 /// arena's pages, and [`OutsideCells::carry`] covers the survivor, whom
 /// the reset promotes into the heap while its storage is still arena
 /// memory (`dev/DECISIONS.md`, "a hooked class draws its storage under its
 /// own category, and the arena carry waits").
 ///
-/// **The category rule is the class's to keep, and nothing here can check
-/// it.** A corpse runs no member of this group — that is what makes the
-/// rule worth having — so the one moment the mistake matters is the one
-/// moment the crate is not called. A class that draws its storage under
-/// `GcHeap` for an arena instance passes every test the crate can write:
-/// its survivors are carried correctly and merely leak the old chunk,
-/// and its corpses leak one chunk each with no symptom short of RSS.
+/// **The category rule is the class's to keep, and nothing here can check it.**
+/// A zero-count member runs no member of this group — that is what makes the
+/// rule worth having — so the one moment the mistake matters is the one moment
+/// the crate is not called. A class that draws its storage under `GcHeap` for
+/// an arena instance passes every test the crate can write: its survivors are
+/// carried correctly and merely leak the old chunk, and its zero-count members
+/// leak one chunk each with no symptom short of RSS.
 pub(crate) struct OutsideCells {
     /// Yield every cell outside the body, on a quiescent heap.
     ///
@@ -126,7 +125,7 @@ pub(crate) struct OutsideCells {
     /// collector reaches this hook directly.
     pub free: unsafe fn(*mut RcHeader),
     /// Bring the storage out of a dying request arena, for an instance
-    /// the reset promotes. The corpse needs nothing: its storage was
+    /// the reset promotes. The zero-count member needs nothing: its storage was
     /// drawn under its own category and dies with the pages.
     ///
     /// Three things the implementer owes, none of them derivable from the
@@ -198,21 +197,20 @@ pub(crate) enum OutsideCarry {
 /// one enumerator serve both. Only the plain reader exists today; S38.0
 /// adds the collector's (`PLAN.md`).
 ///
-/// It covers reads of the **entity's own** memory only. A class
-/// descriptor and a template shape are immortal static data no mutator
-/// writes, so both instantiations read those plainly, and the word that
-/// *points* at them is what goes through the reader.
-/// **Two methods, and the second is not a convenience.** A cell holding a
-/// pointer must be read *as* a pointer: recovering one from an integer
-/// load strips its provenance, and Miri rejects the first dereference of
-/// the result unless the target's address happens to have been exposed as
-/// an integer somewhere. The collector could afford the integer form —
-/// everything it chases is entity or immortal memory whose address was —
-/// but the quiescent walk chases a template shape that may be an ordinary
-/// Rust static, and that one Miri refuses. Found by Miri, not by reasoning:
-/// the first version of this trait had only `word`, and
-/// `template::tests::the_instance_as_an_ordinary_entity::a_dying_template_releases_what_it_held` reported a
-/// dangling pointer with no provenance.
+/// It covers reads of the **entity's own** memory only. A class descriptor and
+/// a template shape are immortal static data no mutator writes, so both
+/// instantiations read those plainly, and the word that *points* at them is
+/// what goes through the reader. **Two methods, and the second is not a
+/// convenience.** A cell holding a pointer must be read *as* a pointer:
+/// recovering one from an integer load strips its provenance, and Miri rejects
+/// the first dereference of the result unless the target's address happens to
+/// have been exposed as an integer somewhere. The collector could afford the
+/// integer form — everything it chases is entity or immortal memory whose
+/// address was — but the quiescent walk chases a template shape that may be an
+/// ordinary Rust static, and that one Miri refuses. Found by Miri, not by
+/// reasoning: the first version of this trait had only `word`, and
+/// `template::tests::the_instance_as_an_ordinary_entity::a_dying_template_releases_what_it_held`
+/// reported a dangling pointer with no provenance.
 pub(crate) trait CellReader {
     /// Walk a class's cells outside its own body with this reader's
     /// member of the group. The trait is the one place the two readers

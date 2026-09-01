@@ -11,21 +11,55 @@
 //! # What lives here, and what does not
 //!
 //! The collector's own state: shadow rows, the arena they come from, the
-//! trace's mark and scan, and the exact test that judges a component. Two
+//! trace's mark and scan, and the exact test that validates a component. Two
 //! things it deliberately does not hold. The enumeration of an entity's
 //! counted children is `cells`, which knows entity kinds and no blocks;
 //! the enumeration of a block's slots is `memory::heap`, which knows
 //! blocks and no kinds. This module is the one place that knows both, and
 //! it knows them only through their two interfaces.
 //!
-//! The enrolment queue is the exception that proves the split: it knows
+//! The candidate queue is the exception that proves the split: it knows
 //! neither, holding entity pointers it never dereferences and pool
 //! blocks it never carves.
+//!
+//! # What each module owns, and for how long
+//!
+//! Two lifetimes only. [`queue`] and [`deferred_slot_reuse`] hold per-thread
+//! state for one thread's whole life, given back at `ll_thread_exit`. The
+//! queue's is manager-issued; the deferred-reuse list is still a `Box<Vec<_>>`
+//! out of the global allocator, which is the one structural change this stage
+//! does not make and `PLAN.md` S41 says so. Everything else is per collection:
+//! [`arena`] holds the blocks a single trace bumps through, [`stack`] draws
+//! its segments from that arena, and the rows [`shadow`], [`mark`] and
+//! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`
+//! own no memory at all — they are arithmetic over memory somebody else holds,
+//! and [`validation`] reads the heap rather than a row.
+//!
+//! **Every allocation of a collection can be refused, and no refusal is
+//! fatal.** A refused block aborts the collection with the heap byte-identical,
+//! because the trace writes into rows and never into an entity.
+//!
+//! The per-thread half is where a refusal can end something. The queue's base
+//! block is drawn twice: at thread init, where a refusal is a thread that
+//! never starts (`rfc/dev/DECISIONS.md`, "the escrow's floor is
+//! allocator-issued", which is that block), and at the first registration of a
+//! thread the runtime never registered, where the same refusal aborts because
+//! there is no caller left to report it to. Past both stands the overflow
+//! buffer's own bound, which aborts when it fills. And the deferred-reuse
+//! list's `Box` aborts under any pressure at all, which is the reason it owes
+//! a structural change rather than a rename.
+//!
+//! The ordering the whole module rests on is one sentence: **the rows die at
+//! the trace token's release, and everything that reads a row happens before
+//! it** (`rfc/model/gc/rc-cycle.md`, "Concurrency"). The scan's sweep is
+//! therefore the last row read of a collection, and validation, teardown and
+//! the slot returns all run after it, untokened — which is why
+//! [`validation`] re-reads the heap instead.
 
 // `ActiveTrace` owns the `TraceScratchArena`, fixing reset-before-replay even
 // before the production collection opens one in S36.7.
 pub(crate) mod arena;
-// The judgement over a component the scan condemned, and dead until the
+// The validation over a component the scan proposed, and dead until the
 // teardown that opens with it.
 #[cfg_attr(
     not(test),

@@ -14,9 +14,9 @@ use crate::refcount::{MemoryCategory, header_refcount, ll_release, ll_retain};
 use crate::test_support::{entity_checked, prop_offset, store_prop};
 
 /// Trace the fixture from one root and assert every entity named is
-/// condemned, which is the state the exact test is asked about.
+/// unreachable, which is the state the exact test is asked about.
 ///
-/// The arena comes back so the caller resets it before judging: the rows
+/// The arena comes back so the caller resets it before validating: the rows
 /// die at the token's release and the exact test runs after it
 /// (`rfc/model/gc/rc-cycle.md`, "Concurrency").
 unsafe fn traced_unreachable_from(

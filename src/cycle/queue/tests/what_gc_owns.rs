@@ -27,7 +27,7 @@ fn the_base_block_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     assert_eq!(OVERFLOW_CAPACITY, 8_152);
     assert_eq!(POLL_STRIDE, 4_076);
 
-    // The escrow ends flush with the block: one control line and the
+    // The overflow buffer ends flush with the block: one control line and the
     // entries account for the payload exactly, with no tail to absorb an
     // off-by-one and nothing of a neighbour within reach.
     assert_eq!(
@@ -111,7 +111,7 @@ fn one_entry_past_the_overflow_capacity_aborts() {
         .output()
         .expect("the test binary runs as its own overflow child");
     // The signal, not merely a failure: any panic in the fixture would
-    // satisfy an unsuccessful exit, and the escrow's last resort is an
+    // satisfy an unsuccessful exit, and the overflow buffer's last resort is an
     // abort with no frame to report through.
     use std::os::unix::process::ExitStatusExt;
     // `SIGABRT`, which is 6 on every unix this crate builds for. Spelled
@@ -136,10 +136,10 @@ fn the_entity_row_dispatch_never_enters_gc_metadata() {
     );
 }
 
-/// Bytes in use inside the blocks the queue owns. Three quanta and no
-/// others: the floor's control line, an escrowed entry, and a segment
-/// that has left the live position full. A spare and the live segment's
-/// own fill are reservation.
+/// Bytes in use inside the blocks the queue owns. Three quanta and no others:
+/// the base block's control line, an overflow-buffer entry, and a segment that
+/// has left the write position full. A spare and the live segment's own fill
+/// are reservation.
 fn in_use() -> usize {
     stats().current_bytes_in_use()
 }
@@ -162,7 +162,7 @@ fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
     );
 
     // The ordinary write, which is the path the whole design exists to
-    // keep clear: three enrolments into the segment that now exists.
+    // keep clear: three registrations into the segment that now exists.
     let mut ordinary = [candidate(2), candidate(2), candidate(2)];
     for header in &mut ordinary {
         assert!(unsafe { !release(&raw mut *header) });
@@ -218,7 +218,7 @@ fn a_threads_base_block_is_in_use_from_its_draw_until_its_exit() {
     let before = in_use();
 
     // The child holds no `test_guard`; what keeps the figure still under
-    // it is that this thread is parked in `join` while holding the lock,
+    // it is that this thread is blocked in `join` while holding the lock,
     // so no third thread can charge against the reading.
     std::thread::spawn(move || {
         assert!(crate::memory::heap::ll_thread_init());

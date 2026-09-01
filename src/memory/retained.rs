@@ -273,18 +273,17 @@ unsafe fn is_occupied(address: usize) -> bool {
     unsafe { crate::refcount::header_refcount(address as *const crate::refcount::RcHeader) != 0 }
 }
 
-/// Whether some reset has finished establishing what occupies `block`.
-/// A reset in flight asks it about its own blocks, which have no index
-/// yet ([`register`] runs at its end), to tell its own corpse from an
+/// Whether some reset has finished establishing what occupies `block`. A reset
+/// in flight asks it about its own blocks, which have no index yet
+/// ([`register`] runs at its end), to tell its own zero-count member from an
 /// occupant an earlier reset counted
 /// (`memory::reset_window::absorbs_retained_free`).
 ///
-/// **A registry entry is not an index.** [`pin`] creates one for a block
-/// held for bytes alone, and it carries no occupant: a block pinned by
-/// this very reset would otherwise answer for an index that does not
-/// exist, and the corpse freed in it would be counted twice — once by
-/// the free the absorb should have taken, once by the index built
-/// without it.
+/// **A registry entry is not an index.** [`pin`] creates one for a block held
+/// for bytes alone, and it carries no occupant: a block pinned by this very
+/// reset would otherwise answer for an index that does not exist, and the
+/// zero-count member freed in it would be counted twice — once by the free the
+/// absorb should have taken, once by the index built without it.
 pub(crate) fn has_occupant_index(block: usize) -> bool {
     registry()
         .lock()
@@ -339,7 +338,7 @@ pub(crate) fn occupant_count(block: usize) -> Option<usize> {
 /// for bytes alone, which carries no index ([`pin`]). The collector
 /// reads that as an external live reference rather than as an error,
 /// which is the conservative direction: an edge whose row cannot be
-/// found keeps its referent alive instead of condemning it.
+/// found keeps its referent alive instead of reading it as unreachable.
 ///
 /// **One registry lock per resolved edge, and that is what the mark pays
 /// today**: `cycle::mark` resolves each child through

@@ -1,8 +1,8 @@
-//! The five conditions a non-zero decrement must satisfy to enrol a
+//! The five conditions a non-zero decrement must satisfy to register a
 //! cycle candidate, each shown rejecting on its own.
 //!
 //! **A scenario test cannot show this.** It observes one outcome — the
-//! entity was enrolled or it was not — so a clause that never fires
+//! entity was registered or it was not — so a clause that never fires
 //! reads exactly like a clause that fired and agreed. The counter past
 //! the gate separates them: a clause is proved live by removing it from
 //! an admitting word and watching the admission go.
@@ -97,7 +97,7 @@ fn the_mask_covers_every_clause_and_nothing_else() {
 }
 
 /// A decrement that reaches zero is a death, and the ordinary teardown
-/// takes it. Enrolling it would put a queue entry on a slot the
+/// takes it. Registering it would put a queue entry on a slot the
 /// allocator is about to hand out again.
 #[test]
 fn a_decrement_to_zero_registers_nothing() {

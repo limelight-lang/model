@@ -13,6 +13,13 @@
 //! The dispatch sits here rather than in `cells`, one level above the
 //! child enumerator, so that the enumerator keeps knowing entity kinds
 //! and out-edges and nothing about rows, blocks or the collector.
+//!
+//! **This module owns nothing and allocates nothing.** It reads a block
+//! header and answers a locator; the rows it names belong to the collection's
+//! arena, and a locator outlives them, so a `RowKey` is only meaningful while
+//! the trace that made it holds its token. The one ordering it depends on is
+//! the block header's: the kind is read before anything derived from it, which
+//! is the same read the caller has already made.
 
 use crate::memory::block_pool::{
     BLOCK_KIND_ENTITY, BLOCK_KIND_ENTITY_LARGE, BLOCK_KIND_ENTITY_LARGE_RUN, BLOCK_KIND_RETAINED,
@@ -99,7 +106,7 @@ pub(crate) enum EdgeTarget {
 ///
 /// An address the retained population cannot place answers
 /// [`EdgeTarget::Untracked`] as well, which keeps its referent alive rather
-/// than condemning it on a row the trace guessed
+/// than reading it as unreachable on a row the trace guessed
 /// (`memory::retained::occupant_index`).
 ///
 /// **The kind alone does not settle the large-entity arm**, and that arm
@@ -159,7 +166,7 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
             // block payload to the very allocator the GC heap uses, so a
             // `RequestArena` entity carries these kinds too. Descending
             // into one would trial-delete an entity the arena's reset is
-            // about to free, and a condemned component would free it a
+            // about to free, and an unreachable component would free it a
             // second time. Promotion rewrites the category in place and
             // deliberately leaves the kind alone, so the category is the
             // word that is right on both sides of a reset

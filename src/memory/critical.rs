@@ -18,7 +18,7 @@
 //! one, and most of its runs begin with no refusal anywhere — and
 //! reaches here only on a null from the pool, which on the pressure path
 //! is its first draw because the refusal is what triggered the
-//! collection. The enrolment queue's growth
+//! collection. The candidate queue's growth
 //! (`crate::cycle::queue`) reaches here on a different condition: its
 //! two spare cells are both empty, which means a poll's refill was
 //! already refused, and the draw puts the runtime in reserve mode. The
@@ -187,7 +187,7 @@ pub(crate) fn give_back(block: *mut BlockHeader) {
             // Stamped here rather than trusted: every block the reserve
             // hands out is assumed to carry this kind already, and what
             // enforces that is each caller stamping its own — the arena's
-            // reset and the enrolment queue's drain, which are the two.
+            // reset and the candidate queue's drain, which are the two.
             // A release store on a cold path is cheaper than an invariant
             // living in two other files.
             unsafe {

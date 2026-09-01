@@ -280,8 +280,8 @@ impl Arena {
 
         if !self.log_push(Log::Larges, entity as usize) {
             // Where `alloc_large` asserts, this door reports: nothing is
-            // published into the slot yet, so handing the run straight
-            // back leaves no corpse and no leak, and the factory above
+            // published into the slot yet, so handing the run straight back
+            // leaves no zero-count member and no leak, and the factory above
             // raises on it the way it raises on any other refusal.
             unsafe { crate::memory::stdapi::ll_free(entity) };
             return std::ptr::null_mut();
@@ -320,8 +320,9 @@ impl Arena {
     /// the failure mode: nothing is allocated, so nothing can be refused
     /// at a point where there is no caller left to report to.
     ///
-    /// The record is zeroed rather than unlinked; [`drain_log`](Self::drain_log) skips
-    /// zeros. Returns false when `ptr` was not one of this arena's runs.
+    /// The record is zeroed rather than unlinked;
+    /// [`drain_log`](Self::drain_log) skips zeros. Returns false when `ptr` was
+    /// not one of this arena's runs.
     pub fn forget_large(&mut self, ptr: *mut u8) -> bool {
         let mut seg = self.larges;
         while !seg.is_null() {
@@ -411,8 +412,8 @@ impl Arena {
         self.reset_with(run_destructor, |_| {});
     }
 
-    /// [`reset`](Self::reset) with an escape handler receiving every escapee entity.
-    /// Composition of the reset primitives below.
+    /// [`reset`](Self::reset) with an escape handler receiving every escapee
+    /// entity. Composition of the reset primitives below.
     pub fn reset_with(
         &mut self,
         mut run_destructor: impl FnMut(*mut RcHeader),

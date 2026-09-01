@@ -24,6 +24,22 @@
 //!
 //! The descent carries an explicit worklist rather than the native
 //! stack, and why is `crate::cycle::stack`.
+//!
+//! # What it owns, and what a refusal costs
+//!
+//! Nothing outlives the call: the rows, the bitmap and the worklist are the
+//! caller's arena, and the mark holds a `&mut` to it for one trace. Two
+//! things it can ask that arena for — a row array, through
+//! [`TraceScratchArena::ensure_row`](crate::cycle::arena::TraceScratchArena::ensure_row),
+//! and a worklist segment, through
+//! [`TraceStack::push`](crate::cycle::stack::TraceStack::push). Either refused
+//! answers [`MarkResult::AllocationFailed`], which abandons the trace where it
+//! stands. Abandoning is free precisely because no entity was written.
+//!
+//! One ordering matters and it is this module's: the row is ensured before
+//! the count is subtracted, so an entity reached for the first time starts
+//! from its refcount rather than from a subtraction against a row that does
+//! not exist yet.
 
 use crate::cells::{self, PlainCells};
 use crate::cycle::arena::{RowLookup, TraceScratchArena};
@@ -111,7 +127,7 @@ pub(crate) unsafe fn mark(
 /// **The root takes no subtraction.** The row starts at the entity's
 /// refcount and the trace subtracts the edges it finds; the queue entry
 /// that named this root is not one of them, and subtracting for it would
-/// condemn a component held by a single external reference.
+/// read a component held by a single external reference as unreachable.
 ///
 /// # Safety
 /// As [`mark`].
@@ -121,7 +137,7 @@ unsafe fn schedule_root_if_unvisited(
     root: *mut RcHeader,
 ) -> bool {
     let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(root) }) else {
-        // The enrolment gate admits none: an entity outside the GC heap
+        // The candidate gate admits none: an entity outside the GC heap
         // never reaches the queue (`rfc/model/gc/rc-cycle.md`, "Death
         // while enrolled"). Answered rather than asserted, because the
         // collection's cost of being wrong here is one root that traces
@@ -146,10 +162,10 @@ unsafe fn schedule_root_if_unvisited(
 /// child's working count, and queue the child when this collection has
 /// not seen it before. False when both memory doors refused.
 ///
-/// An edge the row dispatch cannot place — a child outside the GC heap,
-/// or a retained block whose object index does not name it — is counted
-/// as an external live reference and followed no further, which keeps
-/// the referent alive rather than condemning it on a guessed row.
+/// An edge the row dispatch cannot place — a child outside the GC heap, or a
+/// retained block whose object index does not name it — is counted as an
+/// external live reference and followed no further, which keeps the referent
+/// alive rather than reading it as unreachable on a row the trace guessed.
 ///
 /// **S37.1's maturation prune belongs at the head of this function**, above the
 /// block dispatch: a matured child is read as an opaque live external, which is

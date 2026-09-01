@@ -17,10 +17,10 @@
 //!
 //! Every attempted return goes through `memory::stdapi::ll_free`. That door
 //! first refuses the queue window and then calls [`defer_reuse_if_tracing`] for
-//! this one. Closing a trace replays its parked returns through the same door,
-//! so an entry still standing keeps the slot parked without a second record.
-//! Conversely, retiring an entry while the trace still runs reaches this list.
-//! The two windows can therefore close in either order.
+//! this one. Closing a trace replays its withheld returns through the same
+//! door, so an entry still standing keeps the slot withheld without a second
+//! record. Conversely, retiring an entry while the trace still runs reaches
+//! this list. The two windows can therefore close in either order.
 //!
 //! The list is a raw pointer in a `Cell`, not a `RefCell<Vec<_>>`. It has no
 //! TLS drop glue: thread-exit order is owned explicitly by
@@ -28,6 +28,20 @@
 //! destructor may not depend on the platform's TLS destructor order
 //! (`dev/DECISIONS.md`, "thread exit owns the order its per-thread state dies
 //! in").
+//!
+//! # What it allocates, and what a refusal would cost
+//!
+//! One allocation per thread, and it is the one this stage does not fix: the
+//! list is a `Box<Vec<*mut u8>>` out of the global allocator, drawn at the
+//! first deferred return and freed at [`dispose_thread_state`]. A `Vec` that
+//! cannot grow aborts the process rather than answering, which puts this list
+//! in the crate's fatal class beside the queue's base-block draw and its
+//! overflow-capacity bound (`crate::cycle::queue`) — the difference being that
+//! those two are funded on purpose and this one is an allocator call left
+//! over. Replacing it with
+//! manager-owned memory is a structural change and belongs to the step that
+//! owns it, not to a rename (`PLAN.md`, S41, and
+//! `dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Deferred slot reuse").
 
 use std::cell::Cell;
 
@@ -88,7 +102,7 @@ impl Drop for ActiveTrace {
             assert!(was_active, "closing a trace window that is not open");
         });
 
-        let list = DEFERRED_SLOTS.with(|parked| parked.get());
+        let list = DEFERRED_SLOTS.with(|slots| slots.get());
         if list.is_null() {
             return;
         }
@@ -135,7 +149,7 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8) -> bool {
     true
 }
 
-/// Retire this thread's empty parking list at thread exit.
+/// Retire this thread's empty withheld-return list at thread exit.
 ///
 /// A live window at exit would leave a trace using blocks whose owner is being
 /// abandoned; that is outside the protocol. In a release build the list is
@@ -145,7 +159,7 @@ pub(crate) fn dispose_thread_state() {
     let active = TRACE_ACTIVE.with(|active| active.replace(false));
     assert!(!active, "a thread cannot exit inside its trace window");
 
-    let list = DEFERRED_SLOTS.with(|parked| parked.replace(std::ptr::null_mut()));
+    let list = DEFERRED_SLOTS.with(|slots| slots.replace(std::ptr::null_mut()));
     if list.is_null() {
         return;
     }

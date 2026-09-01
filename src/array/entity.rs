@@ -1404,7 +1404,7 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
                         // the bare-pointer door, so a duty that door
                         // carries is owed twice — here and at the second
                         // site below (`object::ll_entity_die`). What a
-                        // dying enrolled slot owes today is owed at
+                        // dying registered slot owes today is owed at
                         // neither: the withholding is the free's, and
                         // this array's slot reaches the same free
                         // (`memory::stdapi::ll_free`).
@@ -1474,7 +1474,7 @@ unsafe fn release_children_in_order(a: *mut LLArray, pending: &mut WorkList<Pend
             }
 
             // The second site of the duty named above, and the same
-            // answer: what a dying enrolled slot owes is the free's.
+            // answer: what a dying registered slot owes is the free's.
             if is_array(dead) && pending.push(Pending::DeadArray(dead as *mut LLArray)) {
                 deferring = true;
                 return;

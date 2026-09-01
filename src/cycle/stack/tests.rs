@@ -128,7 +128,7 @@ fn a_push_with_both_doors_shut_answers_false() {
 }
 
 /// A stack that outlives its arena's reset forgets its segments, which
-/// is the contract that keeps it from climbing into a block the pool has
+/// is the contract that keeps it from advancing into a block the pool has
 /// handed to someone else. The retry after an aborted collection is the
 /// caller this exists for.
 #[test]

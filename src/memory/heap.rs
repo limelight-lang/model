@@ -208,7 +208,7 @@ struct BlockLinks {
 /// `&mut` honest: a non-owner reads this concurrently by design, so no
 /// exclusive borrow may ever cover it (audit `heap.rs:647`).
 ///
-/// Rejected alternative: parking `owner` on the isolated line together
+/// Rejected alternative: placing `owner` on the isolated line together
 /// with `remote_free`. Every local free then touches a second line just
 /// to check ownership, and it measured clearly slower. (Direction only —
 /// that run was against a stale baseline on a noisy box, so no figure is
@@ -221,7 +221,7 @@ struct BlockShared {
     /// plain `Release` store, not a CAS: the block is off the abandoned
     /// list under its mutex by then, so no other thread is contending for
     /// it, and a racing `free` is correct either way — it either sees the
-    /// old owner and parks the slot in `remote_free`, which the new owner
+    /// old owner and posts the slot into `remote_free`, which the new owner
     /// drains, or sees the new one.
     owner: AtomicPtr<Heap>,
 }
@@ -242,7 +242,7 @@ struct BlockRemote {
     /// thread freeing a slot reads `owner`, sees it is not itself, and pushes
     /// here. If an adoption is racing that read, it does not matter which
     /// value of `owner` was seen: the message lands in the block, and the
-    /// block's *current* owner is the one who drains it. Parked in a heap
+    /// block's *current* owner is the one who drains it. Held in a heap
     /// instead, a message posted to the dying owner after adoption would be
     /// stranded forever — nobody drains a dead heap.
     remote_free: AtomicPtr<FreeSlot>,
@@ -442,7 +442,7 @@ pub struct Heap {
     /// `owned_next` — **per size class**, not one global chain.
     ///
     /// Per class because `collect_owned` walks this to find blocks holding
-    /// parked cross-thread frees, and it only ever wants one class: a single
+    /// withheld cross-thread frees, and it only ever wants one class: a single
     /// chain makes that walk O(all our blocks) where it should be O(blocks of
     /// this class) — ~67 vs ~3 at a 5000-object live set, and it showed
     /// (bleeding larson: 22M vs 34M ops/s).
@@ -707,7 +707,7 @@ impl Heap {
         self.alloc_class(ci)
     }
 
-    /// Sweep this heap's blocks of class `ci` for parked cross-thread frees.
+    /// Sweep this heap's blocks of class `ci` for withheld cross-thread frees.
     /// Returns true if any block gained slots.
     ///
     /// O(blocks this heap owns), but only on the path that would otherwise
@@ -751,7 +751,7 @@ impl Heap {
         // freed into it. This is one of the two places cross-thread frees
         // are reclaimed — `collect_owned` sweeps the rest — and it is the
         // natural one: we are here precisely because
-        // this block has no slots left, which is exactly when its parked
+        // this block has no slots left, which is exactly when its withheld
         // frees are worth the walk.
         if self.collect_remote(block) {
             return self.alloc_class(ci);
@@ -796,7 +796,7 @@ impl Heap {
 
         self.own(ci, block);
 
-        // Slots freed while it was ownerless are parked; take them now. The
+        // Slots freed while it was ownerless are withheld; take them now. The
         // borrow lasts exactly this call.
         self.collect_remote(block);
 
@@ -1016,8 +1016,8 @@ impl Heap {
     /// Note `used` is deliberately not touched: it is owner-only state, and
     /// the owner accounts for this slot when it collects (see
     /// [`Heap::collect_remote`]). That is also what makes `used == 0` safe to
-    /// act on — a slot parked here still counts as live, so a block with a
-    /// parked free can never look empty.
+    /// act on — a slot withheld here still counts as live, so a block with a
+    /// withheld free can never look empty.
     #[cold]
     #[inline(never)]
     fn free_remote(block: *mut HeapBlockHeader, ptr: *mut u8) {
@@ -1594,7 +1594,7 @@ mod tls {
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_exit() {
     // From here this thread may not free anything whose release can be
-    // parked (`thread_may_free`), and a structure built between here and
+    // withheld (`thread_may_free`), and a structure built between here and
     // the end is disposed by this sequence rather than by the guard.
     EXIT_PHASE.with(|phase| phase.set(ExitPhase::Exiting));
     journal_event!(crate::journal::kinds::KIND_THREAD_EXIT, 0, 0, 0);
@@ -1628,10 +1628,10 @@ pub extern "C" fn ll_thread_exit() {
     //    context, weak table.
     crate::static_block::run_thread_exit_teardown();
 
-    // 2. The trace parking list, while the heaps that allocated its Vec are
-    //    still mounted. A trace cannot span thread exit, so the list is empty;
-    //    disposing it here returns its own allocation locally rather than
-    //    posting it to an ownerless block after the heaps are abandoned.
+    // 2. The trace's withheld-return list, while the heaps that allocated its
+    //    Vec are still mounted. A trace cannot span thread exit, so the list
+    //    is empty; disposing it here returns its own allocation locally rather
+    //    than posting it to an ownerless block after the heaps are abandoned.
     crate::cycle::deferred_slot_reuse::dispose_thread_state();
 
     // 3. The weak table, after every death that could still need a row.
@@ -1642,7 +1642,7 @@ pub extern "C" fn ll_thread_exit() {
     // 4. The buffer arena last of the disposals, because every step above can
     //    still free a buffer into it: a static block's teardown reaches
     //    `string_die`, which returns a dynamic string's payload here, and
-    //    the parked backlog's flush routes payload frees the same way.
+    //    the withheld backlog's flush routes payload frees the same way.
     //    Disposing earlier is not caught — a later free would build a
     //    second arena through the lazy path and leak it. The blocks it
     //    hands back go to the process-global pool, which outlives every
@@ -1949,8 +1949,8 @@ thread_local! {
 /// after its own step has run has nowhere to land. A caller holding
 /// memory to give back at that point must leave it for another thread.
 ///
-/// The refusal was written against a parked free, whose backlog the exit
-/// disposed and nothing rebuilt. What parks today is one slot at a time
+/// The refusal was written against a withheld free, whose backlog the exit
+/// disposed and nothing rebuilt. What withholds today is one slot at a time
 /// uses two forms — a slot a queue entry names is simply withheld, while
 /// S36.2's trace window records physical returns out of band
 /// (`memory::stdapi::ll_free`). The refusal therefore still protects a
@@ -2104,9 +2104,9 @@ pub unsafe extern "C" fn ll_entity_reserve(
 /// Return unused reserved cells (`rfc/model/memory/bulk-operations.md`):
 /// each goes back through the ordinary size-less free path, which routes
 /// it to its block's free list, exactly like any other free — including
-/// its parking: an unconsumed cell carries no published header and no
-/// enrolment, so the enrolment window never withholds it, while a cell a
-/// caller published and enrolled is withheld (`memory::stdapi::ll_free`).
+/// its withholding: an unconsumed cell carries no published header and no
+/// registration, so the registration window never withholds it, while a cell a
+/// caller published and registered is withheld (`memory::stdapi::ll_free`).
 /// The second window, a trace in flight, keys on the block kind alone and
 /// so withholds an unconsumed cell too, its return delayed to the window's
 /// close (S36.2, `PLAN.md`).
@@ -2463,7 +2463,7 @@ pub unsafe fn free_foreign(ptr: *mut u8) {
 
 /// Run `f` with this thread's persistent small-object heap.
 ///
-/// `#[inline(always)]`, not merely `#[inline]`: left to its own judgement
+/// `#[inline(always)]`, not merely `#[inline]`: left to its own discretion
 /// LLVM kept this as a real call, which forced the caller to materialise
 /// `f` in a stack slot and pass it by pointer — `ll_malloc` opened with
 /// `sub rsp, 40; mov [rsp+32], rcx; lea rcx, [rsp+32]; call` purely to hand

@@ -1,5 +1,5 @@
 //! Growth: where the segment comes from when the live one is full, and
-//! what the enrolling thread pays for it.
+//! what the registering thread pays for it.
 //!
 //! Y12 clause 3 gives the path three properties and this module holds it
 //! to each: the write never allocates, never locks and never copies; the
@@ -129,10 +129,10 @@ fn a_growth_with_no_spare_draws_the_reserve_and_arms_the_poll() {
     reset();
 }
 
-/// Every door refused: the entry lands in the escrow rather than
+/// Every door refused: the entry lands in the overflow buffer rather than
 /// nowhere, the bit stays down where it was put, and the poll is armed.
 ///
-/// **The enrolment's doors are the spare cells and the critical reserve,
+/// **The registration's doors are the spare cells and the critical reserve,
 /// and nothing here closes the pool**, deliberately.
 /// `block_pool::FORCE_OOM` would refuse before the request is even
 /// counted, so a growth that grew a "then ask the pool" fallback — the

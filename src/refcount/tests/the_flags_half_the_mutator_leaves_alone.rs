@@ -47,7 +47,7 @@ fn retain_and_release_leave_the_flags_half_alone() {
 }
 
 /// Eager death (rfc amendment, 2026-07-27, superseding F5's deferral):
-/// the release reaching zero reports the death — there is no condemned
+/// the release reaching zero reports the death — there is no unreachable
 /// test on the death branch, and the flags half is left exactly as
 /// loaded.
 #[test]

@@ -259,7 +259,7 @@ to the step that owns it.
         records inside closed steps keep their vocabulary: they describe the
         day they were written, which is what the audit's documentation
         boundary asks.
-- [ ] S41.6 The comments, the residue and the gate
+- [x] S41.6 The comments, the residue and the gate
       done: every module header of `cycle` states purpose, ownership and
         lifetime, allocation and failure behaviour, ordering invariants and its
         design references; every remaining occurrence of a retired word is
@@ -272,6 +272,37 @@ to the step that owns it.
         Critic has read the pass for terminology, for the safety contracts it
         had to preserve, and for an accidental change of meaning
       tier: T2 · role: Critic
+      Critic 2026-09-01 round 2: five of the round-1 repairs were wrong or
+        incomplete — a re-wrap cut the head off `scan.rs`'s ordering sentence,
+        two headers claimed an exclusivity the queue's own aborts contradict,
+        two comments were repaired into tautologies, and the wrap-aware
+        citation rule could swallow a whole comment block behind one stray
+        quote. Taken: the guard now reports an unbalanced quote rather than
+        reading past it, reads `let (a, b)` destructuring, and states which
+        surfaces no keyword can reach.
+      Critic 2026-09-01: the word-level rewrite broke what a word-level
+        rewrite breaks. Nine quoted headings were rewritten inside the
+        quotation — every one of them a citation that wraps across two lines,
+        which the first restoration pass could not see; three `# Safety`
+        headings were re-wrapped into their own contracts; about eighteen
+        sentences no longer parsed or no longer meant what they had; two
+        module headers claimed what the code contradicts, one of them the
+        `Box<Vec<_>>` this stage deliberately does not fix; and the new guard's
+        citation rule was per line, so it could not see two of the survivors it
+        exists to find. All taken.
+      handoff: the third guard is
+        `cycle::tests::the_metaphors_the_comments_still_carry`, the same ten
+        metaphors over comment text. A quoted span is a citation and is spared,
+        **and the quote state carries across lines**; seven exemptions name a
+        subtree, a word and the reason, and the reasons are the reset window's
+        window, the promote side of it, and the sweep-list sense of *enrolment*
+        that `cycle/arena` keeps until the glossary answers.
+      handoff: the second guard now reads `let` bindings too, which is where
+        `condemned`, `judged` and `corpse` were still standing under comments
+        that no longer said any of it. 239 comments were rewritten; the words
+        that survive are citations, ordinary English (`noise floor` became
+        *measurement noise*, the arithmetic `floor` a *lower bound*) or one of
+        the seven exemptions.
 
 - [ ] S41.7 Allocation outcomes, and the `door` sites by semantic class
       done: an allocation failure, an unsupported placement, an admission

@@ -29,7 +29,7 @@ fn an_array_reached_from_an_escapee_carries_its_storage_out() {
 
     // One raw pointer per arena and per context, reused: `ll_array_new`
     // resolves the arena from the mounted context rather than taking
-    // one, and a fresh `&mut` per call would retag the pointer parked
+    // one, and a fresh `&mut` per call would retag the pointer stored
     // in TLS (`dev/WORKFLOW.md`, Miri).
     let mut arena = Arena::new();
     let arena_ptr: *mut Arena = &mut arena;

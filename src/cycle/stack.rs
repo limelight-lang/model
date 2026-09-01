@@ -17,6 +17,13 @@
 //! One worklist serves both phases of a trace, `crate::cycle::mark` and
 //! `crate::cycle::scan`, and the segments a deep mark drew are what the
 //! scan's own depth reuses.
+//!
+//! **The stack owns no memory of its own**: every segment is the arena's, so
+//! the arena's reset frees the whole worklist at once and this module has no
+//! release path. That is also the ordering it rests on — a stack outliving
+//! the arena it drew from would hold pointers into blocks the pool has taken
+//! back, so the two are built and dropped as one, and `reset` is what
+//! re-establishes the emptiness a fresh trace starts from.
 
 use crate::cycle::arena::TraceScratchArena;
 use crate::refcount::RcHeader;
@@ -58,7 +65,7 @@ struct StackSegment {
 ///
 /// **Every segment is the arena's memory, so a worklist does not outlive
 /// an arena reset.** `TraceScratchArena::reset` hands those blocks to the pool
-/// and to the critical reserve, and a stack used after it would climb
+/// and to the critical reserve, and a stack used after it would advance
 /// into a block another thread has since recommissioned, writing an
 /// entity pointer into someone else's rows. A collection that resets and
 /// traces again — the retry after an abort is exactly that collection —
@@ -163,7 +170,7 @@ impl TraceStack {
     ///
     /// Nothing is freed here and nothing can be: the memory is the
     /// arena's and goes back with it. What this undoes is the stack's
-    /// own belief that it has segments to climb into, which after
+    /// own belief that it has segments to advance into, which after
     /// `TraceScratchArena::reset` names memory the pool has taken back.
     pub(crate) fn reset(&mut self) {
         self.current = std::ptr::null_mut();
