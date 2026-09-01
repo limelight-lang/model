@@ -95,7 +95,7 @@ struct BufferBlockPrivate {
 /// Separate from the private half **as a type**, not by discipline. The
 /// same shape in `heap.rs` was `&mut` over the whole header twice, and
 /// twice that was a Stacked Borrows violation the audit had to find
-/// (`dev/DECISIONS.md`, 2026-07-20: "making it a type rule was the only
+/// (`dev/DECISIONS.md`, 2026-07-20: "Making it a type rule was the only
 /// option that cannot be violated again"). An owner taking `&mut` over a
 /// header that contains an atomic another thread is reading pops that
 /// thread's tag.

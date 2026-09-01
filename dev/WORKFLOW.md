@@ -310,6 +310,21 @@ re-run after any deletion of a module, a document or a feature:
    — do not contain the deleted strategy's name at all. `dev/tools/linkcheck.php`
    in `rfc` does not cover this: it reads only `rfc`, and only bracketed links.
 
+   **The heading-level form of the same pass**, since 2026-09-01: a citation
+   names a file *and* a quoted heading or bold lead-in, and the `rfc` rewrite
+   of 2026-08-30 renamed sections under 73 citations that the file test read
+   as clean. `python3 dev/tools/citations.py`, run from the crate root, pulls
+   every `` `…md`, "…" `` pair out of `src/`, `benches/`, `docs/`,
+   `dev/INDEX.md` and `dev/ARCHITECTURE.md`, resolves `rfc/…` against the
+   sibling repository, and prints each citation whose quoted text is not in
+   the named file. On 2026-09-01 it reported 379 citations and 12 misses
+   after S41.11: five in `docs/performance-case-decompositions.md` naming the
+   deleted `rc-walk.md` (a backlog line owns them), one split path in
+   `memory/critical.rs` and one `routing.rs` sentence that is not a heading
+   (both read correctly), and five string literals inside the two guard
+   tests, which are examples and not citations. A run that prints anything
+   else has found a renamed heading.
+
    **What a hit means depends on where it stands.** A dated journal —
    `DECISIONS.md`, `BENCHMARKS.md`, `POSTMORTEM.md` — names the document of
    its own day, and so does a note under a deletion banner. Those hits are

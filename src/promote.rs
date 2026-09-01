@@ -109,8 +109,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // has a shared block is a load from its block header — sound while
     // it is alive and a read of returned memory afterwards, a survivor
     // in a block of its own having handed that block to the system at
-    // its death (`dev/DECISIONS.md`, "the reset classifies a survivor
-    // while it is alive").
+    // its death (`dev/DECISIONS.md`, "Promotion classifies once").
     let mut by_block: HashMap<usize, Vec<usize>> = HashMap::new();
     // `survivors[..counted]` have already been counted and retained. New
     // survivors past it are the current round's delta.
@@ -511,8 +510,7 @@ unsafe fn external_memory(surv: *mut RcHeader) -> External {
 /// The grouping is the caller's because only the promotion loop holds a
 /// survivor at a moment it is certainly alive, and deciding which block a
 /// survivor belongs to is a read of the survivor's memory
-/// (`dev/DECISIONS.md`, "the reset classifies a survivor while it is
-/// alive").
+/// (`dev/DECISIONS.md`, "Promotion classifies once").
 ///
 /// One index per block rather than one per reset: both enumerators
 /// reach a block first — the census by the 64 KiB alignment mask, the

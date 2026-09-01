@@ -75,7 +75,7 @@ Any new upward edge is a design event: stop, discuss, record in
 ## Knowledge map
 
 "Does not know" is the contract column. "(hot)" marks the measured hot
-paths (`INDEX.md`, "Hot paths").
+paths (`dev/INDEX.md`, "Hot paths").
 
 The "Depends on" columns restate the production import graph as
 verified 2026-07-27 (test modules excluded); where they drift, the

@@ -361,7 +361,8 @@ impl HeapBlockHeader {
 /// ABI by `bench-external/larson/{walk_probe,churn_probe}.cpp`. They answer
 /// "how many blocks does one alloc walk?" and "how often do blocks cross the
 /// full/not-full line?" — the two questions that located the block-list
-/// churn in `rfc/model/memory/heap-slot-allocation.md` ("Fix 5b").
+/// churn in `rfc/model/memory/heap-slot-allocation.md` ("5b — Block-list churn was the
+/// memory cost").
 ///
 /// Deliberately not always-on: these are stores on the hot path, and a
 /// timing run built with them is measuring the counters as much as the
@@ -510,8 +511,8 @@ impl Heap {
     /// cross-thread frees, walking past a full block. A body holding those
     /// calls needs a stack frame and callee-saved spills, and the fast path
     /// pays for them on every call although only the rare branch needs them
-    /// (`rfc/model/memory/heap-slot-allocation.md`, "Fix 5c — Fast path
-    /// split out of the slow paths"). `#[cold]` is what tells LLVM the
+    /// (`rfc/model/memory/heap-slot-allocation.md`, "5c — Fast path split
+    /// out of the slow paths"). `#[cold]` is what tells LLVM the
     /// branch is rare; `refill` runs about 0.00003 times per alloc.
     #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {

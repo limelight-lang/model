@@ -330,7 +330,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // Withholding is the whole of it: nothing is recorded, because
     // the entry *is* the record, and the block's `used` therefore falls at the
     // return and never here, which is what keeps a block with a withheld
-    // zero-count member out of the pool (`dev/DECISIONS.md`, "a block's `used`
+    // zero-count member out of the pool (`dev/DECISIONS.md`, "A block's `used`
     // falls at the slot's return").
     //
     // The bit is cleared and the slot returned by the retirement, which

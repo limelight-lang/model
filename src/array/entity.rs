@@ -15,8 +15,8 @@
 //! pair, which is what makes the rule checkable rather than remembered.
 //!
 //! **No per-instance class pointer**, the same construction as a string
-//! (`rfc/model/arrays.md`, "a single final class … no per-instance class
-//! pointer, devirtualized methods"). The table holds no header either, so
+//! (`rfc/model/arrays.md`, "no per-instance class pointer, devirtualized
+//! methods"). The table holds no header either, so
 //! this entity supplies the refcount, the memory category and the COW
 //! state, and takes the category as a parameter at every allocating call
 //! (`dev/DECISIONS.md`, "the table is handed its category and reads no
@@ -302,7 +302,7 @@ pub(crate) unsafe fn storage_head(a: *mut LLArray) -> *const StorageHead {
 /// Allocate an empty array in `category`.
 ///
 /// **The storage is the mixed vector**, strategy 2 of
-/// `rfc/model/arrays.md`, "Storage Strategies": a fresh array holds a
+/// `rfc/model/arrays.md`, "One Class, Three Storage Implementations": a fresh array holds a
 /// dense range keyed by position and reaches the ordered hash only by
 /// migrating, which the element layer asks for when a key arrives that
 /// the range cannot hold ([`crate::array::element`]).

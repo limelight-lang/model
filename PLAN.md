@@ -440,7 +440,7 @@ to the step that owns it.
         is citations, `memory::reset_window`'s own words at three sites, and
         two mentions of the deleted collector's parked lists, which no live
         name replaces.
-- [ ] S41.11 Every cited heading exists in the document it names
+- [x] S41.11 Every cited heading exists in the document it names
       done: for every citation of the form `` `rfc/…md` `` or `` `docs/…md` ``
         followed by a quoted heading or bold lead-in, in `src/`, `benches/`,
         `docs/`, `dev/INDEX.md`, `dev/ARCHITECTURE.md` and `dev/WORKFLOW.md`,
@@ -454,6 +454,15 @@ to the step that owns it.
         no "Cycle teardown" (10 files cite it), no "Death while enrolled"
         (7 files), no "Who judges, and what a trace is worth"; pass 1 tests
         only that the file exists. Dated journals are records and stay.
+      handoff: done 2026-09-01 by a sonnet subagent and finished here: 379
+        citations, 73 misses before, 12 after — 51 repointed by the agent
+        over 30 files (`rc-cycle.md` alone had seven renamed sections), ten
+        by hand here (two `heap-slot-allocation.md` headings never carried
+        the word `Fix`, four journal titles quoted by paraphrase or case, two
+        `arrays.md` quotes, one bare `INDEX.md` path, one `performance-case`
+        lead-in). The checker is `dev/tools/citations.py` and `WORKFLOW.md`
+        pass 1 names it with the twelve known residues; the five real ones
+        are the backlog's `performance-case-decompositions.md` line.
 ## S34 — The root queue, enrolment and parking
 
 Goal: candidates reach the collector without the mutator paying for a data
@@ -1250,8 +1259,14 @@ stage claiming the frees while building none of them.
         Final; the atomic count word stands as disclosed.
       handoff: `dev/DECISIONS.md`, "a retained block's survivor list lives in
         the arena's own memory". Slice (e) waits on the `rfc` entry the
-        decision lists the questions for; its structure is agreed with Edmond
-        before it is written.
+        decision lists the questions for. Structure agreed with Edmond on
+        2026-09-01: no new document — one section of
+        `rfc/model/gc/rc-cycle.md` beside "Where the shadow count lives",
+        four paragraphs: the retained block's header words and who publishes
+        them; the block on no thread's list, neither abandoned nor adopted,
+        its last death returning it from any thread; the list-holding block
+        returned when its last list and last occupant are gone; the quiescent
+        enumerator reading the list without a lock. Not yet written.
 
 - [ ] S36.10 The persistent per-owner workspace   *(before S36.3)*
       done: the first collection on a thread draws one 64 KiB workspace base
@@ -1905,6 +1920,15 @@ deleted with its steps; the decisions it leaves are in `dev/DECISIONS.md`
 (2026-08-17 and 2026-08-18), the traps in `dev/POSTMORTEM.md` and the map
 in `dev/INDEX.md`. What it did not do is below.
 
+- [ ] **`docs/performance-case-decompositions.md` cites the deleted
+  `rc-walk.md` at five sites** — "The narrow mutator", "What the mutator
+  pays", "One demand on codegen", "Both ride the death branch of
+  `ll_release`", "Deferred physical release". The document decomposes the
+  retain/release pair, the counted publish and the death branch, which
+  still exist, against contract sentences of a design that does not; whether
+  it moves to `docs/history/` under a superseded banner or is re-cited
+  against `rc-cycle.md` is a reading of the document, not a rename. Found
+  by S41.11's checker, 2026-09-01.
 - [ ] **The ladder's refusal has nowhere to go.**
   `InsertOutcome::RefusedByLadder` is answered inside the crate — a null
   from `ll_cow_separate`, a `false` from `element::set` — because the

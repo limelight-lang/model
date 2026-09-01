@@ -505,9 +505,9 @@ versions live in `docs/history/`, marked at the top.
   and stay so: each is a hand-written copy of a protocol rather than a
   group of tests over a module, and each is compiled only under
   `--cfg loom`.
-- The performance case: `docs/performance-case.md` — the claim ("no
-  known avoidable work on the mutator's hot paths, within stated
-  resolution"), the canary bracket, and the list of claims not made
+- The performance case: `docs/performance-case.md` — the claim ("on the
+  mutator's hot paths this runtime carries no known avoidable work, within
+  the stated resolution of the instruments that measured them"), the canary bracket, and the list of claims not made
   before Phase D; figures are dated citations into `dev/BENCHMARKS.md`,
   which stays normative on conflict. Its instruction-level companion is
   `docs/performance-case-decompositions.md` — the pair, the counted
@@ -711,6 +711,10 @@ touching `memory/retained.rs` or S36.9 (e).
 143 rows, each classified against the glossary's closed list with its
 replacement, the fifteen that fit no class listed first with the reason,
 and one site awaiting a ruling. The input S41.7's rename reads.
+
+`dev/tools/citations.py` — the heading-level citation check, pass 1 of
+`dev/WORKFLOW.md`'s "Checks a grep cannot make": prints every cited
+heading the named document no longer carries.
 
 `dev/CYCLE-COLLECTOR-REVIEW.md` — the 2026-09-01 read-only review of
 `src/cycle/` with Edmond's ruling per finding: arena tail waste, the
