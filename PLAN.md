@@ -1294,6 +1294,31 @@ stage claiming the frees while building none of them.
         a collection did not already lack (`dev/DECISIONS.md`, "the workspace
         base is drawn at the first collection"). The Commit phase moves to
         S36.12 on the same ruling: it had no consumer here (F6). Final.
+      note 2026-09-01 — L2 read the step and the code and stopped before the
+        first edit at Edmond's close; its settled design, untyped: the base
+        pointer is `OwnerCycleState::_future_workspace` renamed
+        `workspace_base`, no new thread-local; `TraceScratchArena::new()`
+        becomes `open() -> Option<Self>` — null pointer → `gc_metadata::acquire`
+        (pool only), refused → `None`; cursor at the payload start, `left =
+        BLOCK_PAYLOAD`, no control line in the base, the base outside `blocks`
+        and `from_reserve`, `reset` rewinds and returns overflow only;
+        `ActiveTrace::open` draws the workspace before the chain head; drop
+        order `mark_peak`, sweep, close window, replay, rewind; the base's
+        consumption is a residue (`base_used` at the crossing) and `reset`
+        does `mark_peak` then `discharge`; the return at exit goes inside
+        `release_queue_base` after the segments and before the base block;
+        `block_pool::test_guard` warms the base after `ll_thread_init` so the
+        before/after block counts hold, a test-only upward edge for
+        `ARCHITECTURE.md`. The red test: a spawned thread, `ll_thread_init`,
+        open + one `ensure_row` + drop → pool requests (0, 2), again → (0, 1),
+        `current_blocks` baseline +1 while the thread lives and baseline after
+        exit — red on `ecc9379` because the second trace makes 2 requests.
+        Edmond's condition asserted as: the base's kind is
+        `BLOCK_KIND_GC_METADATA`, `current_blocks` counts it, and `blocks_out`'s
+        delta equals the probe's request count. Assertions that move:
+        `blocks_held` 2/1/4/0 one fewer where the first block was the base,
+        the reserve's 8-then-refused becomes 9, the crossing's `in_use +
+        BLOCK_PAYLOAD` becomes unchanged with the peak kept.
       Sage 2026-09-01 (pre-change gate, run by session L2, every cited line
         checked against the file): nine findings and three escalations, no
         code touched. Taken as rulings for the code — one representation of
