@@ -8,33 +8,6 @@ never edited or deleted.
 
 ---
 
-## 2026-09-01 — why parking left the dead memory it was threaded through
-
-The record the 2026-08-31 entry cites and the journal does not hold. No code
-changes with this entry.
-
-**Decided:** the reversal of the 2026-07-26 decision — parking through the
-freed allocation's own bytes 8–15, chosen so that parking allocates nothing —
-rests on the class word, and this entry is where that stands in the journal.
-The 2026-08-31 entry's citation of a "later 2026-07-27 decision that
-superseded the intrusive list" names no entry of this file; the seven entries
-of that date settle other questions.
-
-**Why the reversal:** bytes 8–15 of an entity slot are the class word, which
-the walker dereferences one pass after reading the header. A link written
-there is a wild read under a walker chasing a stale pointer. Out of band the
-corpse stays readable — refcount 0, class word live, fields nulled — which is
-what makes the exact test sound. The argument was written down in
-`docs/memory-manager.md`, "Parking is out of band", and never reached this
-file, so the prohibition of 2026-07-26 stood here unanswered while the code
-contradicted it.
-
-**What is still true of the prohibition:** an allocating free path is a defect
-class, and the entry of 2026-09-01 above ends it from the other side — parking
-moves onto manager memory in S36.9 slice c, out of band and without a `Vec`.
-
----
-
 ## 2026-09-01 — GC memory is counted once, and the block kind is the split
 
 Ruled by Edmond. Owner: S36.9.
@@ -196,8 +169,11 @@ physical identity and another for legal header access prevents the block kind
 at offset zero from being mistaken for a live refcount.
 
 **Cost and boundary:** parked pointers live in an out-of-band owner-local
-`Vec`; its cold trace-only allocation is the cost accepted by the later
-2026-07-27 decision that superseded the intrusive list. This TLS form is only
+`Vec`; its cold trace-only allocation is the cost of leaving the intrusive
+list of 2026-07-26 below. Bytes 8-15 of an entity slot are the class word the
+walker dereferences one pass after the header, so a link threaded there is a
+wild read under a walker chasing a stale pointer, while out of band the corpse
+stays readable (`docs/memory-manager.md`, "Parking is out of band"). This TLS form is only
 the synchronous owner-side substrate. Before the accelerator exists,
 S38.1/S38.3 must move the state where a worker can address its owner and solve
 RFC audit A3's generation/handoff race; this step claims neither.
