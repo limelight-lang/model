@@ -11,3 +11,6 @@
 # Built canary probes: rebuilt from source and re-accepted per run;
 # a stale committed binary would be measured instead of the code beside it.
 bench-external/canary/pair_canary
+
+# Working copies of subagents (dev/WORKFLOW.md, delegation).
+/.claude/worktrees/
