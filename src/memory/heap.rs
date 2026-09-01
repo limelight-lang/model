@@ -2100,9 +2100,11 @@ pub unsafe extern "C" fn ll_entity_reserve(
 /// each goes back through the ordinary size-less free path, which routes
 /// it to its block's free list, exactly like any other free — including
 /// its parking: an unconsumed cell carries no published header and no
-/// enrolment, so it is never withheld, while a cell a caller published
-/// and enrolled is (`memory::stdapi::ll_free`). The second window, a trace
-/// in flight, is S36.2's (`PLAN.md`).
+/// enrolment, so the enrolment window never withholds it, while a cell a
+/// caller published and enrolled is withheld (`memory::stdapi::ll_free`).
+/// The second window, a trace in flight, keys on the block kind alone and
+/// so withholds an unconsumed cell too, its return delayed to the window's
+/// close (S36.2, `PLAN.md`).
 ///
 /// # Safety
 /// Every element must be an unconsumed cell from [`ll_entity_reserve`].

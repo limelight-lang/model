@@ -75,10 +75,12 @@
 //! The escrow was a fixed array in this same thread-local until
 //! 2026-08-28, and it was almost the whole of the crate's
 //! zero-initialised TLS image, which every thread pays at birth whether
-//! it enrols or not: `.tbss` measures 496 bytes with the floor against
-//! 65 784 without it (`dev/BENCHMARKS.md`, "the escrow's move out of
-//! TLS"). The floor is drawn instead, at thread init and before the
-//! best-effort fills, and its refusal is a thread that never starts
+//! it enrols or not: `.tbss` measures 472 bytes with the floor on
+//! 2026-09-01 against the 65 784 measured without it on 2026-08-29
+//! (`dev/BENCHMARKS.md`, both entries; the figure moves with the
+//! toolchain and it is the ratio the two arms establish). The floor is
+//! drawn instead, at thread init and before the best-effort fills, and
+//! its refusal is a thread that never starts
 //! (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued").
 //! The invariant every later tier rests on comes out of that coupling:
 //! every registered thread has a floor, because a thread whose floor was
@@ -241,6 +243,11 @@ fn entries(segment: *mut BlockHeader) -> *mut *mut RcHeader {
     BlockHeader::payload_start(segment) as *mut *mut RcHeader
 }
 
+/// Where the floor's escrow begins, one control line past its payload.
+///
+/// Every entry this answers lies outside the control line, so `owner`
+/// must carry the provenance of the whole floor block — the form
+/// [`draw_floor`] produces and [`OWNER`] holds.
 #[inline]
 fn escrow_entries(owner: *mut OwnerCycleState) -> *mut *mut RcHeader {
     unsafe { (owner as *mut u8).add(size_of::<OwnerCycleState>()) as *mut *mut RcHeader }
@@ -272,7 +279,7 @@ pub(crate) unsafe fn enrol(entity: *mut RcHeader) {
     let filled = q.filled.get();
 
     if live.is_null() || filled == SEGMENT_CAPACITY {
-        unsafe { grow_and_write(q, entity) };
+        unsafe { grow_and_write(owner, entity) };
         return;
     }
 
@@ -287,10 +294,11 @@ pub(crate) unsafe fn enrol(entity: *mut RcHeader) {
 /// [`BlockHeader::next`], so growth links and never copies. No door
 /// funding one puts the entry in the escrow, which is why this answers
 /// nothing either.
-unsafe fn grow_and_write(q: &OwnerCycleState, entity: *mut RcHeader) {
+unsafe fn grow_and_write(owner: *mut OwnerCycleState, entity: *mut RcHeader) {
     // `enrol` established the floor before reaching here. Drawing it at
     // the first refusal would be too late: every other door would already
     // have found the pool empty.
+    let q = unsafe { owner_ref(owner) };
     let full = q.live.get();
 
     let fresh = match take_spare(q) {
@@ -322,7 +330,7 @@ unsafe fn grow_and_write(q: &OwnerCycleState, entity: *mut RcHeader) {
     };
 
     if fresh.is_null() {
-        escrow(q, entity);
+        unsafe { escrow(owner, entity) };
         // The escrow landing arms on its own: the refill the poll
         // performs is unconditional, so what the arming buys here is the
         // fire, not the cells.
@@ -349,7 +357,14 @@ unsafe fn grow_and_write(q: &OwnerCycleState, entity: *mut RcHeader) {
 /// behind that is a conjunction: the pool refusing across polls, and
 /// either a gate closed for the whole run or a collection that ran and
 /// lost, and then thousands of further non-final decrements.
-fn escrow(q: &OwnerCycleState, entity: *mut RcHeader) {
+///
+/// # Safety
+/// `owner` is this thread's floor pointer as [`OWNER`] holds it, carrying
+/// the provenance of the whole block. A pointer reconstructed from a
+/// `&OwnerCycleState` covers the control line alone and cannot address
+/// the escrow behind it.
+unsafe fn escrow(owner: *mut OwnerCycleState, entity: *mut RcHeader) {
+    let q = unsafe { owner_ref(owner) };
     let escrowed = q.escrowed.get();
     if escrowed == ESCROW_ENTRIES {
         // Nothing to report it through: `ll_release` holds no frame, and
@@ -359,11 +374,7 @@ fn escrow(q: &OwnerCycleState, entity: *mut RcHeader) {
 
     // The control pointer is inside this thread's non-null floor, which
     // `enrol` established before taking any growth door.
-    unsafe {
-        escrow_entries(q as *const OwnerCycleState as *mut OwnerCycleState)
-            .add(escrowed)
-            .write(entity)
-    };
+    unsafe { escrow_entries(owner).add(escrowed).write(entity) };
     q.escrowed.set(escrowed + 1);
 }
 

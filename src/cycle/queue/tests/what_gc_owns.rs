@@ -69,11 +69,10 @@ fn the_floor_accepts_its_exact_rederived_escrow_capacity() {
     let _g = test_guard();
     reset();
     let owner = owner();
-    let q = unsafe { owner_ref(owner) };
     let mut header = candidate(2);
 
     for _ in 0..ESCROW_ENTRIES {
-        escrow(q, &raw mut header);
+        unsafe { escrow(owner, &raw mut header) };
     }
     assert_eq!(escrowed_count(), ESCROW_ENTRIES);
 
@@ -81,16 +80,19 @@ fn the_floor_accepts_its_exact_rederived_escrow_capacity() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns a child process, which Miri's isolation forbids"
+)]
 fn one_entry_past_the_escrow_capacity_aborts_before_writing() {
     const CHILD: &str = "LL_QUEUE_ESCROW_OVERFLOW_CHILD";
     if std::env::var_os(CHILD).is_some() {
         let _g = test_guard();
         reset();
         let owner = owner();
-        let q = unsafe { owner_ref(owner) };
         let mut header = candidate(2);
         for _ in 0..=ESCROW_ENTRIES {
-            escrow(q, &raw mut header);
+            unsafe { escrow(owner, &raw mut header) };
         }
         return;
     }

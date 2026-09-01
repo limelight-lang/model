@@ -7,6 +7,43 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-01 — a reference to the control line was used to address the block behind it, and the same commit turned Miri off
+
+**What happened.** S36.9a (`0416e83`) moved the queue's control state into the
+first 64 bytes of the floor block and rewrote `escrow` to take
+`&OwnerCycleState`. The escrow itself begins one byte past that struct, so the
+write went through a tag covering `[0..64)` of the payload and addressed
+`[64..65 280)`. Miri reports it as a write with a tag not in the borrow stack,
+on the production path `ll_release_vector` → `enrol` → `grow_and_write` →
+`escrow`. The parent tree passed the same run. The repair threads the floor
+pointer, which carries the block's provenance, through both functions;
+`escrow` is now `unsafe` and says at its declaration what the pointer must be.
+
+**Why it was possible.** A shared reference to a struct at the head of a larger
+allocation looks like a handle to the allocation. It is a handle to the struct.
+`owner_ref` returns `&'a OwnerCycleState` with an unbounded lifetime and no
+safety section, so `q as *const _ as *mut _` reads as a legitimate way back to
+the block, and every ordinary run agrees: the address is right, only the
+provenance is not. This is the second defect of the family — 2026-08-26,
+`&raw const` against an atomic — and both were invisible to `cargo test`.
+
+**Why it was not caught.** Miri is outside the commit gate, and the same commit
+made it unrunnable: the new escrow-overflow test spawns a child through
+`std::env::current_exe`, which Miri's isolation refuses, and Miri stops at the
+first error. Every test after it in `cycle::` — including the ones that reach
+the defect — was never executed. The crate's convention for such a test,
+`#[cfg_attr(miri, ignore = "…")]`, exists in five other files and was not
+applied here.
+
+**The rule.** A change to raw-pointer address arithmetic in `cycle::` runs that
+module's Miri slice before the commit, and a test that spawns a process, reads
+a file or compares function addresses carries its `cfg_attr(miri, ignore)` in
+the same commit that adds it. A Miri run is read as evidence only when its
+result line names a test count: a run that aborted early reports failure, but a
+run whose remaining tests were skipped reports nothing at all.
+
+---
+
 ## 2026-08-29 — a liveness assertion a starved reader cannot satisfy, and a `grep` that let it through
 
 **What happened.** `array::table::tests::what_a_walker_reads_while_the_storage_`
