@@ -69,28 +69,18 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 ## Fog
 
 Raised by the review of 2026-09-01 over `52b2cbf` and `0416e83`; each line is
-an unresolved question, not yet a step, and none of them is ruled on.
+an unresolved question, not yet a step, and none of them is ruled on. Three
+of the six left this list on the day: the free that reaches a traced address
+is S38.3's, ruled by Edmond on 2026-09-01, and its two neighbours — a
+cross-thread free that never sees the window, and a retained block returned
+past the gate — are the same hazard in the same step.
 
-- **The trace window covers entity slots, not the bodies the same trace
-  strides.** `mark` and `scan` reach an array's table storage through
-  `cells::trace_cells`, so a buffer-arena chunk, a retained payload and an
-  OS-direct run all hold live addresses inside an open window; only the first
-  reaches `cycle::parking`, and `52b2cbf` reassigned the other sites'
-  comments to S38.3. `BlockPool` is process-global, so recommissioning needs
-  no second thread. Either those frees are S36.2's or the slot free is not
-  reachable either, and the commit takes both positions.
-- **A cross-thread free of an entity slot never sees the window**, which
-  reads the freeing thread's own flag. Bounded today only because
-  `collect_remote` runs from the allocation paths and a trace allocates no
-  entity; the first allocation inside a window makes it live.
-- **A retained block can leave circulation inside the window** through
-  `retained::give_block_back`, which passes no gate. Unreachable today by an
-  argument about `index.live` that is written down nowhere and that the
-  code's own comment contradicts.
-- **The parked list is a `Vec` on the free path**, which the 2026-07-26
-  decision forbade in as many words. `dev/DECISIONS.md` cites a later
-  2026-07-27 decision as the reversal; no such entry exists, and
-  `cycle::arena`'s module doc still states the prohibition.
+- **The parking `Vec`'s record has a dangling citation.** The entry of
+  2026-08-31 cites a 2026-07-27 decision as what superseded the intrusive
+  list; no such entry exists, and the 2026-07-26 decision it would have
+  superseded forbids the allocation in as many words. The container itself is
+  settled — the entry of 2026-09-01 puts parking on manager memory and S36.9
+  slice c builds it — so what is open is the record, not the code.
 - **`GcBlockRole::WorkspaceBase` has no production user.** `ShadowArena`
   charges its first block to `WorkspaceOverflow`, so the four roles
   `docs/memory-manager.md` describes are three.
@@ -994,9 +984,21 @@ both, and the losing side never deadlocks.
         taken
       tier: T2 · role: Critic
 - [ ] S38.3 Parking the mutator's frees during a trace
+      note: S36.2 built the owner-side substrate for one thread, where nothing
+        frees inside the window: mark and scan only read, and the trace window
+        ends before the user-code teardown by the decision of 2026-08-31. The
+        hazard is this step's, and it is the one rc-walk already paid for — a
+        collector reading an entity another thread frees underneath it
+        (Edmond, 2026-09-01).
       done: while a collection is in flight over a thread's blocks, that
-        thread's frees park until it ends; the cost is measured as the churn
-        held across one collection
+        thread's frees park until it ends, whichever thread performs them, and
+        the parking covers every address the trace holds rather than entity
+        slots alone — an array's table storage in a buffer chunk
+        (`cells::trace_cells` strides it, and
+        `buffer_arena::buffer_free_longlived_payload` returns it past the
+        gate), a retained payload whose block goes home through
+        `retained::give_block_back`, and an OS-direct run; the cost is
+        measured as the churn held across one collection
       tier: T2 · role: —
 
 ## S39 — Thread exit  (carried from S29.2)

@@ -8,6 +8,30 @@ never edited or deleted.
 
 ---
 
+## 2026-09-01 — the free that reaches a traced address is the concurrent collector's problem
+
+Ruled by Edmond after the review of `52b2cbf` and `0416e83`. Owner: S38.3.
+
+**Decided:** the trace window of S36.2 stays as it is, and covering the
+addresses a trace holds outside entity slots — an array's table storage in a
+buffer chunk, a retained payload, an OS-direct run — is S38.3's work, to be
+designed when the collector and the mutator run on different threads. S36.2
+stays closed.
+
+**Why:** on one thread there is no free inside the window. Mark and scan only
+read, and the window ends after the final scan read and before exact
+validation, so the user-code teardown that could free anything runs outside it
+(entry of 2026-08-31 below). What makes the hazard real is a second thread: the
+collector reads an entity while its owner frees it, and the block pool is
+process-global, so the memory is recommissioned immediately. `rc-walk` paid for
+exactly this, which is why its parking held for a whole epoch rather than for a
+phase.
+
+**What this does not settle:** which of the three routes park, and whether they
+park by address or by block. S38.3 carries the list.
+
+---
+
 ## 2026-09-01 — cycle GC owns persistent manager-visible memory and one token per candidate
 
 Plan prerequisites S36.9–S36.13 and S37.4, before S36.3.
