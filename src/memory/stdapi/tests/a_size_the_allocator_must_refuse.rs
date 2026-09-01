@@ -53,13 +53,12 @@ fn a_size_past_isize_max_returns_null_rather_than_aborting() {
 #[test]
 fn pooled_large_reports_exhaustion_instead_of_writing_through_null() {
     let _g = crate::memory::block_pool::test_guard();
-    use crate::memory::block_pool::FORCE_OOM;
-    use std::sync::atomic::Ordering;
+    use crate::memory::block_pool::force_oom;
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let p = unsafe { ll_alloc(20_000, 16) };
     let aligned = unsafe { ll_alloc(40, 64) }; // align > 16 routes here too
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     assert!(p.is_null(), "exhaustion must report, not abort");
     assert!(aligned.is_null(), "the over-aligned route reports too");

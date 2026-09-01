@@ -10,9 +10,8 @@
 //! (`cycle::row::edge_to`).
 
 use super::*;
-use crate::memory::block_pool::{BlockPool, FORCE_OOM, test_guard};
+use crate::memory::block_pool::{BlockPool, force_oom, test_guard};
 use crate::refcount::{EntityKind, MemoryCategory};
-use std::sync::atomic::Ordering;
 
 /// Headers the tests queue, `count` of them, distinct and each carrying
 /// a live pointer's provenance.
@@ -110,7 +109,7 @@ fn a_push_with_both_doors_shut_answers_false() {
     let mut arena = ShadowArena::new();
     let mut stack = TraceStack::new();
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
         "the ordinary door is refusing"
@@ -118,7 +117,7 @@ fn a_push_with_both_doors_shut_answers_false() {
     assert_eq!(crate::memory::critical::blocks_held(), 0);
 
     let refused = stack.push(&mut arena, unsafe { entry(base, 1) });
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     assert!(!refused);
     assert_eq!(stack.pop(), None, "and nothing was queued");

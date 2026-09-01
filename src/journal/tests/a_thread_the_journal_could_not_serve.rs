@@ -18,7 +18,7 @@ use super::*;
 #[test]
 fn a_refused_ring_is_not_asked_for_a_second_time() {
     let _quiet = kinds::disable_sites_for_test();
-    use crate::memory::block_pool::FORCE_OOM;
+    use crate::memory::block_pool::force_oom;
     let _g = crate::memory::block_pool::test_guard();
     let start = mark();
 
@@ -27,9 +27,9 @@ fn a_refused_ring_is_not_asked_for_a_second_time() {
             crate::memory::heap::ll_thread_init(),
             "the runtime started this thread"
         );
-        FORCE_OOM.store(true, Ordering::Relaxed);
+        let oom = force_oom();
         record(ANY_KIND, 0, 1, 0, 0);
-        FORCE_OOM.store(false, Ordering::Relaxed);
+        drop(oom);
         // The pressure is gone and this thread still journals
         // nothing: the refusal was final, not a bad moment.
         record(ANY_KIND, 0, 2, 0, 0);
@@ -116,7 +116,7 @@ fn a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring() {
 #[test]
 fn a_refused_threads_later_records_are_not_counted_as_losses() {
     let _quiet = kinds::disable_sites_for_test();
-    use crate::memory::block_pool::FORCE_OOM;
+    use crate::memory::block_pool::force_oom;
     let _g = crate::memory::block_pool::test_guard();
 
     let (announce, announced) = std::sync::mpsc::channel();
@@ -126,9 +126,9 @@ fn a_refused_threads_later_records_are_not_counted_as_losses() {
             crate::memory::heap::ll_thread_init(),
             "the runtime started this thread"
         );
-        FORCE_OOM.store(true, Ordering::Relaxed);
+        let oom = force_oom();
         record(ANY_KIND, 0, 1, 0, 0);
-        FORCE_OOM.store(false, Ordering::Relaxed);
+        drop(oom);
         announce.send(()).expect("the test hung up");
 
         wait.recv().expect("the test hung up");
@@ -161,7 +161,7 @@ fn a_refused_threads_later_records_are_not_counted_as_losses() {
 #[test]
 fn a_thread_refused_a_ring_is_counted_since_it_is_in_no_window() {
     let _quiet = kinds::disable_sites_for_test();
-    use crate::memory::block_pool::FORCE_OOM;
+    use crate::memory::block_pool::force_oom;
     let _g = crate::memory::block_pool::test_guard();
     let start = mark();
 
@@ -170,9 +170,9 @@ fn a_thread_refused_a_ring_is_counted_since_it_is_in_no_window() {
             crate::memory::heap::ll_thread_init(),
             "the runtime started this thread"
         );
-        FORCE_OOM.store(true, Ordering::Relaxed);
+        let oom = force_oom();
         record(ANY_KIND, 0, 3, 0, 0);
-        FORCE_OOM.store(false, Ordering::Relaxed);
+        drop(oom);
         crate::memory::heap::ll_thread_exit();
     })
     .join()

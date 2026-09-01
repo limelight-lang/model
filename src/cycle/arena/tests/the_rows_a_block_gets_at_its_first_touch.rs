@@ -9,7 +9,7 @@ use crate::class::ClassBuilder;
 use crate::cycle::row::{Population, Row};
 use crate::cycle::shadow::{self, Colour};
 use crate::memory::arena::Arena;
-use crate::memory::block_pool::{BLOCK_MASK, FORCE_OOM, test_guard};
+use crate::memory::block_pool::{BLOCK_MASK, force_oom, test_guard};
 use crate::memory::context::LLContext;
 use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, RcHeader, ll_release};
@@ -359,7 +359,7 @@ fn a_refusal_on_the_second_block_leaves_the_first_intact() {
     // The arena's current block still has room, so the refusal has to be
     // driven from a block boundary: shut the door, then spend the block
     // in hand.
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     while !arena.alloc(1024).is_null() {}
 
     assert_eq!(
@@ -367,7 +367,7 @@ fn a_refusal_on_the_second_block_leaves_the_first_intact() {
         Met::Refused,
         "the second block's rows have nowhere to come from"
     );
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     assert_eq!(
         unsafe { shadow::count(*row) },

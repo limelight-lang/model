@@ -11,12 +11,12 @@ use super::*;
 #[test]
 fn the_pooled_half_reports_pool_exhaustion_and_the_run_half_is_unaffected() {
     let _g = test_guard();
-    crate::memory::block_pool::FORCE_OOM.store(true, std::sync::atomic::Ordering::Relaxed);
+    let oom = crate::memory::block_pool::force_oom();
 
     let pooled = alloc(BLOCK_PAYLOAD);
     let run = alloc(BLOCK_PAYLOAD + 1);
 
-    crate::memory::block_pool::FORCE_OOM.store(false, std::sync::atomic::Ordering::Relaxed);
+    drop(oom);
     assert!(pooled.is_null(), "the pool refused and the refusal carried");
     assert!(
         !run.is_null(),

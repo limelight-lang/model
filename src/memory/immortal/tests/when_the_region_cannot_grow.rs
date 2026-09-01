@@ -9,16 +9,15 @@ use super::*;
 #[test]
 fn exhaustion_reports_null_and_leaves_the_region_usable() {
     let _g = crate::memory::block_pool::test_guard();
-    use crate::memory::block_pool::FORCE_OOM;
-    use std::sync::atomic::Ordering;
+    use crate::memory::block_pool::force_oom;
 
     // Fill whatever remains of the current block, so the next call
     // has to ask the pool.
     let _ = immortal_alloc(BLOCK_PAYLOAD);
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let p = immortal_alloc(64);
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
     assert!(p.is_null(), "exhaustion must report, not abort");
 
     let q = immortal_alloc(64);

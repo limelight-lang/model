@@ -15,7 +15,7 @@
 
 use super::*;
 
-use crate::memory::block_pool::{BLOCK_KIND_GC_METADATA, BlockPool, FORCE_OOM, load_block_kind};
+use crate::memory::block_pool::{BLOCK_KIND_GC_METADATA, BlockPool, force_oom, load_block_kind};
 use crate::memory::gc_metadata::stats;
 use std::sync::atomic::Ordering;
 
@@ -88,9 +88,9 @@ fn a_refused_floor_is_a_thread_that_never_starts() {
     // On a thread of its own, because the refusal is about a thread that
     // has no floor yet and this one has held its since the guard.
     let (started, floorless) = std::thread::spawn(|| {
-        FORCE_OOM.store(true, Ordering::Relaxed);
+        let oom = force_oom();
         let started = crate::memory::heap::ll_thread_init();
-        FORCE_OOM.store(false, Ordering::Relaxed);
+        drop(oom);
         (started, floor().is_null())
     })
     .join()

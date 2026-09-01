@@ -3,7 +3,7 @@ use crate::array::entity::ll_array_new;
 use crate::array::table::Key;
 use crate::class::ClassBuilder;
 use crate::memory::arena::Arena;
-use crate::memory::block_pool::FORCE_OOM;
+use crate::memory::block_pool::force_oom;
 use crate::memory::stdapi::ll_free;
 use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, ll_release};

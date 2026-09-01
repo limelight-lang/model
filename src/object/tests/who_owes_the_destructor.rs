@@ -97,7 +97,7 @@ fn an_unconstructed_object_owes_no_destructor() {
 #[test]
 fn a_refused_destructor_record_fails_the_construction() {
     let _g = crate::memory::block_pool::test_guard();
-    use crate::memory::block_pool::FORCE_OOM;
+    use crate::memory::block_pool::force_oom;
     let cls = ClassBuilder::new("RecordRefused")
         .destructor(counting_destructor as *const ())
         .build();
@@ -117,9 +117,9 @@ fn a_refused_destructor_record_fails_the_construction() {
     assert_eq!(unsafe { (*ctx.arena).remaining() }, 0);
     crate::memory::reserve::drain_for_test();
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let registered = unsafe { object_constructed(&mut ctx, obj) };
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     assert!(!registered, "the record could not be written");
     assert_eq!(

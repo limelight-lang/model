@@ -146,8 +146,8 @@ fn an_arena_tables_key_release_is_owed_by_the_reset_log() {
 /// buffer arena — so neither of them is what refuses.
 #[test]
 fn a_refused_heap_copy_gives_an_escaped_child_back_through_the_barrier() {
-    use crate::memory::block_pool::FORCE_OOM;
-    use std::sync::atomic::Ordering;
+    use crate::memory::block_pool::force_oom;
+
     let _g = crate::memory::block_pool::test_guard();
     let mut arena = crate::memory::arena::Arena::new();
     let arena_ptr: *mut crate::memory::arena::Arena = &mut arena;
@@ -180,7 +180,7 @@ fn a_refused_heap_copy_gives_an_escaped_child_back_through_the_barrier() {
         crate::refcount::ll_retain(src as *mut RcHeader);
     }
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     // Every heap string slot the thread can still serve. The flag refuses
     // the pool a fresh block; a block this thread already holds would
     // serve the key's crossing in silence, and whether it holds one
@@ -205,7 +205,7 @@ fn a_refused_heap_copy_gives_an_escaped_child_back_through_the_barrier() {
         )
     };
 
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
     for s in fillers {
         unsafe {
             assert!(ll_release(s as *mut RcHeader));

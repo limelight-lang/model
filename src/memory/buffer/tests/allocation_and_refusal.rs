@@ -23,8 +23,7 @@ fn ensure_allocates_rounded_and_empty_stays_empty() {
 #[test]
 fn refused_growth_leaves_the_buffer_intact() {
     let _g = crate::memory::block_pool::test_guard();
-    use crate::memory::block_pool::FORCE_OOM;
-    use std::sync::atomic::Ordering;
+    use crate::memory::block_pool::force_oom;
 
     let mut a = arena();
     let mut b = Buffer::new();
@@ -35,10 +34,10 @@ fn refused_growth_leaves_the_buffer_intact() {
     let _intruder = a.alloc(40_000);
     let (data, capacity) = (b.data, b.capacity);
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let p = buffer_ensure(&mut a, &mut b, 40_000, 0);
     let appended = buffer_append(&mut a, &mut b, &[0u8; 40_000]);
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     assert!(p.is_null(), "exhaustion must report, not abort");
     assert!(!appended, "a refused append reports instead of writing");

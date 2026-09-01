@@ -3,12 +3,11 @@ use crate::class::ClassBuilder;
 use crate::cycle::shadow::Colour;
 use crate::cycle::testing::row_word;
 use crate::memory::arena::Arena;
-use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockPool, FORCE_OOM, test_guard};
+use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockPool, force_oom, test_guard};
 use crate::memory::context::LLContext;
 use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, ll_release, ll_retain};
 use crate::test_support::{prop_offset, store_prop};
-use std::sync::atomic::Ordering;
 
 /// The working count the trace left for `entity`, with its colour
 /// asserted met: a count read off an untouched row is whatever the

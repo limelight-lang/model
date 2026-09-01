@@ -205,9 +205,9 @@ fn a_table_disposed_on_another_thread_leaves_the_owners_block_alive() {
 #[test]
 fn a_refused_carry_leaves_the_category_where_it_was() {
     use crate::memory::arena::Arena;
-    use crate::memory::block_pool::{BLOCK_PAYLOAD, FORCE_OOM};
+    use crate::memory::block_pool::{BLOCK_PAYLOAD, force_oom};
     use crate::memory::context::set_current_context;
-    use std::sync::atomic::Ordering;
+
     let _g = crate::memory::block_pool::test_guard();
 
     let mut arena = Arena::new();
@@ -239,9 +239,9 @@ fn a_refused_carry_leaves_the_category_where_it_was() {
         "an in-block storage is the only one that can be refused"
     );
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let carried = unsafe { crate::array::entity::carry_storage_out_of(arena_ptr, a) };
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
     assert!(!carried, "the copy was meant to be refused and was not");
     assert_eq!(
         unsafe { crate::array::entity::category_of(a) },

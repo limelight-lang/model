@@ -26,7 +26,7 @@ fn a_block_is_drawn_while_the_pool_refuses() {
     drain_for_test();
     assert!(replenish());
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
         "the ordinary door is the one refusing"
@@ -39,7 +39,7 @@ fn a_block_is_drawn_while_the_pool_refuses() {
         !replenish(),
         "which cannot be given while the refusal lasts"
     );
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     give_back(block);
     assert_eq!(blocks_held(), CRITICAL_BLOCKS, "the reserve took it back");

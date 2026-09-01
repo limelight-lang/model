@@ -8,17 +8,17 @@ use super::*;
 #[test]
 fn a_drawn_block_is_available_while_the_pool_refuses() {
     let _g = crate::memory::block_pool::test_guard();
-    use crate::memory::block_pool::FORCE_OOM;
-    use std::sync::atomic::Ordering;
+    use crate::memory::block_pool::force_oom;
+
     drain_for_test();
     assert!(replenish());
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     assert!(BlockPool::global().get().is_null(), "the pool is refusing");
     let block = draw();
     assert!(!block.is_null(), "the reserve still hands one out");
     assert!(!replenish(), "and cannot be refilled while it lasts");
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     BlockPool::global().put(block);
     drain_for_test();

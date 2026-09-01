@@ -90,7 +90,7 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
     let mut shadow_arena = ShadowArena::new();
     assert!(!shadow_arena.alloc(BLOCK_PAYLOAD - room).is_null());
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
         "the ordinary door is refusing"
@@ -103,7 +103,7 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
 
     let mut stack = TraceStack::new();
     let answer = unsafe { mark(&mut shadow_arena, &mut stack, head as *mut RcHeader) };
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     assert_eq!(answer, Marked::Refused);
     assert_eq!(

@@ -20,8 +20,7 @@ use super::*;
 #[test]
 fn the_barrier_log_grows_from_the_reserve_when_the_pool_refuses() {
     let _g = crate::memory::block_pool::test_guard();
-    use crate::memory::block_pool::FORCE_OOM;
-    use std::sync::atomic::Ordering;
+    use crate::memory::block_pool::force_oom;
 
     crate::memory::reserve::drain_for_test();
     assert!(crate::memory::reserve::replenish());
@@ -29,7 +28,7 @@ fn the_barrier_log_grows_from_the_reserve_when_the_pool_refuses() {
     let mut arena = Arena::new();
     let mut entity = RcHeader::new(MemoryCategory::RequestArena, 0);
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     assert!(
         arena.alloc(16).is_null(),
         "ordinary allocation reports the exhaustion"
@@ -40,7 +39,7 @@ fn the_barrier_log_grows_from_the_reserve_when_the_pool_refuses() {
         arena.alloc(16).is_null(),
         "and still reports it — the reserve is not the arena's bump block"
     );
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     assert!(
         crate::memory::reserve::is_drawn(),

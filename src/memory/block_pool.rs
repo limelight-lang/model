@@ -287,9 +287,37 @@ static CARVE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Makes [`BlockPool::get`] report exhaustion. Test-only, and the only
 /// way to reach the out-of-memory paths deliberately.
+///
+/// Raised through [`force_oom`] rather than by a store of its own: the flag
+/// is process-wide, and a test that panics between a bare raise and its
+/// lowering leaves every test after it running against a pool that refuses
+/// (`dev/POSTMORTEM.md`, 2026-08-13).
 #[cfg(test)]
 pub(crate) static FORCE_OOM: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// Raise [`FORCE_OOM`] until the guard is dropped.
+///
+/// The window ends where the guard does, so a test that wants it to end
+/// before its own body does drops the guard there by name. Dropping on the
+/// unwind is the point: the flag comes down whether the body returns or
+/// panics.
+#[cfg(test)]
+#[must_use = "the pool refuses only while the guard lives"]
+pub(crate) fn force_oom() -> ForcedOom {
+    FORCE_OOM.store(true, Ordering::Relaxed);
+    ForcedOom
+}
+
+#[cfg(test)]
+pub(crate) struct ForcedOom;
+
+#[cfg(test)]
+impl Drop for ForcedOom {
+    fn drop(&mut self) {
+        FORCE_OOM.store(false, Ordering::Relaxed);
+    }
+}
 
 // Blocks this thread has asked the pool for, whichever tier served it.
 // Counted rather than inferred from the global allocator, because a

@@ -32,7 +32,7 @@ fn a_refused_separation_reports_and_changes_nothing() {
     let (h, slot_a, _slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
     let val = mk(b"unstored");
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let fillers = unsafe { exhaust_buffer_sources(FIRST_STORAGE_BYTES) };
     let stored = unsafe {
         set(
@@ -44,7 +44,7 @@ fn a_refused_separation_reports_and_changes_nothing() {
         )
     };
 
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
     free_fillers(fillers);
     assert!(!stored, "the copy's storage was meant to be refused");
 
@@ -103,7 +103,7 @@ fn a_refused_growth_reports_with_the_table_unchanged() {
         }
     }
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let fillers = unsafe { exhaust_buffer_sources(DOUBLED_STORAGE_BYTES) };
     let stored = unsafe {
         set(
@@ -115,7 +115,7 @@ fn a_refused_growth_reports_with_the_table_unchanged() {
         )
     };
 
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
     free_fillers(fillers);
     assert!(!stored, "growth was meant to be refused");
 
@@ -158,7 +158,7 @@ fn a_growth_refusal_inside_the_copy_destroys_the_copy_alone() {
     let (h, slot_a, _slot_b) = unsafe { two_holders(context_ptr, arena_ptr, src) };
     let val = mk(b"unstored");
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let fillers = unsafe { exhaust_buffer_sources(FIRST_STORAGE_BYTES) };
     // The separation must not be the refusal, or this measures
     // `a_refused_separation_reports_and_changes_nothing` a second
@@ -182,7 +182,7 @@ fn a_growth_refusal_inside_the_copy_destroys_the_copy_alone() {
         )
     };
 
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
     free_fillers(fillers);
     assert!(!stored, "the copy's storage was meant to be refused");
 
@@ -293,7 +293,7 @@ fn a_refused_escape_copy_of_the_value_reports_and_changes_nothing() {
     let value = unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"arena") };
     let before = unsafe { crate::refcount::entity_refcount(value) };
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let fillers = unsafe { exhaust_string_entities(b"arena".len()) };
     let stored = unsafe {
         set(
@@ -305,7 +305,7 @@ fn a_refused_escape_copy_of_the_value_reports_and_changes_nothing() {
         )
     };
 
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
     free_string_fillers(fillers);
     assert!(!stored, "the value's escape copy was meant to be refused");
 
@@ -358,12 +358,12 @@ fn a_refused_box_takes_the_vivified_element_back_out() {
         crate::array::testing::insert(src, Key::Int(0), Value::int(1));
     }
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     // A reference box is 24 bytes, the size class an empty inline
     // string takes.
     let fillers = unsafe { exhaust_string_entities(0) };
     let r = unsafe { make_ref(context_ptr, MemoryCategory::GcHeap, slot, Key::Int(9)) };
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
     free_string_fillers(fillers);
     assert!(r.is_null(), "the box was meant to be refused");
 

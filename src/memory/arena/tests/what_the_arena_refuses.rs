@@ -15,14 +15,13 @@ use super::*;
 #[test]
 fn exhaustion_reports_null_and_leaves_the_arena_usable() {
     let _g = crate::memory::block_pool::test_guard();
-    use crate::memory::block_pool::FORCE_OOM;
-    use std::sync::atomic::Ordering;
+    use crate::memory::block_pool::force_oom;
 
     let mut arena = Arena::new();
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let p = arena.alloc(40);
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     assert!(p.is_null(), "exhaustion must report, not abort");
 

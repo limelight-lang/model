@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::memory::block_pool::{
-    BLOCK_KIND_GC_METADATA, BlockPool, FORCE_OOM, load_block_kind, test_guard,
+    BLOCK_KIND_GC_METADATA, BlockPool, force_oom, load_block_kind, test_guard,
 };
 
 fn current() -> usize {
@@ -57,9 +57,9 @@ fn a_critical_workspace_draw_is_charged_only_while_the_arena_holds_it() {
     let before = current();
     let mut arena = crate::cycle::arena::ShadowArena::new();
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let byte = arena.alloc(1);
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
     assert!(!byte.is_null(), "the critical reserve served the refusal");
     assert_eq!(current(), before + 1);
 

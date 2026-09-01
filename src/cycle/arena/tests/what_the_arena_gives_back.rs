@@ -43,7 +43,7 @@ fn a_refusal_at_both_doors_leaves_nothing_behind() {
     assert!(!arena.alloc(64).is_null(), "the ordinary door served");
     assert_eq!(arena.blocks_held(), 1);
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
         "the ordinary door is refusing"
@@ -57,7 +57,7 @@ fn a_refusal_at_both_doors_leaves_nothing_behind() {
         arena.alloc(BLOCK_PAYLOAD).is_null(),
         "so a growth is refused rather than a process killed"
     );
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     arena.reset();
     assert_eq!(BlockPool::global().blocks_out(), before, "no block leaked");
@@ -102,7 +102,7 @@ fn the_reserve_serves_after_a_refusal_and_is_refilled_at_reset() {
     let before = BlockPool::global().blocks_out();
 
     let mut arena = ShadowArena::new();
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
         "the ordinary door is the one refusing"
@@ -114,7 +114,7 @@ fn the_reserve_serves_after_a_refusal_and_is_refilled_at_reset() {
         "and the block came out of the reserve"
     );
     assert!(crate::memory::critical::is_drawn());
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     arena.reset();
     assert_eq!(
@@ -244,7 +244,7 @@ fn a_refused_first_touch_stamps_nothing() {
     let (mut heap, slot, block) = an_entity_block();
 
     let mut arena = ShadowArena::new();
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
         "the ordinary door is refusing"
@@ -260,7 +260,7 @@ fn a_refused_first_touch_stamps_nothing() {
         Met::Refused,
         "a first touch with no memory aborts the collection"
     );
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     assert!(
         unsafe { crate::memory::heap::block_shadow(block) }.is_null(),
@@ -285,7 +285,7 @@ fn every_block_the_reserve_lent_comes_back_to_it() {
     let before = BlockPool::global().blocks_out();
 
     let mut arena = ShadowArena::new();
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
         "the ordinary door is refusing"
@@ -304,7 +304,7 @@ fn every_block_the_reserve_lent_comes_back_to_it() {
         arena.alloc(BLOCK_PAYLOAD).is_null(),
         "and the next growth has nowhere left to ask"
     );
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
 
     arena.reset();
     assert_eq!(

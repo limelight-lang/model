@@ -180,7 +180,7 @@ fn a_refused_store_through_the_box_keeps_the_displaced_value() {
     let crossing = unsafe { ll_string_new(context_ptr, MemoryCategory::RequestArena, b"crossing") };
     let crossing_start = unsafe { crate::refcount::entity_refcount(crossing) };
 
-    FORCE_OOM.store(true, Ordering::Relaxed);
+    let oom = force_oom();
     let fillers = unsafe { exhaust_string_entities(b"crossing".len()) };
     let stored = unsafe {
         set(
@@ -192,7 +192,7 @@ fn a_refused_store_through_the_box_keeps_the_displaced_value() {
         )
     };
 
-    FORCE_OOM.store(false, Ordering::Relaxed);
+    drop(oom);
     free_string_fillers(fillers);
     assert!(!stored, "the crossing value's copy was meant to be refused");
 

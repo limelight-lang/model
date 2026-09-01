@@ -1,6 +1,5 @@
 use super::*;
-use crate::memory::block_pool::{FORCE_OOM, test_guard};
-use std::sync::atomic::Ordering;
+use crate::memory::block_pool::{force_oom, test_guard};
 
 /// A block the arena may stamp a shadow pointer on: a commissioned
 /// entity block, reached through the slot its heap hands out.

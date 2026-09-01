@@ -110,3 +110,25 @@ fn dying_thread_returns_blocks_to_global_stack() {
         pool.put(b);
     }
 }
+
+/// The refusal window belongs to a guard, so a body that fails inside it
+/// leaves the pool serving. A bare store did not: the flag is
+/// process-wide, and every test after the failing one ran against a pool
+/// that refused (`dev/POSTMORTEM.md`, 2026-08-13).
+#[test]
+fn a_body_that_fails_inside_the_refusal_window_leaves_the_pool_serving() {
+    let _g = test_guard();
+    let pool = BlockPool::global();
+
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _oom = force_oom();
+        assert!(pool.get().is_null(), "the window is open");
+        panic!("the body fails with the window open");
+    }));
+    assert!(failed.is_err());
+
+    assert!(!FORCE_OOM.load(Ordering::Relaxed));
+    let block = pool.get();
+    assert!(!block.is_null(), "the next caller is served");
+    pool.put(block);
+}

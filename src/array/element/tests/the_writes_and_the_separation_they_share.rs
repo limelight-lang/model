@@ -508,7 +508,7 @@ fn a_string_key_through_the_store_obeys_the_ownership_rule() {
 
         let k3 = mk(b"other");
         let k3_start = crate::refcount::entity_refcount(k3);
-        FORCE_OOM.store(true, Ordering::Relaxed);
+        let oom = force_oom();
         let fillers = exhaust_buffer_sources(DOUBLED_STORAGE_BYTES);
         let stored = set(
             context_ptr,
@@ -517,7 +517,7 @@ fn a_string_key_through_the_store_obeys_the_ownership_rule() {
             Key::Str(k3),
             Value::int(9),
         );
-        FORCE_OOM.store(false, Ordering::Relaxed);
+        drop(oom);
         free_fillers(fillers);
         assert!(!stored, "growth was meant to be refused");
         assert_eq!(

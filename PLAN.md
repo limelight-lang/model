@@ -74,13 +74,12 @@ criterion, and it leaves when it gets one or when it is ruled on.
 The six the review of 2026-09-01 raised over `52b2cbf` and `0416e83` left the
 same day — four by Edmond's rulings, recorded in `dev/DECISIONS.md` and in the
 `done:` clause of S38.3, and two by the repairs they prompted, recorded under
-S36.9. One line arrived in their place, from the `dev/` sweep of the same day:
+S36.9. The `dev/` sweep of the same day raised one more — `FORCE_OOM` against
+the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
+than carried: the flag is raised only through `block_pool::force_oom`, whose
+guard lowers it on the unwind as well as on the return.
 
-- **`FORCE_OOM` is raised by a bare store in thirty places**, and
-  `dev/POSTMORTEM.md`, 2026-08-13, states the rule that it must be lowered by a
-  guard. `src/cycle/stack/tests.rs` asserts three times inside the raised
-  window, so a failure there leaves the flag up for every test running beside
-  it — which is the shape that postmortem was written about.
+Empty.
 
 ---
 
