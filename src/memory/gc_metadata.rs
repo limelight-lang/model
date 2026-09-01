@@ -11,6 +11,19 @@
 //! entity heap's. A split by use — queue against workspace — is not kept: no
 //! reader needs it, and a measurement that wants it can be taken on the day
 //! (`dev/DECISIONS.md`, 2026-09-01).
+//!
+//! Beside the blocks, one pair of logical figures: the bytes a structure has
+//! taken into use inside them. A block is reserved whole and used in part, so
+//! the block count alone cannot say whether collection is holding memory it
+//! needs. The charge lands at a structural transition — a queue segment
+//! leaving the live position, an escrow landing, a floor's control line, an
+//! arena block leaving the bump — never per grant, which is what keeps the
+//! enrolment path free of it. Two residues follow from that and are
+//! granularity rather than error: the live segment's own fill and the arena
+//! block still under the bump. Each is entered in the high-water figure by the
+//! transition that ends it — the arena's reset charges it, the owner's drain
+//! marks it — so that figure is exact for one thread and can miss a maximum
+//! two threads stood in together.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -21,15 +34,27 @@ use crate::memory::block_pool::{
 
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
+static IN_USE: AtomicUsize = AtomicUsize::new(0);
+static IN_USE_PEAK: AtomicUsize = AtomicUsize::new(0);
 
-/// A non-transactional observation of physical ownership. The two figures are
+/// A non-transactional observation of what collection holds. The figures are
 /// read independently, so a concurrent handoff may make them describe adjacent
-/// instants; bytes are derived from their own block count and can never
-/// disagree with it.
+/// instants; reservation bytes are derived from their own block count and can
+/// never disagree with it.
+///
+/// **The two axes are not read together.** Bytes are read first and blocks
+/// after, so a queue drained between the two loads leaves
+/// [`current_bytes_in_use`](GcMemoryStats::current_bytes_in_use) standing above
+/// [`current_bytes`](GcMemoryStats::current_bytes) — bytes charged against
+/// blocks the later load no longer counts. What does hold is that neither
+/// high-water figure reads below its own current one, which [`stats`]
+/// establishes rather than the counters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GcMemoryStats {
     current: usize,
     peak: usize,
+    in_use: usize,
+    in_use_peak: usize,
 }
 
 impl GcMemoryStats {
@@ -52,14 +77,87 @@ impl GcMemoryStats {
     pub fn peak_bytes(self) -> usize {
         self.peak * BLOCK_SIZE
     }
+
+    /// Bytes inside those blocks that a collection structure has taken into
+    /// use, which is what says how much of the reservation is working memory.
+    ///
+    /// In use rather than reserved: a spare segment, a block header and an
+    /// escrow area with no entry in it are outside this figure, so the gap to
+    /// [`current_bytes`](Self::current_bytes) is bounded by nothing in
+    /// particular. What is bounded is the figure's own lag — at most one live
+    /// queue segment's fill per thread and one arena block's consumption per
+    /// collection in flight, each charged by the transition that ends it.
+    #[inline]
+    pub fn current_bytes_in_use(self) -> usize {
+        self.in_use
+    }
+
+    /// The most [`current_bytes_in_use`](Self::current_bytes_in_use) has stood
+    /// at once since the process began, and never below it.
+    ///
+    /// Carries the residues the current figure lags by, each entered by the
+    /// transition that ends it: a collection that held one block for two
+    /// hundred bytes is in this figure at two hundred, and a thread that
+    /// filled a queue segment without overflowing enters its fill when it
+    /// drains. **Entered at that transition and not while the residue
+    /// stands**, so a residue that coexisted with another thread's maximum is
+    /// in this figure only if it outlived it.
+    #[inline]
+    pub fn peak_bytes_in_use(self) -> usize {
+        self.in_use_peak
+    }
 }
 
 /// Observe the blocks cycle collection owns now and the most it has held.
 pub fn stats() -> GcMemoryStats {
+    let in_use = IN_USE.load(Ordering::Relaxed);
+    let current = CURRENT.load(Ordering::Relaxed);
+    // Both high-water figures are lifted to their own current one. Each is
+    // raised by an add and then a separate maximum, so a reader landing
+    // between the two would otherwise be told the most-ever figure stands
+    // below the now figure.
     GcMemoryStats {
-        current: CURRENT.load(Ordering::Relaxed),
-        peak: PEAK.load(Ordering::Relaxed),
+        current,
+        peak: PEAK.load(Ordering::Relaxed).max(current),
+        in_use,
+        in_use_peak: IN_USE_PEAK.load(Ordering::Relaxed).max(in_use),
     }
+}
+
+/// Take `bytes` into use inside blocks this door already owns.
+///
+/// The caller charges at a transition that has one inverse — a segment leaving
+/// the live position, an escrow landing, a floor's control line, an arena
+/// block leaving the bump — and never per grant (`dev/DECISIONS.md`, "the
+/// logical charge lands at a structural transition, not at a grant").
+pub(crate) fn charge(bytes: usize) {
+    let in_use = IN_USE.fetch_add(bytes, Ordering::Relaxed) + bytes;
+    IN_USE_PEAK.fetch_max(in_use, Ordering::Relaxed);
+}
+
+/// Put `bytes` of use into the high-water figure without ever standing in the
+/// current one.
+///
+/// The instrument for a residue the ledger carries deliberately: the bytes are
+/// in use, the transition that ends them is releasing them, and a
+/// charge-then-discharge pair would show a reader on another thread a current
+/// figure that overstates what collection holds.
+pub(crate) fn mark_peak(bytes: usize) {
+    let in_use = IN_USE.load(Ordering::Relaxed) + bytes;
+    IN_USE_PEAK.fetch_max(in_use, Ordering::Relaxed);
+}
+
+/// End the use of `bytes` a [`charge`] took.
+///
+/// Fails rather than wraps when more is discharged than stands: the figure is
+/// read as memory the process holds, and a wrapped one reads as a leak of the
+/// whole address space.
+pub(crate) fn discharge(bytes: usize) {
+    IN_USE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |in_use| {
+            in_use.checked_sub(bytes)
+        })
+        .expect("the GC byte ledger cannot underflow");
 }
 
 #[inline]
@@ -124,6 +222,16 @@ pub(crate) fn release_to_critical(block: *mut BlockHeader) {
     released(block);
     unsafe { store_block_kind(&raw const (*block).kind, BLOCK_KIND_ARENA) };
     crate::memory::critical::give_back(block);
+}
+
+/// Lower the high-water figure to the current one.
+///
+/// Tests only, and the instrument an exact assertion needs: the high-water
+/// figure is process-global and never falls, so a rise of a known size is
+/// otherwise absorbed by whatever an earlier test reached.
+#[cfg(test)]
+pub(crate) fn lower_peak_to_current() {
+    IN_USE_PEAK.store(IN_USE.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
 #[cfg(test)]

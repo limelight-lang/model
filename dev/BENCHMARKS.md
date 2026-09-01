@@ -100,6 +100,56 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-01 — S36.9b the logical ledger: nothing on the enrolment write, and `.tbss` unchanged at 472 bytes
+
+**Counted in the sources and read from the binary; nothing is timed**, for the
+reason the entry below states: no benchmark exercises repeated fresh
+enrolments, and no collection runs, so neither the overflow charge nor the
+arena publication has a workload to time.
+
+The enrolment write is unchanged — one pointer store and one fill-count update,
+with no ledger operation on it. What pays is the transition: one relaxed
+`fetch_add` and one `fetch_max` when a full segment leaves the live position,
+which is once per 8,160 enrolments, and the same pair on a floor draw and on
+each arena block crossing. Each inverse is one `fetch_update` with a checked
+subtraction. The owner's drain adds one more pair, a load and a maximum, for
+the live segment's fill.
+
+**The escrow is the exception, and it is the refusal tier.** A landing charges
+the pair per entry, so a thread enrolling while both memory doors refuse pays
+it on every release, and the recovering poll's drain pays one operation per
+entry moved back. Batching that drain into one operation for the run was tried
+and refused: the re-enrolment inside the loop can fill a segment and charge its
+payload, so a discharge held to the end leaves the escrow's bytes standing over
+entries it no longer holds, and the high-water figure keeps that double count
+for the life of the process.
+
+Two atomics join the two the module already keeps on one global line, written
+once per block acquisition and once per transition — and, under sustained
+refusal, once per release on the escrow path. Padding them apart stays deferred
+on the grounds the entry below gives, which that path is an argument against
+rather than for.
+
+`.tbss`, four arms built in a target directory of its own on `rustc 1.96.0`,
+`readelf -SW` on `ll_model-54bfa95a089c3459`, each arm the parent tree with one
+more part of this change laid over it:
+
+| arm | `.tbss` |
+|---|---|
+| parent (`02373e8`) | 472 |
+| the production change, over the parent's tests | 472 |
+| plus this step's `gc_metadata` tests | 480 |
+| the whole change | 472 |
+
+**The change costs nothing here, and the middle arm is what bounds the
+instrument.** The counters are global, so no arm was expected to move; the one
+that does declares no thread-local either, which makes its 8 bytes the linker's
+TLS packing responding to code with no TLS in it. A move of this figure under
+8 bytes therefore says nothing about a source change; the 56-byte move of the
+entry below stands, being larger than what this bounds. One sample per arm —
+the figure is deterministic per input, so what is unrepeated is the spread
+across inputs and not the reading.
+
 ## 2026-09-01 — S36.9a queue control: `.tbss` 528 to 472 bytes
 
 **Read from the binary, not timed, and both arms rebuilt on 2026-09-01.**

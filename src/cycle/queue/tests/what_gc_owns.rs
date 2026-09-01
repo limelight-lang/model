@@ -135,3 +135,158 @@ fn the_entity_row_dispatch_never_enters_gc_metadata() {
         crate::cycle::row::Edge::External
     );
 }
+
+/// Bytes in use inside the blocks the queue owns. Three quanta and no
+/// others: the floor's control line, an escrowed entry, and a segment
+/// that has left the live position full. A spare and the live segment's
+/// own fill are reservation.
+fn in_use() -> usize {
+    stats().current_bytes_in_use()
+}
+
+#[test]
+fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
+    let _g = test_guard();
+    reset();
+    assert!(replenish(), "the cells start full");
+    crate::memory::gc_metadata::lower_peak_to_current();
+    let before = in_use();
+
+    let mut first = candidate(2);
+    let first_entity = &raw mut first;
+    assert!(unsafe { !release(first_entity) });
+    assert_eq!(
+        in_use(),
+        before,
+        "a segment in the live position is reservation, however full"
+    );
+
+    // The ordinary write, which is the path the whole design exists to
+    // keep clear: three enrolments into the segment that now exists.
+    let mut ordinary = [candidate(2), candidate(2), candidate(2)];
+    for header in &mut ordinary {
+        assert!(unsafe { !release(&raw mut *header) });
+    }
+    assert_eq!(in_use(), before, "an ordinary enrolment charges nothing");
+    assert_eq!(
+        crate::memory::gc_metadata::stats().peak_bytes_in_use(),
+        before,
+        "and reaches the high-water figure no more than the current one, \
+         which a balanced charge and discharge on that path would"
+    );
+
+    fill_live_segment(first_entity);
+    assert_eq!(in_use(), before, "the fill alone publishes nothing");
+
+    let mut second = candidate(2);
+    assert!(unsafe { !release(&raw mut second) });
+    assert_eq!(
+        in_use(),
+        before + BLOCK_PAYLOAD,
+        "the segment that left the live position is published whole"
+    );
+
+    reset();
+    assert_eq!(
+        in_use(),
+        before,
+        "the drain gives every published byte back"
+    );
+}
+
+#[test]
+fn an_escrowed_entry_costs_the_pointer_it_holds_and_nothing_more() {
+    let _g = test_guard();
+    reset();
+    let owner = owner();
+    let before = in_use();
+    let mut header = candidate(2);
+
+    for _ in 0..3 {
+        unsafe { escrow(owner, &raw mut header) };
+    }
+    assert_eq!(in_use(), before + 3 * size_of::<*mut RcHeader>());
+
+    reset();
+    assert_eq!(in_use(), before);
+}
+
+#[test]
+fn a_threads_floor_is_in_use_from_its_draw_until_its_exit() {
+    let _g = test_guard();
+    reset();
+    let before = in_use();
+
+    // The child holds no `test_guard`; what keeps the figure still under
+    // it is that this thread is parked in `join` while holding the lock,
+    // so no third thread can charge against the reading.
+    std::thread::spawn(move || {
+        assert!(crate::memory::heap::ll_thread_init());
+        assert_eq!(
+            in_use(),
+            before + size_of::<OwnerCycleState>(),
+            "the control line is working memory; the spares behind it are not"
+        );
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(in_use(), before, "the exit returns the control line");
+}
+
+#[test]
+fn an_entry_leaving_the_escrow_gives_its_pointer_back() {
+    let _g = test_guard();
+    reset();
+    assert!(replenish(), "the drain enrols into a cell somebody filled");
+    let owner = owner();
+    let before = in_use();
+    let mut header = candidate(2);
+
+    for _ in 0..3 {
+        unsafe { escrow(owner, &raw mut header) };
+    }
+    assert_eq!(in_use(), before + 3 * size_of::<*mut RcHeader>());
+
+    drain_escrow();
+    assert_eq!(escrowed_count(), 0, "a spare cell took all three");
+    assert_eq!(
+        in_use(),
+        before,
+        "the entries left the escrow, and the segment they went into is \
+         reservation until it is full"
+    );
+
+    reset();
+}
+
+#[test]
+fn the_live_segments_fill_reaches_the_high_water_figure_at_the_drain() {
+    let _g = test_guard();
+    reset();
+    assert!(replenish(), "the first enrolment takes a spare");
+    crate::memory::gc_metadata::lower_peak_to_current();
+    let before = crate::memory::gc_metadata::stats();
+
+    // Three entries and not a full segment: what the drain has to enter is
+    // the fill, and a capacity would be satisfied by a constant.
+    let mut candidates = [candidate(2), candidate(2), candidate(2)];
+    for header in &mut candidates {
+        assert!(unsafe { !release(&raw mut *header) });
+    }
+    assert_eq!(
+        in_use(),
+        before.current_bytes_in_use(),
+        "nothing charges while the segment stands in the live position"
+    );
+
+    // The thread never overflows, so no transition has charged the fill.
+    // The drain is the one that ends it.
+    reset();
+    assert_eq!(
+        crate::memory::gc_metadata::stats().peak_bytes_in_use(),
+        before.current_bytes_in_use() + 3 * size_of::<*mut RcHeader>(),
+        "the fill a thread never overflowed is in the high-water figure"
+    );
+    assert_eq!(in_use(), before.current_bytes_in_use());
+}

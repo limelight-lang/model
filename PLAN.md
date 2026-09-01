@@ -617,6 +617,72 @@ stage claiming the frees while building none of them.
         source that is not the reserve — the reserve's aimed at the arm that
         keeps the block, since at capacity the pool answers first. Six source
         mutations were run and each was caught by the test that owns it.
+      progress 2026-09-01 — S36.9b logical ledger: `gc_metadata::charge` and
+        `discharge` keep one current and one high-water figure for the bytes in
+        use inside the blocks collection owns. The figure moves at five
+        structural transitions — a segment leaving the live position, an escrow
+        landing, a floor's control line, an arena block leaving the bump, and
+        the reset that publishes the block under the cursor before discharging
+        the collection's whole total — so the enrolment write takes no added
+        instruction. Two residues are documented granularity, each bounded by
+        one payload: the live segment's own fill and the arena block still
+        under the bump — and each is entered in the high-water figure by the
+        transition that ends it, which is exact on one thread and can miss a
+        maximum two threads stood in together. Thirteen source mutations were
+        run and each was caught by the test that owns it.
+        This does not close S36.9: allocator-free parking, weak and retained
+        storage remain.
+      Critic 2026-09-01: fifteen findings. Taken — `drain` released the live
+        segment without charging its fill, so a thread that filled a segment
+        and never overflowed was absent from the high-water figure while three
+        documents called that figure exact; `drain_escrow`'s discharge was the
+        one ledger site no test reached, and deleting it leaked eight bytes per
+        entry for the life of the process; `current_bytes_in_use`'s contract
+        stated a bound against the reservation that this step's own test
+        contradicts, a spare segment and a block header being reservation; the
+        peak assertions were absorbed by the process-global high-water, which a
+        `#[cfg(test)]` door that lowers it to the current figure now makes
+        exact; no test drove `enrol`'s ordinary write, the path the design
+        exists to keep clear; `drain_escrow` took one read-modify-write per
+        entry where `drain` took one for the run; `stats` could report a
+        high-water figure below its own current one, and the byte axis was
+        lifted — round two found the block axis still unlifted and it was
+        lifted there; the
+        payload charge rested on a fullness invariant with no assertion;
+        `draw_floor`'s comment gave a reason that was not the reason, and the
+        arena's claimed a single publish site it does not have. Refused —
+        nothing: the two remaining findings are the `expect` on the discharge,
+        which the Critic could not fire against the five sites, and the
+        citation form, fixed in place. Known gap: the journal's re-entry into
+        `draw_floor` is driven by no test, so a charge moved above its
+        installed check would go uncaught.
+      Critic 2026-09-01 round 2: eight findings, all taken, two of them
+        defects the first round's repairs introduced. Batching `drain_escrow`'s
+        discharge into one operation for the run left the escrow's bytes
+        standing over entries already re-enrolled, so a recovery inflated the
+        high-water figure by a whole payload for the life of the process — the
+        discharge went back to one per entry, and `dev/BENCHMARKS.md` records
+        the batch as tried and refused. `drain`'s charge-and-discharge pair for
+        the live segment's fill was observable by another thread as a current
+        figure holding a segment already gone, so a peak-only
+        `gc_metadata::mark_peak` replaced it. Of the rest: the block axis was
+        never lifted the way the byte axis was, and the contract claimed both;
+        the high-water figure carries a residue only from the transition that
+        ends it, which is exact on one thread and not across threads, and five
+        texts claimed it exact — each now states the bound; every enumeration
+        of the charge sites was one short of the code; the contract explained
+        the cross-axis excess by the wrong read order; and four of the new
+        tests passed under a mutation of the line they were written for, which
+        two rewritten tests and two added assertions now fail. Not taken
+        further: the device stops at two rounds.
+      Sage 2026-09-01: the charge belongs at a structural transition rather
+        than per grant; the figure is bump consumption published at those
+        transitions rather than a per-grant sum; the pre-change baseline is the
+        gate, Miri over `cycle::`, `.tbss` and the enrolment operation count,
+        the logical figure itself having no prior instrument. Taken whole —
+        `dev/DECISIONS.md` carries the charge sites and the refused
+        per-enrolment alternative, `dev/BENCHMARKS.md` the operation count and
+        what `.tbss` cannot resolve.
       handoff: S36.9 is executed as separately reviewed slices: (a) physical
         block contract and queue state; (b) logical ledger and current arena
         instrumentation; (c) manager-backed parking plus ordinary/abort deny

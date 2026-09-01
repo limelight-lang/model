@@ -8,6 +8,41 @@ never edited or deleted.
 
 ---
 
+## 2026-09-01 — the logical charge lands at a structural transition, not at a grant
+
+Owner: S36.9 slice b, ruled by the Sage gate before the first edit.
+
+**Decided:** the logical pair moves at six places. Five are charges, each with
+one inverse: a queue segment leaving the live position charges its whole
+65,280-byte payload; an escrow landing charges one 8-byte pointer; a floor
+charges its 64-byte control line; an arena block leaving the bump charges what
+it consumed; an arena reset charges the block under the cursor and then
+discharges the collection's whole total. The sixth is not a charge — the
+owner's drain enters the live segment's fill in the high-water figure alone,
+the bytes being released in the same breath. Charging 8 bytes per enrolment is
+refused.
+
+**Why:** the enrolment write is the hottest path in the runtime. A per-grant
+charge puts a relaxed read-modify-write pair on it for a figure whose residue
+is already bounded; at a transition the same pair runs once per 8,160
+enrolments and the write itself takes no added instruction. The escrow is
+charged per entry and is the exception that proves the rule: it is the tier
+both memory doors refused into, not the write, and its drain takes one
+discharge for the whole run.
+
+**What this costs:** two residues, each bounded by one block payload — the live
+segment's own fill, per thread, and the arena block still under the bump, per
+collection in flight. The current figure lags by them, and the high-water
+figure carries each only from the transition that ends it: the arena's reset,
+the owner's drain. On one thread that is exact, a collection holding one block
+for two hundred bytes standing in the figure at two hundred. Across threads it
+is not: a segment filled while another thread held ten is entered when its
+owner drains, and by then the other thread may have given its ten back, so the
+figure can miss a maximum the two stood in together by up to one payload per
+thread.
+
+---
+
 ## 2026-09-01 — collection's logical bytes are one pair in production, split only in a debug build
 
 Ruled by Edmond, extending the entry below. Owner: S36.9 slice b.

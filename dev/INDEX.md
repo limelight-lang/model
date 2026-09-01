@@ -542,8 +542,14 @@ refilled at `ll_gc_maybe_collect`. Design in
 `src/memory/gc_metadata.rs` — the one door through which cycle collection
 takes and returns memory. A block it holds carries `BLOCK_KIND_GC_METADATA`,
 and one current plus one high-water block count is what the manager can
-answer about collection (`dev/DECISIONS.md`, 2026-09-01). The pool and the
-critical reserve refuse a block still stamped with that kind.
+answer about collection's reservation (`dev/DECISIONS.md`, "GC memory is
+counted once, and the block kind is the split"). Beside it `charge` and
+`discharge` keep the second pair, bytes in use inside those blocks, moved at a
+structural transition rather than per grant so the enrolment path stays free of
+it; the two residues that follow are entered in the high-water figure by the
+transition that ends them, which is exact on one thread and can miss a maximum
+two threads stood in together. The pool and the critical reserve refuse a
+block still stamped with that kind.
 
 Parking a physical return — `memory::stdapi::ll_free` asks two windows
 before a slot, a retained block or a large run goes back: an entity whose

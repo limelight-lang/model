@@ -338,6 +338,16 @@ unsafe fn grow_and_write(owner: *mut OwnerCycleState, entity: *mut RcHeader) {
     }
 
     unsafe { (*fresh).next = full };
+    if !full.is_null() {
+        // The segment leaving the live position holds its whole payload,
+        // and from this instant that payload is in use. The assertion
+        // pins the premise rather than trusting it: `drain` discharges a
+        // payload for every segment behind the head, so a part-filled one
+        // there would discharge bytes nothing charged. The invariant is
+        // today's single mover's, and the module doc names where it ends.
+        debug_assert_eq!(q.filled.get(), SEGMENT_CAPACITY);
+        gc_metadata::charge(BLOCK_PAYLOAD);
+    }
 
     unsafe { entries(fresh).write(entity) };
     q.live.set(fresh);
@@ -375,6 +385,7 @@ unsafe fn escrow(owner: *mut OwnerCycleState, entity: *mut RcHeader) {
     // `enrol` established before taking any growth door.
     unsafe { escrow_entries(owner).add(escrowed).write(entity) };
     q.escrowed.set(escrowed + 1);
+    gc_metadata::charge(size_of::<*mut RcHeader>());
 }
 
 /// Put a floor under this thread, or answer null when the manager refuses.
@@ -411,6 +422,10 @@ fn draw_floor() -> *mut OwnerCycleState {
     // Publish last: any re-entry after this point must see fully initialised
     // control and will use this exact floor.
     OWNER.with(|owner| owner.set(state));
+    // One charge per floor: the re-entrant frame above finds a floor
+    // already published, gives its own block back and returns without
+    // reaching this line.
+    gc_metadata::charge(size_of::<OwnerCycleState>());
     state
 }
 
@@ -480,6 +495,7 @@ pub(crate) fn release_floor() {
     assert!(q.live.get().is_null(), "release follows queue drain");
     assert_eq!(q.held.get(), 0, "release follows spare drain");
     assert_eq!(q.escrowed.get(), 0, "release follows escrow drain");
+    gc_metadata::discharge(size_of::<OwnerCycleState>());
     gc_metadata::release_to_critical(floor_of(owner));
 }
 
@@ -500,7 +516,7 @@ pub(crate) fn drain_escrow() {
         let live = q.live.get();
         let has_room = !live.is_null() && q.filled.get() < SEGMENT_CAPACITY;
         if !has_room && q.held.get() == 0 {
-            return;
+            break;
         }
 
         let escrowed = q.escrowed.get() - 1;
@@ -508,6 +524,12 @@ pub(crate) fn drain_escrow() {
         // having been drawn before the first entry was written.
         let entity = unsafe { escrow_entries(owner).add(escrowed).read() };
         q.escrowed.set(escrowed);
+        // Per entry rather than once for the run: the re-enrolment below
+        // can fill a segment and charge its payload, and a discharge held
+        // to the end would leave the escrow's bytes standing over entries
+        // it no longer holds — a high-water figure counting the same
+        // memory twice.
+        gc_metadata::discharge(size_of::<*mut RcHeader>());
         unsafe { enrol(entity) };
     }
 }
@@ -603,11 +625,26 @@ pub(crate) fn drain() {
     }
     let q = unsafe { owner_ref(owner) };
     let mut segment = q.live.replace(std::ptr::null_mut());
-    q.filled.set(0);
+    let filled = q.filled.replace(0);
 
+    // The enrolment write charges nothing, so the live segment's fill is
+    // the one residue the ledger carries, and this is the transition that
+    // ends it. It goes to the high-water figure alone: the bytes are
+    // being released in the same breath, and a charge would show another
+    // thread a current figure holding a segment that is already gone.
+    gc_metadata::mark_peak(filled * size_of::<*mut RcHeader>());
+
+    // The head is the live segment, whose fill was never published; every
+    // segment behind it left that position full and carries its payload.
+    let mut left_the_live_position = false;
     while !segment.is_null() {
         let next = unsafe { (*segment).next };
         unsafe { (*segment).next = std::ptr::null_mut() };
+        if left_the_live_position {
+            gc_metadata::discharge(BLOCK_PAYLOAD);
+        }
+
+        left_the_live_position = true;
         gc_metadata::release_to_critical(segment);
         segment = next;
     }
@@ -623,7 +660,8 @@ pub(crate) fn drain() {
     // live segment's. The floor itself stays: it belongs to the
     // thread's life rather than to the queue's contents, and
     // [`release_floor`] is what ends that life.
-    q.escrowed.set(0);
+    let escrowed = q.escrowed.replace(0);
+    gc_metadata::discharge(escrowed * size_of::<*mut RcHeader>());
 }
 
 /// Entries this thread's escrow is holding.

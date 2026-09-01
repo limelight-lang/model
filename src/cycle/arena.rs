@@ -124,6 +124,10 @@ pub(crate) struct ShadowArena {
     /// Newest array of the touched list, or null while no block has
     /// been touched.
     touched: *mut RowArray,
+    /// Bytes of this arena's bump already charged to the manager's
+    /// ledger, so that [`reset`](ShadowArena::reset) discharges exactly
+    /// what was charged and a re-entered reset discharges nothing.
+    published: usize,
 }
 
 impl ShadowArena {
@@ -136,7 +140,15 @@ impl ShadowArena {
             cursor: std::ptr::null_mut(),
             left: 0,
             touched: std::ptr::null_mut(),
+            published: 0,
         }
+    }
+
+    /// Charge `bytes` of this arena's bump as memory in use, and remember
+    /// them for the discharge.
+    fn publish(&mut self, bytes: usize) {
+        self.published += bytes;
+        gc_metadata::charge(bytes);
     }
 
     /// `bytes` of 8-aligned scratch, or **null when both doors have
@@ -314,6 +326,20 @@ impl ShadowArena {
     pub(crate) fn reset(&mut self) {
         self.sweep_touched();
 
+        // The block still under the bump has no further grant coming, so
+        // its consumption is published here; the ones before it were
+        // published as `grow` left each of them. The guard is the cursor
+        // rather than the block list, because the two part company on the
+        // re-entry below: a `reset` that unwinds out of a poisoned `put`
+        // and is run again by `Drop` finds the list half returned and the
+        // cursor already null.
+        if !self.cursor.is_null() {
+            self.publish(BLOCK_PAYLOAD - self.left);
+        }
+
+        gc_metadata::discharge(self.published);
+        self.published = 0;
+
         // What the reserve lent goes back to the reserve, and the rest
         // to the pool. Returning everything through the reserve's door
         // would refill it out of ordinary memory a collection happened
@@ -399,6 +425,14 @@ impl ShadowArena {
             }
 
             self.from_reserve += 1;
+        }
+
+        // The block the bump is leaving takes no further grant, so this
+        // is the instant its consumption becomes exact. Published after
+        // both doors have answered: a refusal leaves the bump where it
+        // is and the block still open.
+        if !self.blocks.is_null() {
+            self.publish(BLOCK_PAYLOAD - self.left);
         }
 
         unsafe { (&raw mut (*block).next).write(self.blocks) };

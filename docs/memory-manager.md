@@ -577,10 +577,22 @@ Candidate-queue and collection-workspace blocks cross one manager boundary,
 `memory::gc_metadata`. While the GC owns one it carries
 `BLOCK_KIND_GC_METADATA`, and that kind is the whole answer to whose memory a
 block is: one current and one high-water block counter change at this
-boundary, and byte figures are derived from the 64 KiB block count. A split by
-use within collection is not kept (`dev/DECISIONS.md`, 2026-09-01). Moving a
-queue segment from spare to live is consequently no allocation and no second
-charge.
+boundary, and reservation figures are derived from the 64 KiB block count. A
+split by use within collection is not kept (`dev/DECISIONS.md`, "GC memory is
+counted once, and the block kind is the split"). Moving a queue segment from
+spare to live is consequently no allocation and no second charge.
+
+Beside the blocks, one pair of logical figures — current and high-water bytes
+in use inside them — answers how much of the reservation is working memory.
+The charge lands at a structural transition and never per grant: a queue
+segment leaving the live position charges its whole payload, an escrow landing
+charges one pointer, a floor charges its 64-byte control line, and an arena
+block leaving the bump charges what it consumed. Each has one inverse, so the
+figure is exact at every instant except for two named residues — the live
+segment's own fill, at most 65,280 bytes per thread, and an arena block still
+under the bump, at most 65,280 bytes per collection in flight. Both are
+published by the transition that ends them, so a collection's own high-water
+figure is exact even when its current one lags.
 
 The queue floor is held for one thread life. Its payload begins with one
 64-byte, cache-line-aligned `OwnerCycleState`; TLS contains only the non-owning
@@ -591,9 +603,8 @@ the full payload. Pool and critical-reserve handoffs restamp the block and end
 GC accounting exactly once; the kind stamp makes a return of a block collection
 never owned a hard invariant failure rather than a counter underflow.
 
-This is the physical half of PLAN S36.9. Logical suballocation accounting and
-the removal of allocator-owned parking, weak and retained-index storage remain
-in that unchecked step.
+What remains in PLAN S36.9 is the removal of allocator-owned parking, weak and
+retained-index storage.
 
 ### The critical reserve
 

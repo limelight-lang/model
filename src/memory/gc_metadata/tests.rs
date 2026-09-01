@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::memory::block_pool::{
-    BLOCK_KIND_GC_METADATA, BlockPool, force_oom, load_block_kind, test_guard,
+    BLOCK_KIND_GC_METADATA, BLOCK_PAYLOAD, BlockPool, force_oom, load_block_kind, test_guard,
 };
 
 fn current() -> usize {
@@ -177,4 +177,107 @@ fn bytes_and_high_water_are_derived_from_the_block_count() {
 
     release(block);
     assert_eq!(stats().current_blocks(), before.current_blocks());
+}
+
+/// Bytes in use inside the blocks collection owns: the half of the answer
+/// that says how much of a reserved block is working memory.
+fn in_use() -> usize {
+    stats().current_bytes_in_use()
+}
+
+#[test]
+fn a_block_held_and_empty_is_reservation_and_no_bytes_in_use() {
+    let _g = test_guard();
+    let before = stats();
+    let block = acquire();
+    assert!(!block.is_null());
+
+    assert_eq!(stats().current_blocks(), before.current_blocks() + 1);
+    assert_eq!(
+        in_use(),
+        before.current_bytes_in_use(),
+        "reservation is the physical axis and moves no logical byte"
+    );
+
+    release(block);
+    assert_eq!(stats().current_blocks(), before.current_blocks());
+    assert_eq!(in_use(), before.current_bytes_in_use());
+}
+
+#[test]
+fn an_arena_publishes_its_bump_at_the_reset_and_gives_it_back_there() {
+    let _g = test_guard();
+    // The high-water figure is process-global and never falls, so an
+    // exact rise is only assertable from a known floor.
+    lower_peak_to_current();
+    let before = stats();
+    let mut arena = crate::cycle::arena::ShadowArena::new();
+
+    assert!(!arena.alloc(1).is_null());
+    assert_eq!(
+        in_use(),
+        before.current_bytes_in_use(),
+        "the block still under the bump is reserved rather than published"
+    );
+
+    arena.reset();
+    assert_eq!(in_use(), before.current_bytes_in_use());
+    assert_eq!(
+        stats().peak_bytes_in_use(),
+        before.current_bytes_in_use() + 8,
+        "one byte granted is eight bytes of bump, and the high-water keeps them"
+    );
+}
+
+#[test]
+fn a_block_crossing_publishes_the_bump_it_abandons() {
+    let _g = test_guard();
+    lower_peak_to_current();
+    let before = stats();
+    let mut arena = crate::cycle::arena::ShadowArena::new();
+
+    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
+    assert_eq!(in_use(), before.current_bytes_in_use());
+
+    // The second grant cannot fit, so the first block leaves the bump —
+    // consumed to the byte, which is the instant its figure is exact.
+    assert!(!arena.alloc(8).is_null());
+    assert_eq!(
+        in_use(),
+        before.current_bytes_in_use() + BLOCK_PAYLOAD,
+        "the block the bump left is published whole"
+    );
+
+    arena.reset();
+    assert_eq!(in_use(), before.current_bytes_in_use());
+    assert_eq!(
+        stats().peak_bytes_in_use(),
+        before.current_bytes_in_use() + BLOCK_PAYLOAD + 8,
+        "the crossing and the reset are both in the high-water figure"
+    );
+}
+
+#[test]
+fn a_second_reset_publishes_nothing_and_the_figure_cannot_underflow() {
+    let _g = test_guard();
+    lower_peak_to_current();
+    let before = stats();
+    let mut arena = crate::cycle::arena::ShadowArena::new();
+    assert!(!arena.alloc(64).is_null());
+
+    arena.reset();
+    let after = stats();
+    arena.reset();
+
+    assert_eq!(after.current_bytes_in_use(), before.current_bytes_in_use());
+    assert_eq!(
+        after.peak_bytes_in_use(),
+        before.current_bytes_in_use() + 64
+    );
+    assert_eq!(stats().current_bytes_in_use(), after.current_bytes_in_use());
+    assert_eq!(
+        stats().peak_bytes_in_use(),
+        after.peak_bytes_in_use(),
+        "the second reset finds no cursor and publishes nothing over a settled ledger"
+    );
 }
