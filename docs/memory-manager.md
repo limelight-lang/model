@@ -571,6 +571,30 @@ refused *destructor* record instead fails the object's creation
 Design and the compiler-side contract it rests on:
 `rfc/runtime/exceptions.md`, "The log reserve protocol".
 
+### Cycle-GC metadata blocks
+
+Candidate-queue and collection-workspace blocks cross one manager boundary,
+`memory::gc_metadata`. While the GC owns one it carries
+`BLOCK_KIND_GC_METADATA`; the header's second word records one of four
+physical roles: queue floor, queue segment, workspace base or workspace
+overflow. Per-role current and high-water block counters change only at this
+boundary, and byte figures are derived from the 64 KiB block count. Moving a
+queue segment from spare to live is consequently no allocation and no second
+charge.
+
+The queue floor is held for one thread life. Its payload begins with one
+64-byte, cache-line-aligned `OwnerCycleState`; TLS contains only the non-owning
+pointer to that state. The remaining 65,216 bytes hold 8,152 escrow pointers,
+so the runtime bulk-loop poll stride is derived as 4,076 rather than retaining
+the ordinary segment's 8,160-entry assumption. Ordinary queue segments use
+the full payload. Pool and critical-reserve handoffs restamp the block and end
+GC accounting exactly once; the role word makes a wrong-role return a hard
+invariant failure rather than a counter underflow.
+
+This is the physical half of PLAN S36.9. Logical suballocation accounting and
+the removal of allocator-owned parking, weak and retained-index storage remain
+in that unchecked step.
+
 ### The critical reserve
 
 A second reserve, eight blocks per thread (`memory::critical`), and it

@@ -134,6 +134,11 @@ pub const BLOCK_KIND_ENTITY_LARGE: u32 = 9;
 /// enumerated from `memory::large_entity`'s registry rather than by the
 /// region scan.
 pub const BLOCK_KIND_ENTITY_LARGE_RUN: u32 = 10;
+/// Metadata owned directly by the cycle collector: candidate-queue storage
+/// and collection workspace. The role within this population is accounted by
+/// `memory::gc_metadata`; it is deliberately one block kind so every heap
+/// walker rejects the whole population without knowing its internal layout.
+pub const BLOCK_KIND_GC_METADATA: u32 = 11;
 /// Entity block: same size-class layout as `BLOCK_KIND_HEAP`, but its
 /// slots hold GC entities (header at offset 0) and only these blocks are
 /// traced by a cycle collector (`docs/memory-manager.md`, "Heap: small
@@ -155,7 +160,10 @@ pub struct BlockHeader {
     /// every region. Atomic by type so that a `&mut` to a header — or to
     /// a private half that contains it — leaves these four bytes alone.
     pub kind: AtomicU32,
-    reserved: u32,
+    /// Population-specific word at offset 4. The GC-metadata population uses
+    /// it for its physical role; entity heaps overlay the same word with their
+    /// atomic size class. Atomic here keeps both views compatible.
+    pub(crate) reserved: AtomicU32,
     /// Free-list link while the block sits in the pool. While a block
     /// is owned, the owner may reuse it as its own chain link (the
     /// arena threads its block list through here — no side `Vec`).
@@ -633,6 +641,11 @@ impl BlockPool {
     /// pool is its sole authority, so this internal API stays safe.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn put(&self, block: *mut BlockHeader) {
+        assert_ne!(
+            unsafe { load_block_kind(&raw const (*block).kind) },
+            BLOCK_KIND_GC_METADATA,
+            "GC metadata returns through memory::gc_metadata"
+        );
         // A retained block carries promoted survivors, and it comes back
         // only through `retained::give_block_back`, which restamps it once
         // the registry reports nothing left holding it — the last live
@@ -775,7 +788,7 @@ impl BlockPool {
             let block = unsafe { region.add(i * BLOCK_SIZE) } as *mut BlockHeader;
             unsafe {
                 store_block_kind(&raw const (*block).kind, BLOCK_KIND_FREE);
-                (*block).reserved = 0;
+                (*block).reserved.store(0, Ordering::Relaxed);
                 (*block).next = std::ptr::null_mut();
             }
 

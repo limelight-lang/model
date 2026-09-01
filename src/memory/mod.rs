@@ -10,6 +10,7 @@ pub mod buffer;
 pub mod buffer_arena;
 pub mod context;
 pub(crate) mod critical;
+pub mod gc_metadata;
 pub mod heap;
 pub mod immortal;
 pub(crate) mod large_entity;

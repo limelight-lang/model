@@ -40,7 +40,9 @@
 
 use std::cell::RefCell;
 
-use crate::memory::block_pool::{BLOCK_KIND_ARENA, BlockHeader, BlockPool};
+use crate::memory::block_pool::{
+    BLOCK_KIND_ARENA, BLOCK_KIND_GC_METADATA, BlockHeader, BlockPool, load_block_kind,
+};
 
 /// Blocks held back per thread: eight, which is 512 KiB and is
 /// `critical-reserve.md`'s 500 KB figure read at block granularity. The
@@ -166,6 +168,11 @@ pub(crate) fn draw() -> *mut BlockHeader {
 /// safepoint. That ordering is what leaves an aborted collection's
 /// retry with a reserve to draw on (module doc).
 pub(crate) fn give_back(block: *mut BlockHeader) {
+    assert_ne!(
+        unsafe { load_block_kind(&raw const (*block).kind) },
+        BLOCK_KIND_GC_METADATA,
+        "GC metadata returns through memory::gc_metadata"
+    );
     let kept = CRITICAL
         .try_with(|c| {
             let mut c = match c.try_borrow_mut() {

@@ -578,6 +578,21 @@ stage claiming the frees while building none of them.
         against the later decision that explicitly accepts the cold,
         trace-only allocation.
 - [ ] S36.9 The GC-memory contract   *(before S36.3)*
+      progress 2026-09-01 — S36.9a physical contract: the single
+        `memory::gc_metadata` door owns pool/reserve adoption and return,
+        `BLOCK_KIND_GC_METADATA` plus the block-header role word make queue
+        floor/segment and workspace-overflow bytes identifiable, and per-role
+        current/high-water block counts are observable. Queue control moved
+        from TLS into one 64-byte floor line; TLS is one non-owning pointer,
+        escrow capacity is 8,152 and `POLL_STRIDE` is re-derived as 4,076.
+        This does not close S36.9: logical accounting and allocator-free
+        parking, weak and retained storage remain.
+      handoff: S36.9 is executed as separately reviewed slices: (a) physical
+        block contract and queue state; (b) logical ledger and current arena
+        instrumentation; (c) manager-backed parking plus ordinary/abort deny
+        gate; (d) weak-table ownership and streaming arena drain; (e) retained
+        index/registry/snapshot ownership plus the direct-large registry audit.
+        Only their composite source audit and deny test close this checkbox.
       done: every block owned by the candidate queue or a collection is drawn
         through one memory-manager wrapper, carries
         `BLOCK_KIND_GC_METADATA` while held, and is counted by role — queue

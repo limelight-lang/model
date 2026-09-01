@@ -74,7 +74,10 @@
 
 use crate::cycle::row::{Population, Row};
 use crate::cycle::shadow::{self, Colour, RowArray};
-use crate::memory::block_pool::{BLOCK_KIND_ARENA, BLOCK_PAYLOAD, BlockHeader, BlockPool};
+#[cfg(test)]
+use crate::memory::block_pool::BlockPool;
+use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
+use crate::memory::gc_metadata::{self, GcBlockRole};
 
 /// What one meeting of an entity answers: its row, or the two reasons
 /// there is none.
@@ -329,9 +332,9 @@ impl ShadowArena {
             self.blocks = unsafe { (*block).next };
             if self.from_reserve > 0 {
                 self.from_reserve -= 1;
-                crate::memory::critical::give_back(block);
+                gc_metadata::release_to_critical(block, GcBlockRole::WorkspaceOverflow);
             } else {
-                BlockPool::global().put(block);
+                gc_metadata::release(block, GcBlockRole::WorkspaceOverflow);
             }
         }
 
@@ -388,26 +391,17 @@ impl ShadowArena {
     /// searched its older blocks for a fit would be a free list, and the
     /// arena's whole life is one collection.
     fn grow(&mut self) -> bool {
-        let mut block = BlockPool::global().get();
+        let mut block = gc_metadata::acquire(GcBlockRole::WorkspaceOverflow);
         if block.is_null() {
-            block = crate::memory::critical::draw();
+            block = gc_metadata::adopt(
+                crate::memory::critical::draw(),
+                GcBlockRole::WorkspaceOverflow,
+            );
             if block.is_null() {
                 return false;
             }
 
             self.from_reserve += 1;
-        } else {
-            // Through `store_block_kind` for the reason every other
-            // commissioning uses it: the collector acquire-loads the kind
-            // of every block of every carved region, so a plain store to
-            // that word is a data race. A reserve block already carries
-            // this kind.
-            unsafe {
-                crate::memory::block_pool::store_block_kind(
-                    &raw const (*block).kind,
-                    BLOCK_KIND_ARENA,
-                )
-            };
         }
 
         unsafe { (&raw mut (*block).next).write(self.blocks) };

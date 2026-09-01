@@ -57,5 +57,6 @@ fn reset() {
 mod an_arena_entity_leaves_no_entry;
 mod the_floor_the_escrow_stands_on;
 mod what_an_enrolment_writes;
+mod what_gc_owns;
 mod what_the_poll_owes_the_queue;
 mod where_a_full_segment_comes_from;

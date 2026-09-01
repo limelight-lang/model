@@ -100,6 +100,31 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-01 — S36.9a queue control: `.tbss` 496 to 480 bytes
+
+**Read from the binary, not timed.** After `cargo test --lib --no-run`,
+`readelf -SW target/debug/deps/ll_model-54bfa95a089c3459` reports `.tbss`
+size `0x1e0`, or 480 bytes. The directly preceding tree's back-to-back
+measurement is the 496-byte "after" arm below. Moving queue control into the
+manager-issued floor leaves TLS with one non-owning
+pointer; linker TLS packing turns that source-layout reduction into 16 bytes
+for the whole binary.
+
+The operation budget is structural because no benchmark repeatedly exercises
+fresh enrolments yet: an ordinary write still stores one pointer and updates
+one fill count, with one TLS lookup now loading the floor pointer before the
+same state accesses. Spare-to-live remains a pointer transition with zero pool
+requests, zero global allocations and zero accounting operations. Only a
+64-KiB ownership boundary pays telemetry: one role-word store, current
+increment and peak update on acquire; role/kind validation and one current
+decrement on return. Those atomics share one cold global line today; padding
+them apart is deferred until concurrent thread-init contention is measured.
+
+The physical capacities after the move are exact layout facts: 8,160 pointers
+per ordinary segment; one 64-byte control line plus 8,152 escrow pointers in
+the floor; bulk-loop `POLL_STRIDE` 4,076. They are compile-time asserted and
+tested at the boundary.
+
 ## 2026-08-29 — the escrow's move out of TLS: `.tbss` from 65 784 bytes to 496
 
 **Read from the binary, not timed.** `readelf -S` on the test binary

@@ -29,8 +29,8 @@
 //!  │              │
 //!  │              └─ 8160 entries, by construction: a segment leaves
 //!  │                 the live position only when it is full
-//!  └─ `filled` entries, held in the thread's own cell rather than in
-//!     the block
+//!  └─ `filled` entries, held in the queue floor's control line rather
+//!     than in this block
 //! ```
 //!
 //! **The live segment's fill lives beside the chain and not inside the
@@ -99,10 +99,11 @@
 //! and where it must not"). The escrow is what carries the root from the
 //! refusal to the first lawful instant.
 //!
-//! It holds one segment's worth of entries, which is what a block holds
-//! and what clause 3's argument for the two cells asks for: a whole
-//! segment cannot fill between two polls at any entry size. That argument
-//! quantifies over loops the compiler emits, and one loop it does not —
+//! After the floor's one 64-byte control line it holds 8,152 entries,
+//! eight fewer than an ordinary segment. The between-polls guarantee is
+//! therefore derived from that smaller capacity, not borrowed from the
+//! segment shape. It quantifies over loops the compiler emits, and one
+//! loop it does not —
 //! `ll_release_vector`, whose count is the caller's — broke it, so that
 //! loop now carries a poll of its own every [`POLL_STRIDE`] iterations.
 //! Overflowing the escrow therefore takes sustained pool refusal rather
@@ -126,25 +127,22 @@
 
 use std::cell::Cell;
 
-use crate::memory::block_pool::{BLOCK_KIND_ARENA, BLOCK_PAYLOAD, BlockHeader, BlockPool};
+use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
+use crate::memory::gc_metadata::{self, GcBlockRole};
 use crate::refcount::RcHeader;
 
 /// Entries one segment holds. Every segment but the live one holds
 /// exactly this many, which is what lets the chain carry no length.
 pub(crate) const SEGMENT_CAPACITY: usize = BLOCK_PAYLOAD / size_of::<*mut RcHeader>();
 
-/// Entries the escrow holds — one block's worth, the floor being one
-/// block.
+/// Entries the escrow holds after the floor's manager-owned control line.
 ///
-/// The size the ruling asks for is the size the storage has: a whole
-/// segment cannot fill between two polls at any entry size, which is the
-/// argument [`SPARE_SEGMENTS`] is sized on, so a run that overflows the
-/// escrow is a run with no poll in it at all. The figure is deliberately
-/// generous; what would license a smaller one is the ABI's bound on
-/// operations between two polls, which is unwritten
-/// (`rfc/runtime/exceptions.md`) — and a smaller one buys nothing while
-/// the storage is a whole block either way.
-pub(crate) const ESCROW_ENTRIES: usize = SEGMENT_CAPACITY;
+/// The capacity is the 65,280-byte payload less one 64-byte
+/// [`OwnerCycleState`]: 8,152 pointers. [`POLL_STRIDE`] is derived from
+/// this figure and statically checked, so the control migration cannot
+/// silently leave the old between-polls bound in force.
+pub(crate) const ESCROW_ENTRIES: usize =
+    (BLOCK_PAYLOAD - size_of::<OwnerCycleState>()) / size_of::<*mut RcHeader>();
 
 /// Iterations a runtime-owned bulk loop may run between two safepoint
 /// polls of its own.
@@ -167,7 +165,7 @@ pub(crate) const POLL_STRIDE: usize = ESCROW_ENTRIES / 2;
 /// it is for.
 pub(crate) const SPARE_SEGMENTS: usize = 2;
 
-/// A thread's queue and the spares behind it.
+/// A thread's queue and the spares behind it, resident in the floor.
 ///
 /// Cells rather than a `RefCell`: the enrolment write is the hottest
 /// path in the runtime and a borrow flag on it buys nothing, the queue
@@ -175,43 +173,77 @@ pub(crate) const SPARE_SEGMENTS: usize = 2;
 /// here has drop glue, so thread exit frees it by hand
 /// ([`drain`]) rather than through a destructor whose order is
 /// unspecified (`memory::heap::ll_thread_exit`).
-struct Queue {
+#[repr(C, align(64))]
+struct OwnerCycleState {
     /// The segment being written, or null before the first enrolment.
     /// The rest of the chain hangs off its [`BlockHeader::next`].
     live: Cell<*mut BlockHeader>,
-    /// Entries written into [`Queue::live`]. Meaningless when it is null.
+    /// Entries written into [`OwnerCycleState::live`]. Meaningless when null.
     filled: Cell<usize>,
     /// Segments taken ahead of an overflow, `held` of them valid.
     spares: [Cell<*mut BlockHeader>; SPARE_SEGMENTS],
     held: Cell<usize>,
-    /// The escrow's storage, or null on a thread that has neither run
-    /// `ll_thread_init` nor enrolled. Held for one init→exit life and
-    /// given back by [`release_floor`].
-    floor: Cell<*mut BlockHeader>,
     /// Entries in the floor no door could fund a segment for, the oldest
     /// first. The tier that cannot refuse, so that an enrolment cannot
     /// fail (`rfc/dev/DECISIONS.md`, "an enrolment cannot fail").
     escrowed: Cell<usize>,
+    /// Reserved for S36.10's persistent base pointer without growing the hot
+    /// line or changing the escrow budget again.
+    _future_workspace: Cell<*mut BlockHeader>,
+    /// Reserved for S36.12/S37.4's cold lane/phase descriptor.
+    _future_cold_state: Cell<usize>,
 }
 
 thread_local! {
-    static QUEUE: Queue = const {
-        Queue {
+    /// Non-owning locator only. The state and every pointer it owns live in
+    /// the manager-issued queue floor to which this points.
+    static OWNER: Cell<*mut OwnerCycleState> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+const _: () = assert!(size_of::<OwnerCycleState>() == 64);
+const _: () = assert!(align_of::<OwnerCycleState>() == 64);
+const _: () = assert!(POLL_STRIDE * 2 <= ESCROW_ENTRIES);
+const _: () = assert!(SEGMENT_CAPACITY > ESCROW_ENTRIES);
+
+impl OwnerCycleState {
+    const fn new() -> Self {
+        Self {
             live: Cell::new(std::ptr::null_mut()),
             filled: Cell::new(0),
             spares: [const { Cell::new(std::ptr::null_mut()) }; SPARE_SEGMENTS],
             held: Cell::new(0),
-            floor: Cell::new(std::ptr::null_mut()),
             escrowed: Cell::new(0),
+            _future_workspace: Cell::new(std::ptr::null_mut()),
+            _future_cold_state: Cell::new(0),
         }
-    };
+    }
 }
 
-/// Where a block's entries begin — a segment's, and the floor's, which
-/// hold the same thing and are the same size.
+#[inline]
+fn owner() -> *mut OwnerCycleState {
+    OWNER.with(Cell::get)
+}
+
+#[inline]
+unsafe fn owner_ref<'a>(owner: *mut OwnerCycleState) -> &'a OwnerCycleState {
+    unsafe { &*owner }
+}
+
+#[inline]
+fn floor_of(owner: *mut OwnerCycleState) -> *mut BlockHeader {
+    BlockHeader::of_ptr(owner as *const u8)
+}
+
+/// Where an ordinary segment's entries begin. The floor has a separate
+/// address calculation because its first cache line is owner control.
 #[inline]
 fn entries(segment: *mut BlockHeader) -> *mut *mut RcHeader {
     BlockHeader::payload_start(segment) as *mut *mut RcHeader
+}
+
+#[inline]
+fn escrow_entries(owner: *mut OwnerCycleState) -> *mut *mut RcHeader {
+    unsafe { (owner as *mut u8).add(size_of::<OwnerCycleState>()) as *mut *mut RcHeader }
 }
 
 /// Put an entity in this thread's queue.
@@ -231,18 +263,21 @@ fn entries(segment: *mut BlockHeader) -> *mut *mut RcHeader {
 /// `entity` points to a live heap entity beginning with `RcHeader`, and
 /// stays live at least until this thread's next safepoint.
 pub(crate) unsafe fn enrol(entity: *mut RcHeader) {
-    QUEUE.with(|q| {
-        let live = q.live.get();
-        let filled = q.filled.get();
+    let mut owner = owner();
+    if owner.is_null() {
+        owner = draw_floor_or_abort();
+    }
+    let q = unsafe { owner_ref(owner) };
+    let live = q.live.get();
+    let filled = q.filled.get();
 
-        if live.is_null() || filled == SEGMENT_CAPACITY {
-            unsafe { grow_and_write(q, entity) };
-            return;
-        }
+    if live.is_null() || filled == SEGMENT_CAPACITY {
+        unsafe { grow_and_write(q, entity) };
+        return;
+    }
 
-        unsafe { entries(live).add(filled).write(entity) };
-        q.filled.set(filled + 1);
-    })
+    unsafe { entries(live).add(filled).write(entity) };
+    q.filled.set(filled + 1);
 }
 
 /// The overflow path: put a fresh segment in the live position and write
@@ -252,20 +287,10 @@ pub(crate) unsafe fn enrol(entity: *mut RcHeader) {
 /// [`BlockHeader::next`], so growth links and never copies. No door
 /// funding one puts the entry in the escrow, which is why this answers
 /// nothing either.
-unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) {
-    // The floor before anything else, because the tier at the bottom of
-    // this function is the one that may not refuse. A registered thread
-    // has held one since `ll_thread_init`, so this is a predictable
-    // branch on a cold path; a thread that never ran init draws here, at
-    // its first enrolment, which is this path by construction — the live
-    // segment is a cell, so a thread's first enrolment finds no room.
-    // Drawing at the first refusal instead would draw exactly when every
-    // other door has already found the pool empty.
-    let floor = match q.floor.get() {
-        f if !f.is_null() => f,
-        _ => draw_floor_or_abort(q),
-    };
-
+unsafe fn grow_and_write(q: &OwnerCycleState, entity: *mut RcHeader) {
+    // `enrol` established the floor before reaching here. Drawing it at
+    // the first refusal would be too late: every other door would already
+    // have found the pool empty.
     let full = q.live.get();
 
     let fresh = match take_spare(q) {
@@ -281,7 +306,8 @@ unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) {
             // already takes one door earlier, at its floor
             // (`dev/DECISIONS.md`, "what the first touch of a
             // thread-local with drop glue may cost").
-            let block = crate::memory::critical::draw();
+            let block =
+                gc_metadata::adopt(crate::memory::critical::draw(), GcBlockRole::QueueSegment);
             if !block.is_null() {
                 // A draw is pressure, and pressure is what asks for a
                 // collection. Armed here rather than beside the refusal
@@ -296,7 +322,7 @@ unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) {
     };
 
     if fresh.is_null() {
-        escrow(q, floor, entity);
+        escrow(q, entity);
         // The escrow landing arms on its own: the refill the poll
         // performs is unconditional, so what the arming buys here is the
         // fire, not the cells.
@@ -304,14 +330,6 @@ unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) {
         return;
     }
 
-    // Stamped here as well as at acquisition, because the block may have
-    // come from the reserve rather than from a cell, and the reserve
-    // stamps its own on the way in but not on the way out. `ARENA`
-    // because what matters is that it is not `ENTITY` — a trace never
-    // enters a block of any other kind (`crate::cycle::row`).
-    unsafe {
-        crate::memory::block_pool::store_block_kind(&raw const (*fresh).kind, BLOCK_KIND_ARENA)
-    };
     unsafe { (*fresh).next = full };
 
     unsafe { entries(fresh).write(entity) };
@@ -331,7 +349,7 @@ unsafe fn grow_and_write(q: &Queue, entity: *mut RcHeader) {
 /// behind that is a conjunction: the pool refusing across polls, and
 /// either a gate closed for the whole run or a collection that ran and
 /// lost, and then thousands of further non-final decrements.
-fn escrow(q: &Queue, floor: *mut BlockHeader, entity: *mut RcHeader) {
+fn escrow(q: &OwnerCycleState, entity: *mut RcHeader) {
     let escrowed = q.escrowed.get();
     if escrowed == ESCROW_ENTRIES {
         // Nothing to report it through: `ll_release` holds no frame, and
@@ -339,38 +357,30 @@ fn escrow(q: &Queue, floor: *mut BlockHeader, entity: *mut RcHeader) {
         std::process::abort();
     }
 
-    // The floor is this thread's and non-null, which is the caller's to
-    // establish and the reason it is a parameter rather than a second
-    // load: every path here comes through [`grow_and_write`], which draws
-    // one before it takes any door.
-    unsafe { entries(floor).add(escrowed).write(entity) };
+    // The control pointer is inside this thread's non-null floor, which
+    // `enrol` established before taking any growth door.
+    unsafe {
+        escrow_entries(q as *const OwnerCycleState as *mut OwnerCycleState)
+            .add(escrowed)
+            .write(entity)
+    };
     q.escrowed.set(escrowed + 1);
 }
 
-/// Put a floor under this thread, or answer null when the pool refuses.
-///
-/// Through the ordinary door, and idempotent: a thread that holds one
-/// answers with it and draws nothing.
-fn draw_floor(q: &Queue) -> *mut BlockHeader {
-    let floor = q.floor.get();
-    if !floor.is_null() {
-        return floor;
+/// Put a floor under this thread, or answer null when the manager refuses.
+/// The returned pointer is the control plane inside that floor.
+fn draw_floor() -> *mut OwnerCycleState {
+    let present = owner();
+    if !present.is_null() {
+        return present;
     }
 
-    let block = BlockPool::global().get();
+    let block = gc_metadata::acquire(GcBlockRole::QueueFloor);
     if block.is_null() {
-        return block;
+        return std::ptr::null_mut();
     }
 
-    // Stamped for the reason a spare is stamped at acquisition: the block
-    // is out of the pool, and the collector acquire-loads the kind of
-    // every block in every carved region, so a floor left reading `FREE`
-    // is a block counted out and read as free.
-    unsafe {
-        crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_ARENA)
-    };
-
-    // **The cell is read again rather than trusted across the draw.**
+    // **The TLS pointer is read again rather than trusted across the draw.**
     // `BlockPool::get` raises a record, and a thread's first record runs
     // `ll_thread_init` from inside the journal (`journal::mod`, "A thread
     // can reach a record site without ever having initialised the
@@ -380,13 +390,18 @@ fn draw_floor(q: &Queue) -> *mut BlockHeader {
     // safe from the same re-entry for a reason this cell does not have:
     // their `RefCell` is borrowed across the draw, so the inner call
     // refuses and returns.
-    if !q.floor.get().is_null() {
-        crate::memory::critical::give_back(block);
-        return q.floor.get();
+    let installed = owner();
+    if !installed.is_null() {
+        gc_metadata::release_to_critical(block, GcBlockRole::QueueFloor);
+        return installed;
     }
 
-    q.floor.set(block);
-    block
+    let state = BlockHeader::payload_start(block) as *mut OwnerCycleState;
+    unsafe { state.write(OwnerCycleState::new()) };
+    // Publish last: any re-entry after this point must see fully initialised
+    // control and will use this exact floor.
+    OWNER.with(|owner| owner.set(state));
+    state
 }
 
 /// Draw the floor of a thread the runtime never registered, and abort
@@ -409,19 +424,19 @@ fn draw_floor(q: &Queue) -> *mut BlockHeader {
 /// [`crate::memory::critical::draw`] stands on two lines below, and the
 /// same one this call is about to take anyway (`dev/DECISIONS.md`, "what
 /// the first touch of a thread-local with drop glue may cost").
-fn draw_floor_or_abort(q: &Queue) -> *mut BlockHeader {
+fn draw_floor_or_abort() -> *mut OwnerCycleState {
     if !crate::memory::heap::thread_exit_will_run() {
         // Past `ll_thread_exit`, with nothing left to run another: the
         // floor would go back to no one.
         std::process::abort();
     }
 
-    let floor = draw_floor(q);
-    if floor.is_null() {
+    let owner = draw_floor();
+    if owner.is_null() {
         std::process::abort();
     }
 
-    floor
+    owner
 }
 
 /// Take this thread's floor, and report whether it has one.
@@ -432,7 +447,7 @@ fn draw_floor_or_abort(q: &Queue) -> *mut BlockHeader {
 /// poll. [`crate::memory::heap::ll_thread_init`] calls it before its
 /// best-effort fills and reports the refusal to its own caller.
 pub(crate) fn take_floor() -> bool {
-    QUEUE.with(|q| !draw_floor(q).is_null())
+    !draw_floor().is_null()
 }
 
 /// Give the floor back, leaving the thread without one.
@@ -446,14 +461,16 @@ pub(crate) fn take_floor() -> bool {
 /// take, so a reserve below capacity is refilled before the pool sees
 /// anything.
 pub(crate) fn release_floor() {
-    QUEUE.with(|q| {
-        let floor = q.floor.replace(std::ptr::null_mut());
-        if floor.is_null() {
-            return;
-        }
+    let owner = OWNER.with(|owner| owner.replace(std::ptr::null_mut()));
+    if owner.is_null() {
+        return;
+    }
 
-        crate::memory::critical::give_back(floor);
-    });
+    let q = unsafe { owner_ref(owner) };
+    assert!(q.live.get().is_null(), "release follows queue drain");
+    assert_eq!(q.held.get(), 0, "release follows spare drain");
+    assert_eq!(q.escrowed.get(), 0, "release follows escrow drain");
+    gc_metadata::release_to_critical(floor_of(owner), GcBlockRole::QueueFloor);
 }
 
 /// Move escrowed entries back into the queue, as far as the room a poll
@@ -464,27 +481,30 @@ pub(crate) fn release_floor() {
 /// would land straight back in the escrow, so the drain stops instead and
 /// waits for the collection the same poll is about to run.
 pub(crate) fn drain_escrow() {
-    QUEUE.with(|q| {
-        while q.escrowed.get() > 0 {
-            let live = q.live.get();
-            let has_room = !live.is_null() && q.filled.get() < SEGMENT_CAPACITY;
-            if !has_room && q.held.get() == 0 {
-                return;
-            }
-
-            let escrowed = q.escrowed.get() - 1;
-            // The floor exists wherever the count is above zero, one
-            // having been drawn before the first entry was written.
-            let entity = unsafe { entries(q.floor.get()).add(escrowed).read() };
-            q.escrowed.set(escrowed);
-            unsafe { enrol(entity) };
+    let owner = owner();
+    if owner.is_null() {
+        return;
+    }
+    let q = unsafe { owner_ref(owner) };
+    while q.escrowed.get() > 0 {
+        let live = q.live.get();
+        let has_room = !live.is_null() && q.filled.get() < SEGMENT_CAPACITY;
+        if !has_room && q.held.get() == 0 {
+            return;
         }
-    });
+
+        let escrowed = q.escrowed.get() - 1;
+        // The floor exists wherever the count is above zero, one
+        // having been drawn before the first entry was written.
+        let entity = unsafe { escrow_entries(owner).add(escrowed).read() };
+        q.escrowed.set(escrowed);
+        unsafe { enrol(entity) };
+    }
 }
 
 /// Take one spare, or null when both cells are empty.
 #[inline]
-fn take_spare(q: &Queue) -> *mut BlockHeader {
+fn take_spare(q: &OwnerCycleState) -> *mut BlockHeader {
     let held = q.held.get();
     if held == 0 {
         return std::ptr::null_mut();
@@ -503,7 +523,8 @@ fn take_spare(q: &Queue) -> *mut BlockHeader {
 /// leave it unasked for the rest of its life (`memory::reserve`,
 /// `is_drawn`).
 pub(crate) fn is_short() -> bool {
-    QUEUE.with(|q| q.held.get() < SPARE_SEGMENTS)
+    let owner = owner();
+    owner.is_null() || unsafe { owner_ref(owner) }.held.get() < SPARE_SEGMENTS
 }
 
 /// Fill the spare cells through the ordinary door, answering false when
@@ -513,44 +534,34 @@ pub(crate) fn is_short() -> bool {
 /// reported by something else: at thread init, where the thread's first
 /// allocation returns null, and at the safepoint poll, which comes back.
 pub(crate) fn replenish() -> bool {
-    QUEUE.with(|q| {
-        while q.held.get() < SPARE_SEGMENTS {
-            let block = BlockPool::global().get();
-            if block.is_null() {
-                return false;
-            }
-
-            // Stamped at acquisition rather than at the swap, which is
-            // what `memory::critical` does and for the same reason: a
-            // block held in a cell is out of the pool and the collector
-            // acquire-loads the kind of every block in every carved
-            // region, so a spare left reading `FREE` is a block counted
-            // out and read as free.
-            unsafe {
-                crate::memory::block_pool::store_block_kind(
-                    &raw const (*block).kind,
-                    BLOCK_KIND_ARENA,
-                )
-            };
-
-            // The count is read again after the draw, and a full pair
-            // sends the block straight back: the record `BlockPool::get`
-            // raises can run `ll_thread_init` on this thread, and that
-            // call fills these same cells, so an index taken before the
-            // draw would be past the end of the array
-            // ([`draw_floor`] carries the same re-entry and why).
-            let held = q.held.get();
-            if held == SPARE_SEGMENTS {
-                crate::memory::critical::give_back(block);
-                return true;
-            }
-
-            q.spares[held].set(block);
-            q.held.set(held + 1);
+    let owner = owner();
+    if owner.is_null() {
+        return false;
+    }
+    let q = unsafe { owner_ref(owner) };
+    while q.held.get() < SPARE_SEGMENTS {
+        let block = gc_metadata::acquire(GcBlockRole::QueueSegment);
+        if block.is_null() {
+            return false;
         }
 
-        true
-    })
+        // The count is read again after the draw, and a full pair
+        // sends the block straight back: the record `BlockPool::get`
+        // raises can run `ll_thread_init` on this thread, and that
+        // call fills these same cells, so an index taken before the
+        // draw would be past the end of the array
+        // ([`draw_floor`] carries the same re-entry and why).
+        let held = q.held.get();
+        if held == SPARE_SEGMENTS {
+            gc_metadata::release_to_critical(block, GcBlockRole::QueueSegment);
+            return true;
+        }
+
+        q.spares[held].set(block);
+        q.held.set(held + 1);
+    }
+
+    true
 }
 
 /// Give every segment and every spare back, and leave the queue empty.
@@ -576,77 +587,96 @@ pub(crate) fn replenish() -> bool {
 /// to the pool, so a reserve below capacity is refilled before the pool
 /// sees anything.
 pub(crate) fn drain() {
-    QUEUE.with(|q| {
-        let mut segment = q.live.replace(std::ptr::null_mut());
-        q.filled.set(0);
+    let owner = owner();
+    if owner.is_null() {
+        return;
+    }
+    let q = unsafe { owner_ref(owner) };
+    let mut segment = q.live.replace(std::ptr::null_mut());
+    q.filled.set(0);
 
-        while !segment.is_null() {
-            let next = unsafe { (*segment).next };
-            unsafe { (*segment).next = std::ptr::null_mut() };
-            crate::memory::critical::give_back(segment);
-            segment = next;
-        }
+    while !segment.is_null() {
+        let next = unsafe { (*segment).next };
+        unsafe { (*segment).next = std::ptr::null_mut() };
+        gc_metadata::release_to_critical(segment, GcBlockRole::QueueSegment);
+        segment = next;
+    }
 
-        let held = q.held.replace(0);
-        for cell in &q.spares[..held] {
-            let block = cell.replace(std::ptr::null_mut());
-            crate::memory::critical::give_back(block);
-        }
+    let held = q.held.replace(0);
+    for cell in &q.spares[..held] {
+        let block = cell.replace(std::ptr::null_mut());
+        gc_metadata::release_to_critical(block, GcBlockRole::QueueSegment);
+    }
 
-        // The escrow empties by its count, which is the only bound on the
-        // floor's contents exactly as `filled` is the only bound on the
-        // live segment's. The floor itself stays: it belongs to the
-        // thread's life rather than to the queue's contents, and
-        // [`release_floor`] is what ends that life.
-        q.escrowed.set(0);
-    });
+    // The escrow empties by its count, which is the only bound on the
+    // floor's contents exactly as `filled` is the only bound on the
+    // live segment's. The floor itself stays: it belongs to the
+    // thread's life rather than to the queue's contents, and
+    // [`release_floor`] is what ends that life.
+    q.escrowed.set(0);
 }
 
 /// Entries this thread's escrow is holding.
 #[cfg(test)]
 pub(crate) fn escrowed_count() -> usize {
-    QUEUE.with(|q| q.escrowed.get())
+    let owner = owner();
+    if owner.is_null() {
+        0
+    } else {
+        unsafe { owner_ref(owner) }.escrowed.get()
+    }
 }
 
 /// Entries this thread's queue holds, walking the chain.
 #[cfg(test)]
 pub(crate) fn enrolled_count() -> usize {
-    QUEUE.with(|q| {
-        let live = q.live.get();
-        if live.is_null() {
-            return 0;
-        }
+    let owner = owner();
+    if owner.is_null() {
+        return 0;
+    }
+    let q = unsafe { owner_ref(owner) };
+    let live = q.live.get();
+    if live.is_null() {
+        return 0;
+    }
 
-        let mut count = q.filled.get();
-        let mut segment = unsafe { (*live).next };
-        while !segment.is_null() {
-            count += SEGMENT_CAPACITY;
-            segment = unsafe { (*segment).next };
-        }
+    let mut count = q.filled.get();
+    let mut segment = unsafe { (*live).next };
+    while !segment.is_null() {
+        count += SEGMENT_CAPACITY;
+        segment = unsafe { (*segment).next };
+    }
 
-        count
-    })
+    count
 }
 
 /// Segments this thread's queue holds.
 #[cfg(test)]
 pub(crate) fn segment_count() -> usize {
-    QUEUE.with(|q| {
-        let mut count = 0;
-        let mut segment = q.live.get();
-        while !segment.is_null() {
-            count += 1;
-            segment = unsafe { (*segment).next };
-        }
+    let owner = owner();
+    if owner.is_null() {
+        return 0;
+    }
+    let q = unsafe { owner_ref(owner) };
+    let mut count = 0;
+    let mut segment = q.live.get();
+    while !segment.is_null() {
+        count += 1;
+        segment = unsafe { (*segment).next };
+    }
 
-        count
-    })
+    count
 }
 
 /// Spares this thread holds.
 #[cfg(test)]
 pub(crate) fn spares_held() -> usize {
-    QUEUE.with(|q| q.held.get())
+    let owner = owner();
+    if owner.is_null() {
+        0
+    } else {
+        unsafe { owner_ref(owner) }.held.get()
+    }
 }
 
 /// This thread's floor, or null when it holds none. One block, out of
@@ -654,7 +684,22 @@ pub(crate) fn spares_held() -> usize {
 /// it.
 #[cfg(test)]
 pub(crate) fn floor() -> *mut BlockHeader {
-    QUEUE.with(|q| q.floor.get())
+    let owner = owner();
+    if owner.is_null() {
+        std::ptr::null_mut()
+    } else {
+        floor_of(owner)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn live_segment() -> *mut BlockHeader {
+    let owner = owner();
+    if owner.is_null() {
+        std::ptr::null_mut()
+    } else {
+        unsafe { owner_ref(owner) }.live.get()
+    }
 }
 
 /// Fill the live segment to capacity with `filler`, so the next
@@ -669,26 +714,28 @@ pub(crate) fn floor() -> *mut BlockHeader {
 /// words to dereference.
 #[cfg(test)]
 pub(crate) fn fill_live_segment(filler: *mut RcHeader) {
-    QUEUE.with(|q| {
-        let live = q.live.get();
-        assert!(!live.is_null(), "no live segment to fill");
-        for index in q.filled.get()..SEGMENT_CAPACITY {
-            unsafe { entries(live).add(index).write(filler) };
-        }
+    let owner = owner();
+    assert!(!owner.is_null(), "no queue floor");
+    let q = unsafe { owner_ref(owner) };
+    let live = q.live.get();
+    assert!(!live.is_null(), "no live segment to fill");
+    for index in q.filled.get()..SEGMENT_CAPACITY {
+        unsafe { entries(live).add(index).write(filler) };
+    }
 
-        q.filled.set(SEGMENT_CAPACITY);
-    });
+    q.filled.set(SEGMENT_CAPACITY);
 }
 
 /// The nth entry of the live segment, counting from the oldest.
 #[cfg(test)]
 pub(crate) fn live_entry(index: usize) -> *mut RcHeader {
-    QUEUE.with(|q| {
-        let live = q.live.get();
-        assert!(!live.is_null(), "no live segment");
-        assert!(index < q.filled.get(), "entry {index} is past the fill");
-        unsafe { entries(live).add(index).read() }
-    })
+    let owner = owner();
+    assert!(!owner.is_null(), "no queue floor");
+    let q = unsafe { owner_ref(owner) };
+    let live = q.live.get();
+    assert!(!live.is_null(), "no live segment");
+    assert!(index < q.filled.get(), "entry {index} is past the fill");
+    unsafe { entries(live).add(index).read() }
 }
 
 #[cfg(test)]
