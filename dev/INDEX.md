@@ -9,7 +9,7 @@ located.
 Knowledge map: `dev/ARCHITECTURE.md` — how the crate works *together*:
 layers and the sanctioned upward edges, the per-module knowledge table
 ("does not know" is the contract), shared resources including the
-header-bit ledger, the five end-to-end paths, and the cross-module
+header-bit ledger, the end-to-end paths, and the cross-module
 invariants. Module docs at the top of each file remain the normative
 detail; `src/memory/heap.rs` and `src/promote.rs` carry the fullest
 ones.
@@ -23,93 +23,27 @@ versions live in `docs/history/`, marked at the top.
 
 ## Entry points
 
-- **There is no cycle collector.** `rc-walk`, `rc-trace` and `rc-satb`
-  were deleted on 2026-08-26 and the design in force, `rc-cycle`
-  (`rfc/model/gc/rc-cycle.md`), is unbuilt: a garbage ring is retained,
-  acyclic garbage dies by counting. What survives of the old code and
-  why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26;
-  the code itself is on the branch `archive/pre-rc-cycle`. `PLAN.md`
-  S34 through S40 build the replacement, and `src/cycle/` is where it
-  is going. Eight parts today, and two have a production caller:
-  **`queue` is the per-thread enrolment queue**, a chain of 64 KiB pool
-  segments that the release path writes an entity pointer into at every
-  non-final decrement the enrolment gate admits. It grows by a pointer
-  swap out of two spare cells the safepoint poll fills through the
-  ordinary door, draws `memory::critical` when both cells are empty and
-  arms the poll when it does, and **cannot fail**: every door refusing puts
-  the entry in an escrow of one block's capacity, which the poll drains once
-  a refill has made room. Edmond ruled on
-  2026-08-28 that nothing may be lost, and the escrow is the tier that
-  keeps it (`rfc/dev/DECISIONS.md`, "an enrolment cannot fail"). Its
-  storage is the **floor**, one pool block drawn at `ll_thread_init` and
-  returned at thread exit, so a thread whose floor the pool refuses is a
-  thread that never starts — which is what `ll_thread_init`'s status
-  return reports, and what puts a floor under every registered thread.
-  **`parking::TraceWindow` is the in-line trace's physical-reuse barrier**:
-  it owns the shadow arena so its close nulls every row before lowering the
-  owner-local active flag and replaying out-of-band returns through the one
-  `ll_free` door. That door refuses both a queue entry and a live trace, across
-  slotted, retained and both large-entity populations. Its TLS form is
-  synchronous-only; S38 replaces it before a worker can trace another owner.
-  The other six have no production caller until S36.7 wires a collection in.
-  `row::edge_to` answers which
-  shadow row a traced edge lands on,
-  dispatching on the block's kind and carrying the population out of
-  that read. `shadow` is the row and the block's array of them: four
-  bytes, two of colour over thirty of working count, with colour zero
-  reserved for "not met in this collection" — the row array is never
-  zeroed whole, a group of eight rows is zeroed at its own first touch,
-  and one bit per group is what says which. `arena::ShadowArena` is the
-  collection's working memory: a bump over 64 KiB blocks, the ordinary
-  pool first and `memory::critical`'s eight-block per-thread reserve on
-  refusal, every block returned at the end and on the abort alike, and
-  the shadow pointer of every block it stamped nulled before they go.
-  `meet` is its one entry: it reserves a block's rows at the first touch,
-  enrols the block for the sweep in the same allocation — the touched
-  list threads through a prologue on the arrays themselves, so nothing
-  about the enrolment can fail once the rows exist — and initialises a
-  row from the refcount once, never twice. It answers with `first_reach`
-  beside the row, because writing the met colour is what destroys that
-  answer and the mark's descent is what needs it. Where the rows are is the
-  population's: an entity block's array is sized by its size class, a
-  retained block's by its occupant count, and a large entity has one row
-  in its own block header. `mark` is the trace over those rows: it meets
-  a root's row from the entity's refcount, expands the entity through
-  `cells::trace_cells`, subtracts one from the row of every child
-  `row::edge_to` places inside the GC heap, and descends into a child
-  only on the meeting's `first_reach`, which is what terminates it on a
-  ring. It writes into no entity, so a refusal at either memory door
-  aborts the collection and leaves the heap byte-identical; its worklist
-  is `stack::TraceStack`, a chain of 512-entry segments drawn from the
-  same arena, where a segment that empties is kept for the next crossing
-  rather than abandoned and the whole chain is forgotten when the arena
-  resets — the segments being the arena's memory, and the retry after an
-  abort the caller that would otherwise climb into a recommissioned
-  block. `scan` is the verdict over the same rows: a row above zero
-  is held by a reference the trace never saw, so it is coloured live and
-  so is everything reachable from it, and a row at zero that no live row
-  reaches is condemned. A condemned row is raised when a live one reaches
-  it afterwards, which is what a ring held by one reference into its
-  middle needs — the member the trace reaches first is condemned before
-  that reference is found. It reads a row through `arena::met_row`, the
-  read-only twin of `meet`: no allocation, and no row at all for a group
-  this collection never zeroed or for a colour still untouched, so an
-  entity the mark never met cannot be judged on a row nobody wrote.
-  `exact` is the owner's judgement over one component, and the only
-  reading a free may stand on: given the component as its own member
-  list, it re-reads every member's refcount
-  on the owning thread and compares their sum against the edges the
-  members hold of each other, one guard per member discounted when the
-  re-verify runs. A member reading zero died ordinarily since it was
-  proposed, so the component is dropped whole before any field is read —
-  the corpse rule. It reads no shadow row and writes nothing at all: the
-  trace token is released before the first exact test, and the arena
-  goes back with it, which is why a component arrives as a list rather
-  than as a colour (`rfc/model/gc/rc-cycle.md`, "The release obliges a
-  readership rule"). The sum stands for the design's per-member identity
-  because no member can carry fewer references than the component holds
-  of it. Nothing opens a trace window, marks, scans or judges yet, and
-  nothing derives a member list from the condemned rows.
+- **No collection runs yet.** `rc-walk`, `rc-trace` and `rc-satb` were
+  deleted on 2026-08-26 and the design in force, `rc-cycle`
+  (`rfc/model/gc/rc-cycle.md`), is built in parts: a garbage ring is
+  retained, acyclic garbage dies by counting. What survives of the old
+  code and why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`,
+  2026-08-26; the code is on the branch `archive/pre-rc-cycle`. `PLAN.md`
+  S34 through S40 build the replacement in `src/cycle/`. What each module
+  does and what it may not know is `dev/ARCHITECTURE.md`'s `cycle` row;
+  where each one is:
+
+  | module | what is there | production caller |
+  |---|---|---|
+  | `queue` | the per-thread enrolment queue, its floor, spares and escrow | `refcount::release_word`, `gc`'s poll |
+  | `parking` | `TraceWindow`, the physical-return barrier | `stdapi::ll_free` |
+  | `arena` | `ShadowArena`, the collection's bump, and `meet`/`met_row` | none until S36.7 |
+  | `shadow` | the row: two bits of colour over thirty of working count | none |
+  | `row` | `edge_to`, which row a traced edge lands on | none |
+  | `mark` | the trace: trial deletion over the rows | none |
+  | `stack` | the trace worklist, segments out of the arena | none |
+  | `scan` | the verdict: live spreads, zero condemns, a reached row is raised | none |
+  | `exact` | the owner's judgement over one component, and the corpse rule | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a
   count at the field's bound is a floor and absorbs every subtraction, so
@@ -118,20 +52,24 @@ versions live in `docs/history/`, marked at the top.
   first touch writes 121 bytes at the widest size class against the
   16 320 its rows reserve, which is what the group bitmap bought
   (`dev/BENCHMARKS.md`, 2026-08-27).
+
+  Nothing derives a member list from the condemned rows, and no step of
+  `PLAN.md` owns that.
 - The enrolment gate: `refcount::ENROLMENT_GATE_MASK` and `may_enrol`,
   read on the non-zero decrement in `release_word`. Five conditions in
   one mask, each of them "this bit is zero" — GC-heap category, a kind a
   ring can close through, no acyclic proof, no ownership proof, not
-  already enrolled. **It decides and nothing more**: the queue that would
-  receive a candidate is S34.1's, and the three marks it reads have no
-  writer yet. What proves each condition live is a `#[cfg(test)]` counter
+  already enrolled. What it admits goes to `cycle::queue::enrol`, which
+  sets `ENROLLED` first; the acyclic and ownership proofs it also reads
+  have no writer. What proves each condition live is a `#[cfg(test)]` counter
   past the gate (`refcount::tests::the_enrolment_gate`), because a
   scenario test sees the pair and never one half.
 - GC C ABI and the safepoint: `src/gc.rs` — the four symbols the
   compiler emits calls to (`ll_gc_collect_cycles`, `ll_gc_maybe_collect`,
   `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`). The two collecting
-  entries report zero until S36.7; the poll still refills the store
-  barrier's log reserve, which is the duty that kept the module.
+  entries report zero until S36.7. The poll has four duties in order:
+  refill the log reserve, refill the critical reserve, refill the queue's
+  spare segments, drain its escrow.
 - Static blocks and thread exit: `src/static_block.rs` — the per-thread
   registry and the teardown pass that releases each block's roots at
   exit (A6, `rfc/model/classes.md` "Teardown at thread exit"). The order
@@ -331,8 +269,8 @@ versions live in `docs/history/`, marked at the top.
   release side uses the barrier's `drop_ref`, so a child the array held
   last is torn down rather than only decremented. An arena array that
   survives a reset **takes its storage with it**, the same two routes a
-  string's payload takes (`table::Table::carry_out_of`, reached from
-  `promote::carry_external_memory`); it gets there as a child of an
+  string's payload takes (`array::entity::carry_storage_out_of`, reached
+  from `promote::carry_external_memory`); it gets there as a child of an
   escapee, never on its own, an array being COW and therefore copied at
   the barrier rather than counted as an escapee. Both COW doors have their Array arm
   now: `object::ll_cow_separate` separates a shared array and
@@ -395,7 +333,7 @@ versions live in `docs/history/`, marked at the top.
   and `journal_event!`, which is how a site is written: it expands to
   nothing without the feature, and with it evaluates its payload only
   after the mask says the kind is on, so a disabled site costs a load and
-  a branch and reads nothing. Fourteen sites carry §9.5's default set —
+  a branch and reads nothing. Twelve sites carry §9.5's default set —
   entity birth at `refcount::publish_header` and death at each kind's own
   teardown body (`ll_object_die`, `string_die`, `array_die`,
   `reference_die`, `weakref_die`, since the kind switch above them is
@@ -482,7 +420,8 @@ versions live in `docs/history/`, marked at the top.
   free arrives through `buffer_arena::buffer_free_longlived_payload`,
   which reads a retained block under the pointer, leaves the bytes where
   they are — former arena memory has no free list — and reclaims the
-  block instead; during an epoch that call parks like any other.
+  block instead. That call reaches no parking: it returns the block
+  straight to the pool, which is the gap `PLAN.md` S38.3 owns.
 - The safepoint bracket a batched run pays: lowering emits
   `ll_gc_checkpoint_ack` before the run, `ll_release_batch` per
   reference, and `ll_gc_checkpoint` after it (decision 2026-07-28;
@@ -600,14 +539,18 @@ store barrier's log growth from failing; drawn in `Arena::grow_log`,
 refilled at `ll_gc_maybe_collect`. Design in
 `rfc/runtime/exceptions.md`, "The log reserve protocol".
 
-`src/memory/deferred_free.rs` was deleted on 2026-08-26 with `rc-walk`,
-whose epoch-wide parking it was. `rc-cycle` parks per slot instead, on
-two windows of different widths — a queue entry naming the slot, and a trace
-in flight. Both are built: `memory::stdapi::ll_free`
-withholds an entity slot whose header still carries `ENROLLED`, and
-nothing is recorded anywhere, the queue entry being the record. For the
-second, `cycle::parking::TraceWindow` records physical returns out of band and
-replays them only after its shadow arena has reset (S36.2).
+`src/memory/gc_metadata.rs` — the one door through which cycle collection
+takes and returns memory. A block it holds carries `BLOCK_KIND_GC_METADATA`,
+and one current plus one high-water block count is what the manager can
+answer about collection (`dev/DECISIONS.md`, 2026-09-01). The pool and the
+critical reserve refuse a block still stamped with that kind.
+
+Parking a physical return — `memory::stdapi::ll_free` asks two windows
+before a slot, a retained block or a large run goes back: an entity whose
+header still carries `ENROLLED` waits with no record kept, the queue entry
+being the record; an open trace sends the return to
+`cycle::parking::TraceWindow`, which replays it after its shadow arena has
+reset. The two close in either order.
 
 Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's
 out-of-line body lives: a string's payload and an array's table storage.
@@ -731,53 +674,29 @@ one of those again.
 
 `docs/architecture.md` — the visual companion to `dev/ARCHITECTURE.md`
 (which stays the source of truth): PlantUML layer picture, full wiring
-graph, and the five end-to-end paths as sequence diagrams. Rendered on
-demand; no images committed.
+graph, and the end-to-end paths as sequence diagrams. Rendered on demand;
+no images committed. Its collector half is stale and says so at its top.
 
 `dev/design/debug-modes.md` — observability and debug levels: object
 registry, lifetimes, shadow metadata, integrity checks, metrics export.
-Design only, nothing implemented.
+§9, the event journal, is built behind the `debug-journal` feature
+(`src/journal/`); §§1–8 are design with nothing behind them.
 
-`dev/design/epoch-walk.md`, `dev/design/epoch-walk-structures.md` and
-`dev/RC_WALK_CRITICAL_REVIEW.md` were deleted on 2026-08-26 with the
-collector they described. They are on the branch `archive/pre-rc-cycle`.
+`dev/design/pure-destructors.md` — a pointer at
+`rfc/model/gc/pure-destructors.md`, which is normative and carries the
+2026-08-23 amendment. The backlog line in `PLAN.md` is the owner.
 
-The **gc-horizon** documents — `gc-horizon.md`, its states and its
-sixteen-case book — were deleted on 2026-08-26 with the two
-collectors. The algorithm was Edmond's of 2026-08-18: a local is owned
-(counted) or an anchored borrow paying nothing while compiler proofs
-hold, promoted by an ordinary retain at a horizon. It is superseded by
-`rc-cycle`, whose own answer to the same question is that a local always
-carries a counted `+1` and a pair may be elided only where no collection
-can fire (`rfc/model/gc/rc-cycle.md`; `rfc/model/gc/cycle/questions.md`
-Y11). The documents are on `archive/pre-rc-cycle`.
-
-`dev/design/pure-destructors.md` — Edmond's pure-destructor proposal
-analyzed, 2026-08-18: the purity ladder, what the runtime already
-banks, the five owner-bound races, and the hand-off drain the
-proposal soundly buys. Its banner names the three sources deleted with
-the collectors on 2026-08-26, one of which mapped the birth-count and
-unique-ownership pair. Analysis, not design; the RFC stays normative, and
-the backlog line in `PLAN.md` is the owner.
+Documents deleted on 2026-08-26 with the collectors they described —
+`dev/design/epoch-walk.md`, `epoch-walk-structures.md`,
+`dev/RC_WALK_CRITICAL_REVIEW.md` and the four gc-horizon documents — are
+on the branch `archive/pre-rc-cycle`, and why each went is
+`dev/DECISIONS.md` under that date.
 
 ## Traps
 
-`dev/POSTMORTEM.md` — benchmarking against a stale baseline
-(2026-07-20); an entity killed at refcount 1, which read as a census
-flake (2026-08-06); a test heavy enough to stop the Miri gate from
-finishing (2026-08-08); a guard checking a different limit from the call
-below it (2026-08-11).
-
-Also worth knowing before touching this crate:
-
-- Formal-UB defects here all pass `cargo test`. Only Miri sees them,
-  and only against a UNIX target — see `dev/WORKFLOW.md`.
-- Miri is blind to leaks here (`-Zmiri-ignore-leaks` is mandatory) and
-  runs in permissive provenance in the pointer-heavy modules, so a
-  clean run is not proof there.
-- The block header is a tagged union shared with the pool's
-  `BlockHeader`: `kind` must stay at offset 0, and the pool's `next`
-  overlays the heap's `used`.
+`dev/POSTMORTEM.md` is the list, thirty-three entries and growing; read
+it before an instrument is trusted, not after. `dev/WORKFLOW.md` carries
+what each tool can and cannot see here.
 
 ## Conventions
 

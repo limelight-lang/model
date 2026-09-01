@@ -2,7 +2,9 @@
 
 Notes on code read outside this repository. An entry records what was
 read, at which revision, what of it applies here, and which claims were
-verified against source rather than taken from a summary. The point is
+verified against source rather than taken from a summary. A line number
+into this crate's own sources drifts; the symbol beside it is the anchor,
+and the external revisions are pinned. The point is
 that a reading is done once and that a borrowed idea keeps its origin.
 
 Read-but-rejected belongs here as much as read-and-taken: without it the
@@ -17,34 +19,20 @@ and the reasoning written into the source comments.
 
 ### The version bracket is half a barrier short
 
-`ck_sequence.h` is the reference seqlock, and against it our version
-counter orders one side of each bracket in the wrong direction.
+`ck_sequence.h` is the reference seqlock, and against it the array's
+version counter ordered one side of each bracket in the wrong direction:
+`begin_move` published the odd version with a release store, which orders
+what precedes it rather than what follows, and `coherent`'s closing check
+re-read the version with an acquire load, which orders what follows
+rather than the three data loads before it. ck writes the odd value
+plainly and issues `ck_pr_fence_store()`; it puts `ck_pr_fence_load()`
+ahead of the closing read.
 
-Opening the window (`StorageHead::begin_move`) stores the odd
-version with `Ordering::Release`. A release *store* orders accesses that
-precede it; what the bracket needs is the opposite, that the odd version
-becomes visible before the entry moves that follow. ck writes the odd
-value with a plain store and then issues `ck_pr_fence_store()`. The
-equivalent here is `store(v + 1, Relaxed)` followed by
-`fence(Ordering::Release)`.
-
-The read side has the mirror defect. `StorageHead::coherent` opens with
-`version.load(Acquire)`, which is correct, because an
-acquire load orders the three data loads after it. The closing check
-is also an acquire load, and there the ordering is
-needed in the other direction: the three data loads must be complete
-before the version is re-read. ck puts `ck_pr_fence_load()` ahead of
-that load, so the fix is `fence(Ordering::Acquire)` before it.
-
-Closing the window (`StorageHead::end_move`) is already correct: a release
-store publishes the entry writes before the even version.
-
-**Not observed, derived from the code.** On x86-64 neither defect can
-fire in hardware, since TSO reorders neither store-store nor load-load,
-so the exposure is compiler reordering — legal here, because the entry
-writes are relaxed atomic stores and `used` and `nslots` are ordinary
-writes. On aarch64 the hardware reorders both. We have no aarch64 box
-and no test that would catch this on x86-64.
+**Applied 2026-08-11** in `18c585c`, both sides, and `array::head.rs`
+cites this entry at the fences. The demonstration, the loom model that
+exhibits the accepting execution for the old bracket and for either fence
+taken alone, and the aarch64 cost are `dev/DECISIONS.md`, "the table's
+version bracket orders both sides with fences".
 
 ### ck_epoch: why reclamation happens at e+2
 
@@ -58,8 +46,10 @@ blocking reclamation must not apply modulo-3 arithmetic to the global
 counter itself, only to the deferral list index: under a bursty writer
 the wrap-around live-locks.
 
-Worth a deliberate comparison against `epoch.rs` and `deferred_free.rs`
-before the next change to either. Not done yet.
+Both modules the comparison was written for are deleted; `rc-cycle` has
+no epoch counter, and its window is a per-thread flag
+(`src/cycle/parking.rs`). The e+2 argument keeps its value as a reading
+record.
 
 ### ck_ec: event counts instead of a condition variable
 
@@ -68,9 +58,10 @@ mutates the structure and then increments the count, which doubles as a
 write-write barrier and a wake; the consumer snapshots the value, reads
 the structure, and blocks on that snapshot. A wake that arrives between
 the snapshot and the block is not lost, because the block is conditional
-on the value being unchanged. This is the primitive the event journal of
-`PLAN.md` item 1 wants for a reader waiting on a ring, and the primitive
-the collector wants while waiting for handshake acks.
+on the value being unchanged. Neither customer this was read for exists: the event journal was built
+without a waiting reader — §9.3 marks a window by snapshotting cursors —
+and the handshake the collector would have waited on retired with
+`rc-walk`.
 
 ### ck_hs: the per-bucket probe bound
 
@@ -103,7 +94,7 @@ growth going through a copy that is swapped in.
 `ck_pr` (atomics — `std::sync::atomic` covers it), the spinlock family
 (MCS, CLH, ticket, Anderson), `ck_cohort` and `ck_rwcohort` (NUMA lock
 composition, and we take a lock only on cold paths), `ck_elide` (needs
-TSX), `ck_hp` (hazard pointers, where our design chose epochs),
+TSX), `ck_hp` (hazard pointers, where the design uses a trace window),
 `ck_bytelock` (the author marks it research-only).
 
 ## 2026-08-08 — Hash tables
@@ -315,10 +306,10 @@ tests one field, `refcount != 0` (`heap.rs:2020`), and reads only slots
 below `bump`.
 
 Two sources of the same knowledge exist here and neither is used. A
-block carved from a fresh region is untouched memory, and regions come
-from `alloc` (`block_pool.rs:501`); `alloc_zeroed` for a 2 MiB
-block-aligned region is served by a fresh kernel mapping, so the
-guarantee costs nothing. A block returned empty from an *entity* heap
+block carved from a fresh region is untouched memory, and since
+`8208815` regions come from the OS directly (`memory::os::map_aligned`),
+whose mapping the kernel zero-fills — so that half is already paid for
+and only carrying the flag across recycling is open. A block returned empty from an *entity* heap
 still satisfies the invariant: `FreeSlot` deliberately preserves the
 first eight bytes, holding the dead entity's final header
 (`heap.rs:175`), and an entity dies at refcount 0. What breaks the
@@ -390,8 +381,11 @@ hand-rolled lock under preemption; our cold paths take a
 
 ## 2026-08-10 — Large objects in eight runtimes, and what PHP allows
 
-Read for S11, the stage that gives an entity larger than one block a
-strategy. The question put to each: how is an object too large for the
+Read for S11, the stage that gave an entity larger than one block a
+strategy; that stage is closed and the result is
+`src/memory/large_entity.rs` (`dev/DECISIONS.md`, the S11 ruling). The
+survey and the PHP measurement below are the evidence the built design
+rests on and exist nowhere else. The question put to each: how is an object too large for the
 ordinary small-object allocator allocated, found by the collector,
 reclaimed, and what does the runtime refuse.
 

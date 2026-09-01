@@ -71,10 +71,16 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 A line here is an unresolved question rather than a step: it carries no
 criterion, and it leaves when it gets one or when it is ruled on.
 
-Empty. The six the review of 2026-09-01 raised over `52b2cbf` and `0416e83`
-left the same day — four by Edmond's rulings, recorded in `dev/DECISIONS.md`
-and in the `done:` clause of S38.3, and two by the repairs they prompted,
-recorded under S36.9.
+The six the review of 2026-09-01 raised over `52b2cbf` and `0416e83` left the
+same day — four by Edmond's rulings, recorded in `dev/DECISIONS.md` and in the
+`done:` clause of S38.3, and two by the repairs they prompted, recorded under
+S36.9. One line arrived in their place, from the `dev/` sweep of the same day:
+
+- **`FORCE_OOM` is raised by a bare store in thirty places**, and
+  `dev/POSTMORTEM.md`, 2026-08-13, states the rule that it must be lowered by a
+  guard. `src/cycle/stack/tests.rs` asserts three times inside the raised
+  window, so a failure there leaves the flag up for every test running beside
+  it — which is the shape that postmortem was written about.
 
 ---
 
@@ -333,7 +339,7 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         `memory/critical.rs` and `memory/heap.rs` already refuse that failure
         mode by hand and say why.
       handoff: it also pays a debt `memory/stdapi.rs` records in its own module
-        doc: while regions come from `std::alloc::alloc`, this manager cannot
+        doc: while regions came from `std::alloc::alloc`, this manager could not
         be installed as Rust's `#[global_allocator]`, because region carving
         would re-enter `ll_alloc` with an alignment it refuses.
       handoff: S34.8 depends on it. That step reports a refused floor block
@@ -1191,9 +1197,9 @@ own checkbox.
   move rule (copy, barrier, or a never-moved proof) is the open design
   question.
 - [ ] **Pure destructors, and the hand-off drain** — proposed by
-  Edmond 2026-08-18, analyzed the same day in
-  `dev/design/pure-destructors.md` through three lenses and two Critic
-  rounds. The runtime-only step (the specialized P0 dispose and the
+  Edmond 2026-08-18, analyzed the same day through three lenses and two
+  Critic rounds; the analysis is `rfc/model/gc/pure-destructors.md`, with
+  the 2026-08-23 amendment that withdraws the collector-side free. The runtime-only step (the specialized P0 dispose and the
   raw-sever drain arm) needs no ruling and no compiler; the hand-off
   drain waits on the residual-duties and tail-bound questions the
   analysis names, its external-child delay accepted by ruling
@@ -1405,9 +1411,11 @@ names what would have to be measured first.
   per allocation; the workload to measure is a growing one, where the
   pass is one extra store per object created.
 
-- [ ] **Return memory to the OS, and cache huge mappings** — blocked on
-  the prerequisite the head of `stdapi.rs` already names: regions come
-  from `std::alloc::alloc`, not from mmap. rpmalloc lets free pages
+- [ ] **Return memory to the OS, and cache huge mappings** — the
+  prerequisite this was blocked on is met since `8208815`: a region is an
+  OS mapping (`memory::os::map_aligned`) and `os::unmap` is already used
+  by the large-run path. What the item now needs is a workload, not a
+  mechanism. rpmalloc lets free pages
   accumulate to 16, 8, 4 or 2 per page type and then decommits down to 4,
   2, 1 or 1, keeping the header prefix committed (`rpmalloc.c:712`,
   `2003`, `1249`), and sends a freed huge mapping to a 32-slot cache

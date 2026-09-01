@@ -207,6 +207,11 @@ density: how many groups of a touched block a collection reaches is what
 
 ## 2026-08-22 — the young-free exemption: an entity is exempt until the second walk that meets it
 
+**What was measured no longer exists** (2026-09-01): the exemption and its
+probe went with `rc-walk` on 2026-08-26, and no epoch byte or enrolment stamp
+is read today. The entry stays as the record of its day.
+
+
 Node C2 of `rfc/model/gc/walk/questions.md`.
 `collector::tests::what_the_young_free_exemption_removes::measure_young_free_exemption`,
 `cargo test --release --lib -- --ignored measure_young_free_exemption --nocapture`,
@@ -516,6 +521,12 @@ on an incoherent head is hot under a mutator that is actually writing.
 
 ## 2026-08-22 — what a leaf row costs the walk: 39-46 ns per entity that cannot ring
 
+**What was measured no longer exists** (2026-09-01): the level prices
+`src/walk.rs`'s row apparatus, deleted on 2026-08-26. The acyclic-skip
+question it served is live in S37 and needs its own number. The entry stays as
+the record of its day.
+
+
 Node B1 of `rfc/model/gc/walk/questions.md`.
 `collector::tests::what_a_leaf_row_costs_the_walk::measure_leaf_row_cost`,
 `cargo test --release --lib -- --ignored measure_leaf_row_cost --nocapture`,
@@ -557,6 +568,13 @@ no PHP corpus has been scanned for. B1 stays open on the share; its rate is
 answered.
 
 ## 2026-08-24 — what the collector waits for: three round trips bounded by the mutator's checkpoint interval, over a 6 µs drain floor
+
+**What was measured no longer exists** (2026-09-01): the handshake
+acknowledgement this waits on retired with `rc-walk`; nothing in `rc-cycle`
+waits. What survives is the probe defect recorded at the end — an instrument
+that made the test's own thread the collector. The entry stays as the record
+of its day.
+
 
 Node C4 of `rfc/model/gc/walk/questions.md`, whose currency a review round
 corrected: rung 2 costs epoch **duration**, and what it spends it on is the
@@ -612,6 +630,11 @@ spinning on it. The timer also caught the spawn rather than the ack, and
 reported a flat 30-70 µs at every point of the sweep.
 
 ## 2026-08-24 — a skipped entity still costs the walk about 4 ns, a tenth of the row it does not get
+
+**What was measured no longer exists** (2026-09-01): the 4 ns is the epoch
+byte plus the census store, and neither is written today. The entry stays as
+the record of its day.
+
 
 Node B7 of `rfc/model/gc/walk/questions.md`, which asks what a block skip
 adds over the per-entity skip of node B1.
@@ -1922,6 +1945,11 @@ and the binary search with a region-indexed table — both matter only
 if the walk shows up again in profiles.
 
 ## 2026-07-28 — the batched-checkpoint split: within noise
+
+**What was measured no longer exists** (2026-09-01): `ll_gc_checkpoint` and
+`ll_gc_checkpoint_ack` are still exported, with empty bodies; what was timed
+is the bodies, which are gone. The entry stays as the record of its day.
+
 
 The split (`rfc/model/gc/rc-walk.md` "Batched releases", amendment
 2026-07-28) replaces the one pre-run `ll_gc_checkpoint` with

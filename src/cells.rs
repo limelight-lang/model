@@ -9,8 +9,9 @@
 //! (`object::for_each_counted_cell`), and the array entity.
 //!
 //! Knowledge split: `memory::heap` knows blocks, slots and occupancy
-//! ([`for_each_entity_slot`]); this module knows entity kinds and what
-//! each kind's out-edges are. Neither knows the other's internals.
+//! ([`crate::memory::heap::for_each_entity_slot`]); this module knows
+//! entity kinds and what each kind's out-edges are. Neither knows the
+//! other's internals.
 //!
 //! This file was the upper half of `walk.rs` until 2026-08-26, when the
 //! `rc-walk` collector below its build-step-2 marker was deleted and the

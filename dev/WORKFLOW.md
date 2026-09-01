@@ -1,7 +1,7 @@
 # Workflow
 
 How work is done in this crate. Not how the code is built
-(`ARCHITECTURE.md`, still unwritten), not what was decided
+(`ARCHITECTURE.md`), not what was decided
 (`DECISIONS.md`) — the routine that is the same for every task.
 
 These rules are written down from established practice in this
@@ -63,7 +63,7 @@ The two are `hash::seed::tests::where_the_seed_comes_from::`
 `the_process_seed_comes_from_the_operating_system` off and
 `a_folding_build_hashes_under_its_own_seed` on, so the arms list the
 same number of tests and a count tells them apart in neither direction
-(diffed byte for byte, 2026-08-26, 454 each):
+(diffed byte for byte on 2026-08-26; both arms list 576 on 2026-09-01):
 
 ```
 LL_HASH_SEED=<any> cargo test --lib --features hash-folding -- --test-threads=4
@@ -92,27 +92,30 @@ axis adds is a re-entry into the allocator from inside itself.
 
 Run each test command **as its own command and read its result line**;
 never pipe into a filter that can swallow a failure and let a commit
-through on a red suite (that happened once — see `ll-next-todo`'s
-flake note, 2026-07-27).
+through on a red suite. That happened once, on 2026-07-27, and again on
+2026-08-29 through a `grep "^test result"` in a shell chain
+(`dev/POSTMORTEM.md`).
 
 ## Formatting
 
 `rustfmt.toml` governs, and the tool decides — nothing here is formatted
-by hand. The catch is that **`rustfmt` is not installed on the default
-`stable` toolchain on this box**, so `cargo fmt` fails outright rather
-than reporting a clean tree, and it is easy to read that failure as "no
-formatting step exists here". It does:
+by hand. **The authority is `+1.94`:**
 
 ```
 cargo +1.94 fmt
 cargo +1.94 fmt --check      # what to run before a commit
 ```
 
+One toolchain is named because two can disagree on a tree neither has
+seen. `stable` carries rustfmt 1.9.0 as of 2026-09-01 and reports this
+tree clean, so a `cargo fmt` without the toolchain is not the failure it
+once was — it is a second opinion, and the gate takes the pinned one.
+
 The crate went unformatted from `3dd2d2a` (which added `rustfmt.toml`)
-until 2026-08-04 for exactly that reason. Re-formatting it was one
-mechanical commit touching 23 files; keeping it formatted costs nothing,
-and letting it drift again means the next such commit hides real changes
-inside it.
+until 2026-08-04, when `stable` had no rustfmt at all and the failure
+read as "no formatting step exists here". Re-formatting was one
+mechanical commit touching 23 files; letting it drift again means the
+next such commit hides real changes inside it.
 
 ## Bugs first
 
@@ -309,9 +312,8 @@ re-run after any deletion of a module, a document or a feature:
 
    **What a hit means depends on where it stands.** A dated journal —
    `DECISIONS.md`, `BENCHMARKS.md`, `POSTMORTEM.md` — names the document of
-   its own day, and so does a note under a deletion banner, as
-   `dev/design/pure-destructors.md` carries one. Those hits are records and
-   stay; a hit anywhere else is debris. That is the distinction the stage
+   its own day, and so does a note under a deletion banner. Those hits are
+   records and stay; a hit anywhere else is debris. That is the distinction the stage
    sweep above draws, and it is drawn for the same reason.
 2. **Every module path a comment cites, resolved against the modules that
    exist.** `` `walk::` ``, `` `collector::` ``, `` `epoch::` ``. A rename
@@ -328,14 +330,11 @@ re-run after any deletion of a module, a document or a feature:
    table had never listed, and one listed edge that was doc links with no call
    behind them.
 
-Passes 2 and 3 returned empty on 2026-08-27, and pass 1 returned seven hits,
-every one of them a record: `rfc/model/gc/rc-walk.md` from `DECISIONS.md`, from
-`BENCHMARKS.md` and from `dev/design/pure-destructors.md`, and the four horizon
-and walk documents once each from the first two. The note here used to say the
-first three passes returned empty at `06ddd1e`; that commit is 2026-08-26 14:42
-and `rfc` deleted those documents at 12:26, so the run behind the claim cannot
-have covered `dev/` whatever its description said. A count is not the check —
-the question is which sites, and the passes name them.
+On 2026-09-01 pass 3 returned empty, pass 1 returned seven hits — every one
+inside a dated journal or a deletion banner, which is where a pointer at a
+deleted document belongs — and pass 2 returned one: an unresolved intra-doc
+link at `src/cells.rs`. A count is not the check; the question is which sites,
+and the passes name them.
 
 ## Tests
 
@@ -385,9 +384,17 @@ contract genuinely moved. Those cannot be told apart silently — ask.
 
 The one sanctioned exception is an environment that physically cannot
 express what the test checks, marked narrowly and still running
-everywhere else, e.g. `#[cfg_attr(miri, ignore = "...")]` on the three
-dispatch-table tests, which compare function identity that Miri does
-not model. Assertions stay untouched.
+everywhere else: `#[cfg_attr(miri, ignore = "...")]` stands on eleven
+tests today — six dispatch-table ones comparing function identity, which
+Miri does not model, four that read a source file, and one that spawns a
+child process, both of which its isolation refuses. Assertions stay
+untouched.
+
+**A test that spawns a process or reads a file carries that attribute in
+the commit that adds it.** Miri stops at the first error, so such a test
+does not merely skip itself — every test after it in the run is never
+executed, and the run reports a failure whose cause looks like the
+subject rather than the harness (`dev/POSTMORTEM.md`, 2026-09-01).
 
 ## Miri
 
@@ -408,10 +415,11 @@ runs over different trees reported 154.41 s and 154.59 s while each cost
 tens of minutes — so a Miri run is timed by `time` or by the shell, and a
 figure quoted from its output says nothing about how long it took.
 
-**What a whole-suite run costs.** On 2026-08-08, at HEAD `6ab0bcf`:
-rc-walk 384 passed, 0 failed, 7 ignored in 948 s, and rc-trace 373
-passed, 0 failed, 4 ignored in 724 s. Both are Miri's own clock, so the
-wall figure is larger. The suite has grown since, and one test dominating
+**What a whole-suite run costs.** No figure for the single configuration
+has been taken. What is measured is `cycle::` on 2026-09-01: 86 passed, 0
+failed, 1 ignored, 387 s on Miri's clock against 10 m 33 s of wall. The
+two-configuration figures of 2026-08-08 went with the configurations
+themselves. One test dominating
 a run has taken it from a quarter of an hour to 28 minutes on its own
 (`dev/POSTMORTEM.md`, 2026-08-08). A stage therefore closes on a targeted
 run over the modules it touched, and says which ones; whether a
@@ -453,14 +461,13 @@ shows, five tests through the unmap path with neither an "incorrect
 layout" report nor the panic `unmap` raises when the table has no entry
 for a pointer.
 
-**Three tests claim Miri as their whole regression, and none of them has
-been able to run under it since 2026-08-26.**
+**Three tests claim Miri as their whole regression, and whether any of
+them still exhibits its defect is unverified.**
 `promote::tests::the_reset_reads_no_corpse`'s
 `a_large_survivor_killed_by_the_drain_is_not_read_by_the_reconcile` and
 its two neighbours guard the reset window against reading a large run
 after it was unmapped, and their doc comments say `cargo test` passes the
-defect by construction. They can run again now. Whether each still
-*exhibits* its defect is unverified: on 2026-08-29 the reconcile one was
+defect by construction. They run under Miri again since 2026-08-26: on 2026-08-29 the reconcile one was
 run under Miri with `reset_window::park_large` returning false — a build
 whose window parks nothing, which its neighbour's comment names as the
 condition — and it passed, in 176 s. Either the mutation is not the one
@@ -503,12 +510,9 @@ binding beside it.
 ## ThreadSanitizer
 
 ThreadSanitizer sees the one class Miri cannot reach here: a plain field
-read beside the collector's atomic store into the same header. Miri is out
-because the only test that pairs a live collector with a mutator —
-`collector::tests::the_epoch_as_a_whole::a_free_running_mutator_survives_concurrent_epochs`
-— is ignored under it, the design's mixed-size atomics being rejected
-outright. TSan does not share that gap: it reports plain-against-atomic and
-says nothing about two atomics of different widths.
+read beside the collector's atomic store into the same header. Miri sees
+the mixed-size access and not the plain-against-atomic race; TSan is the
+other way round.
 
 ```
 RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -Zbuild-std \
@@ -593,7 +597,7 @@ both arms are measured back to back in one session.
 
 ## Related repository
 
-Design lives in `limelight-lang/rfc` (`e:/limelight/rfc`) and is kept
+Design lives in `limelight-lang/rfc` (`/home/edmond/limelight/rfc`) and is kept
 in sync when behaviour changes — e.g. `model/memory/arenas.md`,
 `model/memory/arena-reset.md`, `model/gc/strategies.md`,
 `runtime/object-lifecycle.md`.

@@ -1173,9 +1173,10 @@ impl Heap {
         // Commissioning rule for entity blocks: every slot's first 8
         // bytes must read refcount 0 until an entity is published into
         // it, or a trace striding the block meets bytes that lie about
-        // occupancy. Regions come from the process allocator and blocks recycle
-        // through the pool, so provenance is never a known-fresh OS commit
-        // — the explicit 8-bytes-per-slot pass always runs here. Cold path
+        // occupancy. A region is a fresh OS mapping and arrives zeroed, but a
+        // block recycles through the pool and may have served at another
+        // stride, so nothing here knows a block is already zero — the explicit
+        // 8-bytes-per-slot pass always runs. Cold path
         // (once per block), ≤ 4080 stores at the smallest class.
         //
         // Raw blocks skip it: nothing ever reads their dead slots, and
