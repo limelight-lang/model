@@ -137,6 +137,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("LATE_CELL", false),
         ("OWNER_STATE", false),
         ("POOL_REQUESTS", false),
+        ("PREMISE_CELL_WALKS", false),
         ("RESERVE", true),
         ("RING", false),
         ("THREAD_BUFFER_ARENA", false),

@@ -57,4 +57,5 @@ mod what_a_mutation_racing_the_verdict_costs;
 mod what_a_ring_through_an_array_reads_as;
 mod what_an_edge_out_of_the_component_counts_for;
 mod what_the_guard_references_answer;
+mod what_the_premise_check_costs;
 mod what_the_zero_count_rule_drops;

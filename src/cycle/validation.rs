@@ -36,10 +36,11 @@
 //!
 //! Every input is already in hand — the member list is the caller's and the
 //! counts are the heap's — so this module holds no memory, asks for none, and
-//! has no failure of its own to report. What it answers is a
-//! [`ValidationResult`], and `Unreachable` is a reading rather than
-//! permission: the finalization protocol that acts on it is `PLAN.md` S36.3
-//! onward, and it runs after this call rather than inside it.
+//! has no failure of its own to report. The one exception is the premise
+//! check's in-degree array, which a debug build alone allocates. What it
+//! answers is a [`ValidationResult`], and `Unreachable` is a reading rather
+//! than permission: the finalization protocol that acts on it is `PLAN.md`
+//! S36.3 onward, and it runs after this call rather than inside it.
 //!
 //! **The premise is checked rather than argued**: a debug build runs it
 //! member by member, because the sum cannot see a defect that invents an
@@ -165,9 +166,12 @@ pub(crate) unsafe fn validate_component(
 /// The premise the sum in [`validate_component`] stands on, taken member by
 /// member: `RC(m) >= IN(m) + guard_refs_per_member` for every member.
 ///
-/// Quadratic in the component and run in a debug build alone —
+/// Linear in the component and run in a debug build alone —
 /// `debug_assert!` keeps its argument compiled in every build and
-/// executes it in none but that one. It is here because the sum cannot
+/// executes it in none but that one. Every member's cells are walked
+/// once, and an in-degree array indexed by the member's position in the
+/// sorted slice takes the count; it is the one allocation of this module,
+/// and a debug build makes it. The check is here because the sum cannot
 /// check its own premise: a defect that invents an in-edge into one
 /// member and loses a real one in another meets the sum exactly, and
 /// frees a component a live reference holds.
@@ -178,21 +182,41 @@ unsafe fn member_counts_cover_internal_edges(
     members: &[*mut RcHeader],
     guard_refs_per_member: u32,
 ) -> bool {
-    members.iter().all(|&member| {
-        let mut in_edges = 0u64;
-        for &holder in members {
-            let kind = unsafe { cells::entity_kind(holder) };
-            unsafe {
-                cells::trace_cells::<PlainCells>(holder, kind, |cell| {
-                    if cell.child == member {
-                        in_edges += 1;
-                    }
-                });
-            }
+    let mut in_edges = vec![0u64; members.len()];
+    for &holder in members {
+        note_premise_walk();
+        let kind = unsafe { cells::entity_kind(holder) };
+        unsafe {
+            cells::trace_cells::<PlainCells>(holder, kind, |cell| {
+                if let Ok(position) = members.binary_search(&cell.child) {
+                    in_edges[position] += 1;
+                }
+            });
         }
+    }
 
+    members.iter().zip(&in_edges).all(|(&member, &in_edges)| {
         u64::from(unsafe { header_refcount(member) }) >= in_edges + u64::from(guard_refs_per_member)
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    static PREMISE_CELL_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Count one member's cells walked by the premise check, and nothing at
+/// all without `cfg(test)`.
+#[inline]
+fn note_premise_walk() {
+    #[cfg(test)]
+    PREMISE_CELL_WALKS.with(|walks| walks.set(walks.get() + 1));
+}
+
+/// How many members' cells the premise check has walked on this thread.
+#[cfg(test)]
+pub(crate) fn premise_cell_walks() -> usize {
+    PREMISE_CELL_WALKS.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
