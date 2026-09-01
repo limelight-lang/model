@@ -705,6 +705,11 @@ retained block's occupant index moves from the process-global registry
 into the block's header line, owned by the reset's thread. Read before
 touching `memory/retained.rs` or S36.9 (e).
 
+`dev/design/door-sites.md` — every `door` site in `src/` at `019618d`,
+143 rows, each classified against the glossary's closed list with its
+replacement, the fifteen that fit no class listed first with the reason,
+and one site awaiting a ruling. The input S41.7's rename reads.
+
 `dev/CYCLE-COLLECTOR-REVIEW.md` — the 2026-09-01 read-only review of
 `src/cycle/` with Edmond's ruling per finding: arena tail waste, the
 scan's double row lookup, the retained registry lock, and three T1

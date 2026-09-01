@@ -333,6 +333,18 @@ to the step that owns it.
         which shares an enum with them; what is left here is `Placement`, the
         two outcomes the glossary does not name, the journal's `Window` and
         the `door` classification.
+      handoff: the `door` classification is done, by session L2 on
+        2026-09-01 — `dev/design/door-sites.md`, 143 rows at `019618d`
+        (140 occurrences by `grep -rnoi 'door' src/ | wc -l` and 3 file
+        names; the 86 above was the whole-word singular line count at
+        `27ffbf3`): allocation path 73, entry point 55, none of the five 14,
+        mailbox, channel and store-barrier form 0. One ruling taken here:
+        `element::set`, "the public door", is an entry point — a store
+        function is the caller's way in, and *store-barrier form* names the
+        forms a barrier takes, not the functions that reach it; the glossary
+        line still defines neither, which is S9.1's. What is left of the
+        step's unblocked half is the rename itself, run from the document;
+        it also moves the `PLAN.md` lead-in `os.rs:136` quotes.
 - [x] S41.8 The hash table's collision defence
       done: the metaphor is gone from `src/array/` and its tests — collision-
         defence state, a chain-length threshold, an equal-hash threshold, a
