@@ -217,7 +217,7 @@ pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) 
         let element = vector.get(head, i).expect("a position below the count");
         // A replay: every position was admitted into the vector once.
         // Inert here either way — dense positions on an unsalted staging
-        // table cannot fire a trigger.
+        // table cannot meet a threshold.
         match table.insert(
             &staging,
             category,
@@ -231,14 +231,14 @@ pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) 
                 // nothing a release build could settle here.
                 debug_assert!(false, "vector positions are distinct keys");
             }
-            InsertOutcome::RefusedForMemory => {
+            InsertOutcome::AllocationFailed => {
                 table.dispose(&staging, category);
                 return false;
             }
-            InsertOutcome::RefusedByLadder => {
+            InsertOutcome::AdmissionDenied => {
                 debug_assert!(
                     false,
-                    "dense positions on an unsalted staging table cannot fire a trigger"
+                    "dense positions on an unsalted staging table cannot meet a threshold"
                 );
                 table.dispose(&staging, category);
                 return false;
@@ -546,8 +546,8 @@ pub unsafe fn separate(
 /// bytes for it, and a hash copied into a vector could not hold what it
 /// held.
 ///
-/// For the ordered hash the state is the two flood rung bits and the
-/// append cursor. Both go in before the first insert, the rung deciding
+/// For the ordered hash the state is the two defense-state bits and the
+/// append cursor. Both go in before the first insert, and the two bits decide
 /// how a key is hashed: a copy that starts weak re-installs an
 /// attacker's whole collision set under the hash the source escalated
 /// away from. A vector carries neither — it hashes nothing, and its
@@ -556,16 +556,16 @@ pub unsafe fn separate(
 ///
 /// **The salt is drawn here rather than inherited.** The copy replays
 /// the source's keys, so under the source's number the source's chains
-/// would be reproduced slot for slot, with both rungs spent and the
-/// replay exempt from the terminal refusal — nothing left to rebuild
+/// would be reproduced slot for slot, with both rebuilds spent and the
+/// replay exempt from the terminal admission denial — nothing left to rebuild
 /// them away (`rfc/model/maps.md`, "Rung three, refusal"). The draw
 /// takes the copy's storage address, so it follows the presize.
 ///
-/// **The storage is presized to the replay**, which is one allocation
-/// where the doubling schedule takes several and lands on the same
-/// chunk; in the request arena the ones it skips are headroom nothing
-/// reclaims until the reset. A copy of an empty source takes no chunk at
-/// all unless it inherited a drawn rung bit, the draw needing an address
+/// **The storage is presized to the replay**, which is one allocation where the
+/// doubling schedule takes several and lands on the same chunk; in the request
+/// arena the ones it skips are headroom nothing reclaims until the reset. A
+/// copy of an empty source takes no chunk at all unless it inherited a drawn
+/// defense-state bit, the draw needing an address
 /// ([`Table::presize_for_replay`]).
 ///
 /// # Safety
@@ -581,7 +581,7 @@ unsafe fn new_empty_copy(src: *mut LLArray, category: MemoryCategory) -> *mut LL
 
             let (source, _) = unsafe { as_table(src) };
             let (copy, copy_head) = unsafe { as_table_mut(dst) };
-            copy.adopt_flood_state(copy_head, source);
+            copy.adopt_collision_defense_state(copy_head, source);
             copy.adopt_append_state(source);
             if !copy.presize_for_replay(copy_head, category, source.len()) {
                 unsafe { crate::object::destroy_unpublished(dst as *mut RcHeader) };
@@ -739,7 +739,7 @@ unsafe fn fill_table_from(
                     unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
                 }
             }
-            InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder => {
+            InsertOutcome::AllocationFailed | InsertOutcome::AdmissionDenied => {
                 // Refused part-way. Give back what this element took —
                 // through the barrier, key and value alike; the source is
                 // untouched.
@@ -945,9 +945,9 @@ impl CopiesMade {
             .map(|v| v.entity_ptr() as *mut LLArray)
     }
 
-    /// False when the table refuses — the growth's allocation, or the
-    /// terminal rung after an address-keyed flood spent both rebuilds —
-    /// and the caller unwinds either like any other refusal.
+    /// False when the table refuses — the growth's allocation, or the terminal
+    /// admission denial after an address-keyed flood spent both rebuilds — and
+    /// the caller unwinds either like any other refusal.
     ///
     /// An admission, not a replay: the keys are entity addresses this
     /// table has never seen, whatever their history in the arrays.
@@ -960,7 +960,7 @@ impl CopiesMade {
                 Key::Int(source as i64),
                 Value::entity(Tag::Array, copy as *mut RcHeader),
             ),
-            InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder
+            InsertOutcome::AllocationFailed | InsertOutcome::AdmissionDenied
         )
     }
 

@@ -58,7 +58,7 @@ enum Where {
 /// carry two names rather than one, because the audit gives their token two
 /// ratified senses and no scope here separates them; the message names both
 /// and the reader picks.
-const RETIRED: [(&str, &str, Where); 81] = [
+const RETIRED: [(&str, &str, Where); 84] = [
     // Candidate registration, whose callers are spread over four modules.
     // `ShadowArena::enrol` is the homonym: the audit maps that one to the
     // allocation it performs, and the glossary's *candidate registration* is
@@ -194,6 +194,19 @@ const RETIRED: [(&str, &str, Where); 81] = [
     ("PARKED", "DEFERRED_SLOTS", Where::Anywhere),
     ("park_if_active", "defer_reuse_if_tracing", Where::Anywhere),
     ("parked_count", "deferred_slot_count", Where::Anywhere),
+    // The hash table's collision defense, S41.8's
+    // (`dev/PROJECT-TERMINOLOGY-AUDIT.md`, section 5). Scoped, because all
+    // three words are ordinary English elsewhere — `trigger` in `cycle`,
+    // `hash`, `memory`, `promote` and `refcount`, and the other two in the
+    // prose of `hash/process_key`. What this row reads is code and string
+    // literals; the prose of `src/array/` is the metaphor guards'.
+    ("trigger", "threshold", Where::Under("array")),
+    ("ladder", "collision defense", Where::Under("array")),
+    (
+        "rung",
+        "the salted rebuild or the keyed-hash escalation",
+        Where::Under("array"),
+    ),
     // Exact validation, whose judicial words are the audit's first rule.
     // `Refused` went with the rest of the audit's refusal words: inside
     // `cycle` the only refusal is the allocation's, and S41.7 owns the ones
@@ -458,7 +471,8 @@ fn a_migrated_source_keeps_no_retired_name() {
     assert!(
         kept.is_empty(),
         "{} identifiers the ratified mapping retires stand in files that have \
-         already been migrated (`dev/CYCLE-TERMINOLOGY-AUDIT.md`):\n{}",
+         already been migrated (`dev/CYCLE-TERMINOLOGY-AUDIT.md` for `cycle`, \
+         `dev/PROJECT-TERMINOLOGY-AUDIT.md` for the rest):\n{}",
         kept.len(),
         kept.join("\n")
     );

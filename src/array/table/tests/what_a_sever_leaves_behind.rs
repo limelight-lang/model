@@ -4,7 +4,7 @@ use super::*;
 /// `NONE` and every hole's link is severed too, so no chain reaches a
 /// hole. Without that the chains survive the sever, and the next
 /// insert walks them — `chain_len` and `equal_hashes` reading the
-/// flood ladder's triggers off entries that no longer exist.
+/// collision defense's thresholds off entries that no longer exist.
 #[test]
 fn a_sever_unlinks_what_it_holes_and_the_next_insert_starts_clean() {
     let _g = crate::memory::block_pool::test_guard();

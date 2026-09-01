@@ -31,14 +31,13 @@ pub enum Key {
 /// Which kind of insert the caller is performing. The table's policy
 /// dispatches on it; the caller only states what it is doing.
 ///
-/// The reader is the ladder's terminal rung, the refusal of an
-/// admission whose trigger trips with no rebuild left
-/// (`rfc/model/maps.md`, "Rung three, refusal"). A replay is exempt
-/// from that refusal alone, because a key admitted once cannot be
-/// refused on re-admission; rungs one and two stay armed on both. What
-/// the exemption costs and what returns it is the copy rule in the same
-/// section: the chain a replay carries past the limit is scattered by
-/// the copy's own salt.
+/// The reader is the terminal admission denial, the refusal of an admission
+/// whose threshold trips with no rebuild left (`rfc/model/maps.md`, "Rung
+/// three, refusal"). A replay is exempt from that refusal alone, because a key
+/// admitted once cannot be refused on re-admission; the salted rebuild and the
+/// keyed-hash escalation stay armed on both. What the exemption costs and what
+/// returns it is the copy rule in the same section: the chain a replay carries
+/// past the limit is scattered by the copy's own salt.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InsertKind {
     /// A key from outside the table's history: a user store, or a new
@@ -50,16 +49,16 @@ pub enum InsertKind {
 }
 
 /// What [`Table::insert`] did, or the refusal it answered instead.
-/// A refusal leaves every entry, count and key unchanged. The ladder's
-/// state is outside that promise: the triggers fire on the insert's
-/// walk, before the outcome is decided, so a refused insert may have
-/// spent a rung.
+/// A refusal leaves every entry, count and key unchanged. The collision
+/// defense's state is outside that promise: the thresholds are met on the
+/// insert's walk, before the outcome is decided, so a refused insert may have
+/// spent a rebuild.
 ///
-/// The two refusal causes are distinct variants because the runtime
-/// owes them different answers: memory pressure is the environment's,
-/// while the terminal rung is a property of the keys and is raised as
-/// a catchable error once an error channel exists (`rfc/model/maps.md`,
-/// "Rung three, refusal").
+/// The two refusal causes are distinct variants because the runtime owes them
+/// different answers: memory pressure is the environment's, while the terminal
+/// admission denial is a property of the keys and is raised as a catchable
+/// error once an error channel exists (`rfc/model/maps.md`, "Rung three,
+/// refusal").
 #[must_use = "a replaced element carries the table's reference; dropping it leaks the entity"]
 pub enum InsertOutcome {
     /// A new key entered the table. A string key's reference, published
@@ -70,28 +69,28 @@ pub enum InsertOutcome {
     /// reference published for this call stays the caller's.
     Replaced(Value),
     /// The storage could not grow.
-    RefusedForMemory,
-    /// The ladder's terminal rung: a trigger tripped with no rebuild
+    AllocationFailed,
+    /// The terminal admission denial: a threshold tripped with no rebuild
     /// left — the table is escalated, and the walk met either
     /// [`CHAIN_LIMIT`] chained entries or [`EQUAL_HASH_LIMIT`] equal
     /// identities.
     /// Only an admission is answered this; a replay is admitted
     /// ([`InsertKind`]).
-    RefusedByLadder,
+    AdmissionDenied,
 }
 
 /// Avalanche mix for an integer key, salted per table. Runs only once
-/// the flood ladder has drawn the table's salt ([`TABLE_RESEEDED`]);
+/// the collision defense has drawn the table's salt ([`TABLE_RESEEDED`]);
 /// an unsalted table indexes an integer key by its value, as Zend does.
 ///
 /// Indexing by value means `0, 1024, 2048, …` share one bucket at every
 /// table size up to 1024 — a flood that needs no knowledge of any seed
-/// and no hash function at all. It builds exactly one long chain, which
-/// is the first rung's own trigger, so the mix begins where a
-/// flood-shaped chain showed up. The trigger reads shape, not intent:
-/// honest keys striding by a power of two fire the same rung and pay
-/// the mix from then on (Edmond 2026-08-07: the salt is worth paying
-/// for where keys can come from outside, and the ladder needs nobody to
+/// and no hash function at all. It builds exactly one long chain, which is
+/// what meets the chain-length threshold, so the mix begins where a
+/// flood-shaped chain showed up. The threshold reads shape, not intent:
+/// honest keys striding by a power of two meet it too and pay the mix from
+/// then on (Edmond 2026-08-07: the salt is worth paying
+/// for where keys can come from outside, and the defense needs nobody to
 /// predict where that is).
 #[inline]
 fn mix_int(k: i64, salt: u64) -> u64 {
@@ -140,7 +139,7 @@ fn strong_hash(bytes: &[u8], key: u64) -> u64 {
     h ^ (h >> 32)
 }
 
-/// The flood backstop's first trigger: how many entries with a full
+/// The equal-hash threshold: how many entries with a full
 /// 64-bit hash equal to the incoming key's may be met during one insert
 /// before the table escalates.
 ///
@@ -151,7 +150,7 @@ fn strong_hash(bytes: &[u8], key: u64) -> u64 {
 /// also unaffected by deletion, which a running maximum would not be.
 pub(crate) const EQUAL_HASH_LIMIT: u32 = 8;
 
-/// The second trigger: chain length. This catches families whose hashes
+/// The chain-length threshold. This catches families whose hashes
 /// differ but whose slots coincide, including an integer flood. Generous,
 /// since the honest maximum is 4-8 even at millions of keys.
 pub(crate) const CHAIN_LIMIT: u32 = 32;
@@ -171,7 +170,7 @@ enum EntryMove {
 
 /// Entries in the chunk a first growth takes, and the minimum of every
 /// later size: the growth schedule is this doubled, and a table presized
-/// for a replay lands on the same ladder rather than beside it
+/// for a replay lands on the same collision defense rather than beside it
 /// ([`Table::presize_for_replay`]).
 const FIRST_CAP: usize = 8;
 
@@ -254,7 +253,7 @@ pub struct Table {
     live: usize,
     holes: usize,
     /// Zero from birth. Meaningful only while [`TABLE_RESEEDED`] is set:
-    /// the ladder's first rung draws it ([`Table::draw_salt`]) and a
+    /// the salted rebuild draws it ([`Table::draw_salt`]) and a
     /// copy that took the bit draws its own before its first insert
     /// ([`Table::redraw_salt`]). Nothing else writes it — a salt
     /// rewritten under live entries would leave every one of them
@@ -279,19 +278,20 @@ pub struct Table {
 }
 
 /// A string key's slot comes from a keyed hash over its bytes rather
-/// than from the cached hash at +16. Set once and one way, by the flood
-/// backstop's equal-hash trigger.
+/// than from the cached hash at +16. Set once and one way, by whichever
+/// threshold the escalation answers: equal identities, or a second long
+/// chain past the salted rebuild.
 const TABLE_STRONG: u8 = 1 << 0;
 
-/// This table has a salt: the ladder's first rung drew one, and integer
+/// This table has a salt: the salted rebuild drew one, and integer
 /// keys index through the salted mix rather than by value. Set once —
 /// a second long chain escalates instead of rebuilding again — which
-/// bounds the rung at one firing per table.
+/// bounds the rebuild at one draw per table.
 const TABLE_RESEEDED: u8 = 1 << 1;
 
 /// What a copy of an attacked table inherits — everything the flood
 /// backstop has decided, and nothing else in the byte.
-const TABLE_FLOOD_STATE: u8 = TABLE_STRONG | TABLE_RESEEDED;
+const COLLISION_DEFENSE_BITS: u8 = TABLE_STRONG | TABLE_RESEEDED;
 
 /// `i64::MAX` has been an integer key, so there is no next append key:
 /// [`Table::append_key`] refuses rather than wrapping.
@@ -305,10 +305,10 @@ const NEXT_FREE_NONE: i64 = i64::MIN;
 impl Table {
     /// An empty table with no storage. The first insert allocates.
     ///
-    /// **Unsalted** — the flood ladder's zeroth rung: integer keys index
-    /// by their value until a long chain fires [`Table::reseed`], which
-    /// draws the salt. No caller selects a mode, because the trigger is
-    /// the flood itself.
+    /// **Unsalted** — the collision defense's unsalted state: integer keys
+    /// index by their value until a long chain fires [`Table::reseed`], which
+    /// draws the salt. No caller selects a mode, because the threshold is the
+    /// flood itself.
     ///
     /// No category field, and no read of one: which memory this table's
     /// storage comes from is the owning entity's header to say, and every
@@ -381,9 +381,8 @@ impl Table {
         self.salt
     }
 
-    /// Whether the ladder's first rung has drawn this table's salt —
-    /// the test window for pinning rung state; the code branches on the
-    /// flag directly.
+    /// Whether this table has drawn its salt — the test window for pinning
+    /// defense state; the code branches on the flag directly.
     #[cfg(test)]
     pub(crate) fn is_reseeded(&self) -> bool {
         self.flags & TABLE_RESEEDED != 0
@@ -398,7 +397,7 @@ impl Table {
     }
 
     /// The longest index chain, walked slot by slot — the copy tests
-    /// assert the trigger's bound from outside this module.
+    /// assert the threshold's bound from outside this module.
     #[cfg(test)]
     pub(crate) fn longest_chain(&self, head: &StorageHead) -> usize {
         let mut longest = 0usize;
@@ -422,33 +421,34 @@ impl Table {
         self.flags & TABLE_STRONG != 0
     }
 
-    /// Take `source`'s flood state — both rung bits and, as a number to
-    /// stand on until the storage exists, its salt. The bits are what a
-    /// copy of an attacked table owes: an escalated table copied through
-    /// a fresh [`Table::empty`] would otherwise re-insert the attacker's
-    /// whole collision set under the hash it escalated away from, and
-    /// copying an array is the ordinary thing the language does.
+    /// Take `source`'s defense state — both bits and, as a number
+    /// to stand on until the storage exists, its salt. The bits are what a copy
+    /// of an attacked table owes: an escalated table copied through a fresh
+    /// [`Table::empty`] would otherwise re-insert the attacker's whole
+    /// collision set under the hash it escalated away from, and copying an
+    /// array is the ordinary thing the language does.
     ///
-    /// **The number does not stay.** [`Table::redraw_salt`] replaces it
-    /// once the copy has storage of its own, and the two calls bracket
-    /// [`Table::presize_for_replay`] because a salt is drawn from a
-    /// storage address — which is also why that call takes a chunk for a
-    /// copy holding a rung bit over no entries. What carrying the number
-    /// here buys is the state in between: a bit standing over a zero salt
-    /// would mean `mix_int(k, 0)`, a mix every attacker computes offline.
+    /// **The number does not stay.** [`Table::redraw_salt`] replaces it once
+    /// the copy has storage of its own, and the two calls bracket
+    /// [`Table::presize_for_replay`] because a salt is drawn from a storage
+    /// address — which is also why that call takes a chunk for a copy holding a
+    /// defense-state bit over no entries. What carrying the number here buys is
+    /// the state in between: a bit standing over a zero salt would mean
+    /// `mix_int(k, 0)`, a mix every attacker computes offline.
     ///
     /// **Call it before the first insert.** The mode decides how a key is
     /// hashed, so a table that adopts it afterwards has already indexed
     /// its entries the other way.
     #[inline]
-    pub(crate) fn adopt_flood_state(&mut self, head: &StorageHead, source: &Table) {
+    pub(crate) fn adopt_collision_defense_state(&mut self, head: &StorageHead, source: &Table) {
         debug_assert_eq!(head.used(), 0, "the mode decides how a key is indexed");
         debug_assert!(
             source.flags & TABLE_STRONG == 0 || source.flags & TABLE_RESEEDED != 0,
             "an escalated table always holds a drawn salt: escalate draws on the way"
         );
         self.salt = source.salt;
-        self.flags = (self.flags & !TABLE_FLOOD_STATE) | (source.flags & TABLE_FLOOD_STATE);
+        self.flags =
+            (self.flags & !COLLISION_DEFENSE_BITS) | (source.flags & COLLISION_DEFENSE_BITS);
     }
 
     /// Live entries: holes are excluded, unlike in [`StorageHead::used`].
@@ -572,11 +572,11 @@ impl Table {
         }
     }
 
-    /// The keyed hash's key: the per-process key folded to word width,
-    /// mixed with the table's salt — rung two hashes bytes under the
-    /// key *together with* the salt (`rfc/model/maps.md`, "What the
-    /// flood ladder becomes"), so two escalated tables scatter one
-    /// colliding set differently.
+    /// The keyed hash's key: the per-process key folded to word width, mixed
+    /// with the table's salt — the keyed-hash escalation hashes bytes under the
+    /// key *together with* the salt (`rfc/model/maps.md`, "What the flood
+    /// ladder becomes"), so two escalated tables scatter one colliding set
+    /// differently.
     #[inline]
     fn strong_key(&self) -> u64 {
         mix_word(crate::hash::process_key::folded(), self.salt)
@@ -673,7 +673,7 @@ impl Table {
     /// of a refusal — [`InsertOutcome`] is the contract, refusal causes
     /// included. `kind` states whether the key is the caller's own
     /// admission or a replay of one admitted before ([`InsertKind`]);
-    /// the ladder's terminal rung refuses an admission and admits a
+    /// the terminal admission denial refuses an admission and admits a
     /// replay, and nothing below it reads the kind.
     ///
     /// **Presence is decided ahead of every refusal**: the walk answers
@@ -741,8 +741,8 @@ impl Table {
                 // The counter counts an entry only when its tag equals
                 // the incoming key's: an integer's identity is its
                 // value, so equal identity is an overwrite and never a
-                // chain entry (`rfc/model/maps.md`, "What the flood
-                // ladder becomes").
+                // chain entry (`rfc/model/maps.md`, "What the flood ladder
+                // becomes").
                 if matches!(key, Key::Str(_))
                     && e.key_word >= KEY_SENTINEL_LIMIT
                     && e.key_word & KEY_TAG_MASK == KEY_TAG_STRING
@@ -760,23 +760,23 @@ impl Table {
         // none of those under a live iterator on a shared table.
         if equal_hashes >= EQUAL_HASH_LIMIT {
             if self.flags & TABLE_STRONG != 0 {
-                // The terminal rung: equal identities met past
+                // The terminal admission denial: equal identities met past
                 // escalation have no rebuild left to take. A replay is
                 // exempt from the refusal alone ([`InsertKind`]), and
-                // its chain then grows past the trigger's limit — the
+                // its chain then grows past the threshold's limit — the
                 // price of honouring the earlier admission.
                 if kind == InsertKind::Admission {
-                    return InsertOutcome::RefusedByLadder;
+                    return InsertOutcome::AdmissionDenied;
                 }
             } else {
                 self.escalate(head);
             }
         } else if chain_len >= CHAIN_LIMIT {
             if self.flags & TABLE_STRONG != 0 {
-                // The chain trigger's firing past both rebuilds — the
-                // terminal rung again, same exemption.
+                // The chain threshold met past both rebuilds — the
+                // terminal admission denial again, same exemption.
                 if kind == InsertKind::Admission {
-                    return InsertOutcome::RefusedByLadder;
+                    return InsertOutcome::AdmissionDenied;
                 }
             } else {
                 self.reseed(head);
@@ -786,7 +786,7 @@ impl Table {
         let sh = self.slot_hash(key);
 
         if head.used() == self.cap && !self.grow(head, category) {
-            return InsertOutcome::RefusedForMemory;
+            return InsertOutcome::AllocationFailed;
         }
 
         let slot = sh as usize & self.mask;
@@ -1106,12 +1106,12 @@ impl Table {
     /// merges, which is a defence the mask cannot supply: identities that
     /// differ are scattered by the copy's own salt, and identities that
     /// agree collide at every width and are what the equal-identity
-    /// trigger is for (`rfc/model/maps.md`, "Rung three, refusal", and
+    /// threshold is for (`rfc/model/maps.md`, "Rung three, refusal", and
     /// `dev/DECISIONS.md`, "a copy sizes its storage by its own replay").
     ///
-    /// **A copy with nothing to replay takes no chunk, unless it holds a
-    /// drawn rung bit**, in which case it takes the schedule's first one
-    /// for [`Table::redraw_salt`] to draw an address from.
+    /// **A copy with nothing to replay takes no chunk, unless it holds a drawn
+    /// defense-state bit**, in which case it takes the schedule's first one for
+    /// [`Table::redraw_salt`] to draw an address from.
     pub(crate) fn presize_for_replay(
         &mut self,
         head: &StorageHead,
@@ -1225,7 +1225,7 @@ impl Table {
 
         // The index goes with the entries, for the reason the counters
         // do: a bucket left in place would chain through nothing but
-        // holes, and the next insert's walk would read its trigger
+        // holes, and the next insert's walk would read its threshold
         // counters off entries that no longer exist.
         if !head.storage().is_null() {
             unsafe { std::ptr::write_bytes(Self::slots(head), 0xFF, head.nslots()) };
@@ -1254,26 +1254,25 @@ impl Table {
     /// The one draw of the per-table salt: the storage address run
     /// through the keyed hash under the per-process key
     /// (`hash::process_key`), and the flag saying the table has one.
-    /// Idempotent by the flag, so whichever rung fires first draws and
+    /// Idempotent by the flag, so whichever threshold is met first draws and
     /// the other inherits. Never zero — a zero draw is remapped — so a
     /// drawn salt cannot masquerade as the unsalted state.
     ///
-    /// Keyed under the per-process key so that a static reading of the
-    /// artifact cannot compute the salt: the foldable seed enters
-    /// nowhere — under `hash-folding` it travels inside the artifact,
-    /// where an attacker holding the binary would read it
-    /// (`rfc/model/maps.md`, "What the flood ladder becomes": every
-    /// secret the ladder draws comes from the per-process key). It is
-    /// not one-way: `strong_hash` is a placeholder invertible in its
-    /// key, so a timing oracle recovers the salt, and `rfc/model/strings.md`
-    /// ("Neither position is a defence") concedes that — the backstop is
-    /// the ladder's bounded rebuilds, not the salt. What this still does
-    /// not buy: storage addresses recycle across arena resets, so a salt
-    /// can repeat within one process, and the long-key slot
+    /// Keyed under the per-process key so that a static reading of the artifact
+    /// cannot compute the salt: the foldable seed enters nowhere — under
+    /// `hash-folding` it travels inside the artifact, where an attacker holding
+    /// the binary would read it (`rfc/model/maps.md`, "What the flood ladder
+    /// becomes": every secret the collision defense draws comes from the
+    /// per-process key). It is not one-way: `strong_hash` is a placeholder
+    /// invertible in its key, so a timing oracle recovers the salt, and
+    /// `rfc/model/strings.md` ("Neither position is a defence") concedes that —
+    /// the backstop is the collision defense's bounded rebuilds, not the salt.
+    /// What this still does not buy: storage addresses recycle across arena
+    /// resets, so a salt can repeat within one process, and the long-key slot
     /// (`rfc/model/strings.md`) stays the unfilled function `strong_hash`
     /// stands in for.
     ///
-    /// The triggers fire during an insert's chain walk, which needs
+    /// The thresholds are met during an insert's chain walk, which needs
     /// entries, so the storage is never null here — asserted, because a
     /// null address would draw the same salt for every such table.
     fn draw_salt(&mut self, head: &StorageHead) {
@@ -1289,22 +1288,21 @@ impl Table {
         self.salt = salt_from(head);
     }
 
-    /// Draw again, over a table that took its rung bits from a source
-    /// ([`Table::adopt_flood_state`]) — a copy indexes under a salt of
-    /// its own. The bits are what bound the ladder, so the copy keeps
-    /// them; the number is what a forged set is built against, and the
-    /// copy's replay puts that set back key by key, so an inherited
-    /// number would reproduce the source's chains slot for slot with
-    /// both rebuilds already spent (`rfc/model/maps.md`, "Rung three,
-    /// refusal").
+    /// Draw again, over a table that took its defense-state bits from a source
+    /// ([`Table::adopt_collision_defense_state`]) — a copy indexes under a salt
+    /// of its own. The bits are what bound the collision defense, so the copy
+    /// keeps them; the number is what a forged set is built against, and the
+    /// copy's replay puts that set back key by key, so an inherited number
+    /// would reproduce the source's chains slot for slot with both rebuilds
+    /// already spent (`rfc/model/maps.md`, "Rung three, refusal").
     ///
     /// A no-op on a table with no salt drawn: the flag is the
     /// authority, and an unsalted copy indexes integer keys by value
     /// exactly as its source does.
     ///
     /// **Call it before the first insert**, for the reason
-    /// [`Table::adopt_flood_state`] carries: the number decides which
-    /// slot a key takes.
+    /// [`Table::adopt_collision_defense_state`] carries: the number decides
+    /// which slot a key takes.
     pub(crate) fn redraw_salt(&mut self, head: &StorageHead) {
         if self.flags & TABLE_RESEEDED == 0 {
             return;
@@ -1320,7 +1318,7 @@ impl Table {
 
     /// Escalate to the keyed byte hash, once and one way. The response
     /// to *equal full hashes*: redrawing a salt cannot separate keys whose
-    /// hashes agree, and doing so on that trigger is what made Perl's
+    /// hashes agree, and doing so on that threshold is what made Perl's
     /// REHASH exploitable (CVE-2013-1667).
     ///
     /// Firing from an unsalted table draws the salt on the way, because
@@ -1333,12 +1331,12 @@ impl Table {
     /// about: a salt already drawn is left exactly as it was.
     fn escalate(&mut self, head: &StorageHead) {
         // Unreachable past escalation rather than a no-op there: the
-        // trigger block refuses on a strong table instead of calling
+        // threshold block refuses on a strong table instead of calling
         // down, and a silent return here would hide a caller that
         // stopped making that test.
         debug_assert!(
             self.flags & TABLE_STRONG == 0,
-            "past escalation a trigger refuses instead of escalating"
+            "past escalation a threshold refuses instead of escalating"
         );
         self.draw_salt(head);
         self.flags |= TABLE_STRONG;
@@ -1347,34 +1345,34 @@ impl Table {
         }
     }
 
-    /// Draw the per-table salt and rebuild the index — the ladder's
-    /// first rung, moving integer keys off by-value indexing. The
+    /// Draw the per-table salt and rebuild the index — the collision defense's
+    /// salted rebuild, moving integer keys off by-value indexing. The
     /// response to a long chain of keys whose hashes *differ* — an
     /// accident or an integer flood. **A second firing escalates
     /// instead**, which is what bounds the attacker at one rebuild and
     /// one escalation per table (`rfc/model/arrays-hashtable.md`, "What
-    /// the attacker can drive"). Without that bound the chain trigger
-    /// fires on every insert an attacker chooses, each firing an
+    /// the attacker can drive"). Without that bound the chain threshold is
+    /// met on every insert an attacker chooses, each firing an
     /// O(`used`) rebuild, and the promised O(n) is O(n²).
     ///
-    /// **The two rungs answer different failures**: this one, keys whose
+    /// **The two defenses answer different failures**: this one, keys whose
     /// identities differ while their buckets coincide — its mix covers
     /// every kind's slot, the integer's value through [`mix_int`] and a
     /// string's cached hash through [`mix_word`] — and escalation, keys
     /// whose identity numbers agree while the keys differ
     /// (`dev/DECISIONS.md`, "rung one salts every kind's slot, under the
     /// per-process key", amending "the flood ladder's two rungs answer
-    /// different key kinds").
+    /// different key kinds" — the rebuild and the escalation).
     ///
     /// The salt is drawn at most once per table ([`Table::draw_salt`]),
     /// so there is no orbit to learn and no redraw to aim. A COW copy is
     /// a new table by that reckoning and draws its own before its first
-    /// insert ([`Table::redraw_salt`]); what it inherits is the rung
+    /// insert ([`Table::redraw_salt`]); what it inherits is the defense
     /// bits, so its second long chain escalates rather than rebuilding.
     fn reseed(&mut self, head: &StorageHead) {
         debug_assert!(
             self.flags & TABLE_STRONG == 0,
-            "past escalation a trigger refuses instead of rebuilding"
+            "past escalation a threshold refuses instead of rebuilding"
         );
         if self.flags & TABLE_RESEEDED != 0 {
             self.escalate(head);

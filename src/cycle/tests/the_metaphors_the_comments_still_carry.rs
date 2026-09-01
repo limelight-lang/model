@@ -22,7 +22,7 @@ use super::the_metaphors_the_names_still_carry::{METAPHORS, sources};
 /// The reason is the point: an exemption without one is indistinguishable
 /// from an oversight. `path` is matched as a prefix of the path relative to
 /// `src/`, so a module and its tests take one entry.
-const EXEMPT: [(&str, &str, &str); 7] = [
+const EXEMPT: [(&str, &str, &str); 12] = [
     (
         "memory/reset_window",
         "escrow",
@@ -30,6 +30,20 @@ const EXEMPT: [(&str, &str, &str); 7] = [
          *overflow buffer* is false for that sense \
          (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, \"Glossary check\")",
     ),
+    (
+        "cycle",
+        "trigger",
+        "what triggered a collection, and an edge-triggered bit — the verb, \
+         not the hash table's threshold",
+    ),
+    ("hash", "trigger", "the intended caller of the seed draw"),
+    (
+        "memory",
+        "trigger",
+        "what triggered an arena rotation or an adoption",
+    ),
+    ("promote", "trigger", "a fixture class named `Trigger`"),
+    ("refcount", "trigger", "edge-triggered, the verb"),
     (
         "promote",
         "escrow",

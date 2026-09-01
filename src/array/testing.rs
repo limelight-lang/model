@@ -61,10 +61,10 @@ pub(crate) unsafe fn table<'a>(a: *mut LLArray) -> &'a crate::array::table::Tabl
 }
 
 /// An admission, answered in the pair shape the assertions were written
-/// against: `None` is the memory refusal, `(added, displaced)` the rest.
-/// A ladder refusal panics rather than folding into `None`: a fixture
-/// that trips the terminal rung must not read as out of memory. A test
-/// about that refusal calls `Table::insert` raw.
+/// against: `None` is the memory refusal, `(added, displaced)` the rest. A
+/// collision defense refusal panics rather than folding into `None`: a fixture
+/// that trips the terminal admission denial must not read as out of memory. A
+/// test about that refusal calls `Table::insert` raw.
 ///
 /// # Safety
 /// As [`table`].
@@ -79,8 +79,10 @@ pub(crate) unsafe fn insert(
     match table.insert(head, category, InsertKind::Admission, key, value) {
         InsertOutcome::Added => Some((true, None)),
         InsertOutcome::Replaced(old) => Some((false, Some(old))),
-        InsertOutcome::RefusedForMemory => None,
-        InsertOutcome::RefusedByLadder => panic!("the ladder refused an insert in a fixture"),
+        InsertOutcome::AllocationFailed => None,
+        InsertOutcome::AdmissionDenied => {
+            panic!("the collision defense refused an insert in a fixture")
+        }
     }
 }
 
@@ -162,11 +164,11 @@ pub(crate) unsafe fn at(a: *mut LLArray, i: usize) -> Option<Value> {
     vector.get(head, i)
 }
 
-/// `Table::insert` with the kind named and the outcome handed back
-/// whole, for the tests [`insert`] cannot serve: the ladder's refusal,
-/// which that harness turns into a panic, and a fixture that has to
-/// build its forged chain as a replay so the build cannot spring the
-/// trigger it is about to test.
+/// `Table::insert` with the kind named and the outcome handed back whole, for
+/// the tests [`insert`] cannot serve: the collision defense's refusal, which
+/// that harness turns into a panic, and a fixture that has to build its forged
+/// chain as a replay so the build cannot spring the threshold it is about to
+/// test.
 ///
 /// # Safety
 /// As [`table`].

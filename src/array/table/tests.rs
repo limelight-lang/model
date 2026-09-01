@@ -33,7 +33,7 @@ impl Owned {
     }
 
     /// [`crate::array::testing::insert`]'s pair shape, and its panic on a
-    /// ladder refusal.
+    /// collision defense refusal.
     fn insert(&mut self, key: Key, value: Value) -> Option<(bool, Option<Value>)> {
         unsafe { crate::array::testing::insert(self.0, key, value) }
     }
@@ -183,7 +183,7 @@ fn chain(m: &Owned, slot: usize) -> Vec<usize> {
 
 mod keys_that_are_strings;
 mod the_append_cursor;
-mod the_flood_ladder;
+mod the_collision_defense;
 mod the_ordered_hash_itself;
 mod what_a_sever_leaves_behind;
 mod what_a_walker_is_shown;

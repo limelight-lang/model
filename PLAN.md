@@ -317,8 +317,11 @@ to the step that owns it.
         rename, which a test asserts rather than a reading
       tier: T2 · role: Critic
       handoff: 76 sites over those five types, counted 2026-09-01 with `grep
-        -rn` over `src/`.
-- [ ] S41.8 The hash table's collision defence
+        -rn` over `src/`. `InsertOutcome`'s two rows landed early, with S41.8,
+        which shares an enum with them; what is left here is `Placement`, the
+        two outcomes the glossary does not name, the journal's `Window` and
+        the `door` classification.
+- [x] S41.8 The hash table's collision defence
       done: the metaphor is gone from `src/array/` and its tests — collision-
         defence state, a chain-length threshold, an equal-hash threshold, a
         salted rebuild, a keyed-hash escalation and a terminal admission
@@ -326,8 +329,41 @@ to the step that owns it.
         caller can catch and does not become an allocation failure, which is
         the one distinction the rename can destroy silently
       tier: T2 · role: Critic
-      handoff: `ladder`, `rung` and `trigger` are 176 occurrences in `src/`,
+      handoff: `ladder`, `rung` and `trigger` were 176 occurrences in `src/`,
         counted 2026-09-01; the design half is `rfc`'s.
+      Critic 2026-09-01 round 2: the citations are clean this time, checked by
+        occurrence count over every file. What it found instead: the new test
+        forced its refusal through `block_pool::force_oom`, which the crate's
+        own notes call a coin flip for a `GcHeap` table — its storage comes
+        from the buffer arena's long-lived side — so it now uses
+        `FORCE_REFUSE_LONGLIVED` and proves the refusal through `REFUSALS`,
+        which had no reader until now. Also taken: `trigger` had no guard on
+        the surface four in five of its occurrences lived on, and is in the
+        metaphor list with five exemptions; the `rung` row's replacement named
+        nothing; and the `WORKFLOW.md` figure I "corrected" invented a cause.
+      Critic 2026-09-01: no logic moved, and the added test is not vacuous —
+        but two quoted headings were rewritten inside the quotation again,
+        both of them wrapping onto a second line, which is the defect
+        `dev/POSTMORTEM.md` had just been given an entry for. The checker that
+        cleared the previous step compared citations by membership, so a
+        heading damaged at one site and intact at another read as unchanged;
+        it counts occurrences now. Also taken: two broken intra-doc links,
+        `stage` used for four different things, a dead exemption the step was
+        meant to retire, and a `>=` that could not catch an insert a refusal
+        left behind.
+      handoff: the vocabulary is the audit's six names — collision-defense
+        state, the chain-length and equal-hash thresholds, the salted rebuild,
+        the keyed-hash escalation and the terminal admission denial, in US
+        spelling as rule 6 asks. Both guards carry the three words: the
+        identifier guard scopes them `Under("array")`, which reads code and
+        string literals, and the metaphor guards read the file names and the
+        prose, where four in five of the `trigger` occurrences stood.
+      handoff: `InsertOutcome::RefusedForMemory` became `AllocationFailed`
+        here rather than in S41.7, because four match arms carry it beside the
+        denial and half a rename inside one `|` reads as two vocabularies.
+        S41.7 keeps `Placement`, the two glossary gaps, the journal `Window`
+        and the `door` classification — 86 `door` sites and 17 `Refused`
+        variants as of this commit.
 - [ ] S41.9 The lifecycle, ownership and platform words in the crate's prose
       done: `death`, `destructor`, `teardown`, `dispose`, `drop` and
         `reclamation` each name one of the five phases the project audit

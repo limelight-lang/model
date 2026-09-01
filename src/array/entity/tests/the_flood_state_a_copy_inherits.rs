@@ -1,17 +1,17 @@
-//! A copy takes the source's rung before its first insert, the mode
+//! A copy takes the source's defense state before its first insert, the mode
 //! deciding how a key is hashed and a table that adopts it later
-//! having already indexed its entries the other way. The two rung
+//! having already indexed its entries the other way. The two defense-state
 //! bits carry; the salt does not, because the copy draws its own from
 //! its own storage address, and a set forged against the source
-//! scatters instead of arriving slot for slot. The terminal rung is
+//! scatters instead of arriving slot for slot. The terminal admission denial is
 //! here too: a source that refuses an admission is still copyable,
 //! the replay being exempt from that refusal, and no chain in a copy
-//! reaches the trigger.
+//! reaches the threshold.
 
 use super::*;
 
 /// Spend both rebuilds: string keys whose *full* hashes agree fire the
-/// equal-hash trigger, and escalation draws the salt on its way, so
+/// equal-hash threshold, and escalation draws the salt on its way, so
 /// the table comes back strong and salted. Forged rather than found —
 /// a real such set needs a break of the hash — and the same path the
 /// attack would reach.
@@ -77,10 +77,10 @@ fn family_sharing_a_slot(a: *mut LLArray, from: i64, n: usize) -> Vec<i64> {
 ///
 /// **The colliding set is removed before the copy, and that is the
 /// point.** While the whole set is still in the table the copy
-/// re-escalates on its own — the equal-hash trigger fires again on
+/// re-escalates on its own — the equal-hash threshold fires again on
 /// the ninth collider it re-inserts — so a copy made then proves
 /// nothing about carrying the state. `unset` is what makes the loss
-/// permanent: below the trigger's threshold nothing re-fires, and the
+/// permanent: below the threshold nothing is met again, and the
 /// table is back to the hash the attacker already knows, ready for
 /// the same flood again.
 ///
@@ -113,7 +113,7 @@ fn a_copy_of_an_escalated_table_is_escalated() {
         "the forged set did not escalate the source, so this proves nothing"
     );
 
-    // Leave one collider behind: far below the trigger, so nothing in
+    // Leave one collider behind: far below the threshold, so nothing in
     // the copy can re-fire it.
     for s in &colliders[1..] {
         // `remove` hands the stored key back with the value — the
@@ -161,15 +161,15 @@ fn a_copy_of_an_escalated_table_is_escalated() {
     }
 }
 
-/// A copy of a table whose salt the first rung drew indexes under a
+/// A copy of a table whose salt the salted rebuild drew indexes under a
 /// salt of its own, drawn from the copy's own storage address. The
 /// number is what an attacker's set is built against, and the replay
 /// puts every one of its keys back by hand, so a copy keeping the
 /// source's number would reproduce the source's chains slot for slot
-/// — and reproduce them past the point where the ladder can answer,
-/// both rung bits being spent by inheritance.
+/// — and reproduce them past the point where the collision defense can answer,
+/// both defense-state bits being spent by inheritance.
 ///
-/// The ladder's bound is carried by those bits rather than by the
+/// The collision defense's bound is carried by those bits rather than by the
 /// number: the copy's next long chain escalates because it arrives
 /// already reseeded. What the bit without a number would mean is
 /// `mix_int(k, 0)`, a mix every attacker computes offline, so the
@@ -192,7 +192,7 @@ fn a_copy_of_a_reseeded_table_redraws_its_salt() {
 
     assert!(
         unsafe { crate::array::testing::table(src).is_reseeded() },
-        "the stride flood did not fire the rung, so this proves nothing"
+        "the stride flood drew no salt, so this proves nothing"
     );
     let drawn = unsafe { crate::array::testing::table(src).salt() };
 
@@ -208,7 +208,7 @@ fn a_copy_of_a_reseeded_table_redraws_its_salt() {
     assert!(!copy.is_null());
     assert!(
         unsafe { crate::array::testing::table(copy).is_reseeded() },
-        "the rung bit is inherited: the copy's next long chain escalates"
+        "the defense-state bit is inherited: the copy's next long chain escalates"
     );
     assert_ne!(
         unsafe { crate::array::testing::table(copy).salt() },
@@ -234,10 +234,10 @@ fn a_copy_of_a_reseeded_table_redraws_its_salt() {
 
 /// The third state a copy can inherit: nothing. A copy of an
 /// unsalted source starts unsalted — by-value integer indexing, no
-/// mix — and stays a full citizen of the ladder: its own flood fires
-/// its own first rung, drawing a salt of its own.
+/// mix — and stays a full citizen of the collision defense: its own flood fires
+/// its own salted rebuild, drawing a salt of its own.
 #[test]
-fn a_copy_of_an_unsalted_table_is_unsalted_and_climbs_its_own_ladder() {
+fn a_copy_of_an_unsalted_table_is_unsalted_and_runs_its_own_defense() {
     use crate::array::table::CHAIN_LIMIT;
     let _g = crate::memory::block_pool::test_guard();
     let mut arena = crate::memory::arena::Arena::new();
@@ -275,7 +275,7 @@ fn a_copy_of_an_unsalted_table_is_unsalted_and_climbs_its_own_ladder() {
 
     assert!(
         unsafe { crate::array::testing::table(copy).is_reseeded() },
-        "the copy's own flood must fire the copy's own rung"
+        "the copy's own flood must draw the copy's own salt"
     );
     for i in 0..(CHAIN_LIMIT as i64 + 1) {
         assert_eq!(
@@ -294,9 +294,9 @@ fn a_copy_of_an_unsalted_table_is_unsalted_and_climbs_its_own_ladder() {
     }
 }
 
-/// A source whose ladder refuses an admission is still copyable. The
-/// terminal rung answers a trigger met past both rebuilds, and only an
-/// admission: the copy replays keys the source admitted once, so every
+/// A source whose collision defense refuses an admission is still copyable. The
+/// terminal admission denial answers a threshold met past both rebuilds, and
+/// only an admission: the copy replays keys the source admitted once, so every
 /// entry arrives and the copy holds what the source held.
 ///
 /// Green before the copy's own change, and pinned here rather than
@@ -315,9 +315,9 @@ fn a_copy_of_a_table_that_refuses_an_admission_still_copies() {
     let family = family_sharing_a_slot(src, 1, CHAIN_LIMIT as usize + 1);
     let (chain, tripper) = family.split_at(CHAIN_LIMIT as usize);
     for (i, k) in chain.iter().enumerate() {
-        // As replays: the build must not spring the rung it is here to
+        // As replays: the build must not spring the defense it is here to
         // observe, and a stray collider sharing the slot would put the
-        // last of them over the trigger.
+        // last of them over the threshold.
         let outcome = unsafe {
             crate::array::testing::raw_insert(
                 src,
@@ -340,9 +340,9 @@ fn a_copy_of_a_table_that_refuses_an_admission_still_copies() {
                     Value::int(-1),
                 )
             },
-            InsertOutcome::RefusedByLadder
+            InsertOutcome::AdmissionDenied
         ),
-        "a chain trigger met past both rebuilds refuses an admission"
+        "a chain threshold met past both rebuilds refuses an admission"
     );
     assert!(
         !unsafe { crate::array::testing::contains(src, Key::Int(tripper[0])) },
@@ -391,14 +391,14 @@ fn a_copy_of_a_table_that_refuses_an_admission_still_copies() {
     }
 }
 
-/// No chain in a copy reaches the trigger, even where the source's own
+/// No chain in a copy reaches the threshold, even where the source's own
 /// slot array is wide enough to hide the set that would make one.
 ///
 /// The source here holds 64 forged keys agreeing in eight bits of
 /// their slot, scattered across the 131072 slots a 40000-entry table
 /// grew, and those 40000 are then unset. The copy is sized by what it
 /// replays, so those eight bits cover its whole mask: under the
-/// source's number the 64 would arrive as one chain, with both rung
+/// source's number the 64 would arrive as one chain, with both defense-statee
 /// bits spent by inheritance and the replay exempt from the refusal,
 /// so nothing rebuilds it and the chain is heritable one copy to the
 /// next. The redraw is what answers that, the copy's salt coming from
@@ -409,7 +409,7 @@ fn a_copy_of_a_table_that_refuses_an_admission_still_copies() {
 /// Seen failing on a chain of 64.
 #[test]
 #[cfg_attr(miri, ignore = "40000 inserts and their removal")]
-fn no_chain_in_a_copy_of_a_dense_then_unset_table_reaches_the_trigger() {
+fn no_chain_in_a_copy_of_a_dense_then_unset_table_reaches_a_threshold() {
     use crate::array::table::CHAIN_LIMIT;
     const FILLER: i64 = 40_000;
     const FORGED: usize = 64;
@@ -426,7 +426,7 @@ fn no_chain_in_a_copy_of_a_dense_then_unset_table_reaches_the_trigger() {
 
     assert!(
         unsafe { !crate::array::testing::table(src).is_reseeded() },
-        "dense by-value keys form no chain, so the ladder is untouched here"
+        "dense by-value keys form no chain, so the defense is untouched here"
     );
     assert_eq!(
         unsafe { as_table(src) }.1.nslots(),
@@ -474,7 +474,7 @@ fn no_chain_in_a_copy_of_a_dense_then_unset_table_reaches_the_trigger() {
     assert!(
         longest <= CHAIN_LIMIT as usize,
         "a copy holds a chain of {longest}: the forged set arrived slot for slot, \
-         and the replay is exempt from the rung that would answer it"
+         and the replay is exempt from the denial that would answer it"
     );
     for (i, k) in family.iter().enumerate() {
         assert_eq!(
@@ -497,12 +497,12 @@ fn no_chain_in_a_copy_of_a_dense_then_unset_table_reaches_the_trigger() {
     }
 }
 
-/// A copy of a reseeded source that holds no entries still owns a chunk
-/// and a salt of its own. The rung bit travels whatever the entry count
-/// is — the source is one `unset` away from being flooded again, and its
-/// copy is the same table — while the draw takes a storage address, so
-/// the copy takes the growth schedule's first chunk to be drawn from
-/// rather than starting with none.
+/// A copy of a reseeded source that holds no entries still owns a chunk and a
+/// salt of its own. The defense-state bit travels whatever the entry count is —
+/// the source is one `unset` away from being flooded again, and its copy is the
+/// same table — while the draw takes a storage address, so the copy takes the
+/// growth schedule's first chunk to be drawn from rather than starting with
+/// none.
 ///
 /// Seen failing against a copy that presizes nothing: the draw meets a
 /// null chunk and the debug assertion in `redraw_salt` fires.
@@ -522,7 +522,7 @@ fn a_copy_of_a_reseeded_but_emptied_source_owns_a_chunk_and_a_salt() {
 
     assert!(
         unsafe { crate::array::testing::table(src).is_reseeded() },
-        "the stride flood did not fire the rung, so this proves nothing"
+        "the stride flood drew no salt, so this proves nothing"
     );
     let drawn = unsafe { crate::array::testing::table(src).salt() };
     for i in 0..(CHAIN_LIMIT as i64 + 1) {
@@ -547,7 +547,10 @@ fn a_copy_of_a_reseeded_but_emptied_source_owns_a_chunk_and_a_salt() {
 
     assert!(!copy.is_null());
     let (copy_table, copy_head) = unsafe { as_table(copy) };
-    assert!(copy_table.is_reseeded(), "the rung bit did not travel");
+    assert!(
+        copy_table.is_reseeded(),
+        "the defense-state bit did not travel"
+    );
     assert!(
         !copy_head.storage().is_null(),
         "the salt was drawn from an address the copy does not own"

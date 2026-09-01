@@ -103,6 +103,14 @@ code, and tests. Replace them with literal state and events:
 This migration must preserve the difference between allocation failure and a
 catchable denial of a new key.
 
+**Done in the crate 2026-09-01, under `model/PLAN.md` S41.8.** `src/array/`
+carries the six names, `InsertOutcome` is `AllocationFailed` and
+`AdmissionDenied`, and
+`array::table::tests::the_collision_defense::a_refused_allocation_and_a_denied_admission_are_different_answers`
+holds the distinction the paragraph above asks for. The design half is `rfc`'s
+and is untouched, so `rfc/model/maps.md`'s headings are still quoted by their
+old names wherever this crate cites them.
+
 ### 6. Ownership vocabulary
 
 Bare `owner` denotes at least a containing entity, owning mutator, heap-block

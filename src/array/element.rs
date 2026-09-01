@@ -230,19 +230,18 @@ unsafe fn write_through(
 /// comes last, so a `__destruct` body it runs finds the slot already
 /// naming the copy.
 ///
-/// **Four refusals report `false`**. Three are allocations no reserve
-/// funds: the separation's copy, the publication of an arena COW value
-/// or key into a longer-lived array (`escape_copy`, inside
-/// `store_category_barrier`), and the table's growth. The fourth is the
-/// flood ladder's terminal rung — a trigger tripping with no rebuild
-/// left (`array::table::InsertOutcome`) — and it dead-ends in this
-/// `false` because the crate has no error channel; the catchable error
-/// the design owes it waits on the exceptions work. All four leave
-/// every array unchanged — the slot names the original at its old count,
-/// every table holds the entries it held, and every reference the caller
-/// brought is still the caller's. One state does move on a refused
-/// insert: a long chain draws the salt before growth is asked to
-/// allocate and rung state is one-way, so the flood ladder may have
+/// **Four refusals report `false`**. Three are allocations no reserve funds:
+/// the separation's copy, the publication of an arena COW value or key into a
+/// longer-lived array (`escape_copy`, inside `store_category_barrier`), and the
+/// table's growth. The fourth is the collision defense's terminal admission
+/// denial — a threshold tripping with no rebuild left
+/// (`array::table::InsertOutcome`) — and it dead-ends in this `false` because
+/// the crate has no error channel; the catchable error the design owes it waits
+/// on the exceptions work. All four leave every array unchanged — the slot
+/// names the original at its old count, every table holds the entries it held,
+/// and every reference the caller brought is still the caller's. One state does
+/// move on a refused insert: a long chain draws the salt before growth is asked
+/// to allocate and defense state is one-way, so the collision defense may have
 /// advanced.
 ///
 /// **No caller reference is consumed.** The operation takes references
@@ -552,7 +551,7 @@ unsafe fn store_into(
 
     let (table, head) = unsafe { as_table_mut(a) };
     match table.insert(head, category, InsertKind::Admission, published_key, v) {
-        InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder => {
+        InsertOutcome::AllocationFailed | InsertOutcome::AdmissionDenied => {
             unsafe { give_value_back(category, &v) };
             if let Key::Str(k) = published_key {
                 unsafe { crate::memory::barrier::drop_ref(category, k as *mut RcHeader) };
@@ -732,7 +731,7 @@ unsafe fn box_element(
         match table.insert(head, category, InsertKind::Admission, key, element) {
             InsertOutcome::Added => None,
             InsertOutcome::Replaced(old) => Some(old),
-            InsertOutcome::RefusedForMemory | InsertOutcome::RefusedByLadder => {
+            InsertOutcome::AllocationFailed | InsertOutcome::AdmissionDenied => {
                 debug_assert!(false, "an overwrite of a present key cannot be refused");
                 // Not `destroy_unpublished`: the barrier above published
                 // this box, and for an arena array that publication is a

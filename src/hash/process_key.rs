@@ -1,5 +1,5 @@
 //! The per-process key: 32 bytes of keying material for the hash table's
-//! flood ladder, drawn from the operating system once per process.
+//! collision defense, drawn from the operating system once per process.
 //!
 //! This is the second keying value `rfc/model/strings.md` ("Seeding")
 //! requires to be read independently rather than derived from a common
@@ -20,7 +20,7 @@
 //! **How a consumer takes the key is fixed here, once — whole, as the
 //! key of a keyed hash, never split into words and never mixed
 //! bijectively** (`rfc/model/maps.md`, "What the flood ladder becomes":
-//! every secret the ladder draws comes from this key):
+//! every secret the collision defense draws comes from this key):
 //!
 //! - `array/table.rs`, `salt_from` — the salt: a keyed hash of the
 //!   storage address under this key, taken by both draws;
@@ -40,7 +40,7 @@
 //! `folded`. `rfc/model/strings.md` ("Neither position is a defence")
 //! concedes exactly that — a per-process key raises hash flooding from
 //! reading a constant to mounting a timing attack and no further, and
-//! the structural backstop is the flood ladder's bounded rebuilds, not
+//! the structural backstop is the collision defense's bounded rebuilds, not
 //! the secrecy of this key.
 //!
 //! A zero word stays as drawn: unlike the seed, no field stores a key

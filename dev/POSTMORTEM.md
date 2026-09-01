@@ -7,6 +7,46 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-01 — a rename over prose rewrote the headings it was told to keep
+
+**What happened.** S41.6 rewrote 239 comments with a word-level script over the
+comment half of each line. The audit's one exemption is a citation: a quoted
+heading is kept exactly, whatever the crate has since renamed. The script had
+no notion of a quoted span, so it rewrote thirteen headings inside their
+quotation — `"Death while enrolled"` became `"Death while registered"`, and
+`"the escrow's floor is allocator-issued"` became `"the overflow buffer's
+floor..."`. A checker written against the working tree found and restored them,
+and a Critic then found **nine more of the same defect**: every heading the
+checker missed was one that wraps onto a second line, and the checker read one
+line at a time.
+
+**Why it was possible.** Two readers of the same text disagreed about what a
+line is. The rename script and the first checker both treated a comment line as
+a unit; a citation is a unit of its own and crosses lines freely. The damage is
+invisible to every other check in the crate: a citation is prose, so nothing
+compiles it, and the sentence around it still reads well.
+
+**Why it was not caught.** The guard written to measure this pass had the same
+per-line rule, so it agreed with the damage rather than reporting it. A
+measurement that shares its predecessor's blind spot confirms the blind spot.
+
+**The rule.** A tool that rewrites prose in this crate reads a quoted span as
+one token across line boundaries, and the guard that measures it carries the
+quote state across lines too, reporting a block that opens a citation and never
+closes it rather than reading the rest of the block as quoted
+(`cycle::tests::the_metaphors_the_comments_still_carry`).
+
+**And the checker counts, rather than asks whether it is still there.** The
+same defect recurred at S41.8 and the check written after the first occurrence
+passed over it: `"What the flood ladder becomes"` was damaged at two sites and
+intact at two others, and a membership test found the heading in the file and
+called it unchanged. Comparing multisets of quoted spans, per file, is what
+catches a heading that survives at one site and dies at another — and a
+citation is never spared from that check by being spared from the metaphor
+guard, which strips quoted spans before it reads anything.
+
+---
+
 ## 2026-09-01 — a reference to the control line was used to address the block behind it, and the same commit turned Miri off
 
 **What happened.** S36.9a (`0416e83`) moved the queue's control state into the

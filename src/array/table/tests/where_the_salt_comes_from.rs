@@ -71,7 +71,7 @@ fn the_salt_derives_from_the_key_module_and_not_the_foldable_seed() {
 }
 
 /// Both draws go through that one derivation, which is what makes the
-/// guard above cover the copy's redraw as well as the ladder's first
+/// guard above cover the copy's redraw as well as the collision defense's first
 /// draw: a second derivation written inline in either would be a salt
 /// no source test reads.
 #[test]

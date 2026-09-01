@@ -1,4 +1,4 @@
-//! The zeroth rung pays no mix: a fresh table indexes an integer key
+//! The unsalted state pays no mix: a fresh table indexes an integer key
 //! by its value, as Zend does, so the salt is paid where a flood
 //! shows up rather than by every honest table. A long chain draws
 //! the salt once and a second one escalates to the keyed hash
@@ -8,6 +8,10 @@
 //! made Perl's REHASH exploitable.
 
 use super::*;
+
+use std::sync::atomic::Ordering;
+
+use crate::memory::buffer_arena::{FORCE_REFUSE_LONGLIVED, REFUSALS};
 
 /// Forge the state the backstop exists for: many entries whose *full*
 /// 64-bit hash agrees. Real construction of such a set needs a break
@@ -21,8 +25,8 @@ fn force_equal_hashes(m: &mut Owned, n: usize) {
     }
 }
 
-/// Forge the other trigger's state: keys whose full hashes *differ*,
-/// so the equal-hash trigger stays quiet, but whose low 16 bits agree,
+/// Forge the other threshold's state: keys whose full hashes *differ*,
+/// so the equal-hash threshold stays quiet, but whose low 16 bits agree,
 /// so every one lands in the same index slot at any table size up to
 /// 65536 and they form one chain.
 fn extend_one_chain(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LLString> {
@@ -36,7 +40,7 @@ fn extend_one_chain(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LLString>
         .collect()
 }
 
-/// The ladder's zeroth rung: a fresh table indexes an integer key by
+/// The unsalted state: a fresh table indexes an integer key by
 /// its value, as Zend does, and pays no mix. Three stride keys
 /// sharing one bucket is the by-value signature — a salted mix would
 /// scatter them. The salt is paid where a flood shows up rather than by
@@ -51,7 +55,7 @@ fn a_fresh_table_indexes_an_integer_key_by_its_value() {
 
     assert!(
         !m.is_reseeded(),
-        "three keys are far below the chain trigger"
+        "three keys are far below the chain threshold"
     );
     assert_eq!(m.salt, 0, "an unsalted table holds no number to mix with");
     let mut chain = 0usize;
@@ -70,25 +74,25 @@ fn a_fresh_table_indexes_an_integer_key_by_its_value() {
     }
 }
 
-/// The flood the zeroth rung admits by design: indexed by value, a
+/// The flood the unsalted state admits by design: indexed by value, a
 /// power-of-two stride builds exactly one chain — which is the first
-/// rung's own trigger, so nobody had to predict where keys come
-/// from. The rung draws a salt and rebuilds; the mix scatters the
+/// salted rebuild's own threshold, so nobody had to predict where keys come
+/// from. The rebuild draws a salt; the mix scatters the
 /// rest of the flood and no key is lost across the rebuild.
 #[test]
-fn an_integer_flood_fires_the_first_rung_and_the_drawn_salt_scatters_it() {
+fn an_integer_flood_fires_the_salted_rebuild_and_the_drawn_salt_scatters_it() {
     let _g = crate::memory::block_pool::test_guard();
     let mut m = t();
     for i in 0..512i64 {
         m.insert(Key::Int(i * 1024), Value::int(i));
     }
 
-    assert!(m.is_reseeded(), "the flood's own chain is the trigger");
+    assert!(m.is_reseeded(), "the flood's own chain is the threshold");
     assert!(
         !m.is_strong(),
-        "differing hashes never take the strong rung"
+        "differing hashes never take the keyed-hash escalation"
     );
-    assert_ne!(m.salt, 0, "the rung drew nothing");
+    assert_ne!(m.salt, 0, "the salted rebuild drew nothing");
     // Longest chain: with the drawn salt this is a handful; by-value
     // indexing would put all 512 in one bucket.
     let mut longest = 0usize;
@@ -111,7 +115,7 @@ fn an_integer_flood_fires_the_first_rung_and_the_drawn_salt_scatters_it() {
         assert_eq!(
             m.get(Key::Int(i * 1024)).unwrap().as_int(),
             i,
-            "a key was lost across the rung's rebuild"
+            "a key was lost across the rebuild"
         );
     }
 }
@@ -151,8 +155,8 @@ fn the_drawn_salt_is_not_the_bare_address_hash() {
     );
 }
 
-/// Rung one mixes string slots as well as integer ones: under
-/// `hash-folding` a cached string hash is a build constant, so a rung
+/// The salted rebuild mixes string slots as well as integer ones: under
+/// `hash-folding` a cached string hash is a build constant, so a rebuild
 /// that salts only integers rebuilds an offline-built string chain
 /// into the same chain. The probe side and the rebuild side must move
 /// together, or the salted kind's entries are present, iterable and
@@ -200,7 +204,10 @@ fn a_reseeded_tables_string_slot_is_salted_on_both_sides() {
 /// unsalted table slots by.
 fn extend_one_chain_salted(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LLString> {
     let salt = m.salt;
-    assert_ne!(salt, 0, "forging against no salt forges the wrong rung");
+    assert_ne!(
+        salt, 0,
+        "forging against no salt forges against the wrong hash"
+    );
     assert!(
         m.head().nslots() <= 1 << AGREEING_BITS,
         "the table outgrew the family's agreement, so it no longer shares a slot"
@@ -227,7 +234,7 @@ fn extend_one_chain_salted(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LL
         .collect()
 }
 
-/// The ladder's rungs above the zeroth, in order and each once. A
+/// The salted rebuild and the keyed-hash escalation, in order and each once. A
 /// long chain of keys whose hashes differ draws the salt a fresh
 /// table does not have; a second chain forged against the *drawn*
 /// salt — read through the test window, as an attacker with a timing
@@ -236,15 +243,15 @@ fn extend_one_chain_salted(m: &mut Owned, from: usize, to: usize) -> Vec<*mut LL
 /// escalation per table.
 ///
 /// Seen failing at the escalation: without the reseed counter the
-/// chain trigger redraws forever. The second family is forged under
+/// chain threshold redraws forever. The second family is forged under
 /// the salted mix because the mix covers string slots: an unsalted
 /// forge scatters at the draw's own rebuild and never trips again —
-/// the rung doing its work, not a way to reach the next one.
+/// the rebuild doing its work, not a way to reach the escalation.
 #[test]
 fn a_long_chain_draws_the_salt_once_and_then_escalates() {
     let _g = crate::memory::block_pool::test_guard();
     let mut m = t();
-    assert_eq!(m.salt, 0, "a fresh table is the zeroth rung");
+    assert_eq!(m.salt, 0, "a fresh table is unsalted");
 
     let first = extend_one_chain(&mut m, 0, CHAIN_LIMIT as usize + 1);
     assert!(m.is_reseeded(), "the first long chain draws the salt");
@@ -271,12 +278,12 @@ fn a_long_chain_draws_the_salt_once_and_then_escalates() {
         assert_eq!(
             m.get(Key::Str(*s)).unwrap().as_int(),
             i as i64,
-            "a key was lost across the ladder"
+            "a key was lost across the defense"
         );
     }
 }
 
-/// Equal full hashes take the strong rung directly — and firing from
+/// Equal full hashes take the keyed-hash escalation directly — and firing from
 /// an unsalted table draws the salt on the way, because the keyed
 /// hash's key *is* the salt and zero is a key every attacker knows.
 #[test]
@@ -295,7 +302,7 @@ fn equal_full_hashes_escalate_the_table_to_the_keyed_hash() {
     );
     assert_ne!(
         m.salt, 0,
-        "escalation from the zeroth rung left the keyed hash keyed by zero"
+        "escalation from the unsalted state left the keyed hash keyed by zero"
     );
 }
 
@@ -394,7 +401,7 @@ fn escalation_happens_once_and_a_drawn_salt_is_not_redrawn_on_equal_hashes() {
 /// asserted rather than assumed.
 ///
 /// Names only, no entities: the caller decides which are inserted and
-/// which one springs the trigger.
+/// which one springs the threshold.
 /// How far a forged strong family agrees, and so the widest index that
 /// still holds the whole of it in one slot: these fixtures fill a table
 /// of 64 entries over 128 slots, and eight bits carry that with a
@@ -434,12 +441,85 @@ fn raw_insert(m: &mut Owned, kind: InsertKind, key: Key, value: Value) -> Insert
     unsafe { crate::array::testing::raw_insert(m.0, kind, key, value) }
 }
 
+/// The two refusals are two answers, and a caller acts on them differently:
+/// a denied admission is the collision defense saying no to this key, while a
+/// refused allocation is the storage saying no to any key at all.
+///
+/// The rename that made them `AdmissionDenied` and `AllocationFailed` is
+/// exactly where the two could have become one, so the distinction is
+/// asserted rather than read. The denial half two other tests already assert;
+/// **the allocation half is asserted nowhere else in the crate**, and without
+/// it a merge of the two variants would still pass every test here.
+#[test]
+fn a_refused_allocation_and_a_denied_admission_are_different_answers() {
+    let _g = crate::memory::block_pool::test_guard();
+
+    let mut m = t();
+    // Enough entries that the next insert has to grow the storage, and the
+    // growth is the only thing the refusal below can reach.
+    for i in 0..8i64 {
+        assert!(
+            matches!(
+                raw_insert(&mut m, InsertKind::Admission, Key::Int(i), Value::int(i)),
+                InsertOutcome::Added
+            ),
+            "an insert this test's storage depends on did not add"
+        );
+    }
+
+    // `FORCE_REFUSE_LONGLIVED` rather than `force_oom`: a `GcHeap` table's
+    // storage comes from the buffer arena's long-lived side, which serves out
+    // of a block it already holds and reaches the pool only when it needs a
+    // new one. Refusing through the pool would therefore depend on what ran
+    // before this test (`memory::buffer_arena`, `FORCE_REFUSE_LONGLIVED`).
+    let filled = m.len();
+    let refusals_before = REFUSALS.load(Ordering::Relaxed);
+    FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
+    let refused_for_memory = raw_insert(&mut m, InsertKind::Admission, Key::Int(8), Value::int(8));
+    FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
+
+    // The refusal is proved rather than assumed: the same outcome could in
+    // principle arrive from an allocation nobody injected
+    // (`dev/POSTMORTEM.md`, "a forced-refusal test that never proved the
+    // refusal").
+    assert_eq!(
+        REFUSALS.load(Ordering::Relaxed),
+        refusals_before + 1,
+        "the injected refusal is what the insert met"
+    );
+    assert!(
+        matches!(refused_for_memory, InsertOutcome::AllocationFailed),
+        "storage that cannot grow answers the allocation's refusal, not the \
+         defense's"
+    );
+    assert_eq!(
+        m.len(),
+        filled,
+        "a refused allocation left the table's contents where they were"
+    );
+
+    // And the other answer, from a table with memory to spare.
+    let mut spent = t();
+    let (_, tripper) = spent_defense_with_a_chain(&mut spent);
+    let s = mk(tripper.as_bytes());
+    let denied = raw_insert(
+        &mut spent,
+        InsertKind::Admission,
+        Key::Str(s),
+        Value::int(1),
+    );
+    assert!(
+        matches!(denied, InsertOutcome::AdmissionDenied),
+        "a spent defense denies the admission rather than reporting memory"
+    );
+}
+
 /// A table with both rebuilds spent and one forged chain standing one
-/// short of the trigger, plus the name that would spring it: the state
-/// every terminal-rung test starts from.
-fn spent_ladder_with_a_chain(m: &mut Owned) -> (Vec<*mut LLString>, String) {
+/// short of the threshold, plus the name that would spring it: the state
+/// every terminal-admission-denial test starts from.
+fn spent_defense_with_a_chain(m: &mut Owned) -> (Vec<*mut LLString>, String) {
     force_equal_hashes(m, EQUAL_HASH_LIMIT as usize + 1);
-    assert!(m.is_strong(), "the ladder must be spent before the trip");
+    assert!(m.is_strong(), "both rebuilds must be spent before the trip");
     let mut names = strong_slot_family(m, CHAIN_LIMIT as usize + 1, "strong-chain");
     let tripper = names.pop().expect("the family holds the tripper");
     let chain = names
@@ -447,9 +527,9 @@ fn spent_ladder_with_a_chain(m: &mut Owned) -> (Vec<*mut LLString>, String) {
         .enumerate()
         .map(|(i, name)| {
             let s = mk(name.as_bytes());
-            // As a replay, so the build cannot trip the rung itself: a
+            // As a replay, so the build cannot trip the denial itself: a
             // stray collider sharing the family's slot would otherwise
-            // put the last additions over the trigger — whether it does
+            // put the last additions over the threshold — whether it does
             // depends on the drawn salt, which varies with the storage
             // address, and a fixture must not.
             let outcome = raw_insert(m, InsertKind::Replay, Key::Str(s), Value::int(i as i64));
@@ -460,18 +540,19 @@ fn spent_ladder_with_a_chain(m: &mut Owned) -> (Vec<*mut LLString>, String) {
     (chain, tripper)
 }
 
-/// Rung three: a chain trip on a table whose ladder is spent refuses
+/// The terminal admission denial: a chain trip on a table whose collision defense is
+/// spent refuses
 /// the admission, with every entry, count and key exactly as it was —
-/// including the rung state, which a refusal spends nothing of.
+/// including the defense state, which a refusal spends nothing of.
 ///
-/// Without the terminal rung `reseed` and `escalate` both return early
-/// on a strong table, the admission is taken, and the chain grows
-/// without bound.
+/// Without the terminal admission denial `reseed` and `escalate` both return
+/// early on a strong table, the admission is taken, and the chain grows without
+/// bound.
 #[test]
-fn a_spent_ladders_chain_trip_refuses_the_admission_and_changes_nothing() {
+fn a_spent_defenses_chain_trip_refuses_the_admission_and_changes_nothing() {
     let _g = crate::memory::block_pool::test_guard();
     let mut m = t();
-    let (chain, tripper) = spent_ladder_with_a_chain(&mut m);
+    let (chain, tripper) = spent_defense_with_a_chain(&mut m);
     let len_before = m.len();
     let used_before = m.used();
     let salt_before = m.salt;
@@ -479,8 +560,8 @@ fn a_spent_ladders_chain_trip_refuses_the_admission_and_changes_nothing() {
     let s = mk(tripper.as_bytes());
     let outcome = raw_insert(&mut m, InsertKind::Admission, Key::Str(s), Value::int(999));
     assert!(
-        matches!(outcome, InsertOutcome::RefusedByLadder),
-        "a trigger tripped with no rebuild left must refuse the admission"
+        matches!(outcome, InsertOutcome::AdmissionDenied),
+        "a threshold met with no rebuild left must refuse the admission"
     );
     assert_eq!(
         m.len(),
@@ -489,7 +570,7 @@ fn a_spent_ladders_chain_trip_refuses_the_admission_and_changes_nothing() {
     );
     assert_eq!(m.used(), used_before, "a refused insert wrote an entry");
     assert_eq!(m.salt, salt_before, "a refusal spends nothing");
-    assert!(m.is_strong(), "a refusal clears no rung state");
+    assert!(m.is_strong(), "a refusal clears no defense state");
     assert!(
         m.get(Key::Str(s)).is_none(),
         "the refused key entered the table anyway"
@@ -510,7 +591,7 @@ fn a_spent_ladders_chain_trip_refuses_the_admission_and_changes_nothing() {
     }
 }
 
-/// The fourth terminal case: the equal-identity trigger over string
+/// The fourth terminal case: the equal-identity threshold over string
 /// entries on a table that is already escalated. Equal full hashes are
 /// what escalation answers; met again past it, there is no rebuild
 /// left and the admission is refused.
@@ -537,7 +618,7 @@ fn equal_hashes_on_an_escalated_table_refuse_instead_of_rebuilding() {
     unsafe { (*s).hash = 0x0E0_0E0_0E0 };
     let outcome = raw_insert(&mut m, InsertKind::Admission, Key::Str(s), Value::int(999));
     assert!(
-        matches!(outcome, InsertOutcome::RefusedByLadder),
+        matches!(outcome, InsertOutcome::AdmissionDenied),
         "equal identities on an escalated table have no rebuild to take"
     );
     assert_eq!(m.len(), len_before);
@@ -549,30 +630,30 @@ fn equal_hashes_on_an_escalated_table_refuse_instead_of_rebuilding() {
 
 /// The exemption: the same trip that refuses an admission admits a
 /// replay, because a key admitted once cannot be refused on
-/// re-admission — the chain grows past the trigger's limit, which is
+/// re-admission — the chain grows past the threshold's limit, which is
 /// the price of honouring the earlier admission.
 #[test]
-fn a_replay_is_admitted_past_a_spent_ladder() {
+fn a_replay_is_admitted_past_a_spent_defense() {
     let _g = crate::memory::block_pool::test_guard();
     let mut m = t();
-    let (_, tripper) = spent_ladder_with_a_chain(&mut m);
+    let (_, tripper) = spent_defense_with_a_chain(&mut m);
     let len_before = m.len();
 
     let s = mk(tripper.as_bytes());
     let outcome = raw_insert(&mut m, InsertKind::Replay, Key::Str(s), Value::int(999));
     assert!(
         matches!(outcome, InsertOutcome::Added),
-        "a replay may not be refused by the ladder"
+        "a replay may not be refused by the collision defense"
     );
     assert_eq!(m.len(), len_before + 1);
     assert_eq!(m.get(Key::Str(s)).unwrap().as_int(), 999);
 }
 
-/// Only the refusal is exempt: a replay tripping the chain trigger on
-/// a fresh table fires rung one exactly as an admission does, so a
+/// Only the refusal is exempt: a replay tripping the chain threshold on
+/// a fresh table fires the salted rebuild exactly as an admission does, so a
 /// replayed flood is scattered rather than rebuilt verbatim.
 #[test]
-fn a_replay_still_fires_the_rungs_below_the_terminal_one() {
+fn a_replay_still_fires_the_stages_below_the_terminal_one() {
     let _g = crate::memory::block_pool::test_guard();
     let mut m = t();
     for i in 0..(CHAIN_LIMIT as i64 + 1) {
@@ -587,8 +668,8 @@ fn a_replay_still_fires_the_rungs_below_the_terminal_one() {
 
     assert!(
         m.is_reseeded(),
-        "a replayed flood left rung one unfired: the exemption leaked \
-         below the terminal rung"
+        "a replayed flood left the salted rebuild unfired: the exemption \
+         leaked below the terminal admission denial"
     );
     for i in 0..(CHAIN_LIMIT as i64 + 1) {
         assert_eq!(m.get(Key::Int(i * 1024)).unwrap().as_int(), i);

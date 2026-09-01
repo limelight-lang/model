@@ -63,7 +63,7 @@ The two are `hash::seed::tests::where_the_seed_comes_from::`
 `the_process_seed_comes_from_the_operating_system` off and
 `a_folding_build_hashes_under_its_own_seed` on, so the arms list the
 same number of tests and a count tells them apart in neither direction
-(diffed byte for byte on 2026-08-26; both arms list 576 on 2026-09-01):
+(diffed byte for byte on 2026-08-26; both arms listed 576 on 2026-08-26 and 609 on 2026-09-01, the difference being tests added since):
 
 ```
 LL_HASH_SEED=<any> cargo test --lib --features hash-folding -- --test-threads=4

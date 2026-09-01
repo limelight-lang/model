@@ -19,6 +19,13 @@ use std::path::{Path, PathBuf};
 /// `judg` rather than `judge`, so that `judging` and the US `judgment` are
 /// read too; the others inflect without losing their stem.
 ///
+/// The last three are the hash table's collision defense, retired by S41.8.
+/// `trigger` costs exemptions — it is ordinary English in `cycle`, `hash`,
+/// `memory`, `promote` and `refcount` — and it is here anyway: the audit
+/// retires it as the name of a threshold, four in five of its `src/array/`
+/// occurrences were prose, and prose is the surface only this guard and its
+/// comment sibling read.
+///
 /// Only words the audit retires *as metaphors* are here. The ordinary-English
 /// half of the mapping — `live`, `held`, `drain`, `top` — is the sibling
 /// guard's, scoped by subtree, because a substring of those is English far
@@ -27,8 +34,9 @@ use std::path::{Path, PathBuf};
 /// `door` joins this list at `PLAN.md` S41.7, which is the step that
 /// classifies its sites; before that classification the word is not yet a
 /// defect wherever it stands.
-pub(super) const METAPHORS: [&str; 10] = [
+pub(super) const METAPHORS: [&str; 13] = [
     "condemn", "acquit", "corpse", "judg", "park", "escrow", "floor", "climb", "enrol", "discount",
+    "ladder", "rung", "trigger",
 ];
 
 /// A subtree, a name in it that carries a metaphor and keeps it, and the
@@ -37,7 +45,7 @@ pub(super) const METAPHORS: [&str; 10] = [
 /// The reason is the point: an exemption without one is indistinguishable
 /// from an oversight, and this list is read by whoever finds the next
 /// offence. An empty subtree means the whole crate.
-const EXEMPT: [(&str, &str, &str); 7] = [
+const EXEMPT: [(&str, &str, &str); 8] = [
     (
         "",
         "the_arena_keeps_a_ratified_name_of_its_own_for_enrol",
@@ -69,14 +77,16 @@ const EXEMPT: [(&str, &str, &str); 7] = [
     ),
     (
         "promote",
+        "trigger",
+        "a fixture class named `Trigger` and the bindings that hold it, which \
+         are a test's own furniture rather than the hash table's threshold",
+    ),
+    ("promote", "trigger_cls", "the same fixture"),
+    (
+        "promote",
         "corpse_walks",
         "the binding that reads `memory::reset_window`'s `CORPSE_WALKS`, and \
          it takes that constant's name",
-    ),
-    (
-        "array",
-        "a_copy_of_an_unsalted_table_is_unsalted_and_climbs_its_own_ladder",
-        "the hash table's collision defence, which `PLAN.md` S41.8 renames",
     ),
 ];
 
