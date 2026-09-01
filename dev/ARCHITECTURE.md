@@ -129,7 +129,7 @@ teardown.
 |---|---|---|---|---|
 | `array/head` | the words a concurrent walker may read — version, chunk, index-slot count, element count, strategy tag — and the seqlock bracket that makes reading them coherent (`begin_move` / `end_move`, `coherent`) | that a walker validates a reading rather than locking, that each word it reads is written by one atomic store of the same width, and that giving a reading up leaks one epoch rather than freeing early; that both fences are needed and why their ends differ (`version_bracket_model.rs`); and the two rules it states for whoever writes the chunk — `used` never falls while `storage` stays the same, and a release goes through the window like a move | what the words mean: it knows no stride, no entry, no element, and holds no representation — the strategy tag it stores is opaque to it beyond being one of three | nothing but `core` |
 | `array/entry` | the 32-byte entry — `hash_or_key`, `key`, and the element Box whose reserved bytes carry the collision link as a `u32` at +28 — the sentinel `NONE`, which ends a chain and empties an index slot alike, with the `MAX_ENTRIES` cap a `u32` index imposes; and every store into a word the collector reads — the element's second word and the key word, `make_hole` included | that the link shares the element's second word, so tag, flags and link publish as one relaxed atomic store of the width the collector loads; which key states the raw word encodes, the hole among them; that an entry above the published count is filled by the plain setters instead, no reader being able to reach it yet | the index's shape and every operation over the entries: it supplies the sentinel and reads no slot, hashes nothing, and does not know what an element points at | `value`, `string` |
-| `array/table` | one storage allocation (`u32` index slots, then the dense entry array in insertion order) and the operations over it: lookup, insert, remove, growth by doubling or by dropping the holes, both into a fresh chunk, the flood ladder's two rungs, and the bracket it opens around every move of an entry | the memory category, handed to it as a parameter by every allocating call (`array::entity::category_of` reads it) — except at the carry out of a dying arena, which names `GcHeap` because the owner's header still says `RequestArena` until promotion rewrites it; a string key's bytes and its cached hash; that nothing inside the storage points into it, so promotion copies it whole; that the words a walker reads are not its own — the chunk, the two counts, the tag and the version arrive as `head: &StorageHead` on every call that touches them | entities altogether: no kind, no header, no reference. It allocates none, retains none, releases none and calls no store barrier — it states the ownership its callers owe (`insert`'s one reference per stored key, `remove`'s `#[must_use]` pair) and hands the displaced element back for the layer above to act on. It holds no category of its own either, that field having drifted once (2026-08-07), and no storage head, a `&mut Table` being unable to span one (2026-08-11) | `entry`, `refcount`, `value`, `string`, `hash`, `memory/routing`, `memory/arena`, `memory/block_pool` |
+| `array/table` | one storage allocation (`u32` index slots, then the dense entry array in insertion order) and the operations over it: lookup, insert, remove, growth by doubling or by dropping the holes, both into a fresh chunk, the collision defense's salted rebuild and keyed-hash escalation, and the bracket it opens around every move of an entry | the memory category, handed to it as a parameter by every allocating call (`array::entity::category_of` reads it) — except at the carry out of a dying arena, which names `GcHeap` because the owner's header still says `RequestArena` until promotion rewrites it; a string key's bytes and its cached hash; that nothing inside the storage points into it, so promotion copies it whole; that the words a walker reads are not its own — the chunk, the two counts, the tag and the version arrive as `head: &StorageHead` on every call that touches them | entities altogether: no kind, no header, no reference. It allocates none, retains none, releases none and calls no store barrier — it states the ownership its callers owe (`insert`'s one reference per stored key, `remove`'s `#[must_use]` pair) and hands the displaced element back for the layer above to act on. It holds no category of its own either, that field having drifted once (2026-08-07), and no storage head, a `&mut Table` being unable to span one (2026-08-11) | `entry`, `refcount`, `value`, `string`, `hash`, `memory/routing`, `memory/arena`, `memory/block_pool` |
 | `array/element` | the generic element layer over the table: `canonical_key`, the five operations, the separation composition every write goes through, the element reference box, and the teardown of anything it could not publish | COW separation and the order it publishes in; that an element reference is a `ReferenceBox` because growth moves an entry, and that the box is a heap entity whatever the array's category; that canonicalisation belongs above the table, a map keying exactly | the entry layout, the index, the chains — it names keys and elements, never an entry | `array/table`, `array/entity`, `barrier`, `reference`, `object` (`ll_cow_separate`, `ll_entity_die`), `refcount`, `value`, `string`, `memory/context`, `memory/arena` |
 | `array/entity` | the `RcHeader` over the table — kind Array, COW set, no class pointer — with the factories, the copy for both depths (`separate`), the child walk, the teardown drain that takes a nesting down without the machine stack, and — since the head moved here — the access paths every representation is reached through (`as_table_mut`), the storage's disposal and its carry out of a dying arena | the entity kind, the memory category and the COW state; that a nested array leaves the candidate buffer here, never having reached `ll_entity_die`; which representation the union holds — it owns the tag and asserts it, and it owns the rule that no reference may span the head or the whole entity | classes, an array having none; the element operations above it; the collector's phases | `array/table`, `refcount`, `value`, `barrier`, `object`, `reference`, `string`, `memory/routing`, `memory/arena`, `memory/stdapi`, `journal`; upward: `cells` |
 
@@ -204,11 +204,11 @@ field is lent to):
   collector's fields safely because an arena entity is never a
   candidate, so a reset and a collection never mark the same entity;
 - bits 8–10, the collector's three marks — `ACYCLIC_GATE`,
-  `OWNERSHIP_MARK`, `ENROLLED`. The release path reads them together
+  `OWNERSHIP_MARK`, `CANDIDATE_BIT`. The release path reads them together
   with the category and the kind's top bit as one `flags & 0x723`
-  (`refcount::ENROLMENT_GATE_MASK`), so a constant landing on any of them
+  (`refcount::CANDIDATE_GATE_MASK`), so a constant landing on any of them
   would make the gate refuse candidates for a reason the design does not
-  have. `ENROLLED` is written by `refcount::release_word` beside the queue
+  have. `CANDIDATE_BIT` is written by `refcount::release_word` beside the queue
   entry and cleared at the drain; the two proofs have no writer, and the
   steps that give them one are S37.2 and S37.3;
 - bit 11, `IS_ESCAPEE` — repurposes the refcount as the escapee
@@ -262,7 +262,7 @@ the class's typed runs) → free by category — arena memory just stays,
 heap memory goes through the size-less `ll_free` funnel (`stdapi`).
 
 A **non-zero** decrement is where `rc-cycle` registers a candidate:
-`refcount::ENROLMENT_GATE_MASK` decides and `cycle::queue` stores it.
+`refcount::CANDIDATE_GATE_MASK` decides and `cycle::queue` stores it.
 The free path refuses physical reuse while either identifier stands —
 the queue entry through `CANDIDATE_BIT`, and
 `cycle::deferred_slot_reuse::ActiveTrace`
@@ -322,7 +322,7 @@ write them. Each is load-bearing for at least two modules.
    without a kind dispatch.
 4. **A dead entity slot keeps its final refcount-0 header** in bytes
    0–7 — the walker's occupancy test. That is why every intrusive link
-   through dead memory (heap free list, parked-free list) lives at
+   through dead memory (heap free list, remote-free list) lives at
    bytes 8–15, and why entity blocks are zeroed at commissioning.
 5. **An escapee's hold-count lives in its `refcount`** while
    `IS_ESCAPEE` is set: the barrier and holder teardown maintain it,
@@ -377,14 +377,15 @@ write them. Each is load-bearing for at least two modules.
 11. **One configuration.** The GC axis went with the two collectors on
     2026-08-26; `hash-folding` and `debug-journal` are what remains of
     the build matrix (`WORKFLOW.md`).
-12. **Every death is eager, and a teardown drops on a corpse**
+12. **Every death is eager, and a teardown drops on a zero-count member**
     (eager-death amendment, 2026-07-27, superseding the F5
     deferral/marker scheme): a release reaching zero always tears down
-    at the natural point, with only the memory parked (out-of-band — a
-    parked slot is never written until the flush). The corpse rule that
-    goes with it opens the cycle teardown: a component holding a member
-    already at `rc 0` is dropped whole, before any field is traced or
-    any guard written (`rfc/model/gc/rc-cycle.md`, "Cycle teardown",
+    at the natural point, with only the memory's reuse deferred
+    (out-of-band — a slot whose reuse is deferred is never written until
+    the replay). The zero-count-member rule that goes with it opens the
+    cycle teardown: a component holding a member already at `rc 0` is
+    dropped whole, before any field is traced or any guard written
+    (`rfc/model/gc/rc-cycle.md`, "Cycle teardown",
     step 1).
 13. **An interned name *is* a valid immortal string entity** — the
     future string machinery reads it as-is; immortal + COW makes

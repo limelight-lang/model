@@ -48,12 +48,12 @@ versions live in `docs/history/`, marked at the top.
   Two numbers about a row, both pinned by tests rather than by prose: a
   count at the field's bound is a floor and absorbs every subtraction, so
   an entity referenced more times than thirty bits hold is conservatively
-  live and no scan may condemn it (`shadow::is_saturated`); and a block's
+  live and no scan may mark it potentially unreachable (`shadow::is_saturated`); and a block's
   first touch writes 121 bytes at the widest size class against the
   16 320 its rows reserve, which is what the group bitmap bought
   (`dev/BENCHMARKS.md`, 2026-08-27).
 
-  Nothing derives a member list from the condemned rows, and no step of
+  Nothing derives a member list from the potentially unreachable rows, and no step of
   `PLAN.md` owns that.
 - The candidate gate: `refcount::CANDIDATE_GATE_MASK` and
   `may_become_a_candidate`,
@@ -143,7 +143,7 @@ versions live in `docs/history/`, marked at the top.
   `hash/process_key.rs` holds the other secret, and the two must not be
   confused: 32 bytes drawn from the OS once per process **in every
   build**, outside `STAMP` and exempt from `hash-folding`, because
-  nothing compiled may depend on them. Every secret the flood ladder
+  nothing compiled may depend on them. Every secret the collision defense
   draws comes from here (`rfc/model/maps.md`, "What the flood ladder
   becomes"), and a consumer takes the key whole as a keyed hash's key
   rather than by words. Unix only so far — the backlog carries the
@@ -202,13 +202,15 @@ versions live in `docs/history/`, marked at the top.
   dropping the holes (one body, `move_entries`, and both into a freshly
   allocated chunk: sliding entries inside the published one raced the
   collector's relaxed loads), and the flood backstop, which is
-  a three-rung ladder: a long chain draws the table's salt and rebuilds
-  the index, a second long chain or eight equal identities escalates to a
-  keyed hash over the key bytes, and past both an admission whose trigger
-  trips is refused rather than chained (`rfc/model/maps.md`, "Rung three,
+  the collision defense's state: a chain-length threshold draws the table's
+  salt for a salted rebuild of the index, a second chain-length threshold
+  or an equal-hash threshold of eight identical hashes escalates to a
+  keyed hash over the key bytes, and past both, an admission is
+  refused rather than chained under the terminal admission denial
+  (`rfc/model/maps.md`, "Rung three,
   refusal"). Every secret it draws comes from `hash/process_key.rs`. A
-  COW copy takes the rung bits, draws a salt of its own from its own
-  storage, and is presized to the entries it replays. It allocates no
+  COW copy takes the collision defense's state, draws a salt of its own from
+  its own storage, and is presized to the entries it replays. It allocates no
   entity and calls no store
   barrier: both are `element.rs`'s, and `Table::insert` hands the
   displaced element back for that layer to release.
@@ -326,7 +328,7 @@ versions live in `docs/history/`, marked at the top.
   slot is counted and reported as `Lost`. `ll_thread_init` reopens the cell, so a pool thread's
   second life journals into a ring of its own. An evicted ring is freed by
   the next thread to journal or to mark, never by one inside its own exit,
-  whose parked backlog is gone by then — the three-valued
+  whose pending-free list is gone by then — the three-valued
   `heap::ExitPhase` is what tells those apart, a boolean having conflated
   a heap rebuilt mid-exit with a new life. The module is in every build; what the
   `debug-journal` feature gates is the record **sites**, and those are
@@ -560,7 +562,7 @@ block still stamped with that kind.
 
 Withholding a physical return — `memory::stdapi::ll_free` asks two windows
 before a slot, a retained block or a large run goes back: an entity whose
-header still carries `ENROLLED` waits with no record kept, the queue entry
+header still carries `CANDIDATE_BIT` waits with no record kept, the queue entry
 being the record; an open trace sends the return to
 `cycle::deferred_slot_reuse::ActiveTrace`, which replays it after its trace
 scratch arena has
