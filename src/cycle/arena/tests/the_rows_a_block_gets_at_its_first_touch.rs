@@ -21,7 +21,7 @@ use crate::test_support::{RUN_FILLERS, store_prop, wide_class};
 /// for the sweep. The row itself comes back met, carrying the refcount
 /// the caller read.
 #[test]
-fn a_first_touch_reserves_rows_stamps_the_block_and_enrols_it() {
+fn a_first_touch_reserves_rows_stamps_the_block_and_attaches_it() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
@@ -91,7 +91,7 @@ fn a_second_reach_leaves_the_working_count_alone() {
 /// condemned entity would read it as untouched and re-initialise it from
 /// the refcount, acquitting the component.
 #[test]
-fn a_condemned_zero_row_is_told_from_an_untouched_slot() {
+fn a_potentially_unreachable_zero_row_is_told_from_an_untouched_slot() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();

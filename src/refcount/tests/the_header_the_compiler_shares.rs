@@ -64,7 +64,7 @@ fn flags_layout_matches_the_normative_table() {
     // The enrolment gate reads bits 0-1, 5 and 8-10 as one mask, so a
     // constant landing on any of them would make the gate refuse
     // candidates for a reason the design does not have. The clauses
-    // themselves are `the_enrolment_gate`; this pins the positions.
+    // themselves are `the_candidate_gate`; this pins the positions.
     assert_eq!(
         CANDIDATE_GATE_MASK,
         MEMORY_CATEGORY_MASK | (1 << 5) | ACYCLIC_GATE | OWNERSHIP_MARK | CANDIDATE_BIT,

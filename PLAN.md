@@ -85,6 +85,11 @@ guard lowers it on the unwind as well as on the return.
   none for the sweep-list sense of enrolment. S41.7 needs the first two, and
   all four belong to `rfc` S9.1 (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Glossary
   check").
+- `memory::reset_window` keeps a vocabulary of its own around the same gap —
+  `CORPSE_WALKS` and `park_large` beside `ResetWindow::escrow` — and both
+  S41 guards exempt the two by name, with the reason in the exemption. The
+  rename waits on the glossary entry rather than inventing a third word, and
+  no step owns it yet.
 
 ---
 
@@ -115,7 +120,7 @@ categories" holds and which waits on region ownership, and redrawing
 S36.10 onward are written in the names that survive rather than renamed after
 them. **Every commit here is rename and comment only**: layout, allocation,
 synchronization and algorithm stay where they are, and a structural change the
-audit happens to name — `cycle::parking`'s `Box<Vec<_>>` is the one — belongs
+audit happens to name — `cycle::deferred_slot_reuse`'s `Box<Vec<_>>` is the one — belongs
 to the step that owns it.
 
 - [x] S41.1 Decide: the mapping is synchronized with the RFC glossary
@@ -226,7 +231,7 @@ to the step that owns it.
         arena's `slots` parameter keeps its name on purpose: it counts the
         block's slots, which is what `RowArray::row_count` is derived from
         rather than what it holds.
-- [ ] S41.5 The tests and the current maps
+- [x] S41.5 The tests and the current maps
       done: no test file name, test name or helper uses a retired term,
         measured by a guard of its own that reads the crate's **file names and
         item names** for the audit's metaphor list — condemn, acquit, corpse,
@@ -241,6 +246,19 @@ to the step that owns it.
         and an active citation of an old heading keeps the heading exactly with
         the current name outside the quotation
       tier: T1 · role: —
+      handoff: the second guard is
+        `cycle::tests::the_metaphors_the_names_still_carry`, ten metaphors read
+        as case-insensitive substrings over file names and declarations. It
+        found 37 declarations and 6 file names; four names stay by exemption,
+        each carrying its reason — the sibling guard's own test that names the
+        token it is about, `memory::reset_window`'s `CORPSE_WALKS` and
+        `park_large`, which wait on the glossary, and the hash table's
+        `climbs_its_own_ladder`, which is S41.8's.
+      handoff: `dev/INDEX.md` and `dev/ARCHITECTURE.md` name what the code
+        names, and so do the open half of `PLAN.md` and its backlog. The dated
+        records inside closed steps keep their vocabulary: they describe the
+        day they were written, which is what the audit's documentation
+        boundary asks.
 - [ ] S41.6 The comments, the residue and the gate
       done: every module header of `cycle` states purpose, ownership and
         lifetime, allocation and failure behaviour, ordering invariants and its
@@ -990,17 +1008,17 @@ stage claiming the frees while building none of them.
         the resulting storage survives the trace close through commit
       done: refusal after detach or after any member append aborts the whole
         trace, sweeps its rows and restores every in-flight token to its source
-        lane without allocation. No `ENROLLED` bit is left without exactly one
+        lane without allocation. No `CANDIDATE_BIT` bit is left without exactly one
         logical record and no record exists in two lanes
       tier: T2 · role: Sage → Critic
       handoff: choose and test the commit unit here. A single condemned batch
         is safe under the aggregate exact sum but resurrection in one connected
         part conservatively retains the others; if teardown promises
         per-component behaviour, this step must extract components instead of
-        silently passing their union to `exact::judge`.
+        silently passing their union to `validation::validate_component`.
       handoff: an enrolled death does not clear the bit or retire its record.
         Teardown finishes and physical return waits; only the consumer that
-        still owns the record may observe count zero, clear `ENROLLED`, return
+        still owns the record may observe count zero, clear `CANDIDATE_BIT`, return
         the slot and retire the token. The reverse order creates a dangling
         queue pointer that can name a new occupant.
 - [ ] S36.13 The retained-block visit   *(after S36.12, before S36.7)*
@@ -1075,8 +1093,8 @@ stage claiming the frees while building none of them.
       done: when mark and scan run synchronously on the owning mutator at one
         consistent point, a condemned component proceeds directly to the owner
         commit — guard acquisition, weak invalidation and finalization — without
-        `exact::judge` re-reading the same counts and fields first; the
-        speculative/off-thread path still calls `exact::judge`, because its
+        `validation::validate_component` re-reading the same counts and fields first; the
+        speculative/off-thread path still calls `validation::validate_component`, because its
         shortlist may combine observations from different instants; tests count
         exact-test entries and prove zero before teardown for the in-line path,
         one for a posted speculative result, and no behavioural difference on
@@ -1142,7 +1160,7 @@ stage is what makes a trace affordable rather than what tunes it.
         trace touches the entity, and the stamp that wraps is exactly the one no
         trace touched for four epochs. It also collects YRC's 56 % saving on
         re-registration.
-      handoff: `ENROLLED` means exactly one logical token in exactly one state:
+      handoff: `CANDIDATE_BIT` means exactly one logical token in exactly one state:
         `active → in-flight → dormant`, or consumer-retired after death;
         epoch turnover detaches active and due-dormant heads/tails in O(1), and
         an abort restores each sub-batch to the lane it came from without
@@ -1181,7 +1199,7 @@ both, and the losing side never deadlocks.
         and answers nothing else — no storage version and no give-up, because a
         torn read costs at most a phantom edge or a missed one, and a child
         mapping to no GC-heap block already ends the descent as an external live
-        reference (`cycle::row::edge_to`); the collector-thread trace
+        reference (`cycle::row::resolve_edge_target`); the collector-thread trace
         instantiates `trace_cells`
         with it, and a Miri slice drives it over an object with outside cells
         and over an array mid-move
@@ -1285,7 +1303,7 @@ both, and the losing side never deadlocks.
 - [ ] S39.1 Exit drains its own queue
       done: `ll_thread_exit` retires its queue before handing the heap over,
         which for a zero-count entry means reading the refcount, clearing
-        `ENROLLED` and returning the parked slot; and the fate of a **live**
+        `CANDIDATE_BIT` and returning the parked slot; and the fate of a **live**
         enrolled entity at exit is **chosen** — which of collect, hand over or
         leak, and why — rather than described in a comment, with the test that
         observes the chosen fate named; a red-first test kills a thread between
@@ -1569,14 +1587,14 @@ in `dev/INDEX.md`. What it did not do is below.
   by Rust code inside tests. An embedder needs that door before anything
   outside this crate exercises the arena paths.
 - [ ] **The retained arm's per-edge registry lock.** `cycle::mark` resolves
-  every child through `cycle::row::edge_to`, and the retained arm of that
+  every child through `cycle::row::resolve_edge_target`, and the retained arm of that
   dispatch reaches `memory::retained::occupant_index`, which takes the
   registry mutex to find the block's index before searching it. One lock per
   retained edge, where a per-block visit holding the index's `Arc` would take
   one per block: `occupant_count` already takes it that way at the block's
   first touch, and the search itself is over an `Arc` slice and needs no lock.
   The step that built the mark expected to build the visit and did not, the
-  visit being outside its done clause and a change to `edge_to`'s interface.
+  visit being outside its done clause and a change to `resolve_edge_target`'s interface.
   No measurement of what the lock costs a trace exists.
   **The scan doubled the exposure**: `cycle::scan` resolves a popped
   entity's row a second time, to read the colour it may itself have
@@ -1671,7 +1689,7 @@ names what would have to be measured first.
   rather than operations per second.
   **Settle separately:** entities past 8 KiB take the same path and are
   reached by their own block header's row rather than by a stride
-  (`cycle::row::edge_to`);
+  (`cycle::row::resolve_edge_target`);
   a uniform stride would make them walkable, which `rc-walk` decided the
   other way and `rc-cycle` re-decided by dispatching on the block's kind.
 

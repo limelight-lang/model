@@ -71,7 +71,7 @@ fn pool_holds(block: usize) -> bool {
 /// (`heap::tests::the_block_under_the_slots::empty_block_returns_to_pool`
 /// says the same of the raw population).
 #[test]
-fn a_block_emptied_around_a_parked_corpse_reaches_the_pool_at_the_return() {
+fn a_block_emptied_around_a_withheld_zero_count_member_reaches_the_pool_at_the_return() {
     let _g = crate::memory::block_pool::test_guard();
 
     const SIZE: usize = 64;
@@ -133,7 +133,7 @@ fn a_block_emptied_around_a_parked_corpse_reaches_the_pool_at_the_return() {
 /// The parking is a withholding and nothing else: the body is left as
 /// the death wrote it, so the count the retirement reads is still there.
 #[test]
-fn a_parked_slot_keeps_the_body_the_death_left() {
+fn a_withheld_slot_keeps_the_body_the_death_left() {
     let _g = crate::memory::block_pool::test_guard();
 
     let cell = unsafe { crate::memory::heap::entity_alloc(64) };

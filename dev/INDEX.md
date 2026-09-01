@@ -35,15 +35,15 @@ versions live in `docs/history/`, marked at the top.
 
   | module | what is there | production caller |
   |---|---|---|
-  | `queue` | the per-thread enrolment queue, its floor, spares and escrow | `refcount::release_word`, `gc`'s poll |
-  | `parking` | `TraceWindow`, the physical-return barrier | `stdapi::ll_free` |
-  | `arena` | `ShadowArena`, the collection's bump, and `meet`/`met_row` | none until S36.7 |
+  | `queue` | the per-thread candidate queue, its base block, spares and overflow buffer | `refcount::release_word`, `gc`'s poll |
+  | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier | `stdapi::ll_free` |
+  | `arena` | `TraceScratchArena`, the collection's bump, and `ensure_row`/`find_initialized_row` | none until S36.7 |
   | `shadow` | the row: two bits of colour over thirty of working count | none |
-  | `row` | `edge_to`, which row a traced edge lands on | none |
+  | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
   | `mark` | the trace: trial deletion over the rows | none |
   | `stack` | the trace worklist, segments out of the arena | none |
-  | `scan` | the verdict: live spreads, zero condemns, a reached row is raised | none |
-  | `exact` | the owner's judgement over one component, and the corpse rule | none |
+  | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
+  | `validation` | the owner's exact validation of one component, and the zero-count-member rule | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a
   count at the field's bound is a floor and absorbs every subtraction, so
@@ -55,21 +55,22 @@ versions live in `docs/history/`, marked at the top.
 
   Nothing derives a member list from the condemned rows, and no step of
   `PLAN.md` owns that.
-- The enrolment gate: `refcount::ENROLMENT_GATE_MASK` and `may_enrol`,
+- The candidate gate: `refcount::CANDIDATE_GATE_MASK` and
+  `may_become_a_candidate`,
   read on the non-zero decrement in `release_word`. Five conditions in
   one mask, each of them "this bit is zero" — GC-heap category, a kind a
   ring can close through, no acyclic proof, no ownership proof, not
-  already enrolled. What it admits goes to `cycle::queue::enrol`, which
-  sets `ENROLLED` first; the acyclic and ownership proofs it also reads
+  already a candidate. What it admits goes to
+  `cycle::queue::register_candidate`, which sets `CANDIDATE_BIT` first; the acyclic and ownership proofs it also reads
   have no writer. What proves each condition live is a `#[cfg(test)]` counter
-  past the gate (`refcount::tests::the_enrolment_gate`), because a
+  past the gate (`refcount::tests::the_candidate_gate`), because a
   scenario test sees the pair and never one half.
 - GC C ABI and the safepoint: `src/gc.rs` — the four symbols the
   compiler emits calls to (`ll_gc_collect_cycles`, `ll_gc_maybe_collect`,
   `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`). The two collecting
   entries report zero until S36.7. The poll has four duties in order:
   refill the log reserve, refill the critical reserve, refill the queue's
-  spare segments, drain its escrow.
+  spare segments, drain its overflow buffer.
 - Static blocks and thread exit: `src/static_block.rs` — the per-thread
   registry and the teardown pass that releases each block's roots at
   exit (A6, `rfc/model/classes.md` "Teardown at thread exit"). The order
@@ -262,7 +263,7 @@ versions live in `docs/history/`, marked at the top.
   leaves the head. Nothing keeps one per walked row, and no cell the
   trace read is re-read against one — a cell is read a second time on
   the owning thread, which re-reads the current fields before any free
-  (`cycle::exact`), and the collector-thread reader answers no version
+  (`cycle::validation`), and the collector-thread reader answers no version
   either, a torn read costing at most a phantom edge or a missed one
   (`PLAN.md` S38.0). `entity::for_each_counted_child` is an
   adapter over it, and `ll_entity_die`'s Array arm goes through that; the
@@ -374,7 +375,7 @@ versions live in `docs/history/`, marked at the top.
   soundness rather than economy. A free arriving while a trace
   reads the block must park, and for a run that is soundness rather than
   economy — its memory is unmapped at the free while a trace may still
-  address it. `cycle::parking` parks that return and owns the
+  address it. `cycle::deferred_slot_reuse` defers that return and owns the
   arena-before-replay order (`PLAN.md` S36.2).
   The doors
   above it are
@@ -420,7 +421,7 @@ versions live in `docs/history/`, marked at the top.
   free arrives through `buffer_arena::buffer_free_longlived_payload`,
   which reads a retained block under the pointer, leaves the bytes where
   they are — former arena memory has no free list — and reclaims the
-  block instead. That call reaches no parking: it returns the block
+  block instead. That call defers no reuse: it returns the block
   straight to the pool, which is the gap `PLAN.md` S38.3 owns.
 - The safepoint bracket a batched run pays: lowering emits
   `ll_gc_checkpoint_ack` before the run, `ll_release_batch` per
@@ -545,7 +546,7 @@ and one current plus one high-water block count is what the manager can
 answer about collection's reservation (`dev/DECISIONS.md`, "GC memory is
 counted once, and the block kind is the split"). Beside it `charge` and
 `discharge` keep the second pair, bytes in use inside those blocks, moved at a
-structural transition rather than per grant so the enrolment path stays free of
+structural transition rather than per grant so the registration path stays free of
 it; the two residues that follow are entered in the high-water figure by the
 transition that ends them, which is exact on one thread and can miss a maximum
 two threads stood in together. The pool and the critical reserve refuse a
@@ -555,7 +556,8 @@ Parking a physical return — `memory::stdapi::ll_free` asks two windows
 before a slot, a retained block or a large run goes back: an entity whose
 header still carries `ENROLLED` waits with no record kept, the queue entry
 being the record; an open trace sends the return to
-`cycle::parking::TraceWindow`, which replays it after its shadow arena has
+`cycle::deferred_slot_reuse::ActiveTrace`, which replays it after its trace
+scratch arena has
 reset. The two close in either order.
 
 Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's

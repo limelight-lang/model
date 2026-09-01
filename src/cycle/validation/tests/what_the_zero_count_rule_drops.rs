@@ -51,7 +51,7 @@ fn a_member_at_count_zero_drops_the_component_whole() {
         }
     }
 
-    let mut shadow_arena = unsafe { condemned_from(first, &[first, second, head, tail]) };
+    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second, head, tail]) };
     shadow_arena.reset();
 
     // The ring's teardown releases the chain's head, which reaches zero.

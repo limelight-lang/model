@@ -303,8 +303,9 @@ mod imp {
         // the shim refuses. The whole mapping goes back instead, which is
         // the exact-layout deallocation the shim accepts, and that keeps
         // a read of returned memory an error Miri reports — which is what
-        // three tests in `promote::tests::the_reset_reads_no_corpse` are,
-        // Miri being their whole regression.
+        // three tests in
+        // `promote::tests::the_reset_reads_no_zero_count_member` are, Miri being
+        // their whole regression.
         #[cfg(miri)]
         {
             let _ = bytes;

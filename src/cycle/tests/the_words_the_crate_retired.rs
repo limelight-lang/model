@@ -238,10 +238,10 @@ const RETIRED: [(&str, &str, Where); 81] = [
 ///
 /// **Empty since S41.4, and that measures less than it looks.** What it says
 /// is that no retired identifier stands in code. It says nothing about the
-/// three places this guard does not read: a source file's own name, a name
-/// that merely contains a retired word (`condemned_from`, `met_first`), and
-/// every comment, whose text is cut before the scan. Those are S41.5's and
-/// S41.6's, and they need a measure of their own rather than this one.
+/// three surfaces this guard does not read: a source file's own name, a name
+/// that merely contains a retired word, and every comment, whose text is cut
+/// before the scan. The first two are `the_metaphors_the_names_still_carry`'s
+/// since S41.5; comment text is S41.6's and has no guard yet.
 ///
 /// A second test below refuses a file that has stopped offending, so a rename
 /// cannot leave its entry behind and quietly exempt the file from then on.
@@ -259,11 +259,13 @@ fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-/// This file, which is the one place every retired identifier is written on
+/// The two guards, which are the places every retired identifier is written on
 /// purpose. `path` is relative to `src/`: matched against an absolute path, a
-/// checkout under a directory of this name would exempt the crate.
+/// checkout under a directory of one of these names would exempt the crate.
 fn exempt_file(path: &Path) -> bool {
-    path.to_string_lossy().replace('\\', "/") == "cycle/tests/the_words_the_crate_retired.rs"
+    let name = path.to_string_lossy().replace('\\', "/");
+    name == "cycle/tests/the_words_the_crate_retired.rs"
+        || name == "cycle/tests/the_metaphors_the_names_still_carry.rs"
 }
 
 /// The code of `line`: its trailing comment removed, and every string literal

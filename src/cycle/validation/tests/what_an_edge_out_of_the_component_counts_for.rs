@@ -33,7 +33,7 @@ fn a_reference_the_component_holds_is_no_reference_into_it() {
         assert!(!ll_release(second as *mut RcHeader));
     }
 
-    let mut shadow_arena = unsafe { condemned_from(first, &[first, second]) };
+    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
     assert_eq!(
         unsafe { row_color(outside as *mut RcHeader) },
         Color::Live,

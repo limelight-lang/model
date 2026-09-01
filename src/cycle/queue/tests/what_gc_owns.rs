@@ -13,7 +13,7 @@ fn kind_of(block: *mut BlockHeader) -> u32 {
 }
 
 #[test]
-fn the_floor_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
+fn the_base_block_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     let _g = test_guard();
     reset();
 
@@ -63,7 +63,7 @@ fn a_spare_stays_one_accounted_segment_when_it_becomes_live() {
 }
 
 #[test]
-fn the_floor_accepts_its_exact_rederived_escrow_capacity() {
+fn the_base_block_accepts_its_exact_rederived_overflow_capacity() {
     let _g = test_guard();
     reset();
     let state = owner_state();
@@ -89,7 +89,7 @@ fn the_floor_accepts_its_exact_rederived_escrow_capacity() {
     miri,
     ignore = "spawns a child process, which Miri's isolation forbids"
 )]
-fn one_entry_past_the_escrow_capacity_aborts() {
+fn one_entry_past_the_overflow_capacity_aborts() {
     const CHILD: &str = "LL_QUEUE_ESCROW_OVERFLOW_CHILD";
     if std::env::var_os(CHILD).is_some() {
         let _g = test_guard();
@@ -105,7 +105,7 @@ fn one_entry_past_the_escrow_capacity_aborts() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "cycle::queue::tests::what_gc_owns::one_entry_past_the_escrow_capacity_aborts",
+            "cycle::queue::tests::what_gc_owns::one_entry_past_the_overflow_capacity_aborts",
         ])
         .env(CHILD, "1")
         .output()
@@ -195,7 +195,7 @@ fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
 }
 
 #[test]
-fn an_escrowed_entry_costs_the_pointer_it_holds_and_nothing_more() {
+fn an_overflow_entry_costs_the_pointer_it_holds_and_nothing_more() {
     let _g = test_guard();
     reset();
     let state = owner_state();
@@ -212,7 +212,7 @@ fn an_escrowed_entry_costs_the_pointer_it_holds_and_nothing_more() {
 }
 
 #[test]
-fn a_threads_floor_is_in_use_from_its_draw_until_its_exit() {
+fn a_threads_base_block_is_in_use_from_its_draw_until_its_exit() {
     let _g = test_guard();
     reset();
     let before = in_use();
@@ -235,7 +235,7 @@ fn a_threads_floor_is_in_use_from_its_draw_until_its_exit() {
 }
 
 #[test]
-fn an_entry_leaving_the_escrow_gives_its_pointer_back() {
+fn an_entry_leaving_the_overflow_buffer_gives_its_pointer_back() {
     let _g = test_guard();
     reset();
     assert!(

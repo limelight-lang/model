@@ -100,7 +100,7 @@ fn the_mask_covers_every_clause_and_nothing_else() {
 /// takes it. Enrolling it would put a queue entry on a slot the
 /// allocator is about to hand out again.
 #[test]
-fn a_decrement_to_zero_enrols_nothing() {
+fn a_decrement_to_zero_registers_nothing() {
     crate::refcount::take_admissions();
     let mut header = RcHeader {
         refcount: 1,

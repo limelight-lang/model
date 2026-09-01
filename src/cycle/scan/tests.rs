@@ -106,7 +106,7 @@ fn a_ring_held_from_outside_scans_live_through_the_member_that_is_held() {
 /// cannot reclaim: every in-edge is internal, so both rows read zero and
 /// both are condemned.
 #[test]
-fn a_ring_no_one_holds_is_condemned_whole() {
+fn a_ring_no_one_holds_is_colored_potentially_unreachable_whole() {
     let _g = test_guard();
     let mut arena = Arena::new();
     let (first, second) = unsafe { ring(&mut arena, "ScanWhiteNode") };

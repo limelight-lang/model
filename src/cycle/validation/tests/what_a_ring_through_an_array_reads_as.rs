@@ -48,7 +48,7 @@ fn an_element_and_a_property_close_the_same_ring() {
         assert!(!ll_release(array as *mut RcHeader));
     }
 
-    let mut shadow_arena = unsafe { condemned_from(holder, &[holder]) };
+    let mut shadow_arena = unsafe { traced_unreachable_from(holder, &[holder]) };
     assert_eq!(
         unsafe { row_color(array as *mut RcHeader) },
         Color::PotentiallyUnreachable,

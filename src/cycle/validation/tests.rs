@@ -19,7 +19,10 @@ use crate::test_support::{entity_checked, prop_offset, store_prop};
 /// The arena comes back so the caller resets it before judging: the rows
 /// die at the token's release and the exact test runs after it
 /// (`rfc/model/gc/rc-cycle.md`, "Concurrency").
-unsafe fn condemned_from(root: *mut Object, expected: &[*mut Object]) -> TraceScratchArena {
+unsafe fn traced_unreachable_from(
+    root: *mut Object,
+    expected: &[*mut Object],
+) -> TraceScratchArena {
     let mut arena = TraceScratchArena::new();
     let mut stack = TraceStack::new();
     assert_eq!(
@@ -53,5 +56,5 @@ unsafe fn prop_entity(holder: *mut Object, offset: u32) -> *mut RcHeader {
 mod what_a_mutation_racing_the_verdict_costs;
 mod what_a_ring_through_an_array_reads_as;
 mod what_an_edge_out_of_the_component_counts_for;
-mod what_the_corpse_rule_drops;
-mod what_the_guard_discount_answers;
+mod what_the_guard_references_answer;
+mod what_the_zero_count_rule_drops;

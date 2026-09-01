@@ -316,7 +316,7 @@ fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_reconcile() {
 /// edges are live all the same, and a pass that decides death from those
 /// two words settles its COW child one too low.
 #[test]
-fn a_survivor_promoted_at_refcount_zero_is_not_read_as_a_corpse() {
+fn a_survivor_promoted_at_refcount_zero_is_not_read_as_a_zero_count_member() {
     use crate::array::entity::ll_array_new;
     let _g = crate::memory::block_pool::test_guard();
 
@@ -900,7 +900,7 @@ fn a_survivor_that_resurrects_itself_records_no_death() {
 /// anything. Miri is the regression — with nothing parked it reports the
 /// weak walk's read of a returned run (`dev/WORKFLOW.md`, Tests).
 #[test]
-fn a_run_parked_by_a_nested_reset_outlives_the_reset_that_parked_it() {
+fn a_run_withheld_by_a_nested_reset_outlives_the_reset_that_withheld_it() {
     use crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN;
     let _g = crate::memory::block_pool::test_guard();
 

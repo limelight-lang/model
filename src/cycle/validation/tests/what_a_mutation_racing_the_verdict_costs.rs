@@ -12,7 +12,7 @@ use super::*;
 /// A reference taken after the scan acquits the component, because what
 /// the owner compares is the count as it stands at its own reading.
 #[test]
-fn a_reference_taken_after_the_verdict_acquits() {
+fn a_reference_taken_after_the_verdict_leaves_the_ring_externally_referenced() {
     let _g = test_guard();
     let node = ClassBuilder::new("ExactRacedNode")
         .prop("next", true)
@@ -34,7 +34,7 @@ fn a_reference_taken_after_the_verdict_acquits() {
         assert!(!ll_release(second as *mut RcHeader));
     }
 
-    let mut shadow_arena = unsafe { condemned_from(first, &[first, second]) };
+    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
     shadow_arena.reset();
 
     // The mutation, through the store barrier the mutator uses: the
@@ -69,7 +69,7 @@ fn a_reference_taken_after_the_verdict_acquits() {
 /// Condemned is where this step stops — the free is `PLAN.md` S36.5's,
 /// and the fixture tears the ring down by hand.
 #[test]
-fn the_same_ring_without_the_store_is_condemned() {
+fn the_same_ring_without_the_store_is_unreachable() {
     let _g = test_guard();
     let node = ClassBuilder::new("ExactControlNode")
         .prop("next", true)
@@ -93,7 +93,7 @@ fn the_same_ring_without_the_store_is_condemned() {
         assert!(!ll_release(second as *mut RcHeader));
     }
 
-    let mut shadow_arena = unsafe { condemned_from(first, &[first, second]) };
+    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
     shadow_arena.reset();
 
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];

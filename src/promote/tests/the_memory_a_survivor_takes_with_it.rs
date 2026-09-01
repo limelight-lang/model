@@ -566,7 +566,7 @@ fn a_hooked_survivor_carries_its_block_out_of_the_arena() {
 /// A block drawn from anywhere else would still be out here, with no
 /// pointer left to it.
 #[test]
-fn a_hooked_corpse_leaves_nothing_behind() {
+fn a_hooked_zero_count_member_leaves_nothing_behind() {
     use crate::memory::block_pool::BLOCK_KIND_ARENA;
     use crate::test_support::outside_block;
     let _g = crate::memory::block_pool::test_guard();

@@ -54,7 +54,7 @@ fn an_unarmed_poll_still_refills() {
 /// cancels in it: it is the one block the thread holds for its life
 /// rather than for its queue's contents, and `release_queue_base` rather
 /// than [`release_queue_segments`] is what gives it back
-/// (`the_floor_the_escrow_stands_on`).
+/// (`the_base_block_a_thread_holds_for_its_life`).
 #[test]
 fn a_drain_returns_every_segment_and_every_spare() {
     let _g = test_guard();

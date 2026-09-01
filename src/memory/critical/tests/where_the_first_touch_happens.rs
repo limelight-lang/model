@@ -29,7 +29,7 @@ use super::*;
 /// they take coming through `BlockPool::get`. The exit guard is touched
 /// by the same call, and what proves it is that a thread which only runs
 /// `ll_thread_init` still gives its blocks back
-/// (`cycle::queue::tests::the_floor_the_escrow_stands_on::`
+/// (`cycle::queue::tests::the_base_block_a_thread_holds_for_its_life::`
 /// `a_threads_whole_life_gives_every_block_back`).
 #[test]
 fn thread_init_touches_both_reserves_before_anything_can_release() {

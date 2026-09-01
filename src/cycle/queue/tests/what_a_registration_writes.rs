@@ -38,7 +38,7 @@ fn a_non_final_decrement_puts_the_entity_in_this_thread_s_queue() {
 /// The bit is the gate's fifth clause, so a second decrement of the same
 /// entity adds nothing — which is what keeps one entity to one entry.
 #[test]
-fn a_second_decrement_of_an_enrolled_entity_writes_no_second_entry() {
+fn a_second_decrement_of_a_registered_entity_writes_no_second_entry() {
     let _g = test_guard();
     reset();
     let _ = refill_spares();

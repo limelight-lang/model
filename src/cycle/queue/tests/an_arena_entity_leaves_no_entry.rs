@@ -12,7 +12,7 @@
 //! The gate closes that by refusing to enrol anything outside category
 //! zero (`refcount::ENROLMENT_GATE_MASK`, and
 //! `rfc/model/gc/rc-cycle.md`, "Enrolment requires the GC-heap
-//! category"). `the_enrolment_gate` proves the clause rejects; this
+//! category"). `the_candidate_gate` proves the clause rejects; this
 //! proves what the rejection is worth — the arrangement it prevents,
 //! carried through to the reuse.
 
@@ -49,7 +49,7 @@ fn an_arena_entity_leaves_no_entry_for_the_reset_to_strand() {
     // is set — an arena entity is not counted, its cell being the
     // reset's — so an arena object without it would satisfy every
     // assertion below whether the gate asked about the category or not.
-    // This is the construction `the_enrolment_gate` uses for the same
+    // This is the construction `the_candidate_gate` uses for the same
     // clause, on a real entity instead of a bare header.
     unsafe { crate::refcount::update_header_flags(header, |f| f | crate::refcount::COW) };
     unsafe { ll_retain(header) };

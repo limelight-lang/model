@@ -12,7 +12,7 @@ use super::*;
 use crate::refcount::{mutator_guard_retain, mutator_unguard_release};
 
 #[test]
-fn a_guarded_ring_is_condemned_under_the_discount_and_acquitted_without_it() {
+fn a_guarded_ring_is_unreachable_only_when_the_guard_references_are_subtracted() {
     let _g = test_guard();
     let node = ClassBuilder::new("ExactGuardedNode")
         .prop("next", true)
@@ -30,7 +30,7 @@ fn a_guarded_ring_is_condemned_under_the_discount_and_acquitted_without_it() {
         assert!(!ll_release(second as *mut RcHeader));
     }
 
-    let mut shadow_arena = unsafe { condemned_from(first, &[first, second]) };
+    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
     shadow_arena.reset();
 
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];

@@ -140,7 +140,7 @@ fn a_growth_with_no_spare_draws_the_reserve_and_arms_the_poll() {
 /// the cells and the reserve by hand leaves the pool open, and the pool
 /// counter below is what sees the fallback appear.
 #[test]
-fn every_door_refused_puts_the_entry_in_the_escrow() {
+fn every_allocation_path_refused_puts_the_entry_in_the_overflow_buffer() {
     let _g = test_guard();
     reset();
     assert_eq!(spare_count(), 0);
@@ -178,7 +178,7 @@ fn every_door_refused_puts_the_entry_in_the_escrow() {
 
 /// And the poll takes it out again, in the order that makes room first.
 #[test]
-fn the_poll_drains_the_escrow_into_the_queue() {
+fn the_poll_drains_the_overflow_buffer_into_the_queue() {
     let _g = test_guard();
     reset();
     assert_eq!(spare_count(), 0);
@@ -210,7 +210,7 @@ fn the_poll_drains_the_escrow_into_the_queue() {
 /// that finds every door still spent leaves the entries where they are
 /// for the collection it is about to run.
 #[test]
-fn a_drain_with_no_room_leaves_the_escrow_alone() {
+fn a_drain_with_no_room_leaves_the_overflow_buffer_alone() {
     let _g = test_guard();
     reset();
     crate::memory::critical::drain_for_test();

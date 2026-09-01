@@ -8,7 +8,7 @@ fn release(header: &mut RcHeader) -> bool {
     unsafe { ll_release(header) }
 }
 
-mod the_enrolment_gate;
+mod the_candidate_gate;
 mod the_flags_half_the_mutator_leaves_alone;
 mod the_header_the_compiler_shares;
 mod the_widths_the_mutator_uses;

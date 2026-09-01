@@ -9,8 +9,8 @@
 //! runtime never registered makes for itself, and the return.
 //!
 //! **The two aborts have no test**, and neither has the abort the
-//! overflow buffer takes when it is full, which predates them: nothing in this crate ends a
-//! process and comes back to report it. What is tested instead is every
+//! overflow buffer takes when it is full, which predates them: nothing in
+//! this crate ends a process and comes back to report it. What is tested instead is every
 //! path that reaches them.
 
 use super::*;
@@ -28,7 +28,7 @@ fn kind_of(block: *mut crate::memory::block_pool::BlockHeader) -> u32 {
 /// The floor is one block, it is out of the pool while the thread holds
 /// it, and it carries the stamp that keeps a trace out of it.
 #[test]
-fn the_floor_is_one_stamped_block_out_of_the_pool() {
+fn the_base_block_is_one_stamped_block_out_of_the_pool() {
     let _g = test_guard();
     reset();
     // The reserve empties both times so that `blocks_out` sees the
@@ -60,7 +60,7 @@ fn the_floor_is_one_stamped_block_out_of_the_pool() {
 /// belongs to the thread's life, and a live thread stripped of it would
 /// draw a second one at its next enrolment.
 #[test]
-fn a_drain_leaves_the_floor_where_it_is() {
+fn a_segment_release_leaves_the_base_block_where_it_is() {
     let _g = test_guard();
     let base = queue_base();
     assert!(!base.is_null(), "the guard's `ll_thread_init` drew one");
@@ -90,7 +90,7 @@ fn a_drain_leaves_the_floor_where_it_is() {
 /// A pool that refuses the floor refuses the thread, and the refusal is
 /// the answer `ll_thread_init` gives its caller.
 #[test]
-fn a_refused_floor_is_a_thread_that_never_starts() {
+fn a_refused_base_block_is_a_thread_that_never_starts() {
     let _g = test_guard();
     let pool = BlockPool::global();
     let before = pool.blocks_out();
@@ -136,7 +136,7 @@ fn a_refused_floor_is_a_thread_that_never_starts() {
     feature = "debug-journal",
     ignore = "the journal registers every thread at its first record site"
 )]
-fn an_unregistered_thread_draws_its_floor_at_the_first_enrolment() {
+fn an_unregistered_thread_draws_its_base_block_at_its_first_registration() {
     let _g = test_guard();
     let pool = BlockPool::global();
     let before = pool.blocks_out();
