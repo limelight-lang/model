@@ -135,6 +135,12 @@ per ordinary segment; one 64-byte control line plus 8,152 escrow pointers in
 the floor; bulk-loop `POLL_STRIDE` 4,076. They are compile-time asserted and
 tested at the boundary.
 
+**The boundary is cheaper since the role split ended** (`dev/DECISIONS.md`,
+2026-09-01): acquire is one counter increment and one peak update, release is
+the kind check and one decrement, and the header word is not written at all.
+The `.tbss` figures above are unaffected — the counters are global, not
+per-thread.
+
 ## 2026-08-29 — the escrow's move out of TLS: `.tbss` from 65 784 bytes to 496
 
 **Read from the binary, not timed.** `readelf -S` on the test binary

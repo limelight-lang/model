@@ -130,7 +130,7 @@
 use std::cell::Cell;
 
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
-use crate::memory::gc_metadata::{self, GcBlockRole};
+use crate::memory::gc_metadata;
 use crate::refcount::RcHeader;
 
 /// Entries one segment holds. Every segment but the live one holds
@@ -314,8 +314,7 @@ unsafe fn grow_and_write(owner: *mut OwnerCycleState, entity: *mut RcHeader) {
             // already takes one door earlier, at its floor
             // (`dev/DECISIONS.md`, "what the first touch of a
             // thread-local with drop glue may cost").
-            let block =
-                gc_metadata::adopt(crate::memory::critical::draw(), GcBlockRole::QueueSegment);
+            let block = gc_metadata::adopt(crate::memory::critical::draw());
             if !block.is_null() {
                 // A draw is pressure, and pressure is what asks for a
                 // collection. Armed here rather than beside the refusal
@@ -386,7 +385,7 @@ fn draw_floor() -> *mut OwnerCycleState {
         return present;
     }
 
-    let block = gc_metadata::acquire(GcBlockRole::QueueFloor);
+    let block = gc_metadata::acquire();
     if block.is_null() {
         return std::ptr::null_mut();
     }
@@ -403,7 +402,7 @@ fn draw_floor() -> *mut OwnerCycleState {
     // refuses and returns.
     let installed = owner();
     if !installed.is_null() {
-        gc_metadata::release_to_critical(block, GcBlockRole::QueueFloor);
+        gc_metadata::release_to_critical(block);
         return installed;
     }
 
@@ -481,7 +480,7 @@ pub(crate) fn release_floor() {
     assert!(q.live.get().is_null(), "release follows queue drain");
     assert_eq!(q.held.get(), 0, "release follows spare drain");
     assert_eq!(q.escrowed.get(), 0, "release follows escrow drain");
-    gc_metadata::release_to_critical(floor_of(owner), GcBlockRole::QueueFloor);
+    gc_metadata::release_to_critical(floor_of(owner));
 }
 
 /// Move escrowed entries back into the queue, as far as the room a poll
@@ -551,7 +550,7 @@ pub(crate) fn replenish() -> bool {
     }
     let q = unsafe { owner_ref(owner) };
     while q.held.get() < SPARE_SEGMENTS {
-        let block = gc_metadata::acquire(GcBlockRole::QueueSegment);
+        let block = gc_metadata::acquire();
         if block.is_null() {
             return false;
         }
@@ -564,7 +563,7 @@ pub(crate) fn replenish() -> bool {
         // ([`draw_floor`] carries the same re-entry and why).
         let held = q.held.get();
         if held == SPARE_SEGMENTS {
-            gc_metadata::release_to_critical(block, GcBlockRole::QueueSegment);
+            gc_metadata::release_to_critical(block);
             return true;
         }
 
@@ -609,14 +608,14 @@ pub(crate) fn drain() {
     while !segment.is_null() {
         let next = unsafe { (*segment).next };
         unsafe { (*segment).next = std::ptr::null_mut() };
-        gc_metadata::release_to_critical(segment, GcBlockRole::QueueSegment);
+        gc_metadata::release_to_critical(segment);
         segment = next;
     }
 
     let held = q.held.replace(0);
     for cell in &q.spares[..held] {
         let block = cell.replace(std::ptr::null_mut());
-        gc_metadata::release_to_critical(block, GcBlockRole::QueueSegment);
+        gc_metadata::release_to_critical(block);
     }
 
     // The escrow empties by its count, which is the only bound on the

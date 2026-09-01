@@ -68,12 +68,15 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 
 ## Fog
 
-Raised by the review of 2026-09-01 over `52b2cbf` and `0416e83`; each line is
-an unresolved question, not yet a step, and none of them is ruled on. Three
-of the six left this list on the day: the free that reaches a traced address
-is S38.3's, ruled by Edmond on 2026-09-01, and its two neighbours — a
-cross-thread free that never sees the window, and a retained block returned
-past the gate — are the same hazard in the same step.
+Raised by the review of 2026-09-01 over `52b2cbf` and `0416e83`. A line here
+is an unresolved question rather than a step: it carries no criterion, and it
+leaves the list when it gets one or when it is ruled on.
+
+Four of the six left on the day they arrived, all four by Edmond's rulings of
+2026-09-01. The free that reaches a traced address is S38.3's, and with it go
+its two neighbours — a cross-thread free that never sees the window, and a
+retained block returned past the gate — the same hazard in the same step. The
+dead workspace role went with the role split itself, which he ended.
 
 - **The parking `Vec`'s record has a dangling citation.** The entry of
   2026-08-31 cites a 2026-07-27 decision as what superseded the intrusive
@@ -81,13 +84,12 @@ past the gate — are the same hazard in the same step.
   superseded forbids the allocation in as many words. The container itself is
   settled — the entry of 2026-09-01 puts parking on manager memory and S36.9
   slice c builds it — so what is open is the record, not the code.
-- **`GcBlockRole::WorkspaceBase` has no production user.** `ShadowArena`
-  charges its first block to `WorkspaceOverflow`, so the four roles
-  `docs/memory-manager.md` describes are three.
 - **S36.9a's tests largely restate their own constants.** The figures the
   commit message, the plan and both documents name — 8,152 and 4,076 — are
-  asserted through the expressions that define them, and the three
-  wrong-kind asserts that are the door's whole enforcement have no test.
+  asserted through the expressions that define them. The three refusals that
+  keep a block from crossing the boundary unaccounted still have no test:
+  `BlockPool::put` and `critical::give_back` rejecting a GC-stamped block, and
+  `gc_metadata::adopt` rejecting a source that is not the reserve.
 
 ---
 
@@ -599,9 +601,8 @@ stage claiming the frees while building none of them.
 - [ ] S36.9 The GC-memory contract   *(before S36.3)*
       progress 2026-09-01 — S36.9a physical contract: the single
         `memory::gc_metadata` door owns pool/reserve adoption and return,
-        `BLOCK_KIND_GC_METADATA` plus the block-header role word make queue
-        floor/segment and workspace-overflow bytes identifiable, and per-role
-        current/high-water block counts are observable. Queue control moved
+        `BLOCK_KIND_GC_METADATA` makes the bytes collection holds identifiable,
+        and current/high-water block counts are observable. Queue control moved
         from TLS into one 64-byte floor line; TLS is one non-owning pointer,
         escrow capacity is 8,152 and `POLL_STRIDE` is re-derived as 4,076.
         This does not close S36.9: logical accounting and allocator-free
@@ -623,8 +624,9 @@ stage claiming the frees while building none of them.
         Only their composite source audit and deny test close this checkbox.
       done: every block owned by the candidate queue or a collection is drawn
         through one memory-manager wrapper, carries
-        `BLOCK_KIND_GC_METADATA` while held, and is counted by role — queue
-        floor, queue segment, workspace base and workspace overflow; pool and
+        `BLOCK_KIND_GC_METADATA` while held, and is counted once — the kind is
+        the whole answer to whose memory a block is, and collection is not
+        split by use (Edmond, 2026-09-01, `dev/DECISIONS.md`); pool and
         critical-reserve handoffs restamp both directions, physical
         current/peak blocks and bytes are observable without double counting,
         and thread exit returns the direct count to zero. A second accounting
@@ -641,7 +643,7 @@ stage claiming the frees while building none of them.
       tier: T2 · role: Sage → Critic
       handoff: this supersedes S36.2's acceptance of `Box<Vec>` parking. A
         manager-issued block stamped merely `ARENA` is not enough: the manager
-        must be able to answer how many bytes GC owns and for which role.
+        must be able to answer how many bytes GC owns.
         Control headers live in the manager block's header/payload; TLS holds
         only the non-owning pointer that finds the owner state. The present
         queue `Cell`s therefore move out of TLS into its floor header, and the

@@ -135,7 +135,7 @@ pub const BLOCK_KIND_ENTITY_LARGE: u32 = 9;
 /// region scan.
 pub const BLOCK_KIND_ENTITY_LARGE_RUN: u32 = 10;
 /// Metadata owned directly by the cycle collector: candidate-queue storage
-/// and collection workspace. The role within this population is accounted by
+/// and collection workspace. The population is counted by
 /// `memory::gc_metadata`; it is deliberately one block kind so every heap
 /// walker rejects the whole population without knowing its internal layout.
 pub const BLOCK_KIND_GC_METADATA: u32 = 11;
@@ -160,9 +160,10 @@ pub struct BlockHeader {
     /// every region. Atomic by type so that a `&mut` to a header — or to
     /// a private half that contains it — leaves these four bytes alone.
     pub kind: AtomicU32,
-    /// Population-specific word at offset 4. The GC-metadata population uses
-    /// it for its physical role; entity heaps overlay the same word with their
-    /// atomic size class. Atomic here keeps both views compatible.
+    /// Population-specific word at offset 4: entity heaps overlay it with
+    /// their atomic size class, and a population with nothing to keep there
+    /// leaves the zero `carve_region` wrote. Atomic here keeps every view
+    /// compatible.
     pub(crate) reserved: AtomicU32,
     /// Free-list link while the block sits in the pool. While a block
     /// is owned, the owner may reuse it as its own chain link (the

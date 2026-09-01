@@ -77,7 +77,7 @@ use crate::cycle::shadow::{self, Colour, RowArray};
 #[cfg(test)]
 use crate::memory::block_pool::BlockPool;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
-use crate::memory::gc_metadata::{self, GcBlockRole};
+use crate::memory::gc_metadata;
 
 /// What one meeting of an entity answers: its row, or the two reasons
 /// there is none.
@@ -332,9 +332,9 @@ impl ShadowArena {
             self.blocks = unsafe { (*block).next };
             if self.from_reserve > 0 {
                 self.from_reserve -= 1;
-                gc_metadata::release_to_critical(block, GcBlockRole::WorkspaceOverflow);
+                gc_metadata::release_to_critical(block);
             } else {
-                gc_metadata::release(block, GcBlockRole::WorkspaceOverflow);
+                gc_metadata::release(block);
             }
         }
 
@@ -391,12 +391,9 @@ impl ShadowArena {
     /// searched its older blocks for a fit would be a free list, and the
     /// arena's whole life is one collection.
     fn grow(&mut self) -> bool {
-        let mut block = gc_metadata::acquire(GcBlockRole::WorkspaceOverflow);
+        let mut block = gc_metadata::acquire();
         if block.is_null() {
-            block = gc_metadata::adopt(
-                crate::memory::critical::draw(),
-                GcBlockRole::WorkspaceOverflow,
-            );
+            block = gc_metadata::adopt(crate::memory::critical::draw());
             if block.is_null() {
                 return false;
             }

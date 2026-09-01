@@ -16,7 +16,7 @@
 use super::*;
 
 use crate::memory::block_pool::{BLOCK_KIND_GC_METADATA, BlockPool, FORCE_OOM, load_block_kind};
-use crate::memory::gc_metadata::{GcBlockRole, stats};
+use crate::memory::gc_metadata::stats;
 use std::sync::atomic::Ordering;
 
 /// The kind stamped on a block, which the collector reads for every
@@ -83,7 +83,7 @@ fn a_refused_floor_is_a_thread_that_never_starts() {
     let _g = test_guard();
     let pool = BlockPool::global();
     let before = pool.blocks_out();
-    let floors_before = stats().current_blocks(GcBlockRole::QueueFloor);
+    let floors_before = stats().current_blocks();
 
     // On a thread of its own, because the refusal is about a thread that
     // has no floor yet and this one has held its since the guard.
@@ -99,10 +99,7 @@ fn a_refused_floor_is_a_thread_that_never_starts() {
     assert!(!started, "the thread reports that it did not start");
     assert!(floorless, "and holds nothing to be given back");
     assert_eq!(pool.blocks_out(), before);
-    assert_eq!(
-        stats().current_blocks(GcBlockRole::QueueFloor),
-        floors_before
-    );
+    assert_eq!(stats().current_blocks(), floors_before);
 }
 
 /// A thread the runtime never registered draws its floor at its first
@@ -222,8 +219,8 @@ fn a_thread_nothing_will_tear_down_is_not_funded() {
     let _g = test_guard();
     let pool = BlockPool::global();
     let before = pool.blocks_out();
-    let floors_before = stats().current_blocks(GcBlockRole::QueueFloor);
-    let segments_before = stats().current_blocks(GcBlockRole::QueueSegment);
+    let floors_before = stats().current_blocks();
+    let segments_before = stats().current_blocks();
 
     let started = std::thread::spawn(|| {
         crate::memory::heap::FORCE_GUARD_UNARMED.store(true, Ordering::Relaxed);
@@ -240,12 +237,6 @@ fn a_thread_nothing_will_tear_down_is_not_funded() {
         pool.blocks_out() <= before,
         "and left nothing out of the pool"
     );
-    assert_eq!(
-        stats().current_blocks(GcBlockRole::QueueFloor),
-        floors_before
-    );
-    assert_eq!(
-        stats().current_blocks(GcBlockRole::QueueSegment),
-        segments_before
-    );
+    assert_eq!(stats().current_blocks(), floors_before);
+    assert_eq!(stats().current_blocks(), segments_before);
 }

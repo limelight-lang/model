@@ -6,8 +6,7 @@ use super::*;
 use crate::memory::block_pool::{
     BLOCK_KIND_GC_METADATA, BLOCK_PAYLOAD, BlockHeader, load_block_kind,
 };
-use crate::memory::gc_metadata::{GcBlockRole, stats};
-use std::sync::atomic::Ordering;
+use crate::memory::gc_metadata::stats;
 
 fn kind_of(block: *mut BlockHeader) -> u32 {
     unsafe { load_block_kind(&raw const (*block).kind) }
@@ -31,11 +30,7 @@ fn the_floor_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     let held = floor();
     assert!(!held.is_null());
     assert_eq!(kind_of(held), BLOCK_KIND_GC_METADATA);
-    assert_eq!(
-        unsafe { (*held).reserved.load(Ordering::Relaxed) },
-        GcBlockRole::QueueFloor as u32
-    );
-    assert!(stats().current_blocks(GcBlockRole::QueueFloor) >= 1);
+    assert!(stats().current_blocks() >= 1);
 }
 
 #[test]
@@ -44,22 +39,17 @@ fn a_spare_stays_one_accounted_segment_when_it_becomes_live() {
     reset();
     assert!(replenish());
 
-    let before = stats().current_blocks(GcBlockRole::QueueSegment);
-    assert_eq!(before, SPARE_SEGMENTS);
+    let before = stats().current_blocks();
 
     let mut header = candidate(2);
     assert!(unsafe { !release(&raw mut header) });
 
     assert_eq!(
-        stats().current_blocks(GcBlockRole::QueueSegment),
+        stats().current_blocks(),
         before,
         "spare to live is a state transition, not a second acquisition"
     );
     assert_eq!(kind_of(live_segment()), BLOCK_KIND_GC_METADATA);
-    assert_eq!(
-        unsafe { (*live_segment()).reserved.load(Ordering::Relaxed) },
-        GcBlockRole::QueueSegment as u32
-    );
 
     reset();
 }

@@ -8,6 +8,30 @@ never edited or deleted.
 
 ---
 
+## 2026-09-01 — GC memory is counted once, and the block kind is the split
+
+Ruled by Edmond. Owner: S36.9.
+
+**Decided:** `memory::gc_metadata` keeps one current and one high-water block
+count for everything cycle collection owns, and `GcBlockRole` is deleted with
+its per-role counters and its header word. The question the accounting answers
+is which consumer holds the memory — collection, a request arena, an entity
+heap — and the block kind already answers it.
+
+**Why:** the four roles were a split inside one consumer, and nobody read it.
+What it bought was a second check on return, that a floor is not given back as
+a segment; the kind check that survives already refuses a block collection
+never owned, and the pool and the reserve refuse a GC-stamped block at their
+own doors. A measurement that wants the queue-against-workspace division can be
+taken on the day it is wanted, from a build that adds it, rather than carried
+by every acquisition.
+
+**What this costs:** `stats()` can no longer say how much of the total is the
+candidate queue and how much a collection's workspace. S40.3, which sizes the
+workspace, takes its own measurement.
+
+---
+
 ## 2026-09-01 — the free that reaches a traced address is the concurrent collector's problem
 
 Ruled by Edmond after the review of `52b2cbf` and `0416e83`. Owner: S38.3.
