@@ -72,6 +72,12 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 A line here is an unresolved question rather than a step: it carries no
 criterion, and it leaves when it gets one or when it is ruled on.
 
+Whether `ll_default_dispose` nulls an object's cells or only releases them.
+`mark` needs a live root, the queue can hold a zero-count corpse, and the
+answer decides whether S36.7's driver must drop zero-count roots before marking
+or may rest on the drain's sort (`rfc/model/gc/cycle/questions.md`, Y12 clause
+5). Raised by `dev/CYCLE-COLLECTOR-REVIEW.md` and not checked there.
+
 The six the review of 2026-09-01 raised over `52b2cbf` and `0416e83` left the
 same day — four by Edmond's rulings, recorded in `dev/DECISIONS.md` and in the
 `done:` clause of S38.3, and two by the repairs they prompted, recorded under
@@ -1144,12 +1150,36 @@ stage claiming the frees while building none of them.
         queue `Cell`s therefore move out of TLS into its floor header, and the
         queue capacity, poll stride and between-polls guarantee are re-derived
         and statically checked against the resulting layout.
+      note 2026-09-01 — slice e is worked out in full before its code:
+        `dev/CYCLE-COLLECTOR-REVIEW.md` finding 3 records that every production
+        reader of the retained registry asks about one block whose address it
+        already holds, and that its one enumeration has no production caller;
+        `dev/design/retained-index-ownership.md` moves the index into the
+        retained block's own collector line with the array in a per-thread
+        chain of manager blocks, and names four questions for `rfc`. That is a
+        design change rather than a backing move, so the fork below stands
+        before the slice.
       handoff: the ownership audit must settle the retained registry before a
         cache is built. Its present `BTreeMap`, `Arc<[usize]>` and snapshot
         `Vec` may not be smuggled into the collection under the claim that an
         `Arc` clone itself allocates nothing. Either their backing moves under
         the manager or the registry is redesigned at its owning layer; there
         is no cycle-path exemption.
+- [ ] S36.14 Decide the retained index's owning layer   *(before S36.9's slice e)*
+      done: the choice is recorded in `dev/DECISIONS.md` with the rejected side
+        and its reason — either the present registry keeps its shape and only
+        its backing moves under the manager, or the index moves into the
+        retained block and the registry goes; and if the second wins, the four
+        open questions of `dev/design/retained-index-ownership.md` are answered
+        in `rfc` before any code, which is what makes them answerable at all:
+        an owner word in the block, the index chain at thread exit, when a
+        chain block is released, and what `for_each_entity_slot` may read
+      tier: T2 · role: Sage
+      note: the proposal's own working already refuses a block per index and
+        an index beside its retained block, with reasons; what it does not
+        settle is the block-owner word, which is the same prerequisite the
+        collector worker waits on (`rfc/dev/ALGORITHM-AUDIT.md`, A4)
+
 - [ ] S36.10 The persistent per-owner workspace   *(before S36.3)*
       done: thread init draws one mandatory 64 KiB workspace base from the
         ordinary block pool, after the queue floor and before registration is
@@ -1184,6 +1214,17 @@ stage claiming the frees while building none of them.
         parking, condemned members and S36.5's deferred drops use it, while a
         small fixed worklist in the workspace serves leaf and small traces and
         grows into the same managed segments only on overflow
+      done: a worklist entry carries the pair (entity, row pointer) rather
+        than the entity alone, so the scan's pop reads the colour through the
+        pointer instead of resolving the row a second time — the pointer and
+        not the colour, because another path can recolour the row between push
+        and pop (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 2). Mark reads no row
+        at its pop and carries the pointer for one entry shape
+      done: the trace arena bumps row arrays from a block's front and worklist
+        segments from its back, growing when the two cursors meet, so the tail
+        a 16,408-byte array leaves at the smallest size class — 24.6 % of the
+        payload — is spent rather than abandoned; `residue` counts both ends
+        (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 1)
       done: the Sage gate names the fixed small-worklist and pre-reserved
         parking capacities from the 65,280-byte payload before code begins;
         boundary tests exercise exactly capacity and capacity plus one, and
@@ -1309,6 +1350,27 @@ stage claiming the frees while building none of them.
         collection's consistency window between the final scan decision and
         guard acquisition; encode that boundary in the API so a future caller
         cannot pass a stale condemned list as an in-line proof.
+
+## S42 — The two instruments the collector review found blunt
+
+Goal: the debug check that proves a component's premise walks the edges once
+rather than once per member, and a subtraction that would go below zero says
+so in a test build. Both are `dev/CYCLE-COLLECTOR-REVIEW.md`'s findings 5 and
+6, ruled T1 on 2026-09-01. Neither changes what a release build does.
+
+- [ ] S42.1 The premise check walks the edges once
+      done: `validation::member_counts_cover_internal_edges` builds an
+        in-degree array indexed by a member's position in the already sorted
+        slice and walks every member's cells once, so a 381-member component
+        costs 381 cell walks rather than 145,161; the defect it catches is
+        still caught, which a mutation of one member's in-count shows
+      tier: T1 · role: —
+- [ ] S42.2 A subtraction below zero is visible in a test build
+      done: `shadow::subtract` keeps `saturating_sub`, which is right for a
+        dirty pass, and carries `debug_assert!(count(word) >= edges)` before
+        it, so a double subtraction on the synchronous owner trace fails the
+        suite rather than clamping
+      tier: T1 · role: —
 
 ## S37 — Maturation and the two class gates
 

@@ -700,6 +700,16 @@ registry, lifetimes, shadow metadata, integrity checks, metrics export.
 `rfc/model/gc/pure-destructors.md`, which is normative and carries the
 2026-08-23 amendment. The backlog line in `PLAN.md` is the owner.
 
+`dev/design/retained-index-ownership.md` — proposal, not ruled on: the
+retained block's occupant index moves from the process-global registry
+into the block's header line, owned by the reset's thread. Read before
+touching `memory/retained.rs` or S36.9 (e).
+
+`dev/CYCLE-COLLECTOR-REVIEW.md` — the 2026-09-01 read-only review of
+`src/cycle/` with Edmond's ruling per finding: arena tail waste, the
+scan's double row lookup, the retained registry lock, and three T1
+items. Read before the S36 memory steps.
+
 Documents deleted on 2026-08-26 with the collectors they described —
 `dev/design/epoch-walk.md`, `epoch-walk-structures.md`,
 `dev/RC_WALK_CRITICAL_REVIEW.md` and the four gc-horizon documents — are
