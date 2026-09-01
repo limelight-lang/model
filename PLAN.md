@@ -345,6 +345,12 @@ to the step that owns it.
         line still defines neither, which is S9.1's. What is left of the
         step's unblocked half is the rename itself, run from the document;
         it also moves the `PLAN.md` lead-in `os.rs:136` quotes.
+      handoff: the rename landed 2026-09-01, L2 — `c4a59a6` over 54 files,
+        `door` in `src/` from 140 occurrences to the 3 the name guard's own
+        entry carries, and `9ed63ae` for `Placement::Unsupported` with the
+        distinction test. The unblocked half is spent; what remains is the
+        blocked half — `ExternalCarry::Refused`, `OutsideCarry::Refused` and
+        the journal's `Window::Refused` — and it waits on `rfc` S9.1.
 - [x] S41.8 The hash table's collision defence
       done: the metaphor is gone from `src/array/` and its tests — collision-
         defence state, a chain-length threshold, an equal-hash threshold, a
@@ -1882,10 +1888,10 @@ in `dev/INDEX.md`. What it did not do is below.
   fix: either the links stay and `--document-private-items` becomes how
   the crate's documentation is built, or they become plain names. Raised
   by S27's Code Reviewer, 2026-08-18.
-- [ ] **The per-process key's Windows randomness source.** S27.1 lands unix-only,
-  `#[cfg(not(unix))]` a `compile_error!` naming this gap, so the
-  Windows build refuses until a session on the Windows box adds the
-  door (`BCryptGenRandom` or an equivalent OS draw) and runs the gate
+- [ ] **The per-process key's Windows randomness source.** S27.1 lands
+  unix-only, `#[cfg(not(unix))]` a `compile_error!` naming this gap, so
+  the Windows build refuses until a session on the Windows box adds the
+  source (`BCryptGenRandom` or an equivalent OS draw) and runs the gate
   there. Deferred by Edmond, 2026-08-17.
 - [ ] **No ABI entry creates or mounts an arena.** `LLContext` is
   `#[repr(C)]` with one public pointer and a null context is legal, so an
