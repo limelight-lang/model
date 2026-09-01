@@ -410,7 +410,7 @@ to the step that owns it.
         thread in `block_pool` and `heap`, the holding entity in
         `buffer_arena`. A local `owner` whose type says what it is stays
         short, which is what the audit asks.
-- [ ] S41.10 The two maps say what the code says
+- [x] S41.10 The two maps say what the code says
       done: `dev/INDEX.md` and `dev/ARCHITECTURE.md` carry none of the
         audit's retired words as their own prose — `ladder`, `rung`,
         `trigger`, `corpse`, `condemn`, `parked`, `ENROLLED` among them — each
@@ -421,6 +421,13 @@ to the step that owns it.
       note: S41.5's done clause promised the two maps and left about ten
         sites; found on 2026-09-01, ordered by Edmond the same day as a
         background job for a cheap agent
+      handoff: done 2026-09-01 by a sonnet subagent in a worktree, checked
+        here and amended once (`triggers` → `escalates to`). Two dead
+        identifiers went with it, `ENROLMENT_GATE_MASK` at two sites, which
+        the whole-word guard could not see through the underscore. What stays
+        is citations, `memory::reset_window`'s own words at three sites, and
+        two mentions of the deleted collector's parked lists, which no live
+        name replaces.
 ## S34 — The root queue, enrolment and parking
 
 Goal: candidates reach the collector without the mutator paying for a data
