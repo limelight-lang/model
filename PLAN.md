@@ -1266,7 +1266,12 @@ stage claiming the frees while building none of them.
         them; the block on no thread's list, neither abandoned nor adopted,
         its last death returning it from any thread; the list-holding block
         returned when its last list and last occupant are gone; the quiescent
-        enumerator reading the list without a lock. Not yet written.
+        enumerator reading the list without a lock. Written: `rfc`
+        `0f638f4`, "The survivor list of a retained block", after the
+        consolidation reader's six findings were taken — a list standing in
+        another block counts as a pin in that block's payload half, and the
+        atomic count word is stated as independent of the disjointness
+        premise of "Concurrency".
 
 - [ ] S36.10 The persistent per-owner workspace   *(before S36.3)*
       done: the first collection on a thread draws one 64 KiB workspace base
