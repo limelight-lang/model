@@ -28,11 +28,12 @@
 //! guard` holds for each member on its own: every in-component edge into `m` is
 //! a counted reference a member holds, and the guard is one more. For the sums
 //! to meet while one member stands above the identity, another would have to
-//! stand below it, and none can. What the sum buys is memory — no per-member
-//! in-degree is stored anywhere, and the arena that would have funded one has
-//! gone back at the token's release.
+//! stand below it, and none can. What the sum buys is memory — a release build
+//! stores no per-member in-degree, and the arena that would have funded one has
+//! gone back at the token's release; the debug premise check below keeps one
+//! for its own pass.
 //!
-//! # It allocates nothing, and it cannot be refused
+//! # It allocates nothing in a release build, and it cannot be refused
 //!
 //! Every input is already in hand — the member list is the caller's and the
 //! counts are the heap's — so this module holds no memory, asks for none, and
@@ -166,15 +167,14 @@ pub(crate) unsafe fn validate_component(
 /// The premise the sum in [`validate_component`] stands on, taken member by
 /// member: `RC(m) >= IN(m) + guard_refs_per_member` for every member.
 ///
-/// Linear in the component and run in a debug build alone —
-/// `debug_assert!` keeps its argument compiled in every build and
-/// executes it in none but that one. Every member's cells are walked
-/// once, and an in-degree array indexed by the member's position in the
-/// sorted slice takes the count; it is the one allocation of this module,
-/// and a debug build makes it. The check is here because the sum cannot
-/// check its own premise: a defect that invents an in-edge into one
-/// member and loses a real one in another meets the sum exactly, and
-/// frees a component a live reference holds.
+/// Run in a debug build alone — `debug_assert!` keeps its argument
+/// compiled in every build and executes it in none but that one. Every
+/// member's cells are walked once, and an in-degree array indexed by the
+/// member's position in the sorted slice takes the count; it is the one
+/// allocation of this module, and a debug build makes it. The check is
+/// here because the sum cannot check its own premise: a defect that
+/// invents an in-edge into one member and loses a real one in another
+/// meets the sum exactly, and frees a component a live reference holds.
 ///
 /// # Safety
 /// As [`validate_component`], with `members` already sorted.
@@ -182,22 +182,26 @@ unsafe fn member_counts_cover_internal_edges(
     members: &[*mut RcHeader],
     guard_refs_per_member: u32,
 ) -> bool {
-    let mut in_edges = vec![0u64; members.len()];
+    let mut in_degrees = vec![0u64; members.len()];
     for &holder in members {
         note_premise_walk();
         let kind = unsafe { cells::entity_kind(holder) };
         unsafe {
             cells::trace_cells::<PlainCells>(holder, kind, |cell| {
                 if let Ok(position) = members.binary_search(&cell.child) {
-                    in_edges[position] += 1;
+                    in_degrees[position] += 1;
                 }
             });
         }
     }
 
-    members.iter().zip(&in_edges).all(|(&member, &in_edges)| {
-        u64::from(unsafe { header_refcount(member) }) >= in_edges + u64::from(guard_refs_per_member)
-    })
+    members
+        .iter()
+        .zip(&in_degrees)
+        .all(|(&member, &in_degree)| {
+            u64::from(unsafe { header_refcount(member) })
+                >= in_degree + u64::from(guard_refs_per_member)
+        })
 }
 
 #[cfg(test)]

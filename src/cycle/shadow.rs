@@ -150,7 +150,7 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 
 /// Take one internal edge off `row`'s working count, keeping its colour.
 /// **The count stops at zero** rather than wrapping, and a test build
-/// fails before it would.
+/// fails on a subtraction that would pass it.
 ///
 /// The subtraction is what the mark does per edge, and it is written
 /// here rather than at the call site because the open-coded form —
@@ -163,11 +163,12 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 /// read more in-edges than the refcount held. The design permits that of
 /// a dirty pass, because the counts it reads may be stale, and the exact
 /// test on the owner's thread is what turns a candidate into a verdict
-/// (`rfc/model/gc/rc-cycle.md`, "Who judges, and what a trace is
-/// worth"); so a release build clamps at zero. The only trace today is
-/// the in-line owner trace, which reads exact counts and cannot find more
-/// in-edges than the refcount holds, so a test build asserts `count >=
-/// edges` before the subtraction: a double subtraction fails the suite
+/// (`rfc/model/gc/rc-cycle.md`, "Speculative tracing and exact
+/// validation"); so a release build clamps at zero. The only trace today
+/// is the in-line owner trace, which reads exact counts ("Synchronous
+/// collection is exact by construction", same document) and cannot find
+/// more in-edges than the refcount holds, so a test build asserts `count
+/// >= edges` before the subtraction: a double subtraction fails the suite
 /// rather than clamping (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 6).
 /// The clamp's below-zero arm is therefore reached by no test in the
 /// gate's builds, since reaching it trips the assertion first.
