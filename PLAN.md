@@ -76,7 +76,13 @@ Whether `ll_default_dispose` nulls an object's cells or only releases them.
 `mark` needs a live root, the queue can hold a zero-count corpse, and the
 answer decides whether S36.7's driver must drop zero-count roots before marking
 or may rest on the drain's sort (`rfc/model/gc/cycle/questions.md`, Y12 clause
-5). Raised by `dev/CYCLE-COLLECTOR-REVIEW.md` and not checked there.
+5). Raised by `dev/CYCLE-COLLECTOR-REVIEW.md` and not checked there. The S42
+Code Reviewer read `ll_default_dispose` on 2026-09-01: phase 2 drops each
+counted child through `drop_ref` without nulling the cell, so a zero-count
+root's cells are residue naming children whose counts no longer include those
+edges, and a mark started from such a root would subtract below a live child's
+count — the assertion S42.2 added fires in a test build. The driver skips
+zero-count roots before `mark`, as `validation` already does for its input.
 
 The six the review of 2026-09-01 raised over `52b2cbf` and `0416e83` left the
 same day — four by Edmond's rulings, recorded in `dev/DECISIONS.md` and in the
@@ -434,6 +440,20 @@ to the step that owns it.
         is citations, `memory::reset_window`'s own words at three sites, and
         two mentions of the deleted collector's parked lists, which no live
         name replaces.
+- [ ] S41.11 Every cited heading exists in the document it names
+      done: for every citation of the form `` `rfc/…md` `` or `` `docs/…md` ``
+        followed by a quoted heading or bold lead-in, in `src/`, `benches/`,
+        `docs/`, `dev/INDEX.md`, `dev/ARCHITECTURE.md` and `dev/WORKFLOW.md`,
+        the quoted text is found in the named file — repointed to the section
+        the fact moved to where the `rfc` rewrite of 2026-08-30 renamed it
+        (`55786e4`, `a2310c1`, `0075ef3`), and the check itself is written
+        down as pass 1's heading-level form in `dev/WORKFLOW.md`, so a
+        renamed heading is found by a command rather than by a reader
+      tier: T1 · role: —
+      note: found by the S42 Code Reviewer on 2026-09-01 — `rc-cycle.md` has
+        no "Cycle teardown" (10 files cite it), no "Death while enrolled"
+        (7 files), no "Who judges, and what a trace is worth"; pass 1 tests
+        only that the file exists. Dated journals are records and stay.
 ## S34 — The root queue, enrolment and parking
 
 Goal: candidates reach the collector without the mutator paying for a data
@@ -1201,6 +1221,11 @@ stage claiming the frees while building none of them.
         `Arc` clone itself allocates nothing. Either their backing moves under
         the manager or the registry is redesigned at its owning layer; there
         is no cycle-path exemption.
+        The one site the composite audit exempts by name is
+        `validation::member_counts_cover_internal_edges`'s in-degree `Vec`:
+        it runs under `debug_assertions` alone, on the owning thread, and no
+        release build allocates it (S42.1, 2026-09-01; the S42 Code Reviewer
+        asked that the exemption stand here rather than in the closed stage).
 - [ ] S36.14 Decide the retained index's owning layer   *(before S36.9's slice e)*
       done: the choice is recorded in `dev/DECISIONS.md` with the rejected side
         and its reason — either the present registry keeps its shape and only
@@ -1386,41 +1411,6 @@ stage claiming the frees while building none of them.
         collection's consistency window between the final scan decision and
         guard acquisition; encode that boundary in the API so a future caller
         cannot pass a stale condemned list as an in-line proof.
-
-## S42 — The two instruments the collector review found blunt
-
-Goal: the debug check that proves a component's premise walks the edges once
-rather than once per member, and a subtraction that would go below zero says
-so in a test build. Both are `dev/CYCLE-COLLECTOR-REVIEW.md`'s findings 5 and
-6, ruled T1 on 2026-09-01. Neither changes what a release build does.
-
-- [x] S42.1 The premise check walks the edges once
-      done: `validation::member_counts_cover_internal_edges` builds an
-        in-degree array indexed by a member's position in the already sorted
-        slice and walks every member's cells once, so a 381-member component
-        costs 381 cell walks rather than 145,161; the defect it catches is
-        still caught, which a mutation of one member's in-count shows
-      tier: T1 · role: —
-      handoff: `1e2306f`, written by session L1 on 2026-09-01. A `cfg(test)`
-        thread-local counts the walks, and the ring-of-six test read 36 on
-        the quadratic code and 6 after; with one member's in-count tripled,
-        six validation tests fail at the premise assertion. The in-degree
-        array is a `Vec` a debug build alone allocates — the one allocation
-        in `validation`, named in its module doc — and S36.9's composite
-        source audit must exempt it by name or the check must change.
-- [x] S42.2 A subtraction below zero is visible in a test build
-      done: `shadow::subtract` keeps `saturating_sub`, which is right for a
-        dirty pass, and carries `debug_assert!(count(word) >= edges)` before
-        it, so a double subtraction on the synchronous owner trace fails the
-        suite rather than clamping
-      tier: T1 · role: —
-      handoff: `ba616d6`, L1, 2026-09-01. The clamp test lost its two
-        below-zero clauses, which asserted the old contract, and the below-zero
-        case is a `should_panic` test under `debug_assertions`; the clamp's
-        below-zero arm is reached by no build the gate runs, and `subtract`'s
-        doc says so. The assertion cannot tell a speculative trace from the
-        owner's: S38.0 conditions it when the second thread arrives, and the
-        doc names that debt.
 
 ## S37 — Maturation and the two class gates
 
