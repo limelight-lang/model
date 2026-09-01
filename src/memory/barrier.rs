@@ -250,7 +250,8 @@ pub(crate) unsafe fn publish_child(
 ///
 /// # Safety
 /// `slot` a live 8-byte pointer slot; `new` null or a live entity; `arena`
-/// the live mounted arena; `owner_cat` the slot owner's category.
+/// the live mounted arena; `owner_cat` the category of the entity
+/// that contains the slot.
 #[must_use]
 pub unsafe fn store_ptr(
     arena: *mut Arena,
@@ -316,7 +317,8 @@ pub(crate) unsafe fn write_value_slot(slot: *mut Value, new: Value) {
 ///
 /// # Safety
 /// `slot` a live `Value` slot; `new`'s entity null or live; `arena` the
-/// live mounted arena; `owner_cat` the slot owner's category.
+/// live mounted arena; `owner_cat` the category of the entity
+/// that contains the slot.
 #[must_use]
 pub unsafe fn store_box(
     arena: *mut Arena,
@@ -366,8 +368,8 @@ pub unsafe fn store_box(
 /// `drop_ref` needs none.
 ///
 /// # Safety
-/// `old` null or the live entity the slot held; `owner_cat` the slot
-/// owner's category.
+/// `old` null or the live entity the slot held; `owner_cat` the category of
+/// the entity that contains the slot.
 pub unsafe fn drop_ref(owner_cat: MemoryCategory, old: *mut RcHeader) {
     let dead = unsafe { drop_ref_deferred(owner_cat, old) };
     if !dead.is_null() {
@@ -390,8 +392,8 @@ pub unsafe fn drop_ref(owner_cat: MemoryCategory, old: *mut RcHeader) {
 /// [`drop_ref`], which is this function plus the teardown it defers.
 ///
 /// # Safety
-/// `old` null or the live entity the slot held; `owner_cat` the slot
-/// owner's category.
+/// `old` null or the live entity the slot held; `owner_cat` the category of
+/// the entity that contains the slot.
 #[inline]
 pub(crate) unsafe fn drop_ref_deferred(
     owner_cat: MemoryCategory,

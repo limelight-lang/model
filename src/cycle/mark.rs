@@ -22,7 +22,7 @@
 //! carried out of the meeting because the meeting is what destroys it
 //! (`crate::cycle::arena::TraceScratchArena::ensure_row`).
 //!
-//! The descent carries an explicit worklist rather than the native
+//! The descent carries an explicit worklist rather than the machine
 //! stack, and why is `crate::cycle::stack`.
 //!
 //! # What it owns, and what a refusal costs

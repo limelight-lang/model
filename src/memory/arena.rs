@@ -51,7 +51,7 @@ pub struct Arena {
     /// Newest-first chain of owned blocks, linked through the block
     /// headers' own `next` field.
     blocks: *mut BlockHeader,
-    /// Objects awaiting a pre-destructor at reset (in-arena log).
+    /// Objects awaiting a user destructor at reset (in-arena log).
     destructors: *mut LogSegment,
     /// OS-direct payloads owned by this arena — buffers larger than a
     /// block — freed at reset like everything else (in-arena log).
@@ -403,7 +403,7 @@ impl Arena {
         Self::drain_log(head, |rec| f(rec as *mut RcHeader));
     }
 
-    /// End of request: run pre-destructors via the callback, then
+    /// End of request: run user destructors via the callback, then
     /// return every block to the pool. O(blocks + log records), not
     /// O(objects). The full promotion discipline (validation, trace,
     /// per-block retention) lives in `crate::promote`; this is the

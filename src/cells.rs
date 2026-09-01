@@ -86,7 +86,8 @@ pub(crate) enum CellShape {
 /// freed under it (S38.3), and that withholding machinery must take a freeable
 /// block kind or a buffer-arena chunk, never an allocation from `std::alloc`.
 /// And the category is what decides who frees the storage of an instance that
-/// dies without a teardown: an arena object gets phase 1 only at reset, so
+/// dies without a teardown: an arena object gets the user destructor alone at
+/// reset, so
 /// storage drawn under any other category is storage nothing ever gives back.
 ///
 /// The category rule covers the zero-count member, whose storage dies with the
@@ -119,7 +120,8 @@ pub(crate) struct OutsideCells {
     /// as an integer key rather than a hole.
     pub sever: unsafe fn(*mut RcHeader, &mut Vec<*mut RcHeader>),
     /// Release the storage itself, as the last act of the ordinary
-    /// dispose (`object.rs`, phase 2). Dispose is the only caller: a
+    /// dispose (`object.rs`, the field teardown). Dispose is the only
+    /// caller: a
     /// confirmed cycle member is freed through that same death path
     /// (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 6), so no
     /// collector reaches this hook directly.

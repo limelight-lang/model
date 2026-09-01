@@ -683,12 +683,12 @@ impl Table {
     /// on that guarantee — a refusal check moved ahead of the walk
     /// breaks a caller, not a convenience.
     ///
-    /// **`category` is the owner's, as it stands at this call.** Growth
-    /// allocates from it and teardown frees to it, and promotion rewrites
-    /// the owner's header, so a value cached across an arena reset frees to
-    /// an allocator the storage never came from. Read it at the call site,
-    /// which for an array is `array::entity::category_of`, and keep no copy
-    /// beside the table (`dev/DECISIONS.md`, "the table is handed its
+    /// **`category` is the containing array's, as it stands at this call.**
+    /// Growth allocates from it and teardown frees to it, and promotion
+    /// rewrites the owner's header, so a value cached across an arena reset
+    /// frees to an allocator the storage never came from. Read it at the call
+    /// site, which for an array is `array::entity::category_of`, and keep no
+    /// copy beside the table (`dev/DECISIONS.md`, "the table is handed its
     /// category and reads no header").
     ///
     /// The old value of an overwritten key is returned to the caller
@@ -1445,7 +1445,8 @@ impl Table {
 
     /// Release the storage and return the table to its empty state.
     ///
-    /// `category` is the owner's at this call and decides which allocator
+    /// `category` is the containing array's at this call and decides which
+    /// allocator
     /// the storage goes back to, so it obeys [`Table::insert`]'s rule: a
     /// value cached across a promotion frees to the wrong one.
     ///

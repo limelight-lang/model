@@ -1,15 +1,17 @@
 //! Arena death with promotion: the reset-time consumer of the escapee list
 //! and its hold-counts (`rfc/model/memory/arena-reset.md`).
 //!
-//! Phase 1 implements **retention only** (`rfc/model/memory/arena-reset.md`,
-//! "Retention (dense blocks)", the "Phasing" bullet). Sparse-block
+//! The reset's own phase 1 — a different numbering from the object
+//! teardown's, which `crate::object` owns — implements **retention only**
+//! (`rfc/model/memory/arena-reset.md`, "Retention (dense blocks)", the
+//! "Phasing" bullet). Sparse-block
 //! evacuation is additive and lands later.
 //!
 //! The algorithm:
 //!
 //! 1. **Fixpoint** over the destructor log and the escapee list: from the
 //!    escapees whose hold-count is still non-zero, mark the surviving
-//!    subgraph, then run pre-destructors of dying, unescaped objects.
+//!    subgraph, then run user destructors of dying, unescaped objects.
 //!    Destructors run PHP code and may create new escapes or track new
 //!    destructors, hence the loop. No holder slot is ever dereferenced, so
 //!    a holder that died before now cannot dangle the reset.
@@ -156,7 +158,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     continue; // escaped objects survive; they do not destruct
                 }
 
-                unsafe { crate::object::run_pre_destructor(obj as *mut Object) };
+                unsafe { crate::object::run_user_destructor(obj as *mut Object) };
             }
 
             if unsafe { (*arena).bump_cursor() } != before {

@@ -267,8 +267,8 @@ impl BufferArena {
     }
 
     /// Free a chunk previously handed out by [`alloc`](Self::alloc) on this
-    /// thread. `size` must be the granted capacity (the owner tracks it as the
-    /// buffer's `capacity` anyway) — the zero-metadata contract.
+    /// thread. `size` must be the granted capacity (the holding entity tracks
+    /// it as the buffer's `capacity` anyway) — the zero-metadata contract.
     ///
     /// # Safety
     /// `ptr`/`size` must be exactly one live allocation of this arena.
@@ -860,7 +860,7 @@ pub fn dispose() {
 /// size-carrying; freeing by the request instead loses the difference from
 /// the block's free list.
 ///
-/// This is where the size split lives, so that a payload's owner — a
+/// This is where the size split lives, so that the entity holding a payload — a
 /// string's bytes, an array's table storage — carries no knowledge of how
 /// big a block is. `Arena::alloc_body` is the request-arena counterpart.
 pub fn buffer_alloc_longlived_payload(size: usize) -> (*mut u8, usize) {

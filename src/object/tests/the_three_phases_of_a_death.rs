@@ -67,7 +67,7 @@ fn die_runs_three_phases_and_cascades_to_children() {
         assert_eq!(
             DESTRUCTS.load(Ordering::Relaxed),
             2,
-            "parent and child pre-destructors both ran"
+            "parent and child user destructors both ran"
         );
     });
 }
@@ -112,10 +112,10 @@ fn teardown_cascades_through_a_bare_pointer_slot() {
     });
 }
 
-/// Teardown dispatches through the class's `dispose` pointer, not a
-/// hardcoded path: a class carrying a custom `dispose` sees it invoked,
-/// and the real teardown still runs (here via delegation). This is the
-/// hook A3 opens for the compiler's specialized `dispose`.
+/// Teardown dispatches through the class's `dispose` pointer, not a hardcoded
+/// path: a class carrying a custom `dispose` sees it invoked, and the field
+/// teardown still runs after it (here via delegation). This is the hook A3
+/// opens for the compiler's specialized `dispose`.
 #[test]
 fn teardown_dispatches_through_the_class_dispose_pointer() {
     let _g = crate::memory::block_pool::test_guard();

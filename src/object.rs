@@ -1,11 +1,12 @@
-//! Object creation and three-phase teardown
-//! (`rfc/runtime/object-lifecycle.md`).
+//! Object creation and the three-phase teardown of an *object*
+//! (`rfc/runtime/object-lifecycle.md`). Cycle finalization and arena reset
+//! order the same acts differently, and each owns its own numbering.
 //!
 //! `ll_object_new` is the out-of-line allocation path — the compiler
 //! inlines the bump-pointer version when class and category are
 //! statically known, but both perform the same steps. `ll_object_die`
 //! is the teardown entry every strategy funnels into: it dispatches to
-//! the class's `dispose` (pre-destructor with resurrection check, then
+//! the class's `dispose` (user destructor with resurrection check, then
 //! drop of counted children), then frees the memory by category.
 //! `dispose` is a descriptor pointer — [`ll_default_dispose`] is the
 //! generic stand-in a class carries until the compiler generates one
@@ -263,7 +264,7 @@ pub unsafe extern "C" fn ll_release_vector(entities: *const *mut RcHeader, count
 /// The user constructor returned successfully: from here on the object
 /// owes a `__destruct`. Sets the header flag teardown dispatches on, and
 /// for an arena object records it in the arena's destructor log, which is
-/// what makes reset run the pre-destructor.
+/// what makes reset run the user destructor.
 ///
 /// **False when the record could not be written.** The caller raises
 /// memory-exhausted at the creation site, and the outcome is identical to
@@ -513,7 +514,7 @@ pub(crate) unsafe fn sever_counted_slots(
 ///
 /// # Safety
 /// `obj` must be a live object.
-pub(crate) unsafe fn run_pre_destructor(obj: *mut Object) -> bool {
+pub(crate) unsafe fn run_user_destructor(obj: *mut Object) -> bool {
     let cls = unsafe { (*obj).class() };
     // The header flag, not the class: a class may declare `__destruct`
     // while this particular object never finished construction, and such
@@ -555,15 +556,16 @@ pub type DisposeFn = unsafe extern "C" fn(*mut Object) -> bool;
 /// release children; a generated `dispose` would unroll the releases with no
 /// map read, to identical effect — so a test may install its own.
 ///
-/// Runs phases 1–2 (the resurrection-guarded `__destruct` and the child
-/// releases); phase 3, the memory free, is [`ll_object_die`]'s. Returns
+/// Runs this protocol's phases 1–2 (the resurrection-guarded `__destruct`
+/// and the child releases); phase 3, the memory free, is
+/// [`ll_object_die`]'s. Returns
 /// `true` to proceed to the free, `false` on resurrection.
 ///
 /// # Safety
 /// `obj` a live object whose count just reached zero (or a collector owns).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
-    // Phase 1 — pre-destructor: exactly once, resurrection-aware.
+    // Phase 1 — user destructor: exactly once, resurrection-aware.
     //
     // Guard the destructor with one extra reference so a *transient* $this
     // reference taken inside it (`$x = $this;` then `$x` leaves scope: a
@@ -587,7 +589,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
             unsafe { crate::refcount::mutator_guard_retain(obj as *mut RcHeader) };
         }
 
-        let ran = unsafe { run_pre_destructor(obj) };
+        let ran = unsafe { run_user_destructor(obj) };
         if counted {
             // Eager death (2026-07-27): a collection reading this entity
             // as garbage while the destructor ran changes nothing —

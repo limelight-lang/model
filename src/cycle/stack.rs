@@ -1,7 +1,7 @@
 //! The trace's worklist: entities met but not yet expanded, over
 //! segments drawn from the collection's own arena.
 //!
-//! Recursion would put the closure's depth on the native stack, and the
+//! Recursion would put the closure's depth on the machine stack, and the
 //! closure is not small: the subgraph reachable from a median candidate
 //! root measures at the whole object population, 381 of 381
 //! (`rfc/model/gc/rc-cycle.md`, "What it is"). So the descent carries a

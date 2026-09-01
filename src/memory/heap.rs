@@ -2223,7 +2223,8 @@ pub(crate) unsafe fn entity_slot_index(entity: *mut u8) -> u32 {
 ///
 /// The size class comes from the collector's own copy in the block's
 /// triple rather than from [`HeapBlockHeader::size_class`]: the whole
-/// row lookup is meant to touch one cache line, and the owner's half of
+/// row lookup is meant to touch one cache line, and the owning thread's half
+/// of
 /// the header is borrowed as `&mut` by every allocation, which a
 /// collector's read of it would sit under.
 ///

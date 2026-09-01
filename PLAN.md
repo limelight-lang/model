@@ -364,7 +364,7 @@ to the step that owns it.
         S41.7 keeps `Placement`, the two glossary gaps, the journal `Window`
         and the `door` classification — 86 `door` sites and 17 `Refused`
         variants as of this commit.
-- [ ] S41.9 The lifecycle, ownership and platform words in the crate's prose
+- [x] S41.9 The lifecycle, ownership and platform words in the crate's prose
       done: `death`, `destructor`, `teardown`, `dispose`, `drop` and
         `reclamation` each name one of the five phases the project audit
         separates, and no comment presents them as one ordering; `native`
@@ -372,7 +372,20 @@ to the step that owns it.
         code at each of its sites; `owner` in a cross-module contract says
         which owner it means
       tier: T1 · role: —
-      handoff: `native` is 14 occurrences in `src/`, counted 2026-09-01.
+      handoff: `native` was 14 occurrences in `src/` when this step was
+        written and 2 when it ran — the earlier steps' rewrites took the rest.
+        Both were the machine stack and say so now.
+      handoff: the phase numbering is the defect the lifecycle half came down
+        to. Three protocols number their phases from one — the object
+        teardown's, the arena reset's and cycle finalization's — and each
+        module now says whose numbering it means. `run_pre_destructor` is
+        `run_user_destructor`: the audit rules that `__destruct` is not a
+        *pre*-anything, and the name had spread to twelve prose sites.
+      handoff: `owner` was qualified where a cross-module contract carries it —
+        the containing entity in `barrier` and `array::table`, the owning
+        thread in `block_pool` and `heap`, the holding entity in
+        `buffer_arena`. A local `owner` whose type says what it is stays
+        short, which is what the audit asks.
 ## S34 — The root queue, enrolment and parking
 
 Goal: candidates reach the collector without the mutator paying for a data

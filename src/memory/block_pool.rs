@@ -155,7 +155,7 @@ pub const BLOCK_KIND_ENTITY: u32 = 8;
 #[repr(C)]
 pub struct BlockHeader {
     /// The tagged union's discriminant, and the one word of a block
-    /// header that two threads touch: the owner writes it through
+    /// header that two threads touch: the owning thread writes it through
     /// [`store_block_kind`], the collector reads it for every block of
     /// every region. Atomic by type so that a `&mut` to a header — or to
     /// a private half that contains it — leaves these four bytes alone.
@@ -166,7 +166,7 @@ pub struct BlockHeader {
     /// compatible.
     pub(crate) reserved: AtomicU32,
     /// Free-list link while the block sits in the pool. While a block
-    /// is owned, the owner may reuse it as its own chain link (the
+    /// is owned, the owning structure may reuse it as its own chain link (the
     /// arena threads its block list through here — no side `Vec`).
     pub(crate) next: *mut BlockHeader,
 }
