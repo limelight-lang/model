@@ -305,6 +305,12 @@ to the step that owns it.
         the seven exemptions.
 
 - [ ] S41.7 Allocation outcomes, and the `door` sites by semantic class
+      **blocked: two of its five outcomes have no glossary entry**
+      (`ExternalCarry::Refused` / `OutsideCarry::Refused` and the journal's
+      `Window::Refused`), which is `rfc` S9.1's to answer. What is not blocked
+      is `Placement::Refused` → `Unsupported` and the `door` classification
+      against the glossary's closed list; splitting the step is Edmond's call.
+      `InsertOutcome`'s two rows landed with S41.8, which shares their enum.
       done: an allocation failure, an unsupported placement, an admission
         denial, a carry that left storage in its source block and an
         unobserved journal thread each carry a name of their own —
