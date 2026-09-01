@@ -45,8 +45,8 @@ life of the thread.
 | 2 | Scan resolves a row twice per entity | `cycle/scan.rs` | agreed: carry the row pointer in the worklist entry |
 | 3 | One global mutex per edge into a retained block | `memory/retained.rs` | rework: `dev/design/retained-index-ownership.md` |
 | 4 | Ledger atomics per entry on the pressure path | `cycle/queue.rs` | leave as is |
-| 5 | Debug premise check in validation is quadratic | `cycle/validation.rs` | T1, linear in-degree array |
-| 6 | `shadow::subtract` clamps at zero silently | `cycle/shadow.rs` | T1, `debug_assert` |
+| 5 | Debug premise check in validation is quadratic | `cycle/validation.rs` | T1, linear in-degree array — done, `1e2306f` |
+| 6 | `shadow::subtract` clamps at zero silently | `cycle/shadow.rs` | T1, `debug_assert` — done, `ba616d6` |
 
 ### 1. Arena waste at the smallest size class
 
