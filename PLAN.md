@@ -1256,6 +1256,37 @@ stage claiming the frees while building none of them.
         the final rewind. Nested use and a phase-invalid pointer fail in every
         build
       tier: T2 · role: Sage → Critic
+      Sage 2026-09-01 (pre-change gate, run by session L2, every cited line
+        checked against the file): nine findings and three escalations, no
+        code touched. Taken as rulings for the code — one representation of
+        "a trace is open", the chain head pointer or a phase word but not
+        both, since slice c retired `TRACE_ACTIVE` and an unwind out of the
+        row sweep would leave the two disagreeing (F2); the rollback of a
+        refused base ends with `critical::drain`, because `release_queue_base`
+        alone parks the queue base in the refused thread's reserve and a test
+        reading `blocks_out` after `join` cannot see it (F3); the base lives
+        outside the arena's `blocks` list and outside `from_reserve`, or
+        `reset`'s count-based return hands it to the reserve on an abort (F4);
+        base consumption is a high-water residue entered through `mark_peak`
+        at the rewind, never a current-figure charge (F5, the choice the
+        Sage proposed); the abort path keeps its second shadow sweep (F9);
+        the handoff's 262,144 is the empty-queue figure, not a maximum — a
+        polled thread with one candidate holds five blocks (F7); and the step
+        text's `floor`, `parking`, `active flag` are retired words (F8).
+        Escalated to Edmond: **the design of record has no workspace** —
+        `critical-reserve.md` "Allocation paths" says one mandatory block at
+        init and a thread that cannot obtain it does not start,
+        `rfc/dev/DECISIONS.md` calls the floor "the one stock" that is
+        mandatory, and the only authority for a second mandatory block is
+        this crate's `dev/DECISIONS.md` of 2026-08-26; the alternative that
+        meets the 08-28 reasoning is a base drawn at the first collection
+        and retained from then, `None` at the open as today (F1); and
+        whether the Commit phase is built here with no consumer, S36.12 not
+        having chosen its commit unit (F6). Baseline measured by L2 on
+        `f895272`: `.tbss` 480 (1.96.0) / 472 (+1.94); init draws 13 blocks
+        (base 1, barrier reserve 2, critical 8, spares 2) and the step adds
+        one; every ledger relation the tests pin is listed in L2's report of
+        2026-09-01 and reproduced. Code waits on the two escalations.
       handoff: mandatory direct cycle memory becomes 131,072 bytes per
         registered thread — one 65,536-byte queue floor and one workspace
         base. The two best-effort queue spares make the nominal/maximum direct
