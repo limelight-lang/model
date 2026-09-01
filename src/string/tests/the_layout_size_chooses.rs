@@ -6,10 +6,9 @@
 //! one. The arena's limit is a whole block payload rather than a size
 //! class, while the long-lived heap shares the GC heap's. The other two
 //! categories answer otherwise past their own limit, each for its own
-//! reason: a long-lived string is refused
-//! outright, nothing there being able to free a payload, and an
-//! immortal one keeps the inline layout in a run of its own
-//! (`string::placement`).
+//! reason: a long-lived string is an unsupported placement, nothing there
+//! being able to free a payload, and an immortal one keeps the inline
+//! layout in a run of its own (`string::placement`).
 
 use super::*;
 
@@ -223,14 +222,20 @@ fn an_escaping_oversize_arena_string_is_copied_into_the_heap() {
 /// disagreed within a day.
 ///
 /// One slot's worth is served first through each factory, so a
-/// `placement` that refused the category outright fails here rather
-/// than passes. And the rule itself is read, not only its effect: a
-/// null from a factory says a refusal happened, never where — with
-/// debug assertions off, an out-of-line answer for this category
-/// reaches `body_ensure`, gets null, and reports the same null, an
-/// entity slot leaked behind it.
+/// `placement` that answered `Unsupported` for the whole category fails
+/// here rather than passes. And the rule itself is read, not only its
+/// effect: a null from a factory says only that nothing was made, never
+/// why — with debug assertions off, an out-of-line answer for this
+/// category reaches `body_ensure`, gets null, and reports the same null,
+/// an entity slot leaked behind it.
+///
+/// **An unsupported placement and a memory failure are different
+/// answers**, and the difference is asserted rather than read: the
+/// unsupported null asks nothing of any allocator, so the refusal count
+/// does not move, while the same null from a payload the allocator
+/// refused moves it by one and leaves `placement` answering out of line.
 #[test]
-fn a_long_lived_string_past_the_slot_limit_is_refused_by_both_factories() {
+fn a_long_lived_string_past_the_slot_limit_is_unsupported_by_both_factories() {
     let _g = crate::memory::block_pool::test_guard();
     let mut arena = Arena::new();
     let mut ctx = LLContext { arena: &mut arena };
@@ -252,6 +257,7 @@ fn a_long_lived_string_past_the_slot_limit_is_refused_by_both_factories() {
         "and it is inline, the only layout this category has"
     );
 
+    let refusals_before = crate::memory::buffer_arena::refusals();
     assert!(
         unsafe {
             ll_string_new(
@@ -261,12 +267,17 @@ fn a_long_lived_string_past_the_slot_limit_is_refused_by_both_factories() {
             )
         }
         .is_null(),
-        "one byte more has nowhere to go and is refused"
+        "one byte more has nowhere to go and is unsupported"
     );
     assert!(
         unsafe { crate::string::new_uninit(&mut ctx, MemoryCategory::LongLived, last_inline + 1) }
             .is_null(),
         "and the assemble-in-place factory answers the same"
+    );
+    assert_eq!(
+        crate::memory::buffer_arena::refusals(),
+        refusals_before,
+        "an unsupported placement asks nothing of any allocator"
     );
 
     // The same slot's worth through that factory, because its only
@@ -283,15 +294,47 @@ fn a_long_lived_string_past_the_slot_limit_is_refused_by_both_factories() {
         assert_eq!(string_bytes(filled).len(), last_inline);
     }
 
-    // The rule itself, which no null can report: refused here rather
+    // The rule itself, which no null can report: unsupported here rather
     // than answered out of line and refused one layer down.
     assert!(matches!(
         placement(
             MemoryCategory::LongLived,
             size_of::<LLString>() + last_inline + 1
         ),
-        Placement::Refused
+        Placement::Unsupported
     ));
+
+    // The other null. The GC heap answers the same size out of line, and
+    // `FORCE_REFUSE_LONGLIVED` refuses the payload that answer goes on to
+    // ask for — the flag covers every body allocation a `GcHeap` owner
+    // makes (`memory::buffer_arena`). The refusal is proved by the count
+    // rather than assumed from the null (`dev/POSTMORTEM.md`, "a
+    // forced-refusal test that never proved the refusal").
+    use std::sync::atomic::Ordering;
+    let heap_size = size_of::<LLString>() + last_inline + 1;
+    assert!(matches!(
+        placement(MemoryCategory::GcHeap, heap_size),
+        Placement::OutOfLine
+    ));
+    let refusals_before = crate::memory::buffer_arena::refusals();
+    crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
+    let refused_for_memory = unsafe {
+        ll_string_new(
+            &mut ctx,
+            MemoryCategory::GcHeap,
+            &vec![b'g'; last_inline + 1],
+        )
+    };
+    crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
+    assert!(
+        refused_for_memory.is_null(),
+        "the payload's refusal is the factory's null"
+    );
+    assert_eq!(
+        crate::memory::buffer_arena::refusals(),
+        refusals_before + 1,
+        "and this null is the allocator's, which the count tells from the rule's"
+    );
 
     arena.reset(|_| {});
 }

@@ -262,8 +262,11 @@ enum Placement {
     Inline,
     /// A 32-byte slot and a payload through the buffer machinery.
     OutOfLine,
-    /// No layout serves this: null, for the caller to raise on.
-    Refused,
+    /// No layout serves this category at this size: null, for the caller to
+    /// raise on. Not a memory failure — nothing has been asked of an
+    /// allocator, and a test asserts that difference
+    /// (`string::tests::the_layout_size_chooses`).
+    Unsupported,
 }
 
 /// The rule. Past what the category packs in one slot the inline layout
@@ -273,7 +276,7 @@ enum Placement {
 ///   take the out-of-line form;
 /// - the long-lived heap does not, because `string_die` reclaims the GC
 ///   heap alone, so nothing would ever free the payload
-///   (`rfc/model/strings.md`); refused here rather than left to the
+///   (`rfc/model/strings.md`); unsupported here rather than left to the
 ///   allocator, which serves a slot that size instead of refusing one;
 /// - the immortal region keeps the inline layout whole, in the
 ///   block-aligned run `immortal_alloc` serves for a request over one
@@ -286,7 +289,7 @@ fn placement(category: MemoryCategory, size: usize) -> Placement {
 
     match category {
         MemoryCategory::GcHeap | MemoryCategory::RequestArena => Placement::OutOfLine,
-        MemoryCategory::LongLived => Placement::Refused,
+        MemoryCategory::LongLived => Placement::Unsupported,
         MemoryCategory::Immortal => Placement::Inline,
     }
 }
@@ -325,7 +328,7 @@ pub(crate) unsafe fn new_uninit(
     // caller sees only where to write, which is what [`Reserved::bytes`]
     // answers for either layout.
     match placement(category, size) {
-        Placement::Refused => return Reserved::refused(),
+        Placement::Unsupported => return Reserved::refused(),
         Placement::OutOfLine => {
             let mem = unsafe {
                 crate::memory::routing::entity_alloc_in(ctx, category, size_of::<LLStringDynamic>())
@@ -485,7 +488,7 @@ pub(crate) unsafe fn new_with_hash(
         Placement::OutOfLine => {
             return unsafe { new_out_of_line(ctx, category, bytes, 0, hash, COW) } as *mut LLString;
         }
-        Placement::Refused => return std::ptr::null_mut(),
+        Placement::Unsupported => return std::ptr::null_mut(),
         Placement::Inline => {}
     }
 
