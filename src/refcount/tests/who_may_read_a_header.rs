@@ -55,7 +55,8 @@ use std::path::{Path, PathBuf};
 /// stay against `memory_category` and `lifetime_counted` being reintroduced
 /// as `&self` from habit, which is the regression this crate has already
 /// had once. If the capability is ever wanted again it comes back as a free
-/// function over the flags word, the shape `is_object` and `may_enrol` have.
+/// function over the flags word, the shape `is_object` and
+/// `may_become_a_candidate` have.
 ///
 /// The pointer spellings anchor on the closing parenthesis of `(*p)`, and
 /// that is what keeps them off the other `flags` words in this crate — a

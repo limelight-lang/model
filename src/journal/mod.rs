@@ -457,11 +457,11 @@ fn ring_for_writing() -> *mut Ring {
         // so its allocation takes the large path and touches no thread
         // heap. Without this the exit guard is never registered.
         // Idempotent, and inside the guard because it allocates. Its
-        // answer is not this call's business: a refused floor is a thread
-        // the runtime will not run entity work on, and the abort that
-        // enforces that belongs to the enrolment
-        // (`cycle::queue::draw_floor_or_abort`). What this call needs from
-        // it is the guard, which the next line asks for directly.
+        // answer is not this call's business: a refused base block is a
+        // thread the runtime will not run entity work on, and the abort that
+        // enforces that belongs to candidate registration
+        // (`cycle::queue::ensure_queue_base_or_abort`). What this call needs
+        // from it is the guard, which the next line asks for directly.
         let _ = crate::memory::heap::ll_thread_init();
         // No ring is opened on a thread whose retirement is not
         // guaranteed. A ring opened where the guard cannot be armed —

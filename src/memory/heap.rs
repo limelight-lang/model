@@ -1606,7 +1606,8 @@ pub extern "C" fn ll_thread_exit() {
     // What the registration order is, since the answer is easy to get
     // backwards: `ll_thread_init` registers `EXIT_GUARD` last of the four
     // `thread_local!`s this crate gives drop glue — the pool's thread
-    // cache at the first `BlockPool::get`, which is `queue::take_floor`'s,
+    // cache at the first `BlockPool::get`, which is
+    // `queue::initialize_queue_base`'s,
     // then the barrier reserve, then the critical reserve, then the guard
     // at `thread_exit_will_run`. On glibc, which destroys in reverse
     // registration order, this guard therefore runs first of the four and
@@ -1696,16 +1697,17 @@ fn retire_the_journal() {
     // is `BlockPool::put`, which can push into the cache the next call
     // flushes.
 
-    // The enrolment queue before the critical reserve, because its
+    // The candidate queue before the critical reserve, because its
     // segments go back through that reserve's return path
-    // (`crate::cycle::queue::drain`): draining the reserve first would
-    // strand them in a reserve nothing drains again.
-    crate::cycle::queue::drain();
-    // Then the floor, which the drain above leaves alone: the drain is
-    // also how a live thread empties its queue, and the floor is the one
-    // block this thread holds for its whole life rather than for its
-    // queue's contents (`crate::cycle::queue::release_floor`).
-    crate::cycle::queue::release_floor();
+    // (`crate::cycle::queue::release_queue_segments`): draining the reserve
+    // first would strand them in a reserve nothing drains again.
+    crate::cycle::queue::release_queue_segments();
+    // Then the base block, which the release above leaves alone: that
+    // release is also how a running thread empties its queue, and the base
+    // block is the one block this thread holds for its whole life rather
+    // than for its queue's contents
+    // (`crate::cycle::queue::release_queue_base`).
+    crate::cycle::queue::release_queue_base();
     crate::memory::reserve::drain();
     crate::memory::critical::drain();
     crate::memory::block_pool::drain_thread_cache();
@@ -1790,10 +1792,11 @@ impl Drop for ExitGuard {
 ///
 /// **Answers whether the thread started**, and `false` is a refusal the
 /// caller must act on: the task does not run on this thread, and the
-/// process lives. Only one stock can produce it — the enrolment queue's
-/// floor, which carries the guarantee that a release can never lose a
+/// process lives. Only one stock can produce it — the candidate queue's
+/// base block, which carries the guarantee that a release can never lose a
 /// cycle root and is the one stock no later poll can make good
-/// (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued").
+/// (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued", which
+/// is that block).
 /// A thread whose *heap* the OS refuses still answers `true`: it is
 /// registered, it releases entities allocated elsewhere, and its own
 /// allocations report null, which is the state this module already
@@ -1804,31 +1807,32 @@ impl Drop for ExitGuard {
 /// ([`thread_exit_will_run`]). Such a thread cannot be funded at all:
 /// nothing would give the memory back.
 #[unsafe(no_mangle)]
-#[must_use = "a thread whose floor was refused never started; run the work elsewhere"]
+#[must_use = "a thread whose base block was refused never started; run the work elsewhere"]
 pub extern "C" fn ll_thread_init() -> bool {
     // Must precede the first `tls::get()` anywhere: `get` deliberately does
     // not check whether the slot has been reserved (see its doc), so this
     // is the call that establishes that invariant.
     tls::ensure_slot();
 
-    // The floor before the best-effort fills below, and before anything
+    // The base block before the best-effort fills below, and before anything
     // that would have to be undone: it is the only draw here whose
     // refusal ends the thread, so it is the one that runs while nothing
     // is yet built.
-    if !crate::cycle::queue::take_floor() {
+    if !crate::cycle::queue::initialize_queue_base() {
         return false;
     }
 
     // The three reserves first, and **before** the heap allocation below,
     // which returns early when the OS refuses it. A thread that comes out
     // of here heapless is still alive and still releases entities
-    // allocated elsewhere, so it still reaches the enrolment queue — and
-    // the queue's second door is the critical reserve, which a thread that
-    // has never touched it reaches for the first time from `ll_release`,
-    // where nothing can report. Filling them here needs no heap.
+    // allocated elsewhere, so it still reaches the candidate queue — and
+    // the queue's second allocation path is the critical reserve, which a
+    // thread that has never touched it reaches for the first time from
+    // `ll_release`, where nothing can report. Filling them here needs no
+    // heap.
     let _ = crate::memory::reserve::replenish();
     let _ = crate::memory::critical::replenish();
-    let _ = crate::cycle::queue::replenish();
+    let _ = crate::cycle::queue::refill_spares();
 
     // Whether anything will run this thread's teardown, asked once,
     // because the call is also the arming: standing here it registers the
@@ -1839,11 +1843,11 @@ pub extern "C" fn ll_thread_init() -> bool {
     // A false is a thread nothing will unfund: TLS teardown has already
     // destroyed the guard's slot, and nothing rebuilds one. Everything
     // drawn above goes straight back, and the thread is reported as not
-    // started rather than left holding a floor, two spare segments and
-    // two reserves for the life of the process.
+    // started rather than left holding a base block, two spare segments
+    // and two reserves for the life of the process.
     if !thread_exit_will_run() {
-        crate::cycle::queue::drain();
-        crate::cycle::queue::release_floor();
+        crate::cycle::queue::release_queue_segments();
+        crate::cycle::queue::release_queue_base();
         crate::memory::reserve::drain();
         crate::memory::critical::drain();
         return false;

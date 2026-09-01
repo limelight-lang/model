@@ -33,7 +33,7 @@ fn an_arena_entity_leaves_no_entry_for_the_reset_to_strand() {
     let _g = test_guard();
     reset();
     assert!(
-        replenish(),
+        refill_spares(),
         "the queue is funded, so a refused segment cannot stand in for the gate"
     );
 
@@ -63,10 +63,14 @@ fn an_arena_entity_leaves_no_entry_for_the_reset_to_strand() {
         "the decrement happened, so the gate was reached"
     );
 
-    assert_eq!(enrolled_count(), 0, "no entry names the arena slot");
-    assert_eq!(escrowed_count(), 0, "and none was parked instead");
+    assert_eq!(candidate_count(), 0, "no entry names the arena slot");
     assert_eq!(
-        unsafe { mutator_flags(header) } & ENROLLED,
+        overflow_len(),
+        0,
+        "and none went to the overflow buffer instead"
+    );
+    assert_eq!(
+        unsafe { mutator_flags(header) } & CANDIDATE_BIT,
         0,
         "and the bit that would have named one is down"
     );
@@ -85,7 +89,7 @@ fn an_arena_entity_leaves_no_entry_for_the_reset_to_strand() {
     );
     second.reset(|_| {});
 
-    assert_eq!(enrolled_count(), 0, "and the queue still names nothing");
+    assert_eq!(candidate_count(), 0, "and the queue still names nothing");
 
     reset();
 }

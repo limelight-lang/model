@@ -25,7 +25,7 @@
 thread_local! {
     /// Whether this thread owes a collection at its next clean point.
     ///
-    /// Per thread because what arms it is per thread: the enrolment
+    /// Per thread because what arms it is per thread: the candidate
     /// queue's growth, which is one thread's release path drawing on
     /// one thread's reserve (`crate::cycle::queue`). A process-wide bit
     /// would send every thread through a collection because one of them
@@ -39,10 +39,10 @@ thread_local! {
 
 /// Arm this thread for a collection at its next clean point.
 ///
-/// What arms it today is the enrolment queue running out of room in a
-/// spare cell: a reserve draw, or a refusal at both doors. Neither can
-/// collect where it stands, `ll_release` holding no frame, so the arming
-/// is how the poll hears about it (`rfc/model/gc/strategies.md`,
+/// What arms it today is the candidate queue running out of room in a
+/// spare cell: a reserve draw, or a refusal at both allocation paths.
+/// Neither can collect where it stands, `ll_release` holding no frame, so
+/// the arming is how the poll hears about it (`rfc/model/gc/strategies.md`,
 /// "Triggering: arm vs fire").
 pub(crate) fn arm() {
     DUE.with(|due| due.set(true));
@@ -106,25 +106,25 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // a collection returns what it drew at its own end, so the reserve is
     // usually full by the time this runs, and what it catches is the
     // collection that ended by refusing — the retry after an abort wants
-    // a door that is open (`rfc/model/memory/critical-reserve.md`,
+    // an allocation path that is open (`rfc/model/memory/critical-reserve.md`,
     // "Filling, refilling, and leaving reserve mode").
     if crate::memory::critical::is_drawn() {
         let _ = crate::memory::critical::replenish();
     }
 
-    // And the enrolment queue's spare cells, which is the same protocol
-    // one layer up: the overflow may not allocate, so somebody else
+    // And the candidate queue's spare cells, which is the same protocol
+    // one layer up: the growth path may not allocate, so somebody else
     // takes the segment it swaps in, and this is where that somebody
     // stands (`rfc/model/gc/cycle/questions.md`, Y12 clause 3).
-    if crate::cycle::queue::is_short() {
-        let _ = crate::cycle::queue::replenish();
+    if crate::cycle::queue::needs_spares() {
+        let _ = crate::cycle::queue::refill_spares();
     }
 
-    // And then what the refill made room for: entries that landed in the
-    // queue's escrow because every door had refused them. The order is
-    // load-bearing — a drain before the refill would put them straight
-    // back (`rfc/model/gc/cycle/questions.md`, Y12 clause 3).
-    crate::cycle::queue::drain_escrow();
+    // And then what the refill made room for: entries written to the
+    // queue's overflow buffer because every allocation path had refused
+    // them. The order is load-bearing — draining before the refill would
+    // put them straight back (`rfc/model/gc/cycle/questions.md`, Y12 clause 3).
+    crate::cycle::queue::drain_overflow();
 
     if !take_due() {
         return 0;

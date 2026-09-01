@@ -8,8 +8,8 @@
 //! the draw, the refusal that ends a thread, the draw a thread the
 //! runtime never registered makes for itself, and the return.
 //!
-//! **The two aborts have no test**, and neither has the escrow's own
-//! overflow abort that predates them: nothing in this crate ends a
+//! **The two aborts have no test**, and neither has the abort the
+//! overflow buffer takes when it is full, which predates them: nothing in this crate ends a
 //! process and comes back to report it. What is tested instead is every
 //! path that reaches them.
 
@@ -37,16 +37,23 @@ fn the_floor_is_one_stamped_block_out_of_the_pool() {
     crate::memory::critical::drain_for_test();
 
     let pool = BlockPool::global();
-    assert!(!floor().is_null(), "the guard's `ll_thread_init` drew one");
+    assert!(
+        !queue_base().is_null(),
+        "the guard's `ll_thread_init` drew one"
+    );
     let with = pool.blocks_out();
 
-    release_floor();
+    release_queue_base();
     crate::memory::critical::drain_for_test();
-    assert_eq!(pool.blocks_out() + 1, with, "the floor is one block");
+    assert_eq!(
+        pool.blocks_out() + 1,
+        with,
+        "the base block is one pool block"
+    );
 
-    assert!(take_floor(), "and the thread takes another");
+    assert!(initialize_queue_base(), "and the thread takes another");
     assert_eq!(pool.blocks_out(), with);
-    assert_eq!(kind_of(floor()), BLOCK_KIND_GC_METADATA);
+    assert_eq!(kind_of(queue_base()), BLOCK_KIND_GC_METADATA);
 }
 
 /// The drain empties the queue and leaves the floor alone: the floor
@@ -55,23 +62,27 @@ fn the_floor_is_one_stamped_block_out_of_the_pool() {
 #[test]
 fn a_drain_leaves_the_floor_where_it_is() {
     let _g = test_guard();
-    let held = floor();
-    assert!(!held.is_null(), "the guard's `ll_thread_init` drew one");
+    let base = queue_base();
+    assert!(!base.is_null(), "the guard's `ll_thread_init` drew one");
     reset();
-    assert_eq!(floor(), held, "an empty queue's drain kept it");
+    assert_eq!(queue_base(), base, "an empty queue's release kept it");
 
     // Funded, so that the release below reaches the queue rather than the
     // escrow: what this test is about is a drain that has segments to
     // give back, which is the drain the floor has to survive.
-    assert!(replenish(), "the cells start full");
+    assert!(refill_spares(), "the cells start full");
     let mut header = candidate(2);
     assert!(unsafe { !release(&raw mut header) });
     assert_eq!(segment_count(), 1, "the entry is in a segment");
 
-    drain();
+    release_queue_segments();
 
-    assert_eq!(segment_count(), 0, "which the drain gave back");
-    assert_eq!(floor(), held, "and the thread still has its floor");
+    assert_eq!(segment_count(), 0, "which the release gave back");
+    assert_eq!(
+        queue_base(),
+        base,
+        "and the thread still has its base block"
+    );
 
     reset();
 }
@@ -83,7 +94,7 @@ fn a_refused_floor_is_a_thread_that_never_starts() {
     let _g = test_guard();
     let pool = BlockPool::global();
     let before = pool.blocks_out();
-    let floors_before = stats().current_blocks();
+    let base_blocks_before = stats().current_blocks();
 
     // On a thread of its own, because the refusal is about a thread that
     // has no floor yet and this one has held its since the guard.
@@ -91,7 +102,7 @@ fn a_refused_floor_is_a_thread_that_never_starts() {
         let oom = force_oom();
         let started = crate::memory::heap::ll_thread_init();
         drop(oom);
-        (started, floor().is_null())
+        (started, queue_base().is_null())
     })
     .join()
     .unwrap();
@@ -99,7 +110,7 @@ fn a_refused_floor_is_a_thread_that_never_starts() {
     assert!(!started, "the thread reports that it did not start");
     assert!(floorless, "and holds nothing to be given back");
     assert_eq!(pool.blocks_out(), before);
-    assert_eq!(stats().current_blocks(), floors_before);
+    assert_eq!(stats().current_blocks(), base_blocks_before);
 }
 
 /// A thread the runtime never registered draws its floor at its first
@@ -130,32 +141,38 @@ fn an_unregistered_thread_draws_its_floor_at_the_first_enrolment() {
     let pool = BlockPool::global();
     let before = pool.blocks_out();
 
-    let (had_floor, kind, escrowed, enrolled) = std::thread::spawn(|| {
-        assert!(floor().is_null(), "nothing has run on this thread yet");
+    let (had_base_block, kind, overflow_len, queued) = std::thread::spawn(|| {
+        assert!(queue_base().is_null(), "nothing has run on this thread yet");
 
         let mut header = candidate(2);
         let entity = &raw mut header;
         assert!(unsafe { !release(entity) });
 
-        let drawn = floor();
+        let drawn = queue_base();
         (
             !drawn.is_null(),
             kind_of(drawn),
-            escrowed_count(),
-            enrolled_count(),
+            overflow_len(),
+            candidate_count(),
         )
     })
     .join()
     .unwrap();
 
-    assert!(had_floor, "the enrolment drew one rather than aborting");
+    assert!(
+        had_base_block,
+        "the registration drew one rather than aborting"
+    );
     assert_eq!(kind, BLOCK_KIND_GC_METADATA);
-    assert_eq!(escrowed, 1, "every door but the floor refused");
-    assert_eq!(enrolled, 0, "so nothing reached the queue itself");
+    assert_eq!(
+        overflow_len, 1,
+        "no path could fund a segment, so the entry went to the buffer"
+    );
+    assert_eq!(queued, 0, "so nothing reached the queue itself");
     assert_eq!(
         pool.blocks_out(),
         before,
-        "and the exit the draw armed gave the floor back"
+        "and the exit the draw armed gave the base block back"
     );
 }
 
@@ -188,7 +205,7 @@ fn a_threads_whole_life_gives_every_block_back() {
             crate::memory::heap::ll_thread_init(),
             "the pool served this thread"
         );
-        assert!(!floor().is_null(), "which drew it a floor");
+        assert!(!queue_base().is_null(), "which drew it a base block");
     })
     .join()
     .unwrap();
@@ -219,14 +236,14 @@ fn a_thread_nothing_will_tear_down_is_not_funded() {
     let _g = test_guard();
     let pool = BlockPool::global();
     let before = pool.blocks_out();
-    let floors_before = stats().current_blocks();
+    let base_blocks_before = stats().current_blocks();
     let segments_before = stats().current_blocks();
 
     let started = std::thread::spawn(|| {
         crate::memory::heap::FORCE_GUARD_UNARMED.store(true, Ordering::Relaxed);
         let started = crate::memory::heap::ll_thread_init();
         crate::memory::heap::FORCE_GUARD_UNARMED.store(false, Ordering::Relaxed);
-        assert!(floor().is_null(), "and it holds no floor");
+        assert!(queue_base().is_null(), "and it holds no base block");
         started
     })
     .join()
@@ -237,6 +254,6 @@ fn a_thread_nothing_will_tear_down_is_not_funded() {
         pool.blocks_out() <= before,
         "and left nothing out of the pool"
     );
-    assert_eq!(stats().current_blocks(), floors_before);
+    assert_eq!(stats().current_blocks(), base_blocks_before);
     assert_eq!(stats().current_blocks(), segments_before);
 }

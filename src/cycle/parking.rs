@@ -10,7 +10,8 @@
 //!
 //! There are two independent reasons a dead slot may still be named:
 //!
-//! - an enrolment-queue entry, represented by [`crate::refcount::ENROLLED`];
+//! - a candidate-queue entry, represented by
+//!   [`crate::refcount::CANDIDATE_BIT`];
 //! - this window, represented by [`ACTIVE`], while mark or scan may still use
 //!   a shadow row for the slot.
 //!
@@ -108,8 +109,8 @@ impl Drop for TraceWindow {
 /// the slot, recording the return for the window's close.
 ///
 /// Called only after the queue-entry window has refused the same return. A
-/// replay that still finds `ENROLLED` stops before here, because the queue entry
-/// itself remains the record.
+/// replay that still finds `CANDIDATE_BIT` stops before here, because the
+/// queue entry itself remains the record.
 ///
 /// # Safety
 /// `ptr` is a dead entity slot whose teardown has completed and which this call

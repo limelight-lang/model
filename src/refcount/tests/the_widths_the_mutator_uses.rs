@@ -92,7 +92,7 @@ const NOT_A_FLAG: [&str; 2] = [
     // A shift, not a mask: its value is a position.
     "ENTITY_KIND_SHIFT",
     // Composed from constants the battery already covers.
-    "ENROLMENT_GATE_MASK",
+    "CANDIDATE_GATE_MASK",
 ];
 
 #[test]

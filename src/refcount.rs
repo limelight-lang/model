@@ -42,8 +42,8 @@ pub enum MemoryCategory {
     /// entity this code has no mechanism behind it. `ll_retain` and
     /// `ll_release` return early on it, so it is not counted, and the
     /// same early return keeps it out of every candidate set: `rc-cycle`
-    /// enrols on the release path (`rfc/model/gc/rc-cycle.md`), which
-    /// this category never reaches. No
+    /// registers candidates on the release path
+    /// (`rfc/model/gc/rc-cycle.md`), which this category never reaches. No
     /// reset or teardown pass frees it — `rfc/model/memory/arenas.md`
     /// still records the reclamation strategy as undecided, and no
     /// long-lived arena exists in this crate. What it does instead is take
@@ -105,12 +105,13 @@ pub const OWNERSHIP_MARK: u32 = 1 << 9;
 
 /// A root-queue entry names this entity. Set by the release path before
 /// it writes the entry (`crate::cycle::queue`), and cleared by the owner
-/// at death and at no other point — **never at acquittal**, because
-/// enrolment is edge-triggered and clearing it there is a permanent miss
-/// (S34.2, `rfc/model/gc/rc-cycle.md`). The one other clearing is the
-/// undo of an enrolment whose entry never landed, which is the same
-/// owner reducing the same incomplete state.
-pub const ENROLLED: u32 = 1 << 10;
+/// at death and at no other point — **never when a trace finds it
+/// externally referenced**, because candidate registration is
+/// edge-triggered and clearing it there is a permanent miss (S34.2,
+/// `rfc/model/gc/rc-cycle.md`). The one other clearing is the undo of a
+/// registration whose entry was never written, which is the same owner
+/// reducing the same incomplete state.
+pub const CANDIDATE_BIT: u32 = 1 << 10;
 
 /// Entity has weak references (side table exists).
 pub const HAS_WEAK_REFERENCES: u32 = 1 << 12;
@@ -281,7 +282,7 @@ impl EntityKind {
         debug_assert!(
             self.closes_a_ring() == ((self as u32) < 8),
             "a kind's ring classification and its code disagree, so the \
-             enrolment mask answers the opposite of the classification"
+             candidate gate answers the opposite of the classification"
         );
         (self as u32) << ENTITY_KIND_SHIFT
     }
@@ -352,7 +353,7 @@ const _: () = {
 /// codes were assigned to answer in a single mask test** — the other two
 /// are [`carries_a_class_word`] and [`is_string`], and that assignment is
 /// the whole argument for a four-bit field ([`ENTITY_KIND_SHIFT`]). The
-/// release path reads this same bit inside [`ENROLMENT_GATE_MASK`], which
+/// release path reads this same bit inside [`CANDIDATE_GATE_MASK`], which
 /// answers the kind clause and four others in one test; here the clause
 /// stands alone, and `refcount::tests::the_header_the_compiler_shares` is
 /// what holds it to [`EntityKind::closes_a_ring`].
@@ -378,19 +379,23 @@ pub fn kind_may_close_a_cycle(flags: u32) -> bool {
 /// Composed from the named constants rather than written as the literal
 /// the design names, so that moving a bit moves the gate with it; the
 /// assertion below is what ties the composition back to that literal.
-pub const ENROLMENT_GATE_MASK: u32 =
-    MEMORY_CATEGORY_MASK | KIND_ABOVE_THE_RING_RESERVE | ACYCLIC_GATE | OWNERSHIP_MARK | ENROLLED;
+pub const CANDIDATE_GATE_MASK: u32 = MEMORY_CATEGORY_MASK
+    | KIND_ABOVE_THE_RING_RESERVE
+    | ACYCLIC_GATE
+    | OWNERSHIP_MARK
+    | CANDIDATE_BIT;
 
 const _: () = assert!(
-    ENROLMENT_GATE_MASK == 0x723,
+    CANDIDATE_GATE_MASK == 0x723,
     "the composed gate and the value `rfc/model/classes.md` names have parted"
 );
 
 /// True when this flags word passes every clause of
-/// [`ENROLMENT_GATE_MASK`] at once.
+/// [`CANDIDATE_GATE_MASK`] at once, which is the entity a non-final
+/// decrement may register as a candidate.
 #[inline]
-pub fn may_enrol(flags: u32) -> bool {
-    flags & ENROLMENT_GATE_MASK == 0
+pub fn may_become_a_candidate(flags: u32) -> bool {
+    flags & CANDIDATE_GATE_MASK == 0
 }
 
 /// True when the entity carries a class word at `+8` — an object or a
@@ -632,7 +637,7 @@ const _: () = assert!(
         | ARENA_RESET_MARK
         | ACYCLIC_GATE
         | OWNERSHIP_MARK
-        | ENROLLED
+        | CANDIDATE_BIT
         | IS_ESCAPEE
         | HAS_WEAK_REFERENCES
         | DESTRUCTOR_PENDING
@@ -693,25 +698,26 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
 
     // A decrement that does not reach zero is the one event that can
     // leave a garbage ring behind, so it is where a candidate is
-    // enrolled (`rfc/model/gc/rc-cycle.md`).
-    if refcount != 0 && may_enrol(flags) {
+    // registered (`rfc/model/gc/rc-cycle.md`).
+    if refcount != 0 && may_become_a_candidate(flags) {
         note_admission();
 
         // The bit goes down **before** the queue write, which Y12
         // clause 4 requires: set after it, a second decrement landing in
-        // the window between the two enrols the same entity twice. The
+        // the window between the two registers the same entity twice. The
         // word written is the one loaded above, so this store carries
         // every other mutator flag forward unchanged — which is sound
         // for the same reason the counter store above is, the entity's
         // own thread being its only writer.
-        unsafe { flags_store(entity, flags | ENROLLED) };
+        unsafe { flags_store(entity, flags | CANDIDATE_BIT) };
 
-        // No undo, because there is nothing to undo: the enrolment
-        // cannot fail. Every door refusing puts the entry in the queue's
-        // escrow, and the report is the next safepoint poll's, from a
-        // frame that has one (`rfc/dev/DECISIONS.md`, "an enrolment
-        // cannot fail"). A bit set here therefore always names an entry.
-        unsafe { crate::cycle::queue::enrol(entity) };
+        // No undo, because there is nothing to undo: the registration
+        // cannot fail. Every allocation path refusing writes the entry to
+        // the queue's overflow buffer, and the report is the next safepoint
+        // poll's, from a frame that has one (`rfc/dev/DECISIONS.md`,
+        // "an enrolment cannot fail"). A bit set here therefore always names
+        // an entry.
+        unsafe { crate::cycle::queue::register_candidate(entity) };
     }
 
     refcount == 0 && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap
@@ -720,7 +726,7 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
 #[cfg(test)]
 thread_local! {
     /// How many decrements this thread's release path admitted through
-    /// [`ENROLMENT_GATE_MASK`]. Per thread rather than global because the
+    /// [`CANDIDATE_GATE_MASK`]. Per thread rather than global because the
     /// harness runs tests in parallel and a shared counter would charge
     /// one test's releases to another; `Cell<usize>` has no drop glue,
     /// which is the rule for anything a thread exit can reach
@@ -834,26 +840,27 @@ pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u
 }
 
 /// Whether a queue entry names this entity — the bit the release path
-/// set before it wrote the entry ([`ENROLLED`]).
+/// set before it wrote the entry ([`CANDIDATE_BIT`]).
 ///
 /// The free path asks it of every dying entity: a slot a queue entry
 /// names is withheld from the allocator instead of returned, because the
 /// entry is a raw pointer and whoever retires it reads the count out of
 /// the body (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
 #[inline]
-pub(crate) unsafe fn is_enrolled(header: *const RcHeader) -> bool {
-    unsafe { mutator_flags(header) & ENROLLED != 0 }
+pub(crate) unsafe fn is_registered_candidate(header: *const RcHeader) -> bool {
+    unsafe { mutator_flags(header) & CANDIDATE_BIT != 0 }
 }
 
-/// Take the enrolment bit down, which only the retirement of the entry
+/// Take the candidate bit down, which only the retirement of the entry
 /// that set it may do.
 ///
-/// **Never at acquittal**: enrolment is edge-triggered, so an entity
-/// whose bit is cleared while it is still alive is one no later
-/// decrement can enrol again, and the ring it closes is a permanent miss
+/// **Never when a trace finds the entity externally referenced**:
+/// candidate registration is edge-triggered, so an entity whose bit is
+/// cleared while it is still alive is one no later decrement can register
+/// again, and the ring it closes is a permanent miss
 /// (`rfc/model/gc/cycle/questions.md`, Y6). The two lawful clearings are
-/// the corpse retirement in [`crate::cycle::queue::drain`] and the free
-/// a collection's commit performs, which is `PLAN.md` S36.6's.
+/// the corpse retirement in [`crate::cycle::queue::release_queue_segments`]
+/// and the free a collection's commit performs, which is `PLAN.md` S36.6's.
 #[inline]
 #[cfg_attr(
     not(test),
@@ -862,8 +869,8 @@ pub(crate) unsafe fn is_enrolled(header: *const RcHeader) -> bool {
         reason = "the retirement that clears it is `PLAN.md` S39.1's, and                   the commit's free S36.6's"
     )
 )]
-pub(crate) unsafe fn clear_enrolled(header: *mut RcHeader) {
-    unsafe { update_header_flags(header, |flags| flags & !ENROLLED) };
+pub(crate) unsafe fn clear_candidate_bit(header: *mut RcHeader) {
+    unsafe { update_header_flags(header, |flags| flags & !CANDIDATE_BIT) };
 }
 
 /// The teardown guard's `+1`, as a narrow counter store: the flags half

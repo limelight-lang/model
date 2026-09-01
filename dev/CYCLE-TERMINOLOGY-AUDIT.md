@@ -2,7 +2,9 @@
 
 Status: synchronized with `rfc/dev/GLOSSARY.md` at `rfc` commit `0075ef3` on
 2026-09-01, under `model/PLAN.md` S41.1. The tables below state the ratified
-names, so a rename step reads them directly. This document changes no code.
+names, so a rename step reads them directly — with one exception, the four
+`refcount` rows under "Candidate registration in `refcount`", which S41.3
+derived from a ratified row and which say so where they stand. This document changes no code.
 Ratifying `rfc/dev/PLAN.md` S9.1 stays with that repository; the glossary is
 authoritative here, and this mapping follows it if it moves again.
 
@@ -26,7 +28,7 @@ records are out of scope.
 ## Glossary check, 2026-09-01
 
 Every row of every table below was ruled against the glossary at `rfc` commit
-`0075ef3`. A row the glossary confirms carries no mark, and the tables state
+`0075ef3`, except the four rows S41.3 derived, which that section marks. A row the glossary confirms carries no mark, and the tables state
 the ratified name. Five rows were amended and the amendment is applied in
 place; four outcomes have no glossary entry and stay here as gaps for
 `rfc/dev/PLAN.md` S9.1.
@@ -124,6 +126,21 @@ The module contract should describe exactly three storage paths:
 1. append to the current write segment;
 2. acquire a new segment from a spare or the critical reserve;
 3. append to the base block's bounded overflow buffer.
+
+### Candidate registration in `refcount`
+
+**Derived under S41.3, not ratified with the tables above.** The glossary
+rules on the bit and the verb; these four are that ruling carried to the gate
+composed from the bit and to the three functions that reach it. `refcount`
+cannot carry `register_candidate` beside `ENROLMENT_GATE_MASK` without leaving
+half a rename, and the rename had to land in the same commit as the queue's.
+
+| Current | Proposed | Reason |
+| --- | --- | --- |
+| `ENROLMENT_GATE_MASK` | `CANDIDATE_GATE_MASK` | the gate the bit is composed into |
+| `may_enrol` | `may_become_a_candidate` | the answer is about the entity, not the caller |
+| `is_enrolled` | `is_registered_candidate` | reads the bit, and matches the verb |
+| `clear_enrolled` | `clear_candidate_bit` | takes the bit down, which is the narrower act |
 
 ### Row resolution
 
@@ -317,7 +334,8 @@ corrections, not queue overflow. It needs a separate glossary mapping such as
    Ratifying `rfc/dev/PLAN.md` S9.1 stays with that repository.
 2. Add a source-audit test for retired identifiers, allowing exact historical
    citation strings.
-3. Apply queue and memory-manager terminology; run queue and accounting tests.
+3. Done 2026-09-01 under S41.3: queue and memory-manager terminology, their
+   direct callers, and the `refcount` rows derived above.
 4. Apply row, scratch-arena, mark/scan, stack, deferred-reuse, and validation
    terminology; compile after each module boundary.
 5. Rename tests and current API maps.

@@ -12,18 +12,22 @@ use super::*;
 fn a_non_final_decrement_puts_the_entity_in_this_thread_s_queue() {
     let _g = test_guard();
     reset();
-    let _ = replenish();
+    let _ = refill_spares();
 
     let mut header = candidate(2);
     let entity = &raw mut header;
 
-    assert_eq!(enrolled_count(), 0, "the queue starts empty");
+    assert_eq!(candidate_count(), 0, "the queue starts empty");
     assert!(unsafe { !release(entity) });
 
-    assert_eq!(enrolled_count(), 1);
-    assert_eq!(live_entry(0), entity, "the entry names the entity itself");
+    assert_eq!(candidate_count(), 1);
+    assert_eq!(
+        write_segment_entry(0),
+        entity,
+        "the entry names the entity itself"
+    );
     assert_ne!(
-        unsafe { mutator_flags(entity) } & ENROLLED,
+        unsafe { mutator_flags(entity) } & CANDIDATE_BIT,
         0,
         "the bit says a queue entry names it"
     );
@@ -37,19 +41,19 @@ fn a_non_final_decrement_puts_the_entity_in_this_thread_s_queue() {
 fn a_second_decrement_of_an_enrolled_entity_writes_no_second_entry() {
     let _g = test_guard();
     reset();
-    let _ = replenish();
+    let _ = refill_spares();
 
     let mut header = candidate(3);
     let entity = &raw mut header;
 
     assert!(unsafe { !release(entity) });
-    assert_eq!(enrolled_count(), 1);
+    assert_eq!(candidate_count(), 1);
 
     assert!(unsafe { !release(entity) });
     assert_eq!(
-        enrolled_count(),
+        candidate_count(),
         1,
-        "the enrolled bit refuses the second decrement at the gate"
+        "the candidate bit refuses the second decrement at the gate"
     );
 
     reset();
@@ -62,7 +66,7 @@ fn a_second_decrement_of_an_enrolled_entity_writes_no_second_entry() {
 fn a_decrement_the_gate_refuses_leaves_no_entry() {
     let _g = test_guard();
     reset();
-    let _ = replenish();
+    let _ = refill_spares();
 
     let mut acyclic = candidate_with(2, ACYCLIC_GATE);
     assert!(unsafe { !release(&raw mut acyclic) });
@@ -73,7 +77,7 @@ fn a_decrement_the_gate_refuses_leaves_no_entry() {
         "reaching zero is a death, not a candidate"
     );
 
-    assert_eq!(enrolled_count(), 0);
+    assert_eq!(candidate_count(), 0);
 
     reset();
 }

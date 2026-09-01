@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::memory::block_pool::test_guard;
-use crate::refcount::{ACYCLIC_GATE, ENROLLED, EntityKind, MemoryCategory, mutator_flags};
+use crate::refcount::{ACYCLIC_GATE, CANDIDATE_BIT, EntityKind, MemoryCategory, mutator_flags};
 
 /// A header the enrolment gate admits, at count `holders`: a heap object
 /// with no clause of the gate against it, so a decrement that leaves a
@@ -50,7 +50,7 @@ unsafe fn release(entity: *mut RcHeader) -> bool {
 /// live would put this one's first enrolment in a half-full segment, and
 /// a spare it left held would answer this one's pool arithmetic.
 fn reset() {
-    drain();
+    release_queue_segments();
     crate::memory::critical::drain_for_test();
 }
 

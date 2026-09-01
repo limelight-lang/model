@@ -41,9 +41,11 @@ enum Where {
     /// a name with no caller outside it, where the word is ordinary English
     /// elsewhere.
     Under(&'static str),
-    /// Everywhere but the subtrees that own a homonym of their own. Used
-    /// where the retired name has callers across the crate and the word is
-    /// also somebody else's declaration.
+    /// Everywhere but the subtrees that own a homonym of their own, and
+    /// everywhere but a call that names one of those subtrees' modules
+    /// itself: `critical::replenish` is the critical cache's wherever it is
+    /// called. Used where the retired name has callers across the crate and
+    /// the word is also somebody else's declaration.
     Except(&'static [&'static str]),
 }
 
@@ -53,11 +55,36 @@ enum Where {
 /// The ratified name is carried for the failure message. A guard that only
 /// says "this word is gone" sends its reader back to the audit for the
 /// replacement, and the replacement is what the audit decided.
-const RETIRED: [(&str, &str, Where); 72] = [
+const RETIRED: [(&str, &str, Where); 77] = [
     // Candidate registration, whose callers are spread over four modules.
-    ("enrol", "register_candidate", Where::Anywhere),
+    // `ShadowArena::enrol` is the homonym: the audit maps that one to the
+    // allocation it performs, and the glossary's *candidate registration* is
+    // a different operation. The two rows carry complementary scopes rather
+    // than an order, so `cycle/arena` is told one name and every other file
+    // the other whichever row is read first.
+    (
+        "enrol",
+        "allocate_and_attach_row_array",
+        Where::Under("cycle/arena"),
+    ),
+    (
+        "enrol",
+        "register_candidate",
+        Where::Except(&["cycle/arena"]),
+    ),
     ("ENROLLED", "CANDIDATE_BIT", Where::Anywhere),
     ("enrolled_count", "candidate_count", Where::Anywhere),
+    // The gate the bit is read through, and the three functions that read
+    // it. The audit ratified the bit and the verb; these four follow from
+    // that ruling and are recorded in its table under S41.3.
+    (
+        "ENROLMENT_GATE_MASK",
+        "CANDIDATE_GATE_MASK",
+        Where::Anywhere,
+    ),
+    ("may_enrol", "may_become_a_candidate", Where::Anywhere),
+    ("is_enrolled", "is_registered_candidate", Where::Anywhere),
+    ("clear_enrolled", "clear_candidate_bit", Where::Anywhere),
     // The queue's base block, its overflow buffer and its spare segments.
     ("floor_of", "queue_base_of", Where::Anywhere),
     ("draw_floor", "try_ensure_queue_base", Where::Anywhere),
@@ -170,7 +197,7 @@ const RETIRED: [(&str, &str, Where); 72] = [
 /// The list only shrinks. It is empty when S41.5 closes, and a second test
 /// below refuses a file that has stopped offending, so a rename cannot leave
 /// its entry behind and quietly exempt the file from then on.
-const STILL_TO_MIGRATE: [&str; 50] = [
+const STILL_TO_MIGRATE: [&str; 37] = [
     "cycle/arena.rs",
     "cycle/arena/tests.rs",
     "cycle/arena/tests/the_rows_a_block_gets_at_its_first_touch.rs",
@@ -190,14 +217,7 @@ const STILL_TO_MIGRATE: [&str; 50] = [
     "cycle/mod.rs",
     "cycle/parking.rs",
     "cycle/parking/tests.rs",
-    "cycle/queue.rs",
-    "cycle/queue/tests.rs",
-    "cycle/queue/tests/an_arena_entity_leaves_no_entry.rs",
-    "cycle/queue/tests/the_floor_the_escrow_stands_on.rs",
-    "cycle/queue/tests/what_an_enrolment_writes.rs",
     "cycle/queue/tests/what_gc_owns.rs",
-    "cycle/queue/tests/what_the_poll_owes_the_queue.rs",
-    "cycle/queue/tests/where_a_full_segment_comes_from.rs",
     "cycle/row.rs",
     "cycle/row/tests.rs",
     "cycle/row/tests/the_row_each_population_resolves_to.rs",
@@ -210,17 +230,11 @@ const STILL_TO_MIGRATE: [&str; 50] = [
     "cycle/stack.rs",
     "cycle/stack/tests.rs",
     "cycle/testing.rs",
-    "gc.rs",
-    "memory/arena/tests/the_logs_the_reset_reads.rs",
     "memory/critical/tests/where_the_first_touch_happens.rs",
     "memory/gc_metadata/tests.rs",
     "memory/heap.rs",
     "memory/stdapi.rs",
     "memory/stdapi/tests/the_slot_a_queue_entry_names.rs",
-    "object/tests/who_owes_the_destructor.rs",
-    "refcount.rs",
-    "refcount/tests/the_enrolment_gate.rs",
-    "refcount/tests/the_header_the_compiler_shares.rs",
 ];
 
 /// Every `.rs` file under `src/`, in no particular order.
@@ -298,25 +312,49 @@ fn code_of(line: &str) -> String {
     kept
 }
 
-/// The identifier tokens of `text`, each one whole: `owner_state` is one
-/// token and does not contain `owner`.
-fn identifiers(text: &str) -> Vec<String> {
+/// The identifier tokens of `text`, each one whole and paired with the byte
+/// it starts at: `owner_state` is one token and does not contain `owner`, and
+/// the offset is what lets a caller read the `::` that joins two of them.
+fn identifiers(text: &str) -> Vec<(usize, String)> {
     let mut found = Vec::new();
     let mut current = String::new();
+    let mut start = 0;
 
-    for c in text.chars() {
+    for (offset, c) in text.char_indices() {
         if c.is_ascii_alphanumeric() || c == '_' {
+            if current.is_empty() {
+                start = offset;
+            }
+
             current.push(c);
         } else if !current.is_empty() {
-            found.push(std::mem::take(&mut current));
+            found.push((start, std::mem::take(&mut current)));
         }
     }
 
     if !current.is_empty() {
-        found.push(current);
+        found.push((start, current));
     }
 
     found
+}
+
+/// True where the occurrence at `start` is written as `<module>::<name>` and
+/// the module is the one `prefix` names.
+///
+/// `critical::replenish` is that module's own function under whatever roof it
+/// is called from, while the queue's leftover would stand bare. The join is
+/// read rather than assumed — `::`, or the `::{` a `use` group opens with:
+/// `critical, replenish` and `critical.replenish()` are two tokens in the same
+/// order and neither is that module's call. A name later in a `use` group,
+/// after the comma, is not spared and has to be imported on its own line.
+fn qualified_by(prefix: &str, code: &str, previous: Option<(usize, &str)>, start: usize) -> bool {
+    let Some((before, name)) = previous else {
+        return false;
+    };
+
+    let join = &code[before + name.len()..start];
+    name == prefix.rsplit('/').next().unwrap_or(prefix) && (join == "::" || join == "::{")
 }
 
 /// True where `path`, relative to `src/`, lies in the subtree `prefix` names.
@@ -332,23 +370,28 @@ fn retired_in(path: &Path, text: &str) -> Vec<(usize, String, &'static str)> {
     let mut found = Vec::new();
 
     for (number, line) in text.lines().enumerate() {
-        for token in identifiers(&code_of(line)) {
+        let code = code_of(line);
+        let tokens = identifiers(&code);
+        for (index, (start, token)) in tokens.iter().enumerate() {
+            let previous = index
+                .checked_sub(1)
+                .map(|before| (tokens[before].0, tokens[before].1.as_str()));
             let hit = RETIRED
                 .iter()
                 .find(|(retired, _, scope)| {
-                    *retired == token
+                    retired == token
                         && match scope {
                             Where::Anywhere => true,
                             Where::Under(prefix) => under(path, prefix),
-                            Where::Except(owners) => {
-                                !owners.iter().any(|prefix| under(path, prefix))
-                            }
+                            Where::Except(owners) => !owners.iter().any(|prefix| {
+                                under(path, prefix) || qualified_by(prefix, &code, previous, *start)
+                            }),
                         }
                 })
                 .map(|(_, ratified, _)| *ratified);
 
             if let Some(ratified) = hit {
-                found.push((number + 1, token, ratified));
+                found.push((number + 1, token.clone(), ratified));
             }
         }
     }
@@ -485,6 +528,59 @@ fn the_guard_scopes_ordinary_english_to_its_module() {
     let found = retired_in(Path::new("cycle/queue.rs"), source);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].2, "release_queue_segments");
+}
+
+/// A name two modules declare belongs to the one that qualifies the call.
+/// `critical::replenish` refills the reserve wherever it is called from, and
+/// only a bare `replenish()` outside the queue could be the queue's leftover.
+#[test]
+fn the_guard_spares_a_call_qualified_by_its_owner() {
+    let qualified = "    let _ = crate::memory::critical::replenish();\n";
+    assert!(
+        retired_in(Path::new("gc.rs"), qualified).is_empty(),
+        "the critical cache's own refill, called from outside it"
+    );
+
+    let bare = "    let _ = replenish();\n";
+    let found = retired_in(Path::new("gc.rs"), bare);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].2, "refill_spares");
+}
+
+/// The `::` is what makes a call the owning module's. Two tokens in the same
+/// order joined by anything else are the retired name with a word in front of
+/// it, which is exactly the leftover the scope exists to catch.
+#[test]
+fn the_guard_reads_the_join_before_it_spares_a_call() {
+    for line in [
+        "    let (critical, replenish) = (0, 0);\n",
+        "    let _ = critical.replenish();\n",
+    ] {
+        let found = retired_in(Path::new("gc.rs"), line);
+        assert_eq!(found.len(), 1, "{line:?} -> {found:?}");
+    }
+
+    let group = "use crate::memory::critical::{replenish, is_drawn};\n";
+    assert!(
+        retired_in(Path::new("gc.rs"), group).is_empty(),
+        "a `use` group opens with the same qualifier"
+    );
+}
+
+/// `enrol` is two rows: the audit maps `ShadowArena::enrol` to the allocation
+/// it performs, and the glossary calls candidate registration a different
+/// operation, so the ratified name a file is told depends on where it stands.
+#[test]
+fn the_arena_keeps_a_ratified_name_of_its_own_for_enrol() {
+    let source = "        let array = self.enrol(block, slots, population);\n";
+
+    let arena = retired_in(Path::new("cycle/arena.rs"), source);
+    assert_eq!(arena.len(), 1, "{arena:?}");
+    assert_eq!(arena[0].2, "allocate_and_attach_row_array");
+
+    let elsewhere = retired_in(Path::new("refcount.rs"), source);
+    assert_eq!(elsewhere.len(), 1, "{elsewhere:?}");
+    assert_eq!(elsewhere[0].2, "register_candidate");
 }
 
 /// A comment is prose and belongs to the S41.6 pass; a message inside code is

@@ -48,7 +48,7 @@ fn each_clause_of_the_gate_rejects_on_its_own() {
         ),
         ("a class proven acyclic", ACYCLIC_GATE),
         ("a proven owner", OWNERSHIP_MARK),
-        ("an entity a queue entry already names", ENROLLED),
+        ("an entity a queue entry already names", CANDIDATE_BIT),
     ];
 
     for (clause, extra) in rejecting {
@@ -74,10 +74,10 @@ fn the_mask_covers_every_clause_and_nothing_else() {
         ),
         ("the acyclic gate", ACYCLIC_GATE),
         ("the ownership mark", OWNERSHIP_MARK),
-        ("the enrolled bit", ENROLLED),
+        ("the candidate bit", CANDIDATE_BIT),
     ] {
         assert_eq!(
-            ENROLMENT_GATE_MASK & bits,
+            CANDIDATE_GATE_MASK & bits,
             bits,
             "{clause} is a clause of the gate and has to be in its mask"
         );
@@ -87,9 +87,9 @@ fn the_mask_covers_every_clause_and_nothing_else() {
         | KIND_ABOVE_THE_RING_RESERVE
         | ACYCLIC_GATE
         | OWNERSHIP_MARK
-        | ENROLLED;
+        | CANDIDATE_BIT;
     assert_eq!(
-        ENROLMENT_GATE_MASK & !clauses,
+        CANDIDATE_GATE_MASK & !clauses,
         0,
         "the mask claims a bit no clause named, so it refuses candidates \
          for a reason the design does not have"

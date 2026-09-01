@@ -101,7 +101,7 @@ fn a_block_emptied_around_a_parked_corpse_reaches_the_pool_at_the_return() {
         .copied()
         .expect("the watched block holds slots");
     let header = unsafe { publish(corpse) };
-    unsafe { crate::refcount::update_header_flags(header, |f| f | crate::refcount::ENROLLED) };
+    unsafe { crate::refcount::update_header_flags(header, |f| f | crate::refcount::CANDIDATE_BIT) };
     unsafe { ll_free(corpse) };
 
     for cell in &cells {
@@ -121,7 +121,7 @@ fn a_block_emptied_around_a_parked_corpse_reaches_the_pool_at_the_return() {
 
     // The return, which is the retirement's last act: the bit comes down
     // and the same door takes the slot.
-    unsafe { crate::refcount::clear_enrolled(header) };
+    unsafe { crate::refcount::clear_candidate_bit(header) };
     unsafe { ll_free(corpse) };
 
     assert!(
@@ -139,7 +139,7 @@ fn a_parked_slot_keeps_the_body_the_death_left() {
     let cell = unsafe { crate::memory::heap::entity_alloc(64) };
     assert!(!cell.is_null());
     let header = unsafe { publish(cell) };
-    unsafe { crate::refcount::update_header_flags(header, |f| f | crate::refcount::ENROLLED) };
+    unsafe { crate::refcount::update_header_flags(header, |f| f | crate::refcount::CANDIDATE_BIT) };
 
     unsafe { ll_free(cell) };
 
@@ -149,10 +149,10 @@ fn a_parked_slot_keeps_the_body_the_death_left() {
         "the retirement reads a zero count out of the parked body"
     );
     assert!(
-        unsafe { crate::refcount::is_enrolled(header) },
+        unsafe { crate::refcount::is_registered_candidate(header) },
         "and the bit that parked it is still standing"
     );
 
-    unsafe { crate::refcount::clear_enrolled(header) };
+    unsafe { crate::refcount::clear_candidate_bit(header) };
     unsafe { ll_free(cell) };
 }

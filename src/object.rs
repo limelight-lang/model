@@ -237,11 +237,11 @@ pub unsafe extern "C" fn ll_release_vector(entities: *const *mut RcHeader, count
     for i in 0..count {
         // The poll contract binds this loop too, and it is the runtime's
         // to keep here: `count` is the caller's, the compiler emits its
-        // poll only after the call, and every iteration can enrol a
+        // poll only after the call, and every iteration can register a
         // candidate. Without this the queue's funding is never refilled
-        // mid-run and a large enough clear reaches the escrow's abort
-        // with memory free (`rfc/dev/DECISIONS.md`, "a runtime loop
-        // carries the poll contract it broke").
+        // mid-run and a large enough clear reaches the abort below the
+        // overflow buffer with memory free (`rfc/dev/DECISIONS.md`,
+        // "a runtime loop carries the poll contract it broke").
         //
         // On the backedge, where refcounts and edges agree: iteration
         // `i - 1` has fully returned, its death and destructor with it,
@@ -691,9 +691,9 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
         crate::memory::reset_window::record_death(obj as *mut RcHeader);
         // Under `rc-trace` the object left the candidate buffer here,
         // after `dispose` rather than before it, because `__destruct`
-        // can enrol the object afresh — a transient `$this` inside it is
-        // a retain and a release, and that release is a non-zero
-        // decrement. `rc-cycle` cannot withdraw a queue entry at all and
+        // can make the object a candidate afresh — a transient `$this`
+        // inside it is a retain and a release, and that release is a
+        // non-zero decrement. `rc-cycle` cannot withdraw a queue entry at all and
         // pays the same fact by withholding the slot instead, which the
         // free in phase 3 below does. The ordering the buffer needed is
         // kept by where that free stands: after `dispose`, never

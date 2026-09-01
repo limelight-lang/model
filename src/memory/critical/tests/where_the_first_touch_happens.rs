@@ -87,7 +87,7 @@ fn an_unregistered_thread_reaches_the_reserve_from_its_release_path() {
         assert!(!unsafe { crate::refcount::ll_release(&raw mut header) });
 
         let spent = blocks_held();
-        crate::cycle::queue::drain();
+        crate::cycle::queue::release_queue_segments();
         drain_for_test();
         (untouched, spent)
     })
@@ -135,7 +135,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("EXIT_PHASE", false),
         ("HEAP", false),
         ("LATE_CELL", false),
-        ("OWNER", false),
+        ("OWNER_STATE", false),
         ("PARKED", false),
         ("POOL_REQUESTS", false),
         ("RESERVE", true),

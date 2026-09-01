@@ -287,7 +287,7 @@ kinds. A retained block rides at block granularity — its last occupant can
 return the whole block — and an OS-direct entity run would otherwise be
 unmapped under its header row. A retained block pointer used as the reset's
 empty-block return sentinel is parkable but is not an entity header, so the
-refcount and `ENROLLED` tests explicitly exclude it.
+refcount and `CANDIDATE_BIT` tests explicitly exclude it.
 
 #### Historical rc-walk mechanism
 
@@ -579,29 +579,32 @@ Candidate-queue and collection-workspace blocks cross one manager boundary,
 block is: one current and one high-water block counter change at this
 boundary, and reservation figures are derived from the 64 KiB block count. A
 split by use within collection is not kept (`dev/DECISIONS.md`, "GC memory is
-counted once, and the block kind is the split"). Moving a queue segment from
-spare to live is consequently no allocation and no second charge.
+counted once, and the block kind is the split"). Moving a queue segment from a
+spare cell to the write position is consequently no allocation and no second
+charge.
 
 Beside the blocks, one pair of logical figures — current and high-water bytes
 in use inside them — answers how much of the reservation is working memory.
 The charge lands at a structural transition and never per grant: a queue
-segment leaving the live position charges its whole payload, an escrow landing
-charges one pointer, a floor charges its 64-byte control line, and an arena
-block leaving the bump charges what it consumed. Each has one inverse, so the
-figure is exact at every instant except for two named residues — the live
-segment's own fill, at most 65,280 bytes per thread, and an arena block still
-under the bump, at most 65,280 bytes per collection in flight. Both are
-published by the transition that ends them, so a collection's own high-water
-figure is exact even when its current one lags.
+segment leaving the write position charges its whole payload, an
+overflow-buffer append charges one pointer, a base block charges its 64-byte
+control line, and a trace-scratch block leaving the bump charges what it
+consumed. Each has one inverse, so the figure is exact at every instant except
+for two named residues — the write segment's own fill, at most 65,280 bytes
+per thread, and a trace-scratch block still under the bump, at most 65,280
+bytes per collection in flight. Both are published by the transition that ends
+them, so a collection's own high-water figure is exact even when its current
+one lags.
 
-The queue floor is held for one thread life. Its payload begins with one
+The queue's base block is held for one thread life. Its payload begins with one
 64-byte, cache-line-aligned `OwnerCycleState`; TLS contains only the non-owning
-pointer to that state. The remaining 65,216 bytes hold 8,152 escrow pointers,
-so the runtime bulk-loop poll stride is derived as 4,076 rather than retaining
-the ordinary segment's 8,160-entry assumption. Ordinary queue segments use
-the full payload. Pool and critical-reserve handoffs restamp the block and end
-GC accounting exactly once; the kind stamp makes a return of a block collection
-never owned a hard invariant failure rather than a counter underflow.
+pointer to that state. The remaining 65,216 bytes are the bounded overflow
+buffer, 8,152 pointers, so the runtime bulk-loop poll stride is derived as 4,076
+rather than retaining the ordinary segment's 8,160-entry assumption. Ordinary
+queue segments use the full payload. Pool and critical-reserve handoffs restamp
+the block and end GC accounting exactly once; the kind stamp makes a return of
+a block collection never owned a hard invariant failure rather than a counter
+underflow.
 
 What remains in PLAN S36.9 is the removal of allocator-owned parking, weak and
 retained-index storage.
@@ -621,25 +624,26 @@ It has two customers today, and the draw order is the pool first for
 both. The **cycle collection's working memory** is one: the in-line
 collection has been the standard form since 2026-08-26 rather than the
 emergency one, so most of its runs begin with no refusal anywhere, and a
-full trace's rows are far beyond any reserve; the critical door is the
+full trace's rows are far beyond any reserve; the critical reserve is the
 fallback, which on the memory-pressure path is the first draw because the
 refusal is what triggered the collection.
 
-The **enrolment queue's growth** is the other, and it reaches this door
+The **candidate queue's growth** is the other, and it reaches this reserve
 on a different condition: the queue's two spare cells are both empty,
-which means the poll's own refill through the ordinary door was already
-refused. The draw is one block, and it puts the runtime in reserve mode.
+which means the poll's own refill through the ordinary allocation path was
+already refused. The draw is one block, and it puts the runtime in reserve mode.
 Its segments come back through `give_back` like the collection's, which
-is why thread exit drains the queue before this reserve
-(`memory::heap::ll_thread_exit`). **This door refusing does not refuse the
-enrolment**: below it sits the queue's own escrow, whose storage is a block the
-thread already holds — the floor, drawn at `ll_thread_init` and given back at
-thread exit — so the tier below the reserve asks no door at all. The report is
-the next safepoint poll's, which refills, drains the escrow, and then collects
-or raises from a frame that has one (`rfc/dev/DECISIONS.md`, "an enrolment
-cannot fail", and "the escrow's floor is allocator-issued"). The floor's own
-draw can be refused, and then the thread does not start: `ll_thread_init`
-answers `false` and the task runs elsewhere.
+is why thread exit releases the queue's segments before this reserve
+(`memory::heap::ll_thread_exit`). **This reserve refusing does not refuse the
+registration**: below it sits the queue's own overflow buffer, whose storage is
+a block the thread already holds — the base block, drawn at `ll_thread_init` and
+given back at thread exit — so the tier below the reserve asks no allocation
+path at all. The report is the next safepoint poll's, which refills, drains the
+overflow buffer, and then collects or raises from a frame that has one
+(`rfc/dev/DECISIONS.md`, "an enrolment cannot fail", which is this tier, and
+"the escrow's floor is allocator-issued", whose subject is the base block). The
+base block's own draw can be refused, and then the thread does not start:
+`ll_thread_init` answers `false` and the task runs elsewhere.
 
 The third customer the design names, the mutator that cannot collect,
 arrives with `PLAN.md` S38.4, and no partition among the three is built

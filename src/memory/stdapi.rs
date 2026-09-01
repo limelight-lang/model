@@ -81,7 +81,7 @@ fn can_lose_trace_identity(kind: u32) -> bool {
 ///
 /// The sentinel still has to wait for the trace window, because returning the
 /// whole block loses every row address in it. It must not pass the refcount or
-/// enrolled tests: offset zero is a `BlockHeader`, not an `RcHeader`.
+/// candidate tests: offset zero is a `BlockHeader`, not an `RcHeader`.
 #[inline]
 fn points_to_gc_entity(kind: u32, ptr: *mut u8, block: *mut u8) -> bool {
     kind == BLOCK_KIND_ENTITY
@@ -151,7 +151,7 @@ pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
 unsafe fn ll_alloc_init(size: usize) -> *mut u8 {
     // The status is not read here: this is the self-initialising path,
     // whose contract is a null allocation on any refusal — which the heap
-    // read below reports, for a refused floor as for a refused heap.
+    // read below reports, for a refused base block as for a refused heap.
     let _ = crate::memory::heap::ll_thread_init();
     // Building the heap can itself be refused, and then there is no heap
     // to allocate from — report it the same way as any other exhaustion.
@@ -334,11 +334,13 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // block's `used` falls at the slot's return").
     //
     // The bit is cleared and the slot returned by the retirement, which
-    // is `cycle::queue::drain`'s today and a collection's commit later
-    // (`PLAN.md` S36.6). Only the entity populations are asked: a raw
-    // heap block carries no header to ask.
+    // is `cycle::queue::release_queue_segments`'s today and a collection's
+    // commit later (`PLAN.md` S36.6). Only the entity populations are asked:
+    // a raw heap block carries no header to ask.
     if points_to_gc_entity(kind, ptr, block)
-        && unsafe { crate::refcount::is_enrolled(ptr as *const crate::refcount::RcHeader) }
+        && unsafe {
+            crate::refcount::is_registered_candidate(ptr as *const crate::refcount::RcHeader)
+        }
     {
         return;
     }

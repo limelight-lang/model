@@ -106,14 +106,14 @@ fn the_queue_window_may_close_before_the_trace_window() {
     assert!(!slot.is_null());
     let header = unsafe { dead_entity(slot) };
     unsafe {
-        crate::refcount::update_header_flags(header, |flags| flags | crate::refcount::ENROLLED)
+        crate::refcount::update_header_flags(header, |flags| flags | crate::refcount::CANDIDATE_BIT)
     };
 
     let window = TraceWindow::open();
     unsafe { crate::memory::stdapi::ll_free(slot) };
     assert_eq!(parked_count(), 0, "the queue entry is the first record");
 
-    unsafe { crate::refcount::clear_enrolled(header) };
+    unsafe { crate::refcount::clear_candidate_bit(header) };
     unsafe { crate::memory::stdapi::ll_free(slot) };
     assert_eq!(parked_count(), 1, "the collection takes over the return");
 
@@ -136,7 +136,7 @@ fn the_trace_window_may_close_before_the_queue_window() {
     assert!(!slot.is_null());
     let header = unsafe { dead_entity(slot) };
     unsafe {
-        crate::refcount::update_header_flags(header, |flags| flags | crate::refcount::ENROLLED)
+        crate::refcount::update_header_flags(header, |flags| flags | crate::refcount::CANDIDATE_BIT)
     };
 
     let window = TraceWindow::open();
@@ -152,7 +152,7 @@ fn the_trace_window_may_close_before_the_queue_window() {
     let other = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     assert_ne!(other, slot, "one closed window released through the other");
 
-    unsafe { crate::refcount::clear_enrolled(header) };
+    unsafe { crate::refcount::clear_candidate_bit(header) };
     unsafe { crate::memory::stdapi::ll_free(slot) };
     let reused = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     assert_eq!(reused, slot, "the last window's close returned the slot");
@@ -203,7 +203,9 @@ fn a_retained_blocks_last_occupant_waits_for_its_queue_entry() {
         // Stand in for the entry a previous non-final decrement wrote. The
         // entity is live when the bit goes up; its holder's death below is the
         // later final decrement.
-        crate::refcount::update_header_flags(survivor, |flags| flags | crate::refcount::ENROLLED);
+        crate::refcount::update_header_flags(survivor, |flags| {
+            flags | crate::refcount::CANDIDATE_BIT
+        });
         assert!(crate::refcount::ll_release(holder as *mut RcHeader));
         ll_object_die(holder);
     }
@@ -214,7 +216,7 @@ fn a_retained_blocks_last_occupant_waits_for_its_queue_entry() {
     );
 
     unsafe {
-        crate::refcount::clear_enrolled(survivor);
+        crate::refcount::clear_candidate_bit(survivor);
         crate::memory::stdapi::ll_free(survivor as *mut u8);
     }
     assert_eq!(

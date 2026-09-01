@@ -1,8 +1,9 @@
 //! The two duties the safepoint poll has towards the queue: refilling
-//! the spare cells, and firing the collection an overflow asked for.
+//! the spare cells, and firing the collection a reserve draw or an
+//! overflow append asked for.
 //!
 //! Both are asked as counts rather than remembered as flags. The cells
-//! are asked with [`is_short`], because a thread whose fill at init was
+//! are asked with [`needs_spares`], because a thread whose fill at init was
 //! refused has never drawn and a "drawn" flag would leave it unasked for
 //! the rest of its life (`memory::reserve`, `is_drawn`). The arming is a
 //! flag, and legitimately so: what it stands for is an event and not a
@@ -15,18 +16,18 @@ use super::*;
 fn the_poll_refills_a_cell_an_overflow_spent() {
     let _g = test_guard();
     reset();
-    assert!(replenish());
-    assert!(!is_short(), "full cells are not short");
+    assert!(refill_spares());
+    assert!(!needs_spares(), "full cells ask for nothing");
 
     let mut header = candidate(2);
     assert!(unsafe { !release(&raw mut header) });
-    assert_eq!(spares_held(), SPARE_SEGMENTS - 1);
+    assert_eq!(spare_count(), SPARE_SEGMENTS - 1);
     assert!(!crate::gc::is_armed(), "a cell was there; nothing asked");
-    assert!(is_short(), "a spent cell is what short means");
+    assert!(needs_spares(), "a spent cell is what asks");
 
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
-    assert_eq!(spares_held(), SPARE_SEGMENTS);
-    assert!(!is_short());
+    assert_eq!(spare_count(), SPARE_SEGMENTS);
+    assert!(!needs_spares());
 
     reset();
 }
@@ -38,10 +39,10 @@ fn the_poll_refills_a_cell_an_overflow_spent() {
 fn an_unarmed_poll_still_refills() {
     let _g = test_guard();
     reset();
-    assert_eq!(spares_held(), 0, "nothing has filled the cells yet");
+    assert_eq!(spare_count(), 0, "nothing has stocked the cells yet");
 
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
-    assert_eq!(spares_held(), SPARE_SEGMENTS);
+    assert_eq!(spare_count(), SPARE_SEGMENTS);
 
     reset();
 }
@@ -49,10 +50,10 @@ fn an_unarmed_poll_still_refills() {
 /// Thread exit hands back every segment and every cell, which is what
 /// keeps a dying thread from taking pool blocks with it.
 ///
-/// The floor is out of the pool on both sides of the bracket and so
+/// The base block is out of the pool on both sides of the bracket and so
 /// cancels in it: it is the one block the thread holds for its life
-/// rather than for its queue's contents, and `release_floor` rather than
-/// [`drain`] is what gives it back
+/// rather than for its queue's contents, and `release_queue_base` rather
+/// than [`release_queue_segments`] is what gives it back
 /// (`the_floor_the_escrow_stands_on`).
 #[test]
 fn a_drain_returns_every_segment_and_every_spare() {
@@ -61,11 +62,11 @@ fn a_drain_returns_every_segment_and_every_spare() {
     crate::memory::critical::drain_for_test();
     let before = crate::memory::block_pool::BlockPool::global().blocks_out();
 
-    assert!(replenish());
+    assert!(refill_spares());
     let mut first = candidate(2);
     let first_entity = &raw mut first;
     assert!(unsafe { !release(first_entity) });
-    fill_live_segment(first_entity);
+    fill_write_segment(first_entity);
     let mut second = candidate(2);
     assert!(unsafe { !release(&raw mut second) });
 
@@ -74,22 +75,22 @@ fn a_drain_returns_every_segment_and_every_spare() {
     // and a fixture that reached it holding none would leave the loop
     // that returns them untested.
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
-    assert_eq!(spares_held(), SPARE_SEGMENTS);
+    assert_eq!(spare_count(), SPARE_SEGMENTS);
     assert_eq!(segment_count(), 2);
     assert!(
         crate::memory::block_pool::BlockPool::global().blocks_out() > before,
         "the queue is holding blocks"
     );
 
-    drain();
+    release_queue_segments();
     crate::memory::critical::drain_for_test();
 
     assert_eq!(segment_count(), 0);
-    assert_eq!(spares_held(), 0);
-    assert_eq!(enrolled_count(), 0);
+    assert_eq!(spare_count(), 0);
+    assert_eq!(candidate_count(), 0);
     assert_eq!(
         crate::memory::block_pool::BlockPool::global().blocks_out(),
         before,
-        "every block the queue held is back in the pool"
+        "every block the queue took is back in the pool"
     );
 }

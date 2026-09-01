@@ -24,20 +24,20 @@ fn the_floor_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     assert_eq!(size_of::<OwnerCycleState>(), 64);
     assert_eq!(align_of::<OwnerCycleState>(), 64);
     assert_eq!(SEGMENT_CAPACITY, 8_160);
-    assert_eq!(ESCROW_ENTRIES, 8_152);
+    assert_eq!(OVERFLOW_CAPACITY, 8_152);
     assert_eq!(POLL_STRIDE, 4_076);
 
     // The escrow ends flush with the block: one control line and the
     // entries account for the payload exactly, with no tail to absorb an
     // off-by-one and nothing of a neighbour within reach.
     assert_eq!(
-        size_of::<OwnerCycleState>() + ESCROW_ENTRIES * size_of::<*mut RcHeader>(),
+        size_of::<OwnerCycleState>() + OVERFLOW_CAPACITY * size_of::<*mut RcHeader>(),
         BLOCK_PAYLOAD
     );
 
-    let held = floor();
-    assert!(!held.is_null());
-    assert_eq!(kind_of(held), BLOCK_KIND_GC_METADATA);
+    let base = queue_base();
+    assert!(!base.is_null());
+    assert_eq!(kind_of(base), BLOCK_KIND_GC_METADATA);
     assert!(stats().current_blocks() >= 1);
 }
 
@@ -45,7 +45,7 @@ fn the_floor_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
 fn a_spare_stays_one_accounted_segment_when_it_becomes_live() {
     let _g = test_guard();
     reset();
-    assert!(replenish());
+    assert!(refill_spares());
 
     let before = stats().current_blocks();
 
@@ -55,9 +55,9 @@ fn a_spare_stays_one_accounted_segment_when_it_becomes_live() {
     assert_eq!(
         stats().current_blocks(),
         before,
-        "spare to live is a state transition, not a second acquisition"
+        "spare to write segment is a state transition, not a second acquisition"
     );
-    assert_eq!(kind_of(live_segment()), BLOCK_KIND_GC_METADATA);
+    assert_eq!(kind_of(write_segment()), BLOCK_KIND_GC_METADATA);
 
     reset();
 }
@@ -66,20 +66,20 @@ fn a_spare_stays_one_accounted_segment_when_it_becomes_live() {
 fn the_floor_accepts_its_exact_rederived_escrow_capacity() {
     let _g = test_guard();
     reset();
-    let owner = owner();
+    let state = owner_state();
     let mut header = candidate(2);
 
-    for _ in 0..ESCROW_ENTRIES {
-        unsafe { escrow(owner, &raw mut header) };
+    for _ in 0..OVERFLOW_CAPACITY {
+        unsafe { append_to_overflow(state, &raw mut header) };
     }
-    assert_eq!(escrowed_count(), ESCROW_ENTRIES);
+    assert_eq!(overflow_len(), OVERFLOW_CAPACITY);
 
     // What makes the capacity exact rather than merely sufficient: the
     // entry past the last one is the first byte of the next block. A
     // capacity one too large would fill without complaint on stable and
     // would be seen only by Miri.
-    let past_the_last = unsafe { escrow_entries(owner).add(ESCROW_ENTRIES) } as *mut u8;
-    assert_eq!(past_the_last, BlockHeader::end(floor()));
+    let past_the_last = unsafe { overflow_entries(state).add(OVERFLOW_CAPACITY) } as *mut u8;
+    assert_eq!(past_the_last, BlockHeader::end(queue_base()));
 
     reset();
 }
@@ -94,10 +94,10 @@ fn one_entry_past_the_escrow_capacity_aborts() {
     if std::env::var_os(CHILD).is_some() {
         let _g = test_guard();
         reset();
-        let owner = owner();
+        let state = owner_state();
         let mut header = candidate(2);
-        for _ in 0..=ESCROW_ENTRIES {
-            unsafe { escrow(owner, &raw mut header) };
+        for _ in 0..=OVERFLOW_CAPACITY {
+            unsafe { append_to_overflow(state, &raw mut header) };
         }
         return;
     }
@@ -128,7 +128,7 @@ fn one_entry_past_the_escrow_capacity_aborts() {
 fn the_entity_row_dispatch_never_enters_gc_metadata() {
     let _g = test_guard();
     reset();
-    let pretend_child = BlockHeader::payload_start(floor()) as *mut RcHeader;
+    let pretend_child = BlockHeader::payload_start(queue_base()) as *mut RcHeader;
 
     assert_eq!(
         unsafe { crate::cycle::row::edge_to(pretend_child) },
@@ -148,7 +148,7 @@ fn in_use() -> usize {
 fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
     let _g = test_guard();
     reset();
-    assert!(replenish(), "the cells start full");
+    assert!(refill_spares(), "the cells start full");
     crate::memory::gc_metadata::lower_peak_to_current();
     let before = in_use();
 
@@ -158,7 +158,7 @@ fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
     assert_eq!(
         in_use(),
         before,
-        "a segment in the live position is reservation, however full"
+        "a segment in the write position is reservation, however full"
     );
 
     // The ordinary write, which is the path the whole design exists to
@@ -175,7 +175,7 @@ fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
          which a balanced charge and discharge on that path would"
     );
 
-    fill_live_segment(first_entity);
+    fill_write_segment(first_entity);
     assert_eq!(in_use(), before, "the fill alone publishes nothing");
 
     let mut second = candidate(2);
@@ -183,14 +183,14 @@ fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
     assert_eq!(
         in_use(),
         before + BLOCK_PAYLOAD,
-        "the segment that left the live position is published whole"
+        "the segment that left the write position is published whole"
     );
 
     reset();
     assert_eq!(
         in_use(),
         before,
-        "the drain gives every published byte back"
+        "the release gives every published byte back"
     );
 }
 
@@ -198,12 +198,12 @@ fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
 fn an_escrowed_entry_costs_the_pointer_it_holds_and_nothing_more() {
     let _g = test_guard();
     reset();
-    let owner = owner();
+    let state = owner_state();
     let before = in_use();
     let mut header = candidate(2);
 
     for _ in 0..3 {
-        unsafe { escrow(owner, &raw mut header) };
+        unsafe { append_to_overflow(state, &raw mut header) };
     }
     assert_eq!(in_use(), before + 3 * size_of::<*mut RcHeader>());
 
@@ -238,22 +238,25 @@ fn a_threads_floor_is_in_use_from_its_draw_until_its_exit() {
 fn an_entry_leaving_the_escrow_gives_its_pointer_back() {
     let _g = test_guard();
     reset();
-    assert!(replenish(), "the drain enrols into a cell somebody filled");
-    let owner = owner();
+    assert!(
+        refill_spares(),
+        "the move below re-registers into a spare, so the cells start full"
+    );
+    let state = owner_state();
     let before = in_use();
     let mut header = candidate(2);
 
     for _ in 0..3 {
-        unsafe { escrow(owner, &raw mut header) };
+        unsafe { append_to_overflow(state, &raw mut header) };
     }
     assert_eq!(in_use(), before + 3 * size_of::<*mut RcHeader>());
 
-    drain_escrow();
-    assert_eq!(escrowed_count(), 0, "a spare cell took all three");
+    drain_overflow();
+    assert_eq!(overflow_len(), 0, "a spare cell took all three");
     assert_eq!(
         in_use(),
         before,
-        "the entries left the escrow, and the segment they went into is \
+        "the candidates left the overflow buffer, and the segment they went into is \
          reservation until it is full"
     );
 
@@ -264,7 +267,7 @@ fn an_entry_leaving_the_escrow_gives_its_pointer_back() {
 fn the_live_segments_fill_reaches_the_high_water_figure_at_the_drain() {
     let _g = test_guard();
     reset();
-    assert!(replenish(), "the first enrolment takes a spare");
+    assert!(refill_spares(), "the first registration takes a spare");
     crate::memory::gc_metadata::lower_peak_to_current();
     let before = crate::memory::gc_metadata::stats();
 
@@ -277,16 +280,16 @@ fn the_live_segments_fill_reaches_the_high_water_figure_at_the_drain() {
     assert_eq!(
         in_use(),
         before.current_bytes_in_use(),
-        "nothing charges while the segment stands in the live position"
+        "nothing charges while the segment stands in the write position"
     );
 
-    // The thread never overflows, so no transition has charged the fill.
-    // The drain is the one that ends it.
+    // The thread never grows the queue, so no transition has charged the
+    // fill. The segment release is the one that ends it.
     reset();
     assert_eq!(
         crate::memory::gc_metadata::stats().peak_bytes_in_use(),
         before.current_bytes_in_use() + 3 * size_of::<*mut RcHeader>(),
-        "the fill a thread never overflowed is in the high-water figure"
+        "the fill of a thread that never grew the queue is in the high-water figure"
     );
     assert_eq!(in_use(), before.current_bytes_in_use());
 }

@@ -163,13 +163,42 @@ to the step that owns it.
         both hold while one test carries the whole mapping. Seen red before the
         list existed — 992 sites over those 50 files — and both guards were
         seen firing, on a file taken off the list and on a clean one put on it.
-- [ ] S41.3 The candidate queue and the manager boundary
+- [x] S41.3 The candidate queue and the manager boundary
       done: `src/cycle/queue.rs` and `src/memory/gc_metadata.rs` carry the
         ratified names, the module contract states the three storage paths the
         audit names, and no metaphor from the audit's list survives in either;
         the gate is green and no existing test changed an assertion to get
         there
       tier: T2 · role: Critic
+      Critic 2026-09-01 round 1: sixteen findings, all vocabulary and comments
+        — the mechanical rename-only check found no behaviour change. The
+        load-bearing ones: `SPARE_SEGMENTS`'s doc kept "overflow" in the
+        retired sense, three test messages described a different event than
+        their assertion, `owes` and `stands on` survived the metaphor sweep,
+        and the four `refcount` names decided in this session were in no table
+        and in no guard row. All taken.
+      Critic 2026-09-01 round 2: the round-1 fixes were applied to the lines
+        quoted rather than to the classes they stood for — fourteen more
+        old-sense uses of *overflow* and two more of *enrolment* in the same
+        migrated files, and one fix that made its message false ("every
+        allocation path but the base block refused", when that tier asks no
+        allocation path). Also: the audit's Status line still claimed every
+        row was ratified, and nothing tested the two `enrol` rows. All taken.
+      handoff: the queue is `queue_base`/`overflow_*`/`write_segment`/
+        `spare_count` and registration is `register_candidate`; the `enrol`
+        family in `refcount` moved with it, and the four names that took —
+        `CANDIDATE_GATE_MASK`, `may_become_a_candidate`,
+        `is_registered_candidate`, `clear_candidate_bit` — are the audit's new
+        "Candidate registration in `refcount`" section, marked as derived
+        under this step rather than ratified under S41.1.
+      handoff: `STILL_TO_MIGRATE` is 37 files, down from 50. Three of the
+        thirteen left it without a rename: S41.2's guard counted
+        `critical::replenish` and `reserve::replenish` at their callers as
+        offences, which they are not, so its recorded 992 sites over 50 files
+        overstates the debt. The guard now reads the `::` before a retired
+        name and spares the owning module's own call, and `enrol` is two rows
+        — `cycle/arena`'s is `allocate_and_attach_row_array`, which is what
+        S41.4 has to apply there.
 - [ ] S41.4 Row resolution, the trace scratch, mark, scan, the stack, deferred reuse and validation
       done: `row`, `arena`, `shadow`, `mark`, `scan`, `stack`, `parking` and
         `exact` carry the ratified names, module by module with a compile at

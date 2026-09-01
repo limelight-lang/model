@@ -1,10 +1,11 @@
-//! The memory-manager door for blocks owned directly by cycle collection.
+//! The memory-manager allocation path for blocks owned directly by cycle
+//! collection, and the return that ends that ownership.
 //!
 //! A pool block does not become GC memory merely because its kind keeps the
 //! entity walker out. Ownership begins here, where the block is stamped and
 //! counted, and ends here before it returns to the pool or the critical
-//! reserve. Moving a queue segment from spare to live changes no ownership and
-//! therefore crosses no function in this module.
+//! reserve. Moving a queue segment from a spare cell to the write position
+//! changes no ownership and therefore crosses no function in this module.
 //!
 //! What the count answers is "how much memory does collection hold", and the
 //! block kind is what separates that memory from a request arena's or an
@@ -16,14 +17,14 @@
 //! taken into use inside them. A block is reserved whole and used in part, so
 //! the block count alone cannot say whether collection is holding memory it
 //! needs. The charge lands at a structural transition — a queue segment
-//! leaving the live position, an escrow landing, a floor's control line, an
-//! arena block leaving the bump — never per grant, which is what keeps the
-//! enrolment path free of it. Two residues follow from that and are
-//! granularity rather than error: the live segment's own fill and the arena
-//! block still under the bump. Each is entered in the high-water figure by the
-//! transition that ends it — the arena's reset charges it, the owner's drain
-//! marks it — so that figure is exact for one thread and can miss a maximum
-//! two threads stood in together.
+//! leaving the write position, an overflow-buffer append, a queue-base control
+//! line, a trace-scratch block leaving the bump — never per grant, which is
+//! what keeps the candidate-registration path free of it. Two residues follow
+//! from that and are granularity rather than error: the write segment's own
+//! fill and the trace-scratch block still under the bump. Each is entered in
+//! the high-water figure by the transition that ends it — the scratch arena's
+//! reset charges it, the owner's segment release marks it — so that figure is
+//! exact for one thread and can miss a maximum two threads stood in together.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -82,10 +83,10 @@ impl GcMemoryStats {
     /// use, which is what says how much of the reservation is working memory.
     ///
     /// In use rather than reserved: a spare segment, a block header and an
-    /// escrow area with no entry in it are outside this figure, so the gap to
-    /// [`current_bytes`](Self::current_bytes) is bounded by nothing in
-    /// particular. What is bounded is the figure's own lag — at most one live
-    /// queue segment's fill per thread and one arena block's consumption per
+    /// overflow buffer with no entry in it are outside this figure, so the gap
+    /// to [`current_bytes`](Self::current_bytes) is bounded by nothing in
+    /// particular. What is bounded is the figure's own lag — at most one write
+    /// segment's fill per thread and one trace-scratch block's consumption per
     /// collection in flight, each charged by the transition that ends it.
     #[inline]
     pub fn current_bytes_in_use(self) -> usize {
@@ -98,10 +99,10 @@ impl GcMemoryStats {
     /// Carries the residues the current figure lags by, each entered by the
     /// transition that ends it: a collection that held one block for two
     /// hundred bytes is in this figure at two hundred, and a thread that
-    /// filled a queue segment without overflowing enters its fill when it
-    /// drains. **Entered at that transition and not while the residue
-    /// stands**, so a residue that coexisted with another thread's maximum is
-    /// in this figure only if it outlived it.
+    /// filled a queue segment without growing the queue enters its fill when
+    /// it releases its segments. **Entered at that transition and not while
+    /// the residue stands**, so a residue that coexisted with another
+    /// thread's maximum is in this figure only if it outlived it.
     #[inline]
     pub fn peak_bytes_in_use(self) -> usize {
         self.in_use_peak
@@ -124,12 +125,13 @@ pub fn stats() -> GcMemoryStats {
     }
 }
 
-/// Take `bytes` into use inside blocks this door already owns.
+/// Take `bytes` into use inside blocks this module already owns.
 ///
 /// The caller charges at a transition that has one inverse — a segment leaving
-/// the live position, an escrow landing, a floor's control line, an arena
-/// block leaving the bump — and never per grant (`dev/DECISIONS.md`, "the
-/// logical charge lands at a structural transition, not at a grant").
+/// the write position, an overflow-buffer append, a queue-base control line, a
+/// trace-scratch block leaving the bump — and never per grant
+/// (`dev/DECISIONS.md`, "the logical charge lands at a structural
+/// transition, not at a grant").
 pub(crate) fn charge(bytes: usize) {
     let in_use = IN_USE.fetch_add(bytes, Ordering::Relaxed) + bytes;
     IN_USE_PEAK.fetch_max(in_use, Ordering::Relaxed);
@@ -214,7 +216,7 @@ pub(crate) fn release(block: *mut BlockHeader) {
     BlockPool::global().put(block);
 }
 
-/// End GC ownership and return a block through the critical-reserve door.
+/// End GC ownership and return a block through the critical reserve.
 pub(crate) fn release_to_critical(block: *mut BlockHeader) {
     if block.is_null() {
         return;
