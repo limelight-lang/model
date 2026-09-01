@@ -784,8 +784,8 @@ impl BlockPool {
     /// blocks. Returns false if the OS refused the region — the caller must not
     /// spin. Out of memory is a condition to **report**, not to abort on: a
     /// request that cannot get memory is the request's problem, and the worker
-    /// goes on to serve the next one. The abort that used to be here also
-    /// disagreed with the huge-allocation path, which has always returned null.
+    /// goes on to serve the next one, as the huge-allocation path answers
+    /// the same condition with null.
     fn carve_region(&self) -> bool {
         let _guard = CARVE_LOCK.lock().unwrap();
 

@@ -59,7 +59,7 @@ enum Where {
 /// ratified senses and no scope here separates them; the message names both
 /// and the reader picks. Two rows run the other way and share a name:
 /// `ACTIVE` and `PARKED` were one state in two declarations, and the state is
-/// one pointer now — a chain head whose null says the window is shut
+/// one pointer — a chain head whose null says the window is shut
 /// (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Deferred slot reuse").
 const RETIRED: [(&str, &str, Where); 84] = [
     // Candidate registration, whose callers are spread over four modules.
