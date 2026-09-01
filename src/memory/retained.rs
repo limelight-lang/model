@@ -318,7 +318,7 @@ pub(crate) fn pinned_payloads(block: usize) -> usize {
 /// The count is stable for as long as a trace holds it: an index is
 /// replaced only by a reset of an arena that has taken this block, and a
 /// block cannot leave the pool for an arena while a trace can still
-/// address it (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
+/// address it (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse").
 pub(crate) fn occupant_count(block: usize) -> Option<usize> {
     registry()
         .lock()

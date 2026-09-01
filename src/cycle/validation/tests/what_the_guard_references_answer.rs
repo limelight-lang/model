@@ -5,7 +5,7 @@
 //! one reference the component does not hold. With the guard references
 //! subtracted, the same ring reads as it did before the guards; without that
 //! subtraction, the guards leave it externally referenced and nothing would
-//! ever be freed (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 5). The
+//! ever be freed (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 5). The
 //! teardown that takes the guards and runs the destructor between them is
 //! `PLAN.md` S36.3's and S36.4's; the fixture takes them by hand.
 

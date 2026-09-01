@@ -4,8 +4,8 @@
 //! This is the staleness the exact test exists to absorb: the trace read
 //! the counts of a ring nobody held, and by the time the owner reads
 //! them one of the members is named from outside
-//! (`rfc/model/gc/rc-cycle.md`, "Who judges, and what a trace is
-//! worth").
+//! (`rfc/model/gc/rc-cycle.md`, "Speculative tracing and exact
+//! validation").
 
 use super::*;
 

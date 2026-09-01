@@ -4,7 +4,7 @@
 //! A trace answers with a shortlist rather than a verdict. It may read
 //! counts that have changed since it read them, so what it proposes can
 //! be wrong in exactly one way — staleness (`rfc/model/gc/rc-cycle.md`,
-//! "Who judges, and what a trace is worth"). The validation is made here
+//! "Speculative tracing and exact validation"). The validation is made here
 //! instead: every member's refcount is read again and matched against
 //! the edges the members themselves hold, and a component whose counts
 //! are accounted for that way is held by nothing outside it. The reading
@@ -15,8 +15,8 @@
 //!
 //! The trace token covers the mark, the scan and the rows they write,
 //! and it is released before the exact test of any component — with the
-//! arena and every row in it (`rfc/model/gc/rc-cycle.md`, "The release
-//! obliges a readership rule"). A component therefore arrives as a
+//! arena and every row in it (`rfc/model/gc/rc-cycle.md`, "Concurrency").
+//! A component therefore arrives as a
 //! member list of its own, and the in-degree this file needs is computed
 //! from the heap.
 //!
@@ -63,7 +63,7 @@ pub(crate) enum ValidationResult {
     Unreachable,
     /// A member reads count zero: it died ordinarily since it was
     /// proposed, its fields are teardown residue, and the component is
-    /// dropped whole (`rfc/model/gc/rc-cycle.md`, "Cycle teardown",
+    /// dropped whole (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation",
     /// step 1).
     ZeroCountMember,
     /// A member is held by a reference the component does not contain,
@@ -84,7 +84,7 @@ pub(crate) enum ValidationResult {
 /// `guard_refs_per_member` is the teardown guard outstanding on every member:
 /// zero before the guards are taken, one for the re-verify a destructor forces.
 /// Without it the guards would leave every component externally referenced and
-/// nothing is ever freed (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step
+/// nothing is ever freed (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step
 /// 5).
 ///
 /// Answers [`ValidationResult::ZeroCountMember`] from a pass of its own, before

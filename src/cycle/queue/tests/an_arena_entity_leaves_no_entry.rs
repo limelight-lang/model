@@ -11,8 +11,8 @@
 //!
 //! The gate closes that by refusing to register anything outside category
 //! zero (`refcount::CANDIDATE_GATE_MASK`, and
-//! `rfc/model/gc/rc-cycle.md`, "Enrolment requires the GC-heap
-//! category"). `the_candidate_gate` proves the clause rejects; this
+//! `rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot
+//! reuse"). `the_candidate_gate` proves the clause rejects; this
 //! proves what the rejection is worth — the arrangement it prevents,
 //! carried through to the reuse.
 

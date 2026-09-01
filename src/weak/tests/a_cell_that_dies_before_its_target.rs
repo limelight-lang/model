@@ -3,4 +3,4 @@
 //! that memory out. A collector that freed an unreachable cell without
 //! running dispose would owe the same unregister at a second site;
 //! `rc-cycle` frees through the ordinary death path and owes none
-//! (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 6).
+//! (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 6).

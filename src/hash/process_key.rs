@@ -37,7 +37,7 @@
 //! claim of one-wayness: the short function's keyed primitive
 //! (`array/table.rs`, `strong_hash`) is a placeholder invertible in
 //! its key, so a timing oracle recovers the salt and through it
-//! `folded`. `rfc/model/strings.md` ("Neither position is a defence")
+//! `folded`. `rfc/model/strings.md` ("Neither position is a defense")
 //! concedes exactly that — a per-process key raises hash flooding from
 //! reading a constant to mounting a timing attack and no further, and
 //! the structural backstop is the collision defense's bounded rebuilds, not

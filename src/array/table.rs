@@ -1177,7 +1177,7 @@ impl Table {
     /// Sever every live entry: null its element, drop its key, and
     /// collect both into `displaced` — **without releasing them**. The
     /// array's half of a cycle teardown's "sever and free"
-    /// (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 6); the caller
+    /// (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 6); the caller
     /// owes one drop per collected entry.
     ///
     /// An entry becomes a **hole** rather than keeping a nulled element,
@@ -1265,7 +1265,7 @@ impl Table {
     /// becomes": every secret the collision defense draws comes from the
     /// per-process key). It is not one-way: `strong_hash` is a placeholder
     /// invertible in its key, so a timing oracle recovers the salt, and
-    /// `rfc/model/strings.md` ("Neither position is a defence") concedes that —
+    /// `rfc/model/strings.md` ("Neither position is a defense") concedes that —
     /// the backstop is the collision defense's bounded rebuilds, not the salt.
     /// What this still does not buy: storage addresses recycle across arena
     /// resets, so a salt can repeat within one process, and the long-key slot

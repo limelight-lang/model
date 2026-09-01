@@ -1,6 +1,6 @@
 //! The zeroing is the cost the design measured — 41–76 ms to zero the
 //! rows of a 717 MiB heap against 1.4 ms for the bitmap
-//! (`rfc/model/gc/rc-cycle.md`, "The rows are not zeroed greedily") — so
+//! (`rfc/model/gc/rc-cycle.md`, "Rows are initialized lazily.") — so
 //! what these tests pin is as much what is *not* written as what is. A
 //! row outside the touched group must still read the dirt the bump
 //! handed over, and an implementation that cleared the array at

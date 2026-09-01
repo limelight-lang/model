@@ -12,8 +12,8 @@
 //! The rows arrive dirty, and the array is never zeroed as a whole: at
 //! the smallest size class that would be 16 320 bytes per touched block,
 //! and 41–76 ms over the design's 717 MiB case against the bitmap's
-//! 1.4 ms (`rfc/model/gc/rc-cycle.md`, "The rows are not zeroed
-//! greedily"). What is zeroed instead is a **group of eight rows**
+//! 1.4 ms (`rfc/model/gc/rc-cycle.md`, "Rows are initialized lazily.").
+//! What is zeroed instead is a **group of eight rows**
 //! at its own first touch, which needs a bit per group to say whether
 //! that has happened, and the zero the group init writes has to mean
 //! "this slot has not been met". So colour zero is reserved for it, and

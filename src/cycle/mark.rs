@@ -5,7 +5,8 @@
 //! entity it meets a row once, and the count that row starts from is the
 //! entity's own refcount. A row that still reads above zero when the
 //! scan arrives is therefore held from outside the traced component
-//! (`rfc/model/gc/rc-cycle.md`, "What it is").
+//! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial
+//! deletion").
 //!
 //! **No entity is written.** Mark and scan touch shadow rows, the met
 //! bitmap and this module's worklist, all three of them in the
@@ -138,8 +139,8 @@ unsafe fn schedule_root_if_unvisited(
 ) -> bool {
     let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(root) }) else {
         // The candidate gate admits none: an entity outside the GC heap
-        // never reaches the queue (`rfc/model/gc/rc-cycle.md`, "Death
-        // while enrolled"). Answered rather than asserted, because the
+        // never reaches the queue (`rfc/model/gc/rc-cycle.md`,
+        // "Zero-count entities pending slot reuse"). Answered rather than asserted, because the
         // collection's cost of being wrong here is one root that traces
         // nothing.
         return true;
@@ -173,8 +174,8 @@ unsafe fn schedule_root_if_unvisited(
 /// prune adds a header test and no second dispatch. It cannot live in
 /// `resolve_edge_target`, because the prune is evaluated on the target of an
 /// edge and never on a root, and [`schedule_root_if_unvisited`] asks
-/// `resolve_edge_target` the same question (`rfc/model/gc/rc-cycle.md`, "What
-/// it is").
+/// `resolve_edge_target` the same question (`rfc/model/gc/rc-cycle.md`,
+/// "Candidate registration and trial deletion").
 ///
 /// # Safety
 /// As [`mark`], and `child` is a counted child `cells::trace_cells`

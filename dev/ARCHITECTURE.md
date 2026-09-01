@@ -373,7 +373,7 @@ write them. Each is load-bearing for at least two modules.
     is a correctness requirement rather than a policy: a store lowers
     the old value's count before overwriting the pointer, and a
     collection firing in that window would subtract one reference twice
-    (`rfc/model/gc/strategies.md`, "Triggering: arm vs fire").
+    (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 11. **One configuration.** The GC axis went with the two collectors on
     2026-08-26; `hash-folding` and `debug-journal` are what remains of
     the build matrix (`WORKFLOW.md`).
@@ -385,7 +385,7 @@ write them. Each is load-bearing for at least two modules.
     the replay). The zero-count-member rule that goes with it opens the
     cycle teardown: a component holding a member already at `rc 0` is
     dropped whole, before any field is traced or any guard written
-    (`rfc/model/gc/rc-cycle.md`, "Cycle teardown",
+    (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation",
     step 1).
 13. **An interned name *is* a valid immortal string entity** — the
     future string machinery reads it as-is; immortal + COW makes

@@ -4,7 +4,8 @@
 //! Recursion would put the closure's depth on the machine stack, and the
 //! closure is not small: the subgraph reachable from a median candidate
 //! root measures at the whole object population, 381 of 381
-//! (`rfc/model/gc/rc-cycle.md`, "What it is"). So the descent carries a
+//! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial
+//! deletion"). So the descent carries a
 //! stack of its own, drawn from the arena the rows come from — one
 //! refusal point for both, and a refused segment aborts the collection
 //! exactly as a refused row array does.

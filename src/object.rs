@@ -247,7 +247,7 @@ pub unsafe extern "C" fn ll_release_vector(entities: *const *mut RcHeader, count
         // On the backedge, where refcounts and edges agree: iteration
         // `i - 1` has fully returned, its death and destructor with it,
         // and `entities[i]` has not been read
-        // (`rfc/model/gc/strategies.md`, "Triggering: arm vs fire").
+        // (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
         if i != 0 && i % crate::cycle::queue::POLL_STRIDE == 0 {
             unsafe { crate::gc::ll_gc_maybe_collect() };
         }
@@ -541,7 +541,7 @@ pub(crate) unsafe fn run_user_destructor(obj: *mut Object) -> bool {
 }
 
 /// The class's internal destructor `dispose(obj)`
-/// (`rfc/model/classes.md`, "dispose — the internal destructor"), as a
+/// (`rfc/model/classes.md`, "`dispose` — the runtime teardown entry"), as a
 /// function-pointer type. It runs the user `__destruct` under the
 /// resurrection guard and releases the object's counted children, then
 /// returns whether teardown completed — `true` to free the object,
@@ -595,7 +595,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
             // as garbage while the destructor ran changes nothing —
             // teardown always finishes, and the zero-count rule drops a
             // component holding a member already at zero
-            // (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 1).
+            // (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 1).
             let refcount =
                 unsafe { crate::refcount::mutator_unguard_release(obj as *mut RcHeader) };
             if ran && refcount > 0 {
@@ -681,7 +681,7 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     // mechanism: a slot that dies while a queue entry names it is
     // withheld from the allocator by the free below, and only the
     // retirement of that entry returns it (`rfc/model/gc/rc-cycle.md`,
-    // "Death while enrolled"; `memory::stdapi::ll_free`). So the body a
+    // "Zero-count entities pending slot reuse"; `memory::stdapi::ll_free`). So the body a
     // reader may still reach through the entry stays where the death
     // left it.
 

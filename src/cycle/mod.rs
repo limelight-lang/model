@@ -44,7 +44,7 @@
 //!
 //! The per-thread half is where a refusal can end something. The queue's base
 //! block is drawn twice: at thread init, where a refusal is a thread that
-//! never starts (`rfc/dev/DECISIONS.md`, "the escrow's floor is
+//! never starts (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is
 //! allocator-issued", which is that block), and at the first registration of a
 //! thread the runtime never registered, where the same refusal aborts because
 //! there is no caller left to report it to. Past both stands the overflow

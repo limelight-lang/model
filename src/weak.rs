@@ -189,7 +189,7 @@ pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
 
 /// A collector's user destructor pass: null every member's cell **before any
 /// user code runs** — the binding obligation of `rfc/model/gc/rc-cycle.md`,
-/// "Cycle teardown", step 3 (a weak load is the one channel that can hand a
+/// "Cycle finalization and reclamation", step 3 (a weak load is the one channel that can hand a
 /// destructor a pointer counted references cannot account for). Irrevocable on
 /// a later externally-referenced reading, by design. No collector calls it
 /// today; S36.3 is where the next one does (`PLAN.md`).

@@ -2,7 +2,7 @@
 //! life, drawn at init and given back at exit.
 //!
 //! What the ruling asks of this module is a coupling rather than a
-//! structure (`rfc/dev/DECISIONS.md`, "the escrow's floor is
+//! structure (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is
 //! allocator-issued", which is the base block): every registered thread has
 //! one, because a thread whose base block was refused never started. So the
 //! cases here are the draw, the refusal that ends a thread, the draw a thread

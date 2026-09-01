@@ -16,7 +16,7 @@
 //! `ll_release_batch`). The poll refills the store barrier's log reserve,
 //! and is the only place that can. And the explicit fire is named by the
 //! RFC as a symbol rather than as a mechanism
-//! (`rfc/model/gc/strategies.md`, "Triggering: arm vs fire").
+//! (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 //!
 //! Until stage S36.7 wires `rc-cycle` in, the two collecting entries
 //! collect nothing and report zero. Cyclic garbage is retained; acyclic
@@ -43,7 +43,7 @@ thread_local! {
 /// spare cell: a reserve draw, or a refusal at both allocation paths.
 /// Neither can collect where it stands, `ll_release` holding no frame, so
 /// the arming is how the poll hears about it (`rfc/model/gc/strategies.md`,
-/// "Triggering: arm vs fire").
+/// "Collection requests and triggers").
 pub(crate) fn arm() {
     DUE.with(|due| due.set(true));
 }
@@ -71,7 +71,7 @@ pub(crate) fn is_armed() -> bool {
 ///
 /// # Safety
 /// Callable at a safepoint of the calling mutator — refcounts and edges
-/// consistent (`rfc/model/gc/strategies.md`, "Triggering: arm vs fire").
+/// consistent (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
     0
@@ -107,7 +107,7 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // usually full by the time this runs, and what it catches is the
     // collection that ended by refusing — the retry after an abort wants
     // an allocation path that is open (`rfc/model/memory/critical-reserve.md`,
-    // "Filling, refilling, and leaving reserve mode").
+    // "Reserve lifecycle").
     if crate::memory::critical::is_drawn() {
         let _ = crate::memory::critical::replenish();
     }
@@ -146,7 +146,8 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
 /// generated code carries the bracket in every build, and deleting one half
 /// of an emitted pair would rewrite the calling convention to save nothing.
 /// `rc-cycle` has no handshake to serve here — the in-line collection is
-/// exact by construction (`rfc/model/gc/rc-cycle.md`, "Who judges") — so
+/// exact by construction (`rfc/model/gc/rc-cycle.md`, "Speculative tracing
+/// and exact validation") — so
 /// whether this stays empty forever is settled when the collector-thread
 /// accelerator is built, not before.
 ///

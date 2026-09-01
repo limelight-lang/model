@@ -324,7 +324,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // trace in flight. The first is below; the second is S36.2's.
     //
     // **A slot a queue entry names is withheld from the allocator**
-    // (`rfc/model/gc/rc-cycle.md`, "Death while enrolled"). The entry is a raw
+    // (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse"). The entry is a raw
     // pointer and carries nothing of its own, so whoever retires it reads the
     // count out of the body — which a recycled slot no longer holds.
     // Withholding is the whole of it: nothing is recorded, because

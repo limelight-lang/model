@@ -90,7 +90,7 @@ pub(crate) unsafe fn load_block_kind(kind_field: *const AtomicU32) -> u32 {
 /// limit on the value itself. What excludes that is the withholding rule —
 /// a slot returns only when the collection that could be reading its row
 /// is over, so a block cannot empty and reach the pool mid-trace
-/// (`rfc/model/gc/rc-cycle.md`, "Death while enrolled"). The owner-side
+/// (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse"). The owner-side
 /// trace window is S36.2's; S38.1/S38.3 must make the same exclusion
 /// owner-addressable before a worker reads another thread's blocks.
 ///

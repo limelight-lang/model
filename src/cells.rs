@@ -123,7 +123,7 @@ pub(crate) struct OutsideCells {
     /// dispose (`object.rs`, the field teardown). Dispose is the only
     /// caller: a
     /// confirmed cycle member is freed through that same death path
-    /// (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 6), so no
+    /// (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 6), so no
     /// collector reaches this hook directly.
     pub free: unsafe fn(*mut RcHeader),
     /// Bring the storage out of a dying request arena, for an instance
@@ -284,7 +284,7 @@ impl CellReader for PlainCells {
 /// The payload is read before the flags, and both readers may see a store
 /// land between the two, so a `Value` can be read torn across its words.
 /// A torn read costs a phantom edge or a missed one, never a wrong free
-/// (`rfc/model/gc/rc-cycle.md`, "Collector proposes, owner judges").
+/// (`rfc/model/gc/rc-cycle.md`, "Speculative tracing and exact validation").
 ///
 /// # Safety
 /// `at` addresses a readable, aligned `Value` of a live entity, which a

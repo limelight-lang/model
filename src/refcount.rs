@@ -12,7 +12,7 @@
 //! annotation is kept across the gap rather than taken out and put
 //! back. `rc-cycle` collects in-line on the owning thread and adds the
 //! collector thread as an accelerator over the same headers
-//! (`rfc/model/gc/rc-cycle.md`, "What it is" and "Concurrency").
+//! (`rfc/model/gc/rc-cycle.md`, "Decision summary" and "Concurrency").
 //!
 //! **Flags bits 15 and 16-31 are unclaimed.** The region above 15 is the
 //! collector's own, laid out as epoch at 16-17, maturation age at 18-19
@@ -369,8 +369,8 @@ pub fn kind_may_close_a_cycle(flags: u32) -> bool {
 ///
 /// - the category is `GcHeap` — an arena entity outlives no reset in a
 ///   queue, and the zero-count rule would read the count of the slot's next
-///   occupant (`rfc/model/gc/rc-cycle.md`, "Enrolment requires the
-///   GC-heap category");
+///   occupant (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending
+///   slot reuse");
 /// - the kind is below eight, so a ring can close through it;
 /// - the class is not proven acyclic;
 /// - the owner is not proven;
@@ -845,7 +845,8 @@ pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u
 /// The free path asks it of every dying entity: a slot a queue entry
 /// names is withheld from the allocator instead of returned, because the
 /// entry is a raw pointer and whoever retires it reads the count out of
-/// the body (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
+/// the body (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot
+/// reuse").
 #[inline]
 pub(crate) unsafe fn is_registered_candidate(header: *const RcHeader) -> bool {
     unsafe { mutator_flags(header) & CANDIDATE_BIT != 0 }
@@ -886,8 +887,8 @@ pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
 /// [`mutator_guard_retain`]: returns the new refcount. A collection
 /// landing mid-destructor changes nothing here — teardown always
 /// finishes, and the zero-count rule drops a component holding a member
-/// already at zero (`rfc/model/gc/rc-cycle.md`, "Cycle teardown",
-/// step 1).
+/// already at zero (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and
+/// reclamation", step 1).
 #[inline]
 pub(crate) unsafe fn mutator_unguard_release(header: *mut RcHeader) -> u32 {
     let refcount = unsafe { refcount_load(header) } - 1;

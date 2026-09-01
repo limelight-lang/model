@@ -1,5 +1,5 @@
 //! The reference box (`&`): `RcHeader | Value`, the entity behind PHP
-//! references (`rfc/model/values.md`, "Reference Box"). Variables bound
+//! references (`rfc/model/values.md`, "ReferenceBox"). Variables bound
 //! by `&` point at the same box — the model's only extra indirection,
 //! paid only by code that uses `&` (the `zend_reference` design). The
 //! typed slot-reference variant (`&$obj->typedProp`) waits for the type

@@ -93,7 +93,7 @@ pub(crate) enum RowLookup {
     /// it — an edge into an entity already expanded takes the
     /// decrement and stops, and a trace that expanded again on every
     /// in-edge would not terminate on a ring
-    /// (`rfc/model/gc/rc-cycle.md`, "What replaces the walk").
+    /// (`rfc/model/gc/rc-cycle.md`, "Removed full-census structures").
     Ready { row: *mut u32, first_visit: bool },
     /// The block cannot place this index, which is a retained block
     /// whose object index no longer names the entity. The caller counts
@@ -171,7 +171,7 @@ impl TraceScratchArena {
     ///
     /// The memory is **not zeroed**. A row array arrives dirty by design,
     /// its row-initialization bitmap being what says which rows have meaning
-    /// (`rfc/model/gc/rc-cycle.md`, "The rows are not zeroed greedily").
+    /// (`rfc/model/gc/rc-cycle.md`, "Rows are initialized lazily.").
     pub(crate) fn alloc(&mut self, bytes: usize) -> *mut u8 {
         // Rounded through a checked add, because the refusal below is
         // what the caller reads and an overflow would reach it as a
@@ -231,7 +231,7 @@ impl TraceScratchArena {
     /// from its own address by `resolve_edge_target`, and its block must stay
     /// mapped until [`clear_touched_rows`](Self::clear_touched_rows) runs —
     /// which it does, a trace in flight being what keeps a block from reaching
-    /// the pool (`rfc/model/gc/rc-cycle.md`, "Death while enrolled").
+    /// the pool (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse").
     pub(crate) unsafe fn ensure_row(&mut self, row: RowKey, refcount: u32) -> RowLookup {
         let block = row.block as *mut u8;
         let word = if row.population == Population::SingleEntity {

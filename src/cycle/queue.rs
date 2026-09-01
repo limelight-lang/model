@@ -91,7 +91,7 @@
 //! the toolchain and it is the ratio the two arms establish). The base
 //! block is drawn instead, at thread init and before the best-effort
 //! fills, and its refusal is a thread that never starts
-//! (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued",
+//! (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued",
 //! which is this block). The invariant every later tier rests on comes
 //! out of that coupling: every registered thread has a base block,
 //! because a thread whose base block was refused is a thread the runtime
@@ -454,7 +454,7 @@ fn try_ensure_queue_base() -> *mut OwnerCycleState {
 /// without an entry would be Y6's permanent miss with the bit left
 /// standing. The abort is the funded class's last resort, reached one step
 /// earlier than [`append_to_overflow`]'s own
-/// (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued", which is
+/// (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued", which is
 /// this base block).
 ///
 /// **Asking whether the exit will run is also what arms it**

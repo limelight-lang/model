@@ -4,8 +4,9 @@
 //! The rule is one sentence, and it is the whole mechanism:
 //! [`super::ll_free`] withholds such a slot instead of returning it, so
 //! the entry — a raw pointer carrying nothing of its own — still names a
-//! body whose count can be read (`rfc/model/gc/rc-cycle.md`, "Death while
-//! enrolled"). Nothing is recorded anywhere: the entry is the record.
+//! body whose count can be read (`rfc/model/gc/rc-cycle.md`, "Zero-count
+//! entities pending slot reuse"). Nothing is recorded anywhere: the entry is
+//! the record.
 //!
 //! What that buys is stated as an accounting invariant, and it is what this
 //! module checks: **a block's `used` falls at the slot's return and never at

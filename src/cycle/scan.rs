@@ -14,8 +14,8 @@
 //! marks.** A mark subtracts from rows, so one that ran after a scan
 //! would leave a verdict standing on a count that was not final — and a
 //! second root reaching into the first one's closure is the ordinary
-//! case rather than a rare one (`rfc/model/gc/rc-cycle.md`, "What it
-//! is").
+//! case rather than a rare one (`rfc/model/gc/rc-cycle.md`, "Candidate
+//! registration and trial deletion").
 //!
 //! **No entity is written here either.** The colours go into the shadow
 //! rows, so a scan that gives up halfway leaves the heap byte-identical

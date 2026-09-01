@@ -4,8 +4,8 @@
 //! What produces the zero-count member is the teardown of another component.
 //! The member it releases dies ordinarily — count zero published, slot withheld
 //! — and the component that still names it is validated afterwards
-//! (`rfc/model/gc/rc-cycle.md`, "Cycle teardown", step 1, and "Death while
-//! enrolled").
+//! (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 1, and
+//! "Zero-count entities pending slot reuse").
 
 use super::*;
 

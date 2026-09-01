@@ -1797,7 +1797,7 @@ impl Drop for ExitGuard {
 /// process lives. Only one stock can produce it — the candidate queue's
 /// base block, which carries the guarantee that a release can never lose a
 /// cycle root and is the one stock no later poll can make good
-/// (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued", which
+/// (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued", which
 /// is that block).
 /// A thread whose *heap* the OS refuses still answers `true`: it is
 /// registered, it releases entities allocated elsewhere, and its own
