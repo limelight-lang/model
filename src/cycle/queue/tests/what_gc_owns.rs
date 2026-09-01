@@ -17,15 +17,23 @@ fn the_floor_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     let _g = test_guard();
     reset();
 
+    // The figures the commit message, `PLAN.md`, `docs/memory-manager.md`
+    // and `dev/BENCHMARKS.md` all name. Written out rather than derived
+    // through the expressions that define them: a test that recomputes a
+    // constant agrees with whatever the constant becomes.
     assert_eq!(size_of::<OwnerCycleState>(), 64);
     assert_eq!(align_of::<OwnerCycleState>(), 64);
+    assert_eq!(SEGMENT_CAPACITY, 8_160);
+    assert_eq!(ESCROW_ENTRIES, 8_152);
+    assert_eq!(POLL_STRIDE, 4_076);
+
+    // The escrow ends flush with the block: one control line and the
+    // entries account for the payload exactly, with no tail to absorb an
+    // off-by-one and nothing of a neighbour within reach.
     assert_eq!(
-        ESCROW_ENTRIES,
-        (BLOCK_PAYLOAD - 64) / size_of::<*mut RcHeader>()
+        size_of::<OwnerCycleState>() + ESCROW_ENTRIES * size_of::<*mut RcHeader>(),
+        BLOCK_PAYLOAD
     );
-    assert_eq!(POLL_STRIDE, ESCROW_ENTRIES / 2);
-    assert!(POLL_STRIDE * 2 <= ESCROW_ENTRIES);
-    assert!(SEGMENT_CAPACITY > ESCROW_ENTRIES);
 
     let held = floor();
     assert!(!held.is_null());
@@ -66,6 +74,13 @@ fn the_floor_accepts_its_exact_rederived_escrow_capacity() {
     }
     assert_eq!(escrowed_count(), ESCROW_ENTRIES);
 
+    // What makes the capacity exact rather than merely sufficient: the
+    // entry past the last one is the first byte of the next block. A
+    // capacity one too large would fill without complaint on stable and
+    // would be seen only by Miri.
+    let past_the_last = unsafe { escrow_entries(owner).add(ESCROW_ENTRIES) } as *mut u8;
+    assert_eq!(past_the_last, BlockHeader::end(floor()));
+
     reset();
 }
 
@@ -74,7 +89,7 @@ fn the_floor_accepts_its_exact_rederived_escrow_capacity() {
     miri,
     ignore = "spawns a child process, which Miri's isolation forbids"
 )]
-fn one_entry_past_the_escrow_capacity_aborts_before_writing() {
+fn one_entry_past_the_escrow_capacity_aborts() {
     const CHILD: &str = "LL_QUEUE_ESCROW_OVERFLOW_CHILD";
     if std::env::var_os(CHILD).is_some() {
         let _g = test_guard();
@@ -90,14 +105,22 @@ fn one_entry_past_the_escrow_capacity_aborts_before_writing() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "cycle::queue::tests::what_gc_owns::one_entry_past_the_escrow_capacity_aborts_before_writing",
+            "cycle::queue::tests::what_gc_owns::one_entry_past_the_escrow_capacity_aborts",
         ])
         .env(CHILD, "1")
         .output()
         .expect("the test binary runs as its own overflow child");
-    assert!(
-        !output.status.success(),
-        "capacity plus one returned and wrote beyond the floor"
+    // The signal, not merely a failure: any panic in the fixture would
+    // satisfy an unsuccessful exit, and the escrow's last resort is an
+    // abort with no frame to report through.
+    use std::os::unix::process::ExitStatusExt;
+    // `SIGABRT`, which is 6 on every unix this crate builds for. Spelled
+    // out because the crate takes no `libc` dependency.
+    assert_eq!(
+        output.status.signal(),
+        Some(6),
+        "capacity plus one did not abort; status {:?}",
+        output.status
     );
 }
 

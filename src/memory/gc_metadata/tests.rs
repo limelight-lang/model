@@ -98,6 +98,70 @@ fn a_second_return_fails_before_the_counter_can_wrap() {
     assert_eq!(current(), before);
 }
 
+/// The three refusals that keep a block from crossing the boundary
+/// unaccounted. Each is the only thing standing between a shortcut and a
+/// counter that drifts without anyone noticing, so each is exercised rather
+/// than trusted.
+#[test]
+fn the_pool_refuses_a_block_collection_still_owns() {
+    let _g = test_guard();
+    let before = current();
+    let block = acquire();
+    assert!(!block.is_null());
+
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        BlockPool::global().put(block);
+    }));
+    assert!(refused.is_err(), "the pool took a GC-stamped block");
+    assert_eq!(current(), before + 1, "and the block is still charged");
+
+    release(block);
+    assert_eq!(current(), before);
+}
+
+#[test]
+fn the_critical_reserve_refuses_a_block_collection_still_owns() {
+    let _g = test_guard();
+    let before = current();
+    // Below capacity, which is the arm that keeps the block rather than
+    // passing it to the pool. At capacity the pool's own refusal would
+    // answer and this reserve's would go untested.
+    assert!(crate::memory::critical::replenish());
+    let drawn = crate::memory::critical::draw();
+    assert!(!drawn.is_null());
+
+    let block = acquire();
+    assert!(!block.is_null());
+
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::memory::critical::give_back(block);
+    }));
+    assert!(refused.is_err(), "the reserve took a GC-stamped block");
+    assert_eq!(current(), before + 1, "and the block is still charged");
+
+    release(block);
+    assert_eq!(current(), before);
+    crate::memory::critical::give_back(drawn);
+}
+
+#[test]
+fn adoption_refuses_a_source_that_is_not_the_reserve() {
+    let _g = test_guard();
+    let before = current();
+    // Straight from the pool, so it is `FREE` where `adopt` demands the
+    // `ARENA` stamp every block in the critical reserve carries.
+    let ordinary = BlockPool::global().get();
+    assert!(!ordinary.is_null());
+
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        adopt(ordinary);
+    }));
+    assert!(refused.is_err(), "adoption crossed the wrong boundary");
+    assert_eq!(current(), before, "and charged nothing");
+
+    BlockPool::global().put(ordinary);
+}
+
 #[test]
 fn bytes_and_high_water_are_derived_from_the_block_count() {
     let _g = test_guard();

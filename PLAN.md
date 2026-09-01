@@ -72,11 +72,13 @@ Raised by the review of 2026-09-01 over `52b2cbf` and `0416e83`. A line here
 is an unresolved question rather than a step: it carries no criterion, and it
 leaves the list when it gets one or when it is ruled on.
 
-Four of the six left on the day they arrived, all four by Edmond's rulings of
-2026-09-01. The free that reaches a traced address is S38.3's, and with it go
-its two neighbours — a cross-thread free that never sees the window, and a
-retained block returned past the gate — the same hazard in the same step. The
-dead workspace role went with the role split itself, which he ended.
+Five of the six left on the day they arrived, four by Edmond's rulings of
+2026-09-01 and one by the repair those rulings prompted. The free that reaches
+a traced address is S38.3's, and with it go its two neighbours — a cross-thread
+free that never sees the window, and a retained block returned past the gate —
+the same hazard in the same step. The dead workspace role went with the role
+split itself, which he ended. The weak tests of S36.9a were rebuilt and their
+repair is recorded under that step.
 
 - **The parking `Vec`'s record has a dangling citation.** The entry of
   2026-08-31 cites a 2026-07-27 decision as what superseded the intrusive
@@ -84,12 +86,6 @@ dead workspace role went with the role split itself, which he ended.
   superseded forbids the allocation in as many words. The container itself is
   settled — the entry of 2026-09-01 puts parking on manager memory and S36.9
   slice c builds it — so what is open is the record, not the code.
-- **S36.9a's tests largely restate their own constants.** The figures the
-  commit message, the plan and both documents name — 8,152 and 4,076 — are
-  asserted through the expressions that define them. The three refusals that
-  keep a block from crossing the boundary unaccounted still have no test:
-  `BlockPool::put` and `critical::give_back` rejecting a GC-stamped block, and
-  `gc_metadata::adopt` rejecting a source that is not the reserve.
 
 ---
 
@@ -616,6 +612,17 @@ stage claiming the frees while building none of them.
         — without it Miri stopped at that test and ran none of `cycle::` after
         it. `dev/POSTMORTEM.md`, 2026-09-01. Miri over `cycle::`: 86 passed,
         0 failed, 1 ignored.
+      repair 2026-09-01 — the slice's tests were rebuilt where they agreed
+        with the code instead of constraining it. The capacity figures are
+        asserted as the literals the documents name, and the escrow's last
+        entry is asserted to end flush with the block, which is what makes the
+        capacity exact rather than sufficient. The overflow test reads the
+        child's signal rather than its exit status. The three refusals at the
+        boundary have tests of their own — `BlockPool::put` and
+        `critical::give_back` against a GC-stamped block, `adopt` against a
+        source that is not the reserve — the reserve's aimed at the arm that
+        keeps the block, since at capacity the pool answers first. Six source
+        mutations were run and each was caught by the test that owns it.
       handoff: S36.9 is executed as separately reviewed slices: (a) physical
         block contract and queue state; (b) logical ledger and current arena
         instrumentation; (c) manager-backed parking plus ordinary/abort deny
