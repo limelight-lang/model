@@ -441,6 +441,15 @@ An OOM path that is never executed is not a path, it is a guess.
 **Decision: the runtime exports a snapshot; it does not speak
 Prometheus, HTTP, or any wire format.**
 
+**Cycle collection's memory is two figures in a production build** — blocks
+owned, and bytes in use inside them, each with its high-water mark
+(`memory::gc_metadata`). Which structure holds those bytes — shadow rows, the
+trace worklist, a component's member list, parking, deferred drops, suspects —
+is an axis A feature of its own and is not compiled into a production runtime
+(`dev/DECISIONS.md`, 2026-09-01). It belongs here rather than beside the
+counters because the cost is a store per suballocation on the collection path,
+which is what axis A exists to keep out of a production build.
+
 This crate has **zero runtime dependencies today**, and that is a
 property worth defending — it is linked as a `staticlib` into the
 C++/LLVM layer, and pulling an HTTP stack and a metrics client into the

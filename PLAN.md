@@ -630,9 +630,14 @@ stage claiming the frees while building none of them.
         split by use (Edmond, 2026-09-01, `dev/DECISIONS.md`); pool and
         critical-reserve handoffs restamp both directions, physical
         current/peak blocks and bytes are observable without double counting,
-        and thread exit returns the direct count to zero. A second accounting
-        axis records logical current/high-water bytes for rows, worklist,
-        members, parking, deferred drops and suspects inside those blocks
+        and thread exit returns the direct count to zero. Beside it one pair
+        of logical figures — bytes in use inside those blocks, current and
+        high-water — which is what says how much of a reserved block is
+        working memory. Which structure holds them is not carried in a
+        production build (Edmond, 2026-09-01); the per-structure split is a
+        build-time feature of its own, designed with
+        `dev/design/debug-modes.md` axis A and owned by the backlog line
+        below
       done: the production collection path contains no allocator-owning Rust
         container or hidden global allocation. The source audit covers
         `cycle`, its parking and deferred-drop storage, the weak registry and
@@ -1195,6 +1200,12 @@ own checkbox.
   the share of dynamic publications with compiler-provable targets; the
   move rule (copy, barrier, or a never-moved proof) is the open design
   question.
+- [ ] **Per-structure GC memory, behind a feature.** Which structure holds
+  collection's logical bytes — shadow rows, the trace worklist, a component's
+  member list, parking, deferred drops, suspects — is not carried in a
+  production build (Edmond, 2026-09-01). The breakdown is an axis A feature
+  designed with `dev/design/debug-modes.md` §8; what it needs before it is
+  built is a question that wants it.
 - [ ] **Pure destructors, and the hand-off drain** — proposed by
   Edmond 2026-08-18, analyzed the same day through three lenses and two
   Critic rounds; the analysis is `rfc/model/gc/pure-destructors.md`, with

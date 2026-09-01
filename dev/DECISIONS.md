@@ -8,6 +8,31 @@ never edited or deleted.
 
 ---
 
+## 2026-09-01 — collection's logical bytes are one pair in production, split only in a debug build
+
+Ruled by Edmond, extending the entry below. Owner: S36.9 slice b.
+
+**Decided:** the production build carries one pair of logical figures — bytes
+in use inside the blocks collection owns, current and high-water — beside the
+physical block count. Which structure holds those bytes is not carried: rows,
+worklist, member lists, parking, deferred drops and suspects are one number.
+The per-structure breakdown becomes a build-time feature of its own, the
+mechanism `dev/design/debug-modes.md` axis A already describes, and it may add
+code and cost that production does not pay.
+
+**Why:** the question production has to answer is how much collection holds
+against how much it reserved — a bump arena takes a 65 280-byte payload and
+may hold two hundred bytes in it, and nothing measured that gap. Which
+structure the bytes belong to is an analysis question, and analysis is what a
+debug build is for. Carrying six categories on every suballocation is the same
+split the entry below removed one level up, paid on a hotter path.
+
+**What this costs:** a growth that comes from one structure cannot be
+attributed from a production process; reproducing it needs the feature build.
+That is accepted — a runaway is found by size first and by owner second.
+
+---
+
 ## 2026-09-01 — GC memory is counted once, and the block kind is the split
 
 Ruled by Edmond. Owner: S36.9.
