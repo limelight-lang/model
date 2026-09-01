@@ -1226,7 +1226,7 @@ stage claiming the frees while building none of them.
         it runs under `debug_assertions` alone, on the owning thread, and no
         release build allocates it (S42.1, 2026-09-01; the S42 Code Reviewer
         asked that the exemption stand here rather than in the closed stage).
-- [ ] S36.14 Decide the retained index's owning layer   *(before S36.9's slice e)*
+- [x] S36.14 Decide the retained index's owning layer   *(before S36.9's slice e)*
       done: the choice is recorded in `dev/DECISIONS.md` with the rejected side
         and its reason — either the present registry keeps its shape and only
         its backing moves under the manager, or the index moves into the
@@ -1240,6 +1240,18 @@ stage claiming the frees while building none of them.
         an index beside its retained block, with reasons; what it does not
         settle is the block-owner word, which is the same prerequisite the
         collector worker waits on (`rfc/dev/ALGORITHM-AUDIT.md`, A4)
+      Sage 2026-09-01: option B in a narrower form — the list into a
+        per-thread chain of fresh pool blocks, the count word atomic because
+        `ll_free` is ABI, the chain outside the ledger; A refused because
+        stable Rust gives the containers no allocator parameter.
+      Edmond 2026-09-01: the registry was a leftover of `rc-walk`'s census
+        and the list belongs to the arena that produced it — the retained
+        block's tail, else the reset's current block, else a fresh block.
+        Final; the atomic count word stands as disclosed.
+      handoff: `dev/DECISIONS.md`, "a retained block's survivor list lives in
+        the arena's own memory". Slice (e) waits on the `rfc` entry the
+        decision lists the questions for; its structure is agreed with Edmond
+        before it is written.
 
 - [ ] S36.10 The persistent per-owner workspace   *(before S36.3)*
       done: the first collection on a thread draws one 64 KiB workspace base

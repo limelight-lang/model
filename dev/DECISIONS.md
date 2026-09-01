@@ -8,6 +8,117 @@ never edited or deleted.
 
 ---
 
+## 2026-09-01 — the workspace base is drawn at the first collection, not at thread init
+
+Owner: S36.10, on Edmond's ruling over the Sage gate's first escalation.
+Supersedes the 2026-08-26 entry below that made the workspace a second
+mandatory block at init.
+
+**Decided:** a thread's first collection draws one ordinary-pool 64 KiB block
+through `gc_metadata::acquire`, and the thread holds it until exit as its
+trace workspace — rows, worklist and, after S36.11, the withheld-return
+records bump inside it, and overflow beyond it draws the pool and then the
+critical reserve and returns at every close. A refused first draw is a
+collection that does not start, `None` at the open, which is the answer the
+open already gives when its first block is refused. Thread init draws nothing
+new. The base returns at exit after the queue's blocks and before
+`critical::drain`, and it is outside the arena's list of returnable blocks,
+so an abort's count-based return cannot hand it to the reserve.
+
+**Why:** the design of record has one mandatory block per thread and says a
+thread that cannot obtain it does not start (`rfc/model/memory/critical-reserve.md`,
+"Allocation paths"; `rfc/dev/DECISIONS.md`, 2026-08-28: the queue base is the
+one stock that cannot be refilled at a later poll without suspending the
+guarantee between birth and that poll). A workspace meets neither half of
+that reason — a collection that lacks it answers `None` and loses nothing it
+had — so a second mandatory block raised the thread-start threshold for a
+guarantee the design never made. Edmond's condition is the one that matters
+and holds either way: every block is explicitly requested from the memory
+manager, which `acquire` is, and nothing is carved from a block that was not.
+
+**The Commit phase moves to S36.12.** "Bytes the commit still names after the
+trace close" are the member list S36.12 builds and S36.3 consumes; at this
+step nothing names them, so a typed `Commit` state would be built ahead of the
+shape it serves and could be seen red only against a test that names bytes no
+production path names. S36.10 builds `Idle → Trace → Idle` with the rewind at
+the trace close; S36.12 splits the close when it chooses its commit unit.
+
+**Rejected:** the mandatory draw at init, for the reason above; a base
+adopted from the critical reserve, which `critical-reserve.md` forbids as an
+ordinary bump block; a phase word beside the withheld-return chain's head
+pointer as a second representation of "a trace is open", since an unwind
+that drops the chain would leave the two disagreeing.
+
+**Cost:** mandatory direct cycle memory stays 65,536 bytes per registered
+thread; a thread that has collected once holds 131,072, and 262,144 with both
+queue spares present and an empty queue — the figure the 2026-08-26 entry
+called a maximum is the empty-queue figure, a polled thread with one candidate
+holding five blocks.
+
+---
+
+## 2026-09-01 — a retained block's survivor list lives in the arena's own memory, and the process registry goes
+
+Owner: S36.14, ruled by Edmond over the Sage's ruling, before S36.9 slice (e).
+
+**Decided:** the sorted list of a retained block's survivors is written at the
+reset into memory the arena already holds — the retained block's own tail when
+the list fits below its last object, otherwise the reset's current block,
+which is then retained as the holder of that list, and only when neither has
+room a fresh pool block. The retained block's collector line carries the
+list's address and length beside the shadow pointer; a null address is a block
+retained for bytes alone, and the trace answers *untracked* for an edge into
+it. `memory/retained.rs` loses its `Mutex<BTreeMap>`, its `Arc<[usize]>`
+and `snapshot`, and keeps the arithmetic over the header and the occupancy
+test. `heap::for_each_entity_slot` finds retained blocks by the region scan on
+their kind and reads the list from the header, under the quiescent-mutator
+contract it already states.
+
+**Why the registry existed, and why it goes:** `rc-walk` walked every block of
+the process once per epoch, and a bump-filled block has no stride, so the walk
+needed a list of every retained block's occupants; one process table under a
+mutex gave a process-wide walker that list (`918cf1d`). The walk was deleted
+on 2026-08-26 and the table was kept for its lookup. `rc-cycle` enumerates
+nothing: every production reader asks about one block whose address it holds,
+and the one enumeration has no production caller (`dev/CYCLE-COLLECTOR-REVIEW.md`,
+finding 3, verified on the day). A process-global lock per traced edge, for a
+table nobody enumerates, is the cost of a structure that outlived its reader.
+Edmond's ruling: a survivor list belongs to the arena that produced it.
+
+**The count word is atomic.** Live occupants and pinned payloads are one
+64-bit word on the collector line, decremented with `fetch_sub` by whichever
+thread frees; the returned value says who holds the last count and owes the
+block to the pool. `ll_free` is an ABI entry and cannot be made owner-only,
+and S38.3 parks frees "whichever thread performs them"; two plain words
+written from two threads lose an update, which is a block that never returns
+or returns under a live occupant. One `lock xadd` on a promoted survivor's
+death is cheaper than the mutex and tree lookup it replaces. Disclosed for
+Edmond to overturn; not overturned.
+
+**Rejected, with reasons.** Option A, the registry keeping its shape over
+manager-backed storage: stable Rust gives `BTreeMap` and `Arc` no allocator
+parameter, so it is the registry rewritten by hand with the same lock kept,
+and every line of it replaced when the list moves to the block. The Sage's
+own form of B, a per-thread chain of fresh pool blocks holding the lists:
+the arena already holds the memory the reset is standing in, and a fresh
+block is the fallback, not the rule. A block per list, and a full
+`HeapBlockHeader` on a retained block: as `dev/design/retained-index-ownership.md`
+refuses them. Owner-only plain counters with abandonment and adoption of
+retained blocks: unsafe under the ABI free path, and a third population to
+adopt that has no free slots.
+
+**What the rfc entry answers before slice (e) writes code:** the header's
+words and who publishes them; that a retained block is on no thread's list
+and is neither abandoned nor adopted, its last death returning it from any
+thread; that a list-holding block returns when its last list and last
+occupant are gone; and that the quiescent enumerator reads the list without
+a lock. Also the defect the proposal missed: `retain_block` nulls only the
+shadow pointer today, and a block retained, returned, drawn by an arena and
+retained again would carry a stale list address unless the whole collector
+line is cleared before the kind's release store.
+
+---
+
 ## 2026-09-01 — the weak table is the mutator's memory, and it comes from the buffer layer
 
 Owner: S36.9 slice d, ruled by the Sage gate before the first edit.
