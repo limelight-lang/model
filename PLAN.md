@@ -68,7 +68,36 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 
 ## Fog
 
-Empty.
+Raised by the review of 2026-09-01 over `52b2cbf` and `0416e83`; each line is
+an unresolved question, not yet a step, and none of them is ruled on.
+
+- **The trace window covers entity slots, not the bodies the same trace
+  strides.** `mark` and `scan` reach an array's table storage through
+  `cells::trace_cells`, so a buffer-arena chunk, a retained payload and an
+  OS-direct run all hold live addresses inside an open window; only the first
+  reaches `cycle::parking`, and `52b2cbf` reassigned the other sites'
+  comments to S38.3. `BlockPool` is process-global, so recommissioning needs
+  no second thread. Either those frees are S36.2's or the slot free is not
+  reachable either, and the commit takes both positions.
+- **A cross-thread free of an entity slot never sees the window**, which
+  reads the freeing thread's own flag. Bounded today only because
+  `collect_remote` runs from the allocation paths and a trace allocates no
+  entity; the first allocation inside a window makes it live.
+- **A retained block can leave circulation inside the window** through
+  `retained::give_block_back`, which passes no gate. Unreachable today by an
+  argument about `index.live` that is written down nowhere and that the
+  code's own comment contradicts.
+- **The parked list is a `Vec` on the free path**, which the 2026-07-26
+  decision forbade in as many words. `dev/DECISIONS.md` cites a later
+  2026-07-27 decision as the reversal; no such entry exists, and
+  `cycle::arena`'s module doc still states the prohibition.
+- **`GcBlockRole::WorkspaceBase` has no production user.** `ShadowArena`
+  charges its first block to `WorkspaceOverflow`, so the four roles
+  `docs/memory-manager.md` describes are three.
+- **S36.9a's tests largely restate their own constants.** The figures the
+  commit message, the plan and both documents name — 8,152 and 4,076 — are
+  asserted through the expressions that define them, and the three
+  wrong-kind asserts that are the door's whole enforcement have no test.
 
 ---
 
@@ -587,6 +616,15 @@ stage claiming the frees while building none of them.
         escrow capacity is 8,152 and `POLL_STRIDE` is re-derived as 4,076.
         This does not close S36.9: logical accounting and allocator-free
         parking, weak and retained storage remain.
+      repair 2026-09-01 — the slice's `escrow` addressed the block through a
+        `&OwnerCycleState`, which covers the control line alone; Miri fails the
+        write on the `ll_release_vector` path and the parent tree passes. The
+        floor pointer is threaded through `grow_and_write` and `escrow`
+        instead, `escrow` is `unsafe` and states the precondition, and the
+        overflow test that spawns a child now carries `cfg_attr(miri, ignore)`
+        — without it Miri stopped at that test and ran none of `cycle::` after
+        it. `dev/POSTMORTEM.md`, 2026-09-01. Miri over `cycle::`: 86 passed,
+        0 failed, 1 ignored.
       handoff: S36.9 is executed as separately reviewed slices: (a) physical
         block contract and queue state; (b) logical ledger and current arena
         instrumentation; (c) manager-backed parking plus ordinary/abort deny

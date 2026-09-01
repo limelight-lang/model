@@ -100,15 +100,25 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
-## 2026-09-01 — S36.9a queue control: `.tbss` 496 to 480 bytes
+## 2026-09-01 — S36.9a queue control: `.tbss` 528 to 472 bytes
 
-**Read from the binary, not timed.** After `cargo test --lib --no-run`,
-`readelf -SW target/debug/deps/ll_model-54bfa95a089c3459` reports `.tbss`
-size `0x1e0`, or 480 bytes. The directly preceding tree's back-to-back
-measurement is the 496-byte "after" arm below. Moving queue control into the
-manager-issued floor leaves TLS with one non-owning
-pointer; linker TLS packing turns that source-layout reduction into 16 bytes
-for the whole binary.
+**Read from the binary, not timed, and both arms rebuilt on 2026-09-01.**
+After `cargo test --lib --no-run` in a target directory of its own,
+`readelf -SW` on `ll_model-54bfa95a089c3459` reports `.tbss` `0x1d8`, or 472
+bytes, at this tree and `0x210`, 528 bytes, at the one before it (`6dfb583`).
+Moving queue control into the manager-issued floor leaves TLS with one
+non-owning pointer, and linker TLS packing turns that source-layout reduction
+into 56 bytes for the whole binary.
+
+The figure is toolchain-dependent, so a comparison quoted from it names one:
+`+1.94` reports 480 and 520 for the same two trees, a reduction of 40 bytes.
+Both figures come from `rustc 1.96.0` unless `+1.94` is stated.
+
+**The first version of this entry compared against 496 bytes**, which is the
+2026-08-29 arm below rather than the preceding tree: `52b2cbf` added
+`cycle::parking`'s two thread-locals between the two dates, and its cost was
+never measured. Rebuilt today, that entry's own tree (`d6d54e0`) reports 512
+bytes on both toolchains, so its 496 does not reproduce either.
 
 The operation budget is structural because no benchmark repeatedly exercises
 fresh enrolments yet: an ordinary write still stores one pointer and updates
@@ -137,6 +147,11 @@ touches any of it.
 |---|---|
 | before, `79b22fa` | 65 784 bytes |
 | after, the escrow on an allocator-issued floor | 496 bytes |
+
+Rebuilt on 2026-09-01 at the after arm's commit, `d6d54e0`, the same command
+reports 512 bytes on `rustc 1.96.0` and on `+1.94` alike. The 496 does not
+reproduce and the 16-byte difference is unexplained, so the ratio above stands
+and the absolute figure is read as approximate.
 
 Both arms taken back to back on this box in one sitting, the before arm through
 `git stash push -u` and a rebuild in the same profile. The 65 680 figure

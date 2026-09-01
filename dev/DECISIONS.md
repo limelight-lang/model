@@ -354,6 +354,10 @@ nothing, which is the reentrancy guard that document already licenses.
 poll every 4080 iterations. Unmeasured, and no figure is offered: the crate has
 no bench that isolates a vector release.
 
+**Re-derived 2026-09-01.** The stride is 4,076 since S36.9a gave the floor's
+first 64 bytes to owner control, which took the escrow to 8,152 entries. The
+rule is unchanged and the figure above is what it was on the day.
+
 
 
 ## 2026-08-28 — an enrolment cannot fail, and the undo of the enrolled bit is deleted
