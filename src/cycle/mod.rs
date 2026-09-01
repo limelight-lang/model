@@ -24,20 +24,23 @@
 //!
 //! # What each module owns, and for how long
 //!
-//! Two lifetimes only. [`queue`] and [`deferred_slot_reuse`] hold per-thread
-//! state for one thread's whole life, given back at `ll_thread_exit`. The
-//! queue's is manager-issued; the deferred-reuse list is still a `Box<Vec<_>>`
-//! out of the global allocator, which is the one structural change this stage
-//! does not make and `PLAN.md` S41 says so. Everything else is per collection:
+//! Two lifetimes only. [`queue`] holds per-thread state for one thread's whole
+//! life, given back at `ll_thread_exit`. Everything else is per collection:
 //! [`arena`] holds the blocks a single trace bumps through, [`stack`] draws
-//! its segments from that arena, and the rows [`shadow`], [`mark`] and
+//! its segments from that arena, [`deferred_slot_reuse`] holds the blocks its
+//! withheld returns are recorded in, and the rows [`shadow`], [`mark`] and
 //! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`
 //! own no memory at all — they are arithmetic over memory somebody else holds,
 //! and [`validation`] reads the heap rather than a row.
 //!
-//! **Every allocation of a collection can be refused, and no refusal is
-//! fatal.** A refused block aborts the collection with the heap byte-identical,
-//! because the trace writes into rows and never into an entity.
+//! **A collection's memory is refusable, and the refusal ends the collection
+//! rather than the process.** A refused block leaves the heap byte-identical,
+//! because the trace writes into rows and never into an entity. The
+//! withheld-return chain is inside that claim by where it draws: its first
+//! block comes at the window's open, before a slot is in hand, so a refusal
+//! there is a collection that does not start. What stands outside the claim is
+//! below, with the per-thread aborts, because it has the same shape as they
+//! do.
 //!
 //! The per-thread half is where a refusal can end something. The queue's base
 //! block is drawn twice: at thread init, where a refusal is a thread that
@@ -45,9 +48,12 @@
 //! allocator-issued", which is that block), and at the first registration of a
 //! thread the runtime never registered, where the same refusal aborts because
 //! there is no caller left to report it to. Past both stands the overflow
-//! buffer's own bound, which aborts when it fills. And the deferred-reuse
-//! list's `Box` aborts under any pressure at all, which is the reason it owes
-//! a structural change rather than a rename.
+//! buffer's own bound, which aborts when it fills. Past the trace's own first
+//! chain block stands [`deferred_slot_reuse`]'s growth, which aborts for the
+//! reason the overflow buffer does: it is holding a slot it may neither return
+//! nor drop, and `ll_free` has no frame to report a refusal through. Thread
+//! exit inside an open window aborts there too, `ll_thread_exit` being
+//! `extern "C"` and having no caller to refuse to.
 //!
 //! The ordering the whole module rests on is one sentence: **the rows die at
 //! the trace token's release, and everything that reads a row happens before

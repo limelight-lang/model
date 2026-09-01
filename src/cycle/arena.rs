@@ -144,6 +144,17 @@ impl TraceScratchArena {
         }
     }
 
+    /// Bytes of the block still under the bump, which no [`grow`](Self::grow)
+    /// has charged and which [`reset`](Self::reset) publishes. Zero while no
+    /// block is open, which is the state a re-entered reset finds.
+    pub(crate) fn residue(&self) -> usize {
+        if self.cursor.is_null() {
+            0
+        } else {
+            BLOCK_PAYLOAD - self.left
+        }
+    }
+
     /// Charge `bytes` of this arena's bump as memory in use, and remember
     /// them for the discharge.
     fn publish(&mut self, bytes: usize) {
@@ -336,14 +347,12 @@ impl TraceScratchArena {
 
         // The block still under the bump has no further grant coming, so
         // its consumption is published here; the ones before it were
-        // published as `grow` left each of them. The guard is the cursor
+        // published as `grow` left each of them. `residue` reads the cursor
         // rather than the block list, because the two part company on the
         // re-entry below: a `reset` that unwinds out of a poisoned `put`
         // and is run again by `Drop` finds the list half returned and the
         // cursor already null.
-        if !self.cursor.is_null() {
-            self.publish(BLOCK_PAYLOAD - self.left);
-        }
+        self.publish(self.residue());
 
         gc_metadata::discharge(self.published);
         self.published = 0;

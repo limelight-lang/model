@@ -100,6 +100,46 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-01 — S36.9c the withheld returns leave the global allocator: `.tbss` 480 to 464 bytes, and a void timed run
+
+**Machine:** dev box, shared with interactive work. **Base:** `23362d4`,
+`rustc 1.96.0`.
+
+**What changed:** the physical returns an in-line trace withholds moved out of
+a `Box<Vec<*mut u8>>` and into a chain of memory-manager blocks whose control
+line sits in the head block. Two thread-locals became one.
+
+### Counters
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| global allocations across open → withhold → close | 2 | 0 | `test_support::allocation_probe`, in the test that owns it |
+| pool requests at the open | 0 | 1 | the same probe |
+| pool requests per withheld return | 0 | 0 | the same probe |
+| `.tbss` | 480 | 464 | `readelf -SW` on the test binary, own target directory |
+| `cycle::` under Miri | 104 passed / 7 ignored | 113 passed / 7 ignored | two threads, `-Zmiri-ignore-leaks` |
+
+The two-allocation figure was seen red before the first edit and is the `Box`
+plus the `Vec`'s first push; the reallocations behind it were never counted
+and are not claimed. The `.tbss` figure of 472 recorded on this day for S36.9b
+does not reproduce on today's tree — 480 bytes at `23362d4`, with the crate's
+thread-local declarations unchanged in count and type since that entry, S41
+having only renamed three of them. The 16-byte fall measured here is against
+the 480, both arms taken in one sitting.
+
+### The timed run is void
+
+`benches/lifecycle` was run A, B, A in one sitting. The two measurements of the
+same code disagree by more than the change does: `create_release_die` 14.062 ns
+then 13.832 ns, `batch_64_plain_release` 883.10 ns then 860.59 ns,
+`bulk/reserved_create_loop_release` 785.63 ns then 755.67 ns — the box drifting
+about 3 % downward over the ten minutes the three arms took. **By the method
+above the run is void and no number from it is a result.** What it does bound:
+B lies between the two A arms on every one of the nine rows, so whatever this
+change costs the free path is under that drift. The path itself went from one
+thread-local load of a `bool` to one of a pointer, and no benchmark on this box
+resolves that.
+
 ## 2026-09-01 — S36.9b the logical ledger: nothing on the enrolment write, and `.tbss` unchanged at 472 bytes
 
 **Counted in the sources and read from the binary; nothing is timed**, for the

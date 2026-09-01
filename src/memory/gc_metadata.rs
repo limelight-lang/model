@@ -18,13 +18,16 @@
 //! the block count alone cannot say whether collection is holding memory it
 //! needs. The charge lands at a structural transition — a queue segment
 //! leaving the write position, an overflow-buffer append, a queue-base control
-//! line, a trace-scratch block leaving the bump — never per grant, which is
-//! what keeps the candidate-registration path free of it. Two residues follow
-//! from that and are granularity rather than error: the write segment's own
-//! fill and the trace-scratch block still under the bump. Each is entered in
-//! the high-water figure by the transition that ends it — the scratch arena's
-//! reset charges it, the owner's segment release marks it — so that figure is
-//! exact for one thread and can miss a maximum two threads stood in together.
+//! line, a trace-scratch block leaving the bump, a withheld-return block
+//! leaving the append position — never per grant, which is what keeps the
+//! candidate-registration path and the free path free of it. Three residues
+//! follow from that and are granularity rather than error: the write segment's
+//! own fill, the trace-scratch block still under the bump and the
+//! withheld-return block still under the cursor. Each is entered in the
+//! high-water figure by the transition that ends it — the scratch arena's
+//! reset charges it, the owner's segment release marks it, the trace window's
+//! close marks its own — so that figure is exact for one thread and can miss a
+//! maximum two threads stood in together.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -86,8 +89,9 @@ impl GcMemoryStats {
     /// overflow buffer with no entry in it are outside this figure, so the gap
     /// to [`current_bytes`](Self::current_bytes) is bounded by nothing in
     /// particular. What is bounded is the figure's own lag — at most one write
-    /// segment's fill per thread and one trace-scratch block's consumption per
-    /// collection in flight, each charged by the transition that ends it.
+    /// segment's fill per thread, and one trace-scratch block's consumption
+    /// plus one withheld-return block's per collection in flight, each charged
+    /// by the transition that ends it.
     #[inline]
     pub fn current_bytes_in_use(self) -> usize {
         self.in_use
@@ -98,11 +102,13 @@ impl GcMemoryStats {
     ///
     /// Carries the residues the current figure lags by, each entered by the
     /// transition that ends it: a collection that held one block for two
-    /// hundred bytes is in this figure at two hundred, and a thread that
-    /// filled a queue segment without growing the queue enters its fill when
-    /// it releases its segments. **Entered at that transition and not while
-    /// the residue stands**, so a residue that coexisted with another
-    /// thread's maximum is in this figure only if it outlived it.
+    /// hundred bytes is in this figure at two hundred, a thread that filled a
+    /// queue segment without growing the queue enters its fill when it
+    /// releases its segments, and a trace window enters the block its withheld
+    /// returns were being written into when it closes. **Entered at that
+    /// transition and not while the residue stands**, so a residue that
+    /// coexisted with another thread's maximum is in this figure only if it
+    /// outlived it.
     #[inline]
     pub fn peak_bytes_in_use(self) -> usize {
         self.in_use_peak
@@ -129,9 +135,9 @@ pub fn stats() -> GcMemoryStats {
 ///
 /// The caller charges at a transition that has one inverse — a segment leaving
 /// the write position, an overflow-buffer append, a queue-base control line, a
-/// trace-scratch block leaving the bump — and never per grant
-/// (`dev/DECISIONS.md`, "the logical charge lands at a structural
-/// transition, not at a grant").
+/// trace-scratch block leaving the bump, a withheld-return block leaving the
+/// append position — and never per grant (`dev/DECISIONS.md`, "the logical
+/// charge lands at a structural transition, not at a grant").
 pub(crate) fn charge(bytes: usize) {
     let in_use = IN_USE.fetch_add(bytes, Ordering::Relaxed) + bytes;
     IN_USE_PEAK.fetch_max(in_use, Ordering::Relaxed);

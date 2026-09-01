@@ -227,7 +227,11 @@ takes the canonical term whole and is named `deferred_slot_reuse`.
 
 This audit does not approve `Box<Vec<*mut u8>>`. Replacing it with
 manager-owned GC memory is a separate structural change and must not be hidden
-inside a rename commit.
+inside a rename commit. That change is `PLAN.md` S36.9 slice (c), and it
+collapsed the two rows above it into one: the flag and the list were one state
+in two declarations, and the head block's address is now both, under
+`DEFERRED_RETURNS`. The rows record what S41 ratified; the crate's guard reads
+the later name.
 
 ### Exact validation
 

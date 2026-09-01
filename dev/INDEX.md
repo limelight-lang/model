@@ -373,7 +373,7 @@ versions live in `docs/history/`, marked at the top.
   region scan both enumerators already perform, a run is found from that
   registry and nowhere else, and both carry `slots = 1`, which is
   soundness rather than economy. A free arriving while a trace
-  reads the block must park, and for a run that is soundness rather than
+  reads the block is withheld, and for a run that is soundness rather than
   economy — its memory is unmapped at the free while a trace may still
   address it. `cycle::deferred_slot_reuse` defers that return and owns the
   arena-before-replay order (`PLAN.md` S36.2).
@@ -552,7 +552,7 @@ transition that ends them, which is exact on one thread and can miss a maximum
 two threads stood in together. The pool and the critical reserve refuse a
 block still stamped with that kind.
 
-Parking a physical return — `memory::stdapi::ll_free` asks two windows
+Withholding a physical return — `memory::stdapi::ll_free` asks two windows
 before a slot, a retained block or a large run goes back: an entity whose
 header still carries `ENROLLED` waits with no record kept, the queue entry
 being the record; an open trace sends the return to

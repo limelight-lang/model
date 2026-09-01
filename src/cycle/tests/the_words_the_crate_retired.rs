@@ -57,7 +57,10 @@ enum Where {
 /// replacement, and the replacement is what the audit decided. Three rows
 /// carry two names rather than one, because the audit gives their token two
 /// ratified senses and no scope here separates them; the message names both
-/// and the reader picks.
+/// and the reader picks. Two rows run the other way and share a name:
+/// `ACTIVE` and `PARKED` were one state in two declarations, and the state is
+/// one pointer now — a chain head whose null says the window is shut
+/// (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Deferred slot reuse").
 const RETIRED: [(&str, &str, Where); 84] = [
     // Candidate registration, whose callers are spread over four modules.
     // `ShadowArena::enrol` is the homonym: the audit maps that one to the
@@ -190,8 +193,8 @@ const RETIRED: [(&str, &str, Where); 84] = [
     // Deferred slot reuse.
     ("parking", "deferred_slot_reuse", Where::Anywhere),
     ("TraceWindow", "ActiveTrace", Where::Anywhere),
-    ("ACTIVE", "TRACE_ACTIVE", Where::Anywhere),
-    ("PARKED", "DEFERRED_SLOTS", Where::Anywhere),
+    ("ACTIVE", "DEFERRED_RETURNS", Where::Anywhere),
+    ("PARKED", "DEFERRED_RETURNS", Where::Anywhere),
     ("park_if_active", "defer_reuse_if_tracing", Where::Anywhere),
     ("parked_count", "deferred_slot_count", Where::Anywhere),
     // The hash table's collision defense, S41.8's

@@ -1628,10 +1628,10 @@ pub extern "C" fn ll_thread_exit() {
     //    context, weak table.
     crate::static_block::run_thread_exit_teardown();
 
-    // 2. The trace's withheld-return list, while the heaps that allocated its
-    //    Vec are still mounted. A trace cannot span thread exit, so the list
-    //    is empty; disposing it here returns its own allocation locally rather
-    //    than posting it to an ownerless block after the heaps are abandoned.
+    // 2. The trace window, before anything it could still be addressing goes
+    //    away. It owns its chain of blocks and gives them back at its own
+    //    close, so this call frees nothing: it refuses an exit that would
+    //    abandon a trace still holding rows in the heaps below.
     crate::cycle::deferred_slot_reuse::dispose_thread_state();
 
     // 3. The weak table, after every death that could still need a row.

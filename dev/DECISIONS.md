@@ -8,6 +8,56 @@ never edited or deleted.
 
 ---
 
+## 2026-09-01 — the trace's withheld returns are manager memory, drawn where a refusal can still be answered
+
+Owner: S36.9 slice c, ruled by the Sage gate before the first edit.
+
+**Decided:** an in-line trace records the physical returns it withholds in a
+chain of 64 KiB blocks drawn through `memory::gc_metadata`, ordinary pool
+first and the critical reserve second. The chain's control line is the first
+64 bytes of the head block's payload, and thread-local storage keeps one
+non-owning pointer to that head block; a null pointer is the closed window, so
+the separate active flag goes. The first block is drawn when the window opens
+and not at the first withheld return. Both doors refusing at the open answers
+`None` and the collection does not start; a growth past the first block that
+both doors refuse ends the process.
+
+**Why the draw moved to the open:** a collection is ordinarily the standard
+in-line form and meets no refusal anywhere, but on the pressure path it is a
+refused pool that started it (`rfc/model/gc/cycle/questions.md`, Y14). A draw
+at the first withheld return meets that refusal holding a slot whose rows are
+live: returning it is the reuse the window exists to prevent, and dropping the
+record loses a physical return, which the ruling of 2026-08-28 refuses. Moving
+the draw to the open is what turns the same refusal into a collection that
+never starts.
+
+**Refused, with reasons.** The trace scratch arena as the store: its own reset
+returns the record blocks to the pool before the replay reads them, and a
+refusal there means "abort the collection", which a store receiving pointers
+inside `ll_free` cannot answer with. The queue's base block: its payload is
+exactly full at one control line and 8,152 escrow entries, so room for records
+shrinks the overflow capacity and forces a third re-derivation of the poll
+stride, and the two lifetimes disagree — the base block lives as long as the
+thread, the records as long as one trace. Waiting for S36.10's workspace: the
+`Box<Vec<_>>` stays until then, so the slice's own deny gate cannot pass and
+S36.9 waits on two later steps.
+
+**The ledger gains a seventh charge site and a third residue.** A chain block
+leaving the append position is charged for what it holds; the block under the
+cursor is a residue, entered in the high-water figure at the window's close
+and never standing in the current one. Charged and marked are the bytes
+*written*: the head's control line counts and a later block's reserved one
+does not, which is the rule `current_bytes_in_use` already states. The close
+marks the arena's residue and the chain's as one sum, before the arena's reset
+charges and discharges its own — that instant is the only one at which both
+residues of a collection are in use, and a mark after it would enter them
+separately and understate the maximum.
+
+**The window is taken down by whoever releases the chain.** The ordered close
+takes it down after the row sweep and before the replay; the chain's own drop
+takes it down again, which is what an unwind out of the sweep reaches. See
+`POSTMORTEM.md` of the same date for the round that established this.
+
 ## 2026-09-01 — the logical charge lands at a structural transition, not at a grant
 
 Owner: S36.9 slice b, ruled by the Sage gate before the first edit.

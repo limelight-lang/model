@@ -278,9 +278,17 @@ it through the same `ll_free`, so whichever window closes last performs the
 physical return.
 
 `ActiveTrace` owns the `TraceScratchArena`: close first resets it and nulls
-every block's row pointer, then lowers the owner-local active flag, then
-replays the returns. The window covers mark and scan alone and ends before
-exact validation and teardown. Today it is the in-line owner's TLS state; the
+every block's row pointer, then takes the window down, then replays the
+returns. The records are written into a chain of manager blocks the window
+draws when it opens, so the free path reaches no allocator. Drawing at the
+open is what makes the refusal answerable: both doors refusing there is a
+collection that does not start. Past that block the chain grows, and a refusal
+of the growth aborts the process — the trace is holding a slot it may neither
+return nor drop, and `ll_free` has no frame to report through.
+
+The window covers mark and scan alone and ends before exact validation and
+teardown. Today the in-line owner finds it through one thread-local pointer to
+the chain's head block, a null pointer being the closed window; the
 collector-worker form waits on S38's owner-addressable token and deferred-reuse
 handoff.
 

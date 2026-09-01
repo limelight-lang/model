@@ -185,11 +185,12 @@ pub(crate) fn give_back(block: *mut BlockHeader) {
             }
 
             // Stamped here rather than trusted: every block the reserve
-            // hands out is assumed to carry this kind already, and what
-            // enforces that is each caller stamping its own — the arena's
-            // reset and the candidate queue's drain, which are the two.
-            // A release store on a cold path is cheaper than an invariant
-            // living in two other files.
+            // hands out is assumed to carry this kind already, and the one
+            // production route back — `gc_metadata::release_to_critical`,
+            // which every collection structure returns through — stamps it as
+            // it crosses the ownership boundary. A release store on a cold
+            // path is cheaper than an invariant that has to hold in another
+            // file.
             unsafe {
                 crate::memory::block_pool::store_block_kind(
                     &raw const (*block).kind,

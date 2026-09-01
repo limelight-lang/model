@@ -59,7 +59,7 @@ point:
 | `context → promote` | `ll_arena_reset` | the reset ABI drives the full discipline — `promote::arena_reset_full` consumes the arena's logs through arena's own drain primitives, not the reverse |
 | `barrier → object` | `drop_ref` | the release cascade ends in `ll_entity_die`; `header_category` reads |
 | `class → object` | descriptor construction | carries `ll_default_dispose` as the default dispose pointer (data, not a call) |
-| `heap → static_block`, `weak`, `cycle::queue`, `cycle::deferred_slot_reuse` | `ll_thread_exit`, `ll_thread_init` | thread exit owns the order its per-thread state dies in, because TLS destructor order is unspecified and puts the exit guard last (decision 2026-08-03). These are disposal calls only: `heap` learns nothing about cells or verdicts, it names `dispose`-shaped functions in a fixed sequence. The deferred-reuse list is disposed before the heaps that allocated it; the queue joins at both ends — its cells are filled beside the two memory reserves at init, and its segments go back before theirs at exit |
+| `heap → static_block`, `weak`, `cycle::queue`, `cycle::deferred_slot_reuse` | `ll_thread_exit`, `ll_thread_init` | thread exit owns the order its per-thread state dies in, because TLS destructor order is unspecified and puts the exit guard last (decision 2026-08-03). These are disposal calls only: `heap` learns nothing about cells or verdicts, it names `dispose`-shaped functions in a fixed sequence. The deferred-reuse module is asked before the heaps, and answers by refusing an exit inside an open trace window rather than by freeing anything, its blocks belonging to the window; the queue joins at both ends — its cells are filled beside the two memory reserves at init, and its segments go back before theirs at exit |
 | `refcount → cycle::queue` | `release_word`, the non-final decrement the candidate gate admits | the candidate set is fed from the release path and nowhere else, registration being edge-triggered (`rfc/model/gc/cycle/questions.md`, Y6). `refcount` learns one thing about the queue and it is a boolean: whether the entry landed, which decides whether the candidate bit stays down |
 
 **Where the collector's duty sits.** A dying slot a queue entry names owes the
@@ -166,7 +166,7 @@ teardown they run call back out — which is why `object` names
 | Critical reserve (eight blocks) | per thread | `critical` | the collection's arena draws after the pool refuses and gives back at its reset; the `ll_gc_maybe_collect` poll refills |
 | Candidate queue base block and segments | one 64 KiB block per thread for the life of the thread, plus its segment chain | `cycle::queue` | `refcount::release_word` writes entries; the `ll_gc_maybe_collect` poll fills the spares and drains the overflow buffer; `memory::gc_metadata` counts the blocks |
 | Shadow rows and the collection's bump | 64 KiB blocks for the length of one collection | `cycle::arena::TraceScratchArena` | `mark`, `scan` and `stack` read and write rows out of it; `memory::gc_metadata` counts the blocks |
-| In-line trace deferred-reuse list | TLS, no drop glue | `cycle::deferred_slot_reuse::ActiveTrace` | `stdapi::ll_free` appends physical returns while mark or scan may still address a row; the window replays after its owned arena resets |
+| In-line trace withheld returns | a chain of 64 KiB blocks for the length of one trace, TLS holding one non-owning pointer to its head and no drop glue | `cycle::deferred_slot_reuse::ActiveTrace` | `stdapi::ll_free` appends physical returns while mark or scan may still address a row; the window replays after its owned arena resets; `memory::gc_metadata` counts the blocks |
 | Immortal region | process-global mutex | `immortal` | `class`, `intern`, `object` (immortal category) |
 | Intern table | process-global mutex, Rust-owned | `intern` | `class` looks names up |
 | Retained-block object indexes | process-global mutex, Rust-owned | `retained` | `promote` registers at reset; both of `heap`'s enumerators clone the `Arc` under the lock and read it outside |
@@ -267,7 +267,7 @@ The free path refuses physical reuse while either identifier stands —
 the queue entry through `CANDIDATE_BIT`, and
 `cycle::deferred_slot_reuse::ActiveTrace`
 while mark or scan may still address the slot's row. The trace window
-owns its shadow arena, so rows are nulled before parked returns replay.
+owns its shadow arena, so rows are nulled before the withheld returns replay.
 
 **4. Arena reset.** `ll_arena_reset` (`context`) →
 `promote::arena_reset_full` drives the whole discipline, draining the

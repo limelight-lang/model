@@ -7,6 +7,42 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-01 — a repair moved ownership into a `Drop` and left the state that names it behind
+
+**What happened.** A Critic round found that `ActiveTrace::drop` released its
+chain of manager blocks at the end of a function that could unwind before
+reaching it: `BlockPool::put` panics on a poisoned mutex, and the release
+profile is the only one that aborts instead of unwinding. The repair moved the
+chain into a value of its own whose `Drop` discharges the ledger and returns
+the blocks, so an unwind out of the row sweep still returns them. The next
+round found what the repair had created. The thread-local pointer naming the
+chain was still taken down by the enclosing drop, after the row sweep — so an
+unwind out of that sweep released the blocks and left the pointer standing.
+The next `ll_free` on that thread would have read the control line out of a
+block the reserve had already lent to somebody else and written a record
+through a stale cursor. Before the repair the same unwind leaked a `Box<Vec>`
+and wrote nothing.
+
+**Why it was possible.** The repair was judged against the resource it moved
+and not against the state that names the resource. Ownership and reachability
+were in two places, and only one of them was moved: the blocks got a destructor
+and the pointer that finds them kept a hand-written take-down on the happy
+path. A leak turned into a use-after-free, which is the one direction a
+"defensive" repair must never move.
+
+**The rule.** When a resource moves under a destructor, every name that reaches
+it moves under the same destructor. Concretely: the value that frees the memory
+also clears the pointer, index or flag through which another path could still
+find it, and the ordered close calls that same clearing rather than repeating
+it. A clearing written twice in two places is a clearing that will be true in
+one of them.
+
+**Why nothing caught it.** No test drives an unwind out of the row sweep, and
+none does today: the panic needs a poisoned pool mutex or a corrupted block
+kind, and both cost more test machinery than the path is worth. The gap is
+recorded rather than closed, and it is the second time in this stage that a
+correctness argument rested on reading rather than on a red test.
+
 ## 2026-09-01 — a rename over prose rewrote the headings it was told to keep
 
 **What happened.** S41.6 rewrote 239 comments with a word-level script over the

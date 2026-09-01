@@ -984,6 +984,62 @@ stage claiming the frees while building none of them.
         tests passed under a mutation of the line they were written for, which
         two rewritten tests and two added assertions now fail. Not taken
         further: the device stops at two rounds.
+      progress 2026-09-01 — S36.9c manager-backed withheld returns: the
+        physical returns an in-line trace withholds move out of a
+        `Box<Vec<_>>` and into a chain of `gc_metadata` blocks. The first is
+        drawn at `ActiveTrace::open`, which now answers `Option<Self>`, so both
+        doors refusing is a collection that does not start rather than a
+        refusal met with a slot in hand; a growth past that block that both
+        doors refuse ends the process, as the overflow buffer's bound does.
+        TLS keeps one non-owning pointer to the head block and a null one is
+        the closed window, which retires `TRACE_ACTIVE`. Measured on the day:
+        the withheld-return path made 2 global allocations and now makes 0
+        (seen red before the first edit), `.tbss` 480 bytes to 464, `cycle::`
+        under Miri 104 passed to 113 with 0 failed, and the `lifecycle` timed
+        run void on its own A-A control (`dev/BENCHMARKS.md`). Three of
+        S36.11's `done:` claims land here, and its clause names what is left
+        to it. This does not close S36.9: weak and retained storage remain.
+      Sage 2026-09-01 (slice c gate): the records live in a chain of manager
+        blocks of their own, drawn at the open rather than at the first
+        withheld return, because a refusal is answerable only before a slot is
+        in hand; the trace arena is refused as the store, its own reset
+        returning the record blocks before the replay reads them, and the
+        queue base block is refused, its payload being exactly full and its
+        lifetime the thread's. Refusal model: `None` at the open, no failure
+        within capacity, process abort on a refused growth. Taken whole. Where
+        the implementation departs: the append reads three loads rather than
+        the ruling's two, the fill living in the block the cursor points into.
+      Critic 2026-09-01 round 1 (slice c): thirteen findings, eleven taken.
+        The load-bearing ones: an unwind out of the replay stranded the chain
+        and left the ledger permanently inflated, `BlockPool::put` panicking on
+        a poisoned mutex and nothing behind it re-entrant the way
+        `arena::reset` is; `mark_peak` ran after the arena's reset, so the two
+        residues of one collection were never in the ledger together while
+        `gc_metadata` called the figure exact for one thread; the growth path's
+        reserve accounting was constrained by no test; and the thread-exit call
+        site still carried a comment about the `Vec` this step deleted.
+        Refused: extracting the funding machinery this module now shares with
+        `arena` and `queue` — that is S36.11's primitive, and building it here
+        is that step done early.
+      Critic 2026-09-01 round 2 (slice c): twelve findings; the first is a
+        use-after-free round 1's own repair introduced. Moving the chain under
+        its own `Drop` left the thread-local pointer naming it to the enclosing
+        close, so an unwind out of the row sweep released the blocks with the
+        window still standing, and the next free would have written a record
+        through a stale cursor into memory the reserve had lent out again. The
+        window is taken down by whoever releases the chain now, on both paths.
+        Also taken: the ledger counted a later block's reserved control line as
+        in use, against `current_bytes_in_use`'s own rule; the module cited
+        Y14 for a claim Y14's 2026-08-26 amendment reverses; `critical`'s
+        stamping enumeration was wrong in class and not only in count; and two
+        prose claims contradicted the code they stood over. Refused: the
+        finding that a test's failure message states the opposite of its
+        contract — the message names the failure, which is what the crate's
+        assertions do.
+      Known gaps of slice c: no test drives an unwind out of the row sweep, so
+        the second take-down of the window rests on reading; and nothing
+        constrains `mark_peak` against a `charge`/`discharge` pair, which one
+        thread cannot observe.
       Sage 2026-09-01: the charge belongs at a structural transition rather
         than per grant; the figure is bump consumption published at those
         transitions rather than a per-grant sum; the pre-change baseline is the
@@ -995,7 +1051,8 @@ stage claiming the frees while building none of them.
       handoff: S36.9 is executed as separately reviewed slices: (a) physical
         block contract and queue state; (b) logical ledger and current arena
         instrumentation; (c) manager-backed parking plus ordinary/abort deny
-        gate; (d) weak-table ownership and streaming arena drain; (e) retained
+        gate, done 2026-09-01; (d) weak-table ownership and streaming arena
+        drain; (e) retained
         index/registry/snapshot ownership plus the direct-large registry audit.
         Only their composite source audit and deny test close this checkbox.
       done: every block owned by the candidate queue or a collection is drawn
@@ -1074,11 +1131,12 @@ stage claiming the frees while building none of them.
         parking capacities from the 65,280-byte payload before code begins;
         boundary tests exercise exactly capacity and capacity plus one, and
         the documented budget accounts for the other base-workspace residents
-      done: parking no longer owns a `Box<Vec>` and never writes a link into a
-        corpse. Its base capacity is reserved before a trace; overflow asks
-        pool then critical, and exhaustion takes the documented hard-failure
-        path rather than losing a physical return. Replay still goes through
-        `stdapi::ll_free` after the row sweep
+      done: the withheld returns take their base capacity from the workspace
+        payload rather than from a block of their own, and the chain never
+        writes a link into a corpse. What S36.9 slice c built and this step
+        inherits rather than repeats: no `Box<Vec>`, an overflow that asks pool
+        then critical, a documented hard failure rather than a lost physical
+        return, and a replay through `stdapi::ll_free` after the row sweep
       tier: T2 · role: Sage → Critic
       handoff: the current first worklist push reserves 4,112 bytes for 512
         pointers even for a leaf, and current non-empty parking performs global
