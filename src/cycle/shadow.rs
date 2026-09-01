@@ -149,7 +149,8 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 }
 
 /// Take one internal edge off `row`'s working count, keeping its colour.
-/// **The count stops at zero** rather than wrapping.
+/// **The count stops at zero** rather than wrapping, and a test build
+/// fails before it would.
 ///
 /// The subtraction is what the mark does per edge, and it is written
 /// here rather than at the call site because the open-coded form —
@@ -159,11 +160,21 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 /// belongs to would survive every collection.
 ///
 /// A count that reaches zero with edges left to subtract means the trace
-/// read more in-edges than the refcount held, which the design permits
-/// of a dirty pass: the counts it reads may be stale, and the exact test
-/// on the owner's thread is what turns a candidate into a verdict
+/// read more in-edges than the refcount held. The design permits that of
+/// a dirty pass, because the counts it reads may be stale, and the exact
+/// test on the owner's thread is what turns a candidate into a verdict
 /// (`rfc/model/gc/rc-cycle.md`, "Who judges, and what a trace is
-/// worth"). So the lower bound is a saturation and not an error.
+/// worth"); so a release build clamps at zero. The only trace today is
+/// the in-line owner trace, which reads exact counts and cannot find more
+/// in-edges than the refcount holds, so a test build asserts `count >=
+/// edges` before the subtraction: a double subtraction fails the suite
+/// rather than clamping (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 6).
+/// The clamp's below-zero arm is therefore reached by no test in the
+/// gate's builds, since reaching it trips the assertion first.
+///
+/// The assertion cannot tell a speculative trace from the owner's; a
+/// worker trace does not yet exist, and `PLAN.md` S38.0, where the second
+/// thread arrives, is what conditions the assertion on whose pass this is.
 ///
 /// **A saturated count is absorbing** and this call leaves it alone: it
 /// is a lower bound, so what the subtraction knows about the remainder is
@@ -178,6 +189,12 @@ pub(crate) unsafe fn subtract(row: *mut u32, edges: u32) -> u32 {
     if is_saturated(word) {
         return COUNT_MAX;
     }
+
+    debug_assert!(
+        count(word) >= edges,
+        "a subtraction below the count: the owner trace found more in-edges \
+         than the refcount holds"
+    );
 
     let left = count(word).saturating_sub(edges);
     let updated = compose(color(word), left);

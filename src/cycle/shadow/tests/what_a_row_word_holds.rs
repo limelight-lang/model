@@ -148,11 +148,11 @@ fn a_slot_costs_four_bytes_and_a_bit() {
     }
 }
 
-/// The mark's own operation, and the lower bound that keeps it from turning a
-/// potentially unreachable row into a live one. `count - 1` at zero wraps to
+/// The mark's own operation, within the count. `count - 1` at zero wraps to
 /// `u32::MAX`, which [`compose`] clamps to [`COUNT_MAX`] — the value the
 /// design reserves for "externally referenced, conservatively live" — so
-/// the subtraction has to stop at zero itself.
+/// the subtraction has to stop at zero itself, and a test build refuses to
+/// go below it ([`a_subtraction_below_the_count_fails_a_test_build`]).
 #[test]
 fn a_subtraction_stops_at_zero_and_keeps_the_colour() {
     let mut word = compose(Color::Unclassified, 3);
@@ -161,18 +161,13 @@ fn a_subtraction_stops_at_zero_and_keeps_the_colour() {
     assert_eq!(unsafe { subtract(row, 1) }, 2);
     assert_eq!(unsafe { subtract(row, 2) }, 0);
     assert_eq!(color(unsafe { *row }), Color::Unclassified);
-
-    // More in-edges than the refcount held, which a dirty pass may read
-    // and the exact test on the owner's thread is what corrects.
-    assert_eq!(unsafe { subtract(row, 1) }, 0, "the count stops at zero");
     assert_eq!(
         count(unsafe { *row }),
         0,
-        "and does not come back as a saturated count"
+        "a count that reaches zero does not come back as a saturated count"
     );
-    assert_eq!(color(unsafe { *row }), Color::Unclassified);
 
-    let mut unreachable_row = compose(Color::PotentiallyUnreachable, 0);
+    let mut unreachable_row = compose(Color::PotentiallyUnreachable, 7);
     let row = &raw mut unreachable_row;
     assert_eq!(unsafe { subtract(row, 7) }, 0);
     assert_eq!(
@@ -180,4 +175,20 @@ fn a_subtraction_stops_at_zero_and_keeps_the_colour() {
         Color::PotentiallyUnreachable,
         "a subtraction carries the color it found"
     );
+}
+
+/// More edges than the count holds is a defect of the in-line owner trace,
+/// which reads exact counts, and a test build fails on it rather than
+/// clamping (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 6). The test runs
+/// under `debug_assertions` alone: a `--release` test build carries no
+/// assertion, clamps, and would report the absence of a panic as a
+/// defect.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "a subtraction below the count")]
+fn a_subtraction_below_the_count_fails_a_test_build() {
+    let mut word = compose(Color::Unclassified, 1);
+    let row = &raw mut word;
+
+    unsafe { subtract(row, 2) };
 }
