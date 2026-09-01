@@ -80,7 +80,11 @@ the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
 than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
 
-Empty.
+- the glossary names no outcome for storage that stayed in its source block,
+  none for the journal's unobserved thread, none for `ResetWindow::escrow` and
+  none for the sweep-list sense of enrolment. S41.7 needs the first two, and
+  all four belong to `rfc` S9.1 (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Glossary
+  check").
 
 ---
 
@@ -114,18 +118,28 @@ synchronization and algorithm stay where they are, and a structural change the
 audit happens to name — `cycle::parking`'s `Box<Vec<_>>` is the one — belongs
 to the step that owns it.
 
-- [ ] S41.1 Decide: the mapping is synchronized with the RFC glossary
+- [x] S41.1 Decide: the mapping is synchronized with the RFC glossary
       done: every row of the audit's tables carries a verdict against
         `rfc/dev/GLOSSARY.md` — kept, amended to the glossary's word, or raised
         as a gap the glossary has to answer — and each verdict is recorded in
         the audit itself; a term the glossary does not cover is named rather
         than settled here
       tier: T2 · role: Sage
-      handoff: the glossary is built by the `rfc` plan and read by this step
-        rather than written. Three words are already known to be used as terms
-        with nothing defining them — `door`, `escrow` and `floor` — and
-        `ResetWindow::escrow` outside `cycle` names deferred count corrections
-        and takes a name of its own.
+      Sage 2026-09-01: five rows amended against the draft — `escrowed_count`
+        to the production `overflow_len`, the module `parking` to
+        `deferred_slot_reuse`, `TraceWindow` to `ActiveTrace` because
+        `TraceGuard` would collide with the canonical *guard reference*, the
+        `memory-manager door` bullet to the glossary's closed list, and
+        `group_is_met`'s reason to the row-initialization bitmap. Four
+        outcomes have no glossary entry and stay gaps for `rfc` S9.1. Applied
+        to both audits and verified against `src/` before recording. Final.
+      handoff: the ratified mapping is the tables of
+        `dev/CYCLE-TERMINOLOGY-AUDIT.md`, whose new "Glossary check" section
+        carries the amendments, the four gaps and two identifier groups no
+        table covered — the `colour` functions and the row-initialization
+        bitmap's accessors. `door`, `escrow` and `floor` are defined by the
+        glossary now, so the rename steps apply those entries rather than
+        wait for them.
 - [ ] S41.2 The retired-identifier test, seen failing first
       done: a source audit over `src/` fails on any identifier the ratified
         mapping retires, allowing a string that quotes a document heading
@@ -144,8 +158,8 @@ to the step that owns it.
 - [ ] S41.4 Row resolution, the trace scratch, mark, scan, the stack, deferred reuse and validation
       done: `row`, `arena`, `shadow`, `mark`, `scan`, `stack`, `parking` and
         `exact` carry the ratified names, module by module with a compile at
-        each boundary; `parking` becomes `deferred_reuse` and `exact` becomes
-        `validation`, and neither module changes what it does
+        each boundary; `parking` becomes `deferred_slot_reuse` and `exact`
+        becomes `validation`, and neither module changes what it does
       tier: T2 · role: Critic
 - [ ] S41.5 The tests and the current maps
       done: no test file name, test name, helper or assertion uses a retired
@@ -170,8 +184,9 @@ to the step that owns it.
         unobserved journal thread each carry a name of their own —
         `InsertOutcome`, `Placement`, `ExternalCarry`, `OutsideCarry` and the
         journal `Window` among them — and every `door` site is classified as
-        an allocation path, an entry point, a store-barrier form, a channel,
-        an ownership boundary or the named OS resource; the difference between
+        an allocation path, an entry point, a mailbox, a channel or a
+        store-barrier form, which is the glossary's closed list, with an OS
+        resource named exactly instead; the difference between
         a memory failure and a result a caller can act on survives every
         rename, which a test asserts rather than a reading
       tier: T2 · role: Critic

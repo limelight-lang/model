@@ -1,9 +1,10 @@
 # Cycle terminology audit
 
-Status: draft input to `rfc/dev/PLAN.md` S9.1. This document changes no code.
-It is not an implementation handoff until the RFC glossary is ratified and
-this mapping is synchronized with it. `rfc/dev/GLOSSARY.md` is authoritative;
-if it differs from this audit, the glossary wins.
+Status: synchronized with `rfc/dev/GLOSSARY.md` at `rfc` commit `0075ef3` on
+2026-09-01, under `model/PLAN.md` S41.1. The tables below state the ratified
+names, so a rename step reads them directly. This document changes no code.
+Ratifying `rfc/dev/PLAN.md` S9.1 stays with that repository; the glossary is
+authoritative here, and this mapping follows it if it moves again.
 
 Scope: `src/cycle`, its tests, direct callers, and active API maps. Historical
 records are out of scope.
@@ -21,6 +22,55 @@ records are out of scope.
    shadow-row word address it resolves to.
 5. Distinguish allocation failure from an algorithmic negative result.
 6. Follow the RFC's US spelling in new names and prose.
+
+## Glossary check, 2026-09-01
+
+Every row of every table below was ruled against the glossary at `rfc` commit
+`0075ef3`. A row the glossary confirms carries no mark, and the tables state
+the ratified name. Five rows were amended and the amendment is applied in
+place; four outcomes have no glossary entry and stay here as gaps for
+`rfc/dev/PLAN.md` S9.1.
+
+Amended against the draft:
+
+- `escrowed_count` takes `overflow_len`, the production name, rather than a
+  second noun for one count (writing rule 3).
+- the module `parking` becomes `deferred_slot_reuse`. The canonical term is
+  *deferred slot reuse*, and `deferred_reuse` drops the object that
+  `DEFERRED_SLOTS` and `deferred_slot_count` keep.
+- `TraceWindow` becomes `ActiveTrace`. `TraceGuard` collides with the
+  canonical *guard reference*, which the validation table spends on the `+1`
+  strong reference held during cycle finalization.
+- the `memory-manager door` bullet resolves to an allocation path or an entry
+  point. The glossary's *door* entry is a closed list — allocation path, entry
+  point, mailbox, channel, store-barrier form — and *ownership boundary* is
+  not on it.
+- `group_is_met` reads the *row-initialization bitmap*. "Visited bitmap" was a
+  third name for a structure the glossary already names.
+
+Gaps, for the glossary to answer rather than this audit:
+
+- a result whose storage stayed in its source block, `ExternalCarry::Refused`
+  and `OutsideCarry::Refused`. The glossary's *refusal* list covers a rejected
+  design, an allocation failure, an admission denial, an unsupported placement
+  and a capacity limit; this outcome is none of them.
+- the journal's unobserved-thread result, `Window::Refused`
+  (`src/journal/mod.rs`).
+- `ResetWindow::escrow` (`src/memory/reset_window.rs`), which names deferred
+  count corrections. *Escrow* is deprecated and its replacement, *overflow
+  buffer*, is false for this sense.
+- the prose sense of *enrolment* for attaching a block to the sweep list
+  (`src/cycle/arena.rs`). Its replacement, *candidate registration*, names a
+  different operation.
+
+Identifiers the glossary reaches that no table below covers, and which the
+rename steps carry anyway:
+
+- `shadow::colour`, `shadow::recolour` and `testing::row_colour`. The US
+  spelling rule reaches the functions, not only the type `Colour`.
+- the row-initialization bitmap's own accessors — `groups`, `group_bit` and
+  `group_bytes` in `shadow.rs` — and the phrase "met bitmap" in `arena.rs` and
+  in the mark tests.
 
 ## Proposed mapping
 
@@ -45,7 +95,7 @@ entries.
 | `escrow_entries` | `overflow_entries` | address of overflow storage |
 | `escrow` | `append_to_overflow` | names the mutation |
 | `drain_escrow` | `drain_overflow` | moves overflow entries into segments |
-| `escrowed_count` | test-only `overflow_count` | avoids a second noun for the same count |
+| `escrowed_count` | test-only `overflow_len` | the production name; one noun for one count |
 | `live` | `write_segment` | the append target, not a liveness state |
 | `filled` | `write_len` | initialized entries in `write_segment` |
 | `held` | `spare_count` | initialized entries in `spares` |
@@ -108,7 +158,7 @@ stop descent and treat the edge as an external live reference.
 | `Colour` | `Color` | RFC US spelling |
 | `Colour::Met` | `Color::Unclassified` | initialized working count before scan classification |
 | `meet_group` | `ensure_group_initialized` | zeroes a group on first visit |
-| `group_is_met` | `group_is_initialized` | reads the visited bitmap |
+| `group_is_met` | `group_is_initialized` | reads the row-initialization bitmap |
 
 Keep `Untouched`, `Live`, `shadow`, `row`, `working_count`, and `touched`.
 Replace `Condemned` under exact-validation terminology below.
@@ -146,12 +196,12 @@ and `reset`.
 ### Deferred slot reuse
 
 The RFC glossary rejects `parking` for this lifecycle operation. The module
-should be named `deferred_reuse`.
+takes the canonical term whole and is named `deferred_slot_reuse`.
 
 | Current | Proposed | Reason |
 | --- | --- | --- |
-| module `parking` | `deferred_reuse` | established lifecycle description |
-| `TraceWindow` | `TraceGuard` | RAII guard for trace state and delayed reuse |
+| module `parking` | `deferred_slot_reuse` | the glossary's *deferred slot reuse* |
+| `TraceWindow` | `ActiveTrace` | RAII holder of trace state and delayed reuse; *guard* is spent on guard references |
 | `ACTIVE` | `TRACE_ACTIVE` | state being tested |
 | `PARKED` | `DEFERRED_SLOTS` | delayed slot returns |
 | `park_if_active` | `defer_reuse_if_tracing` | observable operation and condition |
@@ -190,8 +240,8 @@ accounting; it has no per-role enum. Do not introduce or rename
 
 Rewrite its remaining metaphors contextually:
 
-- `memory-manager door` -> `memory-manager allocation path` or `GC metadata
-  ownership boundary`;
+- `memory-manager door` -> `memory-manager allocation path`, or
+  `memory-manager entry point` where the site is the return API;
 - `live position` -> `write position` when it names the queue segment;
 - `escrow landing` -> `overflow-buffer append`;
 - `floor control line` -> `queue-base control line`;
@@ -263,7 +313,8 @@ corrections, not queue overflow. It needs a separate glossary mapping such as
 
 ## Application order
 
-1. Ratify RFC S9.1 and synchronize this draft with the glossary.
+1. Done 2026-09-01: the mapping is synchronized with the glossary (above).
+   Ratifying `rfc/dev/PLAN.md` S9.1 stays with that repository.
 2. Add a source-audit test for retired identifiers, allowing exact historical
    citation strings.
 3. Apply queue and memory-manager terminology; run queue and accounting tests.

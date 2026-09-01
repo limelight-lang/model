@@ -4,6 +4,10 @@ Status: cross-repository audit and migration handoff, 2026-09-01. This report
 covers the model crate and the active RFC tree. The detailed `cycle` mapping is
 in `dev/CYCLE-TERMINOLOGY-AUDIT.md`.
 
+Checked against the glossary at `rfc` commit `0075ef3` on 2026-09-01, under
+`model/PLAN.md` S41.1; the amendments and gaps that check produced are in
+`dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Glossary check".
+
 Authority: `../rfc/dev/GLOSSARY.md`. Its canonical table governs new text;
 deprecated terms are migration input. Historical decisions, dated plan
 records, archived RFCs, and explicitly superseded analysis retain the words
@@ -25,14 +29,14 @@ Required contextual names include:
 | `InsertOutcome::RefusedForMemory` | `InsertOutcome::AllocationFailed` |
 | `InsertOutcome::RefusedByLadder` | `InsertOutcome::AdmissionDenied` |
 | `Placement::Refused` | `Placement::Unsupported` |
-| `ExternalCarry::Refused` / `OutsideCarry::Refused` | a result stating that storage remains in its source block |
-| `Window::Refused` | a journal-specific unavailable/unobserved-thread result |
+| `ExternalCarry::Refused` / `OutsideCarry::Refused` | gap: the glossary names no outcome for storage that stayed in its source block |
+| `Window::Refused` | gap: the glossary names no journal unobserved-thread outcome |
 
 `door` is similarly overloaded across allocation paths, ABI entry points,
 barriers, channels, and OS resources. Replace it only after classifying each
-site. The canonical alternatives are `allocation path`, `entry point`,
-`store-barrier form`, `channel`, `ownership boundary`, and the exact OS
-resource.
+site. The glossary's alternatives are `allocation path`, `entry point`,
+`mailbox`, `channel`, and `store-barrier form`. An OS resource is named
+exactly and is not a `door` replacement.
 
 ### 2. Candidate collection
 
@@ -47,9 +51,10 @@ quoted rulings and exact historical headings must remain searchable, while
 normative clauses and unresolved questions must use canonical terms. The file
 needs a section-aware S9.2 pass.
 
-The glossary's earlier candidate-age definition was factually wrong. Candidate
-age is not a count of epochs: it is the saturating component age assigned at a
-validation commit, scoped by a distinct epoch stamp.
+The glossary's candidate-age definition has been corrected and now reads as
+this audit requires: candidate age is the saturating component age assigned at
+a validation commit, scoped by a distinct epoch stamp, and not a count of
+epochs.
 
 ### 3. Lifecycle phases
 
@@ -93,7 +98,7 @@ code, and tests. Replace them with literal state and events:
 - equal-hash threshold;
 - salted rebuild;
 - keyed-hash escalation;
-- terminal admission denial / collision-limit error.
+- terminal admission denial.
 
 This migration must preserve the difference between allocation failure and a
 catchable denial of a new key.
