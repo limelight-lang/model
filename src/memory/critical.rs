@@ -2,7 +2,7 @@
 //! ordinary door has already refused.
 //!
 //! The protocol and who is entitled to it: `rfc/model/memory/`
-//! `critical-reserve.md`, "The two doors" and "The three customers". Why
+//! `critical-reserve.md`, "Allocation paths" and "Reserve users". Why
 //! it stands beside the log reserve rather than inside it:
 //! `rfc/runtime/exceptions.md`, "The reserve is three reserves, not one"
 //! — a consumer that shared a reserve with another would make each

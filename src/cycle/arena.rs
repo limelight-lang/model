@@ -3,7 +3,7 @@
 //!
 //! **Two doors, in this order: the ordinary block pool, then the
 //! thread's critical reserve** (`rfc/model/memory/critical-reserve.md`,
-//! "The three customers"). The in-line collection is the standard form
+//! "Reserve users"). The in-line collection is the standard form
 //! rather than the emergency one, so most runs begin with no refusal
 //! anywhere and a full trace's rows are far beyond any reserve; the
 //! critical door is the fallback, and on the pressure path of Y14 it is
