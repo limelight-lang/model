@@ -401,6 +401,19 @@ subject rather than the harness (`dev/POSTMORTEM.md`, 2026-09-01).
 Miri is the only tool that can see the formal-UB class of defect here;
 all of them pass a normal `cargo test`.
 
+**It runs at the close of a logical block, not at the close of a step**
+(Edmond, 2026-09-01). A block is the work a reader would name as one thing —
+a stage, or the group of slices that share a structure — and its run is
+targeted at the modules the whole block touched, named in the closing record.
+Steps inside the block are gated by the commands above and by their own tests.
+The reason is the clock: a slice costs ten minutes to an hour of a box that
+has no core to spare while it runs, and a per-step run spends that on the same
+code several times.
+
+**A change that adds no `unsafe` and no pointer arithmetic needs no run at
+all** — a rename, a comment pass, an edit confined to tests. S41 closed
+without one.
+
 ```
 MIRIFLAGS="-Zmiri-ignore-leaks" cargo +nightly miri test \
     --target x86_64-unknown-linux-gnu --lib -- --test-threads=2
@@ -421,10 +434,9 @@ failed, 1 ignored, 387 s on Miri's clock against 10 m 33 s of wall. The
 two-configuration figures of 2026-08-08 went with the configurations
 themselves. One test dominating
 a run has taken it from a quarter of an hour to 28 minutes on its own
-(`dev/POSTMORTEM.md`, 2026-08-08). A stage therefore closes on a targeted
-run over the modules it touched, and says which ones; whether a
-whole-suite run belongs at every stage or only before a release is
-Edmond's, and open.
+(`dev/POSTMORTEM.md`, 2026-08-08). That is the second reason the run is
+targeted at the modules a block touched rather than at the suite; whether a
+whole-suite run belongs before a release is Edmond's, and open.
 
 **Run it in slices.** `array::` alone is about an hour at two threads,
 which is longer than any foreground command should hold the box, and a

@@ -232,14 +232,17 @@ pub(crate) fn release_to_critical(block: *mut BlockHeader) {
     crate::memory::critical::give_back(block);
 }
 
-/// Lower the high-water figure to the current one.
+/// Lower both high-water figures to their current ones.
 ///
-/// Tests only, and the instrument an exact assertion needs: the high-water
+/// Tests only, and the instrument an exact assertion needs: a high-water
 /// figure is process-global and never falls, so a rise of a known size is
-/// otherwise absorbed by whatever an earlier test reached.
+/// otherwise absorbed by whatever an earlier test reached. Both axes, because
+/// an assertion over a whole [`GcMemoryStats`] is exact only when every field
+/// of it can move down.
 #[cfg(test)]
 pub(crate) fn lower_peak_to_current() {
     IN_USE_PEAK.store(IN_USE.load(Ordering::Relaxed), Ordering::Relaxed);
+    PEAK.store(CURRENT.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
 #[cfg(test)]

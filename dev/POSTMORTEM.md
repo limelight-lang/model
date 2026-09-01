@@ -7,6 +7,44 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-01 — `write_bytes` counts elements, and a typed pointer made the wrong count look right
+
+**What happened.** The weak table's fresh row array was zeroed with
+`std::ptr::write_bytes(rows_of(table), 0, capacity * size_of::<Row>())`. The
+pointer is `*mut Row` and `write_bytes` counts **elements**, so the call wrote
+`capacity * 16 * 16` bytes — sixteen times the chunk — over whatever followed
+it in the block and in the blocks after it. What that overwrote included the
+`kind` word of block headers the memory manager owned, so a block the GC
+ledger had stamped `BLOCK_KIND_GC_METADATA` read `BLOCK_KIND_FREE` at thread
+exit and `gc_metadata::release` aborted the process. The expression
+`capacity * size_of::<Row>()` is the right figure for a byte count and reads
+as one; against a typed pointer it is the count times the stride again.
+
+**How it was found, and how long the wrong tools took.** The first symptom was
+a test suite that aborted about one run in ten at four threads and never on a
+single test. Four black-box probes said nothing useful — removing the free,
+routing the payload through a different allocator, replaying the same buffer
+calls without the table, and running the load alone. What ended it in one step
+was a deterministic test of the table's own arithmetic over fabricated
+addresses, and then Miri over that one test: Miri named the line, the count and
+the two figures. **A structure with arithmetic of its own gets a test with no
+runtime under it, and that test comes before the integration.** The
+integration test can only report that something far away is broken.
+
+**Why nothing caught it earlier.** The suite is green on a single thread
+because the bytes past the chunk usually belong to nothing anyone reads back.
+Every assertion in the weak module's own tests passed while the write was
+corrupting other blocks: the table answered every lookup correctly, because
+the rows it overwrote were beyond the ones it used. A structure that writes
+outside itself and reads only inside itself is invisible to its own tests, and
+the instrument for that is Miri, which had not been run on the new code before
+the integration.
+
+**The rule.** `write_bytes`, `copy_nonoverlapping` and `copy` count elements of
+the pointee. When the intent is bytes, the pointer is cast to `*mut u8` at the
+call so that the count and the type agree in one place — and a new structure
+that computes its own offsets is run under Miri before it is wired to anything.
+
 ## 2026-09-01 — a repair moved ownership into a `Drop` and left the state that names it behind
 
 **What happened.** A Critic round found that `ActiveTrace::drop` released its

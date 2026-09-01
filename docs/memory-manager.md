@@ -719,7 +719,9 @@ decided from counts carried in the objects themselves.
 gave blocks back; since 2026-08-03 it first releases what the thread's
 *static blocks* held (`static_block.rs`), which is the only step that
 runs user code and therefore goes first, while every structure a
-`__destruct` may touch is still alive. Then the weak table, then the
+`__destruct` may touch is still alive. Then the weak table, whose rows are a
+long-lived buffer payload and, while they fit a chunk, have to go back before
+the arena that granted them, then the
 buffer arena, and only then the heaps — two steps shorter since
 2026-08-26, the candidate buffer and the parked-free backlog having gone
 with the collectors that owned them. The order is explicit because it cannot be delegated:

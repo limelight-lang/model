@@ -17,4 +17,6 @@ fn with_ctx<R>(f: impl FnOnce(*mut LLContext) -> R) -> R {
 mod a_cell_that_dies_before_its_target;
 mod across_the_arena_reset;
 mod the_cell_and_the_table_behind_it;
+mod the_rows_a_growth_and_a_removal_keep;
+mod what_the_weak_table_asks_the_allocator;
 mod when_the_notification_arrives;

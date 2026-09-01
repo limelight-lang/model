@@ -999,6 +999,63 @@ stage claiming the frees while building none of them.
         run void on its own A-A control (`dev/BENCHMARKS.md`). Three of
         S36.11's `done:` claims land here, and its clause names what is left
         to it. This does not close S36.9: weak and retained storage remain.
+      progress 2026-09-01 — S36.9d the weak table and the streaming drain: the
+        per-thread weak table leaves the global allocator for an open-addressed
+        table in one long-lived buffer payload — the mutator's storage class,
+        not `gc_metadata`'s, because the ledger counts what collection holds
+        and a thread that never collects fills this table. Sixteen-byte rows
+        carry the target and a tagged subscriber word, capacity is a power of
+        two at a load of one half, and every fallible step of
+        `ll_weakref_create` runs before it holds anything, so a refusal answers
+        null. `drain_arena_weak_log` notifies inside the drain's own walk
+        instead of collecting into a `Vec`. Measured on the day: the first
+        create made 2 global allocations and now makes 0, 200 creates across
+        three growths made 8 and now make 0, the reset's weak walk made 2 above
+        its control arm and now makes none, `.tbss` 464 bytes to 472 with the
+        crate's thread-local set unchanged. `weak::` under Miri went 7 tests to
+        19 with 0 failed, measured before the second Critic round's repairs:
+        from 2026-09-01 Miri runs at the close of a logical block rather than
+        of a step (Edmond; `dev/WORKFLOW.md`), so the run that covers this
+        tree is S36.9's and is owed there over `weak`, `cycle` and `memory`. This does not close S36.9: retained storage remains, and
+        the composite deny run over a wired collection waits for S36.7.
+      Sage 2026-09-01 (slice d gate): the buffer layer is the consumer and
+        `gc_metadata` is refused, the block kind being the answer to whose
+        memory a block is; `array::table`, a cell pointer in the object header
+        and a slot-indexed side array are refused with reasons; null at the ABI
+        entry is the refusal answer, since `create` has a caller who can
+        decline; the ledger gains no site and no residue; the deny gate is
+        module-level zero and may not claim the collection-run leg; and no
+        timed run is taken, this box's control having been void today. Taken
+        whole, including the initial 64 rows and the half load.
+      Critic 2026-09-01 round 1 (slice d): nineteen findings, none of them in
+        the table's arithmetic, which the Critic put through a fuzz of its own
+        against a model in its scratch directory — an instrument of that review
+        and not of this repository. The load-bearing ones: neither the
+        growth's nor the disposal's return of the payload was constrained by
+        any test, and Miri cannot see it because the chunk is pool memory
+        rather than the global allocator; the ledger test compared against a
+        process-global high-water figure it had not lowered, so a charge would
+        have passed it; the growth probe never asserted that a growth happened
+        and counted its own `collect` inside the window; and the streaming
+        drain's stated reason — "runs no user code" — is weaker than the
+        condition it needs, which is that the callback may not reach the
+        `Arena` at all while the walk holds `&mut` on it. All taken. Not a
+        defect: `find`'s tag mask is behaviourally dead while the only tag is
+        zero.
+      Critic 2026-09-01 round 2 (slice d): fifteen findings, five of them in
+        round 1's own repairs. The ledger test lowered one high-water figure of
+        two, so a table drawn through `gc_metadata` would still have passed it
+        — the test-only door lowers both axes now; the growth assertion could
+        not fail, and pins the capacity three growths reach instead; the
+        `drain_weak_log` doc gained a second summary and an order the log does
+        not have, newest segment first being the chain's; and "the refusal is
+        taken before anything is built" is false of the cell's refusal after a
+        growth has already taken hold, which the prose now states. Also taken:
+        the payload-return tests held the address and not the size the free
+        recorded, which a second request at twice the size now pins; the
+        OS-direct boundary was asserted against a copy of the arithmetic; and
+        `chunk_from_the_free_list` restored the pressure mode it found rather
+        than `Plenty`. The device stops at two rounds.
       Sage 2026-09-01 (slice c gate): the records live in a chain of manager
         blocks of their own, drawn at the open rather than at the first
         withheld return, because a refusal is answerable only before a slot is

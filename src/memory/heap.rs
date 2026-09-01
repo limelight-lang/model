@@ -1636,7 +1636,9 @@ pub extern "C" fn ll_thread_exit() {
 
     // 3. The weak table, after every death that could still need a row.
     //    `weak.rs` pinned this position against the day static-block
-    //    teardown existed; this is that day.
+    //    teardown existed; this is that day. It also cannot follow step 4: a
+    //    pooled table's rows are a chunk of that arena, and the free would
+    //    reach an arena already disposed of.
     crate::weak::dispose();
 
     // 4. The buffer arena last of the disposals, because every step above can

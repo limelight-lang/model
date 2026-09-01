@@ -10,17 +10,15 @@
 //! Knowledge split: this module owns the cell, the table, and every
 //! notification rule; teardown paths (`object::ll_default_dispose`, the
 //! cycle collectors, arena reset) own only *when* to call in, gated by
-//! [`HAS_WEAK_REFERENCES`]. A plain `HashMap` under no lock is sound
-//! because every notification site runs on the owning thread — teardown,
-//! the drain in the mutator's checkpoint, arena reset — and the collector
-//! thread never touches it.
+//! [`HAS_WEAK_REFERENCES`]. The table takes no lock because every
+//! notification site runs on the owning thread — teardown, the drain in the
+//! mutator's checkpoint, arena reset — and the collector thread never touches
+//! it.
 //!
-//! The row is a single canonical-cell pointer today; it widens to the
-//! design's tagged subscriber list when `WeakMap` lands and maps start
-//! subscribing (`rfc/model/weak-references.md`, "The weak table: address
-//! → subscriber row").
+//! Where the table's memory comes from, what a row holds and where a refused
+//! growth is answered belong to the private `table` submodule.
 
-use std::collections::HashMap;
+mod table;
 
 use crate::journal::kinds::journal_event;
 use crate::memory::context::{LLContext, resolve_arena};
@@ -41,27 +39,6 @@ pub struct LLWeakRef {
     pub target: *mut RcHeader,
 }
 
-thread_local! {
-    /// The weak table: target address → its canonical cell. Row exists
-    /// iff the target's `HAS_WEAK_REFERENCES` is set iff a cell is live
-    /// for it.
-    ///
-    /// Discarded at thread exit without notification — the thread's
-    /// entities die with its heap, and nothing outlives them to read a
-    /// cell (cross-thread movement is reserved). The disposal comes after
-    /// the static-block teardown — the one step of `ll_thread_exit` that
-    /// runs user code, so the only one that can still deliver a
-    /// notification — and before the buffer arena and the heaps
-    /// (`heap::ll_thread_exit` fixes the order).
-    ///
-    /// A `Cell<*mut _>` with no drop glue, freed by [`dispose`]
-    /// (`dev/DECISIONS.md`, "thread exit owns the order its per-thread
-    /// state dies in"). Its initializer is `const`, so a lazily
-    /// initialized key cannot be first-initialized mid-destruction.
-    static WEAK_TABLE: std::cell::Cell<*mut HashMap<usize, *mut LLWeakRef>> =
-        const { std::cell::Cell::new(std::ptr::null_mut()) };
-}
-
 /// Which entity kinds PHP admits as the referent of a `WeakReference`.
 ///
 /// It answers for the same kinds as `refcount::carries_a_class_word`
@@ -77,35 +54,30 @@ fn may_be_a_weak_referent(flags: u32) -> bool {
     crate::refcount::carries_a_class_word(flags)
 }
 
-/// This thread's weak table, allocated on first use.
-fn weak_table() -> *mut HashMap<usize, *mut LLWeakRef> {
-    WEAK_TABLE.with(|cell| {
-        let mut table = cell.get();
-        if table.is_null() {
-            table = Box::into_raw(Box::new(HashMap::new()));
-            cell.set(table);
-        }
-
-        table
-    })
-}
-
-/// Give this thread's weak table back at thread exit, after every death
-/// that could still need a row (see the `WEAK_TABLE` doc).
+/// Give this thread's weak table back at thread exit, after every death that
+/// could still need a row.
 ///
-/// No notification: the rows that remain name targets that are dying
-/// with this thread's heap, and nothing outlives them to read a cell.
+/// No notification: the rows that remain name targets that are dying with this
+/// thread's heap, and nothing outlives them to read a cell (cross-thread
+/// movement is reserved). The call comes after the static-block teardown — the
+/// one step of `ll_thread_exit` that runs user code, so the only one that can
+/// still deliver a notification — and before the buffer arena, which a table
+/// small enough to be a chunk of it has to reach while it is still mounted
+/// (`heap::ll_thread_exit` fixes the order).
 ///
 /// Null-tolerant and idempotent.
 pub(crate) fn dispose() {
-    let table = WEAK_TABLE.with(|cell| cell.replace(std::ptr::null_mut()));
-    if !table.is_null() {
-        unsafe { drop(Box::from_raw(table)) };
-    }
+    table::dispose();
 }
 
 /// `WeakReference::create(target)`: return the canonical cell, creating
 /// it on first use. The returned reference is retained for the caller.
+///
+/// **Null when memory refuses**, which is this entry point's out-of-memory
+/// answer and costs the caller nothing to act on: the target keeps its flags,
+/// the arena's weak log keeps its entries, and the table keeps every row it
+/// held. A refusal of the cell after the table has already grown leaves the
+/// larger table standing, which changes nothing a caller can read.
 ///
 /// The cell is **always GC-heap memory**, wherever the target lives and
 /// whichever arena is ambient: its refcount only counts in that
@@ -134,18 +106,25 @@ pub unsafe extern "C" fn ll_weakref_create(
     );
 
     if flags & HAS_WEAK_REFERENCES != 0 {
-        let cell = unsafe { (*weak_table()).get(&(target as usize)).copied() };
+        let cell = unsafe { table::find(table::current(), target as usize) };
         // Bit set ⇔ row exists, on this thread; a miss would mean the
         // invariant broke somewhere else. Recover by rebuilding in
         // release rather than handing out a null.
         debug_assert!(
-            cell.is_some(),
+            !cell.is_null(),
             "HAS_WEAK_REFERENCES set with no weak-table row"
         );
-        if let Some(cell) = cell {
+        if !cell.is_null() {
             unsafe { ll_retain(cell as *mut RcHeader) };
             return cell;
         }
+    }
+
+    // Every refusal this call can meet is taken here, before it holds
+    // anything: the table's own growth first, the cell second. Past this point
+    // the row's insert cannot fail.
+    if table::ensure_room_for_one_more().is_null() {
+        return std::ptr::null_mut();
     }
 
     let mem = unsafe { crate::memory::heap::entity_alloc(size_of::<LLWeakRef>()) };
@@ -162,7 +141,7 @@ pub unsafe extern "C" fn ll_weakref_create(
         );
     }
 
-    unsafe { (*weak_table()).insert(target as usize, cell) };
+    unsafe { table::insert(target as usize, cell) };
     unsafe { update_header_flags(target, |f| f | HAS_WEAK_REFERENCES) };
     if MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena {
         unsafe { (*resolve_arena(ctx)).log_weak(target) };
@@ -196,12 +175,12 @@ pub unsafe extern "C" fn ll_weakref_get(cell: *mut LLWeakRef) -> *mut RcHeader {
 /// `target` must be a live entity on its owning thread, with
 /// `HAS_WEAK_REFERENCES` set.
 pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
-    let cell = unsafe { (*weak_table()).remove(&(target as usize)) };
+    let cell = unsafe { table::remove(table::current(), target as usize) };
     debug_assert!(
-        cell.is_some(),
+        !cell.is_null(),
         "HAS_WEAK_REFERENCES set with no weak-table row"
     );
-    if let Some(cell) = cell {
+    if !cell.is_null() {
         unsafe { (*cell).target = std::ptr::null_mut() };
     }
 
@@ -247,8 +226,8 @@ pub(crate) unsafe fn weakref_die(cell: *mut LLWeakRef) {
     );
     let target = unsafe { (*cell).target };
     if !target.is_null() {
-        let removed = unsafe { (*weak_table()).remove(&(target as usize)) };
-        debug_assert_eq!(removed, Some(cell), "the weak table row must be this cell");
+        let removed = unsafe { table::remove(table::current(), target as usize) };
+        debug_assert_eq!(removed, cell, "the weak table row must be this cell");
         unsafe { update_header_flags(target, |f| f & !HAS_WEAK_REFERENCES) };
     }
 
@@ -272,19 +251,26 @@ pub(crate) unsafe fn weakref_die(cell: *mut LLWeakRef) {
 /// died and was re-created leaves duplicates, deduplicated by
 /// `HAS_WEAK_REFERENCES` going clear on the first notify.
 ///
+/// **The notification runs inside the drain's own walk**, so it may not reach
+/// the `Arena` at all — not a log, not a field, not a read. `drain_weak_log`
+/// holds `&mut` on the arena for the whole walk and `reset_with` holds a
+/// second above it, so a callback that resolved the ambient arena would alias
+/// them. What it does touch is the entity's header, which is memory the arena
+/// holds rather than the structure that describes it.
+///
 /// # Safety
 /// `arena` must be mid-reset on its owning thread, destructors settled.
 pub(crate) unsafe fn drain_arena_weak_log(arena: *mut crate::memory::arena::Arena) {
-    let mut entries = Vec::new();
-    unsafe { (*arena).drain_weak_log(|e| entries.push(e)) };
-    for target in entries {
-        let flags = unsafe { mutator_flags(target) };
-        if MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena
-            && flags & HAS_WEAK_REFERENCES != 0
-        {
-            unsafe { notify_death(target) };
-        }
-    }
+    unsafe {
+        (*arena).drain_weak_log(|target| {
+            let flags = mutator_flags(target);
+            if MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena
+                && flags & HAS_WEAK_REFERENCES != 0
+            {
+                notify_death(target);
+            }
+        })
+    };
 }
 
 #[cfg(test)]

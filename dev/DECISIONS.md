@@ -8,6 +8,58 @@ never edited or deleted.
 
 ---
 
+## 2026-09-01 — the weak table is the mutator's memory, and it comes from the buffer layer
+
+Owner: S36.9 slice d, ruled by the Sage gate before the first edit.
+
+**Decided:** the per-thread weak table becomes an open-addressed table in one
+contiguous long-lived buffer payload — `buffer_alloc_longlived_payload` and its
+inverse, the storage class an array's table already uses. Its header sits at
+the payload's start and thread-local storage keeps one non-owning pointer to
+it. A row is sixteen bytes: the target's address, and one subscriber word
+tagged in the four low bits an entity slot leaves free. Capacity is a power of
+two of rows, starts at 64 and doubles, and the table holds at most half its
+rows, which is what makes a linear probe terminate.
+
+**Why the buffer layer and not `gc_metadata`:** the block kind answers whose
+memory a block is, and the logical ledger answers how much memory *collection*
+holds (decision of the same date). The weak table is the mutator's
+death-notification machinery — a thread that never runs a collection fills it,
+and S36.3 will have collection read it without owning it. Stamping it GC
+metadata would report mutator memory as collection's holding and falsify
+`stats()` for every reader. So slice d adds no charge site and no residue, and
+two tests assert that no figure of the ledger moves — one over create, growth,
+death and disposal, one over an arena reset's weak walk — each against a
+snapshot the high-water door has lowered to the current figure.
+
+**The refusal is answered at the ABI entry.** Every fallible step of
+`ll_weakref_create` happens before it holds anything: the table's creation or
+growth first, the cell second, and then an insert that cannot fail. A refusal
+of either answers null, which is what that entry point already answers for out
+of memory. The gate bit, the arena's weak log and the table are all written
+after the refusal point, so none of them is reached; the tests hold the gate
+bit and the table, and the weak log is structural — a refused create returns
+before `log_weak`. Removal allocates nothing, so the death path is structurally
+incapable of failing rather than promising not to — which is why the process
+abort slice c spends on a refused growth is not spent here: `create` has a
+caller who can decline and `ll_free` does not.
+
+**Refused, with reasons.** `array::table` reused: its rows carry values, string
+keys and insertion order, and its removal relocates another entry, which drags
+the collision-defense state onto the sever-to-free path. A cell pointer in the
+object header: eight bytes on every object for a minority feature, which the
+RFC already rejected. A side array indexed by slot: eight shadow bytes per
+sixteen-byte slot, and rows that outlive slot reuse. Leaving the `HashMap` and
+proving it off the collection path: it allocates through the global allocator,
+and ownership is the question this step asks.
+
+**The arena's weak drain streams.** `drain_arena_weak_log` notifies inside the
+callback rather than collecting first. Nothing depended on the two phases: the
+log's head is detached before the walk, and the notification reaches no field
+of the `Arena` and no log of it — the entity header it writes is memory the
+arena holds rather than the structure that describes it. The collect-first pattern stays
+where it is load-bearing, in `promote`, whose drains re-enter the arena.
+
 ## 2026-09-01 — the trace's withheld returns are manager memory, drawn where a refusal can still be answered
 
 Owner: S36.9 slice c, ruled by the Sage gate before the first edit.

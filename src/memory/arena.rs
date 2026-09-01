@@ -397,6 +397,15 @@ impl Arena {
 
     /// One-shot drain of the weak log (same take semantics): yields each
     /// recorded weakly-referenced arena entity.
+    /// The head is detached before the first call, so a `log_weak` from inside
+    /// `f` starts a fresh chain this drain will not walk. The order is the
+    /// chain's: newest segment first, and within a segment the order the
+    /// records were written.
+    ///
+    /// **`f` may not reach this arena at all**: the walk holds `&mut self`
+    /// throughout, and a caller that resolved the ambient arena inside the
+    /// callback would alias it (`crate::weak::drain_arena_weak_log` is the one
+    /// caller and says so).
     pub fn drain_weak_log(&mut self, mut f: impl FnMut(*mut RcHeader)) {
         let head = self.weak;
         self.weak = std::ptr::null_mut();

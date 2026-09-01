@@ -449,12 +449,18 @@ versions live in `docs/history/`, marked at the top.
   (`dev/DECISIONS.md`, "a class with cells outside itself carries one flag
   and one group of five" and "the arena carry is the group's sixth
   member, and a refusal answers the bytes it left behind").
-- Weak references: `src/weak.rs` — the kind-11 weak cell, the per-thread
-  weak table, death notification (`notify_death` / `notify_members` /
-  `drain_arena_weak_log`) and the `ll_weakref_create` / `ll_weakref_get`
-  ABI. Notification sites live in `object.rs` (dispose phase 2, first
-  act) and in arena reset; `notify_members` is the cycle teardown's and
-  has no caller until S36.3. Design: `rfc/model/weak-references.md`.
+- Weak references: `src/weak.rs` — the kind-11 weak cell, death
+  notification (`notify_death` / `notify_members` / `drain_arena_weak_log`)
+  and the `ll_weakref_create` / `ll_weakref_get` ABI. Notification sites
+  live in `object.rs` (dispose phase 2, first act) and in arena reset;
+  `notify_members` is the cycle teardown's and has no caller until S36.3.
+  Design: `rfc/model/weak-references.md`, whose "The weak table: address →
+  subscriber row" still writes the table as a `HashMap`.
+- The weak table itself: `src/weak/table.rs` — target address → subscriber
+  row, open-addressed in one long-lived buffer payload, capacity a power of
+  two at a load of one half, and a refusal answered at
+  `ll_weakref_create` (`dev/DECISIONS.md`, "the weak table is the mutator's
+  memory, and it comes from the buffer layer").
 - C ABI surface: `src/memory/context.rs` (arena + context),
   `src/object.rs` (`ll_object_new` factory, `ll_object_new_in` —
   construct into a reserved cell, `ll_object_constructed` —

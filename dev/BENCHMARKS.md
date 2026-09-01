@@ -100,6 +100,43 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-01 — S36.9d the weak table leaves the global allocator: `.tbss` 464 to 472 bytes
+
+**Machine:** dev box, shared with interactive work. **Base:** `8ccf426`,
+`rustc 1.96.0`.
+
+**What changed:** the per-thread weak table moved from a `Box<HashMap<_, _>>`
+to an open-addressed table in one long-lived buffer payload, and the arena's
+weak-log drain stopped collecting into a `Vec`.
+
+### Counters
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| global allocations, first `WeakReference::create` | 2 | 0 | `test_support::allocation_probe`, the thread's buffer arena warmed outside the window |
+| global allocations, 200 creates across three growths (64 rows to 512) | 8 | 0 | the same probe, its own buffer taken outside the window |
+| global allocations, an arena reset draining eight weak-log entries | 2 above its control | 0 above its control | the same probe, against a control arm resetting the same objects with no weak reference taken |
+| global allocations, a death notification | 0 | 0 | already zero: `HashMap::remove` allocates nothing |
+| `.tbss` | 464 | 472 | `readelf -SW` on the test binary, own target directory |
+| `weak::` under Miri | 7 passed / 0 failed, 10.10 s | 19 passed / 0 failed, 41.02 s | two threads, `-Zmiri-ignore-leaks`; the population grew by the twelve tests this slice added. **Taken before the second Critic round's repairs**, which changed four test bodies and the ledger's test-only door; the run that covers the tree as it stands belongs to S36.9's close, which is where Miri runs from 2026-09-01 (`dev/WORKFLOW.md`) |
+
+Every "before" figure was seen red on `8ccf426`. The four allocation counts
+were measured with the bodies that became these tests; the tests written after
+them read the table's own accessors and cannot be compiled against that tree.
+
+**`.tbss` rose by eight bytes and the crate's thread-locals did not change** —
+the same declaration, the same name, the same `Cell<*mut _>` type, one module
+further down. This is the second such reading in one day: the S36.9b entry
+records 472 bytes at `02373e8`, and today's tree measured 480 before slice c
+touched it. The instrument resolves the axis it is used for — a thread-local
+added or removed — and does not resolve eight bytes. Quoted as measured, with
+no cause claimed.
+
+**No timed run.** The Sage gate declined one: no benchmark exercises create,
+death or drain, the paths are cold, and this box's `lifecycle` A-A control was
+void today at about 3 % drift. A timed weak-create figure needs a bench of its
+own on a quiet box, and it is not this slice's.
+
 ## 2026-09-01 — S36.9c the withheld returns leave the global allocator: `.tbss` 480 to 464 bytes, and a void timed run
 
 **Machine:** dev box, shared with interactive work. **Base:** `23362d4`,

@@ -29,9 +29,10 @@ pub(crate) fn chunk_from_the_free_list(capacity: usize) -> *mut u8 {
     use crate::memory::buffer::{PressureMode, set_pressure_mode};
     use crate::memory::buffer_arena::with_buffer_arena;
 
+    let restore = crate::memory::buffer::pressure_mode();
     set_pressure_mode(PressureMode::Critical);
     let (chunk, granted) = with_buffer_arena(|arena| arena.alloc(capacity));
-    set_pressure_mode(PressureMode::Plenty);
+    set_pressure_mode(restore);
     with_buffer_arena(|arena| unsafe { arena.free(chunk, granted) });
     chunk
 }
