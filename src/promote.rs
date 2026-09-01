@@ -534,7 +534,7 @@ fn index_retained_blocks(by_block: HashMap<usize, Vec<usize>>) -> Vec<usize> {
 }
 
 /// True for a survivor that occupies a block-aligned allocation alone
-/// (`memory::large_entity`), which the arena's entity door gives an
+/// (`memory::large_entity`), which the arena's entity entry point gives an
 /// entity past one block payload. Such a block is not shared with
 /// anything, so the reset neither retains nor indexes it; the block kind
 /// is the whole of the test, because a large-entity kind is only ever

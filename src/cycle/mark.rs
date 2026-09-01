@@ -55,7 +55,7 @@ pub(crate) enum MarkResult {
     /// the GC heap has been met, and every internal edge the trace found
     /// has been subtracted from the row it points at.
     Complete,
-    /// Both memory doors refused, so the collection aborts. The heap is
+    /// Both allocation paths refused, so the collection aborts. The heap is
     /// byte-identical and the arena's reset is the whole of the debt.
     AllocationFailed,
 }
@@ -122,7 +122,7 @@ pub(crate) unsafe fn mark(
 }
 
 /// Meet the root's own row and queue it for expansion. False when both
-/// memory doors refused.
+/// allocation paths refused.
 ///
 /// **The root takes no subtraction.** The row starts at the entity's
 /// refcount and the trace subtracts the edges it finds; the queue entry
@@ -160,7 +160,7 @@ unsafe fn schedule_root_if_unvisited(
 
 /// Take one out-edge of an entity being expanded: subtract it from the
 /// child's working count, and queue the child when this collection has
-/// not seen it before. False when both memory doors refused.
+/// not seen it before. False when both allocation paths refused.
 ///
 /// An edge the row dispatch cannot place — a child outside the GC heap, or a
 /// retained block whose object index does not name it — is counted as an

@@ -81,13 +81,13 @@ unsafe fn block_kind_of(entity: *mut u8) -> u32 {
     unsafe { *block }
 }
 
-/// The arena bump-packs up to a block payload and takes a run of its
-/// own past it, through `Arena::alloc_entity`. `Arena::alloc` keeps
-/// refusing that size and is pinned doing so by
-/// `arena::tests::what_the_arena_refuses::absurd_size_is_refused_instead_of_wrapping`: it
-/// serves `ll_arena_alloc` from the C ABI, where an entity and a byte
-/// buffer are the same request, so the split has to be made by a door
-/// that knows which one it is holding.
+/// The arena bump-packs up to a block payload and takes a run of its own past
+/// it, through `Arena::alloc_entity`. `Arena::alloc` keeps refusing that size
+/// and is pinned doing so by
+/// `arena::tests::what_the_arena_refuses::absurd_size_is_refused_instead_of_wrapping`:
+/// it serves `ll_arena_alloc` from the C ABI, where an entity and a byte buffer
+/// are the same request, so the split has to be made by an entry point that
+/// knows which one it is holding.
 #[test]
 fn a_request_arena_entity_past_one_block_payload_takes_a_run_of_its_own() {
     let _g = test_guard();

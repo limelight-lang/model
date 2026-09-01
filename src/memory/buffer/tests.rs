@@ -7,4 +7,4 @@ fn arena() -> Arena {
 mod allocation_and_refusal;
 mod how_a_growth_finds_its_room;
 mod past_one_block;
-mod the_abi_door;
+mod the_abi_entry_point;

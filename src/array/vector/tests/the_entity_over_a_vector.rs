@@ -1,5 +1,5 @@
 //! An array whose storage is a vector is walked, severed and torn down
-//! through the same doors the ordered hash uses: one tracing stride
+//! through the same entry points the ordered hash uses: one tracing stride
 //! dispatching on the tag, one sever, one teardown. The children are
 //! elements alone — a vector keys on the position, so there is no string
 //! key beside them to count.
@@ -117,7 +117,7 @@ fn teardown_releases_the_elements_and_frees_the_storage() {
 
 /// The carry out of a dying arena reaches the vector's own chunk.
 ///
-/// This is the door the tag has to be read at, and the one that had no
+/// This is the entry point the tag has to be read at, and the one that had no
 /// reader for it: the carry used to name the ordered hash outright, so
 /// a surviving vector array had its `cap` read as a granted byte size
 /// and its uninitialised tail read as a table.

@@ -1,16 +1,16 @@
-//! One body serves both doors with the destination category
-//! supplying the depth: a shared array hands back a different array
-//! with the same order and the children shared, while an arena array
-//! taken by a longer-lived holder is copied out and its arena COW
-//! children with it. The replay copies live entries only, so the
-//! append cursor is carried rather than derived — a hole under the
-//! highest key spent leaves no witness in the copy.
+//! One body serves both entry points, `ll_cow_separate` and the escape copy,
+//! with the destination category supplying the depth: a shared array hands back
+//! a different array with the same order and the children shared, while an
+//! arena array taken by a longer-lived holder is copied out and its arena COW
+//! children with it. The replay copies live entries only, so the append cursor
+//! is carried rather than derived — a hole under the highest key spent leaves
+//! no witness in the copy.
 
 use super::*;
 
-/// The COW door. A shared array asked to separate must hand back a
-/// **different** array; returning the original is a write into a value
-/// two holders share, which in release happens with no signal at all.
+/// The separation entry point. A shared array asked to separate must hand back
+/// a **different** array; returning the original is a write into a value two
+/// holders share, which in release happens with no signal at all.
 #[test]
 fn a_shared_array_separates_into_a_copy_of_its_own() {
     let _g = crate::memory::block_pool::test_guard();
@@ -195,9 +195,9 @@ fn separation_carries_holes_away_rather_than_copying_them() {
     }
 }
 
-/// The escape door. An arena array taken by a longer-lived holder is
-/// copied out, and its arena COW children are copied with it — a hold
-/// on arena memory in a heap slot dangles at the reset.
+/// The escape-copy entry point. An arena array taken by a longer-lived holder
+/// is copied out, and its arena COW children are copied with it — a hold on
+/// arena memory in a heap slot dangles at the reset.
 #[test]
 fn an_arena_array_taken_by_a_heap_holder_is_copied_out_with_its_children() {
     let _g = crate::memory::block_pool::test_guard();
@@ -523,7 +523,7 @@ fn a_duplicated_vector_collapses_the_box_its_entry_alone_names() {
     }
 }
 
-/// The deep door over a vector: an arena vector taken by a heap holder is
+/// The escape copy over a vector: an arena vector taken by a heap holder is
 /// copied out, and the nested arena vector inside it is copied in turn
 /// through the work list rather than shared.
 #[test]

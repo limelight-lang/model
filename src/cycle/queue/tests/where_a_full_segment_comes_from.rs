@@ -129,16 +129,16 @@ fn a_growth_with_no_spare_draws_the_reserve_and_arms_the_poll() {
     reset();
 }
 
-/// Every door refused: the entry lands in the overflow buffer rather than
-/// nowhere, the bit stays down where it was put, and the poll is armed.
+/// Every allocation path refused: the entry lands in the overflow buffer rather
+/// than nowhere, the bit stays down where it was put, and the poll is armed.
 ///
-/// **The registration's doors are the spare cells and the critical reserve,
-/// and nothing here closes the pool**, deliberately.
-/// `block_pool::FORCE_OOM` would refuse before the request is even
-/// counted, so a growth that grew a "then ask the pool" fallback — the
-/// regression that would break clause 3 — would look identical. Emptying
-/// the cells and the reserve by hand leaves the pool open, and the pool
-/// counter below is what sees the fallback appear.
+/// **The registration's allocation paths are the spare cells and the critical
+/// reserve, and nothing here closes the pool**, deliberately.
+/// `block_pool::FORCE_OOM` would refuse before the request is even counted, so
+/// a growth that grew a "then ask the pool" fallback — the regression that
+/// would break clause 3 — would look identical. Emptying the cells and the
+/// reserve by hand leaves the pool open, and the pool counter below is what
+/// sees the fallback appear.
 #[test]
 fn every_allocation_path_refused_puts_the_entry_in_the_overflow_buffer() {
     let _g = test_guard();
@@ -206,8 +206,8 @@ fn the_poll_drains_the_overflow_buffer_into_the_queue() {
     reset();
 }
 
-/// A drain with no room puts nothing back and loses nothing: the poll
-/// that finds every door still spent leaves the entries where they are
+/// A drain with no room puts nothing back and loses nothing: the poll that
+/// finds every allocation path still spent leaves the entries where they are
 /// for the collection it is about to run.
 #[test]
 fn a_drain_with_no_room_leaves_the_overflow_buffer_alone() {

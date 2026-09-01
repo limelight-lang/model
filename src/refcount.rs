@@ -275,7 +275,7 @@ impl EntityKind {
     #[inline]
     pub const fn to_flags(self) -> u32 {
         // Every entity's flags word passes here at birth, which makes it
-        // the one door that can catch a kind classified on one side of
+        // the one site that can catch a kind classified on one side of
         // the reserve and coded on the other. The `const` battery below
         // catches the same thing earlier for every kind it names; this
         // catches a kind the battery was not extended to.

@@ -1,4 +1,4 @@
-//! Refusal is reported as null on every door. The two bands are
+//! Refusal is reported as null at every entry point. The two bands are
 //! different defects: a near-`usize::MAX` size would wrap to a tiny
 //! run and under-allocate, while anything past `isize::MAX` is
 //! refused by `Layout` and used to abort the process.
@@ -29,12 +29,12 @@ fn a_size_past_isize_max_returns_null_rather_than_aborting() {
     unsafe {
         assert!(ll_alloc(0x8000_0000_0000_0000, 16).is_null());
         assert!(ll_alloc(isize::MAX as usize, 16).is_null());
-        // The ABI door as well, which is where the abort would have
+        // `ll_malloc` as well, which is where the abort would have
         // happened: `ll_alloc` panics into its Rust caller, while
         // `ll_malloc` is `extern "C"` and cannot unwind out.
         assert!(ll_malloc(0x8000_0000_0000_0000).is_null());
 
-        // And the growth door, which reaches the same call through
+        // And `ll_realloc`, which reaches the same call through
         // `ll_alloc`. A refused growth keeps the original.
         let live = ll_alloc(64, 16);
         assert!(!live.is_null());

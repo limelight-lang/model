@@ -111,8 +111,8 @@ fn a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring() {
 /// silence is already reported for the whole of its life by
 /// [`Window::Refused`], and counting every record it goes on to raise
 /// would mark every window it runs through as having lost something —
-/// the degradation the per-window difference exists to avoid, through
-/// a second door.
+/// the degradation the per-window difference exists to avoid, by a
+/// second route.
 #[test]
 fn a_refused_threads_later_records_are_not_counted_as_losses() {
     let _quiet = kinds::disable_sites_for_test();

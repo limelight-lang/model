@@ -287,11 +287,11 @@ pub unsafe fn ll_free(ptr: *mut u8) {
             "entity freed at a live refcount {refcount} at {:#x}",
             ptr as usize
         );
-        // The same shape one field up: the cycle collector's candidate
-        // buffer holds raw pointers, so a slot that reaches the free
-        // list still claiming a place in it leaves a root aimed at
-        // memory about to be handed out again. Every teardown door has
-        // to clear it; this is where a door that forgot to says so.
+        // The same shape one field up: the cycle collector's candidate buffer
+        // holds raw pointers, so a slot that reaches the free list still
+        // claiming a place in it leaves a root aimed at memory about to be
+        // handed out again. Every teardown entry point has to clear it; this is
+        // where an entry point that forgot to says so.
     }
 
     // A reset in flight on this thread reads one header word of every
@@ -348,7 +348,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // The queue entry above and a trace's shadow rows are independent
     // identifiers of the same slot. A return refused by the first is recorded
     // by that entry; a return refused here is recorded out of band and replayed
-    // through this same door when the trace closes. Whichever window
+    // through this same entry point when the trace closes. Whichever window
     // closes last performs the physical return (`cycle::deferred_slot_reuse`).
     if can_lose_trace_identity(kind)
         && unsafe { crate::cycle::deferred_slot_reuse::defer_reuse_if_tracing(ptr) }

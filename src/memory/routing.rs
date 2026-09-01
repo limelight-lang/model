@@ -46,10 +46,10 @@ pub(crate) unsafe fn entity_alloc_in(
     size: usize,
 ) -> *mut u8 {
     match category {
-        // The arena's own entity door, which splits at a block payload
-        // and logs the run it takes above it. `Arena::alloc` is not that
-        // door and keeps refusing: `ll_arena_alloc` reaches it from the C
-        // ABI, where an entity and a byte buffer are the same request.
+        // The arena's own entity entry point, which splits at a block payload
+        // and logs the run it takes above it. `Arena::alloc` is not that entry
+        // point and keeps refusing: `ll_arena_alloc` reaches it from the C ABI,
+        // where an entity and a byte buffer are the same request.
         MemoryCategory::RequestArena => unsafe { (*resolve_arena(ctx)).alloc_entity(size) },
         // Counted entities live in the segregated entity-block population
         // a cycle collector traces (`docs/memory-manager.md`, "Heap: small

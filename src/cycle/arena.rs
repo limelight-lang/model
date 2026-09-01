@@ -1,16 +1,15 @@
 //! The collection's working memory: a bump arena over 64 KiB blocks,
 //! taken for one collection and returned whole at its end.
 //!
-//! **Two doors, in this order: the ordinary block pool, then the
+//! **Two allocation paths, in this order: the ordinary block pool, then the
 //! thread's critical reserve** (`rfc/model/memory/critical-reserve.md`,
-//! "Reserve users"). The in-line collection is the standard form
-//! rather than the emergency one, so most runs begin with no refusal
-//! anywhere and a full trace's rows are far beyond any reserve; the
-//! critical door is the fallback, and on the pressure path of Y14 it is
-//! the first draw, the pool's refusal being what triggered the
-//! collection.
+//! "Reserve users"). The in-line collection is the standard form rather than
+//! the emergency one, so most runs begin with no refusal anywhere and a full
+//! trace's rows are far beyond any reserve; the reserve allocation path is the
+//! fallback, and on the pressure path of Y14 it is the first draw, the pool's
+//! refusal being what triggered the collection.
 //!
-//! **A refusal at both doors aborts the collection, and never the
+//! **A refusal on both allocation paths aborts the collection, and never the
 //! process.** That is why the memory is asked for a block at a time
 //! through a call that can answer null, rather than reserved as a
 //! mapping materialised page by page: a page that fails to materialise
@@ -22,10 +21,10 @@
 //!
 //! # What the arena owes back
 //!
-//! Every block, at the end of the collection and on the abort path
-//! alike, and what the critical door lent goes back to the reserve
-//! before the pool sees a block — the retry that follows an abort wants
-//! a door that is open.
+//! Every block, at the end of the collection and on the abort path alike, and
+//! what the reserve allocation path lent goes back to the reserve before the
+//! pool sees a block — the retry that follows an abort wants an allocation path
+//! that serves.
 //!
 //! **The shadow-row pointers are nulled earlier than that, and the
 //! instant is fixed by the design rather than by convenience.**
@@ -43,14 +42,13 @@
 //!
 //! # What it does not hold
 //!
-//! A `Vec`, a `HashMap`, or anything else that reaches the global
-//! allocator. Both of the arena's own lists live in its own memory: the
-//! blocks thread through their headers, and the touched list threads
-//! through the row arrays themselves. A collection that grew a `Vec`
-//! would allocate through the very door that has already refused, and an
-//! allocation failure inside `Vec` aborts the process
-//! (`rfc/model/gc/cycle/questions.md`, Y14, "Its working memory must be
-//! sized before it is needed").
+//! A `Vec`, a `HashMap`, or anything else that reaches the global allocator.
+//! Both of the arena's own lists live in its own memory: the blocks thread
+//! through their headers, and the touched list threads through the row arrays
+//! themselves. A collection that grew a `Vec` would allocate through the very
+//! allocation path that has already refused, and an allocation failure inside
+//! `Vec` aborts the process (`rfc/model/gc/cycle/questions.md`, Y14, "Its
+//! working memory must be sized before it is needed").
 //!
 //! # Enrolment cannot fail after the rows exist
 //!
@@ -102,7 +100,7 @@ pub(crate) enum RowLookup {
     /// the edge as an external live reference, the same answer
     /// `row::resolve_edge_target` gives an address it cannot place.
     Untracked,
-    /// Both memory doors refused. The caller aborts the collection,
+    /// Both allocation paths refused. The caller aborts the collection,
     /// which costs nothing beyond the work already done: the trace
     /// writes into no entity.
     AllocationFailed,
@@ -113,7 +111,7 @@ pub(crate) enum RowLookup {
 pub(crate) struct TraceScratchArena {
     /// Blocks held, threaded through `BlockHeader::next`, newest first.
     blocks: *mut BlockHeader,
-    /// How many of them came through the critical door, and therefore
+    /// How many of them came through the reserve allocation path, and therefore
     /// how many go back to the reserve rather than to the pool. The
     /// arena does not record *which*: a block is a block, and the count
     /// is what restores the reserve's size.
@@ -162,7 +160,7 @@ impl TraceScratchArena {
         gc_metadata::charge(bytes);
     }
 
-    /// `bytes` of 8-aligned scratch, or **null when both doors have
+    /// `bytes` of 8-aligned scratch, or **null when both allocation paths have
     /// refused**, which is the caller's signal to abort the collection.
     ///
     /// A request larger than one block payload is refused outright: no
@@ -301,7 +299,7 @@ impl TraceScratchArena {
     }
 
     /// Reserve `row_count` rows for `block` and enrol it for the sweep, or
-    /// null when both memory doors have refused.
+    /// null when both allocation paths have refused.
     ///
     /// The array is linked into the touched list here, which is the
     /// enrolment: it is the same memory, so the two cannot come apart.
@@ -358,7 +356,7 @@ impl TraceScratchArena {
         self.published = 0;
 
         // What the reserve lent goes back to the reserve, and the rest
-        // to the pool. Returning everything through the reserve's door
+        // to the pool. Returning everything through the reserve allocation path
         // would refill it out of ordinary memory a collection happened
         // to be holding, which is the safepoint's job and not this one;
         // returning everything to the pool would leave the reserve empty
@@ -428,7 +426,7 @@ impl TraceScratchArena {
         }
     }
 
-    /// Take one more block, or answer false when both doors refuse.
+    /// Take one more block, or answer false when both allocation paths refuse.
     ///
     /// What is left of the previous block is abandoned. A bump that
     /// searched its older blocks for a fit would be a free list, and the
@@ -444,10 +442,10 @@ impl TraceScratchArena {
             self.from_reserve += 1;
         }
 
-        // The block the bump is leaving takes no further grant, so this
-        // is the instant its consumption becomes exact. Published after
-        // both doors have answered: a refusal leaves the bump where it
-        // is and the block still open.
+        // The block the bump is leaving takes no further grant, so this is the
+        // instant its consumption becomes exact. Published after both
+        // allocation paths have answered: a refusal leaves the bump where it is
+        // and the block still open.
         if !self.blocks.is_null() {
             self.publish(BLOCK_PAYLOAD - self.left);
         }

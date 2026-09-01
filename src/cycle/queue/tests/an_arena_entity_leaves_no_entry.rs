@@ -3,11 +3,11 @@
 //!
 //! A GC-heap slot that dies while an entry names it is withheld from the
 //! allocator, which is what lets the entry stay a raw pointer
-//! (`memory::stdapi::ll_free`). **An arena slot has no such door**: it is
-//! reclaimed wholesale by `ll_arena_reset`, which returns the block to
-//! the pool without passing a free, so nothing consults the candidate bit
-//! and nothing withholds anything. An entry naming an arena slot would
-//! therefore survive into memory the next request is handed.
+//! (`memory::stdapi::ll_free`). **An arena slot has no such entry point**: it
+//! is reclaimed wholesale by `ll_arena_reset`, which returns the block to the
+//! pool without passing a free, so nothing consults the candidate bit and
+//! nothing withholds anything. An entry naming an arena slot would therefore
+//! survive into memory the next request is handed.
 //!
 //! The gate closes that by refusing to register anything outside category
 //! zero (`refcount::CANDIDATE_GATE_MASK`, and

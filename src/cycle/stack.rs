@@ -89,9 +89,9 @@ impl TraceStack {
         }
     }
 
-    /// Queue `entity` for expansion, or answer **false** when both
-    /// memory doors refused — which is the caller's signal to abort the
-    /// collection, and the only way this can fail.
+    /// Queue `entity` for expansion, or answer **false** when both allocation
+    /// paths refused — which is the caller's signal to abort the collection,
+    /// and the only way this can fail.
     pub(crate) fn push(&mut self, arena: &mut TraceScratchArena, entity: *mut RcHeader) -> bool {
         if self.current.is_null() || self.current_len == SEGMENT_ENTRIES {
             if !self.advance_segment(arena) {

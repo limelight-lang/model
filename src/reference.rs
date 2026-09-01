@@ -76,10 +76,10 @@ pub extern "C" fn ll_reference_new_abi() -> *mut LLReference {
 /// then free the slot. No destructor, no resurrection — a box holds a
 /// slot, not behavior.
 ///
-/// The free is unconditional because [`ll_reference_new`] is the only
-/// door and every box it makes is a GC-heap entity; a box in any other
-/// category would be memory this call leaks rather than frees, so the
-/// category is asserted rather than branched on.
+/// The free is unconditional because [`ll_reference_new`] is the only entry
+/// point and every box it makes is a GC-heap entity; a box in any other
+/// category would be memory this call leaks rather than frees, so the category
+/// is asserted rather than branched on.
 ///
 /// # Safety
 /// `boxed` must be a live reference box.

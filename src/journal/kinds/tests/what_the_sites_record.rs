@@ -169,10 +169,10 @@ fn a_disabled_kind_writes_no_record() {
     let _quiet = disable_sites_for_test();
     let _g = crate::memory::block_pool::test_guard();
     let pool = BlockPool::global();
-    // One record through the door that ignores the mask, so that this
-    // thread has a ring to be silent in: with no ring the silence
-    // below would be the wrong silence, and the test would pass on a
-    // thread the journal never reached.
+    // One record through the entry point that ignores the mask,
+    // `journal::record`, so that this thread has a ring to be silent in: with
+    // no ring the silence below would be the wrong silence, and the test would
+    // pass on a thread the journal never reached.
     crate::journal::record(KIND_BLOCK_COMMISSIONED, 0, 0, 0, 0);
     let ring = this_thread_identity();
     assert_ne!(ring, 0, "the thread has no ring, so it is silent anyway");

@@ -296,7 +296,7 @@ fn a_thread_inside_its_own_exit_takes_no_ring_to_free() {
             "the runtime started this thread"
         );
         crate::memory::heap::ll_thread_exit();
-        // Both doors into the pending list go through this.
+        // Both routes into the pending list take this lock.
         let mut registry = locked();
         take_pending(&mut registry).len()
     })

@@ -334,7 +334,7 @@ fn a_promoted_large_entity_keeps_its_block_and_leaves_the_arenas_log() {
     assert_eq!(
         unsafe { *(block as *const u32) },
         crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN,
-        "the arena's entity door gave it a run of its own"
+        "the arena's entity entry point gave it a run of its own"
     );
 
     unsafe { store_prop(&mut arena, holder, 16, obj) };
@@ -382,7 +382,7 @@ fn a_promoted_large_entity_keeps_its_block_and_leaves_the_arenas_log() {
     );
 }
 
-/// The other half of the door's contract: a large arena entity that
+/// The other half of the entry point's contract: a large arena entity that
 /// nothing carries out is freed by the reset, like every other run
 /// the arena logged.
 #[test]

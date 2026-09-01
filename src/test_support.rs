@@ -75,7 +75,7 @@ pub(crate) fn wide_class(
     let size = unsafe { (*class).object_size } as usize;
     assert!(
         size > crate::memory::heap::MAX_SMALL,
-        "the instance fits a size class, so it exercises no large-entity door"
+        "the instance fits a size class, so it exercises no large-entity allocation path"
     );
     assert!(
         fillers < RUN_FILLERS || size > crate::memory::block_pool::BLOCK_PAYLOAD,

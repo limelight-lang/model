@@ -11,10 +11,9 @@
 //!
 //! **The block is drawn under the instance's own category**, through
 //! `memory::routing::body_alloc`, which is the group's contract
-//! (`crate::cells::OutsideCells`) and the same door a table's storage
-//! takes. For the GcHeap instances these tests build that is a
-//! buffer-arena chunk, which withholds during a collection like any other
-//! body.
+//! (`crate::cells::OutsideCells`) and the same allocation path a table's
+//! storage takes. For the GcHeap instances these tests build that is a
+//! buffer-arena chunk, which withholds during a collection like any other body.
 //!
 //! **The block is replaced whole rather than written in place**, and the
 //! version word beside it is the array head's bracket in miniature
@@ -93,8 +92,8 @@ pub(crate) fn class(name: &str) -> *const Class {
     cls
 }
 
-/// Give `obj` a fresh block, carrying over what the old one held, and
-/// free the old one — through the same category-routed door, which S38.3 must
+/// Give `obj` a fresh block, carrying over what the old one held, and free the
+/// old one — through the same category-routed entry point, which S38.3 must
 /// hold back while a worker trace may still be striding it.
 ///
 /// Answers the new block, whose granted capacity the object keeps. The

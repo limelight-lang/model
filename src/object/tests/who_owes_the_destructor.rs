@@ -1,8 +1,7 @@
-//! The completed user constructor registers the record, not the
-//! factory: an object that never got past the factory is in no
-//! destructor log and runs no `__destruct` at the reset. A refused
-//! record puts the object in that same state by the code's other
-//! door, and fails the construction saying so.
+//! The completed user constructor registers the record, not the factory: an
+//! object that never got past the factory is in no destructor log and runs no
+//! `__destruct` at the reset. A refused record puts the object in that same
+//! state by the code's other route, and fails the construction saying so.
 
 use super::*;
 
@@ -72,7 +71,7 @@ fn an_unconstructed_object_owes_no_destructor() {
     arena.reset(|_| {});
 }
 
-/// The other door into that state: the arena's destructor log could
+/// The other route into that state: the arena's destructor log could
 /// not take the record, so `object_constructed` reports false and the
 /// object owes nothing. The caller raises memory-exhausted at the
 /// creation site and the outcome is a constructor that threw, which

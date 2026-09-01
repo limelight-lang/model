@@ -350,7 +350,7 @@ fn taking_a_reference_separates_the_shared_table_first() {
             "the original's element was boxed too"
         );
 
-        // `$r = 2` through the public door: `$b['x']` is in a
+        // `$r = 2` through the public entry point: `$b['x']` is in a
         // reference state, so the store finds the box and writes
         // into it.
         assert!(set(

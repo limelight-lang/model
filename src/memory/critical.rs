@@ -1,5 +1,5 @@
-//! The per-thread critical reserve: blocks a collection draws when the
-//! ordinary door has already refused.
+//! The per-thread critical reserve: blocks a collection draws when the ordinary
+//! allocation path has already refused.
 //!
 //! The protocol and who is entitled to it: `rfc/model/memory/`
 //! `critical-reserve.md`, "Allocation paths" and "Reserve users". Why
@@ -138,8 +138,8 @@ pub(crate) fn replenish() -> bool {
 /// Take one block, or null when the reserve is empty.
 ///
 /// The caller owns the block from here and owes it back through
-/// [`give_back`]. Null is the answer that ends a collection: both doors
-/// have refused, and the caller aborts rather than failing the process.
+/// [`give_back`]. Null is the answer that ends a collection: both allocation
+/// paths have refused, and the caller aborts rather than failing the process.
 pub(crate) fn draw() -> *mut BlockHeader {
     CRITICAL
         .try_with(|c| {
@@ -162,11 +162,11 @@ pub(crate) fn draw() -> *mut BlockHeader {
 /// Return a block the reserve lent out. The reserve keeps it if it is
 /// below capacity, and hands it to the pool otherwise.
 ///
-/// The caller passes back every block it holds, whatever door it came
-/// through, and this decides: at capacity the block is ordinary memory
+/// The caller passes back every block it holds, whatever allocation path it
+/// came through, and this decides: at capacity the block is ordinary memory
 /// again, below capacity it refills the reserve without waiting for a
-/// safepoint. That ordering is what leaves an aborted collection's
-/// retry with a reserve to draw on (module doc).
+/// safepoint. That ordering is what leaves an aborted collection's retry with a
+/// reserve to draw on (module doc).
 pub(crate) fn give_back(block: *mut BlockHeader) {
     assert_ne!(
         unsafe { load_block_kind(&raw const (*block).kind) },
@@ -212,11 +212,11 @@ pub(crate) fn give_back(block: *mut BlockHeader) {
 
 /// Whether the reserve is short and wants a safepoint to refill it.
 ///
-/// The count itself, rather than a flag a draw sets. A flag is false in
-/// the one state that most needs the poll: a thread whose `replenish` at
-/// init was refused holds nothing, has never drawn, and would never be
-/// asked again — the poll skips it, the next pressure event finds the
-/// door shut, and the collection aborts having traced nothing.
+/// The count itself, rather than a flag a draw sets. A flag is false in the one
+/// state that most needs the poll: a thread whose `replenish` at init was
+/// refused holds nothing, has never drawn, and would never be asked again — the
+/// poll skips it, the next pressure event finds the reserve allocation path
+/// empty, and the collection aborts having traced nothing.
 pub(crate) fn is_drawn() -> bool {
     CRITICAL
         .try_with(|c| c.borrow().held < CRITICAL_BLOCKS)

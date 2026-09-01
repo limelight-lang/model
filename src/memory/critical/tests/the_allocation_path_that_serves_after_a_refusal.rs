@@ -1,5 +1,5 @@
-//! The reserve is drawn only where the ordinary door has already said
-//! no, so both halves have to be shown: that it holds what it says it
+//! The reserve is drawn only where the ordinary allocation path has already
+//! refused, so both halves have to be shown: that it holds what it says it
 //! holds, and that it still serves while the pool refuses.
 
 use super::*;
@@ -17,9 +17,9 @@ fn the_reserve_fills_to_its_capacity() {
     drain_for_test();
 }
 
-/// The case the reserve exists for. `FORCE_OOM` refuses the pool and
-/// nothing else, so the assertion below names which door said no before
-/// the draw is asked for anything.
+/// The case the reserve exists for. `FORCE_OOM` refuses the pool and nothing
+/// else, so the assertion below names which allocation path refused before the
+/// draw is asked for anything.
 #[test]
 fn a_block_is_drawn_while_the_pool_refuses() {
     let _g = test_guard();
@@ -29,10 +29,10 @@ fn a_block_is_drawn_while_the_pool_refuses() {
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
-        "the ordinary door is the one refusing"
+        "the ordinary allocation path is the one refusing"
     );
     let block = draw();
-    assert!(!block.is_null(), "the critical door still serves");
+    assert!(!block.is_null(), "the reserve allocation path still serves");
     assert_eq!(blocks_held(), CRITICAL_BLOCKS - 1);
     assert!(is_drawn(), "and asks the next safepoint for a refill");
     assert!(

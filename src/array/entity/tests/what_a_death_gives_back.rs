@@ -1,9 +1,8 @@
-//! The kind switch is the only door a bare entity pointer has, and
-//! its Array arm walks elements and string keys once each, returns
-//! the storage, and tears down a child the array held last rather
-//! than only decrementing it: `ll_release`'s report is an
-//! obligation, and dropping it leaves everything that child holds
-//! unreachable.
+//! The kind switch is the only teardown entry point a bare entity pointer has,
+//! and its Array arm walks elements and string keys once each, returns the
+//! storage, and tears down a child the array held last rather than only
+//! decrementing it: `ll_release`'s report is an obligation, and dropping it
+//! leaves everything that child holds unreachable.
 
 use super::*;
 
@@ -32,11 +31,10 @@ fn releasing_children_walks_elements_and_string_keys_once_each() {
     }
 }
 
-/// Death through the kind switch, which is the only door a bare
+/// Death through the kind switch, which is the only teardown entry point a bare
 /// entity pointer has. Before the Array arm existed this reached a
-/// `debug_assert!(false)` and, in release, did nothing at all: the
-/// children kept the references the array owed them and the storage
-/// was never returned.
+/// `debug_assert!(false)` and, in release, did nothing at all: the children
+/// kept the references the array owed them and the storage was never returned.
 #[test]
 fn dying_through_the_kind_switch_releases_the_children_and_the_storage() {
     use crate::memory::block_pool::{BLOCK_KIND_BUFFER, BLOCK_MASK};

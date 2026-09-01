@@ -1,4 +1,4 @@
-//! The weak table's storage, measured at the one door that can answer:
+//! The weak table's storage, measured at the one site that can answer:
 //! the test binary's counting global allocator.
 //!
 //! The four allocation counts were seen red on `8ccf426`, where the table is a
@@ -269,8 +269,8 @@ fn the_weak_table_moves_no_figure_of_the_collection_ledger() {
     crate::weak::dispose();
     with_ctx(|ctx| {
         // The high-water figures are process-global and never fall, so an
-        // equality over them is vacuous until the door lowers them to the
-        // current ones (`gc_metadata::lower_peak_to_current`).
+        // equality over them is vacuous until `gc_metadata::lower_peak_to_current`
+        // lowers them to the current ones.
         crate::memory::gc_metadata::lower_peak_to_current();
         let before = crate::memory::gc_metadata::stats();
         let mut held = Vec::new();

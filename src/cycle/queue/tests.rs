@@ -29,7 +29,8 @@ fn candidate_with(holders: u32, extra: u32) -> RcHeader {
     header
 }
 
-/// Release once through the ABI, which is the only door registration has.
+/// Release once through the ABI, which is the only entry point registration
+/// has.
 ///
 /// **A raw pointer, and the caller keeps one per header and reuses it.**
 /// A fresh `&mut` per call is a Unique retag that invalidates every raw

@@ -438,7 +438,7 @@ fn a_refused_association_gives_the_nested_copy_back() {
     arena.reset(|_| {});
 }
 
-/// The shallow door with an arena holder is where the giveback's release
+/// The shallow copy with an arena holder is where the giveback's release
 /// reports no death — an arena cell is the reset's — and the teardown
 /// runs anyway, which is the paragraph on `object::destroy_unpublished`
 /// that nothing else exercises through a refusal.

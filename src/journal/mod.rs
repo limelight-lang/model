@@ -227,13 +227,12 @@ struct Registry {
     /// it, and the difference between two marks is how many whole thread
     /// histories the window lost.
     evicted: u64,
-    /// Threads that will never have a ring — the allocator refused it, or
-    /// the thread could not guarantee its retirement. They journal nothing
-    /// for the rest of their lives and appear in no ring, so without a
-    /// count of them a window's silence about them is indistinguishable
-    /// from a process that never had them — the false *none* by the one
-    /// door that opens under memory pressure, which is when the journal is
-    /// switched on.
+    /// Threads that will never have a ring — the allocator refused it, or the
+    /// thread could not guarantee its retirement. They journal nothing for the
+    /// rest of their lives and appear in no ring, so without a count of them a
+    /// window's silence about them is indistinguishable from a process that
+    /// never had them — the false *none* that only memory pressure produces,
+    /// which is when the journal is switched on.
     refused: u64,
     /// Marks taken. It stamps each one, so that two marks handed to
     /// [`between`] in the wrong order are caught instead of answering a

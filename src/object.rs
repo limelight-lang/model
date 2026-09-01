@@ -665,7 +665,7 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
     // Objects and lazies alike, and the kind is read rather than assumed:
-    // this door takes both, and a reader hunting one of them cannot tell
+    // this entry point takes both, and a reader hunting one of them cannot tell
     // them apart by address. Before `dispose`, because a `__destruct`
     // body's own records belong after the death that caused them.
     journal_event!(
@@ -743,19 +743,18 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
     const ARRAY: u32 = EntityKind::Array as u32;
     let flags = unsafe { crate::refcount::mutator_flags(entity) };
     let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
-    // What a dying registered slot owes a collector is done here, for
-    // every kind the gate admits, so a kind that gains counted slots
-    // later inherits it without a call site of its own
-    // (`refcount::EntityKind::closes_a_ring`). An array runs no
-    // `dispose`, which is where an object would do it on its way past the
-    // free, so this door is the array's too — with one exception owing
-    // the same duty at its own site: a **nested** array is torn down by
-    // `array_die`'s drain and never passes here again
-    // (`array::entity::array_die` and `release_children_in_order`). A
-    // duty added here has to be added there as well until the two doors
-    // are one. The one duty a dying registered slot has today is owed by
-    // neither: it is the free's, and every route reaches the same free
-    // (`memory::stdapi::ll_free`, the withholding).
+    // What a dying registered slot owes a collector is done here, for every
+    // kind the gate admits, so a kind that gains counted slots later inherits
+    // it without a call site of its own
+    // (`refcount::EntityKind::closes_a_ring`). An array runs no `dispose`,
+    // which is where an object would do it on its way past the free, so this
+    // entry point is the array's too — with one exception owing the same duty
+    // at its own site: a **nested** array is torn down by `array_die`'s drain
+    // and never passes here again (`array::entity::array_die` and
+    // `release_children_in_order`). A duty added here has to be added there as
+    // well until the two entry points are one. The one duty a dying registered
+    // slot has today is owed by neither: it is the free's, and every route
+    // reaches the same free (`memory::stdapi::ll_free`, the withholding).
 
     match kind {
         OBJECT | LAZY => unsafe { ll_object_die(entity as *mut Object) },
@@ -787,15 +786,15 @@ pub unsafe extern "C" fn ll_entity_die(entity: *mut RcHeader) {
 /// and could not record on the work list.
 ///
 /// [`ll_entity_die`] rather than a kind's own body, so that the teardown
-/// bracket and the candidate-buffer duty this door carries are paid here too,
-/// and it runs **unconditionally** after the count is dropped, because the
-/// release verdict answers a narrower question than the caller is asking: an
-/// arena entity reports no death at any count, its cell being the reset's, and
-/// a refusal branch that waited for `true` left every reference the replay
-/// published — an arena COW child's count, a heap child's log record's +1 —
-/// held by a zero-count member until the reset. On the GC heap the verdict *is*
-/// death, which is all the assertion pins: the callers differ in the category
-/// they can arrive with, never in what they owe.
+/// bracket and the candidate-buffer duty this entry point carries are paid
+/// here too, and it runs **unconditionally** after the count is dropped,
+/// because the release verdict answers a narrower question than the caller is
+/// asking: an arena entity reports no death at any count, its cell being the
+/// reset's, and a refusal branch that waited for `true` left every reference
+/// the replay published — an arena COW child's count, a heap child's log
+/// record's +1 — held by a zero-count member until the reset. On the GC heap
+/// the verdict *is* death, which is all the assertion pins: the callers differ
+/// in the category they can arrive with, never in what they owe.
 ///
 /// # Safety
 /// `entity` is a live entity at count 1 that no slot has ever named.

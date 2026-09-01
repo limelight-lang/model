@@ -127,13 +127,13 @@ mod imp {
         "memory::os declares mmap's offset as i64, which matches off_t only on 64-bit unix"
     );
 
-    // Enumerated rather than defaulted, because a wrong value here is the
-    // worst shape of defect this module can produce: `mmap` refuses with
-    // `EBADF`, the pool reports exhaustion, and every allocation in the
-    // process fails on a machine with all its memory free — a report
-    // indistinguishable from real exhaustion. An unported platform stops
-    // the build instead, the way the per-process key's own unix-only door
-    // does (`PLAN.md`, "The per-process key's Windows door").
+    // Enumerated rather than defaulted, because a wrong value here is the worst
+    // shape of defect this module can produce: `mmap` refuses with `EBADF`, the
+    // pool reports exhaustion, and every allocation in the process fails on a
+    // machine with all its memory free — a report indistinguishable from real
+    // exhaustion. An unported platform stops the build instead, the way the
+    // per-process key's own unix-only `/dev/urandom` read does (`PLAN.md`, "The
+    // per-process key's Windows randomness source").
     //
     // Linux carries the architecture in the condition as well as the
     // operating system: mips defines the flag as 0x0800, and 0x20 there

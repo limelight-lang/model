@@ -75,7 +75,7 @@ pub(crate) enum ScanResult {
     /// Every entity the root reaches through a met row carries a
     /// verdict: [`Color::PotentiallyUnreachable`] or [`Color::Live`].
     Complete,
-    /// Both memory doors refused the worklist a segment, so the
+    /// Both allocation paths refused the worklist a segment, so the
     /// collection aborts. The heap is byte-identical and the arena's
     /// reset is the whole of the debt.
     AllocationFailed,
@@ -143,7 +143,7 @@ pub(crate) unsafe fn scan(
 
 /// Colour one entity the scan has reached and queue it when the colour
 /// changed, `reached_from_live` saying whether the edge came from a row already
-/// known to be held from outside. False when both memory doors refused.
+/// known to be held from outside. False when both allocation paths refused.
 ///
 /// The three colours a met row can carry answer differently.
 /// `Color::Unclassified` is undecided, and the count decides it — an edge

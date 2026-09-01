@@ -1882,7 +1882,7 @@ in `dev/INDEX.md`. What it did not do is below.
   fix: either the links stay and `--document-private-items` becomes how
   the crate's documentation is built, or they become plain names. Raised
   by S27's Code Reviewer, 2026-08-18.
-- [ ] **The per-process key's Windows door.** S27.1 lands unix-only,
+- [ ] **The per-process key's Windows randomness source.** S27.1 lands unix-only,
   `#[cfg(not(unix))]` a `compile_error!` naming this gap, so the
   Windows build refuses until a session on the Windows box adds the
   door (`BCryptGenRandom` or an equivalent OS draw) and runs the gate

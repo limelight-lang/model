@@ -120,7 +120,7 @@ fn a_block_emptied_around_a_withheld_zero_count_member_reaches_the_pool_at_the_r
     );
 
     // The return, which is the retirement's last act: the bit comes down
-    // and the same door takes the slot.
+    // and the same entry point takes the slot.
     unsafe { crate::refcount::clear_candidate_bit(header) };
     unsafe { ll_free(zero_count_member) };
 

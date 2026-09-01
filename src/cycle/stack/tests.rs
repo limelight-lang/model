@@ -100,7 +100,7 @@ fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
 /// A refused segment is a refused collection, and the refusal arrives as
 /// a false rather than as a panic or a null the caller has to test.
 #[test]
-fn a_push_with_both_doors_shut_answers_false() {
+fn a_push_with_both_allocation_paths_refusing_answers_false() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
     let mut headers = slab(1);
@@ -112,7 +112,7 @@ fn a_push_with_both_doors_shut_answers_false() {
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
-        "the ordinary door is refusing"
+        "the ordinary allocation path is refusing"
     );
     assert_eq!(crate::memory::critical::blocks_held(), 0);
 

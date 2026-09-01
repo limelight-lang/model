@@ -30,14 +30,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Birth of an entity: `subject` is its address, `a` its
 /// [`crate::refcount::EntityKind`] as a number, `b` its
 /// [`crate::refcount::MemoryCategory`]. Written where the header is
-/// published, which is the one door every factory in the crate goes
-/// through.
+/// published, which is the one entry point every factory in the crate
+/// goes through, `refcount::publish_header`.
 pub const KIND_ENTITY_BIRTH: u32 = 1;
 
 /// Death of an entity: `subject` is its address, `a` its entity kind, `b`
-/// unused. Written at each kind's own teardown body rather than at the
-/// kind switch above them, because an object reaches teardown by two
-/// doors and a nested array by neither.
+/// unused. Written at each kind's own teardown body rather than at the kind
+/// switch above them, because an object reaches teardown by two entry points
+/// and a nested array by neither.
 pub const KIND_ENTITY_DEATH: u32 = 2;
 
 /// A request arena's reset begins: `subject` is the arena's address, `a`

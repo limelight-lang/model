@@ -29,29 +29,32 @@ fn an_arena_returns_every_block_it_took() {
     crate::memory::critical::drain_for_test();
 }
 
-/// The refusal path. `FORCE_OOM` closes the ordinary door and the
-/// reserve is emptied by hand, so the null comes from both doors having
-/// refused rather than from one of them — and the arena still gives back
+/// The refusal path. `FORCE_OOM` closes the ordinary allocation path and the
+/// reserve is emptied by hand, so the null comes from both allocation paths
+/// having refused rather than from one of them — and the arena still gives back
 /// what it was already holding.
 #[test]
-fn a_refusal_at_both_doors_leaves_nothing_behind() {
+fn a_refusal_on_both_allocation_paths_leaves_nothing_behind() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
     let before = BlockPool::global().blocks_out();
 
     let mut arena = TraceScratchArena::new();
-    assert!(!arena.alloc(64).is_null(), "the ordinary door served");
+    assert!(
+        !arena.alloc(64).is_null(),
+        "the ordinary allocation path served"
+    );
     assert_eq!(arena.blocks_held(), 1);
 
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
-        "the ordinary door is refusing"
+        "the ordinary allocation path is refusing"
     );
     assert_eq!(
         crate::memory::critical::blocks_held(),
         0,
-        "and the critical door has nothing to serve"
+        "and the reserve allocation path has nothing to serve"
     );
     assert!(
         arena.alloc(BLOCK_PAYLOAD).is_null(),
@@ -64,7 +67,7 @@ fn a_refusal_at_both_doors_leaves_nothing_behind() {
     crate::memory::critical::drain_for_test();
 }
 
-/// The ordinary door is asked first, and the reserve is not touched
+/// The ordinary allocation path is asked first, and the reserve is not touched
 /// while it serves. A collection that drew on the reserve whenever it
 /// wanted memory would turn the reserve into ordinary memory with extra
 /// steps, which is what `critical-reserve.md` forbids in terms.
@@ -92,7 +95,7 @@ fn the_reserve_is_untouched_while_the_pool_serves() {
 
 /// The reserve serves once the pool has refused, and the arena's reset
 /// puts back what it drew before the pool sees anything — the retry
-/// after an abort wants a door that is open.
+/// after an abort wants an allocation path that serves.
 #[test]
 fn the_reserve_serves_after_a_refusal_and_is_refilled_at_reset() {
     let _g = test_guard();
@@ -105,9 +108,12 @@ fn the_reserve_serves_after_a_refusal_and_is_refilled_at_reset() {
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
-        "the ordinary door is the one refusing"
+        "the ordinary allocation path is the one refusing"
     );
-    assert!(!arena.alloc(64).is_null(), "the critical door served");
+    assert!(
+        !arena.alloc(64).is_null(),
+        "the reserve allocation path served"
+    );
     assert_eq!(
         crate::memory::critical::blocks_held(),
         held - 1,
@@ -235,7 +241,7 @@ fn a_swept_list_is_not_swept_again_at_reset() {
 /// The refusal lands before the block is stamped, which is what makes
 /// one allocation for the rows and the enrolment worth its shape: there
 /// is no instant at which a block points at rows the abort is about to
-/// give back. Both doors refuse, so the first touch answers
+/// give back. Both allocation paths refuse, so the first touch answers
 /// [`RowLookup::AllocationFailed`] and the block's shadow word is untouched.
 #[test]
 fn a_refused_first_touch_stamps_nothing() {
@@ -247,12 +253,12 @@ fn a_refused_first_touch_stamps_nothing() {
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
-        "the ordinary door is refusing"
+        "the ordinary allocation path is refusing"
     );
     assert_eq!(
         crate::memory::critical::blocks_held(),
         0,
-        "and the critical door has nothing to serve"
+        "and the reserve allocation path has nothing to serve"
     );
 
     assert_eq!(
@@ -288,7 +294,7 @@ fn every_block_the_reserve_lent_comes_back_to_it() {
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
-        "the ordinary door is refusing"
+        "the ordinary allocation path is refusing"
     );
 
     // One block per allocation, the payload being what a block holds.

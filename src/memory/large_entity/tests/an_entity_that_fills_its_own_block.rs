@@ -1,6 +1,6 @@
-//! The whole point of the module: an entity past what its category
-//! packs keeps its inline layout as the sole occupant, and lives and
-//! dies through the ordinary doors.
+//! The whole point of the module: an entity past what its category packs keeps
+//! its inline layout as the sole occupant, and is allocated and freed through
+//! the ordinary entry points.
 
 use super::*;
 

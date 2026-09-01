@@ -356,9 +356,9 @@ fn a_refusal_on_the_second_block_leaves_the_first_intact() {
     let row = met(unsafe { arena.ensure_row(slot_row(first, 0), 2) });
     unsafe { *row = shadow::compose(Color::Unclassified, 1) };
 
-    // The arena's current block still has room, so the refusal has to be
-    // driven from a block boundary: shut the door, then spend the block
-    // in hand.
+    // The arena's current block still has room, so the refusal has to be driven
+    // from a block boundary: close the ordinary allocation path, then spend the
+    // block in hand.
     let oom = force_oom();
     while !arena.alloc(1024).is_null() {}
 

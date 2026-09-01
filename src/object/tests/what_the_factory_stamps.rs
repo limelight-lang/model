@@ -1,9 +1,8 @@
-//! A fresh object carries its header, its class and one starting
-//! state per slot: a defaultless Box slot starts undefined and a
-//! bitmap-tracked raw slot starts with its bit clear, which is what
-//! tells an uninitialized slot from one holding null. The
-//! construct-into-a-reserved-cell door shares the stamp, and the C
-//! entry point takes the category as a `u32`.
+//! A fresh object carries its header, its class and one starting state per
+//! slot: a defaultless Box slot starts undefined and a bitmap-tracked raw slot
+//! starts with its bit clear, which is what tells an uninitialized slot from
+//! one holding null. The construct-into-a-reserved-cell entry point shares the
+//! stamp, and the C entry point takes the category as a `u32`.
 
 use super::*;
 

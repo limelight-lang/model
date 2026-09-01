@@ -15,12 +15,13 @@
 //! - this window, represented by a non-null [`DEFERRED_RETURNS`], while mark
 //!   or scan may still use a shadow row for the slot.
 //!
-//! Every attempted return goes through `memory::stdapi::ll_free`. That door
-//! first refuses the queue window and then calls [`defer_reuse_if_tracing`] for
-//! this one. Closing a trace replays its withheld returns through the same
-//! door, so an entry still standing keeps the slot withheld without a second
-//! record. Conversely, retiring an entry while the trace still runs reaches
-//! this list. The two windows can therefore close in either order.
+//! Every attempted return goes through `memory::stdapi::ll_free`. That entry
+//! point first refuses the queue window and then calls
+//! [`defer_reuse_if_tracing`] for this one. Closing a trace replays its
+//! withheld returns through the same entry point, so an entry still standing
+//! keeps the slot withheld without a second record. Conversely, retiring an
+//! entry while the trace still runs reaches this list. The two windows can
+//! therefore close in either order.
 //!
 //! # What it owns and for how long
 //!
@@ -46,10 +47,10 @@
 //! withheld return, because that is the last instant at which a refusal has an
 //! answer. A collection is ordinarily the standard in-line form and meets no
 //! refusal anywhere (`rfc/model/gc/cycle/questions.md`, Y14), but on the
-//! pressure path it is a refused pool that started it, so both doors refusing
-//! is an outcome the open has to carry: there it is a collection that does not
-//! start, and nothing is withheld. A draw at the first withheld
-//! return would meet the same refusal holding a slot whose rows are live, where
+//! pressure path it is a refused pool that started it, so both allocation paths
+//! refusing is an outcome the open has to carry: there it is a collection that
+//! does not start, and nothing is withheld. A draw at the first withheld return
+//! would meet the same refusal holding a slot whose rows are live, where
 //! returning it is the reuse this module prevents and dropping it loses a
 //! physical return, which is refused (`dev/DECISIONS.md`, "an enrolment cannot
 //! fail"). Growth past the first block therefore has no answer left and ends
@@ -86,10 +87,10 @@ struct DeferredReturnChain {
     limit: Cell<*mut *mut u8>,
     /// The last block of the chain, and the one the cursor is inside.
     append_block: Cell<*mut BlockHeader>,
-    /// Blocks of this chain drawn through the critical door, and therefore how
-    /// many go back to the reserve rather than to the pool. Which ones is not
-    /// recorded: a block is a block, and the count is what restores the
-    /// reserve's size.
+    /// Blocks of this chain drawn through the reserve allocation path, and
+    /// therefore how many go back to the reserve rather than to the pool. Which
+    /// ones is not recorded: a block is a block, and the count is what restores
+    /// the reserve's size.
     from_reserve: Cell<usize>,
     /// Bytes of this chain already charged to the manager's ledger, so that the
     /// close discharges exactly what was charged.
@@ -152,8 +153,8 @@ fn records_of(block: *mut BlockHeader) -> *mut *mut u8 {
 }
 
 /// One block for the chain, the ordinary pool first and the critical reserve
-/// second, with the flag saying which door answered. A null block means both
-/// refused, and then the flag is meaningless.
+/// second, with the flag saying which allocation path answered. A null block
+/// means both refused, and then the flag is meaningless.
 fn draw_block() -> (*mut BlockHeader, bool) {
     let pooled = gc_metadata::acquire();
     if !pooled.is_null() {
@@ -178,7 +179,8 @@ struct WithheldReturns {
 }
 
 impl WithheldReturns {
-    /// Draw the chain's first block, or `None` when neither door answers.
+    /// Draw the chain's first block, or `None` when neither allocation path
+    /// answers.
     fn open() -> Option<Self> {
         let (block, from_reserve) = draw_block();
         if block.is_null() {
@@ -230,7 +232,7 @@ impl WithheldReturns {
         });
     }
 
-    /// Return every withheld slot through the ordinary door, oldest first.
+    /// Return every withheld slot through `ll_free`, oldest first.
     ///
     /// Called with the window already closed, so a return that reaches
     /// [`defer_reuse_if_tracing`] again is refused there and proceeds
@@ -256,7 +258,7 @@ impl WithheldReturns {
             for index in 0..held {
                 // Safety: each record is one entity slot whose observable
                 // teardown completed before `defer_reuse_if_tracing` accepted
-                // the return. Replaying it once through the ordinary door is
+                // the return. Replaying it once through `ll_free` is
                 // the return it still owes.
                 unsafe { crate::memory::stdapi::ll_free(*records.add(index)) };
             }
@@ -267,11 +269,12 @@ impl WithheldReturns {
 }
 
 impl Drop for WithheldReturns {
-    /// Give the chain's blocks back, what the reserve lent through the
-    /// critical door and the rest to the pool.
+    /// Give the chain's blocks back, what the reserve lent through the reserve
+    /// allocation path and the rest to the pool.
     ///
     /// The reserve is served first for the reason the trace arena serves it
-    /// first: the retry that follows an abort wants a door that is open.
+    /// first: the retry that follows an abort wants an allocation path that
+    /// serves.
     fn drop(&mut self) {
         self.close_window();
 
@@ -313,8 +316,8 @@ pub(crate) struct ActiveTrace {
 }
 
 impl ActiveTrace {
-    /// Open this thread's one trace window, or `None` when neither memory door
-    /// can fund the chain that holds its withheld returns.
+    /// Open this thread's one trace window, or `None` when neither allocation
+    /// path can fund the chain that holds its withheld returns.
     ///
     /// `None` is a collection that does not start: no window is open, no return
     /// has been withheld, and the caller's own abort path has nothing to undo.
@@ -374,7 +377,7 @@ impl Drop for ActiveTrace {
 /// it either: `ll_free` holds no frame that can fail.
 ///
 /// Reached only after 8,152 slots have died inside one trace window while both
-/// memory doors refuse a single block.
+/// allocation paths refuse a single block.
 #[cold]
 fn grow(head: *mut BlockHeader, chain: &DeferredReturnChain) {
     let (block, from_reserve) = draw_block();
@@ -382,9 +385,9 @@ fn grow(head: *mut BlockHeader, chain: &DeferredReturnChain) {
         std::process::abort();
     }
 
-    // The block the cursor is leaving is full by construction, so what it
-    // holds is exact here. Charged after both doors have answered: a refusal
-    // leaves the chain where it stands.
+    // The block the cursor is leaving is full by construction, so what it holds
+    // is exact here. Charged after both allocation paths have answered: a
+    // refusal leaves the chain where it stands.
     let filled = used_bytes(chain.append_block.get(), head, RECORDS_PER_BLOCK);
     chain.published.set(chain.published.get() + filled);
     gc_metadata::charge(filled);

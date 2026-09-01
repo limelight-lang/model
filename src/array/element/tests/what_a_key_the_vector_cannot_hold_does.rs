@@ -3,7 +3,7 @@
 //! to the ordered hash before anything is stored, and one it can hold
 //! leaves the vector standing. The migration is asked for by the
 //! element layer through the tag (`element::representation_for`), so
-//! neither door here names a representation.
+//! neither entry point here (`set` with either key) names a representation.
 
 use super::*;
 

@@ -31,12 +31,13 @@ use std::path::{Path, PathBuf};
 /// guard's, scoped by subtree, because a substring of those is English far
 /// more often than it is a leftover.
 ///
-/// `door` joins this list at `PLAN.md` S41.7, which is the step that
-/// classifies its sites; before that classification the word is not yet a
-/// defect wherever it stands.
-pub(super) const METAPHORS: [&str; 13] = [
+/// `door` is the glossary's context-sensitive word, retired site by site
+/// against its closed list (`dev/design/door-sites.md`); the replacement
+/// depends on the operation, so no single ratified name stands beside it in
+/// the sibling guard's table.
+pub(super) const METAPHORS: [&str; 14] = [
     "condemn", "acquit", "corpse", "judg", "park", "escrow", "floor", "climb", "enrol", "discount",
-    "ladder", "rung", "trigger",
+    "ladder", "rung", "trigger", "door",
 ];
 
 /// A subtree, a name in it that carries a metaphor and keeps it, and the

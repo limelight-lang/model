@@ -83,7 +83,7 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
 
     // What the mark may have and no more: the near block's rows, and one
     // worklist segment. The far block's rows are the allocation that
-    // finds the arena empty and both doors shut.
+    // finds the arena empty and both allocation paths refusing.
     let room = granted(shadow::bytes_for(unsafe {
         crate::memory::heap::collector_block_slots(near_block)
     })) + granted(crate::cycle::stack::SEGMENT_BYTES);
@@ -93,12 +93,12 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),
-        "the ordinary door is refusing"
+        "the ordinary allocation path is refusing"
     );
     assert_eq!(
         crate::memory::critical::blocks_held(),
         0,
-        "and the critical door has nothing to serve"
+        "and the reserve allocation path has nothing to serve"
     );
 
     let mut stack = TraceStack::new();

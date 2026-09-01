@@ -337,7 +337,7 @@ fn the_window_draws_one_manager_block_and_the_withheld_return_draws_none() {
     assert_eq!(
         (heap, pool),
         (0, 0),
-        "the withheld return asks no door: the capacity was drawn at the window"
+        "the withheld return asks no allocation path: the capacity was drawn at the window"
     );
 
     drop(window);
@@ -345,7 +345,7 @@ fn the_window_draws_one_manager_block_and_the_withheld_return_draws_none() {
 }
 
 #[test]
-fn an_aborted_window_replays_its_returns_with_both_doors_shut() {
+fn an_aborted_window_replays_its_returns_with_both_allocation_paths_refusing() {
     let _guard = test_guard();
     let first = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     let second = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
@@ -360,9 +360,9 @@ fn an_aborted_window_replays_its_returns_with_both_doors_shut() {
     unsafe { crate::memory::stdapi::ll_free(second as *mut u8) };
     assert_eq!(deferred_slot_count(), 2);
 
-    // The abort is a collection that gives up where memory ran out, so the
-    // path is exercised with both doors shut: closing the window may need no
-    // memory to return what it withheld.
+    // The abort is a collection that gives up where memory ran out, so the path
+    // is exercised with both allocation paths refusing: closing the window may
+    // need no memory to return what it withheld.
     crate::memory::critical::drain_for_test();
     let oom = force_oom();
     let _ = crate::test_support::allocation_probe::take_all();
@@ -384,7 +384,7 @@ fn an_aborted_window_replays_its_returns_with_both_doors_shut() {
 }
 
 #[test]
-fn a_window_neither_door_can_fund_does_not_open() {
+fn a_window_neither_allocation_path_can_fund_does_not_open() {
     let _guard = test_guard();
     crate::memory::critical::drain_for_test();
     let oom = force_oom();
@@ -392,7 +392,7 @@ fn a_window_neither_door_can_fund_does_not_open() {
     drop(oom);
     assert!(
         refused.is_none(),
-        "the window opened on memory neither door granted"
+        "the window opened on memory neither allocation path granted"
     );
 
     // A shut window withholds nothing, which is what makes the refusal
@@ -543,7 +543,10 @@ fn the_critical_reserve_funds_a_window_the_pool_refuses() {
     let _guard = test_guard();
     let held_before = gc_blocks();
     let reserve_before = crate::memory::critical::blocks_held();
-    assert!(reserve_before > 0, "the reserve is the second door here");
+    assert!(
+        reserve_before > 0,
+        "the reserve is the second allocation path here"
+    );
 
     let oom = force_oom();
     let window = ActiveTrace::open().expect("the reserve funds what the pool refused");
@@ -597,8 +600,9 @@ fn a_growth_the_pool_refuses_draws_the_reserve_and_gives_it_back() {
     let held_before = gc_blocks();
     let window = ActiveTrace::open().expect("the pool funds the trace window");
 
-    // The first block is filled to its capacity before the door shuts, so the
-    // refusal lands on the growth and on nothing else.
+    // The first block is filled to its capacity before the ordinary allocation
+    // path starts refusing, so the refusal lands on the growth and on nothing
+    // else.
     for _ in 0..RECORDS_PER_BLOCK {
         let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
         assert!(!slot.is_null());
@@ -612,7 +616,10 @@ fn a_growth_the_pool_refuses_draws_the_reserve_and_gives_it_back() {
     unsafe { dead_entity(over_capacity) };
 
     let reserve_before = crate::memory::critical::blocks_held();
-    assert!(reserve_before > 0, "the reserve is the second door here");
+    assert!(
+        reserve_before > 0,
+        "the reserve is the second allocation path here"
+    );
     let oom = force_oom();
     unsafe { crate::memory::stdapi::ll_free(over_capacity) };
     drop(oom);
@@ -620,7 +627,7 @@ fn a_growth_the_pool_refuses_draws_the_reserve_and_gives_it_back() {
     assert_eq!(
         crate::memory::critical::blocks_held(),
         reserve_before - 1,
-        "the growth took the second door while the first was shut"
+        "the growth took the reserve allocation path while the ordinary one refused"
     );
     assert_eq!(gc_blocks(), held_before + 2);
 

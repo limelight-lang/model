@@ -324,8 +324,8 @@ pub unsafe fn ll_array_new(category: MemoryCategory) -> *mut LLArray {
 /// An empty array whose storage is the mixed vector, for a caller that
 /// needs that representation rather than whatever a fresh array is.
 ///
-/// It stamps what [`ll_array_new`] stamps today and is a separate door on
-/// purpose: the COW copy takes the **source's** representation, and a copy
+/// It stamps what [`ll_array_new`] stamps today and is a separate entry point
+/// on purpose: the COW copy takes the **source's** representation, and a copy
 /// reading the factory's default would follow the default when it moves.
 ///
 /// # Safety
@@ -1367,8 +1367,8 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
     let mut pending: WorkList<Pending> = WorkList::new();
     let mut dying = a;
     loop {
-        // Inside the loop rather than above it: the drain tears down
-        // every nested array here, and those pass no other death door —
+        // Inside the loop rather than above it: the drain tears down every
+        // nested array here, and those pass no other teardown entry point —
         // `ll_entity_die` sees the outermost one only.
         journal_event!(
             crate::journal::kinds::KIND_ENTITY_DEATH,
@@ -1376,8 +1376,8 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
             EntityKind::Array as u64,
             0
         );
-        // An array has no destructor and cannot resurrect, so the door
-        // is the death (`memory::reset_window`).
+        // An array has no destructor and cannot resurrect, so this teardown
+        // entry point is the death (`memory::reset_window`).
         crate::memory::reset_window::record_death(dying as *mut RcHeader);
         unsafe { release_children_in_order(dying, &mut pending) };
         unsafe { dispose_storage(dying, category_of(dying)) };
@@ -1401,13 +1401,12 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
 
                     if unsafe { is_array(dead) } {
                         // A nested array taken over here never passes
-                        // the bare-pointer door, so a duty that door
-                        // carries is owed twice — here and at the second
-                        // site below (`object::ll_entity_die`). What a
-                        // dying registered slot owes today is owed at
-                        // neither: the withholding is the free's, and
-                        // this array's slot reaches the same free
-                        // (`memory::stdapi::ll_free`).
+                        // `ll_entity_die`, so a duty that entry point carries
+                        // is owed twice — here and at the second site below
+                        // (`object::ll_entity_die`). What a dying registered
+                        // slot owes today is owed at neither: the withholding
+                        // is the free's, and this array's slot reaches the same
+                        // free (`memory::stdapi::ll_free`).
                         next = Some(dead as *mut LLArray);
                         break;
                     }

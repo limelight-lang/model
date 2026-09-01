@@ -212,9 +212,9 @@ pub(crate) fn reset_pin_released(block: usize) -> bool {
         return false;
     };
 
-    // The one door of the three where a miscount ends at the block pool
-    // rather than at `false`: spending a payload's pin here would report
-    // a block with live bytes in it empty.
+    // The one of the three release functions where a miscount ends at the block
+    // pool rather than at `false`: spending a payload's pin here would report a
+    // block with live bytes in it empty.
     debug_assert!(index.payloads > 0, "the reset released a pin it never took");
     index.payloads = index.payloads.saturating_sub(1);
     index.live == 0 && index.payloads == 0

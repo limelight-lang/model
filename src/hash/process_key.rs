@@ -59,8 +59,8 @@ use std::sync::LazyLock;
 #[cfg(not(unix))]
 compile_error!(
     "the per-process key is drawn from /dev/urandom, and this target has \
-     no door: add an OS randomness read for it (Windows: BCryptGenRandom \
-     or an equivalent) before building here"
+     no `/dev/urandom`: add an OS randomness read for it (Windows: \
+     BCryptGenRandom or an equivalent) before building here"
 );
 
 /// The drawn key, memoized for the life of the process.
@@ -128,7 +128,8 @@ fn draw_from_os() -> [u64; 4] {
     use std::io::Read;
 
     let mut bytes = [0u8; 32];
-    let read = std::fs::File::open("/dev/urandom").and_then(|mut door| door.read_exact(&mut bytes));
+    let read =
+        std::fs::File::open("/dev/urandom").and_then(|mut urandom| urandom.read_exact(&mut bytes));
     if let Err(refusal) = read {
         eprintln!("ll-model: reading 32 bytes from /dev/urandom failed: {refusal}");
         std::process::abort();
