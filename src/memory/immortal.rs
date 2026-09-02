@@ -122,10 +122,10 @@ fn immortal_alloc_run(size: usize) -> *mut u8 {
     // Through the one write path like every other kind, though nothing
     // reads this one across threads: the run is its own mapping, it lies
     // inside no carved region, and it is registered nowhere the
-    // enumerator reads — not the region registry, not the retained index,
-    // not `large_entity`'s run list — so no scan reaches it. Uniform
-    // anyway, because a discriminant punned across five header types with
-    // two disciplines needs casts at the seams.
+    // enumerator reads — not the region registry, not a retained block's
+    // survivor list, not `large_entity`'s run list — so no scan reaches
+    // it. Uniform anyway, because a discriminant punned across five
+    // header types with two disciplines needs casts at the seams.
     unsafe {
         crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_IMMORTAL);
         BlockHeader::payload_start(block)

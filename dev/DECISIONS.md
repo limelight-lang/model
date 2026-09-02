@@ -8,6 +8,73 @@ never edited or deleted.
 
 ---
 
+## 2026-09-02 — the reset places every survivor list before it reads any count, publishes in two instants, and returns an empty block through an arm of its own
+
+Owner: S36.9 slice (e), executing the Sage's rulings of 2026-09-02 as ruled;
+disclosed for Edmond to overturn. Four things the rfc entry
+(`rfc/model/gc/rc-cycle.md`, "The survivor list of a retained block") and the
+decision above it leave to the code, and one the code took pending his word.
+
+**Two publication instants, not one.** `promote::retain_block` clears the
+whole collector line and stamps `BLOCK_KIND_RETAINED` inside the fixpoint,
+because a payload freed inside the reset must route to the retained arm by its
+kind and spend its pin; the list is written after the fixpoint and published
+by a release store of its own, length first and address next, and every
+lookup acquire-loads the address. The count word is published last, by an
+increment whose release half covers the address: published before the list,
+the count let the decrement that reaches zero on another thread land between
+the two stores, read a null address, and return the block without spending
+the holder's hold (found by the Critic's round of the same day). The rfc's
+sentence "publishes them with the release store that stamps the block's kind"
+reads as one instant: the kind's store publishes the zeros, the address's
+store publishes the list, and the count's increment covers both.
+
+**The arena records a fill per block, and places the list.** The own-tail
+tier needs to know where a block the bump has left stops, log segments
+included, and the arena kept the bump of the current block only.
+`fresh_block` writes one word, the fill, into the header of the block it
+leaves — offset 16, behind the pool's three words, which an arena block used
+for nothing — and `Arena::alloc_preferring(block, size)` answers the tail past
+that fill when the bytes fit, else the ordinary bump, which is the current
+block or a fresh one, so tiers two and three are one call. The alternative,
+computing the tail from the highest survivor's end, would overwrite a
+larges-log segment that `finish_reset` reads after the lists are written.
+
+**Placement before publication.** Every list is placed, its holder retained
+once and pinned once per list, before any block's count is read: a holder
+whose own survivors all died inside the reset would otherwise answer "empty"
+before a later block's list landed in its tail, and the reset would return it
+under a live list.
+
+**The sentinel has an arm.** The reset returns an already-empty block through
+`ll_free(block)`, and that call reached `occupant_freed`, which answered true
+at zero by saturating. With an atomic word a decrement from zero underflows
+into the payload half, so `ptr == block` takes an arm of its own in `ll_free`'s
+retained arm: assert the count reads zero, release. The absorb in
+`reset_window` keys on the low half of the count word reading zero while a
+window is open — the count, not the list's presence, so a block published
+without a list still counts its deaths — and excludes the sentinel. That
+closes a defect the gate found by reading and the slice saw red before the
+fix: a block pinned for a payload alone, the survivor in one arena block and
+its refused bytes in the next, whose payload died inside the reset was pushed
+to the reset's emptied list and its sentinel absorbed as a corpse's free, so
+the block stayed retained for the life of the process.
+
+**Taken pending Edmond's word.** When neither the tail, the current block nor
+the pool can place a list, the reset publishes the count with a null address:
+the block stays retained, returns by its deaths, and every edge into it
+answers untracked for its life — a ring through its occupants is never
+collected. The alternative was the abort `Arena::alloc_large`'s log record
+takes. The count-keyed absorb is what keeps such a block counting its deaths.
+
+**Rejected.** A load-then-decrement guard in `payload_freed` answering false
+for a block pinned for nothing, as the registry did by saturating: it costs a
+second access on every payload death to defend a caller's mistake, and the
+mistake is a debug assertion on the pre-value instead. The one test that
+pinned the saturating answer reads the count word now.
+
+---
+
 ## 2026-09-02 — the workspace is charged when the bump leaves it and marked when the reset rewinds
 
 Owner: S36.10, over the Sage gate's F5.
@@ -38,9 +105,8 @@ fails when the workspace's payload reaches neither figure.
 ## 2026-09-01 — the workspace base is drawn at the first collection, not at thread init
 
 Owner: S36.10, on Edmond's ruling over the Sage gate's first escalation.
-Supersedes the entry below, "cycle GC owns persistent manager-visible memory
-and one token per candidate", which made the workspace a second mandatory
-block at init.
+Supersedes the 2026-08-26 entry below that made the workspace a second
+mandatory block at init.
 
 **Decided:** a thread's first collection draws one ordinary-pool 64 KiB block
 through `gc_metadata::acquire`, and the thread holds it until exit as its
@@ -55,7 +121,7 @@ so an abort's count-based return cannot hand it to the reserve.
 
 **Why:** the design of record has one mandatory block per thread and says a
 thread that cannot obtain it does not start (`rfc/model/memory/critical-reserve.md`,
-"Candidate-queue growth"; `rfc/dev/DECISIONS.md`, 2026-08-28: the queue base is the
+"Allocation paths"; `rfc/dev/DECISIONS.md`, 2026-08-28: the queue base is the
 one stock that cannot be refilled at a later poll without suspending the
 guarantee between birth and that poll). A workspace meets neither half of
 that reason — a collection that lacks it answers `None` and loses nothing it
@@ -72,14 +138,14 @@ production path names. S36.10 builds `Idle → Trace → Idle` with the rewind a
 the trace close; S36.12 splits the close when it chooses its commit unit.
 
 **Rejected:** the mandatory draw at init, for the reason above; a base
-adopted from the critical reserve, which `rfc/model/memory/critical-reserve.md`,
-"Allocation paths", forbids as an ordinary bump block; a phase word beside the withheld-return chain's head
+adopted from the critical reserve, which `critical-reserve.md` forbids as an
+ordinary bump block; a phase word beside the withheld-return chain's head
 pointer as a second representation of "a trace is open", since an unwind
 that drops the chain would leave the two disagreeing.
 
 **Cost:** mandatory direct cycle memory stays 65,536 bytes per registered
 thread; a thread that has collected once holds 131,072, and 262,144 with both
-queue spares present and an empty queue — the figure the superseded entry
+queue spares present and an empty queue — the figure the 2026-08-26 entry
 called a maximum is the empty-queue figure, a polled thread with one candidate
 holding five blocks.
 

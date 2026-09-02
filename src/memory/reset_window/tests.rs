@@ -35,37 +35,45 @@ fn a_nested_window_restores_the_one_it_displaced() {
 
 /// The absorb question has three answers, and only one of them is true:
 /// a reset takes back its own corpse's free, leaves an earlier reset's
-/// occupant alone, and answers nothing at all outside a reset.
+/// occupant alone, and answers nothing at all outside a reset. The
+/// question is asked of the block's count word and not of its list, so
+/// the block here counts one occupant and lists nothing, which is the
+/// state a reset leaves a block in when it could place no list.
 #[test]
-fn only_an_unindexed_block_inside_a_reset_is_absorbed() {
+fn only_an_uncounted_block_inside_a_reset_is_absorbed() {
+    use crate::memory::block_pool::BlockHeader;
     let _g = crate::memory::block_pool::test_guard();
-    // An address, not memory: the question is asked of the registry, and
-    // `register` with no occupants reads nothing through it.
-    let block = 0x5eed_0000usize;
+    let block = crate::memory::retained::bare_retained_block();
+    let cell = BlockHeader::payload_start(block as *mut BlockHeader) as *mut u64;
+    unsafe { cell.write(1) };
 
     assert!(
-        !absorbs_retained_free(block),
+        !unsafe { absorbs_retained_free(block) },
         "a free outside a reset was absorbed"
     );
 
     let guard = opened();
     assert!(
-        absorbs_retained_free(block),
-        "the reset did not absorb the free of a block it has not indexed"
+        unsafe { absorbs_retained_free(block) },
+        "the reset did not absorb the free of a block whose count it has not established"
     );
 
     assert!(
-        unsafe { crate::memory::retained::register(block, Vec::new()) },
-        "an index with no occupants is empty on arrival"
+        !unsafe {
+            crate::memory::retained::register(block, &[cell as usize], std::ptr::null_mut())
+        },
+        "a block with a live occupant is not empty on arrival"
     );
     assert!(
-        !absorbs_retained_free(block),
+        !unsafe { absorbs_retained_free(block) },
         "an occupant an earlier reset counted was absorbed by this one"
     );
 
     assert!(
-        crate::memory::retained::occupant_freed(block),
-        "the index outlived the test that registered it"
+        unsafe { crate::memory::retained::occupant_freed(block) },
+        "the count outlived the test that established it"
     );
+    unsafe { cell.write(0) };
+    unsafe { crate::memory::retained::release_emptied(block) };
     drop(guard);
 }

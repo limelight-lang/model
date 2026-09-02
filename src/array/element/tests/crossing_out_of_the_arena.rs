@@ -108,7 +108,7 @@ fn a_request_that_takes_a_reference_ends_holding_nothing() {
     let mut ctx = crate::memory::context::LLContext { arena: arena_ptr };
     let context_ptr: *mut crate::memory::context::LLContext = &mut ctx;
     crate::memory::context::set_current_context(context_ptr);
-    let retained_before = crate::memory::retained::snapshot().len();
+    let retained_before = crate::memory::retained::retained_block_count();
 
     let cls = ClassBuilder::new("Plain").build();
     let a = unsafe { ll_array_new(MemoryCategory::RequestArena) };
@@ -144,7 +144,7 @@ fn a_request_that_takes_a_reference_ends_holding_nothing() {
         "the reference box outlived the request that made it"
     );
     assert_eq!(
-        crate::memory::retained::snapshot().len(),
+        crate::memory::retained::retained_block_count(),
         retained_before,
         "the request retained a block on the way out"
     );

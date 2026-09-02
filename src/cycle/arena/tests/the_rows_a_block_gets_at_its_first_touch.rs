@@ -143,8 +143,8 @@ fn two_slots_of_one_block_share_its_array_and_take_their_own_rows() {
     crate::memory::critical::drain_for_test();
 }
 
-/// The retained population's index space is its object index, so its
-/// array is sized by the occupant count rather than by a stride the
+/// The retained population's index space is its survivor list, so its
+/// array is sized by the list's length rather than by a stride the
 /// block does not have. Two survivors of different sizes land in one
 /// block, and each takes the row its position in that index names.
 #[test]
@@ -177,14 +177,14 @@ fn a_retained_block_gets_one_row_for_each_occupant() {
     unsafe { store_prop(&mut request, holder, 32, large) };
     unsafe { crate::promote::arena_reset_full(&mut request) };
 
-    let occupants = crate::memory::retained::occupant_count(block)
-        .expect("the reset registered the block's occupant index");
+    let occupants = unsafe { crate::memory::retained::occupant_count(block) }
+        .expect("the reset published the block's survivor list");
 
     let mut arena = crate::cycle::testing::open_arena();
     let mut rows = Vec::new();
     for survivor in [small, large] {
-        let position = crate::memory::retained::occupant_index(block, survivor as usize)
-            .expect("a survivor is named by its block's index");
+        let position = unsafe { crate::memory::retained::occupant_index(block, survivor as usize) }
+            .expect("a survivor is named by its block's list");
         let row = RowKey {
             block,
             index: position as u32,
@@ -324,7 +324,7 @@ fn retention_publishes_a_block_with_no_rows() {
     unsafe { crate::promote::arena_reset_full(&mut request) };
 
     assert!(
-        crate::memory::retained::occupant_count(block as usize).is_some(),
+        unsafe { crate::memory::retained::occupant_count(block as usize) }.is_some(),
         "the fixture's survivor turned its block retained"
     );
     assert!(
@@ -386,30 +386,30 @@ fn a_refusal_on_the_second_block_leaves_the_first_intact() {
     crate::memory::critical::drain_for_test();
 }
 
-/// A block held for a payload and nothing else has a registry entry and no
-/// object index, so an edge into it cannot be placed. The trace keeps the
+/// A block held for a payload and nothing else has a count word and no
+/// survivor list, so an edge into it cannot be placed. The trace keeps the
 /// referent alive instead of guessing a row: `RowLookup::Unplaced` is the same
-/// conservative answer `row::resolve_edge_target` gives an address the index
+/// conservative answer `row::resolve_edge_target` gives an address the list
 /// does not name.
 #[test]
-fn an_edge_into_a_block_with_no_object_index_is_unplaced() {
+fn an_edge_into_a_block_with_no_survivor_list_is_unplaced() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
-    let (mut heap, slot, block) = an_entity_block();
 
     // A pin without a `register`, which is the state a reset is in
-    // between refusing to carry a payload out and building the index.
-    crate::memory::retained::pin(block as usize);
+    // between refusing to carry a payload out and publishing the list.
+    let block = crate::memory::retained::bare_retained_block();
+    unsafe { crate::memory::retained::pin(block) };
     assert!(
-        crate::memory::retained::occupant_count(block as usize).is_none(),
-        "a pinned block carries no occupant index"
+        unsafe { crate::memory::retained::occupant_count(block) }.is_none(),
+        "a pinned block carries no survivor list"
     );
 
     let mut arena = crate::cycle::testing::open_arena();
     let answer = unsafe {
         arena.ensure_row(
             RowKey {
-                block: block as usize,
+                block,
                 index: 0,
                 population: Population::Retained,
             },
@@ -418,14 +418,14 @@ fn an_edge_into_a_block_with_no_object_index_is_unplaced() {
     };
     assert_eq!(answer, RowLookup::Untracked);
     assert!(
-        unsafe { crate::memory::heap::block_shadow(block) }.is_null(),
+        unsafe { crate::memory::heap::block_shadow(block as *mut u8) }.is_null(),
         "an edge it cannot place reserves nothing"
     );
     assert_eq!(arena.touched_blocks(), 0);
 
     arena.reset();
-    assert!(crate::memory::retained::payload_freed(block as usize));
-    unsafe { heap.free(slot) };
+    assert!(unsafe { crate::memory::retained::payload_freed(block) });
+    unsafe { crate::memory::retained::release_emptied(block) };
     crate::memory::critical::drain_for_test();
 }
 

@@ -29,7 +29,7 @@
 //! declares this module implements.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::journal::kinds::journal_event;
 use crate::memory::block_pool::{
@@ -248,21 +248,25 @@ struct BlockRemote {
     remote_free: AtomicPtr<FreeSlot>,
 }
 
-/// The collector's three words about a block, alone on the last cache
-/// line of the block's reserved header line.
+/// The collector's words about a block, alone on the last cache line of
+/// the block's reserved header line.
 ///
 /// **Out here rather than inside [`HeapBlockHeader`] because the
 /// collector writes `shadow`**, and a write into the header's first line
 /// would steal it from under the owner's bump cursor and free list on
-/// every block a trace touches. The two words beside it are written once
-/// at commissioning and never again, so the line the collector dirties
+/// every block a trace touches. The words beside it are written by the
+/// commissioning and never again, so the line the collector dirties
 /// carries nothing the owner reads (`rfc/model/gc/rc-cycle.md`, "Where
 /// the shadow count lives").
 ///
-/// Written only for `BLOCK_KIND_ENTITY` blocks. The other two
-/// populations a trace enters — retained and large-entity — carry their
-/// rows elsewhere (`crate::cycle::row`), and a raw heap block's tail is
-/// left as the pool handed it over.
+/// Which words carry meaning depends on the kind: an entity block's
+/// `refill` writes the reciprocal and the size class, and the arena
+/// reset that retains a former arena block writes its survivor list and
+/// count word over a line it has cleared first
+/// (`rfc/model/gc/rc-cycle.md`, "The survivor list of a retained block").
+/// A large entity carries its one row in its own header
+/// (`crate::cycle::row`), and a raw heap block's tail is left as the pool
+/// handed it over.
 #[repr(C, align(64))]
 struct BlockCollector {
     /// This block's shadow row array, or null while no collection has touched
@@ -282,35 +286,52 @@ struct BlockCollector {
     /// `BLOCK_PAYLOAD / stride`, and taking the stride from here is what
     /// keeps the whole lookup on this line.
     size_class: AtomicU32,
+    /// A retained block's survivor list: the sorted addresses of the
+    /// survivors promoted in it, in the arena's own memory. Null for a
+    /// block retained for a payload alone and for one whose reset
+    /// published no list. Written by the reset after `survivor_count`
+    /// and published with a release store; every lookup acquire-loads it
+    /// (`crate::memory::retained`).
+    survivors: AtomicPtr<usize>,
+    /// What holds a retained block: live occupants in the low half, and
+    /// in the high half the payloads it is pinned for and the survivor
+    /// lists of other blocks standing in it. Decremented atomically by
+    /// whichever thread frees, because `ll_free` is ABI; the arithmetic
+    /// is `crate::memory::retained`'s.
+    holds: AtomicU64,
+    /// The length of `survivors`, which is a retained block's index space.
+    /// Published by the release store of `survivors`.
+    survivor_count: AtomicU32,
 }
 
-/// Where a block's collector triple begins: immediately past the header,
+/// Where a block's collector line begins: immediately past the header,
 /// which is 192 bytes today because [`BlockRemote`] aligns the header to
 /// 64. Tied to the header's size rather than written as 192, so a header
-/// that grows moves the triple instead of overlapping it.
-const COLLECTOR_TRIPLE_OFFSET: usize = size_of::<HeapBlockHeader>();
+/// that grows moves the line instead of overlapping it.
+const COLLECTOR_LINE_OFFSET: usize = size_of::<HeapBlockHeader>();
 
 const _: () = {
     assert!(
-        COLLECTOR_TRIPLE_OFFSET % 64 == 0,
-        "the triple must begin a cache line of its own"
+        COLLECTOR_LINE_OFFSET % 64 == 0,
+        "the collector line must begin a cache line of its own"
     );
     assert!(
-        COLLECTOR_TRIPLE_OFFSET + size_of::<BlockCollector>() <= LINE_SIZE,
-        "the triple must fit the block's reserved header line"
+        COLLECTOR_LINE_OFFSET + size_of::<BlockCollector>() <= LINE_SIZE,
+        "the collector line must fit the block's reserved header line"
     );
 };
 
-/// The collector triple of `block`.
+/// The collector line of `block`.
 ///
 /// # Safety
-/// `block` must be the header of a live 64 KiB block, since the triple
-/// is reached by offset from it. The words carry meaning only for a
-/// `BLOCK_KIND_ENTITY` block, which is the only kind [`Heap::refill`]
-/// writes them for.
+/// `block` must be the header of a live 64 KiB block, since the line is
+/// reached by offset from it. The words carry meaning only for a
+/// `BLOCK_KIND_ENTITY` block, which [`Heap::refill`] commissions, and a
+/// `BLOCK_KIND_RETAINED` block, which the arena reset commissions
+/// ([`clear_collector_line`]).
 #[inline]
 unsafe fn block_collector(block: *mut HeapBlockHeader) -> *mut BlockCollector {
-    unsafe { (block as *mut u8).add(COLLECTOR_TRIPLE_OFFSET) as *mut BlockCollector }
+    unsafe { (block as *mut u8).add(COLLECTOR_LINE_OFFSET) as *mut BlockCollector }
 }
 
 /// Per-block header. Overlays the block's first line; shares offset 0
@@ -1245,10 +1266,10 @@ impl Heap {
             // shape that stays right if this ever moves after the
             // publication.
             if self.block_kind == BLOCK_KIND_ENTITY {
-                let triple = block_collector(block);
-                (&raw mut (*triple).reciprocal).write(AtomicU32::new(reciprocal_for(class_size)));
-                (&raw mut (*triple).size_class).write(AtomicU32::new(ci as u32));
-                (&raw mut (*triple).shadow).write(AtomicPtr::new(std::ptr::null_mut()));
+                let line = block_collector(block);
+                (&raw mut (*line).reciprocal).write(AtomicU32::new(reciprocal_for(class_size)));
+                (&raw mut (*line).size_class).write(AtomicU32::new(ci as u32));
+                (&raw mut (*line).shadow).write(AtomicPtr::new(std::ptr::null_mut()));
             }
 
             crate::memory::block_pool::store_block_kind(&raw const (*block).kind, self.block_kind);
@@ -2142,7 +2163,8 @@ unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
 
 /// Null the shadow-row pointer of a block that can carry rows, which
 /// every collection owes for every block it stamped — at its end and on
-/// its abort alike.
+/// its abort alike. The other words of the line are left alone: a
+/// retained block's survivor list outlives every collection.
 ///
 /// A stale pointer left behind names an arena that has since been
 /// recommissioned, so the next collection would decrement rows that now
@@ -2150,24 +2172,99 @@ unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
 /// count lives"). The store is a release, and the acquire half is
 /// [`block_shadow`].
 ///
-/// **It is also how a block is commissioned into a row-carrying kind.**
-/// The word is written once at an entity block's `refill` and never
-/// again, but a former-arena block is stamped `BLOCK_KIND_RETAINED`
-/// over whatever its previous life left in the collector line, so
-/// `promote` nulls it there before the kind's release store publishes
-/// the block to a trace.
-///
 /// # Safety
 /// `block` must be the header of a live 64 KiB block whose collector
-/// line is the collector's: `BLOCK_KIND_ENTITY`, `BLOCK_KIND_RETAINED`,
-/// or a block about to be stamped one of them.
+/// line is the collector's: `BLOCK_KIND_ENTITY` or `BLOCK_KIND_RETAINED`.
 pub(crate) unsafe fn clear_block_shadow(block: *mut u8) {
-    let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
     unsafe {
-        (*triple)
+        (*line)
             .shadow
             .store(std::ptr::null_mut(), Ordering::Release)
     };
+}
+
+/// Zero every word of a block's collector line, which is how a former
+/// arena block is commissioned as `BLOCK_KIND_RETAINED`: the block's
+/// previous life may have left a collection's array pointer, or a
+/// survivor list and count of an earlier retention, in the line, and the
+/// kind's release store that follows this call publishes the zeros —
+/// no rows yet, no list yet, nothing held
+/// (`rfc/model/gc/rc-cycle.md`, "The survivor list of a retained block").
+/// An entity block's `refill` writes its own words and never calls this.
+///
+/// # Safety
+/// `block` must be the header of a live 64 KiB block that the caller is
+/// about to stamp `BLOCK_KIND_RETAINED`, and which no trace can address
+/// yet.
+pub(crate) unsafe fn clear_collector_line(block: *mut u8) {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe {
+        (*line)
+            .shadow
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
+        (*line).reciprocal.store(0, Ordering::Relaxed);
+        (*line).size_class.store(0, Ordering::Relaxed);
+        (*line)
+            .survivors
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
+        (*line).holds.store(0, Ordering::Relaxed);
+        (*line).survivor_count.store(0, Ordering::Relaxed);
+    }
+}
+
+/// A retained block's survivor list and its length: `(null, 0)` while
+/// no list is published. The address is acquire-loaded, which is what
+/// makes the length and the addresses behind it readable
+/// ([`publish_block_survivor_list`]).
+///
+/// # Safety
+/// `block` must be the header of a live block stamped
+/// `BLOCK_KIND_RETAINED` over a cleared collector line.
+pub(crate) unsafe fn block_survivor_list(block: *mut u8) -> (*const usize, usize) {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    let list = unsafe { (*line).survivors.load(Ordering::Acquire) };
+    if list.is_null() {
+        return (std::ptr::null(), 0);
+    }
+
+    (
+        list,
+        unsafe { (*line).survivor_count.load(Ordering::Relaxed) } as usize,
+    )
+}
+
+/// Publish `list`, `count` sorted survivor addresses in the arena's own
+/// memory, as `block`'s survivor list. The length is written first and
+/// the address last with a release store, so a reader that acquires a
+/// non-null address reads the length that goes with it. A null `list`
+/// publishes "no list" and `count` is ignored.
+///
+/// # Safety
+/// As [`block_survivor_list`], and the caller is the arena reset that
+/// retained the block, on its own thread, before any trace can address it.
+pub(crate) unsafe fn publish_block_survivor_list(block: *mut u8, list: *const usize, count: usize) {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    let count = if list.is_null() { 0 } else { count };
+    unsafe {
+        (*line)
+            .survivor_count
+            .store(count as u32, Ordering::Relaxed);
+        (*line)
+            .survivors
+            .store(list as *mut usize, Ordering::Release);
+    }
+}
+
+/// The count word of a retained block, for the arithmetic that decides
+/// when the block returns (`crate::memory::retained`).
+///
+/// # Safety
+/// As [`block_survivor_list`], for as long as the returned pointer is
+/// used.
+pub(crate) unsafe fn block_hold_count(block: *mut u8) -> *const AtomicU64 {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { &raw const (*line).holds }
 }
 
 /// The shadow-row pointer of a block, null when no collection holds rows
@@ -2177,8 +2274,8 @@ pub(crate) unsafe fn clear_block_shadow(block: *mut u8) {
 /// # Safety
 /// As [`clear_block_shadow`].
 pub(crate) unsafe fn block_shadow(block: *mut u8) -> *mut u8 {
-    let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
-    unsafe { (*triple).shadow.load(Ordering::Acquire) }
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*line).shadow.load(Ordering::Acquire) }
 }
 
 /// Stamp a block's shadow-row pointer. **The caller owes the enrolment
@@ -2188,8 +2285,8 @@ pub(crate) unsafe fn block_shadow(block: *mut u8) -> *mut u8 {
 /// # Safety
 /// As [`clear_block_shadow`].
 pub(crate) unsafe fn set_block_shadow(block: *mut u8, rows: *mut u8) {
-    let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
-    unsafe { (*triple).shadow.store(rows, Ordering::Release) };
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*line).shadow.store(rows, Ordering::Release) };
 }
 
 /// The slot index of `entity` inside its own entity block: which row of
@@ -2197,7 +2294,7 @@ pub(crate) unsafe fn set_block_shadow(block: *mut u8, rows: *mut u8) {
 /// it (`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives").
 ///
 /// The index is derived by a reciprocal multiply rather than by a
-/// division: the block's collector triple carries `2^32 / stride + 1`,
+/// division: the block's collector line carries `2^32 / stride + 1`,
 /// written there once at commissioning, and the high word of the
 /// multiply is the index. An index that is off by one names another live
 /// entity's row instead of faulting, so the arithmetic is proven
@@ -2212,11 +2309,11 @@ pub(crate) unsafe fn set_block_shadow(block: *mut u8, rows: *mut u8) {
 /// # Safety
 /// `entity` must be a slot of a commissioned `BLOCK_KIND_ENTITY` block.
 pub(crate) unsafe fn entity_slot_index(entity: *mut u8) -> u32 {
-    let triple = unsafe { block_collector(HeapBlockHeader::of_ptr(entity)) };
+    let line = unsafe { block_collector(HeapBlockHeader::of_ptr(entity)) };
     // Relaxed, because the caller's acquire load of the kind published
     // this word: both are written once at commissioning, the kind last
     // and with release (`block_pool::collector_load_block_kind`).
-    let reciprocal = unsafe { (*triple).reciprocal.load(Ordering::Relaxed) };
+    let reciprocal = unsafe { (*line).reciprocal.load(Ordering::Relaxed) };
     let offset = (entity as usize & BLOCK_MASK) - LINE_SIZE;
     slot_index_by_reciprocal(offset, reciprocal)
 }
@@ -2225,7 +2322,7 @@ pub(crate) unsafe fn entity_slot_index(entity: *mut u8) -> u32 {
 /// shadow array needs (`crate::cycle::arena`).
 ///
 /// The size class comes from the collector's own copy in the block's
-/// triple rather than from [`HeapBlockHeader::size_class`]: the whole
+/// collector line rather than from [`HeapBlockHeader::size_class`]: the whole
 /// row lookup is meant to touch one cache line, and the owning thread's half
 /// of
 /// the header is borrowed as `&mut` by every allocation, which a
@@ -2235,15 +2332,15 @@ pub(crate) unsafe fn entity_slot_index(entity: *mut u8) -> u32 {
 /// `block` must be the header of a commissioned `BLOCK_KIND_ENTITY`
 /// block.
 pub(crate) unsafe fn collector_block_slots(block: *mut u8) -> u32 {
-    let triple = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
     // Relaxed for the reason `entity_slot_index` loads its reciprocal
     // relaxed: the caller's acquire load of the kind published it.
-    let class = unsafe { (*triple).size_class.load(Ordering::Relaxed) } as usize;
+    let class = unsafe { (*line).size_class.load(Ordering::Relaxed) } as usize;
     (BLOCK_PAYLOAD / SIZE_CLASSES[class]) as u32
 }
 
 /// The reciprocal a block of this `stride` carries in its collector
-/// triple: `2^32 / stride + 1`.
+/// line: `2^32 / stride + 1`.
 ///
 /// Exact for every offset a 64 KiB block can hold, at every size class:
 /// the multiply's error stays below `2^-16` while a quotient's fraction
@@ -2255,7 +2352,7 @@ const fn reciprocal_for(stride: usize) -> u32 {
 }
 
 /// The slot index of `offset` under a reciprocal already in hand — the
-/// form a row lookup takes, the block's triple having paid for the
+/// form a row lookup takes, the block's collector line having paid for the
 /// division once at commissioning.
 ///
 /// `offset` is measured from the payload start, `LINE_SIZE` already off
@@ -2295,17 +2392,19 @@ fn slot_index_of_offset(offset: usize, stride: usize) -> u32 {
 ///
 /// **Three populations, not one.** Size-class entity blocks are strided;
 /// retained former-arena blocks carry no stride and are enumerated from
-/// the index the reset left; and an entity too large for a size class
-/// holds a block-aligned allocation alone, contributing exactly one
-/// slot — found by the region scan while it is a pooled block, and from
+/// the survivor list their header names, found by the same region scan
+/// on their kind (`rfc/model/gc/rc-cycle.md`, "The survivor list of a
+/// retained block"); and an entity too large for a size class holds a
+/// block-aligned allocation alone, contributing exactly one slot — found
+/// by the region scan while it is a pooled block, and from
 /// `memory::large_entity`'s registry once it is an OS-direct run outside
 /// every region.
 ///
 /// # Safety
-/// Requires a quiescent mutator: block kinds, cursors and slot headers
-/// are read unsynchronised, which is sound only while no thread
-/// allocates or frees concurrently (the crate's single-mutator phase;
-/// the concurrent collector adds its snapshot discipline in build
+/// Requires a quiescent mutator: block kinds, cursors, survivor lists and
+/// slot headers are read unsynchronised, which is sound only while no
+/// thread allocates or frees concurrently (the crate's single-mutator
+/// phase; the concurrent collector adds its snapshot discipline in build
 /// step 3).
 pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::RcHeader)) {
     BlockPool::global().for_each_region(|region| {
@@ -2333,6 +2432,25 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
                 continue;
             }
 
+            // A retained former-arena block carries no stride, so its
+            // occupants are the survivor list the reset left in its
+            // header. The occupancy test is the same word: a survivor
+            // that has since died reads refcount 0 and is skipped exactly
+            // as a free slot is (`memory/retained.rs`). A null list is a
+            // block retained for a payload alone, which holds no entity
+            // this walk can name.
+            if kind == crate::memory::block_pool::BLOCK_KIND_RETAINED {
+                let (list, count) = unsafe { block_survivor_list(block as *mut u8) };
+                for i in 0..count {
+                    let slot = unsafe { list.add(i).read() } as *mut crate::refcount::RcHeader;
+                    if unsafe { crate::refcount::header_refcount(slot) } != 0 {
+                        visit(slot);
+                    }
+                }
+
+                continue;
+            }
+
             if kind != BLOCK_KIND_ENTITY {
                 continue;
             }
@@ -2354,20 +2472,6 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
             }
         }
     });
-
-    // Retained former-arena blocks carry no stride, so they are
-    // enumerated from the object index the reset left behind rather
-    // than by striding. The occupancy test is the same word: a survivor
-    // that has since died reads refcount 0 and is skipped exactly as a
-    // free slot is (`memory/retained.rs`).
-    for (_block, index) in crate::memory::retained::snapshot() {
-        for &addr in index.iter() {
-            let slot = addr as *mut crate::refcount::RcHeader;
-            if unsafe { crate::refcount::header_refcount(slot) } != 0 {
-                visit(slot);
-            }
-        }
-    }
 
     // An entity too large even for a pooled block lives in an OS-direct
     // run, which no region contains, so the registry is the only thing
@@ -2444,13 +2548,12 @@ pub(crate) fn describe_slot(addr: usize) -> String {
         .copied()
         .unwrap_or(usize::MAX);
     let index = (addr - block as usize - LINE_SIZE) / stride.max(1);
-    let retained = crate::memory::retained::snapshot()
-        .iter()
-        .any(|(_, ix)| ix.contains(&addr));
+    let listed = kind == crate::memory::block_pool::BLOCK_KIND_RETAINED
+        && unsafe { crate::memory::retained::occupant_index(block as usize, addr) }.is_some();
     format!(
         "addr {addr:#x} block {:#x} in_region {in_region} kind {kind} class {size_class} \
          stride {stride} used {used} slots {slots} bump {bump} slot_index {index} \
-         retained_index {retained} refcount {refcount} flags {flags:#06x}",
+         survivor_listed {listed} refcount {refcount} flags {flags:#06x}",
         block as usize
     )
 }

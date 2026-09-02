@@ -676,8 +676,8 @@ impl BlockPool {
             "GC metadata returns through memory::gc_metadata"
         );
         // A retained block carries promoted survivors, and it comes back
-        // only through `retained::give_block_back`, which restamps it once
-        // the registry reports nothing left holding it — the last live
+        // only through `retained::release_emptied`, which restamps it once
+        // its count word reports nothing left holding it — the last live
         // occupant gone (`ll_free`'s retained arm) or the last pinned
         // payload freed. Arriving here still stamped retained means a
         // caller took a shortcut past that arm, with survivors possibly

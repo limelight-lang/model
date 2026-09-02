@@ -55,16 +55,16 @@ fn block_header_halves_are_laid_out_as_the_design_requires() {
         size_of::<HeapBlockHeader>()
     );
 
-    // The triple takes the free tail of that same line, which the fit
-    // above does not say: a header grown to 256 satisfies it and leaves
-    // the triple nowhere. 192 is what `BlockRemote`'s alignment
-    // produces, so only a literal catches a header that grew into the
-    // tail.
+    // The collector line takes the free tail of that same line, which
+    // the fit above does not say: a header grown to 256 satisfies it and
+    // leaves the collector line nowhere. 192 is what `BlockRemote`'s
+    // alignment produces, so only a literal catches a header that grew
+    // into the tail.
     assert_eq!(size_of::<HeapBlockHeader>(), 192);
     assert_eq!(
-        COLLECTOR_TRIPLE_OFFSET + size_of::<BlockCollector>(),
+        COLLECTOR_LINE_OFFSET + size_of::<BlockCollector>(),
         LINE_SIZE,
-        "the triple ends where the reserved line does, so no slot moves"
+        "the collector line ends where the reserved line does, so no slot moves"
     );
 }
 

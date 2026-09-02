@@ -27,11 +27,11 @@
 //! outer window, which frees it at its own close.
 //!
 //! The window also **absorbs** one free rather than deferring it: a
-//! corpse in a retained block that has no occupant index yet. Its death
-//! is already accounted for, because `retained::register` declines to
-//! count an occupant whose header reads zero, and replaying that free
-//! afterwards would take the block's live count below its true occupancy
-//! and hand it to the pool under living survivors.
+//! corpse in a retained block whose occupant count is not established
+//! yet. Its death is already accounted for, because `retained::register`
+//! declines to count an occupant whose header reads zero, and replaying
+//! that free afterwards would take the block's live count below its true
+//! occupancy and hand it to the pool under living survivors.
 //!
 //! A `Cell<*mut _>` rather than a `RefCell<Vec<_>>`: a `Vec` in a
 //! thread-local registers drop glue, and this path is reachable from
@@ -349,16 +349,21 @@ pub(crate) fn depth() -> usize {
 /// corpse, whose death the reset accounts for by not counting it.
 /// **True** means the caller drops the free entirely.
 ///
-/// False outside a reset, and false for a block already registered: that
-/// index belongs to an earlier reset, which counted this occupant as
-/// live, and its death is the event that will eventually return the
-/// block.
-pub(crate) fn absorbs_retained_free(block: usize) -> bool {
+/// False outside a reset, and false for a block that counts a live
+/// occupant: that count belongs to an earlier reset, which counted this
+/// occupant as live, and its death is the event that will eventually
+/// return the block. The count and not the list is what is asked, so a
+/// block whose reset could place no list still counts its deaths
+/// (`memory::retained::has_live_occupants`).
+///
+/// # Safety
+/// `block` is the header of a mapped block stamped `BLOCK_KIND_RETAINED`.
+pub(crate) unsafe fn absorbs_retained_free(block: usize) -> bool {
     if WINDOW.with(|cell| cell.get()).is_null() {
         return false;
     }
 
-    !crate::memory::retained::has_occupant_index(block)
+    !unsafe { crate::memory::retained::has_live_occupants(block) }
 }
 
 #[cfg(test)]

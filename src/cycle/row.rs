@@ -50,10 +50,9 @@ pub(crate) enum Population {
     /// block's collector triple.
     Slotted,
     /// A retained former-arena block: one row per **occupant** of its
-    /// object index, indexed by position in it, and the array is reached
-    /// through the same triple. The index space is the index's length,
-    /// which is the only one of the three a block cannot state itself
-    /// (`crate::memory::retained`).
+    /// survivor list, indexed by position in it, and the array is reached
+    /// through the same collector line, which also names the list and
+    /// its length, the index space (`crate::memory::retained`).
     Retained,
     /// A large entity, the sole occupant of its block: one row, held in
     /// the block's own header rather than in an array
@@ -74,7 +73,7 @@ pub(crate) struct RowKey {
     /// carrying the header.
     pub block: usize,
     /// The entity's index into that block's rows: its slot index in an
-    /// entity block, its position in the occupant index of a retained
+    /// entity block, its position in the survivor list of a retained
     /// block, and [`SINGLE_ENTITY_INDEX`] for a large entity.
     pub index: u32,
     /// Where those rows are, which the block's kind has already said.
@@ -107,7 +106,9 @@ pub(crate) enum EdgeTarget {
 /// An address the retained population cannot place answers
 /// [`EdgeTarget::Untracked`] as well, which keeps its referent alive rather
 /// than reading it as unreachable on a row the trace guessed
-/// (`memory::retained::occupant_index`).
+/// (`memory::retained::occupant_index`). That arm reads the block's own
+/// header line and nothing process-wide: the survivor list's address and
+/// length stand beside the shadow pointer, and the search is over them.
 ///
 /// **The kind alone does not settle the large-entity arm**, and that arm
 /// reads the child's memory category as well. The other two arms need no
@@ -134,7 +135,7 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
             population: Population::Slotted,
         }),
         BLOCK_KIND_RETAINED => {
-            match crate::memory::retained::occupant_index(block, child as usize) {
+            match unsafe { crate::memory::retained::occupant_index(block, child as usize) } {
                 Some(position) => EdgeTarget::Tracked(RowKey {
                     block,
                     index: position as u32,
@@ -142,19 +143,20 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
                 }),
                 None => {
                     // Two states answer alike here and only one of them
-                    // is expected: a block stamped retained whose index
-                    // the reset has not registered yet, which is the
-                    // window between the stamp and `register`. An
-                    // indexed block that does not name a live occupant
-                    // is a disagreement between this lookup and the
+                    // is expected: a block stamped retained with no
+                    // survivor list — held for a payload alone, not yet
+                    // published by its reset, or published without a
+                    // list because none could be placed. A listed block
+                    // that does not name a live occupant is a
+                    // disagreement between this lookup and the
                     // classification `promote` performs in one place,
                     // and this is the only site in the process that can
                     // see it — `Untracked` would hide it for the rest of
                     // the run.
                     debug_assert!(
-                        !crate::memory::retained::has_occupant_index(block)
+                        !unsafe { crate::memory::retained::has_survivor_list(block) }
                             || unsafe { crate::refcount::header_refcount(child) } == 0,
-                        "an indexed retained block does not name a live occupant"
+                        "a listed retained block does not name a live occupant"
                     );
                     EdgeTarget::Untracked
                 }

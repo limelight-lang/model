@@ -965,8 +965,8 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         // whole call for the length of its epoch; S38.3 owns `rc-cycle`'s
         // narrower per-owner replacement and is not built.
         let block = (ptr as usize) & !BLOCK_MASK;
-        if crate::memory::retained::payload_freed(block) {
-            unsafe { crate::memory::retained::give_block_back(block) };
+        if unsafe { crate::memory::retained::payload_freed(block) } {
+            unsafe { crate::memory::retained::release_emptied(block) };
         }
     } else if kind == BLOCK_KIND_BUFFER {
         // The same hazard as the retained arm above, and the same gap:

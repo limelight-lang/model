@@ -164,7 +164,7 @@ unsafe fn schedule_root_if_unvisited(
 /// not seen it before. False when both allocation paths refused.
 ///
 /// An edge the row dispatch cannot place — a child outside the GC heap, or a
-/// retained block whose object index does not name it — is counted as an
+/// retained block whose survivor list does not name it — is counted as an
 /// external live reference and followed no further, which keeps the referent
 /// alive rather than reading it as unreachable on a row the trace guessed.
 ///

@@ -12,7 +12,9 @@
 //! segment chains allocated from the arena's own bump. Everything dies
 //! together at reset, for free.
 
-use crate::memory::block_pool::{BLOCK_KIND_ARENA, BLOCK_PAYLOAD, BlockHeader, BlockPool};
+use crate::memory::block_pool::{
+    BLOCK_KIND_ARENA, BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader, BlockPool, LINE_SIZE,
+};
 use crate::refcount::RcHeader;
 
 #[inline]
@@ -34,6 +36,30 @@ struct LogSegment {
     count: usize,
     records: [usize; LOG_SEG_RECORDS],
 }
+
+/// The arena's view of a block header: the pool's three words and one of
+/// its own behind them. Nothing else of the header line is the arena's
+/// — the collector line at its end belongs to the trace once the block
+/// is retained (`crate::memory::heap`).
+#[repr(C)]
+struct ArenaBlockHeader {
+    pool: BlockHeader,
+    /// Where the bump stood when the arena left this block for a fresh
+    /// one: the end of everything it wrote there, log segments
+    /// included. Written by [`Arena::fresh_block`] for the block it
+    /// leaves, and advanced by [`Arena::alloc_preferring`] past a list
+    /// it places in the tail, so the word stays the end of everything
+    /// written there; nothing reads the advanced value, one list being
+    /// placed per block. Meaningless for the current block, whose fill
+    /// is the live bump, and for a reserve-carved log block, which the
+    /// bump never enters.
+    fill: *mut u8,
+}
+
+const _: () = assert!(
+    size_of::<ArenaBlockHeader>() <= LINE_SIZE,
+    "the arena's block header must fit the block's reserved line"
+);
 
 /// Which in-arena log a record goes to.
 #[derive(Clone, Copy)]
@@ -233,6 +259,51 @@ impl Arena {
         }
 
         false
+    }
+
+    /// Allocate `size` bytes for the reset, from the unused tail of
+    /// `block` when they fit there and from the ordinary bump otherwise.
+    /// Null when neither has room and the pool refuses a fresh block.
+    ///
+    /// The one caller is the reset placing a retained block's survivor
+    /// list (`crate::promote`), which the design puts into the memory the
+    /// arena already holds: the retained block's own tail, else the
+    /// reset's current block, else a fresh block
+    /// (`rfc/model/gc/rc-cycle.md`, "The survivor list of a retained
+    /// block"). The tail of a block the bump has left is everything past
+    /// its recorded fill, and the current block's tail is the bump itself,
+    /// so the two arms are one `alloc` and one bounds test. Bytes granted
+    /// here are the arena's like any other: a block that holds them and
+    /// is not retained goes back to the pool with them at `finish_reset`.
+    ///
+    /// # Safety
+    /// `block` must be one of this arena's bump blocks — a block the bump
+    /// has filled or is filling, never a reserve-carved log block, whose
+    /// fill was never recorded.
+    pub(crate) unsafe fn alloc_preferring(
+        &mut self,
+        block: *mut BlockHeader,
+        size: usize,
+    ) -> *mut u8 {
+        let size = round_up_8(size);
+        let current = if self.limit.is_null() {
+            std::ptr::null_mut()
+        } else {
+            self.limit.wrapping_sub(BLOCK_SIZE) as *mut BlockHeader
+        };
+
+        if block != current {
+            let header = block as *mut ArenaBlockHeader;
+            let fill = unsafe { (*header).fill };
+            if let Some(end) = (fill as usize).checked_add(size) {
+                if end <= BlockHeader::end(block) as usize {
+                    unsafe { (*header).fill = end as *mut u8 };
+                    return fill;
+                }
+            }
+        }
+
+        self.alloc(size)
     }
 
     /// Allocation too large for a block: OS-direct via the standard
@@ -697,6 +768,15 @@ impl Arena {
         let block = BlockPool::global().get();
         if block.is_null() {
             return false;
+        }
+
+        // The block being left records where its bump stopped, which is
+        // the only record of its tail once the bump has moved on
+        // ([`ArenaBlockHeader::fill`]). Named through `limit` rather than
+        // `blocks`, whose head may be a reserve-carved log block.
+        if !self.limit.is_null() {
+            let left = self.limit.wrapping_sub(BLOCK_SIZE) as *mut ArenaBlockHeader;
+            unsafe { (*left).fill = self.bump };
         }
 
         // The kind last and through `store_block_kind`, because the

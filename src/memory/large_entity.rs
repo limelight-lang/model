@@ -200,8 +200,8 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// **A visitor must not free a run while walking this list.** The
 /// addresses are a snapshot, so a run freed during the walk leaves
 /// whichever element names it pointing at memory the operating system
-/// has taken back. The retained index tolerates it — former arena memory
-/// is never unmapped — and this one does not.
+/// has taken back. A retained block's survivor list tolerates it — former
+/// arena memory is never unmapped — and this one does not.
 pub(crate) fn snapshot() -> Vec<usize> {
     runs().lock().unwrap().iter().copied().collect()
 }

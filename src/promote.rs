@@ -214,17 +214,17 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     // — and it spends this pin (`retained.rs`, blocks
                     // retained for bytes; `dev/DECISIONS.md`, "a pinned
                     // block goes home when its last payload is freed").
-                    crate::memory::retained::pin(payload_block);
+                    unsafe { crate::memory::retained::pin(payload_block) };
 
                     // A second count, the reset's own, because that death
                     // event can arrive inside this reset: a release the
                     // drain below runs can kill the very survivor whose
                     // payload was refused, and no occupant count exists
-                    // to hold the block until `index_retained_blocks`
+                    // to hold the block until `place_survivor_lists`
                     // (`dev/DECISIONS.md`, "the reset holds a pin of its
                     // own, and releases it after the index is real").
                     if pinned.insert(payload_block) {
-                        crate::memory::retained::pin(payload_block);
+                        unsafe { crate::memory::retained::pin(payload_block) };
                     }
                 }
             }
@@ -270,7 +270,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     "a promoted large entity was not one of this arena's runs"
                 );
             } else {
-                // The occupant list is taken here, in the one place that
+                // The survivor list is taken here, in the one place that
                 // classifies, so the two answers cannot disagree and
                 // neither is asked of a dead entity.
                 by_block.entry(block).or_default().push(surv as usize);
@@ -326,15 +326,17 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // user code, so it cannot grow the logs behind the settled fixpoint.
     unsafe { crate::weak::drain_arena_weak_log(arena) };
 
-    // The occupant lists gathered above become the retained blocks'
-    // object indexes. A bump-filled block has no stride to divide by, so
-    // this inventory is the only way a trace can enumerate its
-    // occupants — without it they are root sources and a ring among them
-    // never dies (`rfc/model/gc/rc-cycle.md`, "Where the shadow count
-    // lives", the retained-block arm). Registered
-    // after the fixpoint has settled and before the blocks are disposed
-    // of, so no death can arrive behind the counts it establishes.
-    let mut emptied = index_retained_blocks(by_block);
+    // The survivor lists gathered above are written into the arena's own
+    // memory and published in the retained blocks' headers. A bump-filled
+    // block has no stride to divide by, so this inventory is the only way
+    // a trace can enumerate its occupants — without it they are root
+    // sources and a ring among them never dies
+    // (`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives", the
+    // retained-block arm). Published after the fixpoint has settled and
+    // before the blocks are disposed of, so no death can arrive behind
+    // the counts it establishes, and while the arena still holds its
+    // blocks, which is where the lists go.
+    let mut emptied = unsafe { place_survivor_lists(arena, by_block, &mut retained) };
 
     unsafe { (*arena).finish_reset(|block| retained.contains(&(block as usize))) };
 
@@ -344,22 +346,25 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // freed inside the reset, so it joins the vector below: no later
     // death is left to report it.
     for block in pinned {
-        if crate::memory::retained::reset_pin_released(block) {
+        if unsafe { crate::memory::retained::reset_pin_released(block) } {
             emptied.push(block);
         }
     }
 
-    // Blocks whose every survivor died inside this reset — the shape a
-    // heap reference box produces, where the element it made an escapee
-    // is promoted and then torn down by the box's own logged release. No
-    // later death will report such a block empty, so the reset hands it
-    // over itself, and only **after** `finish_reset`: the arena's block
-    // chain is threaded through the very headers the pool overwrites, so
-    // a block returned before that walk cuts the chain under it. The
-    // route is `ll_free` rather than the pool directly, because the block
-    // still reads `BLOCK_KIND_RETAINED` and that is the one path which
-    // drops the index first, and which S36.2's withholding will hold back
-    // while a collection reads the block.
+    // Blocks nothing holds at the end of this reset — every survivor died
+    // inside it, the shape a heap reference box produces, where the
+    // element it made an escapee is promoted and then torn down by the
+    // box's own logged release; or a payload pinned it and was freed
+    // inside it. No later death will report such a block empty, so the
+    // reset hands it over itself, and only **after** `finish_reset`: the
+    // arena's block chain is threaded through the very headers the pool
+    // overwrites, so a block returned before that walk cuts the chain
+    // under it. The route is `ll_free` of the block address rather than
+    // the pool directly, because the block still reads
+    // `BLOCK_KIND_RETAINED` and that arm is the one path which spends
+    // the hold its list has on the block the list stands in, and which
+    // S36.2's withholding will hold back while a collection reads the
+    // block.
     for block in emptied {
         unsafe { crate::memory::stdapi::ll_free(block as *mut u8) };
     }
@@ -375,24 +380,31 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
 }
 
 /// Take `block` out of circulation as a retained former-arena block: the
-/// one place the reset stamps `BLOCK_KIND_RETAINED`.
+/// one place the reset stamps `BLOCK_KIND_RETAINED`, and it runs **once
+/// per block per reset** — a second call in one reset would zero the
+/// pins the reset has placed on the block since the first.
 ///
-/// **The collector line is cleared before the kind is published**, and
-/// that is the whole reason this is a function. A retained block is
+/// **The whole collector line is cleared before the kind is published**,
+/// and that is the whole reason this is a function. A retained block is
 /// traced through a shadow row array like an entity block is, and the
 /// pointer to that array lives in a word this block's previous life may
 /// have written: an entity block writes it at every collection that
-/// touches it, and only its own commissioning nulls it again. The kind's
-/// release store publishes the null, so a trace that reads
-/// `BLOCK_KIND_RETAINED` reads "no rows yet" with it
-/// (`memory::heap::clear_block_shadow`).
+/// touches it, and only its own commissioning nulls it again. Beside it
+/// stand the survivor list and count word of a previous retention, which
+/// a block retained, returned, drawn by an arena and retained again would
+/// otherwise carry into this one. The kind's release store publishes the
+/// zeros, so a trace that reads `BLOCK_KIND_RETAINED` reads "no rows, no
+/// list, nothing held" with it; the list itself is published later by a
+/// release store of its own (`memory::heap::clear_collector_line`,
+/// `memory::retained::register`).
 ///
 /// # Safety
 /// `block` is the header of a live 64 KiB block whose arena is being
-/// reset, and which holds either a survivor or a survivor's payload.
+/// reset, and which holds a survivor, a survivor's payload or a survivor
+/// list; and this reset has not called this for it before.
 unsafe fn retain_block(block: *mut BlockHeader) {
     unsafe {
-        crate::memory::heap::clear_block_shadow(block as *mut u8);
+        crate::memory::heap::clear_collector_line(block as *mut u8);
         crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_RETAINED);
     }
 }
@@ -503,27 +515,70 @@ unsafe fn external_memory(surv: *mut RcHeader) -> External {
     }
 }
 
-/// Hand each block's occupants to the retained-index registry. The blocks
-/// that came back empty — every occupant already dead when the index was
-/// built — are returned, and their disposal is the caller's.
+/// Write each block's survivor list into the arena's own memory and
+/// publish it in the block's header. The blocks that come back empty —
+/// every occupant already dead when the list was published, and nothing
+/// else holding them — are returned, and their disposal is the caller's.
 ///
 /// The grouping is the caller's because only the promotion loop holds a
 /// survivor at a moment it is certainly alive, and deciding which block a
 /// survivor belongs to is a read of the survivor's memory
 /// (`dev/DECISIONS.md`, "Promotion classifies once").
 ///
-/// One index per block rather than one per reset: both enumerators
-/// reach a block first — the census by the 64 KiB alignment mask, the
-/// synchronous walk by scanning the region registry — so an index found
-/// from a block address costs no second mapping (`dev/DECISIONS.md`,
-/// "retained blocks are walked through a per-block object index").
-fn index_retained_blocks(by_block: HashMap<usize, Vec<usize>>) -> Vec<usize> {
-    let mut emptied = Vec::new();
+/// Where a list goes is the arena's answer, through `Arena::alloc_preferring`:
+/// the retained block's own tail, else the reset's current block, else a
+/// fresh pool block — and a block that holds another block's list is
+/// retained as its holder and pinned once per list, so it returns only
+/// after every block whose list it carries
+/// (`rfc/model/gc/rc-cycle.md`, "The survivor list of a retained block").
+/// Every list is placed before any block's count is read, because a
+/// block's answer counts the lists standing in it, and a holder whose
+/// own survivors all died inside the reset would otherwise report itself
+/// empty before a later block's list landed in its tail. A refused
+/// placement publishes the count without a list: the block stays
+/// retained, returns by its deaths, and every edge into it answers
+/// untracked for its life (`memory::retained::register`).
+///
+/// One list per block rather than one per reset: both enumerators reach
+/// a block first — the trace by the 64 KiB alignment mask, the test-only
+/// walk by scanning the region registry — so a list found from a block
+/// address costs no second mapping (`dev/DECISIONS.md`, "retained
+/// blocks are walked through a per-block object index").
+///
+/// # Safety
+/// `arena` is the arena being reset, past its fixpoint and before
+/// `finish_reset`, and every block in `by_block` is one of its bump
+/// blocks, stamped retained by this reset.
+unsafe fn place_survivor_lists(
+    arena: *mut Arena,
+    by_block: HashMap<usize, Vec<usize>>,
+    retained: &mut HashSet<usize>,
+) -> Vec<usize> {
+    let mut placed: Vec<(usize, Vec<usize>, *mut usize)> = Vec::with_capacity(by_block.len());
     for (block, occupants) in by_block {
+        let bytes = occupants.len() * size_of::<usize>();
+        let list = unsafe { (*arena).alloc_preferring(block as *mut BlockHeader, bytes) };
+        let list = list as *mut usize;
+        if !list.is_null() {
+            let holder = BlockHeader::of_ptr(list as *const u8) as usize;
+            if holder != block {
+                if retained.insert(holder) {
+                    unsafe { retain_block(holder as *mut BlockHeader) };
+                }
+
+                unsafe { crate::memory::retained::pin(holder) };
+            }
+        }
+
+        placed.push((block, occupants, list));
+    }
+
+    let mut emptied = Vec::new();
+    for (block, occupants, list) in placed {
         // A shared retained block keeps every byte it had, so a dead
         // occupant's address is still readable and `register` reads it —
         // which is the whole of what it asks of this caller.
-        if unsafe { crate::memory::retained::register(block, occupants) } {
+        if unsafe { crate::memory::retained::register(block, &occupants, list) } {
             emptied.push(block);
         }
     }
