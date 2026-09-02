@@ -126,18 +126,23 @@ reciprocal, and taking it from `HeapBlockHeader` would put line 0 back in
 the lookup. Its offset is `size_of::<HeapBlockHeader>()` rather than the
 literal 192 — 192 being what `BlockRemote`'s 64-byte alignment produces
 rather than a decision anybody made — so a header that grows moves the
-triple instead of overlapping it. Two `const` assertions hold that: the
-offset begins a cache line, and the triple ends inside the reserved 256.
+collector line instead of overlapping it. Two `const` assertions hold
+that: the offset begins a cache line, and the collector line ends inside
+the reserved 256.
 
-`refill` writes all three words for a `BLOCK_KIND_ENTITY` block, and a
-**retained** block carries the array pointer alone: the reset nulls that
-word before `store_block_kind` publishes the block as retained
-(`promote::retain_block`), because the block's previous life may have
-left a collection's array pointer in it and the reciprocal and size class
-of a bump-filled block would mean nothing. Rows for such a block are
-sized by its occupant count instead (`memory/retained.rs`,
-`occupant_count`). A raw heap block's line 3 is left as the pool handed
-it over, no trace entering one.
+`refill` writes the reciprocal, the size class and a null shadow pointer
+for a `BLOCK_KIND_ENTITY` block. A **retained** block carries the shadow
+pointer, the address and length of its survivor list and one atomic
+count word — live occupants in the low half, pinned payloads and the
+lists of other blocks standing in it in the high half. The reset zeroes
+the whole line before `store_block_kind` publishes the block as retained
+(`promote::retain_block`, `heap::clear_collector_line`), because the
+block's previous life may have left a collection's array pointer or an
+earlier retention's list in it, and publishes the list afterwards with a
+release store of its own (`rfc/model/gc/rc-cycle.md`, "The survivor list
+of a retained block"). Rows for such a block are sized by the list's
+length (`memory/retained.rs`, `occupant_count`). A raw heap block's line
+3 is left as the pool handed it over, no trace entering one.
 
 ## BlockPool
 
@@ -325,8 +330,8 @@ epoch-only.
 memory back in circulation: heap raw buffers, entity slots, pooled
 large, OS-direct runs and retained blocks. A reset in flight takes two
 of those before this test is reached: a large-entity body parks in the
-reset's own window instead, and the free of a corpse in a block that has
-no occupant index yet is dropped entirely (below, "Arena reset"). Buffer-arena chunks never
+reset's own window instead, and the free of a corpse in a block whose
+occupant count is not established yet is dropped entirely (below, "Arena reset"). Buffer-arena chunks never
 reach `ll_free` at all, `buffer_free_longlived_payload` calling
 `BufferArena::free` directly, so that branch makes the test itself and
 parks the whole call: `free` is size-carrying and can hand an emptied
@@ -425,7 +430,7 @@ block-aligned allocation of its own and logs it with the large payloads,
 so an unpromoted corpse is freed by the reset with every other run. A
 survivor in such a block is the reset's one exception to block
 retention: it is handed over rather than retained — no `BLOCK_KIND_RETAINED`
-stamp, no entry in the retained index, and out of the arena's log through
+stamp, no survivor list, and out of the arena's log through
 `forget_large`. Stamping it retained would send a multi-megabyte OS
 allocation to the 64 KiB block pool at the entity's death.
 
@@ -616,8 +621,11 @@ the block and end GC accounting exactly once; the kind stamp makes a return of
 a block collection never owned a hard invariant failure rather than a counter
 underflow.
 
-What remains in PLAN S36.9 is the removal of allocator-owned deferred-reuse,
-weak and retained-index storage.
+The withheld returns of a trace, the weak table and the survivor lists of
+retained blocks are outside the global allocator as well, each in the
+memory of the layer that owns it — a manager chain, a buffer payload, the
+arena's own blocks. What remains in PLAN S36.9 is the composite source
+audit and the deny test over a wired collection.
 
 ### The critical reserve
 
@@ -700,9 +708,10 @@ body parks until the window closes, because its free returns memory to
 the system and the passes after the fixpoint still read one header word
 of every address they hold; an inner window hands what it parked to the
 window outside it, so only the outermost close frees anything. The free
-of a corpse in a block that has no occupant index yet is absorbed, since
-the index built at the end of the reset declines to count an occupant
-whose header reads zero and there is no count for that death to spend.
+of a corpse in a block whose occupant count is not established yet is
+absorbed, since the list published at the end of the reset declines to
+count an occupant whose header reads zero and there is no count for that
+death to spend.
 And every completed teardown is recorded, which is how the passes after
 the fixpoint tell a corpse from a live survivor — and how the COW
 reconciliation of step 2 gets the two correction terms that replace a
@@ -736,28 +745,33 @@ backwards.) Every per-thread structure on this path is therefore a
 pointer cell with no drop glue, freed by hand (`dev/DECISIONS.md`,
 "thread exit owns the order its per-thread state dies in").
 
-**The survivor list outlives the reset.** It is grouped per block and
-registered as each retained block's object index (`memory/retained.rs`,
-2026-08-03). That inventory is the only way those occupants can be
-enumerated: an arena's bump allocator left them mixed-size with no
-stride, so the walk cannot divide an offset by a size class the way it
-does in an entity block. Without it a retained block's occupants are
-root sources and a ring living entirely among promoted survivors is
-never collected. The index is frozen — nothing allocates into a dead
-arena — and a survivor that later dies leaves refcount 0 behind, which
-is the walk's own occupancy test, so a stale entry is skipped like a
-free slot.
+**The survivor list outlives the reset.** It is grouped per block,
+written into memory the arena already holds — the retained block's own
+tail when it fits past the block's recorded fill, else the reset's
+current block, which is then retained as the list's holder, else one
+fresh pool block shared by every list that missed — and published in the
+retained block's own collector line (`memory/retained.rs`;
+`rfc/model/gc/rc-cycle.md`, "The survivor list of a retained block"). That
+inventory is the only way those occupants can be enumerated: an arena's
+bump allocator left them mixed-size with no stride, so the walk cannot
+divide an offset by a size class the way it does in an entity block.
+Without it a retained block's occupants are root sources and a ring
+living entirely among promoted survivors is never collected. The list is
+frozen — nothing allocates into a dead arena — and a survivor that later
+dies leaves refcount 0 behind, which is the walk's own occupancy test, so
+a stale entry is skipped like a free slot. No process-wide table names
+retained blocks: every reader holds the block's address, and the
+test-only enumerator finds the blocks by their kind in the region scan.
 
-The index has a second reader since 2026-08-27: the cycle collector
-resolves a traced edge to a shadow row through it, an occupant's
-position in the sorted array standing in for the slot index arithmetic
-gives an entity block (`retained::occupant_index`,
-`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives"). Which of the
-two a child gets is decided by its block's kind, above this module in
-`cycle::row::edge_to`. The index is also the block's row **count**: the
-array a collection reserves at its first touch holds one row per
-occupant, asked for once per block through `occupant_count` rather than
-once per edge, since the length lives behind the registry's mutex.
+The list has a second reader: the cycle collector resolves a traced edge
+to a shadow row through it, an occupant's position in the sorted array
+standing in for the slot index arithmetic gives an entity block
+(`retained::occupant_index`, `rfc/model/gc/rc-cycle.md`, "Where the
+shadow count lives"). Which of the two a child gets is decided by its
+block's kind, above this module in `cycle::row::resolve_edge_target`. The
+list is also the block's row **count**: the array a collection reserves
+at its first touch holds one row per occupant, and the length is a word
+of the block's header (`occupant_count`), read without a lock.
 
 Not built yet, per RFC phasing: sparse-block evacuation, gated on the
 escapee-reference fixup. Promotion today is retention only, which the
@@ -767,10 +781,16 @@ listed here until 2026-07-25 and are now **dropped**, not deferred:
 segregated entity blocks solved what Immix was drafted for, and a
 retained block stays out of circulation while its survivors live
 (`rfc/model/memory/arena-reset.md`, Retention). An emptied retained
-block goes home since 2026-08-08: the last occupant's death reports
-through `ll_free`'s retained arm, and a block held for a payload the
-reset could not carry out waits for that payload's own free
-(`memory/retained.rs`). A payload freed **inside** the reset that pinned
+block goes home: the last occupant's death reports through `ll_free`'s
+retained arm, a block held for a payload the reset could not carry out
+waits for that payload's own free, and a block holding another block's
+survivor list waits for that block's return. One atomic count word in the
+block's header answers all three, and the thread whose decrement reaches
+zero returns the block, spending its own list's hold on the block the
+list stands in before it does (`memory/retained.rs`). A block nothing
+holds at the end of its reset is returned by the reset itself, through a
+sentinel arm of `ll_free` that decrements nothing. A payload freed
+**inside** the reset that pinned
 its block is the exception, and the reset holds a count of its own
 against exactly that: until it has finished establishing occupant
 counts, no death can empty such a block, and one that is empty when the

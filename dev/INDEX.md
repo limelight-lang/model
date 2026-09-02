@@ -392,39 +392,47 @@ versions live in `docs/history/`, marked at the top.
 - The window a reset holds over its own frees: `src/memory/reset_window.rs`
   — per-thread, both builds, opened by `promote::arena_reset_full` and
   closed by a stack guard. It parks both large-entity kinds until the
-  outermost close, absorbs the free of a corpse in a block with no
-  occupant index yet, records every completed teardown so the passes
+  outermost close, absorbs the free of a corpse in a block whose
+  occupant count is not established yet, records every completed teardown so the passes
   after the fixpoint skip what died, and holds the COW
   reconciliation's two correction terms. Windows nest, because a
   destructor of one reset can resolve a second arena and reset it
   (`dev/DECISIONS.md`, "the reset reads no corpse").
-- Retained-block object indexes: `src/memory/retained.rs` — block
-  address → its occupants, sorted, and how many of them are still
-  alive. Registered by `promote` at reset, read by both of `heap`'s
-  enumerators. This is what makes a bump-filled former-arena block
+- Retained-block survivor lists: `src/memory/retained.rs` — the sorted
+  survivor list of each retained former-arena block, written by `promote`
+  at reset into memory the arena already holds (the block's own tail, else
+  the reset's current block, else one fresh block shared by the lists that
+  missed) and published in the block's own collector line beside one
+  atomic count word; read by the trace's row dispatch and by `heap`'s
+  test-only enumerator, which finds the blocks by kind in the region scan.
+  No process-global table and no lock (`rfc/model/gc/rc-cycle.md`, "The
+  survivor list of a retained block"; `dev/DECISIONS.md`, "a retained
+  block's survivor list lives in the arena's own memory, and the process
+  registry goes"). This is what makes a bump-filled former-arena block
   walkable at all; without it its occupants are root sources and a ring
   among them never dies (`rfc/model/gc/rc-cycle.md`, "Where the shadow
-  count lives", the retained-block arm; the index was built 2026-08-03
-  against a document deleted with `rc-walk`). The live count is what returns the block: each
-  occupant's death reports through `stdapi::ll_free`'s retained arm, and
-  the last one drops the index, restamps the block and hands it to the
-  pool (`dev/DECISIONS.md`, 2026-08-08). Three shapes sit beside that — a
-  block retained for a **payload** the reset could not carry out waits
-  for that payload's own free the way it waits for an occupant's death,
-  the pin being a count because one block can hold several survivors'
-  payloads; a block whose every occupant died inside the reset is
-  handed over by the reset itself, after `finish_reset`; and a payload
-  freed **inside** the reset that pinned its block spends a pin the reset
-  is still holding a second count against, released through
-  `retained::reset_pin_released` once occupant counts are established and
-  handing the block over there if nothing is left to report it
-  (`dev/DECISIONS.md`, "the reset holds a pin of its own, and releases it
-  after the index is real"). The payload's
-  free arrives through `buffer_arena::buffer_free_longlived_payload`,
+  count lives", the retained-block arm). The count word is what returns
+  the block: live occupants in its low half, pinned payloads and the lists
+  of other blocks standing in the block in its high half, decremented by
+  whichever thread frees, and the decrement that reaches zero in both
+  halves returns the block, spending its own list's hold on the holder
+  first (`retained::release_emptied`). Four shapes sit beside that — a
+  block retained for a **payload** the reset could not carry out waits for
+  that payload's own free the way it waits for an occupant's death, the
+  pin being a count because one block can hold several survivors'
+  payloads; a block holding another block's list waits for that block's
+  return; a block nothing holds at the end of its reset is handed over by
+  the reset itself, after `finish_reset`, through a sentinel arm of
+  `ll_free` that decrements nothing; and a payload freed **inside** the
+  reset that pinned its block spends a pin the reset is still holding a
+  second count against, released through `retained::reset_pin_released`
+  once occupant counts are established (`dev/DECISIONS.md`, "the reset
+  holds a pin of its own, and releases it after the index is real"). The
+  payload's free arrives through `buffer_arena::buffer_free_longlived_payload`,
   which reads a retained block under the pointer, leaves the bytes where
   they are — former arena memory has no free list — and reclaims the
-  block instead. That call defers no reuse: it returns the block
-  straight to the pool, which is the gap `PLAN.md` S38.3 owns.
+  block instead. That call defers no reuse: it returns the block straight
+  to the pool, which is the gap `PLAN.md` S38.3 owns.
 - The safepoint bracket a batched run pays: lowering emits
   `ll_gc_checkpoint_ack` before the run, `ll_release_batch` per
   reference, and `ll_gc_checkpoint` after it (decision 2026-07-28;
@@ -702,10 +710,12 @@ registry, lifetimes, shadow metadata, integrity checks, metrics export.
 `rfc/model/gc/pure-destructors.md`, which is normative and carries the
 2026-08-23 amendment. The backlog line in `PLAN.md` is the owner.
 
-`dev/design/retained-index-ownership.md` — proposal, not ruled on: the
-retained block's occupant index moves from the process-global registry
-into the block's header line, owned by the reset's thread. Read before
-touching `memory/retained.rs` or S36.9 (e).
+`dev/design/retained-index-ownership.md` — proposal, ruled on 2026-09-01
+and superseded on the storage question: the list is written into the
+arena's own memory rather than a per-thread chain of manager blocks
+(`dev/DECISIONS.md`, "a retained block's survivor list lives in the
+arena's own memory, and the process registry goes"). Kept as the record
+of what was considered; the code is S36.9 (e).
 
 `dev/design/door-sites.md` — every `door` site in `src/` at `019618d`,
 143 rows, each classified against the glossary's closed list with its

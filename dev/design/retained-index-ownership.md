@@ -3,9 +3,20 @@
 A proposal to move the occupant index of a retained block out of the
 process-global registry (`memory/retained.rs`) and into the block's own
 header line, owned by the thread whose arena reset produced the block.
-Status: worked on 2026-09-01 at Edmond's direction, not ruled on, not
-built. It is a design change and takes an rfc entry before code; the
-plan's slice is S36.9 (e). The review that raised it is
+Status: ruled on 2026-09-01 and **superseded on the storage question**.
+Edmond refused the per-thread chain of manager blocks below and ruled
+that the list is written into the arena's own memory — the retained
+block's own tail, else the reset's current block, else a fresh pool
+block — with the count word atomic because `ll_free` is ABI. The ruling
+is `dev/DECISIONS.md`, "a retained block's survivor list lives in the
+arena's own memory, and the process registry goes"; the normative text is
+`rfc/model/gc/rc-cycle.md`, "The survivor list of a retained block"; the
+code is S36.9 slice (e). What stands of this document: the block answers
+for itself, the words move into its collector line, and the refusals in
+the last section. What is superseded: the manager chain, the thread-owner
+word, thread-exit abandonment and adoption of retained blocks, and the
+four open questions, each answered by the rfc entry. Kept as the record
+of what was considered. The review that raised it is
 `dev/CYCLE-COLLECTOR-REVIEW.md`, finding 3.
 
 ## What the registry is and who reads it

@@ -226,7 +226,7 @@ pub(crate) unsafe fn recolor(row: *mut u32, color: Color) {
 /// neighbouring slots, so a group init covers the 32-byte neighbourhood
 /// a trace walking one object's children is likely to want next. In a
 /// retained block it is eight neighbouring positions of the sorted
-/// occupant index, which are eight ascending addresses of mixed size:
+/// survivor list, which are eight ascending addresses of mixed size:
 /// still neighbours in the block, no longer a fixed span of it. A large
 /// entity has one row and no group at all.
 pub(crate) const GROUP: u32 = 8;

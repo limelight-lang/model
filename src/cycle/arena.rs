@@ -96,7 +96,7 @@ pub(crate) enum RowLookup {
     /// (`rfc/model/gc/rc-cycle.md`, "Removed full-census structures").
     Ready { row: *mut u32, first_visit: bool },
     /// The block cannot place this index, which is a retained block
-    /// whose object index no longer names the entity. The caller counts
+    /// whose survivor list does not name the entity. The caller counts
     /// the edge as an external live reference, the same answer
     /// `row::resolve_edge_target` gives an address it cannot place.
     Untracked,
@@ -275,7 +275,7 @@ impl TraceScratchArena {
             }
 
             if row.index >= unsafe { (*array).row_count } {
-                // A retained block whose object index has been rebuilt
+                // A retained block whose survivor list has been rebuilt
                 // under this trace is the only way here, and the trace
                 // token forbids it. Conservative rather than fatal all
                 // the same: an edge with no row keeps its referent alive.
@@ -520,7 +520,7 @@ pub(crate) unsafe fn find_initialized_row(row: RowKey) -> Option<*mut u32> {
 
         if row.index >= unsafe { (*array).row_count } {
             // The state `ensure_row` asserts on, and it is asserted here for
-            // the same reason: only a retained block whose object index
+            // the same reason: only a retained block whose survivor list
             // was rebuilt under this trace reaches it, which the trace
             // token forbids. A silent `None` here would leave the mark
             // aborting loudly on the state and the scan passing over it.
@@ -542,14 +542,14 @@ pub(crate) unsafe fn find_initialized_row(row: RowKey) -> Option<*mut u32> {
 }
 
 /// How many rows `row`'s block needs, or `None` for a retained block
-/// that has no object index — a block held for a payload alone, or one
-/// whose reset has not registered it yet.
+/// that has no survivor list — a block held for a payload alone, one
+/// whose reset has not published it yet, or one whose reset could place
+/// no list.
 ///
-/// The two populations answer from different places, and only one of them
-/// takes a lock: an entity block states its size class in its own
-/// collector line, while a retained block's index space is the length of
-/// an array behind the registry's mutex, which is why it is asked once
-/// per block here rather than once per edge.
+/// Both populations answer from the block's own collector line, and
+/// neither takes a lock: an entity block states its size class there,
+/// and a retained block the length of its survivor list
+/// (`memory::retained::occupant_count`).
 ///
 /// # Safety
 /// `row`'s block must be commissioned as the population says it is.
@@ -559,7 +559,7 @@ unsafe fn index_space(row: RowKey) -> Option<u32> {
             Some(unsafe { crate::memory::heap::collector_block_slots(row.block as *mut u8) })
         }
         Population::Retained => {
-            crate::memory::retained::occupant_count(row.block).map(|count| count as u32)
+            unsafe { crate::memory::retained::occupant_count(row.block) }.map(|count| count as u32)
         }
         // Unreachable: `ensure_row` answers the sole occupant's row from its
         // block header without asking where an array would go.

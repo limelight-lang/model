@@ -102,21 +102,21 @@ fn two_sizes_in_one_retained_block_resolve_to_distinct_rows() {
     unsafe { crate::promote::arena_reset_full(&mut arena) };
 
     assert_eq!(unsafe { block_kind(block) }, BLOCK_KIND_RETAINED);
-    let occupants = crate::memory::retained::snapshot()
-        .into_iter()
-        .find(|&(registered, _)| registered == block)
-        .expect("the reset registered the retained block's occupant index")
-        .1;
+    let occupants = unsafe { crate::memory::retained::survivor_list_copy(block) };
+    assert!(
+        !occupants.is_empty(),
+        "the reset published the retained block's survivor list"
+    );
 
     let mut rows = Vec::new();
     for &survivor in &[small, large] {
-        // A linear scan of the same index the dispatch binary-searches:
+        // A linear scan of the same list the dispatch binary-searches:
         // the same data read another way, so an agreement is about the
         // dispatch rather than about the search.
         let position = occupants
             .iter()
             .position(|&address| address == survivor as usize)
-            .expect("a survivor is named by its block's index");
+            .expect("a survivor is named by its block's list");
         let resolved = unsafe { resolve_edge_target(survivor as *mut RcHeader) };
         assert_eq!(
             resolved,

@@ -308,11 +308,15 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         return;
     }
 
-    // A zero-count member of the reset in flight, in a block that has no
-    // occupant index yet: the free is absorbed rather than deferred, `register`
-    // having already declined to count it (`memory::reset_window`).
+    // A zero-count member of the reset in flight, in a block whose
+    // occupant count is not established yet: the free is absorbed rather
+    // than deferred, `register` having already declined to count it
+    // (`memory::reset_window`). The reset's own return of an emptied
+    // block — the sentinel, `ptr == block` — is not a member's death and
+    // passes through to its arm below.
     if kind == crate::memory::block_pool::BLOCK_KIND_RETAINED
-        && crate::memory::reset_window::absorbs_retained_free(block as usize)
+        && ptr != block
+        && unsafe { crate::memory::reset_window::absorbs_retained_free(block as usize) }
     {
         return;
     }
@@ -380,14 +384,16 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         return unsafe { (*h).free(ptr) };
     }
 
-    unsafe { ll_free_large(block, kind) };
+    unsafe { ll_free_large(ptr, block, kind) };
 }
 
 /// # Safety
-/// `block` must be the block header of a live non-heap allocation.
+/// `block` must be the block header of a live non-heap allocation, and
+/// `ptr` the freed address inside it — or `block` itself, which only the
+/// retained arm reads.
 #[cold]
 #[inline(never)]
-unsafe fn ll_free_large(block: *mut u8, kind: u32) {
+unsafe fn ll_free_large(ptr: *mut u8, block: *mut u8, kind: u32) {
     match kind {
         BLOCK_KIND_LARGE => BlockPool::global().put(block as *mut BlockHeader),
         // One entity in a block of its own, which is the same physical
@@ -414,16 +420,31 @@ unsafe fn ll_free_large(block: *mut u8, kind: u32) {
             );
         }
         crate::memory::block_pool::BLOCK_KIND_RETAINED => {
+            let block = block as usize;
+            if ptr as usize == block {
+                // The reset returning a block nothing holds: every
+                // survivor died inside it, or the payload it was pinned
+                // for did (`promote::arena_reset_full`). Nothing is
+                // counted down — the count word already reads zero, and
+                // a decrement from zero would underflow into the
+                // payload half — so the block goes home as it stands.
+                debug_assert!(
+                    unsafe { crate::memory::retained::holds_nothing(block) },
+                    "the reset returned a retained block something still holds"
+                );
+                unsafe { crate::memory::retained::release_emptied(block) };
+                return;
+            }
+
             // A promoted survivor died. The block it was promoted in is
             // former arena memory with no free list and no stride, so
             // nothing is recycled inside it; what the death changes is
             // the block's live-occupant count, and at zero the whole
-            // block goes home. The registry drops the index before
-            // saying so, because both enumerators dereference a
-            // registered address without testing that its block still
-            // exists (`retained.rs`, the readable-address contract).
-            if crate::memory::retained::occupant_freed(block as usize) {
-                unsafe { crate::memory::retained::give_block_back(block as usize) };
+            // block goes home, spending the hold its survivor list has
+            // on the block the list stands in before it does
+            // (`retained.rs`, the readable-address contract).
+            if unsafe { crate::memory::retained::occupant_freed(block) } {
+                unsafe { crate::memory::retained::release_emptied(block) };
             }
         }
 

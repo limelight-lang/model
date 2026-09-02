@@ -355,13 +355,6 @@ fn a_promoted_large_entity_keeps_its_block_and_leaves_the_arenas_log() {
     }
 
     assert!(
-        !crate::memory::retained::snapshot()
-            .iter()
-            .any(|(b, _)| *b == block),
-        "a block with one computed occupant needs no inventory, and an \
-         entry here is the same mistake by the other route"
-    );
-    assert!(
         crate::memory::large_entity::snapshot().contains(&block),
         "and the registry it was entered into at allocation is what \
          the walk finds it by now that it is a heap entity"
@@ -466,13 +459,6 @@ fn a_large_survivor_that_dies_inside_the_reset_is_read_no_further() {
     assert!(
         !crate::memory::large_entity::snapshot().contains(&block),
         "the run outlived the entity it was allocated for"
-    );
-    assert!(
-        !crate::memory::retained::snapshot()
-            .iter()
-            .any(|(b, _)| *b == block),
-        "a run was entered into the retained index, which ends at the \
-         64 KiB block pool"
     );
 }
 
@@ -589,10 +575,9 @@ fn a_hooked_zero_count_member_leaves_nothing_behind() {
 
     unsafe { arena_reset_full(&mut *arena_ptr) };
 
-    assert!(
-        !crate::memory::retained::snapshot()
-            .iter()
-            .any(|(b, _)| *b == block_address),
+    assert_eq!(
+        unsafe { block_kind(block_address as *const u8) },
+        crate::memory::block_pool::BLOCK_KIND_FREE,
         "the reset held the block for a payload nobody carried out"
     );
 }
@@ -780,15 +765,15 @@ fn a_pin_spent_inside_the_reset_leaves_the_block_to_its_survivors() {
         BLOCK_KIND_RETAINED,
         "the block went home while two survivors were still living in it"
     );
-    let index = crate::memory::retained::snapshot();
-    let (_, occupants) = index
-        .iter()
-        .find(|(b, _)| *b == block_address)
-        .expect("the block kept no index, so no death of its can return it");
+    assert!(
+        unsafe { crate::memory::retained::has_survivor_list(block_address) },
+        "the block kept no list, so no death of its can return it"
+    );
     for (entity, name) in [(first, "first"), (second, "second")] {
         assert!(
-            occupants.contains(&(entity as usize)),
-            "{name} survived outside its own block's index"
+            unsafe { crate::memory::retained::occupant_index(block_address, entity as usize) }
+                .is_some(),
+            "{name} survived outside its own block's list"
         );
     }
 
@@ -862,10 +847,86 @@ fn a_block_whose_pin_and_occupants_both_go_inside_the_reset_goes_home() {
         BLOCK_KIND_FREE,
         "the block stayed out of the pool with nothing holding it"
     );
+}
+
+/// A block pinned for a payload and holding no survivor — the survivor
+/// in one arena block, its refused bytes in the next — goes home when
+/// the payload's free arrives inside the reset: the count the reset
+/// holds for it is then the last thing holding it, and the reset hands
+/// the block over itself. Such a block has no survivor list and never
+/// will, so the reset's own return of it must not be read as the free
+/// of one of the reset's corpses.
+#[test]
+fn a_block_pinned_for_a_payload_alone_goes_home_when_the_payload_dies_inside_the_reset() {
+    use crate::memory::block_pool::BLOCK_KIND_FREE;
+    use crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED;
+    use crate::test_support::outside_block;
+    use std::sync::atomic::Ordering;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let corpse_cls = ClassBuilder::new("LonePinCorpseNextDoor")
+        .prop("box", true)
+        .build();
+    let waker_cls = outside_block::class("WakerWithItsBlockNextDoor");
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let waker =
+        unsafe { new_constructed(&mut *context_ptr, waker_cls, MemoryCategory::RequestArena) };
+    let corpse =
+        unsafe { new_constructed(&mut *context_ptr, corpse_cls, MemoryCategory::RequestArena) };
+
+    // The block the waker was bumped into is filled to its end, so the
+    // payload the reset will refuse to carry lands in a block of its own.
+    let room = unsafe { (*arena_ptr).room_left() };
     assert!(
-        !crate::memory::retained::snapshot()
-            .iter()
-            .any(|(b, _)| *b == block_address),
-        "the block went home with its index still naming it"
+        !unsafe { (*arena_ptr).alloc(room) }.is_null(),
+        "the bump refused the rest of its own block"
+    );
+    let block = unsafe { outside_block::install_block(context_ptr, waker) };
+    let payload_block = BlockHeader::of_ptr(block) as usize;
+    assert_ne!(
+        payload_block,
+        BlockHeader::of_ptr(waker as *const u8) as usize,
+        "the payload shares the survivor's block, so this test proves nothing"
+    );
+
+    unsafe {
+        let boxed = crate::reference::ll_reference_new();
+        assert!(ref_store(
+            arena_ptr,
+            boxed as *mut RcHeader,
+            &raw mut (*boxed).value,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Object, waker as *mut RcHeader),
+        ));
+        let slot = Object::prop_at(corpse, 16);
+        assert!(ref_store(
+            arena_ptr,
+            corpse as *mut RcHeader,
+            slot,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Reference, boxed as *mut RcHeader),
+        ));
+        assert!(!crate::refcount::ll_release(boxed as *mut RcHeader));
+    }
+
+    let refusals_before = crate::memory::buffer_arena::refusals();
+    FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
+
+    assert_eq!(
+        crate::memory::buffer_arena::refusals() - refusals_before,
+        1,
+        "the carry was not refused, so nothing pinned the block"
+    );
+    assert_eq!(
+        unsafe { block_kind(payload_block as *const u8) },
+        BLOCK_KIND_FREE,
+        "a block pinned for a payload alone stayed retained after the payload died inside the reset"
     );
 }

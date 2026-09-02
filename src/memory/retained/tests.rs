@@ -1,47 +1,59 @@
 use super::*;
 
-/// A block address and occupants a walk may dereference, which is
-/// what the module doc requires of anything registered here.
-///
-/// The registry is process-global, so an index left in it is read by
-/// every later walk in the process. Every test in the groups declared
-/// below holds the block pool's test guard, which is what serializes
-/// them against the walks that take it; the cells are **leaked** on top
-/// of that, because a test that panics before it empties its index
-/// leaves that index registered for the rest of the run and no guard
-/// covers that. Freeing the cells would make such an entry a
-/// use-after-free rather than one that reads refcount 0 and is skipped.
-///
-/// The block address is derived from the cells so that it names the
-/// range they lie in. A constant would be a guess about an address
-/// space the process is also carving regions out of.
+use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED, load_block_kind};
+
+/// Bytes between the fixture's cells: the smallest entity a bump block
+/// holds, so the list a fixture places past them is placed where a
+/// reset would place it.
+const CELL_STRIDE: usize = 16;
+
+/// A retained block and occupants a walk may dereference, which is
+/// what the module doc requires of anything published here: a pool
+/// block commissioned the way the reset commissions one
+/// ([`bare_retained_block`]), with `n` cells at the start of its
+/// payload, every cell's refcount word zeroed.
 ///
 /// The cells come back as raw pointers beside their addresses, and a
 /// test that occupies one writes through **the pointer its address
-/// was taken from**. Neither half of that is optional: an address
-/// that has been through `usize` carries no provenance to write
-/// with, and writing through the leaked slice's reference instead
-/// pops the exposed raw tags off the borrow stack, so the read the
-/// registry itself performs becomes the violation. Miri rejects
-/// both mistakes, one per run.
+/// was taken from**: an address that has been through `usize` carries
+/// no provenance to write with, which Miri rejects.
+///
+/// The block is the test's to return, through [`give_back`], once
+/// nothing holds it.
 fn walkable_index(n: usize) -> (usize, Vec<usize>, Vec<*mut u64>) {
-    let cells: &'static mut [u64] = Box::leak(vec![0u64; n].into_boxed_slice());
-    let base = cells.as_mut_ptr();
-    let pointers: Vec<*mut u64> = (0..n).map(|i| unsafe { base.add(i) }).collect();
+    let block = bare_retained_block();
+    let base = BlockHeader::payload_start(block as *mut BlockHeader);
+    let pointers: Vec<*mut u64> = (0..n)
+        .map(|i| unsafe { base.add(i * CELL_STRIDE) } as *mut u64)
+        .collect();
+    for &cell in &pointers {
+        unsafe { cell.write(0) };
+    }
+
     let addresses: Vec<usize> = pointers.iter().map(|&p| p as usize).collect();
-    let block = addresses[0] & !crate::memory::block_pool::BLOCK_MASK;
     (block, addresses, pointers)
 }
 
-/// Take an index out of the process-global registry, which a test
-/// that registered one owes whether or not it emptied it.
-fn drop_index(block: usize) {
-    registry()
-        .lock()
-        .expect("retained index registry poisoned")
-        .remove(&block);
+/// Where the fixture's block has room for a list of `n` addresses: its
+/// own tail, past the cells — the placement the reset makes first.
+fn list_room(block: usize, n: usize) -> *mut usize {
+    let base = BlockHeader::payload_start(block as *mut BlockHeader);
+    unsafe { base.add(n * CELL_STRIDE) as *mut usize }
+}
+
+/// Return the fixture's block to the pool, which a test that took one
+/// owes whether or not its assertions held. The caller has spent every
+/// count the block was held for.
+fn give_back(block: usize) {
+    unsafe { release_emptied(block) };
+}
+
+/// The kind stamped on `block`, read the way its owner reads it.
+fn kind_of(block: usize) -> u32 {
+    unsafe { load_block_kind(&raw const (*(block as *mut BlockHeader)).kind) }
 }
 
 mod a_block_pinned_for_a_payload;
 mod the_index_a_walker_reads;
+mod what_the_list_asks_the_allocator;
 mod when_a_retained_block_goes_home;

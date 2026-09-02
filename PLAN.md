@@ -1127,6 +1127,42 @@ stage claiming the frees while building none of them.
         OS-direct boundary was asserted against a copy of the arithmetic; and
         `chunk_from_the_free_list` restored the pressure mode it found rather
         than `Plenty`. The device stops at two rounds.
+      progress 2026-09-02 — S36.9e the survivor list and registry ownership:
+        the process-wide registry of retained blocks — `Mutex<BTreeMap>`,
+        `Arc<[usize]>`, `snapshot` — is gone. The reset writes each retained
+        block's sorted survivor list into the arena's own memory, the block's
+        own tail when it fits past the block's recorded fill, else the
+        reset's current block, else one fresh pool block shared by every list
+        that missed, and publishes its address and length in the block's
+        collector line beside one atomic count word: live occupants in the
+        low half, pinned payloads and the lists of other blocks standing in
+        the block in the high half. Every list is placed before any count is
+        read, a holder is retained once and pinned once per list, and the
+        decrement that reaches zero returns the block, spending its own
+        list's hold on the holder first. The absorb keys on the count word,
+        and the reset's empty-block return has an arm of its own in
+        `ll_free`. Measured on the day: publishing a list made 2 global
+        allocations and now makes 0 (seen red before the first edit), pool
+        requests 0 in the first two tiers and 1 for two lists with no room
+        anywhere, `gc_metadata::stats()` unchanged across a reset that lists,
+        `.tbss` 472 to 472; the registry acquisitions per retained-only
+        trace, `2E + V + B + 2R` by reading, are 0 by absence. A defect found
+        by the gate's reading and seen red on the base: a block pinned for a
+        payload alone whose payload died inside the reset stayed retained
+        for the life of the process, its return absorbed as a corpse's free;
+        the sentinel arm closes it. The direct-large registry audit:
+        `large_entity::runs` is read by no production path — the large arm
+        of `row::resolve_edge_target` reads kind and category — its readers
+        are the test-only enumerator and `describe_slot`, and it sits on the
+        mutator's OS-direct entity alloc and free path, outside the
+        collection paths the deny gate covers; gating it `cfg(test)` is a
+        backlog question, not this slice. Not changed: the reset keeps its
+        `HashMap` and `Vec` (`dev/design/retained-index-ownership.md`'s
+        disclosed decision), and the rfc's sentence "publishes them with the
+        release store that stamps the block's kind" reads as one instant
+        where the code has two, which is the `rfc` repository's to amend.
+        This does not close S36.9: the composite deny run over a wired
+        collection waits for S36.7.
       Sage 2026-09-01 (slice c gate): the records live in a chain of manager
         blocks of their own, drawn at the open rather than at the first
         withheld return, because a refusal is answerable only before a slot is
@@ -1181,7 +1217,8 @@ stage claiming the frees while building none of them.
         instrumentation; (c) manager-backed parking plus ordinary/abort deny
         gate, done 2026-09-01; (d) weak-table ownership and streaming arena
         drain; (e) retained
-        index/registry/snapshot ownership plus the direct-large registry audit.
+        index/registry/snapshot ownership plus the direct-large registry audit,
+        done 2026-09-02.
         Only their composite source audit and deny test close this checkbox.
       done: every block owned by the candidate queue or a collection is drawn
         through one memory-manager wrapper, carries
@@ -1423,18 +1460,19 @@ stage claiming the frees while building none of them.
         still owns the record may observe count zero, clear `CANDIDATE_BIT`, return
         the slot and retire the token. The reverse order creates a dangling
         queue pointer that can name a new occupant.
-- [ ] S36.13 The retained-block visit   *(after S36.12, before S36.7)*
-      done: the first reach into a retained block acquires its immutable
-        occupant index once under the registry lock and records a
-        manager-owned, trace-bounded visit; every later mark and scan lookup in
-        that block searches it without the registry mutex, and no handle
-        survives the trace token
+- [x] S36.13 The retained-block visit   *(after S36.12, before S36.7)*
+      done: closed 2026-09-02 by S36.9 slice (e) without code of its own —
+        there is no registry to acquire once. The retained arm of
+        `row::resolve_edge_target` reads two words of the block's own header
+        and binary-searches the list, the block's index space is a third word
+        read at its first touch, and no lock stands anywhere on the path.
+        Nothing of the visit remains to build, and there is no handle to keep
+        past the trace token.
       tier: T2 · role: Sage → Critic
-      handoff: this starts only after S36.9 settles who owns the retained index;
-        cloning the present `Arc` is not compliance. The counter proves one
-        registry acquisition per touched retained block rather than today's
-        approximate `2E + V + B` acquisitions for a retained-only trace. Its
-        Sage gate records that old counter before changing the lookup.
+      handoff: the counter this step asked its gate to record was never an
+        instrument. The old cost, `2E + V + B + 2R` registry acquisitions per
+        retained-only trace, was taken by reading the five call sites and
+        stands in `dev/BENCHMARKS.md`, 2026-09-02.
 - [ ] S36.3 The guard and the weak window
       done: after the exact test confirms, every member takes the teardown
         guard, then every weak cell naming any member is nulled, all members
@@ -1696,7 +1734,7 @@ both, and the losing side never deadlocks.
         (`cells::trace_cells` strides it, and
         `buffer_arena::buffer_free_longlived_payload` returns it past the
         gate), a retained payload whose block goes home through
-        `retained::give_block_back`, and an OS-direct run; the cost is
+        `retained::release_emptied`, and an OS-direct run; the cost is
         measured as the churn held across one collection
       tier: T2 · role: —
 
@@ -1997,25 +2035,13 @@ in `dev/INDEX.md`. What it did not do is below.
   cannot obtain is an `*mut Arena`, every arena in the crate being made
   by Rust code inside tests. An embedder needs that door before anything
   outside this crate exercises the arena paths.
-- [ ] **The retained arm's per-edge registry lock.** `cycle::mark` resolves
-  every child through `cycle::row::resolve_edge_target`, and the retained arm of that
-  dispatch reaches `memory::retained::occupant_index`, which takes the
-  registry mutex to find the block's index before searching it. One lock per
-  retained edge, where a per-block visit holding the index's `Arc` would take
-  one per block: `occupant_count` already takes it that way at the block's
-  first touch, and the search itself is over an `Arc` slice and needs no lock.
-  The step that built the mark expected to build the visit and did not, the
-  visit being outside its done clause and a change to `resolve_edge_target`'s interface.
-  No measurement of what the lock costs a trace exists.
-  **The scan doubled the exposure**: `cycle::scan` resolves a popped
-  entity's row a second time, to read the colour it may itself have
-  raised, so a retained entity costs one lock per in-edge and one more
-  for its own expansion. The recorded alternative for that half is a row
-  pointer on the worklist beside the entity, the pointer being stable for
-  the collection's life; it doubles a worklist entry and is not weighed
-  in `dev/DECISIONS.md`, "the scan re-reads a colour it may have
-  written", which weighed the colour alone (found by the Code Reviewer,
-  2026-08-29).
+- [x] **The retained arm's per-edge registry lock.** Closed 2026-09-02 by
+  S36.9 slice (e): the registry is gone, and the arm reads the survivor
+  list's address and length from the block's own header line and searches
+  the list (`memory/retained.rs`). The scan's second lookup per popped
+  entity is a second header read rather than a second lock; the row-pointer
+  alternative for that half stays unweighed in `dev/DECISIONS.md`, "the
+  scan re-reads a colour it may have written".
 
 Memory manager, still open:
 

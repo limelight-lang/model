@@ -100,6 +100,49 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-02 — S36.9e the survivor list leaves the global allocator: 2 allocations to 0, and no lock on the retained arm
+
+**Machine:** dev box, shared with interactive work. **Base:** `ea5e208`,
+`rustc 1.96.0`, own target directory under the worktree.
+
+**What changed:** the process-wide registry of retained blocks — a
+`Mutex<BTreeMap<usize, Index>>` holding an `Arc<[usize]>` per block — is gone.
+The reset writes the survivor list into the arena's own memory and publishes
+its address, length and one atomic count word in the retained block's header
+line; every reader asks the block.
+
+### Counters
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| global allocations, publishing one block's survivor list | 2 | 0 | `test_support::allocation_probe` around `register` on the walkable fixture; the two were the `Arc<[usize]>` and a tree node |
+| pool requests, a list that fits its own tail, and one that fits the current block | 0 | 0 | the same probe around `arena_reset_full`, two blocks and two survivors, in the placement tests |
+| pool requests, two lists with no room in any block | 0 | 1 | the same probe; one fresh block serves both lists and returns with the last of them |
+| `gc_metadata::stats()` across a reset that lists, both axes lowered first | unchanged | unchanged | `lower_peak_to_current`, then `stats` before and after |
+| registry acquisitions per retained-only trace | `2E + V + B + 2R` | 0 | **by reading, not measured**: `mark.rs` takes one per root and one per edge, `scan.rs` one per root, per edge and per pop, `cycle/arena.rs` `index_space` one per block. No counter existed and none was built, the structure being gone |
+| `.tbss` | 472 | 472 | `readelf -SW` on the test binary, own target directory; no thread-local was added or removed |
+| Miri population | `memory::retained` 7, `memory::reset_window` 2 | `memory::retained` 9, `memory::reset_window` 2 | counted, not run: the block's run is S36.9's close (`dev/WORKFLOW.md`) |
+
+The allocation figure was seen red on `ea5e208` with the test body compiled
+against the old signature — `register(block, Vec)`, the vector built outside
+the window — and the test in the tree reads the new one, as the slice-d entry's
+procedure has it. The pool figures are the new placement tests', and each was
+seen to fail under a mutation that drops the holder's release.
+
+A second red on the same base, found by the gate's reading: a block pinned for
+a payload alone — the survivor in one arena block, its refused bytes in the
+next — whose payload died inside the reset read kind 7, `BLOCK_KIND_RETAINED`,
+after the reset instead of 0. The reset's own return of the block was absorbed
+as a corpse's free. Closed by the sentinel arm (`dev/DECISIONS.md`, "the reset
+places every survivor list before it reads any count, publishes in two
+instants, and returns an empty block through an arm of its own").
+
+**No timed run.** No benchmark drives a retained-only trace, so the per-edge
+cost is stated by operation count and not by time: before, one mutex
+acquisition, a `BTreeMap` lookup, an `Arc` dereference and a binary search;
+after, one acquire load of the list address, one load of its length and the
+same search. The free path lost the same lock and gained one `lock xadd`.
+
 ## 2026-09-01 — S36.9d the weak table leaves the global allocator: `.tbss` 464 to 472 bytes
 
 **Machine:** dev box, shared with interactive work. **Base:** `8ccf426`,

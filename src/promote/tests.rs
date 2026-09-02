@@ -20,4 +20,5 @@ mod the_memory_a_survivor_takes_with_it;
 mod the_release_log;
 mod the_reset_reads_no_zero_count_member;
 mod what_a_destructor_does_during_the_fixpoint;
+mod where_a_survivor_list_is_placed;
 mod who_survives_a_reset;
