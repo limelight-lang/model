@@ -119,6 +119,11 @@ fn an_unregistered_thread_reaches_the_reserve_from_its_release_path() {
 /// those registers one on its first touch, at a cost this module's own
 /// doc states. A fifth exemption is a decision, not an edit.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "reads the crate's sources; `opendir` is unavailable under Miri's isolation, \
+              and the abort takes the whole slice with it"
+)]
 fn the_crate_declares_these_thread_locals_and_no_others() {
     /// Sorted, and each name paired with whether its payload has drop
     /// glue — which is what decides where its first touch may happen.

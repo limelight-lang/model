@@ -7,6 +7,38 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-02 — the rule that a source-reading test carries `cfg_attr(miri, ignore)` had no guard, so a second file kept the trap
+
+**What happened.** S36.9's owed Miri run took `weak::` (19 passed), `cycle::`
+(120 passed) and then `memory::`, which aborted after eleven tests on
+`opendir` refused by Miri's isolation.
+`memory::critical::tests::where_the_first_touch_happens::`
+`the_crate_declares_these_thread_locals_and_no_others` reads `src/` to list the
+crate's thread-locals and carried no `cfg_attr(miri, ignore)`. Every test after
+it in the slice — 134 of the 145 — had never run under Miri. With the attribute
+added, the slice passes 145 with 0 failed and 5 ignored in 15 m 43 s of wall.
+
+**Why it was possible.** The entry of 2026-09-01 states the rule for exactly
+this case and states that the convention "exists in five other files". Neither
+the rule nor the count was ever checked against the crate: five files carried
+the attribute, a sixth needed it, and nothing compared the two sets. A rule
+written in a journal is enforced by whoever remembers it.
+
+**Why it was not caught.** A Miri slice that aborts reports failure, which is
+loud — but only when someone runs it. `memory::` had no run owed to it until
+S36.9 named the three modules its block touched, and the slice had been
+unrunnable since the test was written. The gate of `dev/WORKFLOW.md` does not
+include Miri, by the clock argument recorded there, so the interpreter's
+silence over one module cost nothing visible until a step asked for it.
+
+**The rule.** Unchanged from 2026-09-01, and now owed a guard: a test that
+reads a file, spawns a process or compares function addresses carries its
+`cfg_attr(miri, ignore)` in the commit that adds it. What is new is that the
+convention needs a test of its own, since it has now been broken twice by
+someone who did not know it existed. `PLAN.md` carries the line.
+
+---
+
 ## 2026-09-02 — an assertion under `ll_thread_exit` aborts the binary and names no test
 
 **What happened.** S36.10 gave the thread a collection workspace lent to one

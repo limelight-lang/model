@@ -1271,6 +1271,61 @@ stage claiming the frees while building none of them.
         `dev/DECISIONS.md` carries the charge sites and the refused
         per-enrolment alternative, `dev/BENCHMARKS.md` the operation count and
         what `.tbss` cannot resolve.
+      audit 2026-09-02 — the composite source audit ran over `cycle`, its
+        parking and deferred-drop storage, the weak registry and disposal
+        path, `retained`, `gc_metadata`, `promote`, `reset_window` and the
+        three manager modules where a collection calls them. **The clause is
+        not met**, and two live sites stand between it and met.
+        `large_entity::free`'s run arm takes a process-global
+        `Mutex<BTreeSet<usize>>` and frees its nodes at
+        `large_entity.rs:165`, inside the collection's own close: an
+        OS-direct large entity is inside `can_lose_trace_identity`, so it is
+        withheld and replayed through `stdapi::ll_free` at
+        `ActiveTrace::drop`. A deny run cannot see it, `remove` freeing
+        rather than allocating, which is the case the clause reserves for
+        this audit. Second, `reset_window::park_large` grows a `Vec` at
+        `reset_window.rs:321` on an arm `ll_free` tests **ahead** of
+        `defer_reuse_if_tracing`, and `record_death`'s `died_set` is a boxed
+        `HashSet` on the same footing for S36.4 and S36.5. Both are reached
+        from a collection's paths rather than from the reset's own frames.
+        Clean, and named so the next audit need not re-read them: `cycle`
+        itself, `weak`, `gc_metadata`, `retained`, `critical`, `block_pool`,
+        `heap` and the dispose path; `promote`'s twelve container sites are
+        the disclosed decision and no collection path calls into `promote`.
+        Noted for S36.5 rather than found here: `cells::sever` is typed
+        `unsafe fn(*mut RcHeader, &mut Vec<*mut RcHeader>)` across five
+        modules, dead code today, and becomes a growth inside the denying
+        window on the day S36.5 wires it — the manager-backed replacement
+        belongs to that step's design, before its code.
+      miri 2026-09-02 — the run this step owes over the modules its block
+        touched: `weak::` 19 passed, `cycle::` 120 passed with 7 ignored,
+        `memory::` 145 passed with 5 ignored, 0 failed anywhere, at two
+        threads, 2 m 19 s, 46 m 43 s and 15 m 43 s of wall. `memory::` was
+        unrunnable until this run:
+        `critical::tests::where_the_first_touch_happens::`
+        `the_crate_declares_these_thread_locals_and_no_others` reads `src/`
+        and carried no `cfg_attr(miri, ignore)`, so the slice aborted after
+        eleven tests and the other 134 had never run under the interpreter
+        (`dev/POSTMORTEM.md`, 2026-09-02).
+      ruling 2026-09-02 — the two sites are answered differently, because
+        one has a reader and the other has none. `large_entity::runs` is
+        gated `cfg(test)`: a named exemption would be a permanent hole cut
+        for a structure no production path reads, and this step's own
+        handoff already refuses one — "there is no cycle-path exemption".
+        Manager-backing it would be storage built for a consumer that does
+        not exist; when S38 gives it one, that step un-gates it and takes
+        the backing question with a real reader in hand.
+        `reset_window::park_large` and `died_set` wait for the deny run at
+        S36.7 rather than for an argument now: no collection nests inside a
+        reset until the collection is wired, and the reading that decides
+        them — whether the disclosed reset exemption covers the frames a
+        collection enters or only the reset's own — is Edmond's and is
+        cheaper to take against a run than against a source path.
+      correction 2026-09-02 — slice (e)'s claim that `large_entity::runs`
+        "sits on the mutator's OS-direct entity alloc and free path, outside
+        the collection paths the deny gate covers" is false of the `remove`
+        at `large_entity.rs:165`. The audit of its readers held; the writer
+        on the free path was not checked against the replay.
       handoff: S36.9 is executed as separately reviewed slices: (a) physical
         block contract and queue state; (b) logical ledger and current arena
         instrumentation; (c) manager-backed parking plus ordinary/abort deny
@@ -2140,6 +2195,15 @@ in `dev/INDEX.md`. What it did not do is below.
   it moves to `docs/history/` under a superseded banner or is re-cited
   against `rc-cycle.md` is a reading of the document, not a rename. Found
   by S41.11's checker, 2026-09-01.
+- [ ] **A test that reads a file or spawns a process carries no guard
+  requiring its `cfg_attr(miri, ignore)`.** The convention has been broken
+  twice — `cycle::` on 2026-09-01 and `memory::` on 2026-09-02 — and each
+  time it left a whole Miri slice unrun while `cargo test` stayed green. A
+  guard reads each `#[test]` function's body for `read_dir`, `current_exe`,
+  `File::open` and `read_to_string` and asks for the attribute above it. The
+  work is one test; what it needs first is a decision on how it recognises a
+  test function's extent, since the crate has no parser
+  (`dev/POSTMORTEM.md`, 2026-09-02).
 - [ ] **The ladder's refusal has nowhere to go.**
   `InsertOutcome::RefusedByLadder` is answered inside the crate — a null
   from `ll_cow_separate`, a `false` from `element::set` — because the
