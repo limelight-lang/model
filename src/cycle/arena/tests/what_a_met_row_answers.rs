@@ -25,7 +25,7 @@ fn only_the_slot_the_trace_met_carries_a_row() {
     let slots = slots_of(block);
     assert!(slots > 2 * shadow::GROUP, "the block holds several groups");
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let met_index = 3;
     let row = met(unsafe { arena.ensure_row(slot_row(block, met_index), 7) });
     assert_eq!(shadow::color(unsafe { *row }), Color::Unclassified);

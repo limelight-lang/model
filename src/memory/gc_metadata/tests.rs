@@ -12,7 +12,17 @@ fn current() -> usize {
 fn a_shadow_arena_is_gc_owned_until_both_exit_paths_return_it() {
     let _g = test_guard();
     let before = current();
-    let mut arena = crate::cycle::arena::TraceScratchArena::new();
+    let mut arena = crate::cycle::arena::TraceScratchArena::open()
+        .expect("the guard drew this thread's workspace");
+
+    // The workspace is this thread's already, so the block this case follows
+    // is the one the bump grows into past it.
+    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
+    assert_eq!(
+        current(),
+        before,
+        "the workspace was drawn before this case"
+    );
 
     let byte = arena.alloc(1);
     assert!(!byte.is_null());
@@ -26,7 +36,11 @@ fn a_shadow_arena_is_gc_owned_until_both_exit_paths_return_it() {
     arena.reset();
     assert_eq!(current(), before);
 
+    // The reset rewound the bump into the workspace, so a second block takes
+    // a second growth — and the drop is the other path that returns it.
+    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
     assert!(!arena.alloc(1).is_null());
+    assert_eq!(current(), before + 1);
     drop(arena);
     assert_eq!(current(), before);
 }
@@ -55,7 +69,11 @@ fn a_critical_workspace_draw_is_charged_only_while_the_arena_holds_it() {
     let _g = test_guard();
     assert!(crate::memory::critical::replenish());
     let before = current();
-    let mut arena = crate::cycle::arena::TraceScratchArena::new();
+    let mut arena = crate::cycle::arena::TraceScratchArena::open()
+        .expect("the guard drew this thread's workspace");
+
+    // Past the workspace, so the grant below has to ask an allocation path.
+    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
 
     let oom = force_oom();
     let byte = arena.alloc(1);
@@ -205,13 +223,14 @@ fn a_block_held_and_empty_is_reservation_and_no_bytes_in_use() {
 }
 
 #[test]
-fn an_arena_publishes_its_bump_at_the_reset_and_gives_it_back_there() {
+fn a_reset_enters_the_bump_it_rewinds_in_the_high_water_figure() {
     let _g = test_guard();
     // The high-water figure is process-global and never falls, so an
     // exact rise is only assertable from a known baseline.
     lower_peak_to_current();
     let before = stats();
-    let mut arena = crate::cycle::arena::TraceScratchArena::new();
+    let mut arena = crate::cycle::arena::TraceScratchArena::open()
+        .expect("the guard drew this thread's workspace");
 
     assert!(!arena.alloc(1).is_null());
     assert_eq!(
@@ -221,7 +240,11 @@ fn an_arena_publishes_its_bump_at_the_reset_and_gives_it_back_there() {
     );
 
     arena.reset();
-    assert_eq!(in_use(), before.current_bytes_in_use());
+    assert_eq!(
+        in_use(),
+        before.current_bytes_in_use(),
+        "the rewind releases the bump rather than charging it"
+    );
     assert_eq!(
         stats().peak_bytes_in_use(),
         before.current_bytes_in_use() + 8,
@@ -234,13 +257,16 @@ fn a_block_crossing_publishes_the_bump_it_abandons() {
     let _g = test_guard();
     lower_peak_to_current();
     let before = stats();
-    let mut arena = crate::cycle::arena::TraceScratchArena::new();
+    let mut arena = crate::cycle::arena::TraceScratchArena::open()
+        .expect("the guard drew this thread's workspace");
 
     assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
     assert_eq!(in_use(), before.current_bytes_in_use());
 
-    // The second grant cannot fit, so the first block leaves the bump —
-    // consumed to the byte, which is the instant its figure is exact.
+    // The second grant cannot fit, so the workspace leaves the bump —
+    // consumed to the byte, which is the instant its figure is exact. Held
+    // rather than returned, and charged all the same: the bytes stay in use
+    // until the reset rewinds over them.
     assert!(!arena.alloc(8).is_null());
     assert_eq!(
         in_use(),
@@ -262,7 +288,8 @@ fn a_second_reset_publishes_nothing_and_the_figure_cannot_underflow() {
     let _g = test_guard();
     lower_peak_to_current();
     let before = stats();
-    let mut arena = crate::cycle::arena::TraceScratchArena::new();
+    let mut arena = crate::cycle::arena::TraceScratchArena::open()
+        .expect("the guard drew this thread's workspace");
     assert!(!arena.alloc(64).is_null());
 
     arena.reset();
@@ -278,6 +305,6 @@ fn a_second_reset_publishes_nothing_and_the_figure_cannot_underflow() {
     assert_eq!(
         stats().peak_bytes_in_use(),
         after.peak_bytes_in_use(),
-        "the second reset finds no cursor and publishes nothing over a settled ledger"
+        "the second reset finds a rewound bump and enters nothing over a settled ledger"
     );
 }

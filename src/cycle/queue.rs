@@ -128,6 +128,14 @@
 //! two spare segments rather than three segments, and the empty-queue
 //! case needs no arm of its own.
 //!
+//! # The other block a thread holds for its whole life
+//!
+//! The collection workspace is the arena's memory and this module's cell: its
+//! address lives in the base block's control line rather than in a
+//! thread-local of its own, which is what the line reserved a word for. It is
+//! drawn at the thread's first collection, not at init, and goes back beside
+//! the base block at exit ([`lend_workspace_base`]).
+//!
 //! # What the poll does for this module
 //!
 //! Three things, and [`crate::gc::ll_gc_maybe_collect`] does them in
@@ -202,9 +210,11 @@ struct OwnerCycleState {
     /// candidate registration cannot fail (`rfc/dev/DECISIONS.md`, "an
     /// enrolment cannot fail").
     overflow_len: Cell<usize>,
-    /// Reserved for S36.10's persistent base pointer without growing the hot
-    /// line or changing the overflow budget again.
-    _future_workspace: Cell<*mut BlockHeader>,
+    /// This thread's collection workspace, in three states: null before the
+    /// thread's first collection, the block's address while the workspace is
+    /// idle, and that address with [`WORKSPACE_LENT`] set while an arena is
+    /// bumping in it ([`lend_workspace_base`]).
+    workspace_base: Cell<*mut BlockHeader>,
     /// Reserved for S36.12/S37.4's cold lane/phase descriptor.
     _future_cold_state: Cell<usize>,
 }
@@ -228,7 +238,7 @@ impl OwnerCycleState {
             spares: [const { Cell::new(std::ptr::null_mut()) }; SPARE_SEGMENTS],
             spare_count: Cell::new(0),
             overflow_len: Cell::new(0),
-            _future_workspace: Cell::new(std::ptr::null_mut()),
+            workspace_base: Cell::new(std::ptr::null_mut()),
             _future_cold_state: Cell::new(0),
         }
     }
@@ -492,14 +502,106 @@ pub(crate) fn initialize_queue_base() -> bool {
     !try_ensure_queue_base().is_null()
 }
 
-/// Give the base block back, leaving the thread without one.
+/// Set in [`OwnerCycleState::workspace_base`] while an arena holds the block.
+/// A block address never carries it, blocks being 64 KiB-aligned.
+const WORKSPACE_LENT: usize = 1;
+
+/// Hand this thread's collection workspace to an opening arena, drawing it
+/// on the thread's first collection, or **null when the pool refuses**.
+///
+/// Null is a collection that does not start: no window is open and no root
+/// has been taken, so the caller's abort path has nothing to undo. It is also
+/// the answer on a thread the runtime never registered, which has no queue for
+/// a collection to draw roots from.
+///
+/// The block is the thread's from here until [`release_queue_base`]. The arena
+/// that takes it bumps in it and rewinds at its close rather than returning
+/// it, which is what makes a second collection on the thread cost one block
+/// less than the first (`dev/DECISIONS.md`, "the workspace base is drawn at
+/// the first collection, not at thread init").
+///
+/// **The ordinary allocation path and nothing else.** A reserve block that
+/// became a bump arena for the life of a thread would be the reserve spent as
+/// ordinary memory (`rfc/model/memory/critical-reserve.md`, "Allocation
+/// paths"), and the pressure path has the critical reserve for the growth
+/// past this block instead (`crate::cycle::arena`).
+///
+/// A second lend before the first is returned ends the process in every build:
+/// two arenas bumping one block would grant the same bytes twice.
+pub(crate) fn lend_workspace_base() -> *mut BlockHeader {
+    let state = owner_state();
+    if state.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let q = unsafe { owner_state_ref(state) };
+    let installed = q.workspace_base.get();
+    assert_eq!(
+        installed as usize & WORKSPACE_LENT,
+        0,
+        "a thread bumps one collection workspace at a time"
+    );
+
+    // The draw needs no re-read of the cell across it, unlike the base block's
+    // in `try_ensure_queue_base`: the re-entry that guard exists for is a
+    // thread's first journal record running `ll_thread_init`, and a thread
+    // that already has its control line has recorded already.
+    let base = if installed.is_null() {
+        gc_metadata::acquire()
+    } else {
+        installed
+    };
+
+    if !base.is_null() {
+        q.workspace_base
+            .set((base as usize | WORKSPACE_LENT) as *mut BlockHeader);
+    }
+
+    base
+}
+
+/// Take the workspace back from the arena that is closing, leaving it idle for
+/// the thread's next collection.
+pub(crate) fn return_workspace_base(base: *mut BlockHeader) {
+    let state = owner_state();
+    assert!(
+        !state.is_null(),
+        "a collection outlived the thread state that lent it its workspace"
+    );
+
+    let q = unsafe { owner_state_ref(state) };
+    assert_eq!(
+        q.workspace_base.get() as usize,
+        base as usize | WORKSPACE_LENT,
+        "the closing arena returns the block it was lent"
+    );
+    q.workspace_base.set(base);
+}
+
+/// Draw this thread's workspace ahead of any collection, so that a test
+/// counting blocks across one counts the collection and not the draw.
+///
+/// Tests only. The block is out of the pool for the rest of the thread's life
+/// either way; what this moves is the instant, from the middle of a test into
+/// its fixture.
+#[cfg(test)]
+pub(crate) fn warm_workspace_base() {
+    let base = lend_workspace_base();
+    assert!(!base.is_null(), "the pool served this thread's workspace");
+    return_workspace_base(base);
+}
+
+/// Give back both blocks a thread holds for its whole life — the collection
+/// workspace, if it ever collected, and then the base block — leaving the
+/// thread without either.
 ///
 /// Called by `memory::heap` at thread exit, after
 /// [`release_queue_segments`], and again in `ll_thread_init`'s rollback of a
-/// thread whose exit will never run. The base block is per life, while
+/// thread whose exit will never run. Both blocks are per life, while
 /// the segment release is also how a test starts from a known queue — a
 /// running thread stripped of its base block there would draw a second one
-/// at its next registration and hold two.
+/// at its next registration and hold two, and one stripped of its workspace
+/// would draw a second at its next collection.
 ///
 /// Through [`crate::memory::critical::give_back`], the route the segments
 /// take, so a reserve below capacity is refilled before the pool sees
@@ -517,6 +619,19 @@ pub(crate) fn release_queue_base() {
     );
     assert_eq!(q.spare_count.get(), 0, "release follows spare release");
     assert_eq!(q.overflow_len.get(), 0, "release follows overflow release");
+
+    // The workspace goes back ahead of the block whose control line names it,
+    // and to the pool rather than through the reserve: what the reserve lent
+    // goes back to the reserve, and the reserve never funded this one
+    // ([`lend_workspace_base`]).
+    let workspace = q.workspace_base.replace(std::ptr::null_mut());
+    assert_eq!(
+        workspace as usize & WORKSPACE_LENT,
+        0,
+        "release follows the collection's close"
+    );
+    gc_metadata::release(workspace);
+
     gc_metadata::discharge(size_of::<OwnerCycleState>());
     gc_metadata::release_to_critical(queue_base_of(state));
 }
@@ -759,6 +874,20 @@ pub(crate) fn queue_base() -> *mut BlockHeader {
     } else {
         queue_base_of(state)
     }
+}
+
+/// This thread's collection workspace, or null before its first collection.
+/// The lent bit is masked off, so the answer is the block either way and a
+/// case that wants to know whether an arena holds it asks the arena.
+#[cfg(test)]
+pub(crate) fn workspace_base() -> *mut BlockHeader {
+    let state = owner_state();
+    if state.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let installed = unsafe { owner_state_ref(state) }.workspace_base.get();
+    (installed as usize & !WORKSPACE_LENT) as *mut BlockHeader
 }
 
 #[cfg(test)]

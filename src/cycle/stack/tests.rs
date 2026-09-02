@@ -46,7 +46,7 @@ fn a_depth_past_one_segment_pops_in_the_order_it_pushed() {
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let mut stack = TraceStack::new();
     for i in 1..=depth {
         assert!(
@@ -76,7 +76,7 @@ fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let mut stack = TraceStack::new();
     for crossing in 0..4 {
         for i in 1..=depth {
@@ -106,7 +106,14 @@ fn a_push_with_both_allocation_paths_refusing_answers_false() {
     let mut headers = slab(1);
     let base = headers.as_mut_ptr();
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    // Past the workspace: a segment served out of memory the thread already
+    // holds meets no allocation path, and this case is about the refusal.
+    assert!(
+        !arena
+            .alloc(crate::memory::block_pool::BLOCK_PAYLOAD)
+            .is_null()
+    );
     let mut stack = TraceStack::new();
 
     let oom = force_oom();
@@ -137,7 +144,7 @@ fn a_stack_reset_with_its_arena_holds_no_segment() {
     let mut headers = slab(1);
     let base = headers.as_mut_ptr();
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let mut stack = TraceStack::new();
     assert!(stack.push(&mut arena, unsafe { entry(base, 1) }));
     assert_eq!(stack.segment_count(), 1);

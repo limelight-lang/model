@@ -316,8 +316,9 @@ pub(crate) struct ActiveTrace {
 }
 
 impl ActiveTrace {
-    /// Open this thread's one trace window, or `None` when neither allocation
-    /// path can fund the chain that holds its withheld returns.
+    /// Open this thread's one trace window, or `None` when the memory it
+    /// stands on cannot be had: the thread's workspace, on the first
+    /// collection of its life, or the chain that holds the withheld returns.
     ///
     /// `None` is a collection that does not start: no window is open, no return
     /// has been withheld, and the caller's own abort path has nothing to undo.
@@ -327,11 +328,15 @@ impl ActiveTrace {
             "a thread runs at most one trace at a time"
         );
 
+        // The workspace before the chain: a refused chain then drops an arena
+        // that took nothing the thread did not already hold, where the other
+        // order would install the window in TLS and take it down again.
+        let arena = crate::cycle::arena::TraceScratchArena::open()?;
         let returns = WithheldReturns::open()?;
         DEFERRED_RETURNS.with(|head| head.set(returns.head));
 
         Some(Self {
-            arena: crate::cycle::arena::TraceScratchArena::new(),
+            arena,
             returns,
             _not_send: std::marker::PhantomData,
         })
@@ -352,9 +357,9 @@ impl ActiveTrace {
 impl Drop for ActiveTrace {
     fn drop(&mut self) {
         // Both of this collection's residues stand together here and nowhere
-        // else: the arena's reset charges its own and discharges it in the
-        // same call, so a mark after that call would enter the two separately
-        // and the high-water figure would miss a collection that held rows and
+        // else: the arena's reset enters its own alone, and the high-water
+        // figure takes the larger of two marks rather than their sum, so a
+        // mark left to that call would miss a collection that held rows and
         // withheld returns at once.
         gc_metadata::mark_peak(self.arena.residue() + self.returns.residue());
 

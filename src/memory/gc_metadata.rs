@@ -22,12 +22,12 @@
 //! leaving the append position — never per grant, which is what keeps the
 //! candidate-registration path and the free path free of it. Three residues
 //! follow from that and are granularity rather than error: the write segment's
-//! own fill, the trace-scratch block still under the bump and the
+//! own fill, the block under the trace scratch arena's bump and the
 //! withheld-return block still under the cursor. Each is entered in the
-//! high-water figure by the transition that ends it — the scratch arena's
-//! reset charges it, the owner's segment release marks it, the trace window's
-//! close marks its own — so that figure is exact for one thread and can miss a
-//! maximum two threads stood in together.
+//! high-water figure by the transition that ends it, and by a mark rather than
+//! a charge, the bytes standing there being released in the same breath — so
+//! that figure is exact for one thread and can miss a maximum two threads
+//! stood in together.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -89,9 +89,9 @@ impl GcMemoryStats {
     /// overflow buffer with no entry in it are outside this figure, so the gap
     /// to [`current_bytes`](Self::current_bytes) is bounded by nothing in
     /// particular. What is bounded is the figure's own lag — at most one write
-    /// segment's fill per thread, and one trace-scratch block's consumption
-    /// plus one withheld-return block's per collection in flight, each charged
-    /// by the transition that ends it.
+    /// segment's fill per thread, and the consumption of one block under a
+    /// trace scratch arena's bump plus one withheld-return block's per
+    /// collection in flight, each entered by the transition that ends it.
     #[inline]
     pub fn current_bytes_in_use(self) -> usize {
         self.in_use
@@ -104,8 +104,9 @@ impl GcMemoryStats {
     /// transition that ends it: a collection that held one block for two
     /// hundred bytes is in this figure at two hundred, a thread that filled a
     /// queue segment without growing the queue enters its fill when it
-    /// releases its segments, and a trace window enters the block its withheld
-    /// returns were being written into when it closes. **Entered at that
+    /// releases its segments, and a collection enters the bump its reset
+    /// rewinds and the block its withheld returns were being written into when
+    /// it closes. **Entered at that
     /// transition and not while the residue stands**, so a residue that
     /// coexisted with another thread's maximum is in this figure only if it
     /// outlived it.

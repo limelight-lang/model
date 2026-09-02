@@ -35,9 +35,9 @@ versions live in `docs/history/`, marked at the top.
 
   | module | what is there | production caller |
   |---|---|---|
-  | `queue` | the per-thread candidate queue, its base block, spares and overflow buffer | `refcount::release_word`, `gc`'s poll |
+  | `queue` | the per-thread candidate queue, its base block, spares and overflow buffer, and the cell that lends the collection workspace | `refcount::release_word`, `gc`'s poll |
   | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier | `stdapi::ll_free` |
-  | `arena` | `TraceScratchArena`, the collection's bump, and `ensure_row`/`find_initialized_row` | none until S36.7 |
+  | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace, and `ensure_row`/`find_initialized_row` | none until S36.7 |
   | `shadow` | the row: two bits of colour over thirty of working count | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
   | `mark` | the trace: trial deletion over the rows | none |
@@ -555,9 +555,9 @@ answer about collection's reservation (`dev/DECISIONS.md`, "GC memory is
 counted once, and the block kind is the split"). Beside it `charge` and
 `discharge` keep the second pair, bytes in use inside those blocks, moved at a
 structural transition rather than per grant so the registration path stays free of
-it; the two residues that follow are entered in the high-water figure by the
-transition that ends them, which is exact on one thread and can miss a maximum
-two threads stood in together. The pool and the critical reserve refuse a
+it; the three residues that follow are entered in the high-water figure by the
+transition that ends them, and by a mark rather than a charge, which is exact
+on one thread and can miss a maximum two threads stood in together. The pool and the critical reserve refuse a
 block still stamped with that kind.
 
 Withholding a physical return — `memory::stdapi::ll_free` asks two windows

@@ -11,8 +11,9 @@ never edited or deleted.
 ## 2026-09-01 — the workspace base is drawn at the first collection, not at thread init
 
 Owner: S36.10, on Edmond's ruling over the Sage gate's first escalation.
-Supersedes the 2026-08-26 entry below that made the workspace a second
-mandatory block at init.
+Supersedes the entry below, "cycle GC owns persistent manager-visible memory
+and one token per candidate", which made the workspace a second mandatory
+block at init.
 
 **Decided:** a thread's first collection draws one ordinary-pool 64 KiB block
 through `gc_metadata::acquire`, and the thread holds it until exit as its
@@ -27,7 +28,7 @@ so an abort's count-based return cannot hand it to the reserve.
 
 **Why:** the design of record has one mandatory block per thread and says a
 thread that cannot obtain it does not start (`rfc/model/memory/critical-reserve.md`,
-"Allocation paths"; `rfc/dev/DECISIONS.md`, 2026-08-28: the queue base is the
+"Candidate-queue growth"; `rfc/dev/DECISIONS.md`, 2026-08-28: the queue base is the
 one stock that cannot be refilled at a later poll without suspending the
 guarantee between birth and that poll). A workspace meets neither half of
 that reason — a collection that lacks it answers `None` and loses nothing it
@@ -44,14 +45,14 @@ production path names. S36.10 builds `Idle → Trace → Idle` with the rewind a
 the trace close; S36.12 splits the close when it chooses its commit unit.
 
 **Rejected:** the mandatory draw at init, for the reason above; a base
-adopted from the critical reserve, which `critical-reserve.md` forbids as an
-ordinary bump block; a phase word beside the withheld-return chain's head
+adopted from the critical reserve, which `rfc/model/memory/critical-reserve.md`,
+"Allocation paths", forbids as an ordinary bump block; a phase word beside the withheld-return chain's head
 pointer as a second representation of "a trace is open", since an unwind
 that drops the chain would leave the two disagreeing.
 
 **Cost:** mandatory direct cycle memory stays 65,536 bytes per registered
 thread; a thread that has collected once holds 131,072, and 262,144 with both
-queue spares present and an empty queue — the figure the 2026-08-26 entry
+queue spares present and an empty queue — the figure the superseded entry
 called a maximum is the empty-queue figure, a polled thread with one candidate
 holding five blocks.
 

@@ -27,6 +27,10 @@ fn kind_of(block: *mut crate::memory::block_pool::BlockHeader) -> u32 {
 
 /// The base block is one block, it is out of the pool while the thread holds
 /// it, and it carries the stamp that keeps a trace out of it.
+///
+/// The two blocks a thread holds for its life are counted apart here rather
+/// than together: the release gives back both, and only taking them back one
+/// at a time says which of the two is one block.
 #[test]
 fn the_base_block_is_one_stamped_block_out_of_the_pool() {
     let _g = test_guard();
@@ -46,14 +50,21 @@ fn the_base_block_is_one_stamped_block_out_of_the_pool() {
     release_queue_base();
     crate::memory::critical::drain_for_test();
     assert_eq!(
+        pool.blocks_out() + 2,
+        with,
+        "the release gave back the base block and the workspace"
+    );
+
+    assert!(initialize_queue_base(), "and the thread takes another");
+    assert_eq!(
         pool.blocks_out() + 1,
         with,
         "the base block is one pool block"
     );
-
-    assert!(initialize_queue_base(), "and the thread takes another");
-    assert_eq!(pool.blocks_out(), with);
     assert_eq!(kind_of(queue_base()), BLOCK_KIND_GC_METADATA);
+
+    warm_workspace_base();
+    assert_eq!(pool.blocks_out(), with, "and the workspace is the other");
 }
 
 /// The drain empties the queue and leaves the base block alone: the base block

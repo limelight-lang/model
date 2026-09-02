@@ -858,6 +858,12 @@ pub(crate) fn test_guard() -> TestGuard {
     // and a thread's first record decides when it is taken").
     #[cfg(feature = "debug-journal")]
     crate::journal::take_ring_for_test();
+    // The collection workspace too, and for the same reason: it is a block,
+    // drawn at the thread's first collection and held for the rest of the
+    // thread's life, so a test that names a block cannot have that draw
+    // happen halfway through it
+    // (`crate::cycle::queue::warm_workspace_base`).
+    crate::cycle::queue::warm_workspace_base();
     guard
 }
 

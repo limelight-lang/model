@@ -87,7 +87,8 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
     let room = granted(shadow::bytes_for(unsafe {
         crate::memory::heap::collector_block_slots(near_block)
     })) + granted(crate::cycle::stack::SEGMENT_BYTES);
-    let mut shadow_arena = TraceScratchArena::new();
+    let mut shadow_arena =
+        TraceScratchArena::open().expect("the guard drew this thread's workspace");
     assert!(!shadow_arena.alloc(BLOCK_PAYLOAD - room).is_null());
 
     let oom = force_oom();

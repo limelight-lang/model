@@ -1,8 +1,17 @@
-//! The collection's working memory: a bump arena over 64 KiB blocks,
-//! taken for one collection and returned whole at its end.
+//! The collection's working memory: a bump arena that opens over the thread's
+//! own workspace and grows into 64 KiB blocks taken for one collection.
 //!
-//! **Two allocation paths, in this order: the ordinary block pool, then the
-//! thread's critical reserve** (`rfc/model/memory/critical-reserve.md`,
+//! **The first block is the thread's, and the arena borrows it.** The
+//! workspace is drawn at the thread's first collection, through the ordinary
+//! allocation path alone, and held until the thread exits, so a collection's
+//! close rewinds the bump over it rather than giving it back and every
+//! collection after the first opens on memory already in hand
+//! ([`crate::cycle::queue::lend_workspace_base`]; `dev/DECISIONS.md`, "the
+//! workspace base is drawn at the first collection, not at thread init").
+//!
+//! **Growth past the workspace has two allocation paths, in this order: the
+//! ordinary block pool, then the thread's critical reserve**
+//! (`rfc/model/memory/critical-reserve.md`,
 //! "Reserve users"). The in-line collection is the standard form rather than
 //! the emergency one, so most runs begin with no refusal anywhere and a full
 //! trace's rows are far beyond any reserve; the reserve allocation path is the
@@ -21,10 +30,12 @@
 //!
 //! # What the arena owes back
 //!
-//! Every block, at the end of the collection and on the abort path alike, and
-//! what the reserve allocation path lent goes back to the reserve before the
-//! pool sees a block — the retry that follows an abort wants an allocation path
-//! that serves.
+//! Every block it drew, at the end of the collection and on the abort path
+//! alike, and what the reserve allocation path lent goes back to the reserve
+//! before the pool sees a block — the retry that follows an abort wants an
+//! allocation path that serves. The workspace is not among them: it goes back
+//! to the thread when the arena drops, and to the memory manager only at
+//! thread exit.
 //!
 //! **The shadow-row pointers are nulled earlier than that, and the
 //! instant is fixed by the design rather than by convenience.**
@@ -109,7 +120,13 @@ pub(crate) enum RowLookup {
 /// One collection's memory. Built on the collecting thread's stack,
 /// spent by that collection, and returned by [`TraceScratchArena::reset`].
 pub(crate) struct TraceScratchArena {
-    /// Blocks held, threaded through `BlockHeader::next`, newest first.
+    /// The thread's workspace, lent for the length of this arena and given
+    /// back when it drops. Never null while the arena exists, and outside
+    /// both `blocks` and `from_reserve`: it is not this collection's to
+    /// return, and the reserve never funded it.
+    base: *mut BlockHeader,
+    /// Blocks the bump took above the workspace, threaded through
+    /// `BlockHeader::next`, newest first.
     blocks: *mut BlockHeader,
     /// How many of them came through the reserve allocation path, and therefore
     /// how many go back to the reserve rather than to the pool. The
@@ -129,28 +146,38 @@ pub(crate) struct TraceScratchArena {
 }
 
 impl TraceScratchArena {
-    /// An arena holding nothing. Allocates no memory: a collection that
-    /// finds no candidate pays for no block.
-    pub(crate) fn new() -> Self {
-        Self {
+    /// An arena over this thread's workspace, or **`None` when the pool
+    /// refuses one**, which is a collection that does not start.
+    ///
+    /// The workspace is drawn at the thread's first collection and held until
+    /// the thread exits, so this call goes to the memory manager once in a
+    /// thread's life and every later collection opens on memory already in
+    /// hand ([`crate::cycle::queue::lend_workspace_base`]). A thread bumps one
+    /// workspace at a time, and a second arena opened over a live one ends the
+    /// process rather than granting the same bytes twice.
+    pub(crate) fn open() -> Option<Self> {
+        let base = crate::cycle::queue::lend_workspace_base();
+        if base.is_null() {
+            return None;
+        }
+
+        Some(Self {
+            base,
             blocks: std::ptr::null_mut(),
             from_reserve: 0,
-            cursor: std::ptr::null_mut(),
-            left: 0,
+            cursor: BlockHeader::payload_start(base),
+            left: BLOCK_PAYLOAD,
             touched: std::ptr::null_mut(),
             published: 0,
-        }
+        })
     }
 
-    /// Bytes of the block still under the bump, which no [`grow`](Self::grow)
-    /// has charged and which [`reset`](Self::reset) publishes. Zero while no
-    /// block is open, which is the state a re-entered reset finds.
+    /// Bytes of the block under the bump, which no [`grow`](Self::grow) has
+    /// charged and which [`reset`](Self::reset) enters in the high-water
+    /// figure. Zero on a rewound arena, which is the state a re-entered reset
+    /// finds.
     pub(crate) fn residue(&self) -> usize {
-        if self.cursor.is_null() {
-            0
-        } else {
-            BLOCK_PAYLOAD - self.left
-        }
+        BLOCK_PAYLOAD - self.left
     }
 
     /// Charge `bytes` of this arena's bump as memory in use, and remember
@@ -343,14 +370,13 @@ impl TraceScratchArena {
     pub(crate) fn reset(&mut self) {
         self.clear_touched_rows();
 
-        // The block still under the bump has no further grant coming, so
-        // its consumption is published here; the ones before it were
-        // published as `grow` left each of them. `residue` reads the cursor
-        // rather than the block list, because the two part company on the
-        // re-entry below: a `reset` that unwinds out of a poisoned `put`
-        // and is run again by `Drop` finds the list half returned and the
-        // cursor already null.
-        self.publish(self.residue());
+        // The block still under the bump has no further grant coming, and it
+        // is being released in the same breath — rewound if it is the
+        // workspace, handed over below if it is not — so its consumption goes
+        // into the high-water figure alone rather than through a charge whose
+        // discharge follows it (`memory::gc_metadata::mark_peak`). The blocks
+        // before it were charged as `grow` left each of them.
+        gc_metadata::mark_peak(self.residue());
 
         gc_metadata::discharge(self.published);
         self.published = 0;
@@ -365,9 +391,11 @@ impl TraceScratchArena {
         // The arena's own state moves ahead of each hand-over rather
         // than after the loop: `BlockPool::put` takes a mutex, and a
         // thread that unwinds out of a poisoned one leaves `Drop` to run
-        // `reset` again — over a list whose head was already returned.
-        self.cursor = std::ptr::null_mut();
-        self.left = 0;
+        // `reset` again — over a list whose head was already returned. A
+        // rewound bump reads a residue of zero, which is what the second pass
+        // must find where it used to find a null cursor.
+        self.cursor = BlockHeader::payload_start(self.base);
+        self.left = BLOCK_PAYLOAD;
         while !self.blocks.is_null() {
             let block = self.blocks;
             self.blocks = unsafe { (*block).next };
@@ -443,12 +471,12 @@ impl TraceScratchArena {
         }
 
         // The block the bump is leaving takes no further grant, so this is the
-        // instant its consumption becomes exact. Published after both
-        // allocation paths have answered: a refusal leaves the bump where it is
-        // and the block still open.
-        if !self.blocks.is_null() {
-            self.publish(BLOCK_PAYLOAD - self.left);
-        }
+        // instant its consumption becomes exact — the workspace on the first
+        // growth of a collection and a drawn block after it, and the workspace
+        // is charged like any other because it stays in use until the reset.
+        // Published after both allocation paths have answered: a refusal
+        // leaves the bump where it is and the block still open.
+        self.publish(BLOCK_PAYLOAD - self.left);
 
         unsafe { (&raw mut (*block).next).write(self.blocks) };
         self.blocks = block;
@@ -568,12 +596,18 @@ unsafe fn index_space(row: RowKey) -> Option<u32> {
 }
 
 impl Drop for TraceScratchArena {
-    /// The net under an unwind. On the contract path the collection has
-    /// already called [`reset`](TraceScratchArena::reset) and this finds
+    /// The end of the arena's hold on the thread's workspace, and the net
+    /// under an unwind. On the contract path the collection has already
+    /// called [`reset`](TraceScratchArena::reset) and that call finds
     /// nothing; a test that panics mid-collection would otherwise leave
     /// the pool short for every test after it.
+    ///
+    /// The workspace goes back here rather than at the reset, which is what
+    /// leaves it one holder at a time: an arena that handed it back and kept
+    /// bumping would be granting bytes the next collection is granting too.
     fn drop(&mut self) {
         self.reset();
+        crate::cycle::queue::return_workspace_base(self.base);
     }
 }
 

@@ -277,12 +277,14 @@ recorded out of band by `cycle::deferred_slot_reuse`; closing the trace replays
 it through the same `ll_free`, so whichever window closes last performs the
 physical return.
 
-`ActiveTrace` owns the `TraceScratchArena`: close first resets it and nulls
-every block's row pointer, then takes the window down, then replays the
-returns. The records are written into a chain of manager blocks the window
-draws when it opens, so the free path reaches no allocator. Drawing at the
-open is what makes the refusal answerable: both doors refusing there is a
-collection that does not start. Past that block the chain grows, and a refusal
+`ActiveTrace` owns the `TraceScratchArena`: close first resets it — which
+rewinds the bump over the thread's workspace and gives back every block above
+it — and nulls every block's row pointer, then takes the window down, then
+replays the returns. The records are written into a chain of manager blocks the
+window draws when it opens, so the free path reaches no allocator. Drawing at
+the open is what makes the refusal answerable: both doors refusing there is a
+collection that does not start, and so is a refused workspace one door
+earlier. Past that block the chain grows, and a refusal
 of the growth aborts the process — the trace is holding a slot it may neither
 return nor drop, and `ll_free` has no frame to report through.
 
@@ -597,18 +599,22 @@ Beside the blocks, one pair of logical figures — current and high-water bytes
 in use inside them — answers how much of the reservation is working memory.
 The charge lands at a structural transition and never per grant: a queue
 segment leaving the write position charges its whole payload, an
-overflow-buffer append charges one pointer, a base block charges its 64-byte
-control line, and a trace-scratch block leaving the bump charges what it
-consumed. Each has one inverse, so the figure is exact at every instant except
-for two named residues — the write segment's own fill, at most 65,280 bytes
-per thread, and a trace-scratch block still under the bump, at most 65,280
-bytes per collection in flight. Both are published by the transition that ends
-them, so a collection's own high-water figure is exact even when its current
-one lags.
+overflow-buffer append charges one pointer, the queue's base block charges its
+64-byte control line, a block leaving the trace scratch arena's bump charges
+what it consumed — the workspace included, which stays in use until the reset
+rewinds over it — and a withheld-return block leaving the append position
+charges its own. Each has one inverse, so the figure is exact at every instant
+except for three named residues — the write segment's own fill, at most 65,280
+bytes per thread, and the block under the arena's bump plus the one under the
+withheld-return cursor, at most 65,280 bytes each per collection in flight. All
+three are entered in the high-water figure by the transition that ends them,
+and by a mark rather than a charge, so a collection's own high-water figure is
+exact even when its current one lags.
 
 The queue's base block is held for one thread life. Its payload begins with one
 64-byte, cache-line-aligned `OwnerCycleState`; TLS contains only the non-owning
-pointer to that state. The remaining 65,216 bytes are the bounded overflow
+pointer to that state, and that state carries the address of the second block a
+thread holds for its life, the collection workspace. The remaining 65,216 bytes are the bounded overflow
 buffer, 8,152 pointers, so the runtime bulk-loop poll stride is derived as 4,076
 rather than retaining the ordinary segment's 8,160-entry assumption. Ordinary
 queue segments use the full payload. Pool and critical-reserve handoffs restamp
@@ -631,12 +637,15 @@ Its protocol is the log reserve's, verbatim — filled at
 safepoint poll, drained at thread exit.
 
 It has two customers today, and the draw order is the pool first for
-both. The **cycle collection's working memory** is one: the in-line
-collection has been the standard form since 2026-08-26 rather than the
-emergency one, so most of its runs begin with no refusal anywhere, and a
+both. The **cycle collection's working memory above its workspace** is one:
+the in-line collection has been the standard form since 2026-08-26 rather than
+the emergency one, so most of its runs begin with no refusal anywhere, and a
 full trace's rows are far beyond any reserve; the critical reserve is the
 fallback, which on the memory-pressure path is the first draw because the
-refusal is what triggered the collection.
+refusal is what triggered the collection. The workspace itself is outside this:
+one block per thread from its first collection, funded by the ordinary
+allocation path alone, because a reserve block that became a bump arena for the
+life of a thread would be the reserve spent as ordinary memory.
 
 The **candidate queue's growth** is the other, and it reaches this reserve
 on a different condition: the queue's two spare cells are both empty,
@@ -644,7 +653,9 @@ which means the poll's own refill through the ordinary allocation path was
 already refused. The draw is one block, and it puts the runtime in reserve mode.
 Its segments come back through `give_back` like the collection's, which
 is why thread exit releases the queue's segments before this reserve
-(`memory::heap::ll_thread_exit`). **This reserve refusing does not refuse the
+(`memory::heap::ll_thread_exit`); the workspace and the base block go back
+inside that same release, the workspace straight to the pool and the base block
+through `give_back`. **This reserve refusing does not refuse the
 registration**: below it sits the queue's own overflow buffer, whose storage is
 a block the thread already holds — the base block, drawn at `ll_thread_init` and
 given back at thread exit — so the tier below the reserve asks no allocation

@@ -26,7 +26,7 @@ fn a_first_touch_reserves_rows_stamps_the_block_and_attaches_it() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     assert!(
         unsafe { crate::memory::heap::block_shadow(block) }.is_null(),
         "no collection has touched this block"
@@ -61,7 +61,7 @@ fn a_second_reach_leaves_the_working_count_alone() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let row = met(unsafe { arena.ensure_row(slot_row(block, 0), 3) });
 
     // What the mark does with the row it is handed.
@@ -96,7 +96,7 @@ fn a_potentially_unreachable_zero_row_is_told_from_an_untouched_slot() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let row = met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
     unsafe { *row = shadow::compose(Color::PotentiallyUnreachable, 0) };
 
@@ -128,7 +128,7 @@ fn two_slots_of_one_block_share_its_array_and_take_their_own_rows() {
         "the fixture's second slot is in the same block"
     );
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let first_row = met(unsafe { arena.ensure_row(slot_row(block, 0), 4) });
     let second_row = met(unsafe { arena.ensure_row(slot_row(block, 1), 9) });
 
@@ -180,7 +180,7 @@ fn a_retained_block_gets_one_row_for_each_occupant() {
     let occupants = crate::memory::retained::occupant_count(block)
         .expect("the reset registered the block's occupant index");
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let mut rows = Vec::new();
     for survivor in [small, large] {
         let position = crate::memory::retained::occupant_index(block, survivor as usize)
@@ -239,7 +239,7 @@ fn a_large_entity_is_met_in_its_own_header_and_swept_from_it() {
         "commissioning leaves the row untouched"
     );
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let row = met(unsafe {
         arena.ensure_row(
             RowKey {
@@ -352,7 +352,7 @@ fn a_refusal_on_the_second_block_leaves_the_first_intact() {
     let (mut first_heap, first_slot, first) = an_entity_block();
     let (mut second_heap, second_slot, second) = an_entity_block();
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let row = met(unsafe { arena.ensure_row(slot_row(first, 0), 2) });
     unsafe { *row = shadow::compose(Color::Unclassified, 1) };
 
@@ -405,7 +405,7 @@ fn an_edge_into_a_block_with_no_object_index_is_unplaced() {
         "a pinned block carries no occupant index"
     );
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let answer = unsafe {
         arena.ensure_row(
             RowKey {
@@ -440,13 +440,16 @@ fn a_second_collection_meets_a_slotted_block_at_the_refcount_again() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut first = TraceScratchArena::new();
+    let mut first = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let row = met(unsafe { first.ensure_row(slot_row(block, 0), 6) });
     assert_eq!(unsafe { shadow::subtract(row, 4) }, 2);
     first.clear_touched_rows();
     first.reset();
+    // Dropped rather than left standing: the thread's workspace goes back with
+    // it, and the second collection is the one that takes it next.
+    drop(first);
 
-    let mut second = TraceScratchArena::new();
+    let mut second = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let (row, first_visit) = met_first(unsafe { second.ensure_row(slot_row(block, 0), 6) });
     assert!(first_visit, "the block came back untouched");
     assert_eq!(
@@ -487,7 +490,7 @@ fn an_entity_referenced_past_the_field_is_met_at_the_bound() {
         "the fixture is past the bound"
     );
 
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let row = met(unsafe {
         arena.ensure_row(
             slot_row(
@@ -548,7 +551,7 @@ fn a_first_touch_writes_the_bitmap_and_the_groups_it_reaches() {
     let group = size_of::<u8>() + shadow::GROUP as usize * size_of::<u32>();
 
     let before = shadow::written_bytes();
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
     assert_eq!(
         shadow::written_bytes() - before,

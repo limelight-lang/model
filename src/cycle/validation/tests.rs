@@ -23,7 +23,7 @@ unsafe fn traced_unreachable_from(
     root: *mut Object,
     expected: &[*mut Object],
 ) -> TraceScratchArena {
-    let mut arena = TraceScratchArena::new();
+    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
     let mut stack = TraceStack::new();
     assert_eq!(
         unsafe { mark(&mut arena, &mut stack, root as *mut RcHeader) },
