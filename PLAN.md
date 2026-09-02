@@ -1381,6 +1381,46 @@ stage claiming the frees while building none of them.
         than a constraint on it; and `Idle → Trace → Idle` is a holder with a
         destructor over a tagged cell rather than a typed state machine, which
         is the untyped form the note above settled on.
+      Critic 2026-09-02 round 2: five findings, three of them in round one's
+        own repairs. The abort round one recorded was explained wrongly: it is
+        not a second panic inside an unwinding exit but `ll_thread_exit` being
+        `extern "C"`, so any panic under it aborts whether or not anything is
+        unwinding — shown by forgetting an arena and returning normally, which
+        aborts all the same. The holder therefore converts one path, an unwind
+        out of the reset, and the comment says so now instead of claiming the
+        class. `return_workspace_base`'s assertion on a missing thread state
+        could fire on exactly one sequence — `release_queue_base` had already
+        taken the state out of the thread-local and then failed an assertion of
+        its own — so it was a second panic on that path and nothing anywhere
+        else; it returns instead, and the same misuse now reports one failing
+        test where it aborted the binary. "Ends the process in every build" was
+        false of an `assert_eq!` the test profile unwinds, which the
+        `should_panic` case depends on. Two stale comments taken: the thread
+        exit named one block held for a thread's life, and `cycle::stack`'s
+        stale-segment warning described another thread's block where the
+        quieter failure is now this thread's next collection.
+      Critic 2026-09-02 round 2, what it cleared by running rather than by
+        reading: the ledger reasoning of `dev/DECISIONS.md`, "the workspace is
+        charged when the bump leaves it", which it tried to refute and could
+        not — guarding the crossing charge fails exactly the one test the entry
+        names; the unmasked accessor's three callers; the residue assertion and
+        the shared opener; the `should_panic` case's state; and every citation.
+      Critic 2026-09-02 round 2, one finding that is not a repair and waits on
+        Edmond: **the first-collection draw loses a guarantee the record says it
+        does not.** On `ea5e208` a collection could start with the pool
+        refusing — the arena and the withheld-return chain both asked the pool
+        and then the critical reserve, which is the reserve user
+        `rfc/model/memory/critical-reserve.md`, "Collection working memory",
+        exists for. A thread that has never collected now answers `None` under
+        the same pressure, because the workspace has the ordinary path alone.
+        Five untouched cases in `cycle::deferred_slot_reuse::tests` state the
+        old claim in their prose and pass only because
+        `block_pool::test_guard` draws the workspace ahead of them; with that
+        warm removed, `the_critical_reserve_funds_a_window_the_pool_refuses`
+        fails on its own message. No production caller exists until S36.7. The
+        alternative that keeps both the ruling and the guarantee is an arena
+        that opens without a workspace when the draw is refused and owns its
+        blocks for that collection, as it did before this step.
       handoff: mandatory direct cycle memory becomes 131,072 bytes per
         registered thread — one 65,536-byte queue floor and one workspace
         base. The two best-effort queue spares make the nominal/maximum direct

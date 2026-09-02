@@ -1705,9 +1705,9 @@ fn retire_the_journal() {
     // (`crate::cycle::queue::release_queue_segments`): draining the reserve
     // first would strand them in a reserve nothing drains again.
     crate::cycle::queue::release_queue_segments();
-    // Then the base block, which the release above leaves alone: that
-    // release is also how a running thread empties its queue, and the base
-    // block is the one block this thread holds for its whole life rather
+    // Then the two blocks the release above leaves alone: that release is
+    // also how a running thread empties its queue, while the base block and
+    // the collection workspace are held for this thread's whole life rather
     // than for its queue's contents
     // (`crate::cycle::queue::release_queue_base`).
     crate::cycle::queue::release_queue_base();

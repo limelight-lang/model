@@ -282,9 +282,9 @@ rewinds the bump over the thread's workspace and gives back every block above
 it — and nulls every block's row pointer, then takes the window down, then
 replays the returns. The records are written into a chain of manager blocks the
 window draws when it opens, so the free path reaches no allocator. Drawing at
-the open is what makes the refusal answerable: both doors refusing there is a
-collection that does not start, and so is a refused workspace one refusal
-earlier. Past that block the chain grows, and a refusal
+the open is what makes the refusal answerable: both allocation paths refusing
+there is a collection that does not start, and so is a refused workspace one
+refusal earlier. Past that block the chain grows, and a refusal
 of the growth aborts the process — the trace is holding a slot it may neither
 return nor drop, and `ll_free` has no frame to report through.
 

@@ -65,10 +65,12 @@ struct StackSegment {
 /// arena, which is why it has no [`Drop`] of its own.
 ///
 /// **Every segment is the arena's memory, so a worklist does not outlive
-/// an arena reset.** `TraceScratchArena::reset` hands those blocks to the pool
-/// and to the critical reserve, and a stack used after it would advance
-/// into a block another thread has since recommissioned, writing an
-/// entity pointer into someone else's rows. A collection that resets and
+/// an arena reset.** `TraceScratchArena::reset` hands the blocks it drew to
+/// the pool and to the critical reserve and rewinds the bump over the thread's
+/// workspace, so a stack used after it advances either into a block another
+/// thread has since recommissioned or into rows the next collection on this
+/// thread is granting — an entity pointer written over somebody's rows either
+/// way, and the second is the quieter of the two. A collection that resets and
 /// traces again — the retry after an abort is exactly that collection —
 /// calls [`TraceStack::reset`] in the same breath.
 pub(crate) struct TraceStack {
@@ -172,7 +174,8 @@ impl TraceStack {
     /// Nothing is freed here and nothing can be: the memory is the
     /// arena's and goes back with it. What this undoes is the stack's
     /// own belief that it has segments to advance into, which after
-    /// `TraceScratchArena::reset` names memory the pool has taken back.
+    /// `TraceScratchArena::reset` names memory the pool has taken back or the
+    /// workspace's bump is granting again.
     pub(crate) fn reset(&mut self) {
         self.current = std::ptr::null_mut();
         self.current_len = 0;

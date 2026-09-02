@@ -523,8 +523,9 @@ const WORKSPACE_LENT: usize = 1;
 /// paths"), and the pressure path has the critical reserve for the growth
 /// past this block instead (`crate::cycle::arena`).
 ///
-/// A second lend before the first is returned ends the process in every build:
-/// two arenas bumping one block would grant the same bytes twice.
+/// A second lend before the first is returned fails an assertion rather than
+/// granting the same bytes twice. The release profile ends the process on it;
+/// the test profile unwinds, which is what lets a case state the refusal.
 pub(crate) fn lend_workspace_base() -> *mut BlockHeader {
     let state = owner_state();
     if state.is_null() {
@@ -559,12 +560,18 @@ pub(crate) fn lend_workspace_base() -> *mut BlockHeader {
 
 /// Take the workspace back from the arena that is closing, leaving it idle for
 /// the thread's next collection.
+///
+/// **Answers nothing when the thread has no state left.** One sequence reaches
+/// that: [`release_queue_base`] has taken the state out of the thread-local and
+/// then failed one of its own assertions, and this call is running in the
+/// unwind. Asserting here would be a second panic on that path and nothing on
+/// any other, and the block is already the pool's business rather than a
+/// closing arena's.
 pub(crate) fn return_workspace_base(base: *mut BlockHeader) {
     let state = owner_state();
-    assert!(
-        !state.is_null(),
-        "a collection outlived the thread state that lent it its workspace"
-    );
+    if state.is_null() {
+        return;
+    }
 
     let q = unsafe { owner_state_ref(state) };
     assert_eq!(

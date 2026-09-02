@@ -124,11 +124,16 @@ pub(crate) enum RowLookup {
 /// hand: [`TraceScratchArena::reset`] reaches `BlockPool::put`, which panics on
 /// a poisoned mutex, and a return written after that call in
 /// [`TraceScratchArena::drop`] would be skipped by the unwind. The cell would
-/// then stay lent, and [`crate::cycle::queue::release_queue_base`] would fire
-/// its assertion inside a thread exit that is already unwinding, which ends the
-/// process where one failing test was the whole cost.
-/// [`crate::cycle::deferred_slot_reuse`]'s chain is held this way for the same
-/// reason.
+/// then stay lent until thread exit, where
+/// [`crate::cycle::queue::release_queue_base`] fails its assertion inside
+/// `heap::ll_thread_exit` — an `extern "C"` frame, so the panic aborts the
+/// process whether or not anything is unwinding, and the report is a signal
+/// rather than a named test. [`crate::cycle::deferred_slot_reuse`]'s chain is
+/// held this way for the same reason.
+///
+/// **What it converts is one path.** A lent cell that reaches thread exit by
+/// any other route — an arena that is forgotten rather than dropped — still
+/// aborts there, because the frame that raises is the one that cannot unwind.
 struct LentWorkspace {
     block: *mut BlockHeader,
 }
