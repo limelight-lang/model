@@ -220,7 +220,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     // event can arrive inside this reset: a release the
                     // drain below runs can kill the very survivor whose
                     // payload was refused, and no occupant count exists
-                    // to hold the block until `index_retained_blocks`
+                    // to hold the block until `place_survivor_lists`
                     // (`dev/DECISIONS.md`, "the reset holds a pin of its
                     // own, and releases it after the index is real").
                     if pinned.insert(payload_block) {
@@ -336,7 +336,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // before the blocks are disposed of, so no death can arrive behind
     // the counts it establishes, and while the arena still holds its
     // blocks, which is where the lists go.
-    let mut emptied = unsafe { index_retained_blocks(arena, by_block, &mut retained) };
+    let mut emptied = unsafe { place_survivor_lists(arena, by_block, &mut retained) };
 
     unsafe { (*arena).finish_reset(|block| retained.contains(&(block as usize))) };
 
@@ -381,8 +381,8 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
 
 /// Take `block` out of circulation as a retained former-arena block: the
 /// one place the reset stamps `BLOCK_KIND_RETAINED`, and it runs **once
-/// per block per reset** — a second call would clear counts the first
-/// reset has since taken.
+/// per block per reset** — a second call in one reset would zero the
+/// pins the reset has placed on the block since the first.
 ///
 /// **The whole collector line is cleared before the kind is published**,
 /// and that is the whole reason this is a function. A retained block is
@@ -549,7 +549,7 @@ unsafe fn external_memory(surv: *mut RcHeader) -> External {
 /// `arena` is the arena being reset, past its fixpoint and before
 /// `finish_reset`, and every block in `by_block` is one of its bump
 /// blocks, stamped retained by this reset.
-unsafe fn index_retained_blocks(
+unsafe fn place_survivor_lists(
     arena: *mut Arena,
     by_block: HashMap<usize, Vec<usize>>,
     retained: &mut HashSet<usize>,

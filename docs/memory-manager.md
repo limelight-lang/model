@@ -139,8 +139,10 @@ the whole line before `store_block_kind` publishes the block as retained
 (`promote::retain_block`, `heap::clear_collector_line`), because the
 block's previous life may have left a collection's array pointer or an
 earlier retention's list in it, and publishes the list afterwards with a
-release store of its own (`rfc/model/gc/rc-cycle.md`, "The survivor list
-of a retained block"). Rows for such a block are sized by the list's
+release store of its own, the count word last, so the death that spends
+the last count finds the list it must release first
+(`rfc/model/gc/rc-cycle.md`, "The survivor list of a retained block").
+Rows for such a block are sized by the list's
 length (`memory/retained.rs`, `occupant_count`). A raw heap block's line
 3 is left as the pool handed it over, no trace entering one.
 

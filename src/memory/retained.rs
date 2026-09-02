@@ -14,7 +14,7 @@
 //! (`crate::memory::heap`), and the addresses themselves are written at
 //! the reset into memory the arena already holds — the retained block's
 //! own tail, else the reset's current block, else a fresh pool block,
-//! placed by `promote::index_retained_blocks` through
+//! placed by `promote::place_survivor_lists` through
 //! `Arena::alloc_preferring`. No process-wide table names retained
 //! blocks: every reader asks about one block whose address it holds, and
 //! the test-only enumerator finds them by their kind in the region scan
@@ -94,7 +94,7 @@ unsafe fn count_word(block: usize) -> *const AtomicU64 {
 /// alive.
 ///
 /// `destination` is `occupants.len()` words the arena placed for the list
-/// (`promote::index_retained_blocks`): inside `block`'s own tail, or
+/// (`promote::place_survivor_lists`): inside `block`'s own tail, or
 /// inside another retained block that [`pin`] has already been called for
 /// on this list's behalf. The list is copied there and sorted in place,
 /// because the trace's lookup is a binary search over it and the reset
@@ -135,10 +135,14 @@ pub(crate) unsafe fn register(block: usize, occupants: &[usize], destination: *m
         list.sort_unstable();
     }
 
-    // The count before the list: a reader that acquires the address reads
-    // a block whose occupants are already counted.
-    let held = unsafe { (*count_word(block)).fetch_add(live, Ordering::AcqRel) } + live;
+    // The list before the count. The decrement that reaches zero, on
+    // whichever thread performs it, synchronises with this increment and
+    // spends the hold the list has on its holder through the address it
+    // reads (`release_emptied`); published after the count, the address
+    // could still read null to that decrement, and the holder's hold
+    // would never be spent.
     unsafe { publish_block_survivor_list(block as *mut u8, destination, occupants.len()) };
+    let held = unsafe { (*count_word(block)).fetch_add(live, Ordering::AcqRel) } + live;
     held == 0
 }
 
@@ -300,8 +304,9 @@ unsafe fn is_occupied(address: usize) -> bool {
 /// # Safety
 /// As [`count_word`].
 pub(crate) unsafe fn has_live_occupants(block: usize) -> bool {
-    // Relaxed: the count is read on the thread that established it, or
-    // before it was established at all.
+    // Relaxed: the word's own value is the whole answer and nothing is
+    // read behind it; a free that is not absorbed goes on to the
+    // decrement, which synchronises on its own.
     let word = unsafe { (*count_word(block)).load(Ordering::Relaxed) };
     word & OCCUPANTS != 0
 }
@@ -337,7 +342,7 @@ pub(crate) unsafe fn has_survivor_list(block: usize) -> bool {
 /// # Safety
 /// As [`count_word`].
 #[cfg(test)]
-pub(crate) unsafe fn pinned_payloads(block: usize) -> usize {
+pub(crate) unsafe fn pin_count(block: usize) -> usize {
     (unsafe { (*count_word(block)).load(Ordering::Relaxed) } >> 32) as usize
 }
 
@@ -450,22 +455,35 @@ pub(crate) fn retained_block_count() -> usize {
 }
 
 /// A pool block commissioned as a retained block the way the reset
-/// commissions one — its collector line cleared, then stamped
-/// `BLOCK_KIND_RETAINED` — holding nothing yet. The caller owes it back
-/// to the pool through [`release_emptied`] once nothing holds it.
+/// commissions one ([`commission_retained_block`]), holding nothing yet.
+/// The caller owes it back to the pool through [`release_emptied`] once
+/// nothing holds it.
 #[cfg(test)]
 pub(crate) fn bare_retained_block() -> usize {
     let block = BlockPool::global().get();
     assert!(!block.is_null(), "the pool refused a block");
+    unsafe { commission_retained_block(block as usize) };
+    block as usize
+}
+
+/// Commission `block` as a retained block the way the reset does — its
+/// collector line cleared, then stamped `BLOCK_KIND_RETAINED` — so that
+/// it holds nothing and lists nothing afterwards, whatever its line held
+/// before (`promote::retain_block`).
+///
+/// # Safety
+/// `block` is the header of a mapped block the caller holds, which no
+/// trace can address.
+#[cfg(test)]
+pub(crate) unsafe fn commission_retained_block(block: usize) {
+    let header = block as *mut BlockHeader;
     unsafe {
         crate::memory::heap::clear_collector_line(block as *mut u8);
         store_block_kind(
-            &raw const (*block).kind,
+            &raw const (*header).kind,
             crate::memory::block_pool::BLOCK_KIND_RETAINED,
         );
     }
-
-    block as usize
 }
 
 #[cfg(test)]

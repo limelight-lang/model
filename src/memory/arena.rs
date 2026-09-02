@@ -47,9 +47,12 @@ struct ArenaBlockHeader {
     /// Where the bump stood when the arena left this block for a fresh
     /// one: the end of everything it wrote there, log segments
     /// included. Written by [`Arena::fresh_block`] for the block it
-    /// leaves and read by [`Arena::alloc_preferring`]. Meaningless for
-    /// the current block, whose fill is the live bump, and for a
-    /// reserve-carved log block, which the bump never enters.
+    /// leaves, and advanced by [`Arena::alloc_preferring`] past a list
+    /// it places in the tail, so the word stays the end of everything
+    /// written there; nothing reads the advanced value, one list being
+    /// placed per block. Meaningless for the current block, whose fill
+    /// is the live bump, and for a reserve-carved log block, which the
+    /// bump never enters.
     fill: *mut u8,
 }
 

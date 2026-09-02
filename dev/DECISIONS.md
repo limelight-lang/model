@@ -19,10 +19,15 @@ decision above it leave to the code, and one the code took pending his word.
 whole collector line and stamps `BLOCK_KIND_RETAINED` inside the fixpoint,
 because a payload freed inside the reset must route to the retained arm by its
 kind and spend its pin; the list is written after the fixpoint and published
-by a release store of its own, length first and address last, and every
-lookup acquire-loads the address. The rfc's sentence "publishes them with the
-release store that stamps the block's kind" reads as one instant: the kind's
-store publishes the zeros, the address's store publishes the list.
+by a release store of its own, length first and address next, and every
+lookup acquire-loads the address. The count word is published last, by an
+increment whose release half covers the address: published before the list,
+the count let the decrement that reaches zero on another thread land between
+the two stores, read a null address, and return the block without spending
+the holder's hold (found by the Critic's round of the same day). The rfc's
+sentence "publishes them with the release store that stamps the block's kind"
+reads as one instant: the kind's store publishes the zeros, the address's
+store publishes the list, and the count's increment covers both.
 
 **The arena records a fill per block, and places the list.** The own-tail
 tier needs to know where a block the bump has left stops, log segments

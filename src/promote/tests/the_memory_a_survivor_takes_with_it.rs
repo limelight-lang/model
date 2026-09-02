@@ -406,7 +406,7 @@ fn an_unpromoted_large_arena_entity_is_freed_by_the_reset() {
 ///
 /// The reset has two such readers over its survivor list, and both run
 /// after the release drain — `reconcile_cow_counts` on the entity and
-/// `index_retained_blocks` on the entity's block header.
+/// `place_survivor_lists` on the entity's block header.
 #[test]
 fn a_large_survivor_that_dies_inside_the_reset_is_read_no_further() {
     use crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN;
@@ -632,7 +632,7 @@ fn a_refused_hooked_carry_pins_the_block_its_bytes_lie_in() {
         // survivor too, so it is retained for an occupant whatever the
         // carry answered. The pin is the refusal's own mark.
         assert_eq!(
-            crate::memory::retained::pinned_payloads(block_address),
+            crate::memory::retained::pin_count(block_address),
             1,
             "the refusal named no block, so nothing pinned this one"
         );

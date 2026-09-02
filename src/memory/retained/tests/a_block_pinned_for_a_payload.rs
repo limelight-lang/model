@@ -24,7 +24,7 @@ fn a_pinned_block_outlives_its_occupants() {
     );
     assert_eq!(kind_of(block), BLOCK_KIND_RETAINED);
     assert_eq!(
-        unsafe { pinned_payloads(block) },
+        unsafe { pin_count(block) },
         1,
         "registration cleared the pin set before it"
     );
@@ -86,7 +86,7 @@ fn a_block_pinned_for_two_payloads_waits_for_both() {
     );
     assert!(unsafe { payload_freed(block) }, "both are gone now");
     assert_eq!(
-        unsafe { pinned_payloads(block) },
+        unsafe { pin_count(block) },
         0,
         "a block whose payloads are gone still reports a hold"
     );
