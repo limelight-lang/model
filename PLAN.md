@@ -1307,20 +1307,69 @@ stage claiming the frees while building none of them.
         and carried no `cfg_attr(miri, ignore)`, so the slice aborted after
         eleven tests and the other 134 had never run under the interpreter
         (`dev/POSTMORTEM.md`, 2026-09-02).
-      ruling 2026-09-02 — the two sites are answered differently, because
-        one has a reader and the other has none. `large_entity::runs` is
-        gated `cfg(test)`: a named exemption would be a permanent hole cut
-        for a structure no production path reads, and this step's own
-        handoff already refuses one — "there is no cycle-path exemption".
-        Manager-backing it would be storage built for a consumer that does
-        not exist; when S38 gives it one, that step un-gates it and takes
-        the backing question with a real reader in hand.
-        `reset_window::park_large` and `died_set` wait for the deny run at
-        S36.7 rather than for an argument now: no collection nests inside a
-        reset until the collection is wired, and the reading that decides
-        them — whether the disclosed reset exemption covers the frames a
-        collection enters or only the reset's own — is Edmond's and is
-        cheaper to take against a run than against a source path.
+      ruling 2026-09-02 — `reset_window::park_large` and `died_set` wait for
+        the deny run at S36.7 rather than for an argument now: no collection
+        nests inside a reset until the collection is wired, and the reading
+        that decides them — whether the disclosed reset exemption covers the
+        frames a collection enters or only the reset's own — is Edmond's and
+        is cheaper to take against a run than against a source path.
+      Sage 2026-09-02 (the OS-direct run registry): the intrusive list, and
+        it is slice (e)'s shape applied to this population — the index of a
+        block lives in the block it describes. Refused with reasons:
+        manager-backed storage (a second lifetime, a lookup on free, a
+        refusable growth, a ledger question for storage no production path
+        reads), a fixed-capacity array (a run is any entity above 65,280
+        bytes and a full table would turn an entity allocation into a
+        refusal), the `BTreeSet` with an exemption, `cfg(test)` gating, and
+        deleting the enumerator's run leg, which the `promote` census tests
+        stand on. **Doubly linked, two words, null-terminated, head under
+        the mutex**, because `free` removes an arbitrary run inside the
+        collection's close and a singly-linked list would walk the live runs
+        under a process-global lock for every dead one. Layout, `#[repr(C)]`,
+        pinned by `offset_of!`: `kind` 0, `_pad` 4, `size` 8, `run_bytes` 16,
+        `prev` 24, `next` 32, `row` 40, size 48 within the 256-byte line;
+        `row` stays last and its only accessor reaches it by field.
+        `static RUNS: Mutex<Runs>` with a null head — `Mutex::new` is const,
+        so the `OnceLock` goes, and std's futex mutex allocates nothing.
+        Counts: the free path goes from a lock, a B-tree search and 0-2
+        global deallocations to a lock, two loads and one or two stores;
+        `alloc` loses the hidden abort a `BTreeSet::insert` can reach
+        through the allocator's error handler on a path whose contract says
+        null. Nothing to refuse, and that is right: the words are in the run
+        the mapping already owns. The invariant is that the list is exactly
+        the set of runs between `alloc`'s return and `free`'s entry into the
+        unmap — linked under the lock strictly after the kind's release
+        store, unlinked under it strictly before the unmap, and the mutex
+        rather than the kind is what publishes the links. `snapshot` keeps
+        its signature and its `Vec`, walks under the lock and copies out; a
+        visiting `for_each_run` is refused, a visitor that frees or allocates
+        re-entering the same mutex on its own thread. Its order becomes
+        reverse registration and every reader is order-insensitive. Final.
+      Sage 2026-09-02 (the baseline this step would erase): the real
+        instruments are `test_support::allocation_probe` around twelve
+        OS-direct runs allocated and freed under `test_guard`, and **the
+        probe gains a deallocation counter first**, verified against a
+        dropped `Box` before `large_entity.rs` is touched — without it the
+        defect the audit named is invisible to every instrument in the
+        crate, today's probe counting a free as nothing by design. Then
+        Miri over `memory::large_entity`, `cycle::deferred_slot_reuse` and
+        the four `promote` tests that read `snapshot()` after a free;
+        `promote::` has no recorded Miri figure, so its slice is run at
+        baseline or the Miri claim is limited to `memory::` and `cycle::`
+        and says so. A one-run probe fixture is theatre, one insert into an
+        existing empty root leaf allocating nothing; `.tbss` is a control
+        rather than evidence, the change adding no thread-local; a timed run
+        is theatre, no benchmark driving a run's free. Final.
+      retracted 2026-09-02 — gating `large_entity::runs` `cfg(test)` was
+        ruled and then refused on the facts, before any commit carried it.
+        The registry's reader is `heap::for_each_entity_slot`, which is
+        `pub`: gating deletes a public item or leaves a public enumerator
+        skipping the OS-direct population in a release build, and the audit's
+        phrase "test-only enumerator" described its callers rather than its
+        visibility. What the refusal leaves is the shape the ruling should
+        have taken — the run addresses thread through the runs' own headers,
+        28 of whose 256 bytes are used, so the registry holds no memory and
+        frees none. That goes through this stage's pre-change Sage gate.
       correction 2026-09-02 — slice (e)'s claim that `large_entity::runs`
         "sits on the mutator's OS-direct entity alloc and free path, outside
         the collection paths the deny gate covers" is false of the `remove`
