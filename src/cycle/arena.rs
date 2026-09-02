@@ -117,14 +117,42 @@ pub(crate) enum RowLookup {
     AllocationFailed,
 }
 
-/// One collection's memory. Built on the collecting thread's stack,
-/// spent by that collection, and returned by [`TraceScratchArena::reset`].
+/// The thread's workspace for as long as one arena holds it, given back to
+/// the thread when this drops.
+///
+/// A holder of its own rather than a raw field the enclosing drop returns by
+/// hand: [`TraceScratchArena::reset`] reaches `BlockPool::put`, which panics on
+/// a poisoned mutex, and a return written after that call in
+/// [`TraceScratchArena::drop`] would be skipped by the unwind. The cell would
+/// then stay lent, and [`crate::cycle::queue::release_queue_base`] would fire
+/// its assertion inside a thread exit that is already unwinding, which ends the
+/// process where one failing test was the whole cost.
+/// [`crate::cycle::deferred_slot_reuse`]'s chain is held this way for the same
+/// reason.
+struct LentWorkspace {
+    block: *mut BlockHeader,
+}
+
+impl LentWorkspace {
+    /// The block, never null for as long as the holder exists.
+    fn block(&self) -> *mut BlockHeader {
+        self.block
+    }
+}
+
+impl Drop for LentWorkspace {
+    fn drop(&mut self) {
+        crate::cycle::queue::return_workspace_base(self.block);
+    }
+}
+
+/// One collection's memory: the thread's workspace for as long as the arena
+/// lives, and the blocks the bump grew into past it, which
+/// [`TraceScratchArena::reset`] returns.
 pub(crate) struct TraceScratchArena {
-    /// The thread's workspace, lent for the length of this arena and given
-    /// back when it drops. Never null while the arena exists, and outside
-    /// both `blocks` and `from_reserve`: it is not this collection's to
-    /// return, and the reserve never funded it.
-    base: *mut BlockHeader,
+    /// The thread's workspace. Outside both `blocks` and `from_reserve`: it is
+    /// not this collection's to return, and the reserve never funded it.
+    base: LentWorkspace,
     /// Blocks the bump took above the workspace, threaded through
     /// `BlockHeader::next`, newest first.
     blocks: *mut BlockHeader,
@@ -146,8 +174,11 @@ pub(crate) struct TraceScratchArena {
 }
 
 impl TraceScratchArena {
-    /// An arena over this thread's workspace, or **`None` when the pool
-    /// refuses one**, which is a collection that does not start.
+    /// An arena over this thread's workspace, or **`None` when the thread has
+    /// no workspace to give**: the pool refused the draw, or the runtime never
+    /// registered the thread. Either is a collection that does not start — no
+    /// window is open, no root has been taken, and the caller's abort path has
+    /// nothing to undo.
     ///
     /// The workspace is drawn at the thread's first collection and held until
     /// the thread exits, so this call goes to the memory manager once in a
@@ -162,7 +193,7 @@ impl TraceScratchArena {
         }
 
         Some(Self {
-            base,
+            base: LentWorkspace { block: base },
             blocks: std::ptr::null_mut(),
             from_reserve: 0,
             cursor: BlockHeader::payload_start(base),
@@ -394,7 +425,7 @@ impl TraceScratchArena {
         // `reset` again — over a list whose head was already returned. A
         // rewound bump reads a residue of zero, which is what the second pass
         // must find where it used to find a null cursor.
-        self.cursor = BlockHeader::payload_start(self.base);
+        self.cursor = BlockHeader::payload_start(self.base.block());
         self.left = BLOCK_PAYLOAD;
         while !self.blocks.is_null() {
             let block = self.blocks;
@@ -602,12 +633,13 @@ impl Drop for TraceScratchArena {
     /// nothing; a test that panics mid-collection would otherwise leave
     /// the pool short for every test after it.
     ///
-    /// The workspace goes back here rather than at the reset, which is what
-    /// leaves it one holder at a time: an arena that handed it back and kept
-    /// bumping would be granting bytes the next collection is granting too.
+    /// The workspace goes back when this arena dies rather than at the reset,
+    /// which is what leaves it one holder at a time: an arena that handed it
+    /// back and kept bumping would be granting bytes the next collection is
+    /// granting too. [`LentWorkspace`] is what performs that return, so an
+    /// unwind out of the reset below does not skip it.
     fn drop(&mut self) {
         self.reset();
-        crate::cycle::queue::return_workspace_base(self.base);
     }
 }
 

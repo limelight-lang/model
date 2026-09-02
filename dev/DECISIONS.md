@@ -8,6 +8,33 @@ never edited or deleted.
 
 ---
 
+## 2026-09-02 — the workspace is charged when the bump leaves it and marked when the reset rewinds
+
+Owner: S36.10, over the Sage gate's F5.
+
+**Decided:** the collection workspace enters the byte ledger by the same rule
+as every other block the bump abandons — a `charge` at the crossing, with its
+inverse in the reset's discharge — and only the block still under the bump at
+the reset is entered by `gc_metadata::mark_peak`. F5 ruled that the
+workspace's consumption is a high-water residue "never a current-figure
+charge"; that half is superseded, and the mark at the rewind stands as ruled.
+
+**Why:** F5 was written against a shape in which the bump never leaves the
+workspace. Once it does, the workspace is consumed to its last byte and stays
+consumed until the reset, so the bytes are in use in the plain sense the
+figure claims to report. Charging them nowhere leaves 65,280 bytes outside
+both figures for the length of the collection, and marking them at the
+crossing instead puts them in the high-water figure while leaving the current
+one lagging by two blocks — the workspace and the block now under the bump —
+against the one-block bound `gc_metadata::current_bytes_in_use` states. The
+charge is the only one of the three that keeps that bound.
+
+**What pins it:** `memory::gc_metadata::tests::`
+`a_block_crossing_publishes_the_bump_it_abandons`, which is the one case that
+fails when the workspace's payload reaches neither figure.
+
+---
+
 ## 2026-09-01 — the workspace base is drawn at the first collection, not at thread init
 
 Owner: S36.10, on Edmond's ruling over the Sage gate's first escalation.

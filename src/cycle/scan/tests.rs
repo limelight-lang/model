@@ -77,8 +77,7 @@ fn a_ring_held_from_outside_scans_live_through_the_member_that_is_held() {
     let mut arena = Arena::new();
     let (first, second) = unsafe { ring(&mut arena, "ScanHeldNode") };
 
-    let mut shadow_arena =
-        TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut shadow_arena = crate::cycle::testing::open_arena();
     let mut stack = TraceStack::new();
     assert_eq!(
         unsafe { mark(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
@@ -116,8 +115,7 @@ fn a_ring_no_one_holds_is_colored_potentially_unreachable_whole() {
     // of the difference from the test above.
     assert!(!unsafe { ll_release(second as *mut RcHeader) });
 
-    let mut shadow_arena =
-        TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut shadow_arena = crate::cycle::testing::open_arena();
     let mut stack = TraceStack::new();
     assert_eq!(
         unsafe { mark(&mut shadow_arena, &mut stack, first as *mut RcHeader) },

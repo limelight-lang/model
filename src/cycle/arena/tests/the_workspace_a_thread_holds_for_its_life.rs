@@ -4,10 +4,11 @@
 //! already took, and what it holds between the two is one manager block,
 //! counted as collection's and given back at thread exit.
 //!
-//! **Every case here runs on a thread of its own.** The claim is about a
-//! thread's *first* collection, and every other thread in this suite has
-//! collected already — a case run on the harness's thread would be measuring
-//! a workspace somebody else drew.
+//! **Every case about a first collection runs on a thread of its own.** The
+//! claim is about a thread's *first* collection, and every other thread in this
+//! suite has collected already — such a case run on the harness's thread would
+//! be measuring a workspace somebody else drew. The last case is about a live
+//! workspace rather than a first one and runs where the harness is.
 //!
 //! The instrument is the pool-request counter rather than the pool's
 //! `blocks_out`: the count is per thread, so the parent's traffic cannot
@@ -199,6 +200,6 @@ fn a_refused_workspace_is_a_collection_that_does_not_start() {
 #[should_panic(expected = "a thread bumps one collection workspace at a time")]
 fn a_second_arena_over_a_live_one_is_refused() {
     let _g = test_guard();
-    let _first = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let _first = crate::cycle::testing::open_arena();
     let _second = TraceScratchArena::open();
 }

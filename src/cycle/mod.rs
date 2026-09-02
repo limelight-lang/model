@@ -25,8 +25,10 @@
 //! # What each module owns, and for how long
 //!
 //! Two lifetimes only. [`queue`] holds per-thread state for one thread's whole
-//! life, given back at `ll_thread_exit`. Everything else is per collection:
-//! [`arena`] holds the blocks a single trace bumps through, [`stack`] draws
+//! life, given back at `ll_thread_exit` — the base block, and the collection
+//! workspace an [`arena`] borrows. Everything else is per collection:
+//! [`arena`] holds the blocks a single trace bumps into past that workspace,
+//! [`stack`] draws
 //! its segments from that arena, [`deferred_slot_reuse`] holds the blocks its
 //! withheld returns are recorded in, and the rows [`shadow`], [`mark`] and
 //! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`

@@ -16,7 +16,7 @@ fn an_arena_returns_every_block_it_took() {
     crate::memory::critical::drain_for_test();
     let before = BlockPool::global().blocks_out();
 
-    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut arena = crate::cycle::testing::open_arena();
     // Past the workspace and past one block above it, so the block list is a
     // list rather than a block: the first two grants are the workspace's, and
     // the workspace is not on that list.
@@ -27,6 +27,11 @@ fn an_arena_returns_every_block_it_took() {
 
     arena.reset();
     assert_eq!(arena.blocks_held(), 0);
+    assert_eq!(
+        arena.residue(),
+        0,
+        "and the bump is back at the start of the workspace"
+    );
     assert_eq!(BlockPool::global().blocks_out(), before);
     crate::memory::critical::drain_for_test();
 }
@@ -41,7 +46,7 @@ fn a_refusal_on_both_allocation_paths_leaves_nothing_behind() {
     crate::memory::critical::drain_for_test();
     let before = BlockPool::global().blocks_out();
 
-    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut arena = crate::cycle::testing::open_arena();
     // The workspace serves the first grant and is not the arena's to give
     // back, so the block this case watches is the one above it.
     assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
@@ -83,7 +88,7 @@ fn the_reserve_is_untouched_while_the_pool_serves() {
     assert!(crate::memory::critical::replenish());
     let held = crate::memory::critical::blocks_held();
 
-    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut arena = crate::cycle::testing::open_arena();
     // Five grants of a payload each: the first is the workspace's, and the
     // four the reserve is being watched over are the ones above it.
     for _ in 0..5 {
@@ -111,7 +116,7 @@ fn the_reserve_serves_after_a_refusal_and_is_refilled_at_reset() {
     let held = crate::memory::critical::blocks_held();
     let before = BlockPool::global().blocks_out();
 
-    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut arena = crate::cycle::testing::open_arena();
     // Past the workspace, so the grant under the refusal below has to ask an
     // allocation path at all.
     assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
@@ -159,7 +164,7 @@ fn an_abort_nulls_the_shadow_of_every_block_it_stamped() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut arena = crate::cycle::testing::open_arena();
     met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
     assert!(!unsafe { crate::memory::heap::block_shadow(block) }.is_null());
 
@@ -191,7 +196,7 @@ fn the_sweep_reaches_every_block_of_the_chain() {
     assert_ne!(middle, last);
     assert_ne!(first, last);
 
-    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut arena = crate::cycle::testing::open_arena();
     for block in [first, middle, last] {
         met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
     }
@@ -228,7 +233,7 @@ fn a_swept_list_is_not_swept_again_at_reset() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut arena = crate::cycle::testing::open_arena();
     let rows = met(unsafe { arena.ensure_row(slot_row(block, 0), 1) }) as *mut u8;
 
     arena.clear_touched_rows();
@@ -260,7 +265,7 @@ fn a_refused_first_touch_stamps_nothing() {
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
 
-    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut arena = crate::cycle::testing::open_arena();
     // The workspace is spent first: rows served out of memory the thread
     // already holds reach no allocation path and so meet no refusal.
     assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
@@ -305,7 +310,7 @@ fn every_block_the_reserve_lent_comes_back_to_it() {
     assert!(crate::memory::critical::replenish());
     let before = BlockPool::global().blocks_out();
 
-    let mut arena = TraceScratchArena::open().expect("the guard drew this thread's workspace");
+    let mut arena = crate::cycle::testing::open_arena();
     let oom = force_oom();
     assert!(
         BlockPool::global().get().is_null(),

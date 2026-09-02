@@ -1355,6 +1355,32 @@ stage claiming the frees while building none of them.
         (base 1, barrier reserve 2, critical 8, spares 2) and the step adds
         one; every ledger relation the tests pin is listed in L2's report of
         2026-09-01 and reproduced. Code waits on the two escalations.
+      Critic 2026-09-02 round 1: eight findings, none of them in the ledger
+        arithmetic. The load-bearing one: an unwind out of the arena's reset
+        inside its own `Drop` skipped the workspace return, so the cell stayed
+        lent and `release_queue_base`'s assertion fired inside a thread exit
+        that was already unwinding — one failing test became a process abort
+        naming no test, shown here by a counter mutation that panics on the
+        second reset, SIGABRT before the repair and one reported failure
+        after. The workspace is a holder with a `Drop` of its own now, which
+        is the shape `deferred_slot_reuse` already uses for its chain. Also
+        taken: the test accessor masked the lent bit and so hid a bit standing
+        over a null block; nothing asserted the rewind itself, one incidental
+        block count being all that pinned it; `None` at the open also means a
+        thread the runtime never registered while three comments said the pool
+        refused; `docs/memory-manager.md` gained the retired word `door`, which
+        no guard reads outside `src/`; and thirty copies of the opener's
+        message moved into `cycle::testing::open_arena`.
+      Critic 2026-09-02 round 1, three divergences it found that stand: the
+        ledger rule departs from the Sage's F5, and the departure with its
+        reason is `dev/DECISIONS.md`, "the workspace is charged when the bump
+        leaves it and marked when the reset rewinds"; the rewind sits inside
+        `reset` rather than after the replay, where the first `done:` clause
+        puts it — the sweep still precedes it and the replay reads no arena
+        memory, so the clause's order is a statement about this code rather
+        than a constraint on it; and `Idle → Trace → Idle` is a holder with a
+        destructor over a tagged cell rather than a typed state machine, which
+        is the untyped form the note above settled on.
       handoff: mandatory direct cycle memory becomes 131,072 bytes per
         registered thread — one 65,536-byte queue floor and one workspace
         base. The two best-effort queue spares make the nominal/maximum direct

@@ -4,14 +4,16 @@
 //! and a second copy of the row lookup would be a second opinion about
 //! where a row is. Test builds only.
 //!
-//! It owns nothing, allocates nothing and orders nothing: every function here
-//! reads a row the caller's arena holds, through
+//! The row readers own nothing, allocate nothing and order nothing: each reads
+//! a row the caller's arena holds, through
 //! [`arena::find_initialized_row`](crate::cycle::arena::find_initialized_row),
 //! and answers a value. A row read after its arena reset is the one thing a
 //! caller can do wrong, and it is the caller's to avoid
 //! (`rfc/model/gc/rc-cycle.md`, "Concurrency"; the row layout it reads is
-//! `crate::cycle::shadow`).
+//! `crate::cycle::shadow`). Beside them stands [`open_arena`], which hands the
+//! caller an arena to own.
 
+use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::row::{EdgeTarget, RowKey, resolve_edge_target};
 use crate::cycle::shadow::{self, Color, RowArray};
 use crate::refcount::RcHeader;
@@ -47,4 +49,15 @@ pub(crate) unsafe fn row_word(entity: *mut RcHeader) -> u32 {
 /// As [`row_word`].
 pub(crate) unsafe fn row_color(entity: *mut RcHeader) -> Color {
     shadow::color(unsafe { row_word(entity) })
+}
+
+/// An arena over this thread's workspace, for a case that means to have one.
+///
+/// The refusal is somebody else's subject. Every case that calls this runs
+/// under `memory::block_pool::test_guard`, which draws the workspace before the
+/// case begins, so a `None` here is the fixture failing rather than the path
+/// under test — and one message for all of them keeps that reading in one
+/// place.
+pub(crate) fn open_arena() -> TraceScratchArena {
+    TraceScratchArena::open().expect("the guard drew this thread's workspace")
 }

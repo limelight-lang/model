@@ -506,19 +506,16 @@ pub(crate) fn initialize_queue_base() -> bool {
 /// A block address never carries it, blocks being 64 KiB-aligned.
 const WORKSPACE_LENT: usize = 1;
 
-/// Hand this thread's collection workspace to an opening arena, drawing it
-/// on the thread's first collection, or **null when the pool refuses**.
+/// Hand this thread's collection workspace to an opening arena, drawing it on
+/// the thread's first collection.
 ///
-/// Null is a collection that does not start: no window is open and no root
-/// has been taken, so the caller's abort path has nothing to undo. It is also
-/// the answer on a thread the runtime never registered, which has no queue for
-/// a collection to draw roots from.
+/// **Null on two conditions**: the pool refused the draw, and a thread the
+/// runtime never registered, which holds no state for this cell to live in.
+/// What the caller does with null is [`crate::cycle::arena`]'s.
 ///
-/// The block is the thread's from here until [`release_queue_base`]. The arena
-/// that takes it bumps in it and rewinds at its close rather than returning
-/// it, which is what makes a second collection on the thread cost one block
-/// less than the first (`dev/DECISIONS.md`, "the workspace base is drawn at
-/// the first collection, not at thread init").
+/// The block is the thread's from here until [`release_queue_base`], and the
+/// caller borrows it rather than owning it (`dev/DECISIONS.md`, "the workspace
+/// base is drawn at the first collection, not at thread init").
 ///
 /// **The ordinary allocation path and nothing else.** A reserve block that
 /// became a bump arena for the life of a thread would be the reserve spent as
@@ -876,9 +873,13 @@ pub(crate) fn queue_base() -> *mut BlockHeader {
     }
 }
 
-/// This thread's collection workspace, or null before its first collection.
-/// The lent bit is masked off, so the answer is the block either way and a
-/// case that wants to know whether an arena holds it asks the arena.
+/// The workspace cell verbatim: null before this thread's first collection,
+/// the block while it is idle, and the block with [`WORKSPACE_LENT`] set while
+/// an arena holds it.
+///
+/// Unmasked on purpose. A case that asserts the cell is empty has to be able
+/// to see a bit standing over a null block, which is the one wrong state the
+/// mask would hide.
 #[cfg(test)]
 pub(crate) fn workspace_base() -> *mut BlockHeader {
     let state = owner_state();
@@ -886,8 +887,7 @@ pub(crate) fn workspace_base() -> *mut BlockHeader {
         return std::ptr::null_mut();
     }
 
-    let installed = unsafe { owner_state_ref(state) }.workspace_base.get();
-    (installed as usize & !WORKSPACE_LENT) as *mut BlockHeader
+    unsafe { owner_state_ref(state) }.workspace_base.get()
 }
 
 #[cfg(test)]
