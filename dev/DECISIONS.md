@@ -25,7 +25,7 @@ consumed until the reset, so the bytes are in use in the plain sense the
 figure claims to report. Charging them nowhere leaves 65,280 bytes outside
 both figures for the length of the collection, and marking them at the
 crossing instead puts them in the high-water figure while leaving the current
-one lagging by two blocks — the workspace and the block now under the bump —
+one lagging by two blocks (the workspace and the block now under the bump)
 against the one-block bound `gc_metadata::current_bytes_in_use` states. The
 charge is the only one of the three that keeps that bound.
 

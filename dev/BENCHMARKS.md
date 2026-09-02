@@ -100,6 +100,43 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-02 — S36.10 the collection workspace: a second collection asks the pool once instead of twice
+
+**Machine:** dev box, shared with interactive work. **Base:** `ea5e208`,
+`rustc 1.96.0`.
+
+**What changed:** the trace scratch arena stopped drawing its first block. A
+thread draws one 64 KiB workspace at its first collection and holds it to exit;
+the arena opens over it and rewinds at every close.
+
+### Counters
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| pool requests, a thread's first collection (open, one `ensure_row`, close) | 2 | 2 | `test_support::allocation_probe` on a spawned thread, bracketed after its heap fixture; the two are the workspace and the withheld-return chain, and before the change they were the chain and the arena's first block |
+| pool requests, the second collection on the same thread | 2 | 1 | the same bracket, the same thread, immediately after the first |
+| global allocations, either collection | 0 | 0 | the same probe |
+| GC blocks a thread holds between two collections | +0 | +1 | `gc_metadata::stats().current_blocks()`, read inside the spawned thread and again after its join |
+| `.tbss` | 480 | 480 | `readelf -SW` on the test binary, one target directory per arm, both built on `rustc 1.96.0` |
+
+Both "before" figures were seen red on `ea5e208`, by the test that carries them
+(`cycle::arena::tests::the_workspace_a_thread_holds_for_its_life`): the second
+collection reported `(0, 2)` against the `(0, 1)` asserted, and the block count
+came back to its pre-collection figure instead of standing one above it.
+
+**The first `.tbss` measurement of the day was void and is not the row above.**
+Both arms were built into one target directory, and the second build finished
+in 0.03 s over the first arm's binary — `readelf` read one file twice. The row
+above is the rebuild with a target directory per arm, 16.30 s and 15.63 s, and
+the two binaries differ by `md5sum`. The reading it supports is narrow: the
+change adds no thread-local, which the 64-byte `OwnerCycleState` assertion also
+proves at compile time, and the pointer went into a word that line already
+reserved.
+
+**No timed run.** Nothing collects yet — `ll_gc_collect_cycles` reports zero
+until S36.7 — so there is no path a benchmark could time, and the request count
+is the whole of what this step moves.
+
 ## 2026-09-01 — S36.9d the weak table leaves the global allocator: `.tbss` 464 to 472 bytes
 
 **Machine:** dev box, shared with interactive work. **Base:** `8ccf426`,
