@@ -428,8 +428,8 @@ impl TraceScratchArena {
         // than after the loop: `BlockPool::put` takes a mutex, and a
         // thread that unwinds out of a poisoned one leaves `Drop` to run
         // `reset` again — over a list whose head was already returned. A
-        // rewound bump reads a residue of zero, which is what the second pass
-        // must find where it used to find a null cursor.
+        // rewound bump reads a residue of zero, which is what that second pass
+        // needs to see.
         self.cursor = BlockHeader::payload_start(self.base.block());
         self.left = BLOCK_PAYLOAD;
         while !self.blocks.is_null() {
