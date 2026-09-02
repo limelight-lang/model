@@ -92,6 +92,17 @@ the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
 than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
 
+- **whether a thread's first collection may still run when the pool refuses.**
+  Before S36.10 it could: the arena and the withheld-return chain both asked
+  the pool and then the critical reserve, which is the reserve user
+  `rfc/model/memory/critical-reserve.md`, "Collection working memory", exists
+  for. The workspace has the ordinary path alone, so a thread that has never
+  collected now answers `None` under that pressure, and five cases in
+  `cycle::deferred_slot_reuse::tests` state the old claim in their prose while
+  passing on the guard's pre-draw. Raised by the S36.10 Critic's second round;
+  the answer is Edmond's, and the alternative that keeps both his ruling and
+  the guarantee is an arena that opens without a workspace when the draw is
+  refused and owns its blocks for that collection.
 - the glossary names no outcome for storage that stayed in its source block,
   none for the journal's unobserved thread, none for `ResetWindow::escrow` and
   none for the sweep-list sense of enrolment. S41.7 needs the first two, and
@@ -1089,6 +1100,20 @@ stage claiming the frees while building none of them.
         of a step (Edmond; `dev/WORKFLOW.md`), so the run that covers this
         tree is S36.9's and is owed there over `weak`, `cycle` and `memory`. This does not close S36.9: retained storage remains, and
         the composite deny run over a wired collection waits for S36.7.
+      progress 2026-09-02 — S36.9e retained index and registry ownership: the
+        process-wide `Mutex<BTreeMap<usize, Index>>` with an `Arc<[usize]>` per
+        block is deleted. The reset writes each retained block's sorted
+        survivor list into memory the arena already holds — the block's own
+        tail past its recorded fill, else the reset's current block, else one
+        fresh pool block shared by the lists that missed — and publishes its
+        address, its length and one atomic count word in the block's collector
+        line, live occupants in the low half and pins in the high half. Every
+        reader asks the block; the trace's retained arm takes no lock and the
+        reset makes no global allocation (2 to 0, `dev/BENCHMARKS.md`).
+        Built and reviewed on `work/s36-9e` by a Fable line and merged at
+        `50dba6d`; the merge's own gate is 644 tests, 648 with `debug-journal`.
+        This does not close S36.9: the composite source audit and the deny run
+        over a wired collection remain, and the deny run waits for S36.7.
       Sage 2026-09-01 (slice d gate): the buffer layer is the consumer and
         `gc_metadata` is refused, the block kind being the answer to whose
         memory a block is; `array::table`, a cell pointer in the object header
@@ -1310,7 +1335,7 @@ stage claiming the frees while building none of them.
         atomic count word is stated as independent of the disjointness
         premise of "Concurrency".
 
-- [ ] S36.10 The persistent per-owner workspace   *(before S36.3)*
+- [x] S36.10 The persistent per-owner workspace   *(before S36.3)*
       done: the first collection on a thread draws one 64 KiB workspace base
         through `gc_metadata::acquire` from the ordinary block pool, and the
         thread holds it from then until exit; a refusal is a collection that
@@ -1471,6 +1496,24 @@ stage claiming the frees while building none of them.
         381 widest blocks reserves 6,251,448 row-array bytes, or 6,258,608
         bytes (about 5.97 MiB) with that stack and 381 member pointers. Neither
         number is a workload measurement.
+      handoff: closed 2026-09-02, `ea7f5c1` and the three commits after it.
+        A thread draws one 64 KiB workspace at its first collection through
+        `gc_metadata::acquire` and holds it to exit; `TraceScratchArena::new`
+        is `open() -> Option<Self>`, the bump rewinds over the workspace at
+        every close, and `cycle::queue` lends it out of the word
+        `OwnerCycleState` had reserved, tagging the cell's low bit while an
+        arena holds it. Measured the same day: a second collection asks the
+        pool once against twice, `.tbss` 480 on both arms
+        (`dev/BENCHMARKS.md`).
+      handoff: what the step leaves unconstrained, for whoever needs it. No
+        test separates `mark_peak` from a `charge`/`discharge` pair — one
+        thread cannot observe the difference, which is S36.9's recorded gap
+        and now covers the reset too. Nothing pins the order in
+        `ActiveTrace::open` that draws the workspace before the chain: both
+        orders pass, and only the comment carries the reason. A lent cell that
+        reaches thread exit any way but an unwind out of the reset still
+        aborts the binary (`dev/POSTMORTEM.md`, "an assertion under
+        `ll_thread_exit` aborts the binary and names no test").
 - [ ] S36.11 The managed lists and the small worklist   *(before S36.3)*
       done: one manager-backed segmented primitive serves collection-owned
         pointer records with explicit `read`/`used` bounds and no drop glue;

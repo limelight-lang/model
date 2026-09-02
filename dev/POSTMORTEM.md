@@ -7,6 +7,46 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-02 — an assertion under `ll_thread_exit` aborts the binary and names no test
+
+**What happened.** S36.10 gave the thread a collection workspace lent to one
+arena at a time, and `cycle::queue::release_queue_base` asserts at thread exit
+that nothing still holds it. An arena that fails to return it — a panic out of
+`TraceScratchArena::reset`, an arena forgotten rather than dropped — leaves the
+cell lent, and the assertion then fires inside `memory::heap::ll_thread_exit`.
+That function is `extern "C"`, so the panic is a "panic in a function that
+cannot unwind": the process aborts. The run reports SIGABRT with no failing
+test named, and every test after it in the binary never executes, so a suite of
+634 comes back looking short rather than truncated.
+
+**Why the first explanation was wrong.** The repair that found this recorded
+the cause as a double panic — an assertion raised while the thread was already
+unwinding. That reading is available, because the case first seen was an unwind,
+and it is wrong: forgetting an arena and returning normally, with nothing
+unwinding anywhere, aborts at the same line. The `extern "C"` frame is the
+cause, and it fires on every path, which is a strictly larger class than the
+one the first explanation named. A false cause is worse here than no cause: it
+sends the next reader looking for a second panic that does not exist.
+
+**Root cause.** An assertion is a report only where its frame can unwind.
+`ll_thread_exit` is an ABI entry with no caller that could act on a refusal,
+which the crate already states about the trace window's own check
+(`cycle::deferred_slot_reuse::dispose_thread_state`), and the same reasoning
+was not applied to the new one.
+
+**What was done.** The state the assertion guards is returned by a value with a
+`Drop` of its own (`cycle::arena::LentWorkspace`), so an unwind out of the
+reset cannot skip it, and `return_workspace_base` answers nothing rather than
+asserting when the thread state is already gone — that assertion could fire on
+exactly one sequence, and on that sequence it was a second panic behind a first.
+
+**The rule that follows.** Before adding an assertion to anything the thread
+exit sequence reaches, ask what raises it and what frame it lands in. If the
+frame is `extern "C"`, the assertion buys an abort rather than a report, and
+the invariant has to be kept by a destructor instead.
+
+---
+
 ## 2026-09-01 — `write_bytes` counts elements, and a typed pointer made the wrong count look right
 
 **What happened.** The weak table's fresh row array was zeroed with
