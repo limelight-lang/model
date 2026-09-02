@@ -1242,8 +1242,8 @@ pub(crate) unsafe fn sever_counted_children(a: *mut LLArray, displaced: &mut Vec
     }
 }
 
-/// The address of the array's storage — the block promotion retains when
-/// a carry was refused. Null when the array never allocated one.
+/// The address of the array's storage — the block promotion retains for a
+/// pinned payload. Null when the array never allocated one.
 ///
 /// **The head answers this and no representation is named**, which is
 /// what makes it correct under either tag: the chunk's address is one of
@@ -1278,7 +1278,7 @@ pub(crate) unsafe fn storage_address(a: *mut LLArray) -> *mut u8 {
 ///
 /// Nothing here records where the storage now lives, the category being
 /// the header's to say and promotion rewriting the header a moment later.
-/// A refused carry is safe under the new category too: promotion stamps
+/// A pinned payload is safe under the new category too: promotion stamps
 /// the storage's block `BLOCK_KIND_RETAINED`, the one kind
 /// `buffer_free_longlived_payload` leaves alone.
 ///

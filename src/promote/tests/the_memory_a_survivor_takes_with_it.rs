@@ -2,8 +2,9 @@
 //! two routes: an in-block payload or storage is copied, its block
 //! going back to the pool, and one over a block payload is an
 //! OS-direct run whose record the arena forgets, so the address does
-//! not move and nothing can refuse it. A refused copy retains the
-//! block instead, and the payload's own free is what hands it back.
+//! not move and nothing can refuse it. Bytes whose copy the arena
+//! refused are a pinned payload: the block is retained instead, and the
+//! payload's own free is what hands it back.
 //! An entity that had a block to itself keeps it, unstamped and out
 //! of the log; one nothing carried out is freed with the reset.
 
@@ -180,16 +181,14 @@ fn an_over_block_storage_transfers_instead_of_being_copied() {
 /// the storage did not move is what says the refusal landed where the
 /// test needs it.
 #[test]
-fn a_refused_carry_pins_the_block_and_the_payload_frees_it() {
+fn a_carry_the_arena_refused_pins_the_block_and_the_payload_frees_it() {
     use crate::array::table::Key;
     use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_MASK};
     use crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED;
     use std::sync::atomic::Ordering;
     let _g = crate::memory::block_pool::test_guard();
-    let holder_cls = ClassBuilder::new("RefusedCache").prop("last", true).build();
-    let owner_cls = ClassBuilder::new("RefusedOwner")
-        .prop("items", true)
-        .build();
+    let holder_cls = ClassBuilder::new("PinnedCache").prop("last", true).build();
+    let owner_cls = ClassBuilder::new("PinnedOwner").prop("items", true).build();
 
     let mut arena = Arena::new();
     let arena_ptr: *mut Arena = &mut arena;
@@ -222,6 +221,7 @@ fn a_refused_carry_pins_the_block_and_the_payload_frees_it() {
         store_prop(arena_ptr, holder, 16, owner);
     }
 
+    let refusals_before = crate::memory::buffer_arena::refusals();
     FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
     unsafe { arena_reset_full(&mut *arena_ptr) };
     FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
@@ -236,7 +236,24 @@ fn a_refused_carry_pins_the_block_and_the_payload_frees_it() {
         assert_eq!(
             *(payload_block as *const u32),
             crate::memory::block_pool::BLOCK_KIND_RETAINED,
-            "a refused carry did not retain the block its bytes lie in"
+            "a pinned payload did not retain the block its bytes lie in"
+        );
+
+        // The two answers, held apart by assertion rather than by
+        // reading the names: the allocator refused, which the count
+        // says, and what the caller is left with is a promoted array
+        // reading out of the bytes it always had. A pinned payload
+        // stops no promotion and reaches no caller as a failure.
+        assert_eq!(
+            crate::memory::buffer_arena::refusals() - refusals_before,
+            1,
+            "nothing was refused, so the pin proves nothing"
+        );
+        assert_eq!(
+            crate::array::testing::get(array, Key::Int(1))
+                .expect("the promoted array kept its entry")
+                .as_int(),
+            11
         );
 
         // The promoted array dies with its holder, and its storage is
@@ -582,23 +599,23 @@ fn a_hooked_zero_count_member_leaves_nothing_behind() {
     );
 }
 
-/// A refused carry answers the bytes it left behind, and the reset pins
+/// A pinned payload answers the bytes it left behind, and the reset pins
 /// the block holding them instead of handing it back. The address comes
-/// out of the same call that refused, so nothing can pin the block of an
+/// out of the same call the arena refused, so nothing can pin the block of an
 /// entity other than this one — and the promoted instance's own teardown
 /// is what spends the pin.
 #[test]
-fn a_refused_hooked_carry_pins_the_block_its_bytes_lie_in() {
+fn a_hooked_carry_leaves_a_pinned_payload_in_the_block_its_bytes_lie_in() {
     use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED};
     use crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED;
     use crate::test_support::outside_block;
     use std::sync::atomic::Ordering;
     let _g = crate::memory::block_pool::test_guard();
 
-    let holder_cls = ClassBuilder::new("RefusedWakerHolder")
+    let holder_cls = ClassBuilder::new("PinnedWakerHolder")
         .prop("waker", true)
         .build();
-    let waker_cls = outside_block::class("WakerRefused");
+    let waker_cls = outside_block::class("WakerPinned");
 
     let mut arena = Arena::new();
     let arena_ptr: *mut Arena = &mut arena;
@@ -626,15 +643,15 @@ fn a_refused_hooked_carry_pins_the_block_its_bytes_lie_in() {
         assert_eq!(
             *(block_address as *const u32),
             BLOCK_KIND_RETAINED,
-            "a refused carry did not retain the block its bytes lie in"
+            "a pinned payload did not retain the block its bytes lie in"
         );
         // The kind alone proves nothing here: this block holds the
         // survivor too, so it is retained for an occupant whatever the
-        // carry answered. The pin is the refusal's own mark.
+        // carry answered. The pin is the pinned payload's own mark.
         assert_eq!(
             crate::memory::retained::pin_count(block_address),
             1,
-            "the refusal named no block, so nothing pinned this one"
+            "the carry named no block, so nothing pinned this one"
         );
 
         assert!(crate::refcount::ll_release(holder as *mut RcHeader));
@@ -656,7 +673,7 @@ fn a_refused_hooked_carry_pins_the_block_its_bytes_lie_in() {
 /// The shape that frees a payload that early is the heap box behind `&`
 /// (`memory::retained::register`): the box's logged release kills the
 /// promoted survivor during the drain, and that survivor's teardown frees
-/// the very bytes the refusal pinned the block for. Two other survivors
+/// the very bytes the pin was taken for. Two other survivors
 /// of the same block are what the block must still be held for.
 #[test]
 fn a_pin_spent_inside_the_reset_leaves_the_block_to_its_survivors() {
@@ -750,8 +767,8 @@ fn a_pin_spent_inside_the_reset_leaves_the_block_to_its_survivors() {
     unsafe { arena_reset_full(&mut *arena_ptr) };
     FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
 
-    // The subject is what the refusal leaves behind, and the entity that
-    // was refused is dead by now, so the count is the only thing that
+    // The subject is the pinned payload, and the entity whose carry was
+    // refused is dead by now, so the count is the only thing that
     // tells this run from one where the carry succeeded and no pin was
     // ever taken (`dev/POSTMORTEM.md`, "a forced-refusal test that never
     // proved the refusal").
@@ -850,7 +867,7 @@ fn a_block_whose_pin_and_occupants_both_go_inside_the_reset_goes_home() {
 }
 
 /// A block pinned for a payload and holding no survivor — the survivor
-/// in one arena block, its refused bytes in the next — goes home when
+/// in one arena block, its pinned bytes in the next — goes home when
 /// the payload's free arrives inside the reset: the count the reset
 /// holds for it is then the last thing holding it, and the reset hands
 /// the block over itself. Such a block has no survivor list and never

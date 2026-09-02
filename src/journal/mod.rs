@@ -233,7 +233,7 @@ struct Registry {
     /// window's silence about them is indistinguishable from a process that
     /// never had them — the false *none* that only memory pressure produces,
     /// which is when the journal is switched on.
-    refused: u64,
+    never_journaled: u64,
     /// Marks taken. It stamps each one, so that two marks handed to
     /// [`between`] in the wrong order are caught instead of answering a
     /// confident "nothing happened anywhere" — every ring's range comes
@@ -266,7 +266,7 @@ fn registry() -> &'static Mutex<Registry> {
         retired: Vec::new(),
         next_thread: 0,
         evicted: 0,
-        refused: 0,
+        never_journaled: 0,
         marks: 0,
         pending_free: Vec::new(),
     });
@@ -317,11 +317,12 @@ fn ring_of(registry: &Registry, thread: u64) -> Option<*mut Ring> {
 /// A relaxed read-modify-write, on a path that writes no record — §9.1's
 /// "no atomic RMW" is the write path's rule, and the threads contending
 /// here have stopped journaling. It is not the *only* such path: a
-/// refused thread is reported by [`Window::Refused`] instead, for its
-/// whole life rather than per window, and a record raised from inside the
-/// ring's own allocation is §9.7's documented first-record exception.
-/// So this counts records lost to a retirement, and a reader after every
-/// record the process dropped reads it beside those two.
+/// never-journaled thread is reported by [`Window::NeverJournaled`]
+/// instead, for its whole life rather than per window, and a record
+/// raised from inside the ring's own allocation is §9.7's documented
+/// first-record exception. So this counts records lost to a retirement,
+/// and a reader after every record the process dropped reads it beside
+/// those two.
 static LOST: AtomicU64 = AtomicU64::new(0);
 
 /// A ring this thread will never have. Neither value is an address any
@@ -330,24 +331,24 @@ static LOST: AtomicU64 = AtomicU64::new(0);
 /// one.
 ///
 /// Null means the first record site has not run yet. [`CLOSED`] means the
-/// thread had a ring and has retired it; [`REFUSED`] means it never got
-/// one. Both end journaling on the thread and the record path returns
-/// without a lock and without an allocation — what separates them is the
-/// report: a record arriving after a retirement is a **loss**, counted
-/// per window, while a refused thread's silence is already reported for
-/// its whole life by [`Window::Refused`] and counting its records again
-/// would degrade every window it runs through.
+/// thread had a ring and has retired it; [`NEVER_JOURNALED`] means it
+/// never got one. Both end journaling on the thread and the record path
+/// returns without a lock and without an allocation — what separates them
+/// is the report: a record arriving after a retirement is a **loss**,
+/// counted per window, while a never-journaled thread's silence is already
+/// reported for its whole life by [`Window::NeverJournaled`] and counting
+/// its records again would degrade every window it runs through.
 const CLOSED: *mut Ring = std::ptr::without_provenance_mut(usize::MAX);
 
 /// The thread never had a ring: see [`CLOSED`].
-const REFUSED: *mut Ring = std::ptr::without_provenance_mut(usize::MAX - 1);
+const NEVER_JOURNALED: *mut Ring = std::ptr::without_provenance_mut(usize::MAX - 1);
 
 thread_local! {
     /// This thread's ring: null before the first record site runs,
-    /// [`CLOSED`] once its ring is retired, [`REFUSED`] if it never got
-    /// one, otherwise the ring. Which of the two ends it is decides how
-    /// a later record is reported, which is why there are two of them
-    /// rather than one.
+    /// [`CLOSED`] once its ring is retired, [`NEVER_JOURNALED`] if it
+    /// never got one, otherwise the ring. Which of the two ends it is
+    /// decides how a later record is reported, which is why there are two
+    /// of them rather than one.
     ///
     /// A `Cell<*mut _>` with no drop glue, under the rule every
     /// per-thread structure reachable from thread exit obeys
@@ -391,7 +392,7 @@ pub(crate) fn take_ring_for_test() {
 #[cfg(test)]
 pub(crate) fn this_thread_identity() -> u64 {
     let ring = RING.with(|cell| cell.get());
-    if ring.is_null() || ring == CLOSED || ring == REFUSED {
+    if ring.is_null() || ring == CLOSED || ring == NEVER_JOURNALED {
         return 0;
     }
 
@@ -425,7 +426,7 @@ fn ring_for_writing() -> *mut Ring {
         return std::ptr::null_mut();
     }
 
-    if existing == REFUSED {
+    if existing == NEVER_JOURNALED {
         return std::ptr::null_mut();
     }
 
@@ -497,13 +498,13 @@ fn ring_for_writing() -> *mut Ring {
 ///
 /// A thread with no ring is in no window, so the count is the only thing
 /// standing between its silence and a reader's conclusion that it did
-/// nothing ([`Window::Refused`]). The two reasons a thread ends up here
-/// are the allocator refusing the ring and the thread being unable to
+/// nothing ([`Window::NeverJournaled`]). The two reasons a thread ends up
+/// here are the allocator refusing the ring and the thread being unable to
 /// guarantee the ring's retirement; both are permanent, and neither
 /// leaves the reader anything else to go on.
 fn close_this_thread() {
-    locked().refused += 1;
-    RING.with(|cell| cell.set(REFUSED));
+    locked().never_journaled += 1;
+    RING.with(|cell| cell.set(NEVER_JOURNALED));
 }
 
 /// Stamp a fresh ring with its identity, put it on the live list, and
@@ -581,12 +582,12 @@ fn allocate_ring() -> *mut Ring {
 /// the same sequence ([`Registry::pending_free`]).
 pub fn retire_thread_ring() {
     // Only a thread that has a ring closes: a cell already holding a
-    // sentinel keeps the one it has, so a refusal is not turned into a
-    // retirement and the records after it are not counted twice — once as
-    // a refused thread's for its whole life, once per window as a loss.
+    // sentinel keeps the one it has, so a never-journaled thread is not
+    // turned into a retired one and the records after it are not counted
+    // twice — once for its whole life, once per window as a loss.
     let ring = RING.with(|cell| {
         let ring = cell.get();
-        if ring.is_null() || ring == CLOSED || ring == REFUSED {
+        if ring.is_null() || ring == CLOSED || ring == NEVER_JOURNALED {
             return std::ptr::null_mut();
         }
 
@@ -619,16 +620,16 @@ fn retire_ring(ring: *mut Ring) {
 /// and without this its second life journals nothing at all while looking
 /// exactly like a thread that did nothing.
 ///
-/// Both sentinels reopen: a refusal is final for the life it happened in,
-/// and a new life on the same OS thread is a new thread by everything
-/// else this module counts. A cell holding a live ring is left alone —
-/// `ll_thread_init` is idempotent, and reopening a thread that already
-/// has one would strand the ring on the live list and start a second
-/// under a second identity.
+/// Both sentinels reopen: never journaling is final for the life it
+/// happened in, and a new life on the same OS thread is a new thread by
+/// everything else this module counts. A cell holding a live ring is left
+/// alone — `ll_thread_init` is idempotent, and reopening a thread that
+/// already has one would strand the ring on the live list and start a
+/// second under a second identity.
 pub fn reopen_thread() {
     RING.with(|cell| {
         let ring = cell.get();
-        if ring == CLOSED || ring == REFUSED {
+        if ring == CLOSED || ring == NEVER_JOURNALED {
             cell.set(std::ptr::null_mut());
         }
     });
@@ -664,12 +665,12 @@ pub struct Mark {
     /// neither mark can name them, since one is too early and the other
     /// too late.
     evictions: u64,
-    /// [`Registry::refused`] at this moment. Cumulative rather than a
-    /// difference: a thread refused before the window journals nothing
-    /// inside it either.
-    refusals: u64,
-    /// [`LOST`] at this moment. A difference, unlike the refusals: a
-    /// dropped record is a point event inside one window, and a
+    /// [`Registry::never_journaled`] at this moment. Cumulative rather
+    /// than a difference: a thread that never journaled before the window
+    /// journals nothing inside it either.
+    never_journaled: u64,
+    /// [`LOST`] at this moment. A difference, unlike the never-journaled
+    /// count: a dropped record is a point event inside one window, and a
     /// cumulative count would mark every later window as degraded by it —
     /// "can tell" converted into "cannot tell", which is this module's
     /// own rule broken in the mirror.
@@ -703,9 +704,9 @@ pub enum Window {
     Lost { records: u64 },
     /// Threads left without a ring in this process, refused by the
     /// allocator or unable to guarantee a ring's retirement. They are in
-    /// no other answer, and the count is cumulative because a refusal
+    /// no other answer, and the count is cumulative because the state
     /// lasts the life of its thread.
-    Refused { threads: u64 },
+    NeverJournaled { threads: u64 },
 }
 
 /// Read every registered ring's cursor. One end of a window; the other is
@@ -725,7 +726,7 @@ pub fn mark() -> Mark {
             Mark {
                 positions,
                 evictions: registry.evicted,
-                refusals: registry.refused,
+                never_journaled: registry.never_journaled,
                 lost: LOST.load(Ordering::Relaxed),
                 taken,
             },
@@ -798,9 +799,9 @@ pub fn between(start: &Mark, end: &Mark) -> Vec<Window> {
         windows.push(Window::Lost { records: dropped });
     }
 
-    if end.refusals > 0 {
-        windows.push(Window::Refused {
-            threads: end.refusals,
+    if end.never_journaled > 0 {
+        windows.push(Window::NeverJournaled {
+            threads: end.never_journaled,
         });
     }
 

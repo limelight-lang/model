@@ -61,7 +61,7 @@ enum Where {
 /// `ACTIVE` and `PARKED` were one state in two declarations, and the state is
 /// one pointer — a chain head whose null says the window is shut
 /// (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Deferred slot reuse").
-const RETIRED: [(&str, &str, Where); 84] = [
+const RETIRED: [(&str, &str, Where); 91] = [
     // Candidate registration, whose callers are spread over four modules.
     // `ShadowArena::enrol` is the homonym: the audit maps that one to the
     // allocation it performs, and the glossary's *candidate registration* is
@@ -216,6 +216,37 @@ const RETIRED: [(&str, &str, Where); 84] = [
     // outside it. The module's own old name carries no row — `--exact` is
     // libtest's flag, and `exact` is ordinary English everywhere else.
     ("Refused", "AllocationFailed", Where::Under("cycle")),
+    // S41.7's two outcomes. Storage a carry left in its source block is a
+    // *pinned payload*, and a thread that never obtained a ring is *never
+    // journaled*. The carry takes three rows because the outcome is declared
+    // in `cells`, decided in `promote` and produced by the test hook in
+    // `test_support`; the fourth file that names the type,
+    // `class/tests/what_a_subclass_inherits.rs`, answers `Nothing` and needs
+    // no row.
+    //
+    // The journal's answer carries four rows because its state is a
+    // variant, a sentinel and two counters, and a revert of any of them
+    // compiles: what the compiler catches is half a rename, so the whole
+    // one is this guard's. The price of the two lowercase rows is that a
+    // journal test may not print the kept sense — an assertion message
+    // saying an allocator refused would fail here. That costs nothing while
+    // no file under `src/journal/` carries either token, which this guard's
+    // own run is the proof of, and the escape when one is wanted is to
+    // narrow the row rather than to drop it. No lowercase row reaches
+    // `test_support/outside_block` for exactly that reason: two of its
+    // assertion messages say the memory manager refused a block, which is
+    // the sense the glossary keeps.
+    ("Refused", "Pinned", Where::Under("cells")),
+    ("Refused", "Pinned", Where::Under("promote")),
+    (
+        "Refused",
+        "Pinned",
+        Where::Under("test_support/outside_block"),
+    ),
+    ("Refused", "NeverJournaled", Where::Under("journal")),
+    ("REFUSED", "NEVER_JOURNALED", Where::Under("journal")),
+    ("refused", "never_journaled", Where::Under("journal")),
+    ("refusals", "never_journaled", Where::Under("journal")),
     ("judge", "validate_component", Where::Under("cycle")),
     // `discount`, `references` and `guards` are renamed with the rest and
     // carry no row: they are locals of one function, and all three are the

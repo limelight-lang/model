@@ -100,7 +100,7 @@ fn a_reversed_pair_naming_no_ring_still_answers() {
     let start = Mark {
         positions: Vec::new(),
         evictions: 0,
-        refusals: 0,
+        never_journaled: 0,
         lost: 0,
         taken: 1,
     };
@@ -108,7 +108,7 @@ fn a_reversed_pair_naming_no_ring_still_answers() {
     let end = Mark {
         positions: Vec::new(),
         evictions: 0,
-        refusals: 0,
+        never_journaled: 0,
         lost: 0,
         taken: 2,
     };

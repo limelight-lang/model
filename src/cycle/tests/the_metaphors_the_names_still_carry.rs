@@ -55,9 +55,9 @@ const EXEMPT: [(&str, &str, &str); 8] = [
     (
         "memory/reset_window",
         "CORPSE_WALKS",
-        "`memory::reset_window`'s own vocabulary. The glossary names no outcome \
-         for its window yet (`PLAN.md`, Fog), and a name invented here would be \
-         a third one",
+        "`memory::reset_window`'s own vocabulary. The glossary names the \
+         window's words since `rfc` `9ca669c` — a corpse of this window is a \
+         *torn-down entity* — and no step owns the rename yet",
     ),
     (
         "memory/reset_window",
@@ -67,9 +67,9 @@ const EXEMPT: [(&str, &str, &str); 8] = [
     (
         "promote",
         "corpse",
-        "the reset's own vocabulary, waiting on the same glossary entry: a \
+        "the reset's own vocabulary, and the glossary's *torn-down entity*: a \
          survivor whose refcount reached zero inside the reset is not the \
-         collector's zero-count member",
+         collector's zero-count member, and no step owns the rename",
     ),
     (
         "promote",

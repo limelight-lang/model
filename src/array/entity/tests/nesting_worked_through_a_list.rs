@@ -232,7 +232,7 @@ fn the_work_list_grows_and_keeps_what_it_held() {
 /// is why this shape is three levels rather than two thousand.
 ///
 /// It was untestable until `FORCE_REFUSE_LONGLIVED` existed for the
-/// refused carry; the plan recorded it as owed on the strength
+/// pinned payload; the plan recorded it as owed on the strength
 /// of `FORCE_OOM` alone, which the buffer arena can go around.
 #[test]
 fn a_refused_list_still_tears_everything_down_in_order() {

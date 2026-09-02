@@ -103,16 +103,15 @@ guard lowers it on the unwind as well as on the return.
   the answer is Edmond's, and the alternative that keeps both his ruling and
   the guarantee is an arena that opens without a workspace when the draw is
   refused and owns its blocks for that collection.
-- the glossary names no outcome for storage that stayed in its source block,
-  none for the journal's unobserved thread, none for `ResetWindow::escrow` and
-  none for the sweep-list sense of enrolment. S41.7 needs the first two, and
-  all four belong to `rfc` S9.1 (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Glossary
-  check").
-- `memory::reset_window` keeps a vocabulary of its own around the same gap —
-  `CORPSE_WALKS` and `park_large` beside `ResetWindow::escrow` — and both
-  S41 guards exempt the two by name, with the reason in the exemption. The
-  rename waits on the glossary entry rather than inventing a third word, and
-  no step owns it yet.
+- `memory::reset_window` keeps a vocabulary of its own — `CORPSE_WALKS` and
+  `park_large` beside `ResetWindow::escrow` — and both S41 guards exempt the
+  two by name, with the reason in the exemption. The words exist now: `rfc`
+  S9.1 named `escrow` the *deferred increment* list, `credits` the deferred
+  decrement one, `park_large` a *deferred free*, the window's `corpse` a
+  *torn-down entity* and the sweep-list `enrol` an *attachment to the touched
+  list* (`rfc` `9ca669c`, `dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Glossary check").
+  No step owns the rename, and the four exemption reasons that said the
+  glossary was silent now say this instead.
 
 ---
 
@@ -327,13 +326,7 @@ to the step that owns it.
         *measurement noise*, the arithmetic `floor` a *lower bound*) or one of
         the seven exemptions.
 
-- [ ] S41.7 Allocation outcomes, and the `door` sites by semantic class
-      **blocked: two of its five outcomes have no glossary entry**
-      (`ExternalCarry::Refused` / `OutsideCarry::Refused` and the journal's
-      `Window::Refused`), which is `rfc` S9.1's to answer. What is not blocked
-      is `Placement::Refused` → `Unsupported` and the `door` classification
-      against the glossary's closed list; splitting the step is Edmond's call.
-      `InsertOutcome`'s two rows landed with S41.8, which shares their enum.
+- [x] S41.7 Allocation outcomes, and the `door` sites by semantic class
       done: an allocation failure, an unsupported placement, an admission
         denial, a carry that left storage in its source block and an
         unobserved journal thread each carry a name of their own —
@@ -365,9 +358,49 @@ to the step that owns it.
       handoff: the rename landed 2026-09-01, L2 — `c4a59a6` over 54 files,
         `door` in `src/` from 140 occurrences to the 3 the name guard's own
         entry carries, and `9ed63ae` for `Placement::Unsupported` with the
-        distinction test. The unblocked half is spent; what remains is the
-        blocked half — `ExternalCarry::Refused`, `OutsideCarry::Refused` and
-        the journal's `Window::Refused` — and it waits on `rfc` S9.1.
+        distinction test.
+      handoff: the blocked half landed 2026-09-02, once `rfc` S9.1 named both
+        outcomes at `9ca669c`. `ExternalCarry::Pinned`, `OutsideCarry::Pinned`
+        and `Window::NeverJournaled`, and with the journal's answer the state
+        that carries it — the `NEVER_JOURNALED` sentinel,
+        `Registry::never_journaled` and `Mark::never_journaled`: one state,
+        and now one word for it. The guard grew seven rows, 84 to 91, scoped
+        to the four subtrees that own the two outcomes; the lowercase pair
+        costs a journal test the right to print the kept sense in an assertion
+        message, which nothing in `src/journal/` does today, and the escape is
+        to narrow the row rather than to drop it.
+      handoff: **the word `refused` stays where it names an allocation
+        failure**, which is the one sense `rfc/dev/GLOSSARY.md` keeps of the
+        seven. What moved is the outcome: a carry the arena refused leaves a
+        pinned payload, and a thread the allocator refused a ring is
+        never-journaled. The prose followed in five files the identifier guard
+        cannot reach — `array/entity.rs`, `array/table/tests/`
+        `where_the_storage_comes_from.rs`, `array/entity/tests/`
+        `nesting_worked_through_a_list.rs`, `memory/buffer_arena.rs` and
+        `dev/INDEX.md` — found by the second Critic round rather than by a
+        guard, and no guard covers them now either.
+      handoff: the `done:` clause's "a test asserts rather than a reading" is
+        held by five tests, one per outcome, named in
+        `dev/PROJECT-TERMINOLOGY-AUDIT.md` §1. The journal takes three of
+        them, because its answer has two causes and only one is a memory
+        failure: `a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring`
+        reaches `NeverJournaled` with no allocation asked for at all.
+      Critic 2026-09-02, first round: seven findings, all executed. The two
+        that mattered were a guard row that would have condemned the kept
+        sense inside `journal`, and an added journal assertion that could not
+        fail for its stated reason — `LOST` moves on the `CLOSED` arm alone,
+        so the thread it watched had no path to it. The assertion was deleted
+        rather than repaired: `a_never_journaled_threads_later_records_are_`
+        `not_counted_as_losses` already held that claim.
+      Critic 2026-09-02, second round: eight findings against the first
+        round's repairs, all executed. Two reversed a first-round decision —
+        the deleted guard rows went back, because a whole revert of a field
+        compiles and nothing else stood over `Registry::never_journaled`, and
+        the comment written to justify deleting them argued from three
+        examples the guard is defined not to see. The round also found the
+        retired sense still standing in five files nobody had opened, and
+        four exemption reasons in the two metaphor guards that still said the
+        glossary was silent about the reset window, which `9ca669c` ended.
 - [x] S41.8 The hash table's collision defence
       done: the metaphor is gone from `src/array/` and its tests — collision-
         defence state, a chain-length threshold, an equal-hash threshold, a

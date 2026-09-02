@@ -189,7 +189,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             // category stops describing where it lives. Asked through one
             // call, dispatched on the entity, so promotion keeps knowing
             // nothing about any layout (`rfc/model/strings.md`).
-            if let ExternalCarry::Refused(payload_block) =
+            if let ExternalCarry::Pinned(payload_block) =
                 unsafe { carry_external_memory(arena, surv) }
             {
                 // The bytes stay where they are and the block holding them
@@ -219,7 +219,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                     // A second count, the reset's own, because that death
                     // event can arrive inside this reset: a release the
                     // drain below runs can kill the very survivor whose
-                    // payload was refused, and no occupant count exists
+                    // payload is pinned, and no occupant count exists
                     // to hold the block until `place_survivor_lists`
                     // (`dev/DECISIONS.md`, "the reset holds a pin of its
                     // own, and releases it after the index is real").
@@ -414,10 +414,10 @@ unsafe fn retain_block(block: *mut BlockHeader) {
 /// into the reset: promotion holds a block by the address of a header and
 /// does not otherwise look inside an entity.
 ///
-/// A refusal answers the block holding the bytes, which the caller keeps
-/// alive instead. Every arm computes that address out of the value it
+/// A pinned payload answers the block holding the bytes, which the caller
+/// keeps alive instead. Every arm computes that address out of the value it
 /// already carried, so no second classification can disagree with the one
-/// that refused.
+/// that answered.
 ///
 /// # Safety
 /// `surv` is a live survivor of `arena`, mid-reset.
@@ -427,14 +427,14 @@ unsafe fn carry_external_memory(arena: *mut Arena, surv: *mut RcHeader) -> Exter
             if unsafe { crate::string::carry_payload_out_of(arena, s) } {
                 ExternalCarry::Done
             } else {
-                ExternalCarry::Refused(block_holding(unsafe { (*s).data }))
+                ExternalCarry::Pinned(block_holding(unsafe { (*s).data }))
             }
         }
         External::ArrayStorage(a) => {
             if unsafe { crate::array::entity::carry_storage_out_of(arena, a) } {
                 ExternalCarry::Done
             } else {
-                ExternalCarry::Refused(block_holding(unsafe {
+                ExternalCarry::Pinned(block_holding(unsafe {
                     crate::array::entity::storage_address(a)
                 }))
             }
@@ -446,8 +446,8 @@ unsafe fn carry_external_memory(arena: *mut Arena, surv: *mut RcHeader) -> Exter
             crate::cells::OutsideCarry::Carried | crate::cells::OutsideCarry::Nothing => {
                 ExternalCarry::Done
             }
-            crate::cells::OutsideCarry::Refused { memory } => {
-                ExternalCarry::Refused(block_holding(memory))
+            crate::cells::OutsideCarry::Pinned { memory } => {
+                ExternalCarry::Pinned(block_holding(memory))
             }
         },
         External::None => ExternalCarry::Done,
@@ -455,8 +455,8 @@ unsafe fn carry_external_memory(arena: *mut Arena, surv: *mut RcHeader) -> Exter
 }
 
 /// The block header holding `memory`, or 0 for a null address — the one
-/// place a refusal's address becomes a block, so a caller cannot skip the
-/// mask.
+/// place a pinned payload's address becomes a block, so a caller cannot
+/// skip the mask.
 fn block_holding(memory: *mut u8) -> usize {
     if memory.is_null() {
         0
@@ -469,10 +469,17 @@ fn block_holding(memory: *mut u8) -> usize {
 enum ExternalCarry {
     /// It came along, or there was none.
     Done,
-    /// The move was refused: the bytes stay put and this block is held
-    /// out of circulation. Zero when the memory has no block of the
-    /// arena's.
-    Refused(usize),
+    /// The bytes are a pinned payload: they stay put, and the caller
+    /// retains and pins the block holding them.
+    ///
+    /// Zero is [`block_holding`]'s null-address guard and reaches no
+    /// producer in this crate: both kind arms answer [`ExternalCarry::Done`]
+    /// for a storage-less entity rather than reaching this variant, and a class
+    /// hook that answers `Pinned` with a null address breaks
+    /// [`crate::cells::OutsideCarry::Pinned`]'s contract. The caller pins
+    /// nothing for it (`promote.rs`, the `payload_block != 0` test), so
+    /// the value is a guard rather than a second state of the outcome.
+    Pinned(usize),
 }
 
 /// What a survivor owns outside its own entity. Three shapes do today;

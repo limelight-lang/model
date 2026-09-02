@@ -1,8 +1,9 @@
 # Cycle terminology audit
 
 Status: synchronized with `rfc/dev/GLOSSARY.md` at `rfc` commit `0075ef3` on
-2026-09-01, under `model/PLAN.md` S41.1. The tables below state the ratified
-names, so a rename step reads them directly — with one exception, the four
+2026-09-01, under `model/PLAN.md` S41.1, and re-read against `9ca669c` on
+2026-09-02, where `rfc` S9.1 closed all four gaps. The tables below state the
+ratified names, so a rename step reads them directly — with one exception, the four
 `refcount` rows under "Candidate registration in `refcount`", which S41.3
 derived from a ratified row and which say so where they stand. This document changes no code.
 Ratifying `rfc/dev/PLAN.md` S9.1 stays with that repository; the glossary is
@@ -30,8 +31,9 @@ records are out of scope.
 Every row of every table below was ruled against the glossary at `rfc` commit
 `0075ef3`, except the four rows S41.3 derived, which that section marks. A row the glossary confirms carries no mark, and the tables state
 the ratified name. Five rows were amended and the amendment is applied in
-place; four outcomes have no glossary entry and stay here as gaps for
-`rfc/dev/PLAN.md` S9.1.
+place. Four outcomes had no glossary entry and stayed here as gaps for
+`rfc/dev/PLAN.md` S9.1; `rfc` `9ca669c` answered all four on 2026-09-02, and
+the gap list below carries each entry.
 
 Amended against the draft:
 
@@ -50,20 +52,31 @@ Amended against the draft:
 - `group_is_met` reads the *row-initialization bitmap*. "Visited bitmap" was a
   third name for a structure the glossary already names.
 
-Gaps, for the glossary to answer rather than this audit:
+Gaps, for the glossary to answer rather than this audit. `rfc` S9.1 answered
+all four at `9ca669c` on 2026-09-02, and the entries are in
+`rfc/dev/GLOSSARY.md`. S41.7 spent the first two in the crate; the third and
+fourth have their words and no step yet:
 
-- a result whose storage stayed in its source block, `ExternalCarry::Refused`
-  and `OutsideCarry::Refused`. The glossary's *refusal* list covers a rejected
-  design, an allocation failure, an admission denial, an unsupported placement
-  and a capacity limit; this outcome is none of them.
-- the journal's unobserved-thread result, `Window::Refused`
-  (`src/journal/mod.rs`).
-- `ResetWindow::escrow` (`src/memory/reset_window.rs`), which names deferred
-  count corrections. *Escrow* is deprecated and its replacement, *overflow
-  buffer*, is false for this sense.
-- the prose sense of *enrolment* for attaching a block to the sweep list
-  (`src/cycle/arena.rs`). Its replacement, *candidate registration*, names a
-  different operation.
+- **answered, and spent by S41.7.** A result whose storage stayed in its
+  source block is a *pinned payload*, `ExternalCarry::Pinned` and
+  `OutsideCarry::Pinned`. The glossary's *refusal* list ran to five senses
+  when this gap was opened — a rejected design, an allocation failure, an
+  admission denial, an unsupported placement and a capacity limit — and this
+  outcome was none of them; `9ca669c` made it the sixth. The allocation
+  failure that produces it keeps the word.
+- **answered, and spent by S41.7.** The journal's unobserved-thread result is
+  a *never-journaled thread*, `Window::NeverJournaled` (`src/journal/mod.rs`),
+  the seventh sense `9ca669c` added. A thread whose journaling ended is not
+  one: its later records are what `Window::Lost` counts.
+- **answered, and unspent.** `ResetWindow::escrow` (`src/memory/reset_window.rs`)
+  names the *deferred increment* list, `credits` the deferred decrement one and
+  `park_large` a *deferred free*. *Escrow* is deprecated and the candidate
+  queue's replacement, *overflow buffer*, is false for this sense, which is why
+  the entry had to be written rather than borrowed.
+- **answered, and unspent.** The prose sense of *enrolment* for attaching a
+  block to the sweep list (`src/cycle/arena.rs`) is *attachment to the touched
+  list*, and the end-of-scan operation is a *clear*. *Candidate registration*,
+  the queue's replacement, names a different operation.
 
 Identifiers the glossary reaches that no table below covers, and which the
 rename steps carry anyway:

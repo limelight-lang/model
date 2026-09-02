@@ -29,8 +29,29 @@ Required contextual names include:
 | `InsertOutcome::RefusedForMemory` | `InsertOutcome::AllocationFailed` |
 | `InsertOutcome::RefusedByLadder` | `InsertOutcome::AdmissionDenied` |
 | `Placement::Refused` | `Placement::Unsupported` |
-| `ExternalCarry::Refused` / `OutsideCarry::Refused` | gap: the glossary names no outcome for storage that stayed in its source block |
-| `Window::Refused` | gap: the glossary names no journal unobserved-thread outcome |
+| `ExternalCarry::Refused` / `OutsideCarry::Refused` | `ExternalCarry::Pinned` / `OutsideCarry::Pinned`, the glossary's *pinned payload* |
+| `Window::Refused` | `Window::NeverJournaled`, the glossary's *never-journaled thread* |
+
+**Done in the crate, under `model/PLAN.md` S41.7.** `InsertOutcome` and
+`Placement` landed 2026-09-01; `ExternalCarry::Pinned`, `OutsideCarry::Pinned`
+and `Window::NeverJournaled` landed 2026-09-02, once `rfc` S9.1 named the two
+outcomes at `9ca669c`. The distinction this section exists for is held by
+three tests rather than by a reading:
+`array::table::tests::the_collision_defense::a_refused_allocation_and_a_denied_admission_are_different_answers`,
+`string::tests::the_layout_size_chooses::`
+`a_long_lived_string_past_the_slot_limit_is_unsupported_by_both_factories`, and
+`promote::tests::the_memory_a_survivor_takes_with_it::`
+`a_carry_the_arena_refused_pins_the_block_and_the_payload_frees_it`, which
+asserts one buffer-arena refusal beside a promoted array still reading out of
+the bytes it always had. The journal's answer takes three, all in
+`journal::tests::a_thread_the_journal_could_not_serve`:
+`a_thread_refused_a_ring_is_counted_since_it_is_in_no_window` asserts the
+window a refused ring produces,
+`a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring` produces the same
+window from a cause that asks nothing of any allocator, so the answer is not a
+second name for a memory failure, and
+`a_never_journaled_threads_later_records_are_not_counted_as_losses` asserts
+that such a thread's later records are not reported as `Lost`.
 
 `door` is similarly overloaded across allocation paths, ABI entry points,
 barriers, channels, and OS resources. Replace it only after classifying each

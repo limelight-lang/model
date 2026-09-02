@@ -621,12 +621,16 @@ record is a point event inside one window, and a cumulative count would
 mark every later window as degraded by it, which is this section's rule
 broken in the mirror.
 
-It covers the thread that was **refused** a ring, which is in no window at
-all and cannot be: it has no ring to be in. The registry counts refusals
-and every window carries the count, because the difference between "these
+It covers the **never-journaled** thread, which is in no window at all and
+cannot be: it has no ring to be in. Two routes reach that state, the
+allocator refusing the ring and a thread that cannot guarantee the ring's
+retirement, and the registry counts the threads rather than either cause.
+Every window carries the count, because the difference between "these
 threads did nothing" and "these threads could not tell you" is the whole
-of what this section is about, and the door it opens under is memory
-pressure — the condition the journal is switched on to investigate.
+of what this section is about. The allocator's route arises under memory
+pressure, which is what the journal is switched on to investigate; the
+other arises when TLS teardown has already destroyed the guard's slot, and
+no allocation is asked for on it at all.
 
 And it covers the caller's own mistake: two marks handed over in the wrong
 order bound no window, and the answer says exactly that, in one answer of

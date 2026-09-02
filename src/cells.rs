@@ -140,11 +140,11 @@ pub(crate) struct OutsideCells {
     /// the dying arena, for the one operation that needs it — an
     /// allocation the arena made directly from the system is transferred
     /// by forgetting the arena's record of it (`Arena::forget_large`),
-    /// never copied and never refused.
+    /// never copied and never pinned.
     ///
     /// The argument for the shape is `dev/DECISIONS.md`, "the arena carry
     /// is the group's sixth member, and a refusal answers the bytes it
-    /// left behind".
+    /// left behind" — that refusal is [`OutsideCarry::Pinned`].
     pub carry: unsafe fn(*mut crate::memory::arena::Arena, *mut RcHeader) -> OutsideCarry,
 }
 
@@ -160,8 +160,9 @@ pub(crate) struct OutsideCells {
 pub(crate) enum OutsideCarry {
     /// The storage is out of the arena, and the instance points at it.
     Carried,
-    /// The move was refused: the bytes stay where they are, at `memory`,
-    /// and the reset keeps the block holding them out of circulation.
+    /// The bytes are a pinned payload: they stay where they are, at
+    /// `memory`, and the reset keeps the block holding them out of
+    /// circulation.
     ///
     /// **The bytes, not their block.** The reset masks the address into a
     /// block header itself, as it does for the two kinds that answer
@@ -169,13 +170,13 @@ pub(crate) enum OutsideCarry {
     /// pointer lands in the storage's own first word and leaves the block
     /// unretained.
     ///
-    /// **Only memory inside a block of this arena may be refused.** An
+    /// **Only memory inside a block of this arena may be pinned.** An
     /// allocation the arena made directly from the system has no block of
     /// the arena's, and the reset frees every one it logged, so such
-    /// storage is transferred rather than refused — the arena forgets the
+    /// storage is transferred rather than pinned — the arena forgets the
     /// record and the address does not move
     /// (`array::entity::carry_storage_out_of` is the worked example).
-    Refused { memory: *mut u8 },
+    Pinned { memory: *mut u8 },
     /// The instance has no storage to carry.
     Nothing,
 }

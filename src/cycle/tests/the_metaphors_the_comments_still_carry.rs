@@ -26,8 +26,10 @@ const EXEMPT: [(&str, &str, &str); 12] = [
     (
         "memory/reset_window",
         "escrow",
-        "`ResetWindow::escrow` names deferred count corrections, and \
-         *overflow buffer* is false for that sense \
+        "`ResetWindow::escrow` names deferred count corrections, which the \
+         glossary calls the *deferred increment* list since `rfc` `9ca669c`; \
+         *overflow buffer*, the candidate queue's replacement, is false for \
+         that sense and no step owns the rename \
          (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, \"Glossary check\")",
     ),
     (
@@ -53,14 +55,14 @@ const EXEMPT: [(&str, &str, &str); 12] = [
         "memory/reset_window",
         "park",
         "the reset's own window over its own frees, a different mechanism from \
-         the trace window and one the glossary names no outcome for \
-         (`PLAN.md`, Fog)",
+         the trace window; the glossary calls this one a *deferred free* and \
+         no step owns the rename (`PLAN.md`, Fog)",
     ),
     (
         "memory/reset_window",
         "corpse",
-        "the same window: `CORPSE_WALKS` is its own state and waits on the \
-         same glossary entry",
+        "the same window: `CORPSE_WALKS` is its own state, and the glossary's \
+         word for it is a *torn-down entity*",
     ),
     (
         "promote",
@@ -71,9 +73,10 @@ const EXEMPT: [(&str, &str, &str); 12] = [
     (
         "cycle/arena",
         "enrol",
-        "attaching a block to the sweep list, whose canonical term is a \
-         glossary gap: *candidate registration* names a different operation \
-         (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, \"Glossary check\")",
+        "attaching a block to the sweep list, which the glossary calls an \
+         *attachment to the touched list* since `rfc` `9ca669c`; *candidate \
+         registration* names a different operation, and no step owns the \
+         rename (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, \"Glossary check\")",
     ),
     (
         "memory/heap",

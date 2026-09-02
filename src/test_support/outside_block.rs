@@ -308,7 +308,7 @@ unsafe fn carry(_: *mut Arena, entity: *mut RcHeader) -> OutsideCarry {
     };
 
     if fresh.is_null() {
-        return OutsideCarry::Refused { memory: block };
+        return OutsideCarry::Pinned { memory: block };
     }
 
     unsafe { std::ptr::copy_nonoverlapping(block, fresh, granted) };

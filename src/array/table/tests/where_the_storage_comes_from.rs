@@ -4,8 +4,8 @@
 //! split the 1025th element of a request array used to abort for. A
 //! table dies wherever its last reference is dropped, so the free
 //! routinely arrives from a thread that did not allocate it, and a
-//! carry the reset refused leaves the category alone for promotion
-//! to change.
+//! carry the reset could not evacuate leaves a pinned payload, and leaves
+//! the category for promotion to change.
 
 use super::*;
 
@@ -186,7 +186,7 @@ fn a_table_disposed_on_another_thread_leaves_the_owners_block_alive() {
     );
 }
 
-/// A refused carry decides no category of its own: it leaves the
+/// A pinned payload decides no category of its own: it leaves the
 /// storage where it is and the header saying `RequestArena`, so
 /// promotion is what changes the answer a moment later
 /// (`dev/DECISIONS.md`, "the `RcHeader` is the only authority on
@@ -250,7 +250,7 @@ fn a_refused_carry_leaves_the_category_where_it_was() {
     );
     assert!(
         !head.storage().is_null(),
-        "a refused carry left the array without the storage it had"
+        "a pinned payload left the array without the storage it had"
     );
 
     set_current_context(std::ptr::null_mut());

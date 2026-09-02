@@ -986,7 +986,7 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
 /// body allocation a `GcHeap` or `LongLived` owner can make
 /// (`memory/routing.rs`), from the first request on unless
 /// [`SERVE_BEFORE_REFUSING`] holds some back. Test-only, and the only
-/// deterministic way to reach a refused carry: see the note at the first
+/// deterministic way to reach a pinned payload: see the note at the first
 /// of the two.
 #[cfg(test)]
 pub(crate) static FORCE_REFUSE_LONGLIVED: std::sync::atomic::AtomicBool =

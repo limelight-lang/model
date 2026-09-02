@@ -107,8 +107,9 @@ versions live in `docs/history/`, marked at the top.
   An arena dynamic string that survives the reset **takes its payload
   with it**: `promote::carry_external_memory` asks one kind-dispatched
   question and `string::carry_payload_out_of` answers it — an OS-direct
-  run transfers, an in-block payload is copied, and a refused copy
-  retains the block instead (`dev/DECISIONS.md`, 2026-08-04).
+  run transfers, an in-block payload is copied, and bytes whose copy the
+  allocator refused are a pinned payload, retaining the block instead
+  (`dev/DECISIONS.md`, 2026-08-04).
 - Interpolated string templates: `src/template.rs` — the parts of one
   interpolation site are a `TemplateShape`, static data the compiler
   emits once and never frees; the instance is
@@ -314,19 +315,22 @@ versions live in `docs/history/`, marked at the top.
   called last in `heap::ll_thread_exit`), and the oldest beyond
   `RETIRED_KEPT` are freed. A `Mark` names rings by identity, never by
   address, and a read resolves them under the registry's lock — a freed
-  ring's block goes back to the allocator. A refusal and a retirement both
-  **close** the thread's cell, which is why it has three states and not
-  two: a thread journals nothing after its exit, and one refusal is not
-  retried, though it **is** counted: a refused thread is in no window, and
-  the count is what keeps its silence from reading as inactivity. The
-  ring is retired by the **last act** of `ll_thread_exit`, after every
+  ring's block goes back to the allocator. Never journaling and a
+  retirement both **close** the thread's cell, which is why it has three
+  states and not two: a thread journals nothing after its exit, and a
+  refused ring is not asked for again, though the thread **is** counted:
+  a never-journaled thread is in no window, and the count is what keeps
+  its silence from reading as inactivity. The ring is retired by the
+  **last act** of `ll_thread_exit`, after every
   step of the teardown — the reserve and the pool's thread cache are
   drained there by hand rather than by their own destructors, which run
   later — so a `__destruct` body's records and every block handover are
   inside it and a window over a thread's death is complete. Past that act
-  completeness ends and honesty does not: a record arriving on a closed
-  slot is counted and reported as `Lost`. `ll_thread_init` reopens the cell, so a pool thread's
-  second life journals into a ring of its own. An evicted ring is freed by
+  completeness ends and honesty does not: a record arriving on a retired
+  thread's cell is counted and reported as `Lost`, while a never-journaled
+  thread's records are not counted again on top of its own answer.
+  `ll_thread_init` reopens the cell, so a pool thread's second life
+  journals into a ring of its own. An evicted ring is freed by
   the next thread to journal or to mark, never by one inside its own exit,
   whose pending-free list is gone by then — the three-valued
   `heap::ExitPhase` is what tells those apart, a boolean having conflated
@@ -458,7 +462,8 @@ versions live in `docs/history/`, marked at the top.
   out by the group's own `carry`, reached from `promote::external_memory`
   (`dev/DECISIONS.md`, "a class with cells outside itself carries one flag
   and one group of five" and "the arena carry is the group's sixth
-  member, and a refusal answers the bytes it left behind").
+  member, and a refusal answers the bytes it left behind" — that refusal
+  is `OutsideCarry::Pinned` now).
 - Weak references: `src/weak.rs` — the kind-11 weak cell, death
   notification (`notify_death` / `notify_members` / `drain_arena_weak_log`)
   and the `ll_weakref_create` / `ll_weakref_get` ABI. Notification sites
