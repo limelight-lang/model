@@ -1786,6 +1786,22 @@ stage claiming the frees while building none of them.
         word and both surviving clauses use it; and no chain link is written
         into the workspace's block header, which `BlockPool::put` writes at
         thread exit.
+      progress 2026-09-03 — the pair entry, `841d763` and `77bd48a`. The
+        instrument first: `cycle::row::take_edge_dispatches` counts the calls
+        into `resolve_edge_target` per thread under `cfg(test)`, on the
+        pattern `shadow::WRITTEN_BYTES` set, and priced one scan of the
+        two-member ring at seven dispatches. `WorklistEntry` is then the pair
+        of an entity and the row its meeting found, sixteen bytes, with
+        `SEGMENT_ENTRIES` at 256 so the entries still fill one page behind the
+        segment's two links and `SEGMENT_BYTES` stays 4,112, now pinned by a
+        compile-time assertion. The scan's loop head reads the colour through
+        the carried pointer, the mark carries a pointer it does not read, and
+        the seven fell to four — one per classification, none at a pop — seen
+        red at 7 against the 4 written before the code changed
+        (`dev/BENCHMARKS.md`, `dev/DECISIONS.md`). The stale 512 went from
+        `dev/ARCHITECTURE.md`'s map with it. This does not close S36.11: the
+        segmented primitive, the fixed worklist in the workspace and the
+        withheld returns' base capacity remain.
       note 2026-09-03 — **the two-cursor clause is struck**, by Edmond's word
         over the Sage gate's ruling. It read: the arena bumps row arrays from a
         block's front and worklist segments from its back, growing when the two
