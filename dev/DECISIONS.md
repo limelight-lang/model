@@ -8,6 +8,42 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — a worklist entry is the pair (entity, row), and a segment holds 256 of them
+
+Owner: S36.11, on Edmond's ruling over finding 2 of
+`dev/CYCLE-COLLECTOR-REVIEW.md` and the Sage gate of the same day.
+
+**Decided:** `cycle::stack::WorklistEntry` carries the entity and the shadow
+row its meeting found, sixteen bytes, and `SEGMENT_ENTRIES` falls from 512 to
+256 so that the entries still fill one page behind the segment's two links and
+`SEGMENT_BYTES` stays 4,112. The scan's loop head reads the colour through the
+carried pointer instead of resolving the popped entity's address a second
+time. The mark reads no row at its pop and carries the pointer all the same,
+so that one entry shape serves both phases.
+
+**Why:** resolving an address to a row is a dispatch on the block's kind, and
+for a retained block a search of the survivor list
+(`cycle::row::resolve_edge_target`). The classification that queues an entity
+has already made it, and the row it found cannot change inside a collection:
+a row neither moves nor unmeets. Measured on the two-member ring, the scan's
+dispatches fall from seven to four — one per classification, none at a pop —
+by the counter this step added
+(`cycle::scan::tests::a_scan_resolves_no_row_at_a_pop`).
+
+**The pointer and not the colour:** another path into the same entity can
+recolour its row between the push and the pop, and what decides the expansion
+is the colour the row holds when it is popped. Carrying the colour would
+expand an entity on a verdict a later edge had already overturned.
+
+**Superseded:** the segment size of 2026-08-29, "the descent's worklist is a
+chain of 512-entry segments drawn from the collection's arena". The chain
+itself and the rule that an emptied segment is kept both stand.
+
+**What it costs:** the worklist spends sixteen bytes per queued entity where
+it spent eight, and a depth of 381 — the whole object population a median root
+reaches — crosses one segment boundary where it crossed none. The segment it
+crosses into comes from the arena, which the trace is drawing from anyway.
+
 ## 2026-09-03 — the registry of OS-direct runs is threaded through the runs
 
 Owner: S36.9 slice (f), ruled by the Sage on 2026-09-02 before the code.

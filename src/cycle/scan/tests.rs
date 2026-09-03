@@ -139,23 +139,23 @@ fn a_ring_no_one_holds_is_colored_potentially_unreachable_whole() {
     unsafe { drop_ring(&mut arena, (first, second), &[first, second]) };
 }
 
-/// What one scan of the two-member ring costs in block dispatches: the loop
-/// head resolves the row of every entity it pops, and the classification
-/// that queued that entity resolved the same row to colour it.
+/// What one scan of the two-member ring costs in block dispatches: one per
+/// entity classified, and none at a pop, the worklist entry carrying the row
+/// the classification found.
 ///
-/// Seven, and each one is placed: the root's classification; its pop; the
+/// Four, and each one is placed: the root's classification; the
 /// classification of `second` through the root's edge, which colours it live
-/// on a count of one; that entity's pop; the classification of the root
-/// through its back edge, which raises the root and queues it a second time;
-/// the root's second pop; and the classification of `second` again, which
-/// stops on a colour that is final. Three of the seven are pops, and a pop
-/// resolves a row the push that queued it already held.
+/// on a count of one; the classification of the root through its back edge,
+/// which raises the root and queues it a second time; and the classification
+/// of `second` again, which stops on a colour that is final. The three pops
+/// between them cost none: an entry carries the row its push resolved, and
+/// the pop reads the colour through it.
 ///
 /// The mark stands outside the bracket. It dispatches over the same edges
 /// and needs the row it gets, the count it writes into living there, and it
-/// reads no row at its pop, so the doubled work is the scan's alone.
+/// reads no row at its pop, so the count here is the scan's alone.
 #[test]
-fn a_scan_resolves_the_row_of_every_entity_it_pops_a_second_time() {
+fn a_scan_resolves_no_row_at_a_pop() {
     let _g = test_guard();
     let mut arena = Arena::new();
     let (first, second) = unsafe { ring(&mut arena, "ScanDispatchNode") };
@@ -174,9 +174,8 @@ fn a_scan_resolves_the_row_of_every_entity_it_pops_a_second_time() {
     );
     assert_eq!(
         take_edge_dispatches(),
-        7,
-        "four classifications and three pops, the pops resolving a row the \
-         classification that queued the entity had already found"
+        4,
+        "one dispatch per classification, and a pop reads the row its entry carries"
     );
 
     shadow_arena.reset();

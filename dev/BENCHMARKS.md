@@ -100,6 +100,38 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-03 — S36.11 the worklist entry carries the row: a scan's block dispatches fall from 7 to 4
+
+**Machine:** dev box, shared with interactive work. **Base:** `841d763`,
+`rustc 1.96.0`.
+
+**What changed:** a worklist entry became the pair of an entity and the shadow
+row its meeting found. The scan's loop head reads the colour through that
+pointer; before, it resolved the popped entity's address a second time.
+
+### Counters
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| block dispatches, one scan of a two-member ring | 7 | 4 | `cycle::row::take_edge_dispatches` bracketed around the scan, the mark outside it (`cycle::scan::tests::a_scan_resolves_no_row_at_a_pop`) |
+| entries per worklist segment | 512 | 256 | `cycle::stack::SEGMENT_ENTRIES` |
+| bytes per worklist segment | 4,112 | 4,112 | `SEGMENT_BYTES`, pinned by a compile-time assertion that the entries fill one page |
+| bytes per queued entity | 8 | 16 | `size_of::<WorklistEntry>()` |
+
+The before figure was seen red by the case that carries the after one: the
+assertion read 7 against the 4 written.
+
+**Where the four go:** the root's classification, the classification of the
+second member through the root's edge, the classification of the root through
+the back edge that raises it, and the classification of the second member
+again, which stops on a colour that is final. The three pops between them
+resolve nothing.
+
+**No timed run.** `ll_gc_collect_cycles` returns zero until S36.7, so no path
+a benchmark could drive reaches the trace. What a dispatch costs is a
+block-kind load, and for a retained block a search of the survivor list; how
+that converts to time is S40.3's to measure.
+
 ## 2026-09-03 — S36.9f the OS-direct run registry leaves the global allocator: 3 allocations and 2 frees to 0
 
 **Machine:** dev box, shared with interactive work. **Base:** `43951b4`,

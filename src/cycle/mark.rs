@@ -46,7 +46,7 @@ use crate::cells::{self, PlainCells};
 use crate::cycle::arena::{RowLookup, TraceScratchArena};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
-use crate::cycle::stack::TraceStack;
+use crate::cycle::stack::{TraceStack, WorklistEntry};
 use crate::refcount::{RcHeader, header_refcount};
 
 /// What a mark from one root answered.
@@ -93,7 +93,11 @@ pub(crate) unsafe fn mark(
         return MarkResult::AllocationFailed;
     }
 
-    while let Some(entity) = stack.pop() {
+    while let Some(entry) = stack.pop() {
+        // The row the entry carries is the scan's to read; the mark's
+        // expansion needs the entity alone, and the two phases keep one
+        // entry shape (`crate::cycle::stack::WorklistEntry`).
+        let entity = entry.entity;
         // The kind is loaded here and passed down rather than read
         // inside the tracer, which is the contract `trace_cells` states:
         // a collector holds the kind from its own reading of the header
@@ -149,9 +153,9 @@ unsafe fn schedule_root_if_unvisited(
     match unsafe { arena.ensure_row(row, header_refcount(root)) } {
         RowLookup::AllocationFailed => false,
         RowLookup::Untracked => true,
-        RowLookup::Ready { first_visit, .. } => {
+        RowLookup::Ready { row, first_visit } => {
             if first_visit {
-                stack.push(arena, root)
+                stack.push(arena, WorklistEntry { entity: root, row })
             } else {
                 true
             }
@@ -195,7 +199,7 @@ unsafe fn visit_child(
         RowLookup::Ready { row, first_visit } => {
             unsafe { shadow::subtract(row, 1) };
             if first_visit {
-                stack.push(arena, child)
+                stack.push(arena, WorklistEntry { entity: child, row })
             } else {
                 true
             }

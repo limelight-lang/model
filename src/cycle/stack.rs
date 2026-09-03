@@ -29,7 +29,7 @@
 use crate::cycle::arena::TraceScratchArena;
 use crate::refcount::RcHeader;
 
-/// Entries one stack segment holds: 512 pointers, one page of worklist
+/// Entries one stack segment holds: 256 pairs, one page of worklist
 /// behind the two links.
 ///
 /// It is a trade between two costs the arena pays. Smaller, and a deep
@@ -38,13 +38,39 @@ use crate::refcount::RcHeader;
 /// of up to 16 408 bytes that a block's first touch reserves anyway
 /// (`crate::cycle::shadow::bytes_for`), a page is the smaller of the
 /// two claims.
-const SEGMENT_ENTRIES: usize = 512;
+const SEGMENT_ENTRIES: usize = 256;
+
+// The page the comment above trades against, pinned: the entry count and the
+// entry's width are chosen together, and changing either without the other
+// leaves the comment stating a size the segment no longer has.
+const _: () = assert!(SEGMENT_ENTRIES * size_of::<WorklistEntry>() == 4096);
 
 /// Bytes one segment takes out of the arena. Named here because the
 /// mark's abort tests price a collection's memory to the byte and the
 /// segment's layout is this module's.
 #[cfg(test)]
 pub(crate) const SEGMENT_BYTES: usize = size_of::<StackSegment>();
+
+/// One entity the trace has met and not yet expanded, with the shadow row
+/// that meeting found for it.
+///
+/// The row travels beside the entity because resolving an address to a row
+/// is a block dispatch — a kind load, and for a retained block a search of
+/// the survivor list (`crate::cycle::row::resolve_edge_target`) — and the
+/// push has already paid it. The pointer and not the colour: another path
+/// into the same entity can recolour the row between the push and the pop,
+/// and what decides the expansion is the colour the row holds at the pop
+/// (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(C)]
+pub(crate) struct WorklistEntry {
+    /// The entity whose out-edges the expansion reads.
+    pub(crate) entity: *mut RcHeader,
+    /// Its shadow row, which stays valid until
+    /// [`TraceScratchArena::clear_touched_rows`](crate::cycle::arena::TraceScratchArena::clear_touched_rows)
+    /// nulls the block's pointer at the end of scan.
+    pub(crate) row: *mut u32,
+}
 
 /// One segment of the descent's worklist, allocated from the arena.
 ///
@@ -55,7 +81,7 @@ pub(crate) const SEGMENT_BYTES: usize = size_of::<StackSegment>();
 struct StackSegment {
     previous: *mut StackSegment,
     next: *mut StackSegment,
-    entries: [*mut RcHeader; SEGMENT_ENTRIES],
+    entries: [WorklistEntry; SEGMENT_ENTRIES],
 }
 
 /// The descent's worklist: entities met but not yet expanded.
@@ -92,24 +118,24 @@ impl TraceStack {
         }
     }
 
-    /// Queue `entity` for expansion, or answer **false** when both allocation
+    /// Queue `entry` for expansion, or answer **false** when both allocation
     /// paths refused — which is the caller's signal to abort the collection,
     /// and the only way this can fail.
-    pub(crate) fn push(&mut self, arena: &mut TraceScratchArena, entity: *mut RcHeader) -> bool {
+    pub(crate) fn push(&mut self, arena: &mut TraceScratchArena, entry: WorklistEntry) -> bool {
         if self.current.is_null() || self.current_len == SEGMENT_ENTRIES {
             if !self.advance_segment(arena) {
                 return false;
             }
         }
 
-        unsafe { entries_of(self.current).add(self.current_len).write(entity) };
+        unsafe { entries_of(self.current).add(self.current_len).write(entry) };
         self.current_len += 1;
         true
     }
 
-    /// The next entity to expand, or `None` when the closure is
-    /// exhausted.
-    pub(crate) fn pop(&mut self) -> Option<*mut RcHeader> {
+    /// The next entity to expand and the row its meeting found, or `None`
+    /// when the closure is exhausted.
+    pub(crate) fn pop(&mut self) -> Option<WorklistEntry> {
         if self.current_len == 0 {
             let previous = if self.current.is_null() {
                 std::ptr::null_mut()
@@ -211,8 +237,8 @@ impl TraceStack {
 /// # Safety
 /// `segment` is a segment a [`TraceStack`] drew, hence non-null.
 #[inline]
-unsafe fn entries_of(segment: *mut StackSegment) -> *mut *mut RcHeader {
-    (unsafe { &raw mut (*segment).entries }) as *mut *mut RcHeader
+unsafe fn entries_of(segment: *mut StackSegment) -> *mut WorklistEntry {
+    (unsafe { &raw mut (*segment).entries }) as *mut WorklistEntry
 }
 
 #[cfg(test)]

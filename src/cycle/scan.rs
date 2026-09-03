@@ -35,7 +35,10 @@
 //! unreachable to live. So the expansion reads the colour again rather
 //! than carrying it on the worklist: what decides the children is the
 //! colour the entity holds now (`dev/DECISIONS.md`, "the scan re-reads a
-//! colour it may have written").
+//! colour it may have written"). What the entry does carry is the row's
+//! address, which is fixed for the collection, so the re-read costs one
+//! load rather than a second dispatch on the child's block
+//! (`crate::cycle::stack::WorklistEntry`).
 //!
 //! # The descent is the mark's, written twice
 //!
@@ -66,7 +69,7 @@ use crate::cells::{self, PlainCells};
 use crate::cycle::arena::{TraceScratchArena, find_initialized_row};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow::{self, Color};
-use crate::cycle::stack::TraceStack;
+use crate::cycle::stack::{TraceStack, WorklistEntry};
 use crate::refcount::RcHeader;
 
 /// What a scan from one root answered.
@@ -106,21 +109,19 @@ pub(crate) unsafe fn scan(
         return ScanResult::AllocationFailed;
     }
 
-    while let Some(entity) = stack.pop() {
-        let Some(word) = (unsafe { find_initialized_row_for_entity(entity) }) else {
-            // Queued only after its row answered, and a row neither
-            // moves nor unmeets inside a collection.
-            debug_assert!(false, "a queued entity has no met row");
-            continue;
-        };
-
-        let live = shadow::color(unsafe { *word }) == Color::Live;
+    while let Some(entry) = stack.pop() {
+        // The colour is read here and the row pointer came off the entry:
+        // the classification that queued this entity resolved its address
+        // once, and resolving it again would be a second block dispatch for
+        // an answer that cannot have changed — a row neither moves nor
+        // unmeets inside a collection.
+        let live = shadow::color(unsafe { *entry.row }) == Color::Live;
         // The kind is loaded here and passed down rather than read
         // inside the tracer, which is the contract `trace_cells` states.
-        let kind = unsafe { cells::entity_kind(entity) };
+        let kind = unsafe { cells::entity_kind(entry.entity) };
         let mut refused = false;
         unsafe {
-            cells::trace_cells::<PlainCells>(entity, kind, |cell| {
+            cells::trace_cells::<PlainCells>(entry.entity, kind, |cell| {
                 // The refusal cannot break out of the tracer, so the
                 // remaining cells of this entity are read and dropped.
                 // They cost a load each and nothing else: the collection
@@ -184,7 +185,7 @@ unsafe fn classify_and_schedule_entity(
     };
 
     unsafe { shadow::recolor(word, verdict) };
-    stack.push(arena, entity)
+    stack.push(arena, WorklistEntry { entity, row: word })
 }
 
 /// The row this collection met for `entity`, or `None` when it has none:

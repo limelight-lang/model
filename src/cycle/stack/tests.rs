@@ -1,9 +1,9 @@
-//! The worklist, on its own. Its entries are never dereferenced, so the
-//! tests here queue headers off a slab rather than a real graph: what is
-//! under test is the segment chain, and a graph deep enough to cross it
-//! would be five hundred objects built to prove a link.
+//! The worklist, on its own. Neither half of an entry is dereferenced
+//! here, so the tests queue headers and rows off two slabs rather than a
+//! real graph: what is under test is the segment chain, and a graph deep
+//! enough to cross it would be five hundred objects built to prove a link.
 //!
-//! The slab is real memory and not an integer cast to a pointer, which
+//! Both slabs are real memory and not integers cast to pointers, which
 //! matters to the instrument rather than to the code: one such cast puts
 //! Miri into permissive provenance for the whole run, and the crate
 //! keeps them to the one place that owns block addresses
@@ -21,16 +21,24 @@ fn slab(count: usize) -> Vec<RcHeader> {
         .collect()
 }
 
-/// The `index`-th header of a slab whose start is `base`. One-based, so
-/// that no entry is the null a segment's untouched memory could hold by
-/// accident.
+/// Shadow rows to pair the headers with, `count` of them.
+fn row_slab(count: usize) -> Vec<u32> {
+    vec![0; count]
+}
+
+/// The `index`-th entry over two slabs whose starts are `base` and `rows`.
+/// One-based, so that neither half is the null a segment's untouched
+/// memory could hold by accident.
 ///
 /// # Safety
-/// `base` is a slab of at least `index` headers, taken once and not
-/// re-derived: a fresh `&mut` to the vector would retag it and leave
-/// every pointer built here reading through a dead tag.
-unsafe fn entry(base: *mut RcHeader, index: usize) -> *mut RcHeader {
-    unsafe { base.add(index - 1) }
+/// The slabs hold at least `index` elements each, and both starts are
+/// taken once and not re-derived: a fresh `&mut` to either vector would
+/// retag it and leave every pointer built here reading through a dead tag.
+unsafe fn entry(base: *mut RcHeader, rows: *mut u32, index: usize) -> WorklistEntry {
+    WorklistEntry {
+        entity: unsafe { base.add(index - 1) },
+        row: unsafe { rows.add(index - 1) },
+    }
 }
 
 /// Order across a segment boundary. A depth past one segment is where
@@ -45,12 +53,14 @@ fn a_depth_past_one_segment_pops_in_the_order_it_pushed() {
     let depth = SEGMENT_ENTRIES + SEGMENT_ENTRIES / 2;
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
+    let mut shadow_rows = row_slab(depth);
+    let rows = shadow_rows.as_mut_ptr();
 
     let mut arena = crate::cycle::testing::open_arena();
     let mut stack = TraceStack::new();
     for i in 1..=depth {
         assert!(
-            stack.push(&mut arena, unsafe { entry(base, i) }),
+            stack.push(&mut arena, unsafe { entry(base, rows, i) }),
             "the pool served"
         );
     }
@@ -58,7 +68,7 @@ fn a_depth_past_one_segment_pops_in_the_order_it_pushed() {
     assert_eq!(stack.segment_count(), 2, "the depth crossed one boundary");
 
     for i in (1..=depth).rev() {
-        assert_eq!(stack.pop(), Some(unsafe { entry(base, i) }));
+        assert_eq!(stack.pop(), Some(unsafe { entry(base, rows, i) }));
     }
 
     assert_eq!(stack.pop(), None, "and the worklist is exhausted");
@@ -75,12 +85,14 @@ fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
     let depth = SEGMENT_ENTRIES + 1;
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
+    let mut shadow_rows = row_slab(depth);
+    let rows = shadow_rows.as_mut_ptr();
 
     let mut arena = crate::cycle::testing::open_arena();
     let mut stack = TraceStack::new();
     for crossing in 0..4 {
         for i in 1..=depth {
-            assert!(stack.push(&mut arena, unsafe { entry(base, i) }));
+            assert!(stack.push(&mut arena, unsafe { entry(base, rows, i) }));
         }
 
         assert_eq!(
@@ -90,7 +102,7 @@ fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
         );
 
         for i in (1..=depth).rev() {
-            assert_eq!(stack.pop(), Some(unsafe { entry(base, i) }));
+            assert_eq!(stack.pop(), Some(unsafe { entry(base, rows, i) }));
         }
     }
 
@@ -105,6 +117,8 @@ fn a_push_with_both_allocation_paths_refusing_answers_false() {
     crate::memory::critical::drain_for_test();
     let mut headers = slab(1);
     let base = headers.as_mut_ptr();
+    let mut shadow_rows = row_slab(1);
+    let rows = shadow_rows.as_mut_ptr();
 
     let mut arena = crate::cycle::testing::open_arena();
     // Past the workspace: a segment served out of memory the thread already
@@ -123,7 +137,7 @@ fn a_push_with_both_allocation_paths_refusing_answers_false() {
     );
     assert_eq!(crate::memory::critical::blocks_held(), 0);
 
-    let refused = stack.push(&mut arena, unsafe { entry(base, 1) });
+    let refused = stack.push(&mut arena, unsafe { entry(base, rows, 1) });
     drop(oom);
 
     assert!(!refused);
@@ -143,10 +157,12 @@ fn a_stack_reset_with_its_arena_holds_no_segment() {
     let _g = test_guard();
     let mut headers = slab(1);
     let base = headers.as_mut_ptr();
+    let mut shadow_rows = row_slab(1);
+    let rows = shadow_rows.as_mut_ptr();
 
     let mut arena = crate::cycle::testing::open_arena();
     let mut stack = TraceStack::new();
-    assert!(stack.push(&mut arena, unsafe { entry(base, 1) }));
+    assert!(stack.push(&mut arena, unsafe { entry(base, rows, 1) }));
     assert_eq!(stack.segment_count(), 1);
 
     arena.reset();
@@ -154,7 +170,7 @@ fn a_stack_reset_with_its_arena_holds_no_segment() {
     assert_eq!(stack.segment_count(), 0, "no segment of the old arena");
     assert_eq!(stack.pop(), None, "and nothing queued in one");
 
-    assert!(stack.push(&mut arena, unsafe { entry(base, 1) }));
-    assert_eq!(stack.pop(), Some(unsafe { entry(base, 1) }));
+    assert!(stack.push(&mut arena, unsafe { entry(base, rows, 1) }));
+    assert_eq!(stack.pop(), Some(unsafe { entry(base, rows, 1) }));
     arena.reset();
 }
