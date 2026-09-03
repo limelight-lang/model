@@ -34,9 +34,15 @@ exists for. Budgeting a reserve block for that growth was refused: the state
 does not arise once a collection under starvation ends itself and hands the
 reserve back before a teardown withholds its 1,025th return.
 
-**What it leaves open:** which step builds the wind-down, and what tells a
-running collection to end. The `abort()` in `cycle::deferred_slot_reuse::grow`
-stands until then, as the last resort it already was.
+**What tells a collection to end is the shortage itself** (Edmond, the same
+day): the refusal both allocation paths give is the signal, and there is no
+second one to build. Every draw the collection makes already reads it —
+`TraceScratchArena::grow` answers false on it and the collection aborts, and
+`deferred_slot_reuse::grow` reads the same null.
+
+**What it leaves open:** which step builds the wind-down, and what the refusal
+inside `ll_free` does instead of `std::process::abort()`. That `abort()` stands
+until then, as the last resort it already was.
 
 ---
 
