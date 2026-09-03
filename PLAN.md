@@ -1422,6 +1422,34 @@ stage claiming the frees while building none of them.
         out" paragraph asserted the allocator-free collection clause the
         audit of 2026-09-02 records as unmet. Two rounds, and the device is
         dropped here.
+      audit 2026-09-03 — the composite source audit re-run over `cycle`,
+        `weak`, `gc_metadata`, `retained`, `large_entity`, `cells` and
+        `reset_window`, after slice (f) closed the first of the two live
+        sites. **The clause is still not met**, and every remaining site is
+        in `reset_window`. `large_entity` is clean: the run registry
+        allocates and frees nothing, and `snapshot`'s `Vec` has no
+        production caller — `heap::for_each_entity_slot` reaches it, and
+        every caller of that enumerator is `cfg(test)`, `cells::heap_census`
+        and `heap::describe_slot` among them. Where 2026-09-02 named two
+        sites in `reset_window`, this reading finds four allocator touches
+        inside the teardown frames a collection enters: `park_large`'s
+        `parked_large.push` (`reset_window.rs:321`), `record_death`'s insert
+        into the boxed `died_set` (`reset_window.rs:220`), the
+        `escrow.extend(edges)` two lines below it, and a nested close's
+        `parked_large.extend` (`reset_window.rs:143`). A fifth frees rather
+        than allocates and is invisible to a deny run for that reason,
+        `snapshots.remove` (`reset_window.rs:225`) — the case the
+        `large_entity::remove` finding reserved for this audit. All five
+        turn on the one reading the 2026-09-02 ruling defers to the deny run
+        at S36.7, and the ruling covers them unchanged: it asks whether the
+        disclosed reset exemption reaches the frames a collection enters.
+        Re-read and clean: the `thread_local!`s of `cycle`, `weak` and the
+        queue are `const` `Cell`s that locate manager memory and own no
+        backing, and the three `.extend(` sites in `cycle` are
+        `RecordChain`'s over blocks the manager issued. The two exemptions
+        stand unchanged — `validation::member_counts_cover_internal_edges`'s
+        in-degree `vec!` under `debug_assertions`, and `cells::sever_cells`'s
+        `&mut Vec<*mut RcHeader>`, dead code whose replacement S36.5 owes.
       handoff: S36.9 is executed as separately reviewed slices: (a) physical
         block contract and queue state; (b) logical ledger and current arena
         instrumentation; (c) manager-backed parking plus ordinary/abort deny
