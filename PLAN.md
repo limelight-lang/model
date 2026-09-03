@@ -2314,7 +2314,7 @@ both, and the losing side never deadlocks.
         that merely terminates terminates most easily when the wait is never
         taken
       tier: T2 · role: Critic
-- [ ] S38.3 Parking the mutator's frees during a trace
+- [ ] S38.3 Deferring the mutator's frees during a trace
       note: S36.2 built the owner-side substrate for one thread, where nothing
         frees inside the window: mark and scan only read, and the trace window
         ends before the user-code teardown by the decision of 2026-08-31. The
@@ -2322,8 +2322,8 @@ both, and the losing side never deadlocks.
         collector reading an entity another thread frees underneath it
         (Edmond, 2026-09-01).
       done: while a collection is in flight over a thread's blocks, that
-        thread's frees park until it ends, whichever thread performs them, and
-        the parking covers every address the trace holds rather than entity
+        thread's frees are deferred until it ends, whichever thread performs
+        them, and the deferral covers every address the trace holds rather than entity
         slots alone — an array's table storage in a buffer chunk
         (`cells::trace_cells` strides it, and
         `buffer_arena::buffer_free_longlived_payload` returns it past the
@@ -2337,16 +2337,16 @@ both, and the losing side never deadlocks.
 - [ ] S39.1 Exit drains its own queue
       done: `ll_thread_exit` retires its queue before handing the heap over,
         which for a zero-count entry means reading the refcount, clearing
-        `CANDIDATE_BIT` and returning the parked slot; and the fate of a **live**
+        `CANDIDATE_BIT` and returning the deferred slot; and the fate of a **live**
         enrolled entity at exit is **chosen** — which of collect, hand over or
         leak, and why — rather than described in a comment, with the test that
         observes the chosen fate named; a red-first test kills a thread between
         enrolment and collection
       tier: T2 · role: —
       handoff: the corpse half arrived from S34.3 on 2026-08-29, which built
-        the parking and the two accessors it needs
+        the deferral and the two accessors it needs
         (`refcount::clear_enrolled`, whose `expect(dead_code)` names this step)
-        and could not wire them. Two obstacles, both this step's: a parked slot
+        and could not wire them. Two obstacles, both this step's: a deferred slot
         that is never retired leaks for the life of the process, and the
         queue's test fixture writes bare `RcHeader`s on the stack, so a drain
         that dereferenced entries would read freed stack memory — the fixture
@@ -2389,9 +2389,9 @@ Goal: the one number the design still lacks.
 - [ ] S40.3 Count the workspace and the cache traffic   *(before S40.2)*
       done: per collection counters report unique roots, `V`, `E`, touched
         blocks and groups, row bytes reserved and written, distinct row/group
-        lines touched, worklist/member/parking high-water, arena requested,
+        lines touched, worklist/member/deferred-slot high-water, arena requested,
         granted and abandoned-tail bytes, base hits, overflow draws and
-        returns, suspect parks/re-offers, exact passes and probes, retained
+        returns, suspect deferrals and re-offers, exact passes and probes, retained
         registry acquisitions, physical GC current/peak blocks by funding role,
         and logical current/high-water bytes by workspace consumer
       done: pinned back-to-back runs over component sizes 2, 16, 256 and 381,
@@ -2525,7 +2525,7 @@ own checkbox.
   question.
 - [ ] **Per-structure GC memory, behind a feature.** Which structure holds
   collection's logical bytes — shadow rows, the trace worklist, a component's
-  member list, parking, deferred drops, suspects — is not carried in a
+  member list, deferred slots, deferred drops, suspects — is not carried in a
   production build (Edmond, 2026-09-01). The breakdown is an axis A feature
   designed with `dev/design/debug-modes.md` §8; what it needs before it is
   built is a question that wants it.
