@@ -2626,6 +2626,25 @@ deleted with its steps; the decisions it leaves are in `dev/DECISIONS.md`
 (2026-08-17 and 2026-08-18), the traps in `dev/POSTMORTEM.md` and the map
 in `dev/INDEX.md`. What it did not do is below.
 
+- [ ] **A gate flake, measured 2026-09-03 and pre-existing.**
+  `promote::tests::where_a_survivor_list_is_placed::`
+  `lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains`
+  fails about once in twenty-five runs at sixteen threads, at
+  `where_a_survivor_list_is_placed.rs:256`, where it asserts that
+  `gc_metadata::stats()` is unchanged across `arena_reset_full`. Measured
+  on the tree with S36.12's slice (a) and on the tree without it: 1 of 25
+  each, so the slice neither causes it nor hides it. The two observed
+  deltas are one block and 64 bytes, in one run up and in the other down,
+  which is exactly a queue base block and the `OwnerCycleState` charge that
+  goes with it. `promote::` run alone is clean over 40 runs, so the mover is
+  another module's test, and twenty-nine test files never take
+  `block_pool::test_guard` — a thread running one of them self-initialises
+  the runtime at its first allocation and draws that base block outside the
+  lock the guard holds. What the fix costs is the open question: the figure
+  is process-global and the assertion cannot own it, so either every test
+  that can move the ledger takes the guard, which serialises more of the
+  suite, or the ledger gains a per-thread reading for tests to assert on.
+  `dev/WORKFLOW.md`, "Bugs first", puts this ahead of new work.
 - [ ] **`docs/performance-case-decompositions.md` cites the deleted
   `rc-walk.md` at five sites** — "The narrow mutator", "What the mutator
   pays", "One demand on codegen", "Both ride the death branch of
