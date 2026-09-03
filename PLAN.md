@@ -2032,6 +2032,11 @@ stage claiming the frees while building none of them.
         "newest first"; and `ll_free`'s comment promised a check nobody wrote,
         which is the arm below it and now says so. The device stops at two
         rounds.
+      miri 2026-09-03 — the run slice (a) owes, at `e63c235` and at two threads:
+        `cycle::` 134 passed, 0 failed, 9 ignored, 457.95 s on Miri's clock. The
+        two added ignores are the slice's child-process cases, which Miri's
+        isolation forbids; 134 and 9 account for every `#[test]` under
+        `src/cycle` at that commit.
       handoff: choose and test the commit unit here. A single condemned batch
         is safe under the aggregate exact sum but resurrection in one connected
         part conservatively retains the others; if teardown promises
