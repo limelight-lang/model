@@ -2,7 +2,7 @@ use super::*;
 
 use crate::cycle::arena::WORKSPACE_BUMP_BYTES;
 use crate::memory::block_pool::{
-    BLOCK_KIND_GC_METADATA, BLOCK_PAYLOAD, BlockPool, force_oom, load_block_kind, test_guard,
+    BLOCK_KIND_GC_METADATA, BlockPool, force_oom, load_block_kind, test_guard,
 };
 
 fn current() -> usize {
