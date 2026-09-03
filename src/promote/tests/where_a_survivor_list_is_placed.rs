@@ -155,9 +155,9 @@ fn a_list_that_fits_goes_into_the_blocks_own_tail() {
     let mut shape = unsafe { two_blocks("OwnTail", 64, SecondSurvivor::HeldOnTheHeap) };
     let arena_ptr: *mut Arena = &mut *shape.arena;
 
-    crate::test_support::allocation_probe::take_all();
+    crate::test_support::allocation_probe::take_allocations();
     unsafe { arena_reset_full(arena_ptr) };
-    let (_, pool) = crate::test_support::allocation_probe::take_all();
+    let (_, pool) = crate::test_support::allocation_probe::take_allocations();
     assert_eq!(pool, 0, "a list that fits its own tail drew a block");
 
     for (block, name) in [(shape.first_block, "first"), (shape.second_block, "second")] {
@@ -189,9 +189,9 @@ fn a_list_with_no_room_in_its_tail_goes_into_the_current_block() {
     let mut shape = unsafe { two_blocks("CurrentBlock", 0, SecondSurvivor::HeldOnTheHeap) };
     let arena_ptr: *mut Arena = &mut *shape.arena;
 
-    crate::test_support::allocation_probe::take_all();
+    crate::test_support::allocation_probe::take_allocations();
     unsafe { arena_reset_full(arena_ptr) };
-    let (_, pool) = crate::test_support::allocation_probe::take_all();
+    let (_, pool) = crate::test_support::allocation_probe::take_allocations();
     assert_eq!(pool, 0, "a list placed in the current block drew a block");
 
     assert_eq!(
@@ -246,9 +246,9 @@ fn lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains() {
 
     crate::memory::gc_metadata::lower_peak_to_current();
     let before = crate::memory::gc_metadata::stats();
-    crate::test_support::allocation_probe::take_all();
+    crate::test_support::allocation_probe::take_allocations();
     unsafe { arena_reset_full(arena_ptr) };
-    let (_, pool) = crate::test_support::allocation_probe::take_all();
+    let (_, pool) = crate::test_support::allocation_probe::take_allocations();
     assert_eq!(
         pool, 1,
         "two lists with no room anywhere drew {pool} blocks"

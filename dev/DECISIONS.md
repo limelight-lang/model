@@ -8,6 +8,57 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — the registry of OS-direct runs is threaded through the runs
+
+Owner: S36.9 slice (f), ruled by the Sage on 2026-09-02 before the code.
+
+**Decided:** the process registry of OS-direct large-entity runs is a doubly
+linked list whose nodes are the run headers. `LargeEntityHeader` gains `prev`
+and `next` between `run_bytes` and `row`; `static RUNS: Mutex<Runs>` holds a
+null head, `Mutex::new` being `const`. A run is linked at the head under the
+lock strictly after its kind's release store and unlinked under the lock
+strictly before its mapping is returned, so the list is exactly the runs alive
+at any moment a reader may hold the lock, and the mutex rather than the kind
+is what publishes the links. `snapshot` keeps its signature, walks under the
+lock and copies the addresses out; its order becomes reverse registration and
+every reader asks about membership.
+
+**Why the free path decided it:** an OS-direct run is inside
+`can_lose_trace_identity`, so its free is withheld and replayed at
+`ActiveTrace::drop` — inside the collection's close, where the collector owns
+no allocator-backed container. `BTreeSet::remove` gives nodes back to the
+global allocator exactly there, and a deny run cannot see it: a deny gate
+counts allocations, and this site frees. That is the case the composite source
+audit of 2026-09-02 was reserved for, and the reason the probe gained a
+deallocation counter in the same slice.
+
+**Rejected, with reasons.** Manager-backed storage: a second lifetime, a
+lookup on free, a refusable growth, and a ledger question for storage no
+production path reads. A fixed-capacity array: a run is any entity above
+65,280 bytes, so a full table would turn an entity allocation into a refusal.
+The `BTreeSet` with a written exemption: the clause is executable or it is
+decoration. `cfg(test)` gating of the enumerator: its reader
+`heap::for_each_entity_slot` is `pub`, so gating either deletes a public item
+or leaves a public enumerator skipping the OS-direct population in a release
+build — the retracted ruling of 2026-09-02 and its correction. A visiting
+`for_each_run` in place of `snapshot`: a visitor that frees or allocates
+re-enters the same mutex on its own thread. Singly linked: `free` removes an
+arbitrary run, so every free would walk the live runs under a process-global
+lock to find the predecessor.
+
+**The costs the shape carries, and what pins each.** `link` writes the new
+head's `next` and the old head's `prev` and takes the new head's own `prev`
+from `commission`, which nulls both words before the kind is published; a
+`debug_assert!` in `link` states that precondition. `unlink` reads a null
+`prev` as "this is the head", and every commissioned block has one, so an
+unlink of something never linked would empty the whole registry — under the
+ordered set the same mistaken call removed nothing, and a second
+`debug_assert!` restores the difference. The linked half of the module is the
+run half alone: a pooled large entity is never linked and carries the pair
+null for its whole life.
+
+---
+
 ## 2026-09-02 — the reset places every survivor list before it reads any count, publishes in two instants, and returns an empty block through an arm of its own
 
 Owner: S36.9 slice (e), executing the Sage's rulings of 2026-09-02 as ruled;

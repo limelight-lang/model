@@ -53,12 +53,12 @@ fn a_second_collection_on_the_same_thread_draws_no_workspace() {
 
         // Bracketed after the fixture: the heap's own blocks are this
         // thread's entity memory and say nothing about the collection.
-        let _ = allocation_probe::take_all();
+        let _ = allocation_probe::take_allocations();
         one_collection(block);
-        let first = allocation_probe::take_all();
+        let first = allocation_probe::take_allocations();
 
         one_collection(block);
-        let second = allocation_probe::take_all();
+        let second = allocation_probe::take_allocations();
 
         unsafe { heap.free(slot) };
         (first, second)

@@ -138,6 +138,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("DUE", false),
         ("EXIT_GUARD", true),
         ("EXIT_PHASE", false),
+        ("FREED", false),
         ("HEAP", false),
         ("LATE_CELL", false),
         ("OWNER_STATE", false),

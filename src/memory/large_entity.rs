@@ -15,9 +15,8 @@
 //! pointer that is the caller's data. `Heap::refill` zeroes an entity
 //! block's slots for the same reason.
 
-use std::collections::BTreeSet;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU32;
-use std::sync::{Mutex, OnceLock};
 
 use crate::memory::block_pool::{
     BLOCK_KIND_ENTITY_LARGE, BLOCK_KIND_ENTITY_LARGE_RUN, BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader,
@@ -37,6 +36,11 @@ pub(crate) struct LargeEntityHeader {
     /// Bytes the operating system mapped, which [`free`] unmaps.
     /// Zero in the pooled form, which goes back to the block pool.
     run_bytes: usize,
+    /// Registry link toward the head, null in the head itself. Who may
+    /// read or write the pair, and when it is meaningful, is [`Runs`].
+    prev: *mut LargeEntityHeader,
+    /// Registry link toward the tail, null in the last run.
+    next: *mut LargeEntityHeader,
     /// The collector's shadow row for the one entity this block holds,
     /// in the header's free tail rather than in an array of one
     /// (`rfc/model/gc/rc-cycle.md`, "Where the shadow count lives").
@@ -113,10 +117,12 @@ pub(crate) fn alloc(size: usize) -> *mut u8 {
         }
 
         let entity = unsafe { commission(block, size, run_bytes, BLOCK_KIND_ENTITY_LARGE_RUN) };
-        // After the commissioning, never before: registration is what
-        // makes the run reachable to an enumerator, and what it must
-        // find there is a header word, zeroed.
-        runs().lock().unwrap().insert(block as usize);
+        // After the commissioning, never before: `commission` nulls the
+        // link words, so a run linked ahead of it would have its `next`
+        // overwritten and orphan every run behind it. Registration is
+        // also what makes the run reachable to an enumerator, and what
+        // it must find there is a header word, zeroed.
+        unsafe { link(block as *mut LargeEntityHeader) };
         entity
     }
 }
@@ -139,6 +145,12 @@ unsafe fn commission(block: *mut u8, size: usize, run_bytes: usize, kind: u32) -
         (&raw mut (*header)._pad).write(0);
         (&raw mut (*header).size).write(size);
         (&raw mut (*header).run_bytes).write(run_bytes);
+        // Null here and nowhere else: `link` writes the new head's
+        // `next` and the old head's `prev`, and takes the new head's own
+        // `prev` from this write. A pooled block is never linked and
+        // carries the pair null for as long as it is a large entity.
+        (&raw mut (*header).prev).write(std::ptr::null_mut());
+        (&raw mut (*header).next).write(std::ptr::null_mut());
         (&raw mut (*header).row).write(0);
         let entity = block.add(LINE_SIZE);
         (entity as *mut u64).write(0);
@@ -161,8 +173,8 @@ pub(crate) unsafe fn free(block: *mut u8, kind: u32) {
             // The entry goes before the memory does, because both
             // enumerators dereference a registered address without
             // testing that its block still exists — the rule
-            // `memory/retained.rs` states for its own index.
-            runs().lock().unwrap().remove(&(block as usize));
+            // `memory/retained.rs` states for the addresses it publishes.
+            unsafe { unlink(block as *mut LargeEntityHeader) };
             let run_bytes = unsafe { (*(block as *const LargeEntityHeader)).run_bytes };
             crate::memory::os::unmap(block, run_bytes);
         }
@@ -181,10 +193,17 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 }
 
 /// Every OS-direct run alive at this moment, cloned out under the lock so
-/// the caller walks the addresses without holding it — the contract
-/// `memory/retained.rs` keeps for its own index, and for the same reason:
-/// a visitor runs arbitrary code and must not do it under a lock the
-/// allocator takes.
+/// the caller walks the addresses without holding it: a visitor runs
+/// arbitrary code and must not do it under a lock the allocator takes.
+///
+/// **It knowingly breaks that rule for itself**, as `BlockPool::regions`
+/// does: the `Vec` grows under the registry mutex, one push per live run.
+/// Nothing it calls reaches [`link`], [`unlink`] or `snapshot` again, so
+/// the re-entry the rule guards against cannot happen; an allocation
+/// failure aborts, which is the residue, and the visiting form that would
+/// remove the `Vec` is refused for the re-entry it opens instead
+/// (`dev/DECISIONS.md`, "the registry of OS-direct runs is threaded through
+/// the runs").
 ///
 /// **A returned address may be dereferenced, and the reason is worth
 /// stating here rather than at the three sites that rely on it.** Unlike
@@ -202,23 +221,143 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// whichever element names it pointing at memory the operating system
 /// has taken back. A retained block's survivor list tolerates it — former
 /// arena memory is never unmapped — and this one does not.
+///
+/// The order is reverse registration, the newest run first, because that
+/// is where [`link`] puts one. No caller may depend on it: what the list
+/// answers is membership.
 pub(crate) fn snapshot() -> Vec<usize> {
-    runs().lock().unwrap().iter().copied().collect()
+    let runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = Vec::new();
+    let mut run = runs.head;
+    while !run.is_null() {
+        out.push(run as usize);
+        run = unsafe { (*run).next };
+    }
+    out
 }
 
-/// The registry of OS-direct runs: one address per run, and nothing
-/// else, because a run's occupant index has length one and is computed
-/// (`block + LINE_SIZE`).
+/// The registry of OS-direct runs: the head of a list whose nodes are the
+/// runs themselves, linked through [`LargeEntityHeader`]'s `prev` and
+/// `next`. One address per run and nothing else, because a run's occupant
+/// index has length one and is computed (`block + LINE_SIZE`).
 ///
-/// A table of its own rather than an arm of `memory/retained.rs`: a
-/// retained block dies when two counters reach zero and goes back to the
-/// **pool**, while a run dies with its single entity and must reach
-/// `dealloc`. Sharing the table would put that branch on the entry, in
-/// the reclamation path itself, where the wrong arm either unmaps a
-/// pooled block or leaks a run.
-fn runs() -> &'static Mutex<BTreeSet<usize>> {
-    static RUNS: OnceLock<Mutex<BTreeSet<usize>>> = OnceLock::new();
-    RUNS.get_or_init(|| Mutex::new(BTreeSet::new()))
+/// **The list is exactly the runs between [`alloc`]'s return and the unmap
+/// in [`free`]**, and the mutex is what publishes it: a run is linked
+/// under the lock strictly after its kind's release store and unlinked
+/// under the lock strictly before its mapping goes back to the operating
+/// system. A reader that holds the lock therefore sees only addresses it
+/// may dereference.
+///
+/// The index of a run lives in the run, because a table beside them would
+/// be a second lifetime to keep: `free` runs inside a collection's close,
+/// where an allocation is refused, and a table there both takes memory to
+/// insert and gives memory back to remove. Doubly linked for the same
+/// path — `free` removes an arbitrary run, and a single link would walk
+/// the live runs under a process-global lock for every dead one.
+///
+/// A structure of its own rather than an arm of `memory/retained.rs`,
+/// which answers a different question. What a retained block publishes in
+/// its own header says whether that one block is still held, and the
+/// module names no set: every reader arrives with an address. A run has to
+/// be **enumerated**, having no region to be scanned out of, so the words
+/// that find it cannot be per-block state alone. The ends of life diverge
+/// with the question: a retained block goes back to the pool through
+/// `retained::release_emptied`, while a run's memory returns to the
+/// operating system and must never reach the pool.
+///
+/// Before [`link`], and in the pooled half which is never linked, both
+/// words read null — that is what [`commission`] writes. After [`unlink`]
+/// they still name the departed neighbours, and the mapping carrying them
+/// goes back to the operating system before anything can read them. So
+/// neither word is self-describing: a null `prev` means "the head" only
+/// for a run the list holds, every other block carrying one too, which is
+/// why [`unlink`] asserts membership before it believes the head arm.
+struct Runs {
+    head: *mut LargeEntityHeader,
+}
+
+// SAFETY: `head` is a raw pointer with no thread affinity, and it and
+// every `prev`/`next` reachable from it are read and written only with
+// this mutex held. A run is linked after its mapping exists and unlinked
+// before that mapping goes back to the operating system, so no pointer
+// reachable from `head` names an unmapped page.
+unsafe impl Send for Runs {}
+
+/// `Mutex::new` is `const`, so no lazy cell stands between a free and the
+/// list. That the lock itself takes no memory is what
+/// `tests::what_the_registry_asks_the_allocator` measures.
+///
+/// **Every taker recovers a poisoned lock rather than propagating it, and
+/// what makes that sound is that no section stores before its last panic
+/// site**: [`link`] and [`unlink`] assert and then write raw pointers
+/// only, and [`snapshot`] allocates under the lock but mutates nothing, so
+/// a panic here cannot leave a half-linked list. Propagating instead would
+/// abort — [`unlink`] is reached from `stdapi::ll_free`, whose C-ABI
+/// callers `object::ll_entity_die` and `stdapi::ll_c_free` turn an unwind
+/// into one — and a failed debug assertion in one test would take the
+/// process. A section added here that stores and can then panic breaks
+/// this and propagates instead.
+static RUNS: Mutex<Runs> = Mutex::new(Runs {
+    head: std::ptr::null_mut(),
+});
+
+/// Put `run` at the head of the registry, which is what makes it visible
+/// to an enumerator.
+///
+/// # Safety
+/// `run` is a commissioned run block that is not in the list, its kind is
+/// already published, and its `prev` reads null: this writes the new
+/// head's `next` and the old head's `prev`, and takes the new head's own
+/// `prev` from [`commission`].
+unsafe fn link(run: *mut LargeEntityHeader) {
+    let mut runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        // A second link of the run already at the head writes `next = run`
+        // and leaves [`snapshot`] walking a self-loop under this mutex,
+        // which hangs every allocation and free of a run behind it with no
+        // fault and no output.
+        debug_assert!(
+            !std::ptr::eq(runs.head, run),
+            "a run entered the registry a second time"
+        );
+        debug_assert!(
+            (*run).prev.is_null(),
+            "a run entered the registry with `prev` already set"
+        );
+        (*run).next = runs.head;
+        if !runs.head.is_null() {
+            (*runs.head).prev = run;
+        }
+    }
+    runs.head = run;
+}
+
+/// Take `run` out of the registry. Its own link words are left as they
+/// are: the caller unmaps the memory holding them before returning.
+///
+/// # Safety
+/// `run` is in the list, and the caller is the thread freeing it.
+unsafe fn unlink(run: *mut LargeEntityHeader) {
+    let mut runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let prev = (*run).prev;
+        let next = (*run).next;
+        // A null `prev` means the head here, and `commission` gives every
+        // block one — so an unlink of something never linked would take
+        // the head arm and empty the whole registry.
+        debug_assert!(
+            !prev.is_null() || std::ptr::eq(runs.head, run),
+            "unlink of a run the registry does not hold"
+        );
+        if prev.is_null() {
+            runs.head = next;
+        } else {
+            (*prev).next = next;
+        }
+        if !next.is_null() {
+            (*next).prev = prev;
+        }
+    }
 }
 
 #[cfg(test)]

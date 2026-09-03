@@ -378,7 +378,12 @@ versions live in `docs/history/`, marked at the top.
   allocation. Discovery follows the split: the pooled half rides the
   region scan both enumerators already perform, a run is found from that
   registry and nowhere else, and both carry `slots = 1`, which is
-  soundness rather than economy. A free arriving while a trace
+  soundness rather than economy. **The registry is a doubly linked list
+  threaded through the run headers themselves**, a head behind a mutex and
+  two link words per run, so registering a run takes no memory and freeing
+  one gives none back — which is what a free inside a collection's close
+  requires (`dev/DECISIONS.md`, "the registry of OS-direct runs is threaded
+  through the runs"). A free arriving while a trace
   reads the block is withheld, and for a run that is soundness rather than
   economy — its memory is unmapped at the free while a trace may still
   address it. `cycle::deferred_slot_reuse` defers that return and owns the

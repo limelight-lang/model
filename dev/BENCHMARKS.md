@@ -100,6 +100,51 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-03 — S36.9f the OS-direct run registry leaves the global allocator: 3 allocations and 2 frees to 0
+
+**Machine:** dev box, shared with interactive work. **Base:** `43951b4`,
+`rustc 1.96.0`.
+
+**What changed:** the registry of OS-direct large-entity runs — a
+`OnceLock<Mutex<BTreeSet<usize>>>` keyed by block address — is gone. The
+registry is now a doubly linked list threaded through the run headers
+themselves: `prev` and `next` in `LargeEntityHeader`, a null head in a
+`static Mutex<Runs>`, linked under the lock after the kind's release store
+and unlinked under it before the unmap.
+
+**Why the free path is the one that mattered:** `free`'s run arm is reached
+from `ActiveTrace::drop`, inside a collection's close, and `BTreeSet::remove`
+gives its nodes back to the global allocator there. The composite source
+audit of 2026-09-02 named it as one of two live sites standing between S36.9
+and its allocator-free clause.
+
+### Counters
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| global allocations, registering twelve runs | 3 | 0 | `test_support::allocation_probe` around twelve `alloc(BLOCK_PAYLOAD + 1)` under `test_guard` |
+| global deallocations, freeing the same twelve | 2 | 0 | the same bracket around the twelve `free` calls |
+| pool requests, either half | 0 | 0 | the same bracket; a run comes from `os::map_aligned` and never from the pool |
+| `.tbss`, test binary | 480 | 488 | `readelf -SW`, base built in its own worktree and target directory the same hour. The eight bytes are the probe's own `FREED` counter, which is `cfg(test)`; the registry adds no thread-local |
+| operations per free | a lock, a B-tree search, 0–2 global deallocations | a lock, two loads, one or two stores | **by reading, not measured**: no benchmark drives a run's free, so a timed run here would report the load on the box and nothing else |
+| `alloc`'s hidden abort | reachable | gone | `BTreeSet::insert` can reach the allocator's error handler on a path whose contract says null; the list writes into memory the mapping already owns |
+| Miri, at two threads | no figure for `promote::` | `memory::large_entity` 7 passed with 1 ignored, `cycle::deferred_slot_reuse` 16, `promote::tests::the_reset_reads_no_zero_count_member` 9, `promote::tests::the_memory_a_survivor_takes_with_it` 13, 0 failed | 368 s, 419 s, 295 s and 421 s of wall. The ignored test is the probe one above: under Miri `os::map_aligned` keeps a table of whole mappings, so mapping a run allocates on the probe's counter |
+
+**The instrument was built before the measurement, and calibrated.** The probe
+counted a free as nothing by design, so the defect above was invisible to
+every instrument in the crate: `take_heap_deallocations` and a counting
+`dealloc` were added first and read against a dropped `Box` — one allocation
+while it lives, one free when it drops, zero on the second take. A second
+calibration pins the arm the `Box` cannot reach: a `Vec` growth is one
+allocation and no free, because a reallocation leaves the caller holding one
+live block.
+
+**Twelve runs and not one.** One insert into an empty root leaf allocates
+nothing, so a single-run fixture would have reported zero over the structure
+it was written to convict. Twelve is past the eleven keys a `BTreeSet` root
+leaf holds, which is what makes the split — and the two nodes handed back on
+the way out — visible.
+
 ## 2026-09-02 — S36.9e the survivor list leaves the global allocator: 2 allocations to 0, and no lock on the retained arm
 
 **Machine:** dev box, shared with interactive work. **Base:** `ea5e208`,

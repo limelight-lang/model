@@ -59,19 +59,19 @@ fn neither_the_write_nor_the_overflow_allocates_or_asks_the_pool() {
     // write is bracketed after it, against a segment that now exists.
     let mut opening = candidate(2);
     let opening_entity = &raw mut opening;
-    let _ = allocation_probe::take_all();
+    let _ = allocation_probe::take_allocations();
     assert!(unsafe { !release(opening_entity) });
     assert_eq!(
-        allocation_probe::take_all(),
+        allocation_probe::take_allocations(),
         (0, 0),
         "the first registration swaps a cell in; it does not go and get a block"
     );
 
     let mut ordinary = candidate(2);
-    let _ = allocation_probe::take_all();
+    let _ = allocation_probe::take_allocations();
     assert!(unsafe { !release(&raw mut ordinary) });
     assert_eq!(
-        allocation_probe::take_all(),
+        allocation_probe::take_allocations(),
         (0, 0),
         "and a registration with room is a store into the write segment"
     );
@@ -79,10 +79,10 @@ fn neither_the_write_nor_the_overflow_allocates_or_asks_the_pool() {
 
     fill_write_segment(opening_entity);
     let mut on_a_full_segment = candidate(2);
-    let _ = allocation_probe::take_all();
+    let _ = allocation_probe::take_allocations();
     assert!(unsafe { !release(&raw mut on_a_full_segment) });
     assert_eq!(
-        allocation_probe::take_all(),
+        allocation_probe::take_allocations(),
         (0, 0),
         "and neither does the growth that follows a full segment"
     );
@@ -145,7 +145,7 @@ fn every_allocation_path_refused_puts_the_entry_in_the_overflow_buffer() {
     reset();
     assert_eq!(spare_count(), 0);
     crate::memory::critical::drain_for_test();
-    let _ = allocation_probe::take_all();
+    let _ = allocation_probe::take_allocations();
 
     let mut header = candidate(2);
     let entity = &raw mut header;
@@ -159,7 +159,7 @@ fn every_allocation_path_refused_puts_the_entry_in_the_overflow_buffer() {
     assert_eq!(candidate_count(), 0, "and not in the queue, which has none");
     assert_eq!(segment_count(), 0, "nothing was swapped in");
     assert_eq!(
-        allocation_probe::take_all(),
+        allocation_probe::take_allocations(),
         (0, 0),
         "the overflow append is a store; it reaches past no allocation path"
     );

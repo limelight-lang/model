@@ -302,7 +302,7 @@ fn a_trace_window_allocates_nothing_through_the_global_allocator() {
     assert!(!slot.is_null());
     let dead = unsafe { dead_entity(slot) };
 
-    let _ = crate::test_support::allocation_probe::take_all();
+    let _ = crate::test_support::allocation_probe::take_allocations();
     let mut window = ActiveTrace::open().expect("the pool funds the trace window");
     let row = unsafe { ensure_row(window.arena(), dead, 0) };
     assert!(!row.is_null());
@@ -310,7 +310,7 @@ fn a_trace_window_allocates_nothing_through_the_global_allocator() {
     assert_eq!(deferred_slot_count(), 1);
     drop(window);
 
-    let (heap, _pool) = crate::test_support::allocation_probe::take_all();
+    let (heap, _pool) = crate::test_support::allocation_probe::take_allocations();
     assert_eq!(
         heap, 0,
         "the trace window reached the global allocator: open, withhold, \
@@ -326,14 +326,14 @@ fn the_window_draws_one_manager_block_and_the_withheld_return_draws_none() {
     let dead = unsafe { dead_entity(slot) };
 
     let held_before = gc_blocks();
-    let _ = crate::test_support::allocation_probe::take_all();
+    let _ = crate::test_support::allocation_probe::take_allocations();
     let window = ActiveTrace::open().expect("the pool funds the trace window");
-    let (heap, pool) = crate::test_support::allocation_probe::take_all();
+    let (heap, pool) = crate::test_support::allocation_probe::take_allocations();
     assert_eq!((heap, pool), (0, 1), "the chain's first block, and only it");
     assert_eq!(gc_blocks(), held_before + 1);
 
     unsafe { crate::memory::stdapi::ll_free(dead as *mut u8) };
-    let (heap, pool) = crate::test_support::allocation_probe::take_all();
+    let (heap, pool) = crate::test_support::allocation_probe::take_allocations();
     assert_eq!(
         (heap, pool),
         (0, 0),
@@ -365,9 +365,9 @@ fn an_aborted_window_replays_its_returns_with_both_allocation_paths_refusing() {
     // need no memory to return what it withheld.
     crate::memory::critical::drain_for_test();
     let oom = force_oom();
-    let _ = crate::test_support::allocation_probe::take_all();
+    let _ = crate::test_support::allocation_probe::take_allocations();
     drop(window);
-    let (heap, _pool) = crate::test_support::allocation_probe::take_all();
+    let (heap, _pool) = crate::test_support::allocation_probe::take_allocations();
     drop(oom);
 
     assert_eq!(heap, 0, "the abort path reached the global allocator");

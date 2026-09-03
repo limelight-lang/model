@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-02 · Active: the rest of S36, from S36.9 — the sections after
+Updated: 2026-09-03 · Active: the rest of S36, from S36.9 — the sections after
 S40 are the backlog. S41 closed 2026-09-02 and is not yet deleted: what
 outlives it has to reach the journals first (rule 23.1.3).
 
@@ -1222,6 +1222,32 @@ stage claiming the frees while building none of them.
         where the code has two, which is the `rfc` repository's to amend.
         This does not close S36.9: the composite deny run over a wired
         collection waits for S36.7.
+      progress 2026-09-03 — S36.9f the OS-direct run registry: the first of
+        the audit's two live sites is closed. `large_entity`'s
+        `OnceLock<Mutex<BTreeSet<usize>>>` is now a doubly linked list
+        threaded through the run headers — `prev` and `next` between
+        `run_bytes` and `row`, a null head in a `static Mutex<Runs>`, linked
+        under the lock after the kind's release store and unlinked under it
+        before the unmap, `snapshot` walking under the lock and copying out.
+        The instrument came first, as the gate required: the probe counted a
+        free as nothing by design, so `take_heap_deallocations` and a
+        counting `dealloc` were added and read against a dropped `Box`
+        before `large_entity.rs` was touched, with a second calibration
+        pinning that a reallocation is one allocation and no free.
+        `take_all` is `take_allocations`, three counters having made the old
+        name false. Measured on the day and seen red on `43951b4`:
+        registering twelve runs made 3 global allocations and now makes 0,
+        freeing the twelve made 2 global deallocations and now makes 0, pool
+        requests 0 in both halves, `.tbss` 480 to 488 for the probe's own
+        `cfg(test)` counter and nothing else. Each of the three writes an
+        unlink makes was dropped in turn and the A/B/C test went red on all
+        three, as a fault rather than a mismatch — a link left standing
+        names an unmapped page and the next walk reads it. Recorded in
+        `dev/DECISIONS.md`, `dev/BENCHMARKS.md` and `dev/INDEX.md`, and
+        `rfc/model/memory/large-entities.md` is amended to the built shape.
+        This does not close S36.9: the composite deny run over a wired
+        collection waits for S36.7, and `reset_window::park_large` and
+        `died_set` wait with it.
       Sage 2026-09-01 (slice c gate): the records live in a chain of manager
         blocks of their own, drawn at the open rather than at the first
         withheld return, because a refusal is answerable only before a slot is
@@ -1375,6 +1401,49 @@ stage claiming the frees while building none of them.
         the collection paths the deny gate covers" is false of the `remove`
         at `large_entity.rs:165`. The audit of its readers held; the writer
         on the free path was not checked against the replay.
+      miri 2026-09-03 — the run this slice owes, at two threads:
+        `memory::large_entity` 7 passed with 1 ignored, `cycle::`
+        `deferred_slot_reuse` 16 passed,
+        `promote::tests::the_reset_reads_no_zero_count_member` 9 passed and
+        `promote::tests::the_memory_a_survivor_takes_with_it` 13 passed, 0
+        failed anywhere — 368 s, 419 s, 295 s and 421 s of wall. The
+        ignored one is the twelve-run probe test: under Miri
+        `os::map_aligned` keeps a table of whole mappings, so mapping a run
+        allocates on the probe's own counter. No baseline was taken for
+        `promote::`, which had no recorded figure: the Sage allowed either
+        a baseline run or a limited claim, and a clean run has nothing to
+        attribute, so the baseline is owed only if a later run reddens.
+      Critic 2026-09-03 round 1 (slice f): seven findings, all taken. Two
+        were defects rather than wording. `take_heap_deallocations` was
+        documented as "what a path gave back" while it counts `dealloc`
+        calls, so a shrinking reallocation returns memory the counter does
+        not see; the doc now says what it counts and a test pins the
+        `realloc` arm. And `unlink` read a null `prev` as "this run is the
+        head" while `commission` gives every block one, so an unlink of
+        something never linked would have emptied the whole registry —
+        under the ordered set the same mistaken call removed nothing. A
+        `debug_assert!` restores the difference. Also taken: the `Send`
+        justification argued pointee validity instead of the mutex
+        discipline it exists for, two comments forty lines apart stated
+        opposite facts about a run's link words, and the rfc still
+        specified the ordered set.
+      Critic 2026-09-03 round 2 (slice f): nine findings against round 1's
+        repairs, all taken. One was a defect: `link`'s new assertion pinned
+        the harmless half of its own contract, and a second link of the run
+        already at the head passes a null-`prev` test and writes a
+        self-loop, leaving `snapshot` walking forever under the
+        process-global mutex with no fault and no output. The
+        non-membership assertion is now the first of the two. The rest were
+        sentences round 1 wrote that the code does not support: the
+        poisoning paragraph denied an allocation `snapshot` makes and named
+        `ll_free` as the abort site where the C-ABI frame above it is one;
+        five citations named `retained.rs`'s index, lock and snapshot,
+        which slice (e) deleted the day before; the rfc's rewritten
+        invariant claimed the list holds every live mapping, which the
+        window between `map_aligned` and `link` breaks; and its new "Ruled
+        out" paragraph asserted the allocator-free collection clause the
+        audit of 2026-09-02 records as unmet. Two rounds, and the device is
+        dropped here.
       handoff: S36.9 is executed as separately reviewed slices: (a) physical
         block contract and queue state; (b) logical ledger and current arena
         instrumentation; (c) manager-backed parking plus ordinary/abort deny

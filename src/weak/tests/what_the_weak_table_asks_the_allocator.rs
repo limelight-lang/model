@@ -44,9 +44,9 @@ fn the_first_create_reaches_no_global_allocator() {
         let target = unsafe { a_target(ctx, "FirstCreateTarget") };
 
         warm_the_buffer_arena();
-        let _ = allocation_probe::take_all();
+        let _ = allocation_probe::take_allocations();
         let cell = unsafe { ll_weakref_create(ctx, target as *mut RcHeader) };
-        let (heap, _pool) = allocation_probe::take_all();
+        let (heap, _pool) = allocation_probe::take_allocations();
 
         assert!(!cell.is_null());
         assert_eq!(
@@ -71,12 +71,12 @@ fn a_table_that_grows_reaches_no_global_allocator() {
         warm_the_buffer_arena();
         let mut cells: Vec<*mut LLWeakRef> = Vec::with_capacity(TARGETS);
         let capacity_before = table::capacity();
-        let _ = allocation_probe::take_all();
+        let _ = allocation_probe::take_allocations();
         for target in &pairs {
             cells.push(unsafe { ll_weakref_create(ctx, *target as *mut RcHeader) });
         }
 
-        let (heap, _pool) = allocation_probe::take_all();
+        let (heap, _pool) = allocation_probe::take_allocations();
         assert_eq!(
             heap, 0,
             "growing to {TARGETS} rows went to the global allocator"
@@ -103,12 +103,12 @@ fn a_death_notification_reaches_no_global_allocator() {
         let cell = unsafe { ll_weakref_create(ctx, target as *mut RcHeader) };
 
         warm_the_buffer_arena();
-        let _ = allocation_probe::take_all();
+        let _ = allocation_probe::take_allocations();
         unsafe {
             assert!(ll_release(target as *mut RcHeader));
             crate::object::ll_object_die(target);
         }
-        let (heap, _pool) = allocation_probe::take_all();
+        let (heap, _pool) = allocation_probe::take_allocations();
 
         assert_eq!(heap, 0, "the row's removal went to the global allocator");
         assert!(unsafe { (*cell).target }.is_null());
@@ -136,9 +136,9 @@ fn a_reset_of_eight_objects(weak: bool) -> (usize, Vec<*mut LLWeakRef>) {
     }
 
     warm_the_buffer_arena();
-    let _ = allocation_probe::take_all();
+    let _ = allocation_probe::take_allocations();
     unsafe { crate::promote::arena_reset_full(&mut arena) };
-    let (heap, _pool) = allocation_probe::take_all();
+    let (heap, _pool) = allocation_probe::take_allocations();
     (heap, cells)
 }
 
