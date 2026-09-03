@@ -8,6 +8,49 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — the trace reads a root's count before its cells, and refuses a root at zero
+
+Owner: S36.11's design review. Ruled by Edmond.
+
+**Decided:** `cycle::mark` reads `header_refcount(root)` first and expands
+nothing when it is zero. The rule lives in the trace rather than in the caller
+that drains the queue, so a second caller inherits it; `visit_child` carries
+the same rule as a `debug_assert`, a counted edge being a reference the entity
+it names must hold.
+
+**Why:** the candidate queue holds entries for entities that have since been
+torn down, and nothing retires an entry at the death. The entry keeps the slot
+out of the allocator's hands, so the address is still that entity's — but
+teardown releases every counted child through `drop_ref` and leaves the cells
+naming them (`object::ll_default_dispose`, phase 2), so those cells are
+addresses of slots the allocator may have handed to somebody else. A trace
+that expanded such a root subtracted an edge the heap no longer holds from the
+row of whatever occupies the slot now. Seen red: the trace touched two blocks
+where it should touch none, and the child of a torn-down root was met and
+counted down (`cycle::mark::tests::what_a_dead_root_is_worth`).
+
+**What the wrong verdict costs:** with the exact test on the owning thread, the
+component reads as holding a member at count zero and is dropped whole — the
+garbage is never collected, and not once but at every collection for as long
+as the entry stands. Under the in-line elision S36.8 builds, which skips that
+test, the live occupant of the reused slot is freed.
+
+**Why the count may be read at all** (Edmond): the mutator does not free an
+entity the root queue names — `stdapi::ll_free` refuses a return for a
+registered candidate — so a count this call reads above zero cannot fall to a
+torn-down entity under it. What the entry does not promise is that the entity
+is alive, which is the whole of what this check adds.
+
+**What it supersedes:** the plan's fog line answering the same question with
+"the driver skips zero-count roots before `mark`". A driver would have to, and
+now the trace does not depend on it: S36.7's step was never written, and the
+trace's correctness rested on it.
+
+**Not decided:** whether `ll_default_dispose` should null the cells it
+releases. It does not, and the trace no longer reads them.
+
+---
+
 ## 2026-09-03 — the worklist's fixed region is retracted: it saved nothing and cost 48 bytes a segment
 
 Owner: S36.11, after the design review of the same day.

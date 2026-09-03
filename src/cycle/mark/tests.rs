@@ -79,4 +79,5 @@ fn fold(state: u64, word: u64) -> u64 {
 }
 
 mod an_aborted_mark_writes_nothing;
+mod what_a_dead_root_is_worth;
 mod what_the_trace_subtracts;

@@ -42,6 +42,22 @@
 //! the count is subtracted, so an entity reached for the first time starts
 //! from its refcount rather than from a subtraction against a row that does
 //! not exist yet.
+//!
+//! # A root at count zero is expanded by nothing
+//!
+//! The candidate queue holds entries for entities that have since died: the
+//! entry keeps the slot out of the allocator's hands, and nothing retires it
+//! at the death. What the entry does not keep is the entity's contents —
+//! teardown released every counted child and left the cells naming them
+//! (`crate::object::ll_default_dispose`, phase 2) — so those cells are
+//! addresses of slots the allocator may have handed to somebody else.
+//!
+//! So the count is read before the cells, and a root at zero contributes
+//! nothing. The read is meaningful because the mutator does not free an
+//! entity the root queue names (`crate::memory::stdapi::ll_free`, the
+//! candidate arm): a count above zero cannot fall to a torn-down entity under
+//! the call that read it. The rule lives here rather than in the caller that
+//! drains the queue, so that a second caller of [`mark`] inherits it.
 
 use crate::cells::{self, PlainCells};
 use crate::cycle::arena::{RowLookup, TraceScratchArena};
@@ -81,10 +97,15 @@ pub(crate) enum MarkResult {
 /// leaves the heap byte-identical and the caller's whole duty is
 /// `TraceScratchArena::reset`.
 ///
+/// **A root at count zero was torn down, and is expanded by nothing** (module
+/// doc), which is not a refusal: the answer is [`MarkResult::Complete`] and
+/// the collection carries on with its other roots.
+///
 /// # Safety
-/// `root` is a live entity header of this thread's heap, and the trace
-/// runs where `cells::trace_cells` may read an entity's cells plainly —
-/// on the owning thread, with no mutator running beside it.
+/// `root` is an entity header of this thread's heap whose slot is still its
+/// own — a candidate the queue names, live or dead — and the trace runs where
+/// `cells::trace_cells` may read an entity's cells plainly: on the owning
+/// thread, with no mutator running beside it.
 pub(crate) unsafe fn mark(arena: &mut TraceScratchArena, root: *mut RcHeader) -> MarkResult {
     if !unsafe { schedule_root_if_unvisited(arena, root) } {
         return MarkResult::AllocationFailed;
@@ -134,6 +155,22 @@ pub(crate) unsafe fn mark(arena: &mut TraceScratchArena, root: *mut RcHeader) ->
 /// # Safety
 /// As [`mark`].
 unsafe fn schedule_root_if_unvisited(arena: &mut TraceScratchArena, root: *mut RcHeader) -> bool {
+    let refcount = unsafe { header_refcount(root) };
+    if refcount == 0 {
+        // An entity the queue is still holding after its teardown. The entry
+        // keeps the slot out of the allocator's hands, so the address is this
+        // entity's; the teardown released every counted child and left the
+        // cells naming them (`crate::object::ll_default_dispose`, phase 2), so
+        // expanding it would subtract edges the heap no longer holds — from
+        // the rows of whatever occupies those slots now.
+        //
+        // The count may be read here because the mutator does not free an
+        // entity the root queue names (`crate::memory::stdapi::ll_free`, the
+        // candidate arm), so a count above zero cannot fall to a torn-down
+        // entity under this call.
+        return true;
+    }
+
     let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(root) }) else {
         // The candidate gate admits none: an entity outside the GC heap
         // never reaches the queue (`rfc/model/gc/rc-cycle.md`,
@@ -143,7 +180,7 @@ unsafe fn schedule_root_if_unvisited(arena: &mut TraceScratchArena, root: *mut R
         return true;
     };
 
-    match unsafe { arena.ensure_row(row, header_refcount(root)) } {
+    match unsafe { arena.ensure_row(row, refcount) } {
         RowLookup::AllocationFailed => false,
         RowLookup::Untracked => true,
         RowLookup::Ready { row, first_visit } => {
@@ -181,6 +218,16 @@ unsafe fn visit_child(arena: &mut TraceScratchArena, child: *mut RcHeader) -> bo
     let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(child) }) else {
         return true;
     };
+
+    // A counted edge is a reference, so the entity it names holds at least
+    // that one. A zero here is an expansion of a torn-down entity's residual
+    // cells, which [`schedule_root_if_unvisited`] is what keeps out of the
+    // descent.
+    debug_assert_ne!(
+        unsafe { header_refcount(child) },
+        0,
+        "a counted child at count zero: the trace expanded a corpse"
+    );
 
     match unsafe { arena.ensure_row(row, header_refcount(child)) } {
         RowLookup::AllocationFailed => false,

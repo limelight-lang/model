@@ -74,18 +74,6 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 A line here is an unresolved question rather than a step: it carries no
 criterion, and it leaves when it gets one or when it is ruled on.
 
-Whether `ll_default_dispose` nulls an object's cells or only releases them.
-`mark` needs a live root, the queue can hold a zero-count corpse, and the
-answer decides whether S36.7's driver must drop zero-count roots before marking
-or may rest on the drain's sort (`rfc/model/gc/cycle/questions.md`, Y12 clause
-5). Raised by `dev/CYCLE-COLLECTOR-REVIEW.md` and not checked there. The S42
-Code Reviewer read `ll_default_dispose` on 2026-09-01: phase 2 drops each
-counted child through `drop_ref` without nulling the cell, so a zero-count
-root's cells are residue naming children whose counts no longer include those
-edges, and a mark started from such a root would subtract below a live child's
-count — the assertion S42.2 added fires in a test build. The driver skips
-zero-count roots before `mark`, as `validation` already does for its input.
-
 The six the review of 2026-09-01 raised over `52b2cbf` and `0416e83` left the
 same day — four by Edmond's rulings, recorded in `dev/DECISIONS.md` and in the
 `done:` clause of S38.3, and two by the repairs they prompted, recorded under
