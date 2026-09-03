@@ -1733,11 +1733,6 @@ stage claiming the frees while building none of them.
         not the colour, because another path can recolour the row between push
         and pop (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 2). Mark reads no row
         at its pop and carries the pointer for one entry shape
-      done: the trace arena bumps row arrays from a block's front and worklist
-        segments from its back, growing when the two cursors meet, so the tail
-        a 16,408-byte array leaves at the smallest size class — 24.6 % of the
-        payload — is spent rather than abandoned; `residue` counts both ends
-        (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 1)
       done: the Sage gate names the fixed small-worklist and pre-reserved
         parking capacities from the 65,280-byte payload before code begins;
         boundary tests exercise exactly capacity and capacity plus one, and
@@ -1749,12 +1744,74 @@ stage claiming the frees while building none of them.
         then critical, a documented hard failure rather than a lost physical
         return, and a replay through `stdapi::ll_free` after the row sweep
       tier: T2 · role: Sage → Critic
+      Sage 2026-09-03 (pre-change gate, no code touched). Capacities, which
+        the fourth clause owes this gate: the worklist takes 256 entries of
+        16 bytes and the withheld returns 1,024 records of 8, each region
+        behind a 64-byte line of its own, so the workspace's fixed prefix is
+        at most 12,480 bytes and its bump region at least 52,800. The
+        justification offered — that a prefix under 16,056 bytes costs
+        nothing, three widest row arrays still fitting — was struck as true of
+        class 16 alone: at class 32 the workspace holds six arrays where it
+        held seven. What holds instead is a comparison against today, where
+        every window's open draws a whole block: per-collection draws never
+        rise, and fall by one for every trace whose rows and overflow segments
+        fit 52,800 bytes. The primitive keeps a `cursor`/`limit` pair as the
+        chain has today, a segment carries its own capacity in its header
+        because base and overflow differ, LIFO pop and the replay's walk are
+        two methods of one chain, records are `Copy` with no drop glue, and no
+        `read` bound is persisted until S36.5 needs one. The worklist moves
+        into `TraceScratchArena` rather than `ActiveTrace`, the arena already
+        owning every byte it uses: `mark(arena, root)`, `scan(arena, root)`,
+        and `TraceStack::reset` goes with the separation that made it
+        necessary. The abort threshold is the gate's 1,024 rather than
+        Edmond's: clause 5 as written already lowers it, 8,152 records not
+        fitting the payload beside anything.
+      Sage 2026-09-03, the findings the slices owe: the chain's drop releases
+        every block from its head, which after slice (d) is the thread's
+        workspace, and its replay reads every block but the append one as
+        holding 8,152 records, so a chain that grew once replays 7,128 words
+        of worklist and rows into `ll_free`; `ActiveTrace` declares `arena`
+        before `returns`, so the workspace goes back to the thread before the
+        replay reads the records inside it, and the field order reverses;
+        `grow`'s crossing charge is `BLOCK_PAYLOAD - self.left`, which
+        overstates by the prefix once the bump opens at 52,800;
+        `a_window_neither_allocation_path_can_fund_does_not_open` and
+        `the_critical_reserve_funds_a_window_the_pool_refuses` state a refusal
+        model the open no longer has and are rewritten rather than weakened;
+        `resolve_edge_target` has no counter, so the operation the second
+        clause removes is instrumented first and its four calls per scan of a
+        two-entity chain seen before the change (`shadow::WRITTEN_BYTES` is
+        the pattern); `clear_touched_rows` is `pub(crate)` and must assert an
+        empty worklist once the two share an owner; `parking` is a retired
+        word and both surviving clauses use it; and no chain link is written
+        into the workspace's block header, which `BlockPool::put` writes at
+        thread exit.
+      note 2026-09-03 — **the two-cursor clause is struck**, by Edmond's word
+        over the Sage gate's ruling. It read: the arena bumps row arrays from a
+        block's front and worklist segments from its back, growing when the two
+        cursors meet, so the 16,056-byte tail a fourth 16,408-byte array cannot
+        use at the smallest size class is spent rather than abandoned. The
+        mechanism is byte-identical to the arena it would replace.
+        `TraceScratchArena::alloc` grows on `bytes > self.left`, and a
+        two-cursor arena's free space `back - front` is that same number, so
+        both forms draw a block at the same request and abandon the same tail —
+        20,000 shuffled traces over all 32 size classes, equal block counts in
+        every one. The waste the review measured is real, and two other places
+        account for it: the base block's tail is spent by the residents the
+        clauses above put in the workspace, and the drawn blocks' tail is
+        counted by S40.3, whose `done:` already names abandoned-tail bytes, and
+        decided by S40.2, which may replace the flat row array that creates the
+        tail. The alternative that does spend it — keeping the tail a growth
+        abandons and serving later requests from it — was refused at its
+        measured size: 0.2 % to 2.1 % of blocks drawn over all classes, and
+        4.9 % on a heap of nothing but the smallest class
+        (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 1).
       handoff: the current first worklist push reserves 4,112 bytes for 512
-        pointers even for a leaf, and current non-empty parking performs global
-        allocation. Red tests show a small trace makes no manager overflow
-        draw, two collections reuse the same base, corpse bytes remain intact,
-        critical capacity is restored, and success and abort both return GC
-        bytes to the per-thread baseline.
+        pointers even for a leaf, and a window's open draws a whole block for
+        the withheld returns whether or not one return is made. Red tests show
+        a small trace makes no manager overflow draw, two collections reuse the
+        same base, corpse bytes remain intact, critical capacity is restored,
+        and success and abort both return GC bytes to the per-thread baseline.
 - [ ] S36.12 The in-flight batch and condemned membership   *(before S36.3)*
       done: collection detaches the active candidate chain as one in-flight
         batch whose bounds travel with it; every first-reached entity appends

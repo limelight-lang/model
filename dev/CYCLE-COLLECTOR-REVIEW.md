@@ -41,7 +41,7 @@ life of the thread.
 
 | # | finding | where | ruling |
 |---|---|---|---|
-| 1 | A quarter of each arena block is lost at the smallest size class | `cycle/arena.rs` | agreed: allocate stack segments from the block's end |
+| 1 | A quarter of each arena block is lost at the smallest size class | `cycle/arena.rs` | agreed 2026-09-01, withdrawn 2026-09-03: the agreed mechanism draws the same blocks as the arena it replaces (below) |
 | 2 | Scan resolves a row twice per entity | `cycle/scan.rs` | agreed: carry the row pointer in the worklist entry |
 | 3 | One global mutex per edge into a retained block | `memory/retained.rs` | rework: `dev/design/retained-index-ownership.md` |
 | 4 | Ledger atomics per entry on the pressure path | `cycle/queue.rs` | leave as is |
@@ -61,6 +61,33 @@ worklist segments (4112 bytes) from the back; `grow` when they meet. The
 loss falls to under one segment per block. `residue` counts both ends.
 Memory only, no time; noticeable only on heaps with many small-class
 blocks.
+
+**Withdrawn 2026-09-03, before any code was written for it.** The agreed
+mechanism draws exactly the blocks the present arena draws. `alloc` grows
+on `bytes > self.left` (`cycle/arena.rs`), and a two-cursor arena's free
+space `back - front` is that same number — everything granted from the
+block, subtracted from its payload — so the two forms take a fresh block
+at the same request and abandon the same tail. The measurement agrees:
+20 000 shuffled traces over all 32 size classes, with request sizes
+rounded as `alloc` rounds them, give equal block counts in every one. The
+diagnosis above stands; what fails is the remedy, because it also never
+returns to an earlier block, which is what the diagnosis names as the
+cause. The promise "the loss falls to under one segment per block" holds
+only for a policy where the back cursor keeps serving segments out of a
+block the front has already left.
+
+Two places account for the waste instead. The workspace's tail is spent
+by the residents S36.11 puts in it — the withheld-return records and the
+fixed worklist, together under 16 056 bytes. The drawn blocks' tail is
+S40.3's to count, its `done:` already naming "arena requested, granted
+and abandoned-tail bytes" over component sizes 2, 16, 256 and 381, and
+S40.2's to decide, because below 29 % density it replaces the flat row
+array that leaves the tail. Keeping the abandoned tail and serving later
+requests from it was measured and refused at that size: 0.2 % to 2.1 % of
+blocks drawn over all classes, 4.9 % on a heap of nothing but the
+smallest class, against one more allocation state in the arena, a second
+block shape in `reset`, and a charge site for bytes `grow` has already
+published.
 
 ### 2. Scan resolves the row twice
 
