@@ -300,7 +300,7 @@ fn an_os_direct_large_entity_waits_for_its_header_row() {
 /// Blocks the memory manager reports as collection's. Stable for the duration
 /// of a `test_guard`, which every test asserting on it holds.
 fn gc_blocks() -> usize {
-    crate::memory::gc_metadata::stats().current_blocks()
+    crate::memory::gc_metadata::thread_stats().current_blocks()
 }
 
 #[test]
@@ -541,7 +541,7 @@ fn the_append_moves_into_a_block_when_the_workspace_region_is_full() {
     let _guard = test_guard();
     let held_before = gc_blocks();
     let bytes_before = in_use_bytes();
-    crate::memory::gc_metadata::lower_peak_to_current();
+    crate::memory::gc_metadata::lower_thread_peak_to_current();
     let window = ActiveTrace::open().expect("the pool funds the trace window");
 
     // One OS-direct large entity at each end of the chain. Its return is the
@@ -599,7 +599,7 @@ fn the_append_moves_into_a_block_when_the_workspace_region_is_full() {
         "the close discharges exactly what the growth charged"
     );
     assert_eq!(
-        crate::memory::gc_metadata::stats().peak_bytes_in_use(),
+        crate::memory::gc_metadata::thread_stats().peak_bytes_in_use(),
         bytes_before + SEGMENT_HEADER_BYTES + size_of::<*mut u8>(),
         "the grown chain enters the block under the cursor: its segment header \
          and the one record written behind it"
@@ -634,7 +634,7 @@ unsafe fn withheld_large_entity() -> usize {
 /// Bytes the memory manager reports as in use inside the blocks collection
 /// holds. Stable for the duration of a `test_guard`, as `gc_blocks` is.
 fn in_use_bytes() -> usize {
-    crate::memory::gc_metadata::stats().current_bytes_in_use()
+    crate::memory::gc_metadata::thread_stats().current_bytes_in_use()
 }
 
 #[test]
@@ -645,7 +645,7 @@ fn a_window_inside_the_workspace_region_charges_and_enters_no_byte() {
     let dead = unsafe { dead_entity(slot) };
 
     let bytes_before = in_use_bytes();
-    crate::memory::gc_metadata::lower_peak_to_current();
+    crate::memory::gc_metadata::lower_thread_peak_to_current();
     let window = ActiveTrace::open().expect("the pool funds the trace window");
     unsafe { crate::memory::stdapi::ll_free(dead as *mut u8) };
     assert_eq!(
@@ -656,7 +656,7 @@ fn a_window_inside_the_workspace_region_charges_and_enters_no_byte() {
     );
 
     drop(window);
-    let after = crate::memory::gc_metadata::stats();
+    let after = crate::memory::gc_metadata::thread_stats();
     assert_eq!(after.current_bytes_in_use(), bytes_before);
     assert_eq!(
         after.peak_bytes_in_use(),
@@ -704,7 +704,7 @@ fn the_high_water_figure_holds_both_residues_of_one_collection() {
     let dead = unsafe { dead_entity(slot) };
 
     let bytes_before = in_use_bytes();
-    crate::memory::gc_metadata::lower_peak_to_current();
+    crate::memory::gc_metadata::lower_thread_peak_to_current();
     let mut window = ActiveTrace::open().expect("the pool funds the trace window");
     let row = unsafe { ensure_row(window.arena(), dead, 0) };
     assert!(!row.is_null());
@@ -729,7 +729,7 @@ fn the_high_water_figure_holds_both_residues_of_one_collection() {
 
     drop(window);
     assert_eq!(
-        crate::memory::gc_metadata::stats().peak_bytes_in_use(),
+        crate::memory::gc_metadata::thread_stats().peak_bytes_in_use(),
         bytes_before + arena_residue + SEGMENT_HEADER_BYTES + size_of::<*mut u8>(),
         "the rows and the withheld return stood together and were entered apart"
     );

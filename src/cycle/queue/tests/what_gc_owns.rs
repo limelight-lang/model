@@ -6,7 +6,7 @@ use super::*;
 use crate::memory::block_pool::{
     BLOCK_KIND_GC_METADATA, BLOCK_PAYLOAD, BlockHeader, load_block_kind,
 };
-use crate::memory::gc_metadata::stats;
+use crate::memory::gc_metadata::{stats, thread_stats};
 
 fn kind_of(block: *mut BlockHeader) -> u32 {
     unsafe { load_block_kind(&raw const (*block).kind) }
@@ -38,7 +38,7 @@ fn the_base_block_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     let base = queue_base();
     assert!(!base.is_null());
     assert_eq!(kind_of(base), BLOCK_KIND_GC_METADATA);
-    assert!(stats().current_blocks() >= 1);
+    assert!(thread_stats().current_blocks() >= 1);
 }
 
 #[test]
@@ -47,13 +47,13 @@ fn a_spare_stays_one_accounted_segment_when_it_becomes_live() {
     reset();
     assert!(refill_spares());
 
-    let before = stats().current_blocks();
+    let before = thread_stats().current_blocks();
 
     let mut header = candidate(2);
     assert!(unsafe { !release(&raw mut header) });
 
     assert_eq!(
-        stats().current_blocks(),
+        thread_stats().current_blocks(),
         before,
         "spare to write segment is a state transition, not a second acquisition"
     );
@@ -141,7 +141,7 @@ fn the_entity_row_dispatch_never_enters_gc_metadata() {
 /// has left the write position full. A spare and the live segment's own fill
 /// are reservation.
 fn in_use() -> usize {
-    stats().current_bytes_in_use()
+    thread_stats().current_bytes_in_use()
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the cells start full");
-    crate::memory::gc_metadata::lower_peak_to_current();
+    crate::memory::gc_metadata::lower_thread_peak_to_current();
     let before = in_use();
 
     let mut first = candidate(2);
@@ -169,7 +169,7 @@ fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
     }
     assert_eq!(in_use(), before, "an ordinary enrolment charges nothing");
     assert_eq!(
-        crate::memory::gc_metadata::stats().peak_bytes_in_use(),
+        crate::memory::gc_metadata::thread_stats().peak_bytes_in_use(),
         before,
         "and reaches the high-water figure no more than the current one, \
          which a balanced charge and discharge on that path would"
@@ -215,23 +215,32 @@ fn an_overflow_entry_costs_the_pointer_it_holds_and_nothing_more() {
 fn a_threads_base_block_is_in_use_from_its_draw_until_its_exit() {
     let _g = test_guard();
     reset();
-    let before = in_use();
+    // The process figure and not this thread's, the claim being about memory a
+    // thread that no longer exists gave back. It is the reading a third thread
+    // can move, and the one case here that no per-thread figure can replace
+    // (`PLAN.md`, "A gate flake, measured 2026-09-03 and pre-existing").
+    let before = stats().current_bytes_in_use();
 
-    // The child holds no `test_guard`; what keeps the figure still under
-    // it is that this thread is blocked in `join` while holding the lock,
-    // so no third thread can charge against the reading.
     std::thread::spawn(move || {
+        // The child's own figure, which starts at zero and is moved by the
+        // init alone: what the draw charges is stated without reference to
+        // what the rest of the suite is holding.
+        assert_eq!(in_use(), 0, "the thread has charged nothing yet");
         assert!(crate::memory::heap::ll_thread_init());
         assert_eq!(
             in_use(),
-            before + size_of::<OwnerCycleState>(),
+            size_of::<OwnerCycleState>(),
             "the control line is working memory; the spares behind it are not"
         );
     })
     .join()
     .unwrap();
 
-    assert_eq!(in_use(), before, "the exit returns the control line");
+    assert_eq!(
+        stats().current_bytes_in_use(),
+        before,
+        "the exit returns the control line"
+    );
 }
 
 #[test]
@@ -268,8 +277,8 @@ fn the_live_segments_fill_reaches_the_high_water_figure_at_the_drain() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the first registration takes a spare");
-    crate::memory::gc_metadata::lower_peak_to_current();
-    let before = crate::memory::gc_metadata::stats();
+    crate::memory::gc_metadata::lower_thread_peak_to_current();
+    let before = crate::memory::gc_metadata::thread_stats();
 
     // Three entries and not a full segment: what the drain has to enter is
     // the fill, and a capacity would be satisfied by a constant.
@@ -287,7 +296,7 @@ fn the_live_segments_fill_reaches_the_high_water_figure_at_the_drain() {
     // fill. The segment release is the one that ends it.
     reset();
     assert_eq!(
-        crate::memory::gc_metadata::stats().peak_bytes_in_use(),
+        crate::memory::gc_metadata::thread_stats().peak_bytes_in_use(),
         before.current_bytes_in_use() + 3 * size_of::<*mut RcHeader>(),
         "the fill of a thread that never grew the queue is in the high-water figure"
     );

@@ -2690,25 +2690,39 @@ deleted with its steps; the decisions it leaves are in `dev/DECISIONS.md`
 (2026-08-17 and 2026-08-18), the traps in `dev/POSTMORTEM.md` and the map
 in `dev/INDEX.md`. What it did not do is below.
 
-- [ ] **A gate flake, measured 2026-09-03 and pre-existing.**
+- [ ] **A gate flake, measured 2026-09-03 and pre-existing.** The case that
+  reached the gate is fixed and measured; four cases that cannot take the
+  same fix are named below and stay open.
   `promote::tests::where_a_survivor_list_is_placed::`
   `lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains`
-  fails about once in twenty-five runs at sixteen threads, at
-  `where_a_survivor_list_is_placed.rs:256`, where it asserts that
-  `gc_metadata::stats()` is unchanged across `arena_reset_full`. Measured
-  on the tree with S36.12's slice (a) and on the tree without it: 1 of 25
-  each, so the slice neither causes it nor hides it. The two observed
-  deltas are one block and 64 bytes, in one run up and in the other down,
-  which is exactly a queue base block and the `OwnerCycleState` charge that
-  goes with it. `promote::` run alone is clean over 40 runs, so the mover is
-  another module's test, and twenty-nine test files never take
-  `block_pool::test_guard` — a thread running one of them self-initialises
-  the runtime at its first allocation and draws that base block outside the
-  lock the guard holds. What the fix costs is the open question: the figure
-  is process-global and the assertion cannot own it, so either every test
-  that can move the ledger takes the guard, which serialises more of the
-  suite, or the ledger gains a per-thread reading for tests to assert on.
-  `dev/WORKFLOW.md`, "Bugs first", puts this ahead of new work.
+  failed 4 of 100 runs of `cargo test --lib -- --test-threads=16`, asserting
+  that `gc_metadata::stats()` is unchanged across `arena_reset_full`. What
+  differed was the high-water pair alone — a queue base block and the
+  `OwnerCycleState` control line another thread charged inside the window,
+  twenty-nine test files never taking `block_pool::test_guard`. The ledger
+  now answers a per-thread reading beside the process one, every exact
+  assertion takes it, and the same loop ran 500 times with no failure. Three
+  mutations were run and each was caught: `thread_stats` made to answer
+  `stats()`, the mirror deleted from `charge`, and the mirror deleted from
+  `released`, which a test over the module's own source names
+  (`dev/DECISIONS.md`, "the test-facing reading of the GC ledger is per
+  thread"; `dev/POSTMORTEM.md`, "an exact assertion cannot be made against a
+  process-global ledger").
+  **What is left** is the five cases whose claim is about memory a thread
+  that no longer exists gave back, which no per-thread figure can answer:
+  `gc_metadata::tests::a_threads_exit_ends_every_block_it_acquired`,
+  `what_gc_owns::a_threads_base_block_is_in_use_from_its_draw_until_its_exit`,
+  `the_workspace_stands_between_collections_and_goes_back_at_exit`, and the
+  two refusal cases in `the_base_block_a_thread_holds_for_its_life`. Each
+  reads the process figures across a child thread's whole life and drifts if
+  a third thread draws GC memory in that window; none was seen to fail in the
+  500 runs. What would close them is a reading of a named thread's figures
+  that outlives the thread, which is a structure rather than a patch — worth
+  its cost only if one of them is seen to fail. One of the five carries a
+  defect of its own, found in the same review and older than it:
+  `a_thread_nothing_will_tear_down_is_not_funded` reads the same figure into
+  `base_blocks_before` and `segments_before` and asserts both, so the segment
+  claim its name makes has no reading behind it.
 - [ ] **`docs/performance-case-decompositions.md` cites the deleted
   `rc-walk.md` at five sites** — "The narrow mutator", "What the mutator
   pays", "One demand on codegen", "Both ride the death branch of

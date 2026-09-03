@@ -8,6 +8,62 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — the test-facing reading of the GC ledger is per thread
+
+Owner: the gate flake of the same day (`dev/POSTMORTEM.md`, "an exact
+assertion cannot be made against a process-global ledger").
+
+**`gc_metadata` answers two readings, and a test takes the one its claim is
+about.** `stats()` stays what it was, the figures the memory manager reports
+for the process, and `thread_stats()` counts the blocks and the bytes one
+thread took and gave back. Every exact assertion moved to the second: the
+process figures are moved by every other thread the suite is running, so an
+equality over them holds by luck. `lower_peak_to_current` went with the move
+and is now `lower_thread_peak_to_current`, which lowers this thread's
+high-water pair alone — the store into the process figures it used to make was
+itself a disturbance under another test's reading.
+
+The mirror is five hand-written blocks, one at each site that moves a process
+figure, and a test over the module's own source refuses a sixth site without
+one: `every_write_to_a_process_figure_moves_this_threads_figures_too` names the
+five writers, so both a transition added later and a counter renamed fail it.
+Without that guard the loss would be silent — the exact assertions read the
+per-thread figure, so a path it does not count is a path none of them
+constrains, and every one of them keeps passing.
+
+The mirror is `#[cfg(test)]` and costs the shipped crate nothing, which is
+what settles the question the flake left open: neither the ledger nor the
+suite pays. The alternative on the table was the guard on every test that can
+move the figures, refused because it serialises the suite and because a test
+added later can forget the lock, where a reading of one's own thread cannot be
+forgotten.
+
+**Five cases that read the process figures keep them**, each about memory a
+thread that no longer exists gave back: `a_threads_exit_ends_every_block_it_`
+`acquired`, `a_threads_base_block_is_in_use_from_its_draw_until_its_exit`,
+`the_workspace_stands_between_collections_and_goes_back_at_exit`, and the two
+refusal cases in `the_base_block_a_thread_holds_for_its_life`. A per-thread
+figure cannot answer them: the thread that moved it is gone before the
+assertion runs. They stay exposed to the same drift, at the rate their windows
+give, and `PLAN.md` carries that as a residual item. A sixth reading of
+`stats()` stays for a different reason —
+`bytes_and_high_water_are_derived_from_the_block_count` asserts that bytes are
+the block count times the block size and that neither high-water figure reads
+below its current one, which is arithmetic over one reading and holds whatever
+another thread is doing. It is what keeps the process reading itself under
+test.
+
+**Signed counters, and a reading that refuses a negative.** Nothing in the
+module makes a block the acquiring thread's to return, so a cross-thread
+release lowers that thread's figure below zero; `thread_stats` fails there
+with the reason rather than wrapping into a figure that reads as the whole
+address space. No path does that today: the critical reserve is per thread,
+and thread exit releases what the exiting thread acquired. What the refusal
+catches is a figure still negative when a test reads it, so a thread that
+releases another's block and then acquires one of its own reads back a
+plausible figure and the crossing goes unreported — the check is a net one and
+not a crossing detector.
+
 ## 2026-09-03 — the restore's refusal is the ordinary teardown, and it yields on an unwind
 
 Owner: S36.12 and S36.7's driver. Supersedes the paragraph "What the restore

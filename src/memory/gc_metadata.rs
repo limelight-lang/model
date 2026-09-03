@@ -41,6 +41,52 @@ static PEAK: AtomicUsize = AtomicUsize::new(0);
 static IN_USE: AtomicUsize = AtomicUsize::new(0);
 static IN_USE_PEAK: AtomicUsize = AtomicUsize::new(0);
 
+/// The four figures above, counted for one thread rather than for the process.
+///
+/// Signed, because nothing in this module makes a block the acquiring thread's
+/// to return: a release on another thread lowers that thread's figure below
+/// zero, and [`thread_stats`] refuses such a reading rather than wrapping it
+/// into one that reads as the whole address space.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct ThreadFigures {
+    current: isize,
+    peak: isize,
+    in_use: isize,
+    in_use_peak: isize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What this thread has taken and given back.
+    ///
+    /// `Cell` and `const`-initialised, on the terms
+    /// `crate::test_support::allocation_probe` states for its own counters:
+    /// the sites that move this one are inside the memory manager, so a
+    /// counter that allocated to be read would re-enter it, and a
+    /// `const` block with no destructor is still readable from the release
+    /// that runs at thread exit.
+    static THREAD_FIGURES: std::cell::Cell<ThreadFigures> = const {
+        std::cell::Cell::new(ThreadFigures {
+            current: 0,
+            peak: 0,
+            in_use: 0,
+            in_use_peak: 0,
+        })
+    };
+}
+
+/// Move this thread's figures, reading and writing the cell once.
+#[cfg(test)]
+#[inline]
+fn move_thread_figures(by: impl FnOnce(&mut ThreadFigures)) {
+    THREAD_FIGURES.with(|figures| {
+        let mut moved = figures.get();
+        by(&mut moved);
+        figures.set(moved);
+    });
+}
+
 /// A non-transactional observation of what collection holds. The figures are
 /// read independently, so a concurrent handoff may make them describe adjacent
 /// instants; reservation bytes are derived from their own block count and can
@@ -142,6 +188,11 @@ pub fn stats() -> GcMemoryStats {
 pub(crate) fn charge(bytes: usize) {
     let in_use = IN_USE.fetch_add(bytes, Ordering::Relaxed) + bytes;
     IN_USE_PEAK.fetch_max(in_use, Ordering::Relaxed);
+    #[cfg(test)]
+    move_thread_figures(|figures| {
+        figures.in_use += bytes as isize;
+        figures.in_use_peak = figures.in_use_peak.max(figures.in_use);
+    });
 }
 
 /// Put `bytes` of use into the high-water figure without ever standing in the
@@ -154,6 +205,10 @@ pub(crate) fn charge(bytes: usize) {
 pub(crate) fn mark_peak(bytes: usize) {
     let in_use = IN_USE.load(Ordering::Relaxed) + bytes;
     IN_USE_PEAK.fetch_max(in_use, Ordering::Relaxed);
+    #[cfg(test)]
+    move_thread_figures(|figures| {
+        figures.in_use_peak = figures.in_use_peak.max(figures.in_use + bytes as isize);
+    });
 }
 
 /// End the use of `bytes` a [`charge`] took.
@@ -167,6 +222,8 @@ pub(crate) fn discharge(bytes: usize) {
             in_use.checked_sub(bytes)
         })
         .expect("the GC byte ledger cannot underflow");
+    #[cfg(test)]
+    move_thread_figures(|figures| figures.in_use -= bytes as isize);
 }
 
 #[inline]
@@ -185,6 +242,12 @@ fn acquired(block: *mut BlockHeader, source_kind: u32) -> *mut BlockHeader {
     // eventual releaser will have to account for.
     let current = CURRENT.fetch_add(1, Ordering::Relaxed) + 1;
     PEAK.fetch_max(current, Ordering::Relaxed);
+    #[cfg(test)]
+    move_thread_figures(|figures| {
+        figures.current += 1;
+        figures.peak = figures.peak.max(figures.current);
+    });
+
     unsafe { store_block_kind(&raw const (*block).kind, BLOCK_KIND_GC_METADATA) };
     block
 }
@@ -199,6 +262,8 @@ fn released(block: *mut BlockHeader) {
             current.checked_sub(1)
         })
         .expect("the GC block counter cannot underflow");
+    #[cfg(test)]
+    move_thread_figures(|figures| figures.current -= 1);
 }
 
 /// Draw ordinary pool memory and make it GC-owned.
@@ -233,17 +298,56 @@ pub(crate) fn release_to_critical(block: *mut BlockHeader) {
     crate::memory::critical::give_back(block);
 }
 
-/// Lower both high-water figures to their current ones.
+/// Observe what this thread has taken and given back, in the figures [`stats`]
+/// answers for the process.
+///
+/// Tests only, and the reading an exact assertion needs. The process figures
+/// are moved by every thread the suite is running, so they answer "what did
+/// this path do" only while no other test allocates — which is a property of
+/// the run rather than of the path, and the suite reached the failing side of
+/// it about once in twenty-five runs at sixteen threads
+/// (`dev/POSTMORTEM.md`, "an exact assertion cannot be made against a
+/// process-global ledger"). A thread's own figures are moved by its own work
+/// alone.
+///
+/// The high-water pair is this thread's since
+/// [`lower_thread_peak_to_current`] last lowered it, and never below the
+/// current figure beside it — the same lift [`stats`] applies, for the same
+/// reason.
+#[cfg(test)]
+pub(crate) fn thread_stats() -> GcMemoryStats {
+    let figures = THREAD_FIGURES.with(|figures| figures.get());
+    let taken_here = |figure: isize| {
+        usize::try_from(figure)
+            .expect("a charge or a block another thread made was ended on this one")
+    };
+    let current = taken_here(figures.current);
+    let in_use = taken_here(figures.in_use);
+    GcMemoryStats {
+        current,
+        peak: taken_here(figures.peak).max(current),
+        in_use,
+        in_use_peak: taken_here(figures.in_use_peak).max(in_use),
+    }
+}
+
+/// Lower both of this thread's high-water figures to their current ones.
 ///
 /// Tests only, and the instrument an exact assertion needs: a high-water
-/// figure is process-global and never falls, so a rise of a known size is
-/// otherwise absorbed by whatever an earlier test reached. Both axes, because
-/// an assertion over a whole [`GcMemoryStats`] is exact only when every field
-/// of it can move down.
+/// figure never falls, so a rise of a known size is otherwise absorbed by
+/// whatever an earlier test on this thread reached. Both axes, because an
+/// assertion over a whole [`GcMemoryStats`] is exact only when every field of
+/// it can move down.
+///
+/// This thread's and not the process's: a store into the process figures is
+/// itself what an assertion on another thread would then read as its own
+/// path's work.
 #[cfg(test)]
-pub(crate) fn lower_peak_to_current() {
-    IN_USE_PEAK.store(IN_USE.load(Ordering::Relaxed), Ordering::Relaxed);
-    PEAK.store(CURRENT.load(Ordering::Relaxed), Ordering::Relaxed);
+pub(crate) fn lower_thread_peak_to_current() {
+    move_thread_figures(|figures| {
+        figures.peak = figures.current;
+        figures.in_use_peak = figures.in_use;
+    });
 }
 
 #[cfg(test)]

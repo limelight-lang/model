@@ -59,10 +59,10 @@ fn a_reset_that_lists_moves_no_figure_of_the_ledger() {
     unsafe { crate::test_support::store_prop(&mut arena, holder, 16, survivor) };
     let block = BlockHeader::of_ptr(survivor as *const u8) as usize;
 
-    crate::memory::gc_metadata::lower_peak_to_current();
-    let before = crate::memory::gc_metadata::stats();
+    crate::memory::gc_metadata::lower_thread_peak_to_current();
+    let before = crate::memory::gc_metadata::thread_stats();
     unsafe { crate::promote::arena_reset_full(&mut arena) };
-    let after = crate::memory::gc_metadata::stats();
+    let after = crate::memory::gc_metadata::thread_stats();
     assert_eq!(
         after, before,
         "the reset moved the ledger of the blocks collection owns"

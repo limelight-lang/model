@@ -149,6 +149,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("RING", false),
         ("THREAD_BUFFER_ARENA", false),
         ("THREAD_CACHE", true),
+        ("THREAD_FIGURES", false),
         ("THREAD_HEAP", false),
         ("WEAK_TABLE", false),
         ("WINDOW", false),

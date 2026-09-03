@@ -177,11 +177,11 @@ fn neither_the_detach_nor_the_restore_asks_for_memory() {
     // registration being a growth by construction, so the stock is read here
     // rather than assumed full.
     let spares_before = spare_count();
-    // The peak is lowered first, because it is process-global and a figure this
-    // pair cannot move is one no assertion can see moved
-    // (`gc_metadata::lower_peak_to_current`).
-    gc_metadata::lower_peak_to_current();
-    let stats_before = gc_metadata::stats();
+    // The peak is lowered first, because it never falls on its own and a figure
+    // this pair cannot move is one no assertion can see moved
+    // (`gc_metadata::lower_thread_peak_to_current`).
+    gc_metadata::lower_thread_peak_to_current();
+    let stats_before = gc_metadata::thread_stats();
     let _ = allocation_probe::take_allocations();
 
     let batch = detach_candidates();
@@ -191,7 +191,7 @@ fn neither_the_detach_nor_the_restore_asks_for_memory() {
         "the detach is two cell swaps"
     );
     assert_eq!(BlockPool::global().blocks_out(), blocks_before);
-    assert_eq!(gc_metadata::stats(), stats_before);
+    assert_eq!(gc_metadata::thread_stats(), stats_before);
 
     restore_candidates(batch);
     assert_eq!(
@@ -200,7 +200,7 @@ fn neither_the_detach_nor_the_restore_asks_for_memory() {
         "and so is the restore"
     );
     assert_eq!(BlockPool::global().blocks_out(), blocks_before);
-    assert_eq!(gc_metadata::stats(), stats_before);
+    assert_eq!(gc_metadata::thread_stats(), stats_before);
     assert_eq!(spare_count(), spares_before, "and no cell was spent either");
 
     reset();

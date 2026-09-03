@@ -244,8 +244,8 @@ fn lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains() {
         "the second block has room"
     );
 
-    crate::memory::gc_metadata::lower_peak_to_current();
-    let before = crate::memory::gc_metadata::stats();
+    crate::memory::gc_metadata::lower_thread_peak_to_current();
+    let before = crate::memory::gc_metadata::thread_stats();
     crate::test_support::allocation_probe::take_allocations();
     unsafe { arena_reset_full(arena_ptr) };
     let (_, pool) = crate::test_support::allocation_probe::take_allocations();
@@ -254,7 +254,7 @@ fn lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains() {
         "two lists with no room anywhere drew {pool} blocks"
     );
     assert_eq!(
-        crate::memory::gc_metadata::stats(),
+        crate::memory::gc_metadata::thread_stats(),
         before,
         "the fresh block was counted as collection's"
     );

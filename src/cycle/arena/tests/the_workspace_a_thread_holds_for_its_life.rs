@@ -20,7 +20,7 @@ use super::*;
 
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
 use crate::memory::block_pool::{BLOCK_KIND_GC_METADATA, load_block_kind};
-use crate::memory::gc_metadata::stats;
+use crate::memory::gc_metadata::{stats, thread_stats};
 use crate::test_support::allocation_probe;
 
 /// One collection over one entity: open the window, meet the entity, close.
@@ -87,6 +87,9 @@ fn a_second_collection_on_the_same_thread_draws_no_workspace() {
 #[test]
 fn the_workspace_stands_between_collections_and_goes_back_at_exit() {
     let _g = test_guard();
+    // The process figure, the last assertion being about blocks a thread that
+    // no longer exists gave back; the three the child takes are its own
+    // (`PLAN.md`, "A gate flake, measured 2026-09-03 and pre-existing").
     let outside = stats().current_blocks();
 
     let (before_collecting, after_first, after_second) = std::thread::spawn(|| {
@@ -99,11 +102,11 @@ fn the_workspace_stands_between_collections_and_goes_back_at_exit() {
         // The thread's queue base and its spare segments are collection's
         // memory too, and they are drawn at init: the figure this case reads
         // is a difference from them, not from zero.
-        let before_collecting = stats().current_blocks();
+        let before_collecting = thread_stats().current_blocks();
         one_collection(block);
-        let after_first = stats().current_blocks();
+        let after_first = thread_stats().current_blocks();
         one_collection(block);
-        let after_second = stats().current_blocks();
+        let after_second = thread_stats().current_blocks();
 
         unsafe { heap.free(slot) };
         (before_collecting, after_first, after_second)

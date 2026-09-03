@@ -582,7 +582,11 @@ structural transition rather than per grant so the registration path stays free 
 it; the three residues that follow are entered in the high-water figure by the
 transition that ends them, and by a mark rather than a charge, which is exact
 on one thread and can miss a maximum two threads stood in together. The pool and the critical reserve refuse a
-block still stamped with that kind.
+block still stamped with that kind. Under `cfg(test)` the same four figures are
+counted per thread as well, and `thread_stats` is what an exact assertion
+reads: the process figures are moved by every thread the suite is running
+(`dev/DECISIONS.md`, "the test-facing reading of the GC ledger is per
+thread").
 
 Withholding a physical return — `memory::stdapi::ll_free` asks two windows
 before a slot, a retained block or a large run goes back: an entity whose

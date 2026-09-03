@@ -268,11 +268,11 @@ fn the_weak_table_moves_no_figure_of_the_collection_ledger() {
     let _g = crate::memory::block_pool::test_guard();
     crate::weak::dispose();
     with_ctx(|ctx| {
-        // The high-water figures are process-global and never fall, so an
-        // equality over them is vacuous until `gc_metadata::lower_peak_to_current`
-        // lowers them to the current ones.
-        crate::memory::gc_metadata::lower_peak_to_current();
-        let before = crate::memory::gc_metadata::stats();
+        // A high-water figure never falls, so an equality over the pair is
+        // vacuous until `gc_metadata::lower_thread_peak_to_current` lowers
+        // them to the current ones.
+        crate::memory::gc_metadata::lower_thread_peak_to_current();
+        let before = crate::memory::gc_metadata::thread_stats();
         let mut held = Vec::new();
         for index in 0..40 {
             let target = unsafe { a_target(ctx, &format!("LedgerTarget{index}")) };
@@ -287,7 +287,7 @@ fn the_weak_table_moves_no_figure_of_the_collection_ledger() {
 
         crate::weak::dispose();
         assert_eq!(
-            crate::memory::gc_metadata::stats(),
+            crate::memory::gc_metadata::thread_stats(),
             before,
             "the weak table is the mutator's memory and no figure of \
              collection's may move with it"
@@ -299,12 +299,12 @@ fn the_weak_table_moves_no_figure_of_the_collection_ledger() {
 fn the_reset_drain_moves_no_figure_of_the_collection_ledger() {
     let _g = crate::memory::block_pool::test_guard();
     crate::weak::dispose();
-    crate::memory::gc_metadata::lower_peak_to_current();
-    let before = crate::memory::gc_metadata::stats();
+    crate::memory::gc_metadata::lower_thread_peak_to_current();
+    let before = crate::memory::gc_metadata::thread_stats();
     let (_heap, cells) = a_reset_of_eight_objects(true);
 
     assert_eq!(
-        crate::memory::gc_metadata::stats(),
+        crate::memory::gc_metadata::thread_stats(),
         before,
         "the weak walk of an arena reset moved a figure of collection's ledger"
     );

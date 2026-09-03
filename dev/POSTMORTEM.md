@@ -7,6 +7,67 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-03 — an exact assertion cannot be made against a process-global ledger
+
+**What happened.** `promote::tests::where_a_survivor_list_is_placed::`
+`lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains` failed 4
+of 100 runs of `cargo test --lib -- --test-threads=16`. It compares a whole
+`gc_metadata::stats()` across `arena_reset_full`, and what differed was the
+high-water pair alone: `peak` 5 against 4, one block, and `in_use_peak` 136
+against 64, which is 72 bytes — the 64-byte `OwnerCycleState` control line a
+self-initialising thread charges, and eight bytes more, the size one overflow
+buffer entry charges on that thread's first release (`cycle::queue`). Nine test
+files read the process figures, fifty times between them, so the failure was
+one draw of a lottery every one of those readings enters. The same loop was run
+on the tree with S36.12's slice (a) and on the tree without it before any of
+this, 1 of 25 each: the slice neither causes the flake nor hides it.
+
+**Why it was possible.** The suite has a lock, `block_pool::test_guard`, and
+the convention around it was read as making these readings stable. It excludes
+the tests that take it; twenty-nine test files never do, and a thread running
+one of them self-initialises the runtime at its first allocation and draws its
+base block outside the lock. One comment had written that false argument down —
+"this thread is blocked in `join` while holding the lock, so no third thread
+can charge against the reading". The test-only `lower_peak_to_current` widened
+the same defect in the other direction: it stored into the process high-water
+figures, so a test preparing its own baseline moved the figures another test
+was reading.
+
+**Why it was not caught.** The crate had been bitten by this defect once
+already and wrote the lesson down beside the test it cost:
+`memory::heap::tests::frees_arriving_from_another_thread`,
+`many_threads_freeing_into_one_owner_lose_no_slots` "deliberately does *not*
+assert on the process-global `blocks_out`… which made this test flaky at ~2
+runs in 10 under `--test-threads=16`". The answer there was to stop asserting
+on the shared figure; the answer was never generalised, so the next ledger was
+built with a process reading only — that being what the memory manager reports
+to an embedder — and its tests took the reading that existed rather than the
+one their claims needed. `test_support::allocation_probe` had already chosen
+the other way for its own counters, and said why: "All three are per thread,
+because the suite runs tests in parallel and a shared counter would charge one
+test's allocations to another".
+
+**What to do instead.** Read at the scope of the claim. "This path took
+nothing" is a claim about one thread, so it is answered by
+`gc_metadata::thread_stats`, which no other thread moves; "a thread that
+exited gave its blocks back" is a claim about the process, and the four cases
+that make it keep `stats()` and stay exposed. A figure that several threads
+write is never the subject of an exact assertion.
+
+**How the fix was checked.** The loop that produced the 4 failures ran 500
+times over the repaired tree without one, the last hundred of them on the tree
+as committed. Three mutations were run and each was
+caught: `thread_stats` made to answer `stats()`, which the new case fails on
+every run; the mirror deleted from `charge`, which eight cases fail on; and the
+mirror deleted from `released`, which the source guard names.
+
+**The second trap, paid for in the same hour.** The case written to prove the
+fix spawns a thread that acquires a block and holds it across a rendezvous,
+and it first held no `test_guard`. That made it the mover for everything else:
+`gc_metadata::tests::a_threads_exit_ends_every_block_it_acquired`, which had
+failed none of 100 runs, then failed 11 of 69. A test that moves a shared
+figure and takes no lock is indistinguishable from the defect it is testing.
+
 ## 2026-09-03 — a stricter repair can be worse than the failure it replaces
 
 **What happened.** S36.11's first Critic round found that
