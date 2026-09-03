@@ -10,13 +10,15 @@
 //! workspace base is drawn at the first collection, not at thread init").
 //!
 //! **Its first [`WORKSPACE_PREFIX_BYTES`] bytes are fixed regions rather than
-//! bump**, and the bump opens behind them. One region stands there, the
-//! trace's worklist ([`crate::cycle::stack`]): a shallow trace queues its
-//! entities into memory the thread already holds, so the common collection
-//! asks the memory manager for nothing at all. The withheld returns take a
-//! second region when S36.11 moves their base capacity here. The arena holds
-//! the worklist for the reason it holds the bump — the memory is one block,
-//! and its reset is one call.
+//! bump**, and the bump opens behind them. Two regions stand there in this
+//! order: the trace's worklist ([`crate::cycle::stack`]) and the withheld
+//! returns' records ([`crate::cycle::deferred_slot_reuse`]). Both are what
+//! makes the ordinary collection ask the memory manager for nothing at all —
+//! it queues its entities and withholds its returns in memory the thread
+//! already holds. The arena holds the worklist for the reason it holds the
+//! bump: the memory is one block, and its reset is one call. It holds no part
+//! of the returns' chain, only the region that chain is opened over, because
+//! that chain outlives the arena's reset and dies with the window instead.
 //!
 //! **Growth past the workspace has two allocation paths, in this order: the
 //! ordinary block pool, then the thread's critical reserve**
@@ -90,6 +92,7 @@
 //! enrolment is in hand, so a refused enrolment leaves the row at zero
 //! ([`TraceScratchArena::ensure_row`]).
 
+use crate::cycle::deferred_slot_reuse::RETURNS_BASE_BYTES;
 use crate::cycle::row::{Population, RowKey};
 use crate::cycle::shadow::{self, Color, RowArray};
 use crate::cycle::stack::{SEGMENT_BYTES, TraceStack, WorklistEntry};
@@ -164,13 +167,24 @@ impl Drop for LentWorkspace {
 /// Bytes at the head of the workspace the fixed regions take, before the bump
 /// opens.
 ///
-/// One region so far, the trace's worklist. The withheld returns take a second
-/// one when S36.11 moves their base capacity into the workspace, and the bump
-/// region shrinks by that much.
-pub(crate) const WORKSPACE_PREFIX_BYTES: usize = SEGMENT_BYTES;
+/// The worklist's region first and the withheld returns' second, which is the
+/// order [`TraceScratchArena::withheld_returns_region`] reads.
+pub(crate) const WORKSPACE_PREFIX_BYTES: usize = SEGMENT_BYTES + RETURNS_BASE_BYTES;
 
 /// Bytes of the workspace the bump may grant.
 pub(crate) const WORKSPACE_BUMP_BYTES: usize = BLOCK_PAYLOAD - WORKSPACE_PREFIX_BYTES;
+
+// The two figures the Sage gate fixed for S36.11, pinned here because they are
+// the trade it was taken on: the regions are worth what they cost the bump,
+// and a capacity raised without that comparison moves the cost silently.
+const _: () = assert!(WORKSPACE_PREFIX_BYTES == 12_480);
+const _: () = assert!(WORKSPACE_BUMP_BYTES == 52_800);
+
+// Every region begins on a line, which the withheld returns' control line
+// needs to be aligned at all: a payload starts `LINE_SIZE` into a 64 KiB-aligned
+// block, so an offset that is a multiple of 64 is 64-aligned.
+const _: () = assert!(SEGMENT_BYTES % 64 == 0 && RETURNS_BASE_BYTES % 64 == 0);
+const _: () = assert!(crate::memory::block_pool::LINE_SIZE % 64 == 0);
 
 /// One collection's memory: the thread's workspace for as long as the arena
 /// lives, and the blocks the bump grew into past it, which
@@ -253,6 +267,18 @@ impl TraceScratchArena {
     /// charge every collection for them again.
     pub(crate) fn residue(&self) -> usize {
         self.open_capacity - self.left
+    }
+
+    /// The workspace region a trace window opens its withheld-return chain
+    /// over, [`RETURNS_BASE_BYTES`] bytes behind the worklist's region.
+    ///
+    /// The chain is not this arena's: its records are read by a replay that
+    /// runs after [`reset`](Self::reset), so what the arena guarantees is the
+    /// region's address and that the workspace stays lent until the arena
+    /// drops — which is after the window's chain has died
+    /// (`crate::cycle::deferred_slot_reuse::ActiveTrace`).
+    pub(crate) fn withheld_returns_region(&self) -> *mut u8 {
+        unsafe { BlockHeader::payload_start(self.base.block()).add(SEGMENT_BYTES) }
     }
 
     /// Charge `bytes` of this arena's bump as memory in use, and remember

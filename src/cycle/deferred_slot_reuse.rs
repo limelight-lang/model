@@ -25,13 +25,17 @@
 //!
 //! # What it owns and for how long
 //!
-//! One chain of 64 KiB manager blocks per open trace, stamped
-//! `BLOCK_KIND_GC_METADATA` for as long as it is held, drawn at
-//! [`ActiveTrace::open`] and returned at that window's close. The chain's
-//! control line is the first 64 bytes of the head block's payload, and
-//! thread-local storage holds one non-owning pointer to that head block:
-//! **null is the closed window**,
-//! so no second flag can disagree with the chain's existence
+//! **The first [`RETURNS_BASE_RECORDS`] records are a fixed region of the
+//! thread's workspace**, laid out behind the worklist's
+//! ([`crate::cycle::arena`]), so a window opens on memory the thread already
+//! holds and the ordinary collection withholds every return it has without
+//! asking the memory manager for anything. Past that region the chain takes
+//! 64 KiB manager blocks, stamped `BLOCK_KIND_GC_METADATA` for as long as
+//! they are held and returned at the window's close.
+//!
+//! The chain's control line is the first 64 bytes of that region, and
+//! thread-local storage holds one non-owning pointer to it: **null is the
+//! closed window**, so no second flag can disagree with the chain's existence
 //! (`PLAN.md`, S36.9, "TLS holds only the non-owning pointer that finds the
 //! owner state").
 //!
@@ -43,50 +47,50 @@
 //!
 //! # What a refusal costs, and where it is answered
 //!
-//! The first block is drawn when the window opens rather than at the first
-//! withheld return, because that is the last instant at which a refusal has an
-//! answer. A collection is ordinarily the standard in-line form and meets no
-//! refusal anywhere (`rfc/model/gc/cycle/questions.md`, Y14), but on the
-//! pressure path it is a refused pool that started it, so both allocation paths
-//! refusing is an outcome the open has to carry: there it is a collection that
-//! does not start, and nothing is withheld. A draw at the first withheld return
-//! would meet the same refusal holding a slot whose rows are live, where
-//! returning it is the reuse this module prevents and dropping it loses a
-//! physical return, which is refused (`dev/DECISIONS.md`, "an enrolment cannot
-//! fail"). Growth past the first block therefore has no answer left and ends
-//! the process, which is the funded class's last resort and the same one the
-//! queue's overflow buffer reaches (`crate::cycle::queue`). A thread exiting
-//! with its window still open ends the process for the same reason
+//! **A window's open asks no allocation path**, the workspace being the one
+//! block it stands on and the [`ActiveTrace`] having drawn that already. So
+//! the refusal a draw at the first withheld return would meet — holding a
+//! slot whose rows are live, where returning it is the reuse this module
+//! prevents and dropping it loses a physical return, which is refused
+//! (`dev/DECISIONS.md`, "an enrolment cannot fail") — has no way of arriving
+//! for as long as the region has room.
+//!
+//! Growth past the region is where it arrives, and there it has no answer
+//! left and ends the process, which is the funded class's last resort and the
+//! same one the queue's overflow buffer reaches (`crate::cycle::queue`).
+//! Reached only after [`RETURNS_BASE_RECORDS`] slots have died inside one
+//! trace window while both allocation paths refuse a single block. A thread
+//! exiting with its window still open ends the process for the same reason
 //! ([`dispose_thread_state`]).
 //!
 //! The block leaving the append position is charged whole. The block still
 //! under the cursor is a documented residue: it never stands in the current
 //! figure, and the close enters it in the high-water one together with the
 //! trace arena's own residue, which is the instant the two are in use at once
-//! (`crate::memory::gc_metadata`).
+//! (`crate::memory::gc_metadata`). The workspace's own region enters neither
+//! figure, being memory the thread holds whether or not a collection is
+//! running (`crate::cycle::arena::TraceScratchArena::residue`).
 
 use std::cell::Cell;
 
+use crate::cycle::records::{RecordChain, SEGMENT_HEADER_BYTES};
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
 use crate::memory::gc_metadata;
 
-/// The chain of withheld returns, resident in the head block it describes.
+/// The chain of withheld returns, resident in the workspace region it
+/// describes.
 ///
 /// `Cell` rather than a lock or a `RefCell`: the chain has one writer by
 /// construction, the thread whose trace window is open, and the append sits on
 /// the free path where a borrow flag buys nothing.
 ///
-/// One 64-byte line, so the records behind it start on the next one and an
-/// append writes no line the replay walk reads before it.
+/// One 64-byte line, so the base segment's own header starts on the next one
+/// and an append writes no line the replay walk reads before it.
 #[repr(C, align(64))]
 struct DeferredReturnChain {
-    /// Where the next record goes.
-    cursor: Cell<*mut *mut u8>,
-    /// One past the last record position of the block [`Self::cursor`] points
-    /// into, which is what the append tests against.
-    limit: Cell<*mut *mut u8>,
-    /// The last block of the chain, and the one the cursor is inside.
-    append_block: Cell<*mut BlockHeader>,
+    /// The records themselves, over the workspace's region and the blocks the
+    /// growth attached past it.
+    records: RecordChain<*mut u8>,
     /// Blocks of this chain drawn through the reserve allocation path, and
     /// therefore how many go back to the reserve rather than to the pool. Which
     /// ones is not recorded: a block is a block, and the count is what restores
@@ -100,56 +104,49 @@ struct DeferredReturnChain {
 const _: () = assert!(size_of::<DeferredReturnChain>() == 64);
 const _: () = assert!(align_of::<DeferredReturnChain>() == 64);
 
-/// Records one block of the chain holds.
+/// Records the workspace's own region for withheld returns holds.
 ///
-/// Every block reserves the control line, not only the head that uses it: one
-/// capacity rather than two costs 64 bytes in a chain that has grown, and the
-/// growth itself is the path this module documents as unreachable in practice.
-/// The figure is the candidate queue's overflow capacity for the same reason —
-/// a 65,280-byte payload less one 64-byte control line, in eight-byte records.
-const RECORDS_PER_BLOCK: usize =
-    (BLOCK_PAYLOAD - size_of::<DeferredReturnChain>()) / size_of::<*mut u8>();
+/// The capacity the Sage gate fixed, and the record count past which a
+/// growth — and therefore a refusal that ends the process — becomes reachable
+/// at all (`PLAN.md`, S36.11).
+pub(crate) const RETURNS_BASE_RECORDS: usize = 1_024;
 
-const _: () = assert!(
-    RECORDS_PER_BLOCK * size_of::<*mut u8>() + size_of::<DeferredReturnChain>() == BLOCK_PAYLOAD
-);
+/// Bytes that region takes out of the workspace: the control line, the base
+/// segment's header line, and the records behind it.
+pub(crate) const RETURNS_BASE_BYTES: usize = size_of::<DeferredReturnChain>()
+    + SEGMENT_HEADER_BYTES
+    + RETURNS_BASE_RECORDS * size_of::<*mut u8>();
+
+/// Records one block the growth attaches holds.
+///
+/// The block's payload less the segment's header line, in eight-byte records.
+/// The figure is the candidate queue's overflow capacity for the same reason.
+const RECORDS_PER_BLOCK: usize = (BLOCK_PAYLOAD - SEGMENT_HEADER_BYTES) / size_of::<*mut u8>();
+
+const _: () =
+    assert!(RECORDS_PER_BLOCK * size_of::<*mut u8>() + SEGMENT_HEADER_BYTES == BLOCK_PAYLOAD);
 
 thread_local! {
-    /// The head block of this thread's withheld returns while its trace window
-    /// is open, and null otherwise. Non-owning: the chain belongs to the
-    /// [`ActiveTrace`] that drew it.
-    static DEFERRED_RETURNS: Cell<*mut BlockHeader> = const { Cell::new(std::ptr::null_mut()) };
+    /// The control line of this thread's withheld returns while its trace
+    /// window is open, and null otherwise. Non-owning: the region belongs to
+    /// the workspace the [`ActiveTrace`]'s arena holds.
+    static DEFERRED_RETURNS: Cell<*mut DeferredReturnChain> =
+        const { Cell::new(std::ptr::null_mut()) };
 }
 
-/// The control line of a chain, which is its head block's first line.
-#[inline]
-fn chain_of(head: *mut BlockHeader) -> *const DeferredReturnChain {
-    BlockHeader::payload_start(head) as *const DeferredReturnChain
-}
-
-/// Bytes of `block` in use while it holds `records` records.
+/// Bytes of the segment the chain is filling that stand in the byte ledger.
 ///
-/// The head's control line counts and a later block's reserved one does not:
-/// the ledger's figure is what a structure has written into a block it holds,
-/// and the reservation behind that is outside it
+/// The workspace's region enters neither figure, so a chain that has not grown
+/// answers zero; a block the growth attached counts its header line and the
+/// records written behind it
 /// (`crate::memory::gc_metadata::GcMemoryStats::current_bytes_in_use`).
 #[inline]
-fn used_bytes(block: *mut BlockHeader, head: *mut BlockHeader, records: usize) -> usize {
-    let control = if block == head {
-        size_of::<DeferredReturnChain>()
-    } else {
-        0
-    };
-
-    control + records * size_of::<*mut u8>()
-}
-
-/// The first record position of any block of a chain.
-#[inline]
-fn records_of(block: *mut BlockHeader) -> *mut *mut u8 {
-    unsafe {
-        BlockHeader::payload_start(block).add(size_of::<DeferredReturnChain>()) as *mut *mut u8
+fn ledger_bytes(chain: &DeferredReturnChain) -> usize {
+    if chain.records.appends_into_base() {
+        return 0;
     }
+
+    SEGMENT_HEADER_BYTES + chain.records.records_in_append_segment() * size_of::<*mut u8>()
 }
 
 /// One block for the chain, the ordinary pool first and the critical reserve
@@ -174,47 +171,43 @@ fn draw_block() -> (*mut BlockHeader, bool) {
 /// [`crate::cycle::arena::TraceScratchArena`] is re-entrant for the same
 /// reason.
 struct WithheldReturns {
-    /// The chain's head, which carries the control line of all of it.
-    head: *mut BlockHeader,
+    /// The control line, in the workspace region this chain was opened over.
+    control: *mut DeferredReturnChain,
 }
 
 impl WithheldReturns {
-    /// Draw the chain's first block, or `None` when neither allocation path
-    /// answers.
-    fn open() -> Option<Self> {
-        let (block, from_reserve) = draw_block();
-        if block.is_null() {
-            return None;
-        }
+    /// Open a chain over `region`, which is the workspace's own region for
+    /// withheld returns.
+    ///
+    /// Infallible: the region is memory the arena already holds, so a window
+    /// opens wherever a collection does.
+    ///
+    /// # Safety
+    /// `region` addresses [`RETURNS_BASE_BYTES`] writable bytes, aligned to
+    /// 64, and stays the caller's for as long as this chain is used.
+    unsafe fn open(region: *mut u8) -> Self {
+        let control = region as *mut DeferredReturnChain;
+        let records = unsafe { region.add(size_of::<DeferredReturnChain>()) };
 
-        let records = records_of(block);
+        // Field by field and written rather than assigned: the region is
+        // memory with no value in it, so an assignment would drop a
+        // `DeferredReturnChain` that was never constructed.
         unsafe {
-            (&raw mut (*block).next).write(std::ptr::null_mut());
-            (BlockHeader::payload_start(block) as *mut DeferredReturnChain).write(
-                DeferredReturnChain {
-                    cursor: Cell::new(records),
-                    limit: Cell::new(records.add(RECORDS_PER_BLOCK)),
-                    append_block: Cell::new(block),
-                    from_reserve: Cell::new(usize::from(from_reserve)),
-                    published: Cell::new(0),
-                },
-            );
+            (&raw mut (*control).records).write(RecordChain::over(records, RETURNS_BASE_RECORDS));
+            (&raw mut (*control).from_reserve).write(Cell::new(0));
+            (&raw mut (*control).published).write(Cell::new(0));
         }
 
-        Some(Self { head: block })
+        Self { control }
     }
 
     fn chain(&self) -> &DeferredReturnChain {
-        unsafe { &*chain_of(self.head) }
+        unsafe { &*self.control }
     }
 
-    /// Bytes of the block under the cursor, which no growth has charged.
+    /// Bytes of the segment under the cursor, which no growth has charged.
     fn residue(&self) -> usize {
-        let chain = self.chain();
-        let append_block = chain.append_block.get();
-        let records = (chain.cursor.get() as usize - records_of(append_block) as usize)
-            / size_of::<*mut u8>();
-        used_bytes(append_block, self.head, records)
+        ledger_bytes(self.chain())
     }
 
     /// Take this thread's window down.
@@ -225,9 +218,9 @@ impl WithheldReturns {
     /// over a released block is a free path writing a record through a cursor
     /// into memory the pool has handed out again.
     fn close_window(&self) {
-        DEFERRED_RETURNS.with(|head| {
-            if head.get() == self.head {
-                head.set(std::ptr::null_mut());
+        DEFERRED_RETURNS.with(|control| {
+            if control.get() == self.control {
+                control.set(std::ptr::null_mut());
             }
         });
     }
@@ -237,40 +230,21 @@ impl WithheldReturns {
     /// Called with the window already closed, so a return that reaches
     /// [`defer_reuse_if_tracing`] again is refused there and proceeds
     /// physically.
-    ///
-    /// The cursor bounds the records of the block it points into; every block
-    /// before that one holds [`RECORDS_PER_BLOCK`], a block leaving the append
-    /// position only when it is full.
     fn replay(&self) {
-        let chain = self.chain();
-        let append_block = chain.append_block.get();
-        let cursor = chain.cursor.get();
-
-        let mut block = self.head;
-        while !block.is_null() {
-            let records = records_of(block);
-            let held = if block == append_block {
-                (cursor as usize - records as usize) / size_of::<*mut u8>()
-            } else {
-                RECORDS_PER_BLOCK
-            };
-
-            for index in 0..held {
-                // Safety: each record is one entity slot whose observable
-                // teardown completed before `defer_reuse_if_tracing` accepted
-                // the return. Replaying it once through `ll_free` is
-                // the return it still owes.
-                unsafe { crate::memory::stdapi::ll_free(*records.add(index)) };
-            }
-
-            block = unsafe { (*block).next };
-        }
+        self.chain().records.walk(|slot| {
+            // Safety: each record is one entity slot whose observable
+            // teardown completed before `defer_reuse_if_tracing` accepted
+            // the return. Replaying it once through `ll_free` is
+            // the return it still owes.
+            unsafe { crate::memory::stdapi::ll_free(slot) };
+        });
     }
 }
 
 impl Drop for WithheldReturns {
-    /// Give the chain's blocks back, what the reserve lent through the reserve
-    /// allocation path and the rest to the pool.
+    /// Give back every block the growth attached, what the reserve lent
+    /// through the reserve allocation path and the rest to the pool. The
+    /// workspace's own region is the arena's and stays where it is.
     ///
     /// The reserve is served first for the reason the trace arena serves it
     /// first: the retry that follows an abort wants an allocation path that
@@ -279,22 +253,18 @@ impl Drop for WithheldReturns {
         self.close_window();
 
         let chain = self.chain();
-        let published = chain.published.get();
-        let mut owed_to_reserve = chain.from_reserve.get();
-        gc_metadata::discharge(published);
+        gc_metadata::discharge(chain.published.replace(0));
+        let mut owed_to_reserve = chain.from_reserve.replace(0);
 
-        let mut block = self.head;
-        while !block.is_null() {
-            let next = unsafe { (*block).next };
+        chain.records.take_segments_past_base(|segment| {
+            let block = BlockHeader::of_ptr(segment);
             if owed_to_reserve > 0 {
                 owed_to_reserve -= 1;
                 gc_metadata::release_to_critical(block);
             } else {
                 gc_metadata::release(block);
             }
-
-            block = next;
-        }
+        });
     }
 }
 
@@ -308,8 +278,11 @@ impl Drop for WithheldReturns {
 /// reuse it delayed.
 #[must_use = "dropping the trace window closes the slot-reuse barrier"]
 pub(crate) struct ActiveTrace {
-    arena: crate::cycle::arena::TraceScratchArena,
+    /// Declared before the arena, and therefore dropped before it: the records
+    /// this chain replays stand in a region of the workspace, and the arena's
+    /// drop is what hands that workspace back to the thread.
     returns: WithheldReturns,
+    arena: crate::cycle::arena::TraceScratchArena,
     // A window belongs to the TLS state of the thread that opened it. Moving
     // the guard would close another thread's window and strand this one's.
     _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -318,26 +291,25 @@ pub(crate) struct ActiveTrace {
 impl ActiveTrace {
     /// Open this thread's one trace window, or `None` when the memory it
     /// stands on cannot be had: the thread's workspace, on the first
-    /// collection of its life, or the chain that holds the withheld returns.
+    /// collection of its life.
     ///
     /// `None` is a collection that does not start: no window is open, no return
     /// has been withheld, and the caller's own abort path has nothing to undo.
+    /// A thread that has collected once holds its workspace until it exits, so
+    /// every window after the first opens without asking the memory manager.
     pub(crate) fn open() -> Option<Self> {
         assert!(
             DEFERRED_RETURNS.with(Cell::get).is_null(),
             "a thread runs at most one trace at a time"
         );
 
-        // The workspace before the chain: a refused chain then drops an arena
-        // that took nothing the thread did not already hold, where the other
-        // order would install the window in TLS and take it down again.
         let arena = crate::cycle::arena::TraceScratchArena::open()?;
-        let returns = WithheldReturns::open()?;
-        DEFERRED_RETURNS.with(|head| head.set(returns.head));
+        let returns = unsafe { WithheldReturns::open(arena.withheld_returns_region()) };
+        DEFERRED_RETURNS.with(|control| control.set(returns.control));
 
         Some(Self {
-            arena,
             returns,
+            arena,
             _not_send: std::marker::PhantomData,
         })
     }
@@ -380,32 +352,27 @@ impl Drop for ActiveTrace {
 /// exists to prevent; dropping the record loses a physical return, which is
 /// refused (`dev/DECISIONS.md`, "an enrolment cannot fail"). Nothing can report
 /// it either: `ll_free` holds no frame that can fail.
-///
-/// Reached only after 8,152 slots have died inside one trace window while both
-/// allocation paths refuse a single block.
 #[cold]
-fn grow(head: *mut BlockHeader, chain: &DeferredReturnChain) {
+fn grow(chain: &DeferredReturnChain) {
     let (block, from_reserve) = draw_block();
     if block.is_null() {
         std::process::abort();
     }
 
-    // The block the cursor is leaving is full by construction, so what it holds
-    // is exact here. Charged after both allocation paths have answered: a
-    // refusal leaves the chain where it stands.
-    let filled = used_bytes(chain.append_block.get(), head, RECORDS_PER_BLOCK);
+    // The segment the cursor is leaving is full by construction, so what it
+    // holds is exact here — nothing for the workspace's region, and a whole
+    // payload for a block. Charged after both allocation paths have answered:
+    // a refusal leaves the chain where it stands.
+    let filled = ledger_bytes(chain);
     chain.published.set(chain.published.get() + filled);
     gc_metadata::charge(filled);
 
-    let records = records_of(block);
     unsafe {
-        (&raw mut (*block).next).write(std::ptr::null_mut());
-        (&raw mut (*chain.append_block.get()).next).write(block);
-        chain.limit.set(records.add(RECORDS_PER_BLOCK));
-    }
+        chain
+            .records
+            .extend(BlockHeader::payload_start(block), RECORDS_PER_BLOCK)
+    };
 
-    chain.append_block.set(block);
-    chain.cursor.set(records);
     if from_reserve {
         chain.from_reserve.set(chain.from_reserve.get() + 1);
     }
@@ -419,32 +386,27 @@ fn grow(head: *mut BlockHeader, chain: &DeferredReturnChain) {
 /// queue entry itself remains the record.
 ///
 /// With no window open the whole cost is one thread-local load and one branch.
-/// With one open and room in the append block: three loads — the thread-local
-/// head, the cursor and the limit — two branches and two stores, with no
-/// atomic, no allocator call and no pool call. The pool is asked in [`grow`]
-/// alone, and the cursor is read a second time only there.
+/// With one open and room in the append segment: three loads — the thread-local
+/// control line, the cursor and the limit — two branches and two stores, with
+/// no atomic, no allocator call and no pool call. The pool is asked in
+/// [`grow`] alone, and the cursor is read a second time only there.
 ///
 /// # Safety
 /// `ptr` is a dead entity slot whose teardown has completed and which this call
 /// owns until either the function returns `false` or the window closes.
 #[inline]
 pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8) -> bool {
-    let head = DEFERRED_RETURNS.with(Cell::get);
-    if head.is_null() {
+    let control = DEFERRED_RETURNS.with(Cell::get);
+    if control.is_null() {
         return false;
     }
 
-    let chain = unsafe { &*chain_of(head) };
-    let mut cursor = chain.cursor.get();
-    if cursor == chain.limit.get() {
-        grow(head, chain);
-        cursor = chain.cursor.get();
+    let chain = unsafe { &*control };
+    if !chain.records.push(ptr) {
+        grow(chain);
+        chain.records.push(ptr);
     }
 
-    unsafe {
-        cursor.write(ptr);
-        chain.cursor.set(cursor.add(1));
-    }
     true
 }
 
@@ -464,22 +426,12 @@ pub(crate) fn dispose_thread_state() {
 
 #[cfg(test)]
 pub(crate) fn deferred_slot_count() -> usize {
-    let head = DEFERRED_RETURNS.with(Cell::get);
-    if head.is_null() {
+    let control = DEFERRED_RETURNS.with(Cell::get);
+    if control.is_null() {
         return 0;
     }
 
-    let chain = unsafe { &*chain_of(head) };
-    let append_block = chain.append_block.get();
-    let cursor = chain.cursor.get();
-    let mut count = 0;
-    let mut block = head;
-    while !block.is_null() && block != append_block {
-        count += RECORDS_PER_BLOCK;
-        block = unsafe { (*block).next };
-    }
-
-    count + (cursor as usize - records_of(append_block) as usize) / size_of::<*mut u8>()
+    unsafe { &*control }.records.used()
 }
 
 #[cfg(test)]

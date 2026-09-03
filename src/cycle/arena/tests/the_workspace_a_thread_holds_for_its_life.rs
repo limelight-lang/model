@@ -1,8 +1,8 @@
 //! The working memory a thread draws at its first collection and keeps until
 //! it exits, held to the two claims that are the whole reason for keeping it:
-//! a second collection asks the memory manager for nothing the first one
-//! already took, and what it holds between the two is one manager block,
-//! counted as collection's and given back at thread exit.
+//! a second collection asks the memory manager for nothing at all, and what
+//! it holds between the two is one manager block, counted as collection's and
+//! given back at thread exit.
 //!
 //! **Every case about a first collection runs on a thread of its own.** The
 //! claim is about a thread's *first* collection, and every other thread in this
@@ -33,12 +33,11 @@ fn one_collection(block: *mut u8) {
     met(unsafe { trace.arena().ensure_row(slot_row(block, 0), 1) });
 }
 
-/// What a second collection costs, which is the step's whole claim: the
-/// window's own chain and nothing else, the working memory being memory the
-/// thread already holds.
+/// What a second collection costs, which is the step's whole claim: nothing,
+/// the working memory being memory the thread already holds.
 ///
-/// The first collection is bracketed too, and it is the control: two requests
-/// there and one here is the difference between drawing a workspace and
+/// The first collection is bracketed too, and it is the control: one request
+/// there and none here is the difference between drawing a workspace and
 /// finding one.
 #[test]
 fn a_second_collection_on_the_same_thread_draws_no_workspace() {
@@ -68,13 +67,14 @@ fn a_second_collection_on_the_same_thread_draws_no_workspace() {
 
     assert_eq!(
         first,
-        (0, 2),
-        "the first collection drew the workspace and the window's chain"
+        (0, 1),
+        "the first collection drew the workspace, and the window's chain stands \
+         in it"
     );
     assert_eq!(
         second,
-        (0, 1),
-        "and the second drew the chain alone, the workspace being resident"
+        (0, 0),
+        "and the second drew nothing at all, the workspace being resident"
     );
 }
 
@@ -82,8 +82,8 @@ fn a_second_collection_on_the_same_thread_draws_no_workspace() {
 /// the thread: between two collections the thread stands one block above
 /// where it began, and thread exit puts that block back.
 ///
-/// One block and not two — the window's chain goes back at every close, so a
-/// figure that stayed up by two would mean a workspace per collection.
+/// One block and not two — a second workspace per collection is what a figure
+/// standing up by two would mean.
 #[test]
 fn the_workspace_stands_between_collections_and_goes_back_at_exit() {
     let _g = test_guard();

@@ -8,6 +8,48 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — the withheld returns' first 1,024 records are the workspace's second region
+
+Owner: S36.11, slice (d), under the Sage gate of the same day.
+
+**Decided:** the withheld-return chain opens over a second fixed region of the
+collection workspace — its 64-byte control line, the base segment's header
+line and 1,024 eight-byte records, 8,320 bytes behind the worklist's 4,160.
+The workspace's prefix is therefore 12,480 bytes and its bump region 52,800,
+both pinned by compile-time assertions. `WithheldReturns::open` asks no
+allocation path and cannot fail; the chain is a
+`cycle::records::RecordChain`, so the replay reads each segment's own capacity
+and the drop releases the segments past the base and leaves the region alone.
+`ActiveTrace` declares `returns` before `arena`, so the chain dies before the
+arena hands the workspace back to the thread.
+
+**What it changes about refusal:** a thread's *first* collection can be
+refused, and no other. The workspace is drawn once through the ordinary
+allocation path and held until the thread exits, so every window after it
+opens on memory in hand — rows, worklist and withheld returns alike. Measured
+on a thread of its own: the first collection makes one pool request where it
+made two, and the second makes none where it made one.
+
+**What it changes about the abort:** the growth that can end the process moves
+from the 8,153rd withheld return to the 1,025th. A collection that withholds
+more than 1,024 slots draws a block, and both allocation paths refusing there
+is the same last resort it was — `ll_free` holds no frame that can report one.
+The gate took the lower threshold knowingly: 8,152 records do not fit the
+payload beside the rows and the worklist.
+
+**The region enters neither byte figure**, by the rule slice (c) set for the
+worklist's: it is memory the thread holds between collections, so a chain that
+never leaves it charges nothing and enters nothing. What the growth charges is
+the segment it leaves, which is nothing for the region and a whole payload for
+a block.
+
+**Superseded:** the draw of 2026-08-30 that made the chain's first block come
+at the window's open, "because that is the last instant at which a refusal has
+an answer". The reasoning stands for a chain whose first records need a block;
+this one's do not.
+
+---
+
 ## 2026-09-03 — the worklist's first 256 entries are a region of the workspace, and the arena owns the worklist
 
 Owner: S36.11, slice (c), under the Sage gate of the same day.

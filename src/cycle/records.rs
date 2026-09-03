@@ -9,11 +9,13 @@
 //!
 //! **The chain allocates nothing.** A caller hands it a region and the
 //! capacity that region holds, and where the region came from is that caller's
-//! subject: the worklist's base is the thread's workspace and its overflow is
-//! the collection arena's bump ([`crate::cycle::arena`]). That is what lets
-//! one chain serve users whose memory comes from different places, and it is
-//! why [`RecordChain::push`] reports a full append position rather than
-//! growing.
+//! subject: both chains take their base out of the thread's workspace, and
+//! the worklist's overflow is the collection arena's bump while the withheld
+//! returns' is a manager block of their own
+//! ([`crate::cycle::arena`], [`crate::cycle::deferred_slot_reuse`]). That is
+//! what lets one chain serve users whose memory comes from different places,
+//! and it is why [`RecordChain::push`] reports a full append position rather
+//! than growing.
 //!
 //! **Segments differ in capacity and each one carries its own**, because a
 //! base region sized to the common case sits beside overflow segments sized to
@@ -21,9 +23,11 @@
 //! than a constant, so a chain of unequal segments hands its records back
 //! exactly.
 //!
-//! [`RecordChain::pop`] takes the newest record, which is the order a descent
-//! needs. A second order, the oldest-first read a replay needs, is what
-//! S36.11 adds when the withheld returns move onto this chain.
+//! Two access orders, over one chain: [`RecordChain::pop`] takes the newest
+//! record and is what a descent needs, and [`RecordChain::walk`] reads every
+//! record oldest first and is what a replay needs. A chain that pops has no
+//! defined walk, the records past the cursor being the ones it has handed
+//! back.
 //!
 //! **The records are `Copy` and no drop glue runs over them.** A segment is
 //! raw memory the owner rewinds or releases whole, so a record whose death
@@ -202,6 +206,74 @@ impl<T: Copy> RecordChain<T> {
         let segment = unsafe { Segment::write_header(region, capacity, current) };
         unsafe { (*current).next.set(segment) };
         self.open(segment);
+    }
+
+    /// Read every record oldest first, for a chain nothing has popped.
+    pub(crate) fn walk(&self, mut visit: impl FnMut(T)) {
+        let current = self.current.get();
+        let cursor = self.cursor.get();
+        let mut segment = self.base;
+
+        loop {
+            let records = unsafe { Segment::records::<T>(segment) };
+            let held = if segment == current {
+                (cursor as usize - records as usize) / size_of::<T>()
+            } else {
+                // Every segment below the append position is full: a chain
+                // that never pops advances only when it has no room left.
+                unsafe { (*segment).capacity }
+            };
+
+            for index in 0..held {
+                visit(unsafe { records.add(index).read() });
+            }
+
+            if segment == current {
+                return;
+            }
+
+            segment = unsafe { (*segment).next.get() };
+        }
+    }
+
+    /// Records the chain holds, for a chain nothing has popped. Tests only:
+    /// the count is `O(records)`, the chain persisting no bound of its own
+    /// until S36.5 needs one.
+    #[cfg(test)]
+    pub(crate) fn used(&self) -> usize {
+        let mut count = 0;
+        self.walk(|_| count += 1);
+        count
+    }
+
+    /// Records in the segment the chain is filling.
+    pub(crate) fn records_in_append_segment(&self) -> usize {
+        let records = unsafe { Segment::records::<T>(self.current.get()) };
+        (self.cursor.get() as usize - records as usize) / size_of::<T>()
+    }
+
+    /// Whether the chain is still filling the base segment, which is the one
+    /// segment its owner did not attach.
+    pub(crate) fn appends_into_base(&self) -> bool {
+        self.current.get() == self.base
+    }
+
+    /// Hand every segment past the base to `take`, oldest first, by the
+    /// address of its region, and leave the chain empty over its base.
+    ///
+    /// The owner is the one that knows what a region is — a block to release,
+    /// or bump the arena rewinds — so this reports them rather than freeing
+    /// them. Re-entrant: a second call finds the chain on its base and hands
+    /// out nothing.
+    pub(crate) fn take_segments_past_base(&self, mut take: impl FnMut(*mut u8)) {
+        let mut segment = unsafe { (*self.base).next.get() };
+        self.rewind();
+
+        while !segment.is_null() {
+            let next = unsafe { (*segment).next.get() };
+            take(segment as *mut u8);
+            segment = next;
+        }
     }
 
     /// Whether the chain holds no record.

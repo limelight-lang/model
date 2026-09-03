@@ -100,6 +100,32 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-03 — S36.11 the withheld returns' region: a thread's second collection draws nothing
+
+**Machine:** dev box, shared with interactive work. **Base:** `8c76475`,
+`rustc 1.96.0`.
+
+**What changed:** the withheld-return chain's first 1,024 records became a
+fixed region of the thread's workspace; before, the chain drew a 64 KiB block
+at every window's open and gave it back at every close.
+
+### Counters
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| pool requests, a thread's first collection | 2 | 1 | `allocation_probe` around one collection on a fresh thread (`cycle::arena::tests::the_workspace_a_thread_holds_for_its_life::a_second_collection_on_the_same_thread_draws_no_workspace`) |
+| pool requests, the same thread's second collection | 1 | 0 | the same case |
+| withheld returns before a manager block is drawn | 0 | 1,024 | `RETURNS_BASE_RECORDS` (`cycle::deferred_slot_reuse::tests::the_append_moves_into_a_block_when_the_workspace_region_is_full`) |
+| withheld returns before a refusal can end the process | 8,152 | 1,024 | the growth's threshold, the same case |
+| workspace bytes the bump may grant | 61,120 | 52,800 | `WORKSPACE_BUMP_BYTES`, pinned |
+
+The before figures are the assertions the same cases carried on `8c76475`,
+where they read 2 and 1.
+
+**What it costs:** 8,320 bytes of the workspace, and the abort threshold. A
+collection that withholds more than 1,024 slots now draws a block where it
+would have drawn one at 8,152 — the same block, at a different record.
+
 ## 2026-09-03 — S36.11 the worklist's fixed region: a trace at 256 entries draws no segment
 
 **Machine:** dev box, shared with interactive work. **Base:** `4baee36`,

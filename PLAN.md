@@ -1724,7 +1724,8 @@ stage claiming the frees while building none of them.
 - [ ] S36.11 The managed lists and the small worklist   *(before S36.3)*
       done: one manager-backed segmented primitive serves collection-owned
         pointer records with explicit `read`/`used` bounds and no drop glue;
-        parking, condemned members and S36.5's deferred drops use it, while a
+        the withheld returns, condemned members and S36.5's deferred drops use
+        it, while a
         small fixed worklist in the workspace serves leaf and small traces and
         grows into the same managed segments only on overflow
       done: a worklist entry carries the pair (entity, row pointer) rather
@@ -1734,7 +1735,8 @@ stage claiming the frees while building none of them.
         and pop (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 2). Mark reads no row
         at its pop and carries the pointer for one entry shape
       done: the Sage gate names the fixed small-worklist and pre-reserved
-        parking capacities from the 65,280-byte payload before code begins;
+        withheld-return capacities from the 65,280-byte payload before code
+        begins;
         boundary tests exercise exactly capacity and capacity plus one, and
         the documented budget accounts for the other base-workspace residents
       done: the withheld returns take their base capacity from the workspace
@@ -1820,6 +1822,25 @@ stage claiming the frees while building none of them.
         (`dev/DECISIONS.md`, `dev/BENCHMARKS.md`). This does not close S36.11:
         the withheld returns' base capacity in the workspace payload remains,
         with the findings that belong to it.
+      progress 2026-09-03 — slice (d), the withheld returns' base in the
+        workspace. The chain's first 1,024 records are the workspace's second
+        fixed region, control line included, so the prefix is 12,480 bytes and
+        the bump opens at 52,800 — the two figures the gate fixed, now pinned
+        by compile-time assertions. `WithheldReturns::open` is infallible and
+        `ActiveTrace::open` draws nothing: a thread's second collection asks
+        the memory manager for nothing at all, where it asked once before
+        (`cycle::arena::tests::the_workspace_a_thread_holds_for_its_life::`
+        `a_second_collection_on_the_same_thread_draws_no_workspace`, (0,1) and
+        (0,0) against (0,2) and (0,1)). The chain is a `RecordChain` over that
+        region, so the replay reads each segment's own capacity and the drop
+        releases only the segments past the base. The remaining findings are
+        paid with it: the field order reverses so `returns` dies before the
+        arena hands the workspace back, and the two refusal-model tests are
+        rewritten — the refusal left is a thread's first collection, which is
+        the only one that can be told there is no workspace. The withheld
+        returns' region enters neither byte figure, being memory the thread
+        holds between collections. Two clauses above lost the retired word
+        `parking`; S38.3, S39 and the backlog still carry it.
       note 2026-09-03 — **the two-cursor clause is struck**, by Edmond's word
         over the Sage gate's ruling. It read: the arena bumps row arrays from a
         block's front and worklist segments from its back, growing when the two

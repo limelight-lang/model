@@ -36,7 +36,7 @@ versions live in `docs/history/`, marked at the top.
   | module | what is there | production caller |
   |---|---|---|
   | `queue` | the per-thread candidate queue, its base block, spares and overflow buffer, and the cell that lends the collection workspace | `refcount::release_word`, `gc`'s poll |
-  | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier | `stdapi::ll_free` |
+  | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its records in the workspace's second region | `stdapi::ll_free` |
   | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind that workspace's fixed regions, the worklist laid over the first of them, and `ensure_row`/`find_initialized_row` | none until S36.7 |
   | `shadow` | the row: two bits of colour over thirty of working count | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |

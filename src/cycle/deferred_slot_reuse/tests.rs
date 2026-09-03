@@ -319,7 +319,7 @@ fn a_trace_window_allocates_nothing_through_the_global_allocator() {
 }
 
 #[test]
-fn the_window_draws_one_manager_block_and_the_withheld_return_draws_none() {
+fn neither_the_window_nor_the_withheld_return_draws_a_manager_block() {
     let _guard = test_guard();
     let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     assert!(!slot.is_null());
@@ -327,21 +327,30 @@ fn the_window_draws_one_manager_block_and_the_withheld_return_draws_none() {
 
     let held_before = gc_blocks();
     let _ = crate::test_support::allocation_probe::take_allocations();
-    let window = ActiveTrace::open().expect("the pool funds the trace window");
+    let window = ActiveTrace::open().expect("this thread's workspace is in hand");
     let (heap, pool) = crate::test_support::allocation_probe::take_allocations();
-    assert_eq!((heap, pool), (0, 1), "the chain's first block, and only it");
-    assert_eq!(gc_blocks(), held_before + 1);
+    assert_eq!(
+        (heap, pool),
+        (0, 0),
+        "the open stands on the workspace and asks no allocation path"
+    );
+    assert_eq!(gc_blocks(), held_before);
 
     unsafe { crate::memory::stdapi::ll_free(dead as *mut u8) };
     let (heap, pool) = crate::test_support::allocation_probe::take_allocations();
     assert_eq!(
         (heap, pool),
         (0, 0),
-        "the withheld return asks no allocation path: the capacity was drawn at the window"
+        "and the withheld return goes into the region the workspace already holds"
     );
+    assert_eq!(deferred_slot_count(), 1);
 
     drop(window);
-    assert_eq!(gc_blocks(), held_before, "the close gives the chain back");
+    assert_eq!(
+        gc_blocks(),
+        held_before,
+        "the close drew and gave back nothing"
+    );
 }
 
 #[test]
@@ -383,34 +392,77 @@ fn an_aborted_window_replays_its_returns_with_both_allocation_paths_refusing() {
     unsafe { crate::memory::stdapi::ll_free(reused) };
 }
 
+/// A thread that has collected once holds its workspace until it exits, and
+/// the window stands in that workspace, so the ordinary allocation path
+/// refusing everything takes no window down. The refusal this leaves is the
+/// one a thread's *first* collection meets, which is the case below.
 #[test]
-fn a_window_neither_allocation_path_can_fund_does_not_open() {
+fn a_window_opens_with_both_allocation_paths_refusing() {
     let _guard = test_guard();
-    crate::memory::critical::drain_for_test();
-    let oom = force_oom();
-    let refused = ActiveTrace::open();
-    drop(oom);
-    assert!(
-        refused.is_none(),
-        "the window opened on memory neither allocation path granted"
-    );
-
-    // A shut window withholds nothing, which is what makes the refusal
-    // answerable: the collection does not start and no slot is in hand.
     let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     assert!(!slot.is_null());
+    // `test_guard` draws this thread's workspace before the case begins, which
+    // is the state the claim is about: a thread that has collected once.
     let dead = unsafe { dead_entity(slot) };
+
+    crate::memory::critical::drain_for_test();
+    let oom = force_oom();
+    let window = ActiveTrace::open().expect("the workspace was in hand before the refusal");
     unsafe { crate::memory::stdapi::ll_free(dead as *mut u8) };
-    assert_eq!(deferred_slot_count(), 0);
+    assert_eq!(deferred_slot_count(), 1, "and it withheld a return");
+    drop(window);
+    drop(oom);
 
     let reused = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
-    assert_eq!(reused, dead as *mut u8, "a shut window withheld a return");
+    assert_eq!(
+        reused, dead as *mut u8,
+        "the close lost the physical return"
+    );
     unsafe { dead_entity(reused) };
     unsafe { crate::memory::stdapi::ll_free(reused) };
+    crate::memory::critical::drain_for_test();
+}
+
+/// The one refusal left: a thread whose first collection cannot draw its
+/// workspace. A shut window withholds nothing, which is what makes that
+/// refusal answerable — the collection does not start and no slot is in hand.
+///
+/// On a thread of its own, because every other thread in this suite has
+/// collected already and holds a workspace this case would find.
+#[test]
+fn a_first_collection_that_cannot_draw_a_workspace_does_not_open() {
+    let _guard = test_guard();
+
+    std::thread::spawn(|| {
+        assert!(crate::memory::heap::ll_thread_init());
+        let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+        assert!(!slot.is_null());
+        let dead = unsafe { dead_entity(slot) };
+
+        // The workspace comes off the ordinary allocation path alone, so the
+        // pool refusing is the whole of the refusal here.
+        let oom = force_oom();
+        let refused = ActiveTrace::open();
+        assert!(
+            refused.is_none(),
+            "the window opened without a workspace the pool granted"
+        );
+
+        unsafe { crate::memory::stdapi::ll_free(dead as *mut u8) };
+        assert_eq!(deferred_slot_count(), 0);
+        drop(oom);
+
+        let reused = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+        assert_eq!(reused, dead as *mut u8, "a shut window withheld a return");
+        unsafe { dead_entity(reused) };
+        unsafe { crate::memory::stdapi::ll_free(reused) };
+    })
+    .join()
+    .unwrap();
 }
 
 #[test]
-fn the_append_moves_into_a_second_block_when_the_first_is_full() {
+fn the_append_moves_into_a_block_when_the_workspace_region_is_full() {
     let _guard = test_guard();
     let held_before = gc_blocks();
     let bytes_before = in_use_bytes();
@@ -420,10 +472,10 @@ fn the_append_moves_into_a_second_block_when_the_first_is_full() {
     // One OS-direct large entity at each end of the chain. Its return is the
     // one a reader can see from outside — the run leaves the registry and the
     // address space only when the replay reaches its record — so a replay that
-    // walks one block of two is caught whichever block it skips.
+    // walks one segment of two is caught whichever segment it skips.
     let first_marker = unsafe { withheld_large_entity() };
-    let mut withheld = Vec::with_capacity(RECORDS_PER_BLOCK);
-    for _ in 0..RECORDS_PER_BLOCK - 1 {
+    let mut withheld = Vec::with_capacity(RETURNS_BASE_RECORDS);
+    for _ in 0..RETURNS_BASE_RECORDS - 1 {
         let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
         assert!(!slot.is_null());
         unsafe { dead_entity(slot) };
@@ -431,24 +483,25 @@ fn the_append_moves_into_a_second_block_when_the_first_is_full() {
         withheld.push(slot);
     }
 
-    assert_eq!(deferred_slot_count(), RECORDS_PER_BLOCK);
+    assert_eq!(deferred_slot_count(), RETURNS_BASE_RECORDS);
     assert_eq!(
         gc_blocks(),
-        held_before + 1,
-        "the first block holds exactly its capacity"
+        held_before,
+        "the workspace's region holds exactly its capacity and draws nothing"
     );
 
     let second_marker = unsafe { withheld_large_entity() };
-    assert_eq!(deferred_slot_count(), RECORDS_PER_BLOCK + 1);
+    assert_eq!(deferred_slot_count(), RETURNS_BASE_RECORDS + 1);
     assert_eq!(
         gc_blocks(),
-        held_before + 2,
-        "the record past the capacity drew the second block"
+        held_before + 1,
+        "the record past the capacity drew the chain's first block"
     );
     assert_eq!(
         in_use_bytes(),
-        bytes_before + BLOCK_PAYLOAD,
-        "the block the append left is charged whole and nothing else is"
+        bytes_before,
+        "and charged nothing: the region the append left is the thread's \
+         workspace, which stands in neither figure"
     );
 
     drop(window);
@@ -456,15 +509,11 @@ fn the_append_moves_into_a_second_block_when_the_first_is_full() {
     for marker in [first_marker, second_marker] {
         assert!(
             !crate::memory::large_entity::snapshot().contains(&marker),
-            "the close left a withheld return standing in one of the two blocks"
+            "the close left a withheld return standing in one of the two segments"
         );
     }
 
-    assert_eq!(
-        gc_blocks(),
-        held_before,
-        "both blocks of the chain went back"
-    );
+    assert_eq!(gc_blocks(), held_before, "the chain's block went back");
     assert_eq!(
         in_use_bytes(),
         bytes_before,
@@ -472,9 +521,9 @@ fn the_append_moves_into_a_second_block_when_the_first_is_full() {
     );
     assert_eq!(
         crate::memory::gc_metadata::stats().peak_bytes_in_use(),
-        bytes_before + BLOCK_PAYLOAD + size_of::<*mut u8>(),
-        "the grown chain enters a full head block and the one record behind \
-         it; the second block's control line is reserved and not written"
+        bytes_before + SEGMENT_HEADER_BYTES + size_of::<*mut u8>(),
+        "the grown chain enters the block under the cursor: its segment header \
+         and the one record written behind it"
     );
 
     let reused = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
@@ -510,7 +559,7 @@ fn in_use_bytes() -> usize {
 }
 
 #[test]
-fn one_window_charges_no_byte_and_enters_its_consumption_at_the_close() {
+fn a_window_inside_the_workspace_region_charges_and_enters_no_byte() {
     let _guard = test_guard();
     let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     assert!(!slot.is_null());
@@ -532,38 +581,39 @@ fn one_window_charges_no_byte_and_enters_its_consumption_at_the_close() {
     assert_eq!(after.current_bytes_in_use(), bytes_before);
     assert_eq!(
         after.peak_bytes_in_use(),
-        bytes_before + size_of::<DeferredReturnChain>() + size_of::<*mut u8>(),
-        "the block under the cursor is entered in the high-water figure by the \
-         transition that ends it, control line and one record"
+        bytes_before,
+        "and enters none either: a chain that never left the workspace's own \
+         region has no residue of its own to enter"
     );
 }
 
+/// The reserve exists for the pressure collection, where a refused pool is
+/// what started the collection at all. A window that drew a block at its open
+/// would spend the reserve on every such collection before a single return was
+/// withheld; standing in the workspace, it spends none. What the reserve does
+/// fund is the growth past the region, which is the case below it.
 #[test]
-fn the_critical_reserve_funds_a_window_the_pool_refuses() {
+fn a_windows_open_and_close_leave_the_critical_reserve_untouched() {
     let _guard = test_guard();
     let held_before = gc_blocks();
     let reserve_before = crate::memory::critical::blocks_held();
     assert!(
         reserve_before > 0,
-        "the reserve is the second allocation path here"
+        "the reserve has something to be spent here"
     );
 
     let oom = force_oom();
-    let window = ActiveTrace::open().expect("the reserve funds what the pool refused");
-    drop(oom);
-    assert_eq!(
-        crate::memory::critical::blocks_held(),
-        reserve_before - 1,
-        "the reserve lent the block the pool refused"
-    );
-    assert_eq!(gc_blocks(), held_before + 1);
-
-    drop(window);
+    let window = ActiveTrace::open().expect("the workspace was in hand before the refusal");
     assert_eq!(
         crate::memory::critical::blocks_held(),
         reserve_before,
-        "what the reserve lent goes back to the reserve"
+        "the open asked neither allocation path"
     );
+    assert_eq!(gc_blocks(), held_before);
+
+    drop(window);
+    drop(oom);
+    assert_eq!(crate::memory::critical::blocks_held(), reserve_before);
     assert_eq!(gc_blocks(), held_before);
 }
 
@@ -584,12 +634,24 @@ fn the_high_water_figure_holds_both_residues_of_one_collection() {
         arena_residue > 0,
         "the trace reserved no row to residue over"
     );
+
+    // Past the workspace's region, so the chain has a residue of its own: a
+    // chain still inside that region enters nothing, and the case would then
+    // be reading one residue rather than two.
+    for _ in 0..RETURNS_BASE_RECORDS {
+        let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+        assert!(!slot.is_null());
+        unsafe { dead_entity(slot) };
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+    }
+
     unsafe { crate::memory::stdapi::ll_free(dead as *mut u8) };
+    assert_eq!(deferred_slot_count(), RETURNS_BASE_RECORDS + 1);
 
     drop(window);
     assert_eq!(
         crate::memory::gc_metadata::stats().peak_bytes_in_use(),
-        bytes_before + arena_residue + size_of::<DeferredReturnChain>() + size_of::<*mut u8>(),
+        bytes_before + arena_residue + SEGMENT_HEADER_BYTES + size_of::<*mut u8>(),
         "the rows and the withheld return stood together and were entered apart"
     );
 }
@@ -600,17 +662,17 @@ fn a_growth_the_pool_refuses_draws_the_reserve_and_gives_it_back() {
     let held_before = gc_blocks();
     let window = ActiveTrace::open().expect("the pool funds the trace window");
 
-    // The first block is filled to its capacity before the ordinary allocation
-    // path starts refusing, so the refusal lands on the growth and on nothing
-    // else.
-    for _ in 0..RECORDS_PER_BLOCK {
+    // The workspace's region is filled to its capacity before the ordinary
+    // allocation path starts refusing, so the refusal lands on the growth and
+    // on nothing else.
+    for _ in 0..RETURNS_BASE_RECORDS {
         let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
         assert!(!slot.is_null());
         unsafe { dead_entity(slot) };
         unsafe { crate::memory::stdapi::ll_free(slot) };
     }
 
-    assert_eq!(deferred_slot_count(), RECORDS_PER_BLOCK);
+    assert_eq!(deferred_slot_count(), RETURNS_BASE_RECORDS);
     let over_capacity = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     assert!(!over_capacity.is_null());
     unsafe { dead_entity(over_capacity) };
@@ -629,7 +691,7 @@ fn a_growth_the_pool_refuses_draws_the_reserve_and_gives_it_back() {
         reserve_before - 1,
         "the growth took the reserve allocation path while the ordinary one refused"
     );
-    assert_eq!(gc_blocks(), held_before + 2);
+    assert_eq!(gc_blocks(), held_before + 1);
 
     drop(window);
     assert_eq!(

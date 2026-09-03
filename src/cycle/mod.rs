@@ -28,21 +28,22 @@
 //! life, given back at `ll_thread_exit` — the base block, and the collection
 //! workspace an [`arena`] borrows. Everything else is per collection:
 //! [`arena`] holds the blocks a single trace bumps into past that workspace
-//! and the worklist [`stack`] lays over a fixed region of it,
-//! [`deferred_slot_reuse`] holds the blocks its
-//! withheld returns are recorded in, and the rows [`shadow`], [`mark`] and
+//! and the worklist [`stack`] lays over the first fixed region of it,
+//! [`deferred_slot_reuse`] opens its chain over the second and holds the
+//! blocks a growth past it draws, and the rows [`shadow`], [`mark`] and
 //! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`
 //! own no memory at all — they are arithmetic over memory somebody else holds,
 //! and [`validation`] reads the heap rather than a row.
 //!
 //! **A collection's memory is refusable, and the refusal ends the collection
 //! rather than the process.** A refused block leaves the heap byte-identical,
-//! because the trace writes into rows and never into an entity. The
-//! withheld-return chain is inside that claim by where it draws: its first
-//! block comes at the window's open, before a slot is in hand, so a refusal
-//! there is a collection that does not start. What stands outside the claim is
-//! below, with the per-thread aborts, because it has the same shape as they
-//! do.
+//! because the trace writes into rows and never into an entity. The one
+//! refusal a collection can meet before it starts is the workspace, drawn at a
+//! thread's first collection and held until that thread exits: a thread that
+//! has collected once opens every later window without asking the memory
+//! manager, its rows, worklist and withheld returns all standing in memory it
+//! already holds. What stands outside the claim is below, with the per-thread
+//! aborts, because it has the same shape as they do.
 //!
 //! The per-thread half is where a refusal can end something. The queue's base
 //! block is drawn twice: at thread init, where a refusal is a thread that
@@ -50,10 +51,11 @@
 //! allocator-issued", which is that block), and at the first registration of a
 //! thread the runtime never registered, where the same refusal aborts because
 //! there is no caller left to report it to. Past both stands the overflow
-//! buffer's own bound, which aborts when it fills. Past the trace's own first
-//! chain block stands [`deferred_slot_reuse`]'s growth, which aborts for the
-//! reason the overflow buffer does: it is holding a slot it may neither return
-//! nor drop, and `ll_free` has no frame to report a refusal through. Thread
+//! buffer's own bound, which aborts when it fills. Past the workspace's own
+//! region for withheld returns stands [`deferred_slot_reuse`]'s growth, which
+//! aborts for the reason the overflow buffer does: it is holding a slot it may
+//! neither return nor drop, and `ll_free` has no frame to report a refusal
+//! through. Thread
 //! exit inside an open window aborts there too, `ll_thread_exit` being
 //! `extern "C"` and having no caller to refuse to.
 //!
