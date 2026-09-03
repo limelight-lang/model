@@ -12,8 +12,9 @@ The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
 Updated: 2026-09-03 · Active: the rest of S36, from S36.9 — the sections after
-S40 are the backlog. S43 sits between S36 and S37, where it is to be done. S41 closed 2026-09-02 and is not yet deleted: what
-outlives it has to reach the journals first (rule 23.1.3).
+S40 are the backlog. S43 sits between S36 and S37, where it is to be done.
+S41 closed 2026-09-02 and is not yet deleted: what outlives it has to reach
+the journals first (rule 23.1.3).
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
