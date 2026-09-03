@@ -675,6 +675,158 @@ pub(crate) fn drain_overflow() {
     }
 }
 
+/// The candidate chain one collection took out of the active lane.
+///
+/// Two words: the head segment and the entries it holds. Everything behind the
+/// head hangs off [`BlockHeader::next`], as it did in the lane this came out
+/// of, so a batch of any length is these two words and no copy.
+///
+/// **A batch that is dropped instead of restored strands every root in it** —
+/// each one carrying `CANDIDATE_BIT` with no record behind it, which
+/// [`crate::refcount::CANDIDATE_GATE_MASK`] then refuses to register again for
+/// the life of the process (`rfc/model/gc/cycle/questions.md`, Y6). The drop
+/// below is what says so, and it is the reason this type has one.
+#[must_use = "a batch that is not restored strands every root in it"]
+pub(crate) struct InFlightBatch {
+    head: *mut BlockHeader,
+    /// Entries in [`InFlightBatch::head`]. Meaningless when the head is null.
+    fill: usize,
+}
+
+impl InFlightBatch {
+    /// Whether the batch holds no root at all, which is a collection that
+    /// found an empty queue.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the collection that asks is S36.7")
+    )]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.head.is_null()
+    }
+
+    /// Take every root in the batch, newest first, stopping at the first
+    /// `visit` that answers false. **False** when it stopped early.
+    ///
+    /// A root may name an entity that has since been torn down: the entry is
+    /// what keeps that slot out of the allocator's hands, and nothing retires
+    /// it at the death (`rfc/model/gc/cycle/questions.md`, Y12 clause 7). The
+    /// reader is what applies the zero-count rule, which for the trace is
+    /// `crate::cycle::mark`'s.
+    pub(crate) fn walk_roots(&self, visit: impl FnMut(*mut RcHeader) -> bool) -> bool {
+        walk_chain(self.head, self.fill, visit)
+    }
+}
+
+impl Drop for InFlightBatch {
+    fn drop(&mut self) {
+        assert!(
+            self.head.is_null(),
+            "a detached candidate batch was dropped instead of restored"
+        );
+    }
+}
+
+/// Every entry of a chain whose head holds `fill` entries, newest segment
+/// first, stopping at the first `visit` that answers false. **False** when it
+/// stopped early.
+///
+/// The one place that knows how a chain is bounded: the head by a fill stored
+/// beside it, every segment behind the head by [`SEGMENT_CAPACITY`], which
+/// holds because a segment leaves the write position only when it is full. A
+/// second reader of that rule is a second place to fix when S38.1 ends it.
+fn walk_chain(
+    head: *mut BlockHeader,
+    fill: usize,
+    mut visit: impl FnMut(*mut RcHeader) -> bool,
+) -> bool {
+    let mut segment = head;
+    let mut bound = fill;
+    while !segment.is_null() {
+        for index in 0..bound {
+            if !visit(unsafe { segment_entries(segment).add(index).read() }) {
+                return false;
+            }
+        }
+
+        segment = unsafe { (*segment).next };
+        bound = SEGMENT_CAPACITY;
+    }
+
+    true
+}
+
+/// Take this thread's whole candidate chain out of the active lane, for one
+/// collection to trace.
+///
+/// **It draws nothing and cannot be refused.** The lane is left with no write
+/// segment, which is the state it holds before a thread's first registration:
+/// the next registration finds no room by construction, takes the growth path,
+/// and is funded by the spare cells the poll fills. Swapping a fresh segment in
+/// here instead would put a pool request on the front of every collection, and
+/// on the path a collection starts from an allocation failure it would take a
+/// block from the tier the trace's own rows need
+/// (`dev/DECISIONS.md`, "the detach of a candidate chain draws no segment").
+///
+/// **The overflow buffer stays where it is.** Its entries are the next trace's:
+/// the poll drains it into the lane before it fires, so on the ordinary path it
+/// is empty here, and on the pressure path what it holds keeps its bits and its
+/// records where they are.
+///
+/// An empty batch is the answer for a thread that has registered nothing, and
+/// for one with no queue state at all.
+pub(crate) fn detach_candidates() -> InFlightBatch {
+    let state = owner_state();
+    if state.is_null() {
+        return InFlightBatch {
+            head: std::ptr::null_mut(),
+            fill: 0,
+        };
+    }
+
+    let q = unsafe { owner_state_ref(state) };
+    InFlightBatch {
+        head: q.write_segment.replace(std::ptr::null_mut()),
+        fill: q.write_len.replace(0),
+    }
+}
+
+/// Put a batch back into the active lane it came out of, every root still
+/// registered and every record where it was.
+///
+/// This is the disposition of a trace that reclaimed nothing — an abort, and,
+/// until a drain is built, the ordinary end as well. A root the trace did not
+/// dispose of keeps its registration, its bit uncleared and its entry back in
+/// its own lane (`rfc/model/gc/cycle/questions.md`, Y12 clause 5).
+///
+/// **The write position must still be empty, and the assertion is in every
+/// build.** Nothing between the detach and here registers a candidate: mark and
+/// scan write no entity, so no decrement runs under them. The day that stops
+/// holding is the day a destructor runs before the restore, and the damage is
+/// silent — the segment holding that destructor's entries would leave the
+/// chain with its own roots' bits standing.
+pub(crate) fn restore_candidates(mut batch: InFlightBatch) {
+    let head = std::mem::replace(&mut batch.head, std::ptr::null_mut());
+    if head.is_null() {
+        return;
+    }
+
+    let state = owner_state();
+    // The batch is non-empty, so the thread that detached it had a base block,
+    // and a base block belongs to the thread's life rather than to a
+    // collection's ([`release_queue_base`]).
+    assert!(
+        !state.is_null(),
+        "the queue base block left with a batch out"
+    );
+    let q = unsafe { owner_state_ref(state) };
+    assert!(
+        q.write_segment.get().is_null(),
+        "a candidate was registered while a batch was detached"
+    );
+    q.write_segment.set(head);
+    q.write_len.set(batch.fill);
+}
+
 /// Take one spare, or null when both cells are empty.
 #[inline]
 fn take_spare(q: &OwnerCycleState) -> *mut BlockHeader {
@@ -837,6 +989,38 @@ pub(crate) fn candidate_count() -> usize {
     }
 
     count
+}
+
+/// Every candidate token this thread's queue holds, the active chain and the
+/// overflow buffer both, appended to `out`: the chain newest segment first,
+/// then the overflow buffer oldest entry first.
+///
+/// [`candidate_count`] answers the chain alone, and a count of one lane can
+/// state neither half of the rule this exists for — a `CANDIDATE_BIT` standing
+/// over no record anywhere, and one entity holding a record in two lanes at
+/// once. The batch a collection detaches is a third lane, held in the
+/// collection's own frame rather than here, so a caller holding one appends it
+/// itself.
+///
+/// The entries are read and not dereferenced, exactly as the queue reads them:
+/// an entry may name an entity that has since been torn down
+/// (`rfc/model/gc/cycle/questions.md`, Y12 clause 7).
+#[cfg(test)]
+pub(crate) fn collect_lane_tokens(out: &mut Vec<*mut RcHeader>) {
+    let state = owner_state();
+    if state.is_null() {
+        return;
+    }
+
+    let q = unsafe { owner_state_ref(state) };
+    walk_chain(q.write_segment.get(), q.write_len.get(), |entry| {
+        out.push(entry);
+        true
+    });
+
+    for index in 0..q.overflow_len.get() {
+        out.push(unsafe { overflow_entries(state).add(index).read() });
+    }
 }
 
 /// Segments this thread's queue holds.

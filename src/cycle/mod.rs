@@ -79,12 +79,8 @@ pub(crate) mod arena;
     )
 )]
 pub(crate) mod validation;
-// Nothing marks in the production build either: the collection that
-// runs a trace is S36.7's, and this module is what it will run.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the collection that marks is S36.7")
-)]
+// The first phase of a trace, reached from [`trace`] rather than from a
+// collection: the collection that drives one is S36.7's.
 pub(crate) mod mark;
 // Physical slot return waits while a trace can still address the slot's shadow
 // row. The production trace that opens the window arrives in S36.7; S36.2
@@ -101,17 +97,20 @@ pub(crate) mod queue;
 // The record chain the collection's lists are built on.
 pub(crate) mod records;
 pub(crate) mod row;
-// The verdict over the rows the mark counted, and dead until a
-// collection runs one.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the collection that scans is S36.7")
-)]
+// The second phase, and the proposal a collection reads: reached from
+// [`trace`], which S36.7 drives.
 pub(crate) mod scan;
 pub(crate) mod shadow;
 // The worklist both phases of a trace share, held by the arena whose memory
 // it stands on.
 pub(crate) mod stack;
+// The two phases of one trace, in the order the rows require. Dead until a
+// collection drives them, which is S36.7.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the collection that drives both phases is S36.7")
+)]
+pub(crate) mod trace;
 // The row readers the mark's tests and the scan's tests share. Test
 // builds only.
 #[cfg(test)]

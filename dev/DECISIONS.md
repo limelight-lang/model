@@ -8,6 +8,46 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — the detach of a candidate chain draws no segment
+
+Owner: S36.12. Ruled by the stage's Sage gate, against the proposal put to it.
+
+**Decided:** a collection takes the whole active chain out of the queue by
+moving two words — the head segment and its fill — and leaves the write
+position null. It asks no allocation path for a replacement segment, so the
+detach cannot be refused and answers nothing.
+
+**The lane's empty state is one it already has.** A thread holds no write
+segment until its first registration, and `register_candidate`,
+`drain_overflow`, `candidate_count` and `release_queue_segments` all have that
+arm today. The next registration after a detach therefore finds no room by
+construction, takes the growth path, and is funded by the spare cells the poll
+fills.
+
+**What the refused alternative was.** `rfc/model/gc/cycle/questions.md`, Y12
+clause 2, says the token holder "swaps the live buffer for a spare and traces
+the detached one", and clause 3 charges the swap to the holder's own
+allocation paths. That text is from 2026-08-27, before the overflow buffer
+existed: the refusal it provisioned against was a dropped root, and since
+2026-08-28 no registration can drop one (`rfc/dev/DECISIONS.md`, "an enrolment
+cannot fail"). The swap therefore protects nothing and costs a pool request at
+the front of every collection — worst where it hurts most, since a collection
+an allocation failure started would take a block from the tier its own rows
+need, before drawing a single row, and would not start at all when all three
+lists refuse. Carrying the amendment back to Y12 is the `rfc` repository's
+work.
+
+**What the restore rests on instead of a spare.** The batch goes back into an
+empty write position, and an assertion in every build says it was empty.
+Between the detach and the restore nothing registers a candidate: mark and
+scan write no entity, so no decrement runs under them. The day that stops
+holding is the day a destructor runs before the restore, and the damage would
+be silent — the segment holding that destructor's entries would leave the
+chain with its own roots' candidate bits standing, which is Y6's permanent
+miss.
+
+---
+
 ## 2026-09-03 — the member list is the pressure path's alone, and the surplus is a second trace
 
 Owner: S36.12 and S36.7's driver. Ruled by Edmond.

@@ -57,6 +57,8 @@ fn reset() {
 
 mod an_arena_entity_leaves_no_entry;
 mod the_base_block_a_thread_holds_for_its_life;
+mod the_batch_a_collection_detaches;
+mod the_tokens_every_lane_holds;
 mod what_a_registration_writes;
 mod what_gc_owns;
 mod what_the_poll_owes_the_queue;

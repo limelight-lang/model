@@ -1871,6 +1871,13 @@ stage claiming the frees while building none of them.
         17 m 00 s of wall, at two threads with `-Zmiri-ignore-leaks`. Clean,
         and it covers every case of `records`, `stack`, `arena` and
         `deferred_slot_reuse` this step wrote.
+      miri 2026-09-03 — re-run at `fd1ecce`, which the figure above predates by
+        two commits: the worklist region's revert and the root-count guard.
+        126 passed, 0 failed, 7 ignored, 441.22 s on Miri's clock at two
+        threads. The 126 and the 7 account for every `#[test]` under
+        `src/cycle` at that commit, 133 of them; the run above accounts for 130
+        of the 132 the tree carried at `0c64602`, and what the other two were
+        is not established.
       note 2026-09-03 — **the two-cursor clause is struck**, by Edmond's word
         over the Sage gate's ruling. It read: the arena bumps row arrays from a
         block's front and worklist segments from its back, growing when the two
@@ -1929,6 +1936,43 @@ stage claiming the frees while building none of them.
         lane without allocation. No `CANDIDATE_BIT` bit is left without exactly one
         logical record and no record exists in two lanes
       tier: T2 · role: Sage → Critic
+      Sage 2026-09-03 (pre-change gate): **the detach draws no segment**, which
+        refuses the proposal put to the gate and Y12 clause 2's swap with it —
+        recorded in `dev/DECISIONS.md`, "the detach of a candidate chain draws
+        no segment", and carrying the amendment to `rfc` is that repository's
+        work. The batch is a two-word move-only value owned by the collection
+        frame, refused a home in `OwnerCycleState`'s reserved word and in the
+        workspace: nothing outside that frame ever has to find it. Its bounds
+        are the head and the head's fill alone, with no tail, S37.4's composite
+        detach adding one when it needs one. The overflow buffer is not part of
+        the batch and the detach may not assert it empty, the pressure path
+        sharing the code. The restore asserts an empty write position **in
+        every build**, that assertion being the whole difference between "no
+        user code runs between the detach and the restore" as an argument and
+        as a check. And the step splits: slice (a) is the detach, the restore
+        and the two-phase loop; slice (b) is the pressure path's harvest, which
+        waits because its region capacity waits for S40.1. The instrument owed
+        before the first edit is a walk over every lane, `candidate_count`
+        answering one of two and the clause being about entities rather than
+        counts.
+      progress 2026-09-03 — slice (a): `queue::detach_candidates` moves the
+        chain's head and fill into an `InFlightBatch` and leaves the write
+        position null; `restore_candidates` puts them back under the
+        every-build assertion; `ActiveTrace` holds the batch and its drop
+        restores one nothing disposed of, before the row sweep. `cycle::trace`
+        runs both phases over the batch in one function, so "all roots mark
+        before any root scans" holds by construction rather than by a caller
+        remembering it — its test shows the interleaved order reading a ring as
+        held from outside, and the two-phase order reading the same ring
+        unreachable. Measured on the day: the detach and the restore each make
+        0 global allocations and 0 pool requests, move neither
+        `gc_metadata::stats` figure and spend no spare cell. Ten tests, the
+        walk over both lanes calibrated against `candidate_count` and
+        `overflow_len` before the batch existed, and the two assertions —
+        a restore over a lane that grew again, and a batch dropped instead of
+        restored — in child processes. This does not close S36.12: slice (b)
+        remains, and with it the first clause's harvest sentence and the
+        member-append half of the refusal clause.
       handoff: choose and test the commit unit here. A single condemned batch
         is safe under the aggregate exact sum but resurrection in one connected
         part conservatively retains the others; if teardown promises

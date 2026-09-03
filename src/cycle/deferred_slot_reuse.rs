@@ -281,6 +281,11 @@ impl Drop for WithheldReturns {
 /// reuse it delayed.
 #[must_use = "dropping the trace window closes the slot-reuse barrier"]
 pub(crate) struct ActiveTrace {
+    /// The candidate chain this collection detached, while it is still this
+    /// collection's. `None` before [`ActiveTrace::detach_candidates`] and after
+    /// whatever disposition takes it, which puts a restore after the batch is
+    /// gone out of reach rather than merely in the wrong.
+    batch: Option<crate::cycle::queue::InFlightBatch>,
     /// Declared before the arena, and therefore dropped before it: this
     /// chain's control line, its base segment and its first 1,024 records all
     /// stand in a region of the workspace, which the arena's drop hands back
@@ -319,10 +324,46 @@ impl ActiveTrace {
         DEFERRED_RETURNS.with(|control| control.set(returns.control));
 
         Some(Self {
+            batch: None,
             returns,
             arena,
             _not_send: std::marker::PhantomData,
         })
+    }
+
+    /// Take this thread's candidate chain into this trace, once, before the
+    /// first mark.
+    ///
+    /// The draw the window needed is behind it — the detach itself asks for
+    /// nothing and cannot be refused (`crate::cycle::queue::detach_candidates`)
+    /// — so a collection that reaches this line has all the memory its roots
+    /// cost.
+    pub(crate) fn detach_candidates(&mut self) {
+        assert!(
+            self.batch.is_none(),
+            "a trace detaches its candidate chain once"
+        );
+        self.batch = Some(crate::cycle::queue::detach_candidates());
+    }
+
+    /// The arena and the detached batch in one answer, because a trace reads
+    /// the batch's roots while writing the arena's rows and two calls would
+    /// borrow this window twice.
+    ///
+    /// # Panics
+    /// When no batch has been detached, which is a caller that skipped
+    /// [`ActiveTrace::detach_candidates`].
+    pub(crate) fn rows_and_roots(
+        &mut self,
+    ) -> (
+        &mut crate::cycle::arena::TraceScratchArena,
+        &crate::cycle::queue::InFlightBatch,
+    ) {
+        let batch = self
+            .batch
+            .as_ref()
+            .expect("the trace has no candidate batch");
+        (&mut self.arena, batch)
     }
 
     /// The trace's working memory. No arena reference can outlive the window,
@@ -339,6 +380,15 @@ impl ActiveTrace {
 
 impl Drop for ActiveTrace {
     fn drop(&mut self) {
+        // First, and before the rows die: a batch still here was disposed of by
+        // nothing, so every root in it keeps its registration and its records go
+        // back to the lane they came out of. It depends on neither the sweep nor
+        // the replay, and `ll_free`'s candidate arm reads the entity's bit rather
+        // than the lane its record stands in.
+        if let Some(batch) = self.batch.take() {
+            crate::cycle::queue::restore_candidates(batch);
+        }
+
         // Both of this collection's residues stand together here and nowhere
         // else: the arena's reset enters its own alone, and the high-water
         // figure takes the larger of two marks rather than their sum, so a
