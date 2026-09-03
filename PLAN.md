@@ -1973,6 +1973,35 @@ stage claiming the frees while building none of them.
         restored — in child processes. This does not close S36.12: slice (b)
         remains, and with it the first clause's harvest sentence and the
         member-append half of the refusal clause.
+      Critic 2026-09-03 round 1 (slice a): eleven findings, ten taken. The
+        load-bearing one is a trap the slice would have sprung on the first
+        real collection: the restore lives in `ActiveTrace`'s drop, and the
+        ordinary path keeps its rows through the teardown, so the severing that
+        releases a condemned member's live children registers candidates into
+        the write position the detach emptied — and the restore's own assertion
+        would then end the process. `ActiveTrace::take_batch` is what a
+        disposition uses instead, and the ordering it owes is stated at both
+        ends and named against S36.7. Also taken: the restore emptied the batch
+        before it asserted, so a refusal stranded the chain in a local, and the
+        batch's drop was blind to exactly that path; `scan`'s safety contract
+        said "a live entity header" while the batch offers roots that were torn
+        down, which is the case `mark` admits by rule; `walk_chain` claimed to
+        be the only place that knows how a chain is bounded, where
+        `release_queue_segments` and `append_with_new_segment` rest on the same
+        rule, and `candidate_count` now goes through the walk so the count is
+        one place fewer; the walk's order was documented as newest first, where
+        it is the newest segment first and the oldest entry inside each; the
+        ordering test's control arm ran an order the batch does not produce,
+        and under the real order the interleaving is harmless, so the fixture
+        registers the other way round and the batch's order is pinned; the
+        tests never read a candidate bit; and the citation for the ordering
+        rule named an `rfc` section that states the trial-deletion arithmetic
+        and not the ordering, in `scan.rs` as well, both now stating the
+        derivation instead. Refused — that the probe cannot see a pool request:
+        `allocation_probe::take_allocations` answers heap allocations and pool
+        requests as a pair, and the assertion is against `(0, 0)`. Two source
+        mutations were run and each was caught by the test that owns it: the
+        two phases interleaved per root, and the restore's assertion deleted.
       handoff: choose and test the commit unit here. A single condemned batch
         is safe under the aggregate exact sum but resurrection in one connected
         part conservatively retains the others; if teardown promises

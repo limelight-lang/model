@@ -2,20 +2,24 @@
 //! scanned.
 //!
 //! The order is the whole of this module, and it is a correctness requirement
-//! rather than a convenience. A mark subtracts from rows, so a mark that ran
-//! after a scan would leave a verdict standing on a count that was not final,
-//! and a second root reaching into the first one's closure is the ordinary case
-//! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial
-//! deletion"). Both phases run here, in one function, so the rule holds by
-//! construction rather than by a caller remembering it.
+//! rather than a convenience. It follows from the arithmetic trial deletion
+//! rests on: the mark subtracts each internal edge from the row it points at
+//! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial deletion"),
+//! so a row is final only once every root has been marked, and a scan run
+//! before that reads a count still owed subtractions. A second root reaching
+//! into the first one's closure is what makes the case ordinary rather than
+//! rare, and the rfc states neither the ordering nor that frequency. Both
+//! phases run here, in one function, so the rule holds by construction rather
+//! than by a caller remembering it.
 //!
 //! # What it owns
 //!
 //! Nothing. The rows, the bitmap and the worklist are the caller's arena, and
 //! the roots are the caller's batch; the phases read the batch twice and write
 //! neither it nor any entity. A trace that gives up leaves the heap
-//! byte-identical, and the caller's whole debt is the arena's reset — which
-//! `crate::cycle::deferred_slot_reuse::ActiveTrace` performs at its close.
+//! byte-identical, and what it owes afterwards is the arena's reset and the
+//! batch's restore — both of them
+//! `crate::cycle::deferred_slot_reuse::ActiveTrace`'s at its close.
 //!
 //! # What a root at zero costs
 //!
@@ -37,8 +41,9 @@ pub(crate) enum TraceOutcome {
     /// proposal the exact test may read.
     Complete,
     /// An allocation path refused, in either phase, and the trace was
-    /// abandoned where it stood. The heap is byte-identical, no colour is a
-    /// verdict, and every root keeps its registration.
+    /// abandoned where it stood. The heap is byte-identical and no colour is a
+    /// verdict; the roots keep their registration because nothing here disposes
+    /// of one, and their records go back with the window's close.
     AllocationFailed,
 }
 

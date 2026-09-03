@@ -346,6 +346,23 @@ impl ActiveTrace {
         self.batch = Some(crate::cycle::queue::detach_candidates());
     }
 
+    /// Take the detached batch out of this window, leaving the drop nothing to
+    /// restore.
+    ///
+    /// **A disposition that runs user code calls this before the first
+    /// destructor.** The ordinary collection keeps its rows through the
+    /// teardown (`dev/DECISIONS.md`, "the member list is the pressure path's
+    /// alone"), so this window is still open while severed children are
+    /// released; each such release registers a candidate into the write
+    /// position the detach emptied, and a restore after that is refused
+    /// (`crate::cycle::queue::restore_candidates`). The disposition that owns
+    /// the roots from here on is S36.7's driver.
+    ///
+    /// `None` when no batch was detached, or when one already left.
+    pub(crate) fn take_batch(&mut self) -> Option<crate::cycle::queue::InFlightBatch> {
+        self.batch.take()
+    }
+
     /// The arena and the detached batch in one answer, because a trace reads
     /// the batch's roots while writing the arena's rows and two calls would
     /// borrow this window twice.

@@ -11,11 +11,12 @@
 //! on the owning thread before any free.
 //!
 //! **It runs after every root has been marked, never between two
-//! marks.** A mark subtracts from rows, so one that ran after a scan
-//! would leave a verdict standing on a count that was not final — and a
-//! second root reaching into the first one's closure is the ordinary
-//! case rather than a rare one (`rfc/model/gc/rc-cycle.md`, "Candidate
-//! registration and trial deletion").
+//! marks.** A mark subtracts from rows (`rfc/model/gc/rc-cycle.md`,
+//! "Candidate registration and trial deletion"), so one that ran after a
+//! scan would leave a verdict standing on a count that was not final,
+//! and a second root reaching into the first one's closure is the
+//! ordinary case rather than a rare one. What holds the order is
+//! `crate::cycle::trace`, which runs both phases over one batch.
 //!
 //! **No entity is written here either.** The colours go into the shadow
 //! rows, so a scan that gives up halfway leaves the heap byte-identical
@@ -97,9 +98,13 @@ pub(crate) enum ScanResult {
 /// mark, and every root must have been marked before the first scan runs.
 ///
 /// # Safety
-/// As `mark`: `root` is a live entity header of this thread's heap, and
-/// the trace runs where `cells::trace_cells` may read an entity's cells
-/// plainly — on the owning thread, with no mutator running beside it.
+/// As `mark`: `root` is an entity header of this thread's heap whose slot is
+/// still its own — a candidate the queue names, live or dead — and the trace
+/// runs where `cells::trace_cells` may read an entity's cells plainly, on the
+/// owning thread with no mutator running beside it. A root that was torn down
+/// has no met row, so this reads its block and stops; the cells are read only
+/// for an entity the mark met, and the mark meets none at count zero
+/// (`crate::cycle::mark`, "A root at count zero is expanded by nothing").
 pub(crate) unsafe fn scan(arena: &mut TraceScratchArena, root: *mut RcHeader) -> ScanResult {
     if !unsafe { classify_and_schedule_entity(arena, root, false) } {
         return ScanResult::AllocationFailed;

@@ -102,6 +102,12 @@ fn every_token_crosses_the_detach_exactly_once() {
     let mut before = Vec::new();
     collect_lane_tokens(&mut before);
     assert_eq!(before, vec![chained_entity, overflowed_entity]);
+    // The other half of the clause, and the one a token walk cannot state: a
+    // record answers for a bit, so a detach or a restore that cleared or set
+    // one would keep every set below equal and still be wrong. Asserted for
+    // the chained entity alone — the overflowed one was written by the fixture
+    // rather than by the release path, so no bit was ever set for it.
+    assert_ne!(unsafe { mutator_flags(chained_entity) } & CANDIDATE_BIT, 0);
 
     let batch = detach_candidates();
     let mut during = Vec::new();
@@ -116,19 +122,25 @@ fn every_token_crosses_the_detach_exactly_once() {
         vec![chained_entity],
         "and the chain's entry is in the batch, in one lane and not two"
     );
+    assert_ne!(
+        unsafe { mutator_flags(chained_entity) } & CANDIDATE_BIT,
+        0,
+        "the record moved lanes and the bit that answers for it stayed put"
+    );
 
     restore_candidates(batch);
     let mut after = Vec::new();
     collect_lane_tokens(&mut after);
     assert_eq!(after, before, "the set of records is what it was");
+    assert_ne!(unsafe { mutator_flags(chained_entity) } & CANDIDATE_BIT, 0);
 
     reset();
 }
 
-/// Neither end draws, charges or discharges anything. This is what the
-/// detach's shape buys, and the reason a fresh segment is not swapped in at
-/// the front of every collection: under that design this assertion could only
-/// have said "at most one pool request".
+/// Neither end draws, charges or discharges anything: no global allocation, no
+/// pool request, no cell spent, and neither ledger figure moved. That is what
+/// a detach of two words can be held to (`dev/DECISIONS.md`, "the detach of a
+/// candidate chain draws no segment").
 #[test]
 fn neither_the_detach_nor_the_restore_asks_for_memory() {
     let _g = test_guard();

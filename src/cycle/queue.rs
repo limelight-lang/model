@@ -704,8 +704,10 @@ impl InFlightBatch {
         self.head.is_null()
     }
 
-    /// Take every root in the batch, newest first, stopping at the first
-    /// `visit` that answers false. **False** when it stopped early.
+    /// Take every root in the batch in [`walk_chain`]'s order — the newest
+    /// segment first and, inside each segment, the oldest entry first — and
+    /// stop at the first `visit` that answers false. **False** when it stopped
+    /// early.
     ///
     /// A root may name an entity that has since been torn down: the entry is
     /// what keeps that slot out of the allocator's hands, and nothing retires
@@ -719,6 +721,14 @@ impl InFlightBatch {
 
 impl Drop for InFlightBatch {
     fn drop(&mut self) {
+        // Silent while another panic is unwinding. This one would be the
+        // second, and a panic inside a panic ends the process without the first
+        // one's message — which is the message that says what actually went
+        // wrong, this drop's own being a consequence of it.
+        if std::thread::panicking() {
+            return;
+        }
+
         assert!(
             self.head.is_null(),
             "a detached candidate batch was dropped instead of restored"
@@ -730,10 +740,13 @@ impl Drop for InFlightBatch {
 /// first, stopping at the first `visit` that answers false. **False** when it
 /// stopped early.
 ///
-/// The one place that knows how a chain is bounded: the head by a fill stored
-/// beside it, every segment behind the head by [`SEGMENT_CAPACITY`], which
-/// holds because a segment leaves the write position only when it is full. A
-/// second reader of that rule is a second place to fix when S38.1 ends it.
+/// The one place that reads a chain's entries, and where the bound on them
+/// lives: the head holds the fill stored beside it, every segment behind the
+/// head holds [`SEGMENT_CAPACITY`], and that holds because a segment leaves the
+/// write position only when it is full. Two others rest on the same rule
+/// without reading an entry — [`release_queue_segments`], which discharges one
+/// payload per segment behind the head, and [`append_with_new_segment`], which
+/// asserts it at the growth — so S38.1 ends the rule in three places.
 fn walk_chain(
     head: *mut BlockHeader,
     fill: usize,
@@ -774,6 +787,14 @@ fn walk_chain(
 ///
 /// An empty batch is the answer for a thread that has registered nothing, and
 /// for one with no queue state at all.
+///
+/// **Nothing in this module knows a batch is out.** [`release_queue_segments`]
+/// finds an empty write position and gives back none of the batch's segments,
+/// and [`release_queue_base`]'s own assertion passes. What stands between that
+/// and a thread exit is the trace window the batch travels with:
+/// `cycle::deferred_slot_reuse::dispose_thread_state` refuses an exit inside
+/// one, and `memory::heap::ll_thread_exit` calls it before it releases the
+/// queue.
 pub(crate) fn detach_candidates() -> InFlightBatch {
     let state = owner_state();
     if state.is_null() {
@@ -793,20 +814,30 @@ pub(crate) fn detach_candidates() -> InFlightBatch {
 /// Put a batch back into the active lane it came out of, every root still
 /// registered and every record where it was.
 ///
-/// This is the disposition of a trace that reclaimed nothing — an abort, and,
-/// until a drain is built, the ordinary end as well. A root the trace did not
-/// dispose of keeps its registration, its bit uncleared and its entry back in
-/// its own lane (`rfc/model/gc/cycle/questions.md`, Y12 clause 5).
+/// This is the disposition of a trace that reclaimed nothing — an abort, and
+/// the ordinary end as well while no other disposition takes the batch first;
+/// S36.7 builds the one that does. A root the trace did not dispose of keeps
+/// its registration, its bit uncleared and its entry back in its own lane
+/// (`rfc/model/gc/cycle/questions.md`, Y12 clause 5).
 ///
 /// **The write position must still be empty, and the assertion is in every
-/// build.** Nothing between the detach and here registers a candidate: mark and
-/// scan write no entity, so no decrement runs under them. The day that stops
-/// holding is the day a destructor runs before the restore, and the damage is
-/// silent — the segment holding that destructor's entries would leave the
-/// chain with its own roots' bits standing.
+/// build.** Nothing registers a candidate between the detach and here while
+/// nothing but mark and scan runs there: they write no entity, so no decrement
+/// runs under them.
+///
+/// **A teardown does register candidates, so a disposition takes the batch
+/// before the first destructor runs.** The ordinary collection keeps its rows
+/// through the teardown (`dev/DECISIONS.md`, "the member list is the pressure
+/// path's alone"), so the trace window outlives the severing that releases the
+/// live children of a member the exact test found unreachable; each such
+/// release registers a candidate, which installs a fresh segment in the empty
+/// write position. Restoring over
+/// that segment would drop it out of the chain with its own roots' bits
+/// standing, which no later decrement can undo, so the assertion refuses it —
+/// and `cycle::deferred_slot_reuse::ActiveTrace::take_batch` is what a
+/// disposition uses instead.
 pub(crate) fn restore_candidates(mut batch: InFlightBatch) {
-    let head = std::mem::replace(&mut batch.head, std::ptr::null_mut());
-    if head.is_null() {
+    if batch.head.is_null() {
         return;
     }
 
@@ -819,12 +850,15 @@ pub(crate) fn restore_candidates(mut batch: InFlightBatch) {
         "the queue base block left with a batch out"
     );
     let q = unsafe { owner_state_ref(state) };
+    // Checked before the batch is emptied, so a refusal leaves the chain in the
+    // batch rather than in a local this frame is about to drop.
     assert!(
         q.write_segment.get().is_null(),
         "a candidate was registered while a batch was detached"
     );
-    q.write_segment.set(head);
+    q.write_segment.set(batch.head);
     q.write_len.set(batch.fill);
+    batch.head = std::ptr::null_mut();
 }
 
 /// Take one spare, or null when both cells are empty.
@@ -981,19 +1015,18 @@ pub(crate) fn candidate_count() -> usize {
         return 0;
     }
 
-    let mut count = q.write_len.get();
-    let mut segment = unsafe { (*write_segment).next };
-    while !segment.is_null() {
-        count += SEGMENT_CAPACITY;
-        segment = unsafe { (*segment).next };
-    }
+    let mut count = 0;
+    walk_chain(write_segment, q.write_len.get(), |_| {
+        count += 1;
+        true
+    });
 
     count
 }
 
 /// Every candidate token this thread's queue holds, the active chain and the
-/// overflow buffer both, appended to `out`: the chain newest segment first,
-/// then the overflow buffer oldest entry first.
+/// overflow buffer both, appended to `out`: the chain in [`walk_chain`]'s
+/// order, then the overflow buffer oldest entry first.
 ///
 /// [`candidate_count`] answers the chain alone, and a count of one lane can
 /// state neither half of the rule this exists for — a `CANDIDATE_BIT` standing

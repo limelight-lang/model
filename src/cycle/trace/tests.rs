@@ -15,8 +15,12 @@ use crate::test_support::{prop_offset, store_prop};
 /// Two garbage rings, the second of which points into the first.
 ///
 /// `alpha` holds itself; `beta` holds itself and `alpha`. Both are registered,
-/// `alpha` last so that it comes first in the batch — the order in which the
-/// interleaved arm below gets the wrong answer.
+/// `alpha` **first**, because a batch's entries come out of a segment in the
+/// order they went in: `alpha` at index 0 is the first root the walk offers,
+/// and that is the order in which the interleaved arm below gets the wrong
+/// answer. Registered the other way round, one mark from `beta` reaches
+/// `alpha` too and the interleaving is harmless, which would leave the control
+/// arm proving nothing.
 ///
 /// The count each row starts from: `alpha` at two, its own edge and `beta`'s,
 /// and `beta` at one. Every one of those three edges is internal, so a trace
@@ -66,11 +70,9 @@ fn two_rings() -> TwoRings {
         store_prop(&mut arena, alpha, prop_offset(0), alpha);
         store_prop(&mut arena, beta, prop_offset(0), beta);
         store_prop(&mut arena, beta, prop_offset(1), alpha);
-        // Non-final both, so each release registers its entity: `beta` first,
-        // which puts `alpha` at the head of the chain and therefore first in
-        // the batch.
-        assert!(!ll_release(beta as *mut RcHeader));
+        // Non-final both, so each release registers its entity.
         assert!(!ll_release(alpha as *mut RcHeader));
+        assert!(!ll_release(beta as *mut RcHeader));
     }
 
     TwoRings { arena, alpha, beta }
@@ -110,8 +112,9 @@ fn every_root_marks_before_any_root_scans() {
     let (alpha, beta) = (rings.alpha, rings.beta);
     assert_eq!(candidate_count(), 2, "both rings are registered");
 
-    // The control arm, and it is the defect rather than the fix: one arena,
-    // the two phases interleaved per root, in the batch's own order.
+    // The control arm, and it is the defect rather than the fix: one arena, the
+    // two phases interleaved per root, in the order the batch offers them —
+    // pinned below, because the arm is only a control while it matches.
     let mut interleaved = open_arena();
     unsafe {
         assert_eq!(
@@ -146,6 +149,16 @@ fn every_root_marks_before_any_root_scans() {
     active.detach_candidates();
     let outcome = {
         let (arena, batch) = active.rows_and_roots();
+        let mut order = Vec::new();
+        batch.walk_roots(|root| {
+            order.push(root);
+            true
+        });
+        assert_eq!(
+            order,
+            vec![alpha as *mut RcHeader, beta as *mut RcHeader],
+            "the control arm above ran the order the batch offers"
+        );
         unsafe { trace_batch(arena, batch) }
     };
     assert_eq!(outcome, TraceOutcome::Complete);
