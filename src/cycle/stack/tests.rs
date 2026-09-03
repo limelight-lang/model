@@ -1,7 +1,8 @@
-//! The worklist, on its own. Neither half of an entry is dereferenced
-//! here, so the tests queue headers and rows off two slabs rather than a
-//! real graph: what is under test is the segment chain, and a graph deep
-//! enough to cross it would be five hundred objects built to prove a link.
+//! The worklist, through the arena that owns it. Neither half of an entry
+//! is dereferenced here, so the tests queue headers and rows off two slabs
+//! rather than a real graph: what is under test is the segment chain, and a
+//! graph deep enough to cross it would be five hundred objects built to prove
+//! a link.
 //!
 //! Both slabs are real memory and not integers cast to pointers, which
 //! matters to the instrument rather than to the code: one such cast puts
@@ -41,37 +42,83 @@ unsafe fn entry(base: *mut RcHeader, rows: *mut u32, index: usize) -> WorklistEn
     }
 }
 
-/// Order across a segment boundary. A depth past one segment is where
-/// the chain starts existing at all, and last-in-first-out across it is
-/// what the descent depends on: an entity popped out of order is
-/// expanded before the entity that queued it, which is a different
-/// traversal rather than a wrong one — and it reads correctly on every
-/// graph but the one whose depth crosses the boundary.
+/// The region's own capacity, exactly. A trace this deep is served out of
+/// memory the thread already holds, so the collection asks the memory manager
+/// for nothing, which is the point of the fixed region.
 #[test]
-fn a_depth_past_one_segment_pops_in_the_order_it_pushed() {
+fn a_depth_at_the_regions_capacity_draws_nothing() {
     let _g = test_guard();
-    let depth = SEGMENT_ENTRIES + SEGMENT_ENTRIES / 2;
+    let depth = WORKLIST_BASE_ENTRIES;
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
     let mut shadow_rows = row_slab(depth);
     let rows = shadow_rows.as_mut_ptr();
 
     let mut arena = crate::cycle::testing::open_arena();
-    let mut stack = TraceStack::new();
+    let room_before = arena.room_left();
     for i in 1..=depth {
         assert!(
-            stack.push(&mut arena, unsafe { entry(base, rows, i) }),
-            "the pool served"
+            arena.push_work(unsafe { entry(base, rows, i) }),
+            "the region served"
         );
     }
 
-    assert_eq!(stack.segment_count(), 2, "the depth crossed one boundary");
+    assert_eq!(
+        arena.worklist_segment_count(),
+        1,
+        "the workspace's region alone"
+    );
+    assert_eq!(arena.blocks_held(), 0, "and no block was drawn");
+    assert_eq!(arena.room_left(), room_before, "nor was the bump touched");
 
     for i in (1..=depth).rev() {
-        assert_eq!(stack.pop(), Some(unsafe { entry(base, rows, i) }));
+        assert_eq!(arena.pop_work(), Some(unsafe { entry(base, rows, i) }));
     }
 
-    assert_eq!(stack.pop(), None, "and the worklist is exhausted");
+    assert_eq!(arena.pop_work(), None, "and the worklist is exhausted");
+    arena.reset();
+}
+
+/// One entry past the region, which is where the chain starts existing at
+/// all. Last-in-first-out across the boundary is what the descent depends on:
+/// an entity popped out of order is expanded before the entity that queued it,
+/// which is a different traversal rather than a wrong one — and it reads
+/// correctly on every graph but the one whose depth crosses the boundary.
+#[test]
+fn a_depth_one_past_the_region_pops_in_the_order_it_pushed() {
+    let _g = test_guard();
+    let depth = WORKLIST_BASE_ENTRIES + 1;
+    let mut headers = slab(depth);
+    let base = headers.as_mut_ptr();
+    let mut shadow_rows = row_slab(depth);
+    let rows = shadow_rows.as_mut_ptr();
+
+    let mut arena = crate::cycle::testing::open_arena();
+    let room_before = arena.room_left();
+    for i in 1..=depth {
+        assert!(
+            arena.push_work(unsafe { entry(base, rows, i) }),
+            "the bump served"
+        );
+    }
+
+    assert_eq!(
+        arena.worklist_segment_count(),
+        2,
+        "the depth crossed one boundary"
+    );
+    assert_eq!(
+        room_before - arena.room_left(),
+        SEGMENT_BYTES,
+        "and the segment came out of the bump rather than out of a block of its own"
+    );
+    assert_eq!(arena.blocks_held(), 0);
+
+    for i in (1..=depth).rev() {
+        assert_eq!(arena.pop_work(), Some(unsafe { entry(base, rows, i) }));
+    }
+
+    assert_eq!(arena.pop_work(), None, "and the worklist is exhausted");
     arena.reset();
 }
 
@@ -82,27 +129,26 @@ fn a_depth_past_one_segment_pops_in_the_order_it_pushed() {
 #[test]
 fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
     let _g = test_guard();
-    let depth = SEGMENT_ENTRIES + 1;
+    let depth = WORKLIST_BASE_ENTRIES + 1;
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
     let mut shadow_rows = row_slab(depth);
     let rows = shadow_rows.as_mut_ptr();
 
     let mut arena = crate::cycle::testing::open_arena();
-    let mut stack = TraceStack::new();
     for crossing in 0..4 {
         for i in 1..=depth {
-            assert!(stack.push(&mut arena, unsafe { entry(base, rows, i) }));
+            assert!(arena.push_work(unsafe { entry(base, rows, i) }));
         }
 
         assert_eq!(
-            stack.segment_count(),
+            arena.worklist_segment_count(),
             2,
             "crossing {crossing} drew no segment of its own"
         );
 
         for i in (1..=depth).rev() {
-            assert_eq!(stack.pop(), Some(unsafe { entry(base, rows, i) }));
+            assert_eq!(arena.pop_work(), Some(unsafe { entry(base, rows, i) }));
         }
     }
 
@@ -115,20 +161,21 @@ fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
 fn a_push_with_both_allocation_paths_refusing_answers_false() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
-    let mut headers = slab(1);
+    let depth = WORKLIST_BASE_ENTRIES + 1;
+    let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
-    let mut shadow_rows = row_slab(1);
+    let mut shadow_rows = row_slab(depth);
     let rows = shadow_rows.as_mut_ptr();
 
     let mut arena = crate::cycle::testing::open_arena();
-    // Past the workspace: a segment served out of memory the thread already
-    // holds meets no allocation path, and this case is about the refusal.
-    assert!(
-        !arena
-            .alloc(crate::memory::block_pool::BLOCK_PAYLOAD)
-            .is_null()
-    );
-    let mut stack = TraceStack::new();
+    // Past the region and past the bump: a segment served out of memory the
+    // thread already holds meets no allocation path, and this case is about
+    // the refusal.
+    let room = arena.room_left();
+    assert!(!arena.alloc(room).is_null());
+    for i in 1..depth {
+        assert!(arena.push_work(unsafe { entry(base, rows, i) }));
+    }
 
     let oom = force_oom();
     assert!(
@@ -137,40 +184,54 @@ fn a_push_with_both_allocation_paths_refusing_answers_false() {
     );
     assert_eq!(crate::memory::critical::blocks_held(), 0);
 
-    let refused = stack.push(&mut arena, unsafe { entry(base, rows, 1) });
+    let refused = arena.push_work(unsafe { entry(base, rows, depth) });
     drop(oom);
 
     assert!(!refused);
-    assert_eq!(stack.pop(), None, "and nothing was queued");
-    assert_eq!(stack.segment_count(), 0);
+    assert_eq!(
+        arena.worklist_segment_count(),
+        1,
+        "and no segment was attached"
+    );
+    for i in (1..depth).rev() {
+        assert_eq!(arena.pop_work(), Some(unsafe { entry(base, rows, i) }));
+    }
+
+    assert_eq!(arena.pop_work(), None, "nor was the refused entry queued");
 
     arena.reset();
     crate::memory::critical::drain_for_test();
 }
 
-/// A stack that outlives its arena's reset forgets its segments, which
-/// is the contract that keeps it from advancing into a block the pool has
-/// handed to someone else. The retry after an aborted collection is the
-/// caller this exists for.
+/// The arena's reset empties the worklist and forgets every segment past the
+/// workspace's own region, which is the contract that keeps a later push from
+/// advancing into a block the pool has handed to someone else. The retry after
+/// an aborted collection is the caller this exists for.
 #[test]
-fn a_stack_reset_with_its_arena_holds_no_segment() {
+fn the_arenas_reset_leaves_the_worklist_on_its_region_alone() {
     let _g = test_guard();
-    let mut headers = slab(1);
+    let depth = WORKLIST_BASE_ENTRIES + 1;
+    let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
-    let mut shadow_rows = row_slab(1);
+    let mut shadow_rows = row_slab(depth);
     let rows = shadow_rows.as_mut_ptr();
 
     let mut arena = crate::cycle::testing::open_arena();
-    let mut stack = TraceStack::new();
-    assert!(stack.push(&mut arena, unsafe { entry(base, rows, 1) }));
-    assert_eq!(stack.segment_count(), 1);
+    for i in 1..=depth {
+        assert!(arena.push_work(unsafe { entry(base, rows, i) }));
+    }
+
+    assert_eq!(arena.worklist_segment_count(), 2);
 
     arena.reset();
-    stack.reset();
-    assert_eq!(stack.segment_count(), 0, "no segment of the old arena");
-    assert_eq!(stack.pop(), None, "and nothing queued in one");
+    assert_eq!(
+        arena.worklist_segment_count(),
+        1,
+        "no segment of the collection that ended"
+    );
+    assert_eq!(arena.pop_work(), None, "and nothing queued in one");
 
-    assert!(stack.push(&mut arena, unsafe { entry(base, rows, 1) }));
-    assert_eq!(stack.pop(), Some(unsafe { entry(base, rows, 1) }));
+    assert!(arena.push_work(unsafe { entry(base, rows, 1) }));
+    assert_eq!(arena.pop_work(), Some(unsafe { entry(base, rows, 1) }));
     arena.reset();
 }

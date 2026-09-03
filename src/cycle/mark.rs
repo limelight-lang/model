@@ -33,7 +33,8 @@
 //! things it can ask that arena for — a row array, through
 //! [`TraceScratchArena::ensure_row`](crate::cycle::arena::TraceScratchArena::ensure_row),
 //! and a worklist segment, through
-//! [`TraceStack::push`](crate::cycle::stack::TraceStack::push). Either refused
+//! [`TraceScratchArena::push_work`](crate::cycle::arena::TraceScratchArena::push_work).
+//! Either refused
 //! answers [`MarkResult::AllocationFailed`], which abandons the trace where it
 //! stands. Abandoning is free precisely because no entity was written.
 //!
@@ -46,7 +47,7 @@ use crate::cells::{self, PlainCells};
 use crate::cycle::arena::{RowLookup, TraceScratchArena};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
-use crate::cycle::stack::{TraceStack, WorklistEntry};
+use crate::cycle::stack::WorklistEntry;
 use crate::refcount::{RcHeader, header_refcount};
 
 /// What a mark from one root answered.
@@ -71,10 +72,10 @@ pub(crate) enum MarkResult {
 /// which is what keeps a ring through the arena — broken by the arena's
 /// own reset — out of the collector's reach (`crate::cycle::row`).
 ///
-/// `arena` and `stack` belong to the collection rather than to the root:
-/// a second root inside the first one's closure meets rows that already
-/// say met, expands nothing twice, and reuses the segments the first
-/// root's depth drew.
+/// `arena` belongs to the collection rather than to the root, and carries the
+/// worklist with it: a second root inside the first one's closure meets rows
+/// that already say met, expands nothing twice, and reuses the segments the
+/// first root's depth drew.
 ///
 /// **Nothing is written into any entity**, so [`MarkResult::AllocationFailed`]
 /// leaves the heap byte-identical and the caller's whole duty is
@@ -84,16 +85,12 @@ pub(crate) enum MarkResult {
 /// `root` is a live entity header of this thread's heap, and the trace
 /// runs where `cells::trace_cells` may read an entity's cells plainly —
 /// on the owning thread, with no mutator running beside it.
-pub(crate) unsafe fn mark(
-    arena: &mut TraceScratchArena,
-    stack: &mut TraceStack,
-    root: *mut RcHeader,
-) -> MarkResult {
-    if !unsafe { schedule_root_if_unvisited(arena, stack, root) } {
+pub(crate) unsafe fn mark(arena: &mut TraceScratchArena, root: *mut RcHeader) -> MarkResult {
+    if !unsafe { schedule_root_if_unvisited(arena, root) } {
         return MarkResult::AllocationFailed;
     }
 
-    while let Some(entry) = stack.pop() {
+    while let Some(entry) = arena.pop_work() {
         // The row the entry carries is the scan's to read; the mark's
         // expansion needs the entity alone, and the two phases keep one
         // entry shape (`crate::cycle::stack::WorklistEntry`).
@@ -114,7 +111,7 @@ pub(crate) unsafe fn mark(
                     return;
                 }
 
-                refused = !visit_child(arena, stack, cell.child);
+                refused = !visit_child(arena, cell.child);
             })
         };
 
@@ -136,11 +133,7 @@ pub(crate) unsafe fn mark(
 ///
 /// # Safety
 /// As [`mark`].
-unsafe fn schedule_root_if_unvisited(
-    arena: &mut TraceScratchArena,
-    stack: &mut TraceStack,
-    root: *mut RcHeader,
-) -> bool {
+unsafe fn schedule_root_if_unvisited(arena: &mut TraceScratchArena, root: *mut RcHeader) -> bool {
     let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(root) }) else {
         // The candidate gate admits none: an entity outside the GC heap
         // never reaches the queue (`rfc/model/gc/rc-cycle.md`,
@@ -155,7 +148,7 @@ unsafe fn schedule_root_if_unvisited(
         RowLookup::Untracked => true,
         RowLookup::Ready { row, first_visit } => {
             if first_visit {
-                stack.push(arena, WorklistEntry { entity: root, row })
+                arena.push_work(WorklistEntry { entity: root, row })
             } else {
                 true
             }
@@ -184,11 +177,7 @@ unsafe fn schedule_root_if_unvisited(
 /// # Safety
 /// As [`mark`], and `child` is a counted child `cells::trace_cells`
 /// yielded, hence a live entity header.
-unsafe fn visit_child(
-    arena: &mut TraceScratchArena,
-    stack: &mut TraceStack,
-    child: *mut RcHeader,
-) -> bool {
+unsafe fn visit_child(arena: &mut TraceScratchArena, child: *mut RcHeader) -> bool {
     let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(child) }) else {
         return true;
     };
@@ -199,7 +188,7 @@ unsafe fn visit_child(
         RowLookup::Ready { row, first_visit } => {
             unsafe { shadow::subtract(row, 1) };
             if first_visit {
-                stack.push(arena, WorklistEntry { entity: child, row })
+                arena.push_work(WorklistEntry { entity: child, row })
             } else {
                 true
             }

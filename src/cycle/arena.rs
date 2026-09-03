@@ -9,6 +9,15 @@
 //! ([`crate::cycle::queue::lend_workspace_base`]; `dev/DECISIONS.md`, "the
 //! workspace base is drawn at the first collection, not at thread init").
 //!
+//! **Its first [`WORKSPACE_PREFIX_BYTES`] bytes are fixed regions rather than
+//! bump**, and the bump opens behind them. One region stands there, the
+//! trace's worklist ([`crate::cycle::stack`]): a shallow trace queues its
+//! entities into memory the thread already holds, so the common collection
+//! asks the memory manager for nothing at all. The withheld returns take a
+//! second region when S36.11 moves their base capacity here. The arena holds
+//! the worklist for the reason it holds the bump — the memory is one block,
+//! and its reset is one call.
+//!
 //! **Growth past the workspace has two allocation paths, in this order: the
 //! ordinary block pool, then the thread's critical reserve**
 //! (`rfc/model/memory/critical-reserve.md`,
@@ -83,6 +92,7 @@
 
 use crate::cycle::row::{Population, RowKey};
 use crate::cycle::shadow::{self, Color, RowArray};
+use crate::cycle::stack::{SEGMENT_BYTES, TraceStack, WorklistEntry};
 #[cfg(test)]
 use crate::memory::block_pool::BlockPool;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
@@ -151,6 +161,17 @@ impl Drop for LentWorkspace {
     }
 }
 
+/// Bytes at the head of the workspace the fixed regions take, before the bump
+/// opens.
+///
+/// One region so far, the trace's worklist. The withheld returns take a second
+/// one when S36.11 moves their base capacity into the workspace, and the bump
+/// region shrinks by that much.
+pub(crate) const WORKSPACE_PREFIX_BYTES: usize = SEGMENT_BYTES;
+
+/// Bytes of the workspace the bump may grant.
+const WORKSPACE_BUMP_BYTES: usize = BLOCK_PAYLOAD - WORKSPACE_PREFIX_BYTES;
+
 /// One collection's memory: the thread's workspace for as long as the arena
 /// lives, and the blocks the bump grew into past it, which
 /// [`TraceScratchArena::reset`] returns.
@@ -169,9 +190,17 @@ pub(crate) struct TraceScratchArena {
     /// The bump cursor into the newest block, and the bytes left in it.
     cursor: *mut u8,
     left: usize,
+    /// Bytes the bump may grant out of the block under the cursor: the whole
+    /// payload of a drawn block, and [`WORKSPACE_BUMP_BYTES`] of the
+    /// workspace, whose head the fixed regions hold.
+    open_capacity: usize,
     /// Newest array of the touched list, or null while no block has
     /// been touched.
     touched: *mut RowArray,
+    /// The trace's worklist, whose first entries are the workspace's own
+    /// region and whose overflow segments are this bump's
+    /// ([`crate::cycle::stack`]).
+    worklist: TraceStack,
     /// Bytes of this arena's bump already charged to the manager's
     /// ledger, so that [`reset`](TraceScratchArena::reset) discharges exactly
     /// what was charged and a re-entered reset discharges nothing.
@@ -197,13 +226,18 @@ impl TraceScratchArena {
             return None;
         }
 
+        let payload = BlockHeader::payload_start(base);
         Some(Self {
             base: LentWorkspace { block: base },
             blocks: std::ptr::null_mut(),
             from_reserve: 0,
-            cursor: BlockHeader::payload_start(base),
-            left: BLOCK_PAYLOAD,
+            cursor: unsafe { payload.add(WORKSPACE_PREFIX_BYTES) },
+            left: WORKSPACE_BUMP_BYTES,
+            open_capacity: WORKSPACE_BUMP_BYTES,
             touched: std::ptr::null_mut(),
+            // The regions are laid out from the head of the payload, and the
+            // worklist's is the first of them.
+            worklist: unsafe { TraceStack::over(payload) },
             published: 0,
         })
     }
@@ -212,8 +246,13 @@ impl TraceScratchArena {
     /// charged and which [`reset`](Self::reset) enters in the high-water
     /// figure. Zero on a rewound arena, which is the state a re-entered reset
     /// finds.
+    ///
+    /// Measured against what the bump may grant rather than against the whole
+    /// payload: the workspace's fixed regions are memory the thread holds
+    /// whether or not a collection is running, and counting them here would
+    /// charge every collection for them again.
     pub(crate) fn residue(&self) -> usize {
-        BLOCK_PAYLOAD - self.left
+        self.open_capacity - self.left
     }
 
     /// Charge `bytes` of this arena's bump as memory in use, and remember
@@ -404,6 +443,10 @@ impl TraceScratchArena {
     /// from the moment this returns, and its own `reset` is what says
     /// so.
     pub(crate) fn reset(&mut self) {
+        // Ahead of the sweep, which asserts an empty worklist: an abort is
+        // raised with entities still queued, and every one of them carries a
+        // row pointer into an array this call is about to unstamp.
+        self.worklist.rewind();
         self.clear_touched_rows();
 
         // The block still under the bump has no further grant coming, and it
@@ -430,8 +473,10 @@ impl TraceScratchArena {
         // `reset` again — over a list whose head was already returned. A
         // rewound bump reads a residue of zero, which is what that second pass
         // needs to see.
-        self.cursor = BlockHeader::payload_start(self.base.block());
-        self.left = BLOCK_PAYLOAD;
+        self.cursor =
+            unsafe { BlockHeader::payload_start(self.base.block()).add(WORKSPACE_PREFIX_BYTES) };
+        self.left = WORKSPACE_BUMP_BYTES;
+        self.open_capacity = WORKSPACE_BUMP_BYTES;
         while !self.blocks.is_null() {
             let block = self.blocks;
             self.blocks = unsafe { (*block).next };
@@ -461,6 +506,11 @@ impl TraceScratchArena {
     /// entity, so the pointer is the whole of what a collection leaves in
     /// the heap.
     pub(crate) fn clear_touched_rows(&mut self) {
+        assert!(
+            self.worklist.is_empty(),
+            "the worklist is drained before the rows it points into are unstamped"
+        );
+
         let mut array = self.touched;
         // Emptied first: the walk below runs to the end of the chain,
         // and a second call must find nothing rather than repeat it.
@@ -490,6 +540,38 @@ impl TraceScratchArena {
         }
     }
 
+    /// Queue `entry` for expansion, or answer **false** when both allocation
+    /// paths refused a worklist segment — which is the caller's signal to
+    /// abort the collection, and the only way this can fail.
+    ///
+    /// The first [`WORKLIST_BASE_ENTRIES`](crate::cycle::stack::WORKLIST_BASE_ENTRIES)
+    /// entries of a collection go into the workspace's own region and reach no
+    /// allocation path at all; past it the worklist takes segments from this
+    /// bump, so a depth that outruns the region is refused exactly where a row
+    /// array would be.
+    pub(crate) fn push_work(&mut self, entry: WorklistEntry) -> bool {
+        if self.worklist.push_into_current(entry) {
+            return true;
+        }
+
+        if !self.worklist.advance_to_kept() {
+            let region = self.alloc(SEGMENT_BYTES);
+            if region.is_null() {
+                return false;
+            }
+
+            unsafe { self.worklist.extend(region) };
+        }
+
+        self.worklist.push_into_current(entry)
+    }
+
+    /// The next entity to expand and the row its meeting found, or `None`
+    /// when the closure is exhausted.
+    pub(crate) fn pop_work(&mut self) -> Option<WorklistEntry> {
+        self.worklist.pop()
+    }
+
     /// Take one more block, or answer false when both allocation paths refuse.
     ///
     /// What is left of the previous block is abandoned. A bump that
@@ -512,12 +594,13 @@ impl TraceScratchArena {
         // is charged like any other because it stays in use until the reset.
         // Published after both allocation paths have answered: a refusal
         // leaves the bump where it is and the block still open.
-        self.publish(BLOCK_PAYLOAD - self.left);
+        self.publish(self.residue());
 
         unsafe { (&raw mut (*block).next).write(self.blocks) };
         self.blocks = block;
         self.cursor = BlockHeader::payload_start(block);
         self.left = BLOCK_PAYLOAD;
+        self.open_capacity = BLOCK_PAYLOAD;
         true
     }
 
@@ -535,6 +618,21 @@ impl TraceScratchArena {
         }
 
         count
+    }
+
+    /// Bytes the bump can still grant out of the block under the cursor.
+    /// Tests only, and the instrument a case uses to leave the arena an exact
+    /// remainder before forcing a refusal.
+    #[cfg(test)]
+    pub(crate) fn room_left(&self) -> usize {
+        self.left
+    }
+
+    /// Segments the worklist holds, the workspace's own region included.
+    /// Tests only ([`TraceStack::segment_count`](crate::cycle::stack::TraceStack::segment_count)).
+    #[cfg(test)]
+    pub(crate) fn worklist_segment_count(&self) -> usize {
+        self.worklist.segment_count()
     }
 
     /// Blocks this arena holds. Tests only: the number is what a leak

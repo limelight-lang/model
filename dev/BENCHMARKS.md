@@ -100,6 +100,33 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-03 — S36.11 the worklist's fixed region: a trace at 256 entries draws no segment
+
+**Machine:** dev box, shared with interactive work. **Base:** `4baee36`,
+`rustc 1.96.0`.
+
+**What changed:** the worklist's first 256 entries became a fixed region of
+the thread's workspace; before, the first push drew a segment out of the
+arena's bump whatever the trace's depth.
+
+### Counters
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| worklist segments drawn, trace of 256 entries | 1 | 0 | `cycle::stack::tests::a_depth_at_the_regions_capacity_draws_nothing` |
+| arena bytes the worklist takes, trace of 256 entries | 4,112 | 0 | after: the same case, `TraceScratchArena::room_left` unmoved across the pushes. Before: the one segment `alloc` granted, at `size_of::<StackSegment>()` |
+| workspace bytes the bump may grant | 65,280 | 61,120 | `WORKSPACE_BUMP_BYTES` |
+| bytes per overflow segment | 4,112 | 4,160 | `cycle::stack::SEGMENT_BYTES`, the two links replaced by a 64-byte header line |
+
+The before figure was seen red on `4baee36` by the same question put to the
+old worklist: a case pushing 256 entries and asserting `segment_count() == 0`
+read 1 against 0.
+
+**What it does not say:** nothing here measures a collection's total block
+draws. The gate's claim is that per-collection draws never rise and fall by
+one for a trace whose rows and overflow segments fit the 61,120 bytes left;
+the population that would show it is S40.3's.
+
 ## 2026-09-03 — S36.11 the worklist entry carries the row: a scan's block dispatches fall from 7 to 4
 
 **Machine:** dev box, shared with interactive work. **Base:** `841d763`,

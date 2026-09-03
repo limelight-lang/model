@@ -1,7 +1,8 @@
 //! The abort is free, and "free" is a claim about the heap rather than
 //! about the arena: mark and scan write shadow rows, a row-initialization
-//! bitmap and a worklist, all of them in memory the reset gives back, so a
-//! collection that gave up halfway has nothing to undo in the heap.
+//! bitmap and a worklist, all of them in memory the reset gives back or
+//! rewinds, so a collection that gave up halfway has nothing to undo in the
+//! heap.
 //!
 //! The refusal is forced **past the first descent**. An arena refused at
 //! its first allocation proves the claim over a mark that never ran; the
@@ -81,14 +82,17 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
         ])
     };
 
-    // What the mark may have and no more: the near block's rows, and one
-    // worklist segment. The far block's rows are the allocation that
-    // finds the arena empty and both allocation paths refusing.
+    // What the mark may have and no more: the near block's rows. The three
+    // entities queue inside the workspace's own worklist region, which the
+    // bump never sees, so the far block's rows are the one allocation left —
+    // and it is the one that finds the arena empty and both allocation paths
+    // refusing.
     let room = granted(shadow::bytes_for(unsafe {
         crate::memory::heap::collector_block_slots(near_block)
-    })) + granted(crate::cycle::stack::SEGMENT_BYTES);
+    }));
     let mut shadow_arena = crate::cycle::testing::open_arena();
-    assert!(!shadow_arena.alloc(BLOCK_PAYLOAD - room).is_null());
+    let fill = shadow_arena.room_left() - room;
+    assert!(!shadow_arena.alloc(fill).is_null());
 
     let oom = force_oom();
     assert!(
@@ -101,8 +105,7 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
         "and the reserve allocation path has nothing to serve"
     );
 
-    let mut stack = TraceStack::new();
-    let answer = unsafe { mark(&mut shadow_arena, &mut stack, head as *mut RcHeader) };
+    let answer = unsafe { mark(&mut shadow_arena, head as *mut RcHeader) };
     drop(oom);
 
     assert_eq!(answer, MarkResult::AllocationFailed);

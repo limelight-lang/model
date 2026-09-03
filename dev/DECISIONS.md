@@ -8,6 +8,49 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — the worklist's first 256 entries are a region of the workspace, and the arena owns the worklist
+
+Owner: S36.11, slice (c), under the Sage gate of the same day.
+
+**Decided:** the collection workspace opens with a fixed region rather than
+with bump. Its first 4,160 bytes are the trace's worklist — a 64-byte segment
+header and 256 entries of sixteen bytes — and the arena's bump starts behind
+them, at 61,120 bytes of the 65,280-byte payload. A depth past those entries
+draws 4,160-byte segments from the same bump, so the refusal point is the one
+a row array already meets. `TraceScratchArena` holds the worklist, and
+`mark(arena, root)` and `scan(arena, root)` no longer carry a second object:
+the memory is one block and its reset is one call, so a worklist that
+outlived an arena reset can no longer be constructed.
+
+**Why the region rather than a segment per collection:** every trace drew a
+segment at its first push, whatever its depth, and that segment came out of
+the bump the rows are granted from. A collection of a leaf root spent 4,112
+arena bytes on a worklist it filled to one entry. The region costs the bump
+4,160 bytes of the workspace instead, once, for the life of the thread — and
+the comparison the gate accepted is against today's draws: per-collection
+draws never rise, and fall by one for every trace whose rows and overflow
+segments fit the 61,120 bytes left.
+
+**What the segments are built on:** `cycle::records::RecordChain`, a chain of
+segments over memory its owner supplies. The chain allocates nothing and
+reports a full append position instead, which is what lets the base region
+come from the workspace and the overflow from the arena. Each segment carries
+its own capacity in its header, because a base region sized to the common
+case stands beside overflow segments sized to what funds them.
+
+**What it costs:** the segment header grows from two links to a 64-byte line,
+so an overflow segment is 4,160 bytes where it was 4,112. The line is what
+makes the record count of a block-funded segment divide evenly and the
+workspace's regions lay out in lines, which S36.11's fourth clause needs when
+the withheld returns take a region of their own.
+
+**The ledger follows the bump rather than the payload:** `residue` and
+`grow`'s crossing charge measure against what the bump may grant, so the
+fixed regions are charged to no collection. They are memory the thread holds
+whether or not one is running.
+
+---
+
 ## 2026-09-03 — a worklist entry is the pair (entity, row), and a segment holds 256 of them
 
 Owner: S36.11, on Edmond's ruling over finding 2 of

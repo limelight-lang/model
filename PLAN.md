@@ -1802,6 +1802,24 @@ stage claiming the frees while building none of them.
         `dev/ARCHITECTURE.md`'s map with it. This does not close S36.11: the
         segmented primitive, the fixed worklist in the workspace and the
         withheld returns' base capacity remain.
+      progress 2026-09-03 — slice (c), the segmented primitive and the fixed
+        worklist region. `cycle::records::RecordChain` is a chain of segments
+        over memory its owner supplies: it allocates nothing and answers a
+        full append position instead, each segment carries its own capacity in
+        a 64-byte header line, and the records are `Copy` with no drop glue.
+        The worklist's first 256 entries are the workspace's own region, so
+        the bump opens at 61,120 bytes of the 65,280-byte payload and a trace
+        of that depth draws nothing — seen red on `4baee36` at one segment
+        against zero. `TraceScratchArena` holds the worklist, `mark(arena,
+        root)` and `scan(arena, root)` carry no second object, and
+        `TraceStack::reset` is gone with the separation that needed it. Three
+        of the findings the slices owe are paid here: `clear_touched_rows`
+        asserts an empty worklist, the reset rewinds the worklist ahead of
+        that sweep, and `grow`'s crossing charge measures against what the
+        bump may grant rather than against the whole payload
+        (`dev/DECISIONS.md`, `dev/BENCHMARKS.md`). This does not close S36.11:
+        the withheld returns' base capacity in the workspace payload remains,
+        with the findings that belong to it.
       note 2026-09-03 — **the two-cursor clause is struck**, by Edmond's word
         over the Sage gate's ruling. It read: the arena bumps row arrays from a
         block's front and worklist segments from its back, growing when the two

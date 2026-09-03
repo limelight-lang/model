@@ -18,8 +18,8 @@ fn an_arena_returns_every_block_it_took() {
 
     let mut arena = crate::cycle::testing::open_arena();
     // Past the workspace and past one block above it, so the block list is a
-    // list rather than a block: the first two grants are the workspace's, and
-    // the workspace is not on that list.
+    // list rather than a block: the first grant is the workspace's, and the
+    // workspace is not on that list.
     for _ in 0..5 {
         assert!(!arena.alloc(BLOCK_PAYLOAD / 2).is_null());
     }
@@ -47,9 +47,10 @@ fn a_refusal_on_both_allocation_paths_leaves_nothing_behind() {
     let before = BlockPool::global().blocks_out();
 
     let mut arena = crate::cycle::testing::open_arena();
-    // The workspace serves the first grant and is not the arena's to give
-    // back, so the block this case watches is the one above it.
-    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
+    // The workspace's bump region is spent first and is not the arena's to
+    // give back, so the block this case watches is the one above it.
+    let room = arena.room_left();
+    assert!(!arena.alloc(room).is_null());
     assert!(
         !arena.alloc(64).is_null(),
         "the ordinary allocation path served"
@@ -89,9 +90,11 @@ fn the_reserve_is_untouched_while_the_pool_serves() {
     let held = crate::memory::critical::blocks_held();
 
     let mut arena = crate::cycle::testing::open_arena();
-    // Five grants of a payload each: the first is the workspace's, and the
-    // four the reserve is being watched over are the ones above it.
-    for _ in 0..5 {
+    // The workspace's bump region, and then four grants of a payload each:
+    // those four are the blocks the reserve is being watched over.
+    let room = arena.room_left();
+    assert!(!arena.alloc(room).is_null());
+    for _ in 0..4 {
         assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
     }
     assert_eq!(arena.blocks_held(), 4);
@@ -119,7 +122,8 @@ fn the_reserve_serves_after_a_refusal_and_is_refilled_at_reset() {
     let mut arena = crate::cycle::testing::open_arena();
     // Past the workspace, so the grant under the refusal below has to ask an
     // allocation path at all.
-    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
+    let room = arena.room_left();
+    assert!(!arena.alloc(room).is_null());
 
     let oom = force_oom();
     assert!(
@@ -266,9 +270,11 @@ fn a_refused_first_touch_stamps_nothing() {
     let (mut heap, slot, block) = an_entity_block();
 
     let mut arena = crate::cycle::testing::open_arena();
-    // The workspace is spent first: rows served out of memory the thread
-    // already holds reach no allocation path and so meet no refusal.
-    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
+    // The workspace's bump region is spent first: rows served out of memory
+    // the thread already holds reach no allocation path and so meet no
+    // refusal.
+    let room = arena.room_left();
+    assert!(!arena.alloc(room).is_null());
 
     let oom = force_oom();
     assert!(
@@ -317,9 +323,11 @@ fn every_block_the_reserve_lent_comes_back_to_it() {
         "the ordinary allocation path is refusing"
     );
 
-    // One block per allocation, the payload being what a block holds, and one
-    // grant more than the reserve holds blocks: the first is the workspace's.
-    for _ in 0..crate::memory::critical::CRITICAL_BLOCKS + 1 {
+    // The workspace's bump region, and then one block per allocation, the
+    // payload being what a block holds.
+    let room = arena.room_left();
+    assert!(!arena.alloc(room).is_null());
+    for _ in 0..crate::memory::critical::CRITICAL_BLOCKS {
         assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
     }
     assert_eq!(

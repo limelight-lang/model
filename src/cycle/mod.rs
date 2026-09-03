@@ -27,9 +27,9 @@
 //! Two lifetimes only. [`queue`] holds per-thread state for one thread's whole
 //! life, given back at `ll_thread_exit` — the base block, and the collection
 //! workspace an [`arena`] borrows. Everything else is per collection:
-//! [`arena`] holds the blocks a single trace bumps into past that workspace,
-//! [`stack`] draws
-//! its segments from that arena, [`deferred_slot_reuse`] holds the blocks its
+//! [`arena`] holds the blocks a single trace bumps into past that workspace
+//! and the worklist [`stack`] lays over a fixed region of it,
+//! [`deferred_slot_reuse`] holds the blocks its
 //! withheld returns are recorded in, and the rows [`shadow`], [`mark`] and
 //! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`
 //! own no memory at all — they are arithmetic over memory somebody else holds,
@@ -96,6 +96,8 @@ pub(crate) mod mark;
 )]
 pub(crate) mod deferred_slot_reuse;
 pub(crate) mod queue;
+// The record chain the collection's lists are built on.
+pub(crate) mod records;
 pub(crate) mod row;
 // The verdict over the rows the mark counted, and dead until a
 // collection runs one.
@@ -105,12 +107,8 @@ pub(crate) mod row;
 )]
 pub(crate) mod scan;
 pub(crate) mod shadow;
-// The worklist both phases of a trace share, and dead for the same
-// reason they are.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the collection that traces is S36.7")
-)]
+// The worklist both phases of a trace share, held by the arena whose memory
+// it stands on.
 pub(crate) mod stack;
 // The row readers the mark's tests and the scan's tests share. Test
 // builds only.

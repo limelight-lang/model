@@ -16,7 +16,8 @@ fn a_shadow_arena_is_gc_owned_until_both_exit_paths_return_it() {
 
     // The workspace is this thread's already, so the block this case follows
     // is the one the bump grows into past it.
-    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
+    let room = arena.room_left();
+    assert!(!arena.alloc(room).is_null());
     assert_eq!(
         current(),
         before,
@@ -37,7 +38,8 @@ fn a_shadow_arena_is_gc_owned_until_both_exit_paths_return_it() {
 
     // The reset rewound the bump into the workspace, so a second block takes
     // a second growth — and the drop is the other path that returns it.
-    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
+    let room = arena.room_left();
+    assert!(!arena.alloc(room).is_null());
     assert!(!arena.alloc(1).is_null());
     assert_eq!(current(), before + 1);
     drop(arena);
@@ -71,7 +73,8 @@ fn a_critical_reserve_block_is_charged_only_while_the_arena_holds_it() {
     let mut arena = crate::cycle::testing::open_arena();
 
     // Past the workspace, so the grant below has to ask an allocation path.
-    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
+    let room = arena.room_left();
+    assert!(!arena.alloc(room).is_null());
 
     let oom = force_oom();
     let byte = arena.alloc(1);

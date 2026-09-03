@@ -53,7 +53,7 @@
 //! **Nothing here outlives the call.** The rows, the bitmap and the worklist
 //! are the caller's arena. The scan asks that arena for one thing only, a
 //! worklist segment through
-//! [`TraceStack::push`](crate::cycle::stack::TraceStack::push) — it reads rows
+//! [`TraceScratchArena::push_work`](crate::cycle::arena::TraceScratchArena::push_work) — it reads rows
 //! through
 //! [`find_initialized_row`](crate::cycle::arena::find_initialized_row), which
 //! allocates nothing — and a refusal there answers
@@ -69,7 +69,7 @@ use crate::cells::{self, PlainCells};
 use crate::cycle::arena::{TraceScratchArena, find_initialized_row};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow::{self, Color};
-use crate::cycle::stack::{TraceStack, WorklistEntry};
+use crate::cycle::stack::WorklistEntry;
 use crate::refcount::RcHeader;
 
 /// What a scan from one root answered.
@@ -93,23 +93,19 @@ pub(crate) enum ScanResult {
 /// never met is left alone, which is where an edge out of the GC heap and an
 /// address the retained population cannot place both end.
 ///
-/// `arena` and `stack` are the collection's, as they are for the mark,
-/// and every root must have been marked before the first scan runs.
+/// `arena` is the collection's and carries the worklist, as it does for the
+/// mark, and every root must have been marked before the first scan runs.
 ///
 /// # Safety
 /// As `mark`: `root` is a live entity header of this thread's heap, and
 /// the trace runs where `cells::trace_cells` may read an entity's cells
 /// plainly — on the owning thread, with no mutator running beside it.
-pub(crate) unsafe fn scan(
-    arena: &mut TraceScratchArena,
-    stack: &mut TraceStack,
-    root: *mut RcHeader,
-) -> ScanResult {
-    if !unsafe { classify_and_schedule_entity(arena, stack, root, false) } {
+pub(crate) unsafe fn scan(arena: &mut TraceScratchArena, root: *mut RcHeader) -> ScanResult {
+    if !unsafe { classify_and_schedule_entity(arena, root, false) } {
         return ScanResult::AllocationFailed;
     }
 
-    while let Some(entry) = stack.pop() {
+    while let Some(entry) = arena.pop_work() {
         // The colour is read here and the row pointer came off the entry:
         // the classification that queued this entity resolved its address
         // once, and resolving it again would be a second block dispatch for
@@ -130,7 +126,7 @@ pub(crate) unsafe fn scan(
                     return;
                 }
 
-                refused = !classify_and_schedule_entity(arena, stack, cell.child, live);
+                refused = !classify_and_schedule_entity(arena, cell.child, live);
             })
         };
 
@@ -158,7 +154,6 @@ pub(crate) unsafe fn scan(
 /// `cells::trace_cells` yielded, hence a live entity header.
 unsafe fn classify_and_schedule_entity(
     arena: &mut TraceScratchArena,
-    stack: &mut TraceStack,
     entity: *mut RcHeader,
     reached_from_live: bool,
 ) -> bool {
@@ -185,7 +180,7 @@ unsafe fn classify_and_schedule_entity(
     };
 
     unsafe { shadow::recolor(word, verdict) };
-    stack.push(arena, WorklistEntry { entity, row: word })
+    arena.push_work(WorklistEntry { entity, row: word })
 }
 
 /// The row this collection met for `entity`, or `None` when it has none:

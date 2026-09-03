@@ -3,7 +3,7 @@ use crate::class::ClassBuilder;
 use crate::cycle::shadow::Color;
 use crate::cycle::testing::row_word;
 use crate::memory::arena::Arena;
-use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockPool, force_oom, test_guard};
+use crate::memory::block_pool::{BlockPool, force_oom, test_guard};
 use crate::memory::context::LLContext;
 use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, ll_release, ll_retain};

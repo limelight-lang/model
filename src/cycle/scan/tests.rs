@@ -12,7 +12,6 @@ use super::*;
 use crate::class::ClassBuilder;
 use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::row::take_edge_dispatches;
-use crate::cycle::stack::TraceStack;
 use crate::cycle::testing::row_color;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
@@ -79,13 +78,12 @@ fn a_ring_held_from_outside_scans_live_through_the_member_that_is_held() {
     let (first, second) = unsafe { ring(&mut arena, "ScanHeldNode") };
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
-    let mut stack = TraceStack::new();
     assert_eq!(
-        unsafe { mark(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
+        unsafe { mark(&mut shadow_arena, first as *mut RcHeader) },
         MarkResult::Complete
     );
     assert_eq!(
-        unsafe { scan(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
+        unsafe { scan(&mut shadow_arena, first as *mut RcHeader) },
         ScanResult::Complete
     );
 
@@ -117,13 +115,12 @@ fn a_ring_no_one_holds_is_colored_potentially_unreachable_whole() {
     assert!(!unsafe { ll_release(second as *mut RcHeader) });
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
-    let mut stack = TraceStack::new();
     assert_eq!(
-        unsafe { mark(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
+        unsafe { mark(&mut shadow_arena, first as *mut RcHeader) },
         MarkResult::Complete
     );
     assert_eq!(
-        unsafe { scan(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
+        unsafe { scan(&mut shadow_arena, first as *mut RcHeader) },
         ScanResult::Complete
     );
 
@@ -161,15 +158,14 @@ fn a_scan_resolves_no_row_at_a_pop() {
     let (first, second) = unsafe { ring(&mut arena, "ScanDispatchNode") };
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
-    let mut stack = TraceStack::new();
     assert_eq!(
-        unsafe { mark(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
+        unsafe { mark(&mut shadow_arena, first as *mut RcHeader) },
         MarkResult::Complete
     );
 
     let _ = take_edge_dispatches();
     assert_eq!(
-        unsafe { scan(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
+        unsafe { scan(&mut shadow_arena, first as *mut RcHeader) },
         ScanResult::Complete
     );
     assert_eq!(

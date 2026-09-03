@@ -4,7 +4,6 @@ use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::scan::{ScanResult, scan};
 use crate::cycle::shadow::Color;
-use crate::cycle::stack::TraceStack;
 use crate::cycle::testing::row_color;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
@@ -24,13 +23,12 @@ unsafe fn traced_unreachable_from(
     expected: &[*mut Object],
 ) -> TraceScratchArena {
     let mut arena = crate::cycle::testing::open_arena();
-    let mut stack = TraceStack::new();
     assert_eq!(
-        unsafe { mark(&mut arena, &mut stack, root as *mut RcHeader) },
+        unsafe { mark(&mut arena, root as *mut RcHeader) },
         MarkResult::Complete
     );
     assert_eq!(
-        unsafe { scan(&mut arena, &mut stack, root as *mut RcHeader) },
+        unsafe { scan(&mut arena, root as *mut RcHeader) },
         ScanResult::Complete
     );
 
