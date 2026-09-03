@@ -8,6 +8,38 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — under memory starvation a collection ends itself and gives back everything, and each thread frees its own
+
+Owner: Edmond, ruling over the Critic's first finding on S36.11.
+
+**Decided:** memory starvation is its own regime and takes its own answer.
+When the memory manager sees it, a running collection ends itself rather than
+carrying on — it returns every block it holds, the critical reserve included,
+and it can be started again later. In that regime the collector is not needed
+at all: each thread frees its own memory by counting. Stopping mutator threads
+there is permitted.
+
+**Why:** a mutator that cannot allocate stops anyway. It waits for the
+collection if a collection is running over it, and then that collection is in
+a position to free everything itself; if none is, the mutator frees its own
+memory and needs no collector. Either way the collection is the part that can
+be given up, and the memory it holds is worth more given back than spent
+finishing a trace.
+
+**What it answers:** the Critic found that `TraceScratchArena` holds the
+critical reserve until the window's close, so the withheld-return chain's
+growth past its 1,024-record region can ask an empty reserve and reach
+`std::process::abort()` — on the pressure path, which is the path the reserve
+exists for. Budgeting a reserve block for that growth was refused: the state
+does not arise once a collection under starvation ends itself and hands the
+reserve back before a teardown withholds its 1,025th return.
+
+**What it leaves open:** which step builds the wind-down, and what tells a
+running collection to end. The `abort()` in `cycle::deferred_slot_reuse::grow`
+stands until then, as the last resort it already was.
+
+---
+
 ## 2026-09-03 — the withheld returns' first 1,024 records are the workspace's second region
 
 Owner: S36.11, slice (d), under the Sage gate of the same day.

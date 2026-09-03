@@ -36,6 +36,48 @@ fn an_arena_returns_every_block_it_took() {
     crate::memory::critical::drain_for_test();
 }
 
+/// The abort's own state, which is the only one where the two lists are both
+/// occupied at the reset: a mark that gave up has entities queued and blocks
+/// stamped at once, and every queued entry carries a row pointer into an array
+/// the sweep unstamps. So the reset empties the worklist before it sweeps, and
+/// a swap fires `clear_touched_rows`'s check in a test build.
+///
+/// The stack's own cases queue without meeting a row and the cases here meet
+/// rows without queuing, so without this one nothing reaches the reset in the
+/// state the ordering exists for.
+#[test]
+fn a_reset_over_a_queued_worklist_and_a_stamped_block_empties_the_worklist_first() {
+    let _g = test_guard();
+    let (mut heap, slot, block) = an_entity_block();
+
+    let mut arena = crate::cycle::testing::open_arena();
+    let row = met(unsafe { arena.ensure_row(slot_row(block, 0), 1) });
+    assert_eq!(arena.touched_blocks(), 1);
+    assert!(arena.push_work(crate::cycle::stack::WorklistEntry {
+        entity: slot as *mut crate::refcount::RcHeader,
+        row,
+    }));
+
+    arena.reset();
+
+    assert_eq!(
+        arena.touched_blocks(),
+        0,
+        "the sweep emptied the touched list"
+    );
+    assert_eq!(
+        arena.pop_work(),
+        None,
+        "and the reset emptied the worklist the abort left behind"
+    );
+    assert!(
+        unsafe { crate::memory::heap::block_shadow(block) }.is_null(),
+        "the block carries no pointer at rows the reset gave back"
+    );
+
+    unsafe { heap.free(slot) };
+}
+
 /// The refusal path. `FORCE_OOM` closes the ordinary allocation path and the
 /// reserve is emptied by hand, so the null comes from both allocation paths
 /// having refused rather than from one of them — and the arena still gives back

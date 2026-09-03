@@ -397,7 +397,7 @@ fn grow(chain: &DeferredReturnChain) {
 /// With one open and room in the append segment: three loads — the thread-local
 /// control line, the cursor and the limit — two branches and two stores, with
 /// no atomic, no allocator call and no pool call. The pool is asked in
-/// [`grow`] alone, and the cursor is read a second time only there.
+/// [`grow`] alone, and the second push below it runs on that path only.
 ///
 /// # Safety
 /// `ptr` is a dead entity slot whose teardown has completed and which this call
@@ -412,15 +412,15 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8) -> bool {
     let chain = unsafe { &*control };
     if !chain.records.push(ptr) {
         grow(chain);
-        // The same last resort [`grow`] reaches, for the same reason: a record
-        // this call drops is a physical return lost, and no frame above can be
-        // told. The segment a growth opens is empty and holds
-        // [`RECORDS_PER_BLOCK`], so nothing but a defect in the chain gets
-        // here.
-        assert!(
-            chain.records.push(ptr),
-            "the growth opened a segment with no room for the record it was drawn for"
-        );
+        if !chain.records.push(ptr) {
+            // The same last resort [`grow`] reaches, and by the same call
+            // rather than by a panic: a record this call drops is a physical
+            // return lost, and `ll_free`'s caller is `extern "C"`, so an
+            // unwind out of here is outside the protocol on every profile
+            // that unwinds. The segment a growth opens is empty and holds
+            // [`RECORDS_PER_BLOCK`], so only a defect in the chain gets here.
+            std::process::abort();
+        }
     }
 
     true

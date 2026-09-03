@@ -65,9 +65,10 @@
 //! # What it does not hold
 //!
 //! A `Vec`, a `HashMap`, or anything else that reaches the global allocator.
-//! Both of the arena's own lists live in its own memory: the blocks thread
-//! through their headers, and the touched list threads through the row arrays
-//! themselves. A collection that grew a `Vec` would allocate through the very
+//! All three of the arena's own lists live in its own memory: the blocks
+//! thread through their headers, the touched list threads through the row
+//! arrays themselves, and the worklist's segments thread through their own
+//! headers in the bump. A collection that grew a `Vec` would allocate through the very
 //! allocation path that has already refused, and an allocation failure inside
 //! `Vec` aborts the process (`rfc/model/gc/cycle/questions.md`, Y14, "Its
 //! working memory must be sized before it is needed").
@@ -79,8 +80,8 @@
 //! (`crate::cycle::shadow`). One refusal point serves both, and it
 //! stands before either exists, so the state the sweep exists to undo —
 //! a block stamped with rows the abort has given back — cannot be
-//! reached. The recorded alternative is a chain of 512-entry segments
-//! beside the arrays: it allocates a second time, and that allocation's
+//! reached. The recorded alternative is a segment chain of its own beside
+//! the arrays, 512 entries to a segment: it allocates a second time, and that allocation's
 //! refusal arrives after the stamp, which is the state above; it also
 //! costs 4 KiB at the first touched block against the prologue's 24
 //! bytes.
@@ -539,8 +540,9 @@ impl TraceScratchArena {
         // sweep would name a row the next collection is granting. Checked and
         // not enforced, and by a `debug_assert` — this module answers a
         // refusal rather than ending the process, and the release build of a
-        // caller that got the order wrong loses nothing here, the rows staying
-        // where they are until [`reset`](Self::reset) rewinds over them.
+        // caller that got the order wrong loses nothing here for as long as it
+        // pops nothing afterwards, the rows staying where they are until
+        // [`reset`](Self::reset) rewinds over them.
         debug_assert!(
             self.worklist.is_empty(),
             "the worklist is drained before the rows it points into are unstamped"

@@ -203,6 +203,16 @@ impl<T: Copy> RecordChain<T> {
     /// false reports.
     pub(crate) unsafe fn extend(&self, region: *mut u8, capacity: usize) {
         let current = self.current.get();
+        // The link this overwrites would otherwise be the only path to a
+        // segment an earlier crossing left above the current one: the chain
+        // would answer every push and pop correctly and hand that segment to
+        // nobody at `take_segments_past_base`, which is a leaked region and a
+        // charge with no discharge. A chain that pops owes
+        // [`advance_to_kept`](Self::advance_to_kept) before it comes here.
+        debug_assert!(
+            unsafe { (*current).next.get() }.is_null(),
+            "a segment already stands above the one being extended"
+        );
         let segment = unsafe { Segment::write_header(region, capacity, current) };
         unsafe { (*current).next.set(segment) };
         self.open(segment);

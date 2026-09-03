@@ -7,6 +7,38 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-03 — a stricter repair can be worse than the failure it replaces
+
+**What happened.** S36.11's first Critic round found that
+`defer_reuse_if_tracing` dropped the answer of the push it makes after a
+growth: a `false` there loses a physical return silently, which is the outcome
+the `std::process::abort()` inside `grow` exists to prevent three lines away.
+The repair was an `assert!`. The second round showed the repair was the worse
+of the two: `ll_free`'s caller is `pub unsafe extern "C" fn ll_c_free`, and on
+the replay path the call sits inside a closure the chain's walk drives, so on
+every profile that unwinds the assert leaves an `extern "C"` frame and a
+half-walked chain, where `abort()` ends the process the way the module already
+documents. The state is unreachable either way; what the round-1 repair
+changed was only how badly it would fail.
+
+**Why the first repair looked right.** A panic carries a message and an abort
+does not, and a message is worth having wherever a caller can act on it. The
+question that was not asked is which frame would catch it. Two lines above the
+site, `grow`'s own doc already answered: "Nothing can report it either:
+`ll_free` holds no frame that can fail."
+
+**What to do instead.** When a repair adds a failure, name the frame that
+receives it before choosing its form. Where the enclosing call is `extern "C"`,
+or where the callers are a drop path and a closure, the answer is the one the
+neighbouring code already uses — copy it rather than reach for the stricter
+construct.
+
+**Second round earns its cost here.** Two of the three defects the second round
+found were in the first round's repairs, and the third was a test the first
+round asked for. A single round would have closed the step with all three
+standing.
+
+
 ## 2026-09-02 — the rule that a source-reading test carries `cfg_attr(miri, ignore)` had no guard, so a second file kept the trap
 
 **What happened.** S36.9's owed Miri run took `weak::` (19 passed), `cycle::`

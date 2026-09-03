@@ -98,7 +98,11 @@ fn a_reused_slot_cannot_inherit_the_dead_occupants_row() {
     unsafe { crate::refcount::set_header_refcount(fresh, 0) };
     unsafe { crate::memory::stdapi::ll_free(fresh as *mut u8) };
     drop(window);
-    assert_eq!(deferred_slot_count(), 0);
+    assert_eq!(
+        deferred_slot_count(),
+        0,
+        "the window is closed, which is what a count of zero reads after a drop"
+    );
 }
 
 #[test]
@@ -201,7 +205,11 @@ fn a_retained_blocks_last_occupant_waits_for_the_trace_row() {
     );
 
     drop(window);
-    assert_eq!(deferred_slot_count(), 0);
+    assert_eq!(
+        deferred_slot_count(),
+        0,
+        "the window is closed, which is what a count of zero reads after a drop"
+    );
     assert_eq!(
         unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) },
         BLOCK_KIND_FREE,
@@ -380,7 +388,11 @@ fn an_aborted_window_replays_its_returns_with_both_allocation_paths_refusing() {
     drop(oom);
 
     assert_eq!(heap, 0, "the abort path reached the global allocator");
-    assert_eq!(deferred_slot_count(), 0);
+    assert_eq!(
+        deferred_slot_count(),
+        0,
+        "the window is closed, which is what a count of zero reads after a drop"
+    );
     assert_eq!(
         gc_blocks(),
         held_before,
@@ -406,19 +418,26 @@ fn an_abort_past_the_region_gives_the_chains_block_back() {
     let held_before = gc_blocks();
     let window = ActiveTrace::open().expect("this thread's workspace is in hand");
 
-    // The marker is withheld first and is therefore replayed first, out of the
-    // region rather than out of the block: a replay that walked the block
-    // alone would leave the run mapped.
-    let marker = unsafe { withheld_large_entity() };
-    let mut withheld = Vec::with_capacity(RETURNS_BASE_RECORDS);
-    for _ in 0..RETURNS_BASE_RECORDS {
+    // One OS-direct large entity at each end of the chain, as the growth case
+    // above does. Its return is the one a reader can see from outside, so a
+    // replay that reads the region alone and a replay that reads the block
+    // alone are each caught by the marker the other end holds.
+    let region_marker = unsafe { withheld_large_entity() };
+    for _ in 0..RETURNS_BASE_RECORDS - 1 {
         let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
         assert!(!slot.is_null());
         unsafe { dead_entity(slot) };
         unsafe { crate::memory::stdapi::ll_free(slot) };
-        withheld.push(slot);
     }
 
+    assert_eq!(deferred_slot_count(), RETURNS_BASE_RECORDS);
+    assert_eq!(
+        gc_blocks(),
+        held_before,
+        "the region holds its capacity and draws nothing"
+    );
+
+    let block_marker = unsafe { withheld_large_entity() };
     assert_eq!(deferred_slot_count(), RETURNS_BASE_RECORDS + 1);
     assert_eq!(
         gc_blocks(),
@@ -427,27 +446,24 @@ fn an_abort_past_the_region_gives_the_chains_block_back() {
     );
 
     // The abort is a collection that gives up where memory ran out, so the
-    // close runs with both allocation paths refusing: giving a block back may
-    // need no memory.
+    // close runs with both allocation paths refusing: giving a block back and
+    // replaying what it holds may need no memory.
     crate::memory::critical::drain_for_test();
     let oom = force_oom();
+    let _ = crate::test_support::allocation_probe::take_allocations();
     drop(window);
+    let requests = crate::test_support::allocation_probe::take_allocations();
     drop(oom);
 
-    assert_eq!(deferred_slot_count(), 0);
+    assert_eq!(requests, (0, 0), "the abort asked an allocation path");
     assert_eq!(gc_blocks(), held_before, "the abort gave the block back");
-    assert!(
-        !crate::memory::large_entity::snapshot().contains(&marker),
-        "the replay skipped the region and read the block alone"
-    );
+    for (marker, segment) in [(region_marker, "region"), (block_marker, "block")] {
+        assert!(
+            !crate::memory::large_entity::snapshot().contains(&marker),
+            "the replay left the withheld return standing in the {segment}"
+        );
+    }
 
-    let reused = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
-    assert!(
-        withheld.contains(&reused),
-        "the abort across two segments lost a slotted return"
-    );
-    unsafe { dead_entity(reused) };
-    unsafe { crate::memory::stdapi::ll_free(reused) };
     crate::memory::critical::drain_for_test();
 }
 
@@ -564,7 +580,11 @@ fn the_append_moves_into_a_block_when_the_workspace_region_is_full() {
     );
 
     drop(window);
-    assert_eq!(deferred_slot_count(), 0);
+    assert_eq!(
+        deferred_slot_count(),
+        0,
+        "the window is closed, which is what a count of zero reads after a drop"
+    );
     for marker in [first_marker, second_marker] {
         assert!(
             !crate::memory::large_entity::snapshot().contains(&marker),

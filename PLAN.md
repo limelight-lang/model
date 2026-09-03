@@ -1721,7 +1721,7 @@ stage claiming the frees while building none of them.
         reaches thread exit any way but an unwind out of the reset still
         aborts the binary (`dev/POSTMORTEM.md`, "an assertion under
         `ll_thread_exit` aborts the binary and names no test").
-- [ ] S36.11 The managed lists and the small worklist   *(before S36.3)*
+- [x] S36.11 The managed lists and the small worklist   *(before S36.3)*
       done: one manager-backed segmented primitive serves collection-owned
         pointer records with explicit `read`/`used` bounds and no drop glue;
         the withheld returns, condemned members and S36.5's deferred drops use
@@ -1841,6 +1841,31 @@ stage claiming the frees while building none of them.
         returns' region enters neither byte figure, being memory the thread
         holds between collections. Two clauses above lost the retired word
         `parking`; S38.3, S39 and the backlog still carry it.
+      progress 2026-09-03 — the Critic's two rounds, `d8d7c2c` and the commit
+        after it. Round one: the sweep's guard fell from `assert!` to
+        `debug_assert!`, so an S36.7 abort path that swept before it reset no
+        longer ends a release process on the path this module documents as
+        free; `defer_reuse_if_tracing` stopped dropping the answer of the push
+        after a growth; the aborted-window case said "the abort gave the chain
+        back" over a chain that had never drawn one; `dev/ARCHITECTURE.md`
+        still described the chain as blocks for the length of a trace. Round
+        two found three defects in those repairs: the new assert would unwind
+        out of an `extern "C"` frame where the `abort()` beside it does not,
+        the new case's final assertion held whether or not the grown segment
+        was replayed, and `RecordChain::extend` stated a precondition no
+        caller checked — `deferred_slot_reuse::grow` satisfies it only by
+        never popping, and a list that pops would strand a segment and
+        under-discharge its bytes. It also found that no case reached the
+        reset with both lists occupied, which is the abort's own state and
+        the one the rewind ordering exists for; there is one now, seen red
+        against the swap. Both rounds are spent, and what the second one cost
+        the first is `dev/POSTMORTEM.md`, "a stricter repair can be worse than
+        the failure it replaces".
+      progress 2026-09-03 — Miri over `cycle::` at the close of the block:
+        123 passed, 0 failed, 7 ignored, 434.71 s on Miri's clock against
+        17 m 00 s of wall, at two threads with `-Zmiri-ignore-leaks`. Clean,
+        and it covers every case of `records`, `stack`, `arena` and
+        `deferred_slot_reuse` this step wrote.
       note 2026-09-03 — **the two-cursor clause is struck**, by Edmond's word
         over the Sage gate's ruling. It read: the arena bumps row arrays from a
         block's front and worklist segments from its back, growing when the two
@@ -1861,10 +1886,7 @@ stage claiming the frees while building none of them.
         measured size: 0.2 % to 2.1 % of blocks drawn over all classes, and
         4.9 % on a heap of nothing but the smallest class
         (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 1).
-      handoff: the current first worklist push reserves 4,112 bytes for 512
-        pointers even for a leaf, and a window's open draws a whole block for
-        the withheld returns whether or not one return is made. Red tests show
-        a small trace makes no manager overflow draw, two collections reuse the
+      handoff: Red tests show a small trace makes no manager overflow draw, two collections reuse the
         same base, corpse bytes remain intact, critical capacity is restored,
         and success and abort both return GC bytes to the per-thread baseline.
 - [ ] S36.12 The in-flight batch and condemned membership   *(before S36.3)*
