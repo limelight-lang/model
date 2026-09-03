@@ -8,6 +8,31 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — a collection draws from the manager of the thread it runs on, not of the thread it collects
+
+Owner: S38.1. Ruled by Edmond over a design review's finding.
+
+**Decided:** `TraceScratchArena::open` takes no owner and never will for this
+reason. A collection's working memory — the workspace it bumps in, the blocks
+it grows into, the critical reserve it falls back on — comes from the memory
+manager of the thread running the collection. A collector worker tracing
+another thread's graph draws its own workspace and returns its own blocks; the
+owner's workspace is the owner's.
+
+**Why:** the workspace is per-thread state a thread holds between its own
+collections, and a worker taking the owner's would make two collections
+contend for one bump. Rows are addressed by block and slot, not by which
+thread's memory holds the array, so nothing about the trace needs the owner's
+arena.
+
+**What this does not settle:** the withheld returns, whose window is installed
+in the tracing thread's own thread-local state while the frees it must refuse
+run on the owner's. That is the parking S38.3 owns, "by address or by block"
+still open (`dev/DECISIONS.md`, "the free that reaches a traced address is the
+concurrent collector's problem").
+
+---
+
 ## 2026-09-03 — the trace reads a root's count before its cells, and refuses a root at zero
 
 Owner: S36.11's design review. Ruled by Edmond.
