@@ -9,16 +9,18 @@
 //! ([`crate::cycle::queue::lend_workspace_base`]; `dev/DECISIONS.md`, "the
 //! workspace base is drawn at the first collection, not at thread init").
 //!
-//! **Its first [`WORKSPACE_PREFIX_BYTES`] bytes are fixed regions rather than
-//! bump**, and the bump opens behind them. Two regions stand there in this
-//! order: the trace's worklist ([`crate::cycle::stack`]) and the withheld
-//! returns' records ([`crate::cycle::deferred_slot_reuse`]). Both are what
-//! makes the ordinary collection ask the memory manager for nothing at all —
-//! it queues its entities and withholds its returns in memory the thread
-//! already holds. The arena holds the worklist for the reason it holds the
-//! bump: the memory is one block, and its reset is one call. It holds no part
-//! of the returns' chain, only the region that chain is opened over, because
-//! that chain outlives the arena's reset and dies with the window instead.
+//! **Its first [`WORKSPACE_PREFIX_BYTES`] bytes are a fixed region rather than
+//! bump**, and the bump opens behind it. The region is the withheld returns'
+//! records ([`crate::cycle::deferred_slot_reuse`]), which is what lets an
+//! ordinary collection withhold every return it has without asking the memory
+//! manager for anything. The arena holds no part of that chain, only the
+//! region it is opened over, because the chain outlives the arena's reset and
+//! dies with the window instead.
+//!
+//! The trace's worklist ([`crate::cycle::stack`]) has no region and takes its
+//! segments from the bump, one at the first push. The arena holds it for the
+//! reason it holds the bump: the memory is one block, and its reset is one
+//! call.
 //!
 //! **Growth past the workspace has two allocation paths, in this order: the
 //! ordinary block pool, then the thread's critical reserve**
@@ -165,27 +167,23 @@ impl Drop for LentWorkspace {
     }
 }
 
-/// Bytes at the head of the workspace the fixed regions take, before the bump
-/// opens.
-///
-/// The worklist's region first and the withheld returns' second, which is the
-/// order [`TraceScratchArena::withheld_returns_region`] reads.
-pub(crate) const WORKSPACE_PREFIX_BYTES: usize = SEGMENT_BYTES + RETURNS_BASE_BYTES;
+/// Bytes at the head of the workspace the withheld returns' region takes,
+/// before the bump opens.
+pub(crate) const WORKSPACE_PREFIX_BYTES: usize = RETURNS_BASE_BYTES;
 
 /// Bytes of the workspace the bump may grant.
 pub(crate) const WORKSPACE_BUMP_BYTES: usize = BLOCK_PAYLOAD - WORKSPACE_PREFIX_BYTES;
 
-// The two figures the Sage gate fixed for S36.11, pinned here because they are
-// the trade it was taken on: the regions are worth what they cost the bump,
-// and a capacity raised without that comparison moves the cost silently.
-const _: () = assert!(WORKSPACE_PREFIX_BYTES == 12_480);
-const _: () = assert!(WORKSPACE_BUMP_BYTES == 52_800);
+// What the region costs the bump, pinned: it is the trade the capacity was
+// taken on, and a capacity raised without that comparison moves the cost
+// silently.
+const _: () = assert!(WORKSPACE_PREFIX_BYTES == 8_320);
+const _: () = assert!(WORKSPACE_BUMP_BYTES == 56_960);
 
-// Every region begins on a line, which the withheld returns' control line
-// needs to be aligned at all: a payload starts `LINE_SIZE` into a block the
-// pool aligns to `BLOCK_SIZE`, so an offset that is a multiple of 64 is
-// 64-aligned.
-const _: () = assert!(SEGMENT_BYTES % 64 == 0 && RETURNS_BASE_BYTES % 64 == 0);
+// The region begins on a line, which its control line needs to be aligned at
+// all: a payload starts `LINE_SIZE` into a block the pool aligns to
+// `BLOCK_SIZE`, so an offset that is a multiple of 64 is 64-aligned.
+const _: () = assert!(RETURNS_BASE_BYTES % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::LINE_SIZE % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::BLOCK_SIZE % 64 == 0);
 
@@ -214,8 +212,7 @@ pub(crate) struct TraceScratchArena {
     /// Newest array of the touched list, or null while no block has
     /// been touched.
     touched: *mut RowArray,
-    /// The trace's worklist, whose first entries are the workspace's own
-    /// region and whose overflow segments are this bump's
+    /// The trace's worklist, whose segments are this bump's
     /// ([`crate::cycle::stack`]).
     worklist: TraceStack,
     /// Bytes of this arena's bump already charged to the manager's
@@ -252,9 +249,7 @@ impl TraceScratchArena {
             left: WORKSPACE_BUMP_BYTES,
             open_capacity: WORKSPACE_BUMP_BYTES,
             touched: std::ptr::null_mut(),
-            // The regions are laid out from the head of the payload, and the
-            // worklist's is the first of them.
-            worklist: unsafe { TraceStack::over(payload) },
+            worklist: TraceStack::new(),
             published: 0,
         })
     }
@@ -273,7 +268,7 @@ impl TraceScratchArena {
     }
 
     /// The workspace region a trace window opens its withheld-return chain
-    /// over, [`RETURNS_BASE_BYTES`] bytes behind the worklist's region.
+    /// over: [`RETURNS_BASE_BYTES`] bytes at the head of the payload.
     ///
     /// The chain is not this arena's: its records are read by a replay that
     /// runs after [`reset`](Self::reset), so what the arena guarantees is the
@@ -281,7 +276,7 @@ impl TraceScratchArena {
     /// drops — which is after the window's chain has died
     /// (`crate::cycle::deferred_slot_reuse::ActiveTrace`).
     pub(crate) fn withheld_returns_region(&self) -> *mut u8 {
-        unsafe { BlockHeader::payload_start(self.base.block()).add(SEGMENT_BYTES) }
+        BlockHeader::payload_start(self.base.block())
     }
 
     /// Charge `bytes` of this arena's bump as memory in use, and remember
@@ -581,11 +576,9 @@ impl TraceScratchArena {
     /// paths refused a worklist segment — which is the caller's signal to
     /// abort the collection, and the only way this can fail.
     ///
-    /// The first [`WORKLIST_BASE_ENTRIES`](crate::cycle::stack::WORKLIST_BASE_ENTRIES)
-    /// entries of a collection go into the workspace's own region and reach no
-    /// allocation path at all; past it the worklist takes segments from this
-    /// bump, so a depth that outruns the region is refused exactly where a row
-    /// array would be.
+    /// The worklist takes [`SEGMENT_BYTES`] of this bump at its first push and
+    /// at every boundary the depth crosses after it, so a worklist is refused
+    /// exactly where a row array would be.
     pub(crate) fn push_work(&mut self, entry: WorklistEntry) -> bool {
         if self.worklist.push_into_current(entry) {
             return true;

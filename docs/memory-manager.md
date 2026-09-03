@@ -610,10 +610,10 @@ overflow-buffer append charges one pointer, the queue's base block charges its
 64-byte control line, a block leaving the trace scratch arena's bump charges
 what it consumed — the workspace included, which stays in use until the reset
 rewinds over it — and a withheld-return block leaving the append position
-charges its own. **The collection workspace's fixed regions are charged
-nowhere**: the worklist's 4,160 bytes and the withheld returns' 8,320 are
-memory the thread holds whether or not a collection is running, so what the
-workspace charges at the crossing is the 52,800 bytes its bump may grant. Each
+charges its own. **The collection workspace's fixed region is charged
+nowhere**: the withheld returns' 8,320 bytes are memory the thread holds
+whether or not a collection is running, so what the workspace charges at the
+crossing is the 56,960 bytes its bump may grant. Each
 charge has one inverse, so the figure is exact at every instant except for
 three named residues — the write segment's own fill, at most 65,280 bytes per
 thread, and the block under the arena's bump plus the one under the

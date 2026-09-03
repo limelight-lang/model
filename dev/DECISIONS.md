@@ -8,6 +8,44 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — the worklist's fixed region is retracted: it saved nothing and cost 48 bytes a segment
+
+Owner: S36.11, after the design review of the same day.
+
+**Retracted:** the entry below, "the worklist's first 256 entries are a region
+of the workspace". The worklist takes its segments from the bump again, one at
+the first push, and the workspace's prefix is the withheld returns' region
+alone — 8,320 bytes, with 56,960 of bump behind it.
+
+**Why the region was wrong:** it was justified against a baseline that does not
+exist. The segment it replaced was drawn from the arena's bump, and since
+S36.10 that bump's first block *is* the workspace, so the 4,112 bytes a trace
+spent on its first segment came out of the same block the region takes 4,160
+from. Counting what the bump has left for rows when a trace needs `n` worklist
+segments: `65,280 − n × 4,112` before, `65,280 − 4,160 − (n − 1) × 4,160`
+after. The region is worse by 48 bytes a segment — the header line the segment
+grew — and better in no case.
+
+**What the measurement missed:** it read the bump's consumption during the
+trace and found zero where it had found 4,112. The region's own 4,160 bytes
+came off the same bump at the arena's open, before the reading started, so the
+control arm and the treatment arm did not pay the same
+(`dev/POSTMORTEM.md`, "a probe's control arm must pay the same").
+
+**What a region could still buy, and it is not this one:** a region *smaller*
+than a segment. At 64 entries it costs the bump 1,088 bytes and serves a trace
+whose depth never exceeds 64 with no segment at all, which leaves 64,192 bytes
+for rows against the 61,168 the segment leaves. Whether such a depth is the
+common one is the median trace depth, which S40.1's instrumented collection is
+what measures. No capacity is chosen before that number.
+
+**What stands from the retracted entry:** `cycle::records::RecordChain` and the
+arena's ownership of the worklist. Neither rests on the region: the chain
+carries the withheld returns, and the ownership is what makes a worklist that
+outlives an arena reset unconstructable.
+
+---
+
 ## 2026-09-03 — under memory starvation a collection ends itself and gives back everything, and each thread frees its own
 
 Owner: Edmond, ruling over the Critic's first finding on S36.11.

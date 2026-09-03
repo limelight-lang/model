@@ -1,6 +1,5 @@
-//! The trace's worklist: entities met but not yet expanded, over a fixed
-//! region of the thread's workspace and segments the collection's arena
-//! serves past it.
+//! The trace's worklist: entities met but not yet expanded, over segments the
+//! collection's arena serves.
 //!
 //! Recursion would put the closure's depth on the machine stack, and the
 //! closure is not small: the subgraph reachable from a median candidate
@@ -9,13 +8,11 @@
 //! deletion"). So the descent carries a
 //! stack of its own.
 //!
-//! **The first [`WORKLIST_BASE_ENTRIES`] entries cost no allocation.** They
-//! are a fixed region of the workspace the thread already holds, so a leaf
-//! root and a shallow trace queue their entities without asking the memory
-//! manager for anything, and a depth past that region draws segments from the
-//! same arena the rows come from — one refusal point for both, and a refused
-//! segment aborts the collection exactly as a refused row array does
-//! ([`crate::cycle::arena`]).
+//! **The segments come from the arena the rows come from**, so there is one
+//! refusal point for both and a refused segment aborts the collection exactly
+//! as a refused row array does ([`crate::cycle::arena`]). The first push of a
+//! collection is what draws the first one: a trace that queues nothing pays
+//! for nothing.
 //!
 //! A segment is **kept when it empties** rather than abandoned. The
 //! arena is a bump with no free, so a trace whose depth crosses a
@@ -37,24 +34,21 @@
 use crate::cycle::records::{RecordChain, SEGMENT_HEADER_BYTES};
 use crate::refcount::RcHeader;
 
-/// Entries the workspace's own worklist region holds, and entries one
-/// overflow segment holds behind its header line.
+/// Entries one segment holds behind its header line.
 ///
-/// It is a trade between two costs. Smaller, and a deep trace crosses a
-/// boundary often; larger, and the fixed region takes workspace from the
-/// bump that serves rows — against a row array of up to 16 408 bytes at the
-/// smallest size class (`crate::cycle::shadow::bytes_for`), a page of entries
-/// is the smaller of the two claims. The capacity the Sage gate fixed for the
-/// region is in `PLAN.md`, S36.11.
-pub(crate) const WORKLIST_BASE_ENTRIES: usize = 256;
+/// It is a trade between two costs the arena pays. Smaller, and a deep trace
+/// crosses a boundary often; larger, and a shallow trace's first push reserves
+/// memory the collection never uses — against a row array of up to 16 408
+/// bytes that a block's first touch reserves anyway
+/// (`crate::cycle::shadow::bytes_for`), a page is the smaller of the two
+/// claims.
+pub(crate) const SEGMENT_ENTRIES: usize = 256;
 
-/// Bytes the worklist's fixed region takes out of the workspace, and the
-/// bytes one overflow segment takes out of the arena.
-///
-/// Named here because the mark's abort tests price a collection's memory to
-/// the byte and the segment's layout is this module's.
+/// Bytes one segment takes out of the arena. Named here because the mark's
+/// abort tests price a collection's memory to the byte and the segment's
+/// layout is this module's.
 pub(crate) const SEGMENT_BYTES: usize =
-    SEGMENT_HEADER_BYTES + WORKLIST_BASE_ENTRIES * size_of::<WorklistEntry>();
+    SEGMENT_HEADER_BYTES + SEGMENT_ENTRIES * size_of::<WorklistEntry>();
 
 // The page the comment above trades against, pinned: the entry count and the
 // entry's width are chosen together, and changing either without the other
@@ -94,35 +88,33 @@ pub(crate) struct WorklistEntry {
 /// reset is what empties it, and the retry after an abort is the collection
 /// that depends on this.
 pub(crate) struct TraceStack {
-    entries: RecordChain<WorklistEntry>,
+    /// The chain, or `None` until the first push has drawn a segment.
+    entries: Option<RecordChain<WorklistEntry>>,
 }
 
 impl TraceStack {
-    /// An empty worklist over `region`, which holds [`WORKLIST_BASE_ENTRIES`]
-    /// entries behind its header line.
-    ///
-    /// # Safety
-    /// `region` addresses [`SEGMENT_BYTES`] writable bytes of the thread's
-    /// workspace, and stays this worklist's until the arena holding it closes.
-    pub(crate) unsafe fn over(region: *mut u8) -> Self {
-        Self {
-            entries: unsafe { RecordChain::over(region, WORKLIST_BASE_ENTRIES) },
-        }
+    /// An empty worklist. Draws nothing: a root whose entity has no counted
+    /// children pays for no segment.
+    pub(crate) fn new() -> Self {
+        Self { entries: None }
     }
 
     /// Queue `entry` in the segment the worklist is filling, or answer
-    /// **false** when that segment is full and the caller owes a region.
+    /// **false** when there is no room and the caller owes a region.
     pub(crate) fn push_into_current(&mut self, entry: WorklistEntry) -> bool {
-        self.entries.push(entry)
+        self.entries.as_ref().is_some_and(|chain| chain.push(entry))
     }
 
     /// Move onto the segment an earlier crossing left above the current one,
     /// or answer **false** when there is none.
     pub(crate) fn advance_to_kept(&mut self) -> bool {
-        self.entries.advance_to_kept()
+        self.entries
+            .as_ref()
+            .is_some_and(RecordChain::advance_to_kept)
     }
 
-    /// Attach `region` as one more segment and make it the one being filled.
+    /// Take `region` as the worklist's segment — the first one, or one more
+    /// above the current — and make it the one being filled.
     ///
     /// # Safety
     /// `region` addresses [`SEGMENT_BYTES`] writable bytes of the arena that
@@ -130,32 +122,42 @@ impl TraceStack {
     /// which is what [`advance_to_kept`](Self::advance_to_kept) answering
     /// false reports.
     pub(crate) unsafe fn extend(&mut self, region: *mut u8) {
-        unsafe { self.entries.extend(region, WORKLIST_BASE_ENTRIES) };
+        match self.entries.as_ref() {
+            Some(chain) => unsafe { chain.extend(region, SEGMENT_ENTRIES) },
+            None => {
+                self.entries = Some(unsafe { RecordChain::over(region, SEGMENT_ENTRIES) });
+            }
+        }
     }
 
     /// The next entity to expand and the row its meeting found, or `None`
     /// when the closure is exhausted.
     pub(crate) fn pop(&mut self) -> Option<WorklistEntry> {
-        self.entries.pop()
+        self.entries.as_ref().and_then(RecordChain::pop)
     }
 
     /// Whether the trace has expanded everything it queued.
     pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.as_ref().is_none_or(RecordChain::is_empty)
     }
 
-    /// Empty the worklist and forget every segment past the workspace's own
-    /// region, which the arena owes the instant it gives those blocks back.
+    /// Forget every segment, which the arena owes the instant it gives those
+    /// blocks back.
+    ///
+    /// Nothing is freed here and nothing can be: the memory is the arena's and
+    /// goes back with it. What this undoes is the worklist's own belief that
+    /// it has segments to advance into.
     pub(crate) fn rewind(&mut self) {
-        self.entries.rewind();
+        self.entries = None;
     }
 
-    /// Segments the worklist holds, the workspace's own region included.
-    /// Tests only: a shallow trace holds one, and a second says the depth
-    /// crossed the region's boundary.
+    /// Segments drawn from the arena, emptied ones included. Tests only, and
+    /// the instrument for the one defect the entries cannot show: a worklist
+    /// that abandoned an emptied segment answers every push and pop correctly
+    /// while spending a page per boundary crossing.
     #[cfg(test)]
     pub(crate) fn segment_count(&self) -> usize {
-        self.entries.segment_count()
+        self.entries.as_ref().map_or(0, RecordChain::segment_count)
     }
 }
 

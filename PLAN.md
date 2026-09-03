@@ -1715,20 +1715,19 @@ stage claiming the frees while building none of them.
       done: one manager-backed segmented primitive serves collection-owned
         pointer records with explicit `read`/`used` bounds and no drop glue;
         the withheld returns, condemned members and S36.5's deferred drops use
-        it, while a
-        small fixed worklist in the workspace serves leaf and small traces and
-        grows into the same managed segments only on overflow
+        it. **The clause's second half — a small fixed worklist in the
+        workspace, growing into managed segments only on overflow — is struck**
+        by the note at the foot of this step
       done: a worklist entry carries the pair (entity, row pointer) rather
         than the entity alone, so the scan's pop reads the colour through the
         pointer instead of resolving the row a second time — the pointer and
         not the colour, because another path can recolour the row between push
         and pop (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 2). Mark reads no row
         at its pop and carries the pointer for one entry shape
-      done: the Sage gate names the fixed small-worklist and pre-reserved
-        withheld-return capacities from the 65,280-byte payload before code
-        begins;
-        boundary tests exercise exactly capacity and capacity plus one, and
-        the documented budget accounts for the other base-workspace residents
+      done: the Sage gate names the pre-reserved withheld-return capacity from
+        the 65,280-byte payload before code begins; boundary tests exercise
+        exactly capacity and capacity plus one, and the documented budget
+        accounts for the other base-workspace residents
       done: the withheld returns take their base capacity from the workspace
         payload rather than from a block of their own, and the chain never
         writes a link into a corpse. What S36.9 slice c built and this step
@@ -1876,9 +1875,26 @@ stage claiming the frees while building none of them.
         measured size: 0.2 % to 2.1 % of blocks drawn over all classes, and
         4.9 % on a heap of nothing but the smallest class
         (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 1).
-      handoff: Red tests show a small trace makes no manager overflow draw, two collections reuse the
-        same base, corpse bytes remain intact, critical capacity is restored,
-        and success and abort both return GC bytes to the per-thread baseline.
+      note 2026-09-03 — **the fixed worklist region is struck and reverted**,
+        after the design review of the same day. It was justified against a
+        baseline that does not exist: the segment it replaced came from the
+        arena's bump, whose first block has been the workspace since S36.10, so
+        both forms take the same bytes out of the same block. With `n` worklist
+        segments the bump has `65,280 - n * 4,112` left for rows in the old
+        form and `65,280 - n * 4,160` in the new, the region being worse by the
+        48 bytes the segment's header grew and better in no case. The
+        measurement that passed it read the bump during the trace and did not
+        count the region's own bytes, taken at the arena's open. What survives
+        the revert: `cycle::records::RecordChain` and the arena's ownership of
+        the worklist. What may still be worth taking, once S40.1 has the median
+        trace depth, is a region *smaller* than a segment — at 64 entries it
+        costs the bump 1,088 bytes and leaves 64,192 for rows against the
+        61,168 a segment leaves (`dev/DECISIONS.md`, "the worklist's fixed
+        region is retracted").
+      handoff: Red tests show a small trace makes no manager overflow draw, two
+        collections reuse the same base, corpse bytes remain intact, critical
+        capacity is restored, and success and abort both return GC bytes to the
+        per-thread baseline.
 - [ ] S36.12 The in-flight batch and condemned membership   *(before S36.3)*
       done: collection detaches the active candidate chain as one in-flight
         batch whose bounds travel with it; every first-reached entity appends
@@ -2044,9 +2060,9 @@ one, a block with no rows having no row for a new occupant to inherit.
 - [ ] S43.4 The chain and its last resort are deleted
       done: `cycle::deferred_slot_reuse` holds no record chain, no capacity, no
         growth and no `std::process::abort()`; the withheld returns' region
-        leaves the workspace, whose prefix falls to the worklist's alone and
-        whose bump rises by 8,320 bytes; `dev/ARCHITECTURE.md`'s reserve row
-        names one borrower again
+        leaves the workspace, whose payload becomes bump end to end and whose
+        bump rises by 8,320 bytes to the whole 65,280;
+        `dev/ARCHITECTURE.md`'s reserve row names one borrower again
       tier: T2 · role: Critic
       note 2026-09-03: this is what makes the refusal answerable rather than a
         wind-down. Under starvation a collection still ends itself and returns

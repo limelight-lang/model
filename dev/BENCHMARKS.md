@@ -117,7 +117,7 @@ at every window's open and gave it back at every close.
 | pool requests, the same thread's second collection | 1 | 0 | the same case |
 | withheld returns before a manager block is drawn | 0 | 1,024 | `RETURNS_BASE_RECORDS` (`cycle::deferred_slot_reuse::tests::the_append_moves_into_a_block_when_the_workspace_region_is_full`) |
 | withheld returns before a refusal can end the process | 8,152 | 1,024 | the growth's threshold, the same case |
-| workspace bytes the bump may grant | 61,120 | 52,800 | `WORKSPACE_BUMP_BYTES`, pinned |
+| workspace bytes the bump may grant | 61,120 | 52,800 | `WORKSPACE_BUMP_BYTES`, pinned — superseded, 56,960 today |
 
 The before figures are the assertions the same cases carried on `8c76475`,
 where they read 2 and 1.
@@ -127,6 +127,14 @@ collection that withholds more than 1,024 slots now draws a block where it
 would have drawn one at 8,152 — the same block, at a different record.
 
 ## 2026-09-03 — S36.11 the worklist's fixed region: a trace at 256 entries draws no segment
+
+**RETRACTED the same day.** The reading is real and the conclusion drawn from
+it is not: the region's own 4,160 bytes come off the same bump at the arena's
+open, which this measurement does not count, so the arm that draws no segment
+pays for one anyway. The region is worse than the segment it replaced by 48
+bytes a segment (`dev/DECISIONS.md`, "the worklist's fixed region is
+retracted"). The workspace figures below are superseded: the prefix is 8,320
+bytes and the bump 56,960.
 
 **Machine:** dev box, shared with interactive work. **Base:** `4baee36`,
 `rustc 1.96.0`.

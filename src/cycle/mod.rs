@@ -28,9 +28,9 @@
 //! life, given back at `ll_thread_exit` — the base block, and the collection
 //! workspace an [`arena`] borrows. Everything else is per collection:
 //! [`arena`] holds the blocks a single trace bumps into past that workspace
-//! and the worklist [`stack`] lays over the first fixed region of it,
-//! [`deferred_slot_reuse`] opens its chain over the second and holds the
-//! blocks a growth past it draws, and the rows [`shadow`], [`mark`] and
+//! and the worklist [`stack`] draws its segments from that bump,
+//! [`deferred_slot_reuse`] opens its chain over the workspace's fixed region
+//! and holds the blocks a growth past it draws, and the rows [`shadow`], [`mark`] and
 //! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`
 //! own no memory at all — they are arithmetic over memory somebody else holds,
 //! and [`validation`] reads the heap rather than a row.

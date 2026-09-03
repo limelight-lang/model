@@ -36,13 +36,13 @@ versions live in `docs/history/`, marked at the top.
   | module | what is there | production caller |
   |---|---|---|
   | `queue` | the per-thread candidate queue, its base block, spares and overflow buffer, and the cell that lends the collection workspace | `refcount::release_word`, `gc`'s poll |
-  | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its records in the workspace's second region | `stdapi::ll_free` |
-  | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind that workspace's fixed regions, the worklist laid over the first of them, and `ensure_row`/`find_initialized_row` | none until S36.7 |
+  | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its records in the workspace's fixed region | `stdapi::ll_free` |
+  | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | none until S36.7 |
   | `shadow` | the row: two bits of colour over thirty of working count | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
   | `mark` | the trace: trial deletion over the rows | none |
   | `records` | `RecordChain`, the segmented record chain the collection's lists are built on | none |
-  | `stack` | the trace worklist: 256 entries in the workspace's own region, segments out of the arena past it | none |
+  | `stack` | the trace worklist, 256-entry segments out of the arena | none |
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
   | `validation` | the owner's exact validation of one component, and the zero-count-member rule | none |
 

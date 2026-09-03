@@ -42,13 +42,12 @@ unsafe fn entry(base: *mut RcHeader, rows: *mut u32, index: usize) -> WorklistEn
     }
 }
 
-/// The region's own capacity, exactly. A trace this deep is served out of
-/// memory the thread already holds, so the collection asks the memory manager
-/// for nothing, which is the point of the fixed region.
+/// One segment's capacity, exactly. The segment comes out of the workspace's
+/// own bump, so a trace this deep asks the memory manager for nothing.
 #[test]
-fn a_depth_at_the_regions_capacity_draws_nothing() {
+fn a_depth_at_one_segments_capacity_draws_no_block() {
     let _g = test_guard();
-    let depth = WORKLIST_BASE_ENTRIES;
+    let depth = SEGMENT_ENTRIES;
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
     let mut shadow_rows = row_slab(depth);
@@ -59,17 +58,17 @@ fn a_depth_at_the_regions_capacity_draws_nothing() {
     for i in 1..=depth {
         assert!(
             arena.push_work(unsafe { entry(base, rows, i) }),
-            "the region served"
+            "the bump served"
         );
     }
 
-    assert_eq!(
-        arena.worklist_segment_count(),
-        1,
-        "the workspace's region alone"
-    );
+    assert_eq!(arena.worklist_segment_count(), 1, "one segment and no more");
     assert_eq!(arena.blocks_held(), 0, "and no block was drawn");
-    assert_eq!(arena.room_left(), room_before, "nor was the bump touched");
+    assert_eq!(
+        room_before - arena.room_left(),
+        SEGMENT_BYTES,
+        "the one segment came out of the workspace's own bump"
+    );
 
     for i in (1..=depth).rev() {
         assert_eq!(arena.pop_work(), Some(unsafe { entry(base, rows, i) }));
@@ -79,15 +78,15 @@ fn a_depth_at_the_regions_capacity_draws_nothing() {
     arena.reset();
 }
 
-/// One entry past the region, which is where the chain starts existing at
+/// One entry past a segment, which is where the chain starts existing at
 /// all. Last-in-first-out across the boundary is what the descent depends on:
 /// an entity popped out of order is expanded before the entity that queued it,
 /// which is a different traversal rather than a wrong one — and it reads
 /// correctly on every graph but the one whose depth crosses the boundary.
 #[test]
-fn a_depth_one_past_the_region_pops_in_the_order_it_pushed() {
+fn a_depth_one_past_a_segment_pops_in_the_order_it_pushed() {
     let _g = test_guard();
-    let depth = WORKLIST_BASE_ENTRIES + 1;
+    let depth = SEGMENT_ENTRIES + 1;
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
     let mut shadow_rows = row_slab(depth);
@@ -109,8 +108,8 @@ fn a_depth_one_past_the_region_pops_in_the_order_it_pushed() {
     );
     assert_eq!(
         room_before - arena.room_left(),
-        SEGMENT_BYTES,
-        "and the segment came out of the bump rather than out of a block of its own"
+        2 * SEGMENT_BYTES,
+        "and both segments came out of the bump rather than out of a block of their own"
     );
     assert_eq!(arena.blocks_held(), 0);
 
@@ -129,7 +128,7 @@ fn a_depth_one_past_the_region_pops_in_the_order_it_pushed() {
 #[test]
 fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
     let _g = test_guard();
-    let depth = WORKLIST_BASE_ENTRIES + 1;
+    let depth = SEGMENT_ENTRIES + 1;
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
     let mut shadow_rows = row_slab(depth);
@@ -161,21 +160,22 @@ fn a_segment_the_depth_left_is_reused_at_the_next_crossing() {
 fn a_push_with_both_allocation_paths_refusing_answers_false() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
-    let depth = WORKLIST_BASE_ENTRIES + 1;
+    let depth = SEGMENT_ENTRIES + 1;
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
     let mut shadow_rows = row_slab(depth);
     let rows = shadow_rows.as_mut_ptr();
 
     let mut arena = crate::cycle::testing::open_arena();
-    // Past the region and past the bump: a segment served out of memory the
-    // thread already holds meets no allocation path, and this case is about
-    // the refusal.
-    let room = arena.room_left();
-    assert!(!arena.alloc(room).is_null());
+    // The first segment out of the workspace's bump, and then the bump spent:
+    // a segment served out of memory the thread already holds meets no
+    // allocation path, and this case is about the refusal.
     for i in 1..depth {
         assert!(arena.push_work(unsafe { entry(base, rows, i) }));
     }
+
+    let room = arena.room_left();
+    assert!(!arena.alloc(room).is_null());
 
     let oom = force_oom();
     assert!(
@@ -191,7 +191,7 @@ fn a_push_with_both_allocation_paths_refusing_answers_false() {
     assert_eq!(
         arena.worklist_segment_count(),
         1,
-        "and no segment was attached"
+        "and no second segment was attached"
     );
     for i in (1..depth).rev() {
         assert_eq!(arena.pop_work(), Some(unsafe { entry(base, rows, i) }));
@@ -203,14 +203,14 @@ fn a_push_with_both_allocation_paths_refusing_answers_false() {
     crate::memory::critical::drain_for_test();
 }
 
-/// The arena's reset empties the worklist and forgets every segment past the
-/// workspace's own region, which is the contract that keeps a later push from
-/// advancing into a block the pool has handed to someone else. The retry after
-/// an aborted collection is the caller this exists for.
+/// The arena's reset empties the worklist and forgets every segment, which is
+/// the contract that keeps a later push from advancing into a block the pool
+/// has handed to someone else. The retry after an aborted collection is the
+/// caller this exists for.
 #[test]
-fn the_arenas_reset_leaves_the_worklist_on_its_region_alone() {
+fn the_arenas_reset_leaves_the_worklist_holding_no_segment() {
     let _g = test_guard();
-    let depth = WORKLIST_BASE_ENTRIES + 1;
+    let depth = SEGMENT_ENTRIES + 1;
     let mut headers = slab(depth);
     let base = headers.as_mut_ptr();
     let mut shadow_rows = row_slab(depth);
@@ -226,7 +226,7 @@ fn the_arenas_reset_leaves_the_worklist_on_its_region_alone() {
     arena.reset();
     assert_eq!(
         arena.worklist_segment_count(),
-        1,
+        0,
         "no segment of the collection that ended"
     );
     assert_eq!(arena.pop_work(), None, "and nothing queued in one");
