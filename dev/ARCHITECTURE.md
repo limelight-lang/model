@@ -366,16 +366,22 @@ write them. Each is load-bearing for at least two modules.
 8. **Publish before teardown**: the barrier owns the whole slot; an
    overwriting store is `store_*` then `drop_ref`, never the reverse.
 9. **Death is owner-bound.** Every free and every weak-table touch runs
-   on the entity's owning thread. `rc-cycle` keeps the rule and sharpens
-   it: a collector proposes a shortlist, and every reduction of state —
-   the free, the acquittal, the queue entry — is the owner's, taken on
-   an exact reading at its own checkpoint (`rfc/model/gc/rc-cycle.md`).
-10. **Arm vs fire**: nothing collects mid-mutation. Collection fires
-    only at clean points — `ll_gc_collect_cycles`, the
-    `ll_gc_maybe_collect` poll, and the allocation slow path. The rule
-    is a correctness requirement rather than a policy: a store lowers
-    the old value's count before overwriting the pointer, and a
-    collection firing in that window would subtract one reference twice
+   on the entity's owning thread. The design sharpens that for
+   `rc-cycle`: a collector proposes a shortlist, and every reduction of
+   state is the owner's, taken on an exact reading at its own checkpoint
+   (`rfc/model/gc/rc-cycle.md`). None of the sharpening is built. No
+   collection runs, `validation` is dead outside a test build, and
+   nothing retires a queue entry at a death; S36.3 through S36.7 build
+   the three.
+10. **Arm vs fire**: nothing collects mid-mutation. A collection fires
+    only at a clean point, and the crate has two of them: the ABI's
+    `ll_gc_collect_cycles`, and the `ll_gc_maybe_collect` poll, whose
+    one caller inside the crate is `object::ll_release_vector`'s
+    backedge. The allocation slow path becomes the third when S36.7
+    wires the collection an allocation failure starts. The rule is a
+    correctness requirement rather than a policy: a store lowers the old
+    value's count before overwriting the pointer, and a collection
+    firing in that window would subtract one reference twice
     (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 11. **One configuration.** The GC axis went with the two collectors on
     2026-08-26; `hash-folding` and `debug-journal` are what remains of
