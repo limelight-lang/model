@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::cycle::arena::WORKSPACE_BUMP_BYTES;
 use crate::memory::block_pool::{
     BLOCK_KIND_GC_METADATA, BLOCK_PAYLOAD, BlockPool, force_oom, load_block_kind, test_guard,
 };
@@ -259,25 +260,31 @@ fn a_block_crossing_publishes_the_bump_it_abandons() {
     let before = stats();
     let mut arena = crate::cycle::testing::open_arena();
 
-    assert!(!arena.alloc(BLOCK_PAYLOAD).is_null());
+    // The workspace's bump region and not the whole payload: the grant has to
+    // be the one that leaves nothing, or the crossing below is a growth over a
+    // block that still had room and the figure it publishes is not the
+    // workspace's.
+    assert!(!arena.alloc(WORKSPACE_BUMP_BYTES).is_null());
     assert_eq!(in_use(), before.current_bytes_in_use());
 
     // The second grant cannot fit, so the workspace leaves the bump —
     // consumed to the byte, which is the instant its figure is exact. Held
     // rather than returned, and charged all the same: the bytes stay in use
-    // until the reset rewinds over them.
+    // until the reset rewinds over them. The fixed regions at the workspace's
+    // head are outside the figure, being memory the thread holds whether or
+    // not a collection is running (`cycle::arena::TraceScratchArena::residue`).
     assert!(!arena.alloc(8).is_null());
     assert_eq!(
         in_use(),
-        before.current_bytes_in_use() + BLOCK_PAYLOAD,
-        "the block the bump left is published whole"
+        before.current_bytes_in_use() + WORKSPACE_BUMP_BYTES,
+        "the bump region the workspace left is published whole"
     );
 
     arena.reset();
     assert_eq!(in_use(), before.current_bytes_in_use());
     assert_eq!(
         stats().peak_bytes_in_use(),
-        before.current_bytes_in_use() + BLOCK_PAYLOAD + 8,
+        before.current_bytes_in_use() + WORKSPACE_BUMP_BYTES + 8,
         "the crossing and the reset are both in the high-water figure"
     );
 }

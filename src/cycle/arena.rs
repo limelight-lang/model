@@ -170,7 +170,7 @@ impl Drop for LentWorkspace {
 pub(crate) const WORKSPACE_PREFIX_BYTES: usize = SEGMENT_BYTES;
 
 /// Bytes of the workspace the bump may grant.
-const WORKSPACE_BUMP_BYTES: usize = BLOCK_PAYLOAD - WORKSPACE_PREFIX_BYTES;
+pub(crate) const WORKSPACE_BUMP_BYTES: usize = BLOCK_PAYLOAD - WORKSPACE_PREFIX_BYTES;
 
 /// One collection's memory: the thread's workspace for as long as the arena
 /// lives, and the blocks the bump grew into past it, which
