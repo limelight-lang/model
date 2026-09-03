@@ -54,14 +54,17 @@ the right answer under this ruling: a thread in starvation wants no collector,
 and the one it would have run would have ended itself at the next refusal
 anyway.
 
-**What it costs to build; S43 owns it.** The trace's state is
-reachable only from the collection's own frame: `ActiveTrace` owns both the
-arena and the chain, while `defer_reuse_if_tracing` holds nothing but the
-thread-local pointer to the chain's control line. A wind-down raised from the
-free path needs the arena reachable from thread-local state as well, and the
-replay made one-shot, so that the collection's own close finds a window
-already down rather than replaying a second time. The `abort()` in
-`cycle::deferred_slot_reuse::grow` stands until S43.3 removes it.
+**Where the refusal goes instead** (Edmond, the same day, over a draft that
+would have built the wind-down into the free path): the free path stops asking.
+The withheld returns' list is what needed memory there, and the fact it carries
+fits in the dead slot itself, so S43 deletes the list and with it the growth,
+the reserve draw and the `abort()`. Every other refusal a collection meets is
+the arena's, and `TraceScratchArena::grow` already answers it by ending the
+collection and returning every block — which is this ruling, already built.
+
+The wind-down raised from inside `ll_free` was drafted and dropped: it needed
+the arena reachable from thread-local state and the replay made one-shot, and
+it existed only to fund a list that does not need to exist.
 
 ---
 

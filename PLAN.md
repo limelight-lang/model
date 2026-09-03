@@ -1989,57 +1989,82 @@ stage claiming the frees while building none of them.
         guard acquisition; encode that boundary in the API so a future caller
         cannot pass a stale condemned list as an in-line proof.
 
-## S43 — The starvation wind-down   *(after S36.7)*
+## S43 — The withheld return becomes a mark on the dead slot   *(before S36.7)*
 
-Goal: a collection that cannot finish on the memory it has ends itself and
-gives every block back, rather than ending the process. Memory starvation is
-its own regime and the collector is not wanted in it — each thread frees its
-own memory by counting — and the shortage itself is the signal, which is the
-refusal both allocation paths already answer (`dev/DECISIONS.md`, 2026-09-03,
-"under memory starvation a collection ends itself and gives back everything").
+Goal: a slot that dies inside a trace window is marked dead in place and
+returned by the sweep that unstamps its block, so the collector holds no list
+of withheld returns at all. What goes with the list: its capacity, its growth
+past that capacity, its critical-reserve draw, and the
+`std::process::abort()` that answers a refusal `ll_free` has no frame to
+report.
 
-Today one refusal has no answer: the withheld returns' growth past the
-workspace's 1,024-record region calls `std::process::abort()`, because
-`ll_free` holds no frame that can report a refusal and the slot in hand can be
-neither returned nor dropped while the trace addresses its row. The wind-down
-removes the second half of that: a collection that has ended addresses no row,
-so the slot goes back physically.
+Why the list can go (Edmond, 2026-09-03): the fact it carries — this address
+is dead and not yet on the free list — fits in the slot itself. An entity
+block has no occupancy bitmap; occupancy is read from the slot's first word
+(`memory::heap`, "why the bitmap lost"), and a dead slot's word is nobody
+else's. The collector already walks the blocks it stamped, at
+`TraceScratchArena::clear_touched_rows`, which is the instant its rows die —
+so the window a mark has to survive is exactly the window the sweep closes.
 
-- [ ] S43.1 The trace's state is reachable from the free path
-      done: `ll_free` reaches this thread's open arena and its withheld-return
-        chain through thread-local state alone, with the `ActiveTrace` still
-        the owner that returns both; a test drives a withheld return that reads
-        the arena's block count without a reference from the collection's frame
+What it costs instead, and the number is not taken: the sweep walks each
+touched block's slots rather than one pointer per block. At the smallest size
+class that is about four thousand words to a block, against eight bytes per
+death today. Which is cheaper turns on how many blocks a trace touches against
+how many entities die inside its window, and that is S40.1's measurement.
+
+**A mark is taken only where the sweep will find it.** Today every return is
+withheld while a window is open, the block's own state unread; a mark in a
+block the trace never touched would never be swept and the slot would be lost.
+The test is the block's shadow pointer, one load `ll_free` nearly makes
+already for its kind dispatch — and it is the right test rather than a cheaper
+one, a block with no rows having no row for a new occupant to inherit.
+
+- [ ] S43.1 Measure the two populations   *(S40.1's instrument, this question)*
+      done: one instrumented collection reports blocks touched and entities
+        dying inside the window, on the synthetic load S40.1 defines, so the
+        sweep's per-slot walk is priced against the list's per-death append
+        before either is built
+      tier: T2 · role: Bench
+- [ ] S43.2 The dead slot carries the mark
+      done: a slot freed inside a trace window, in a block the trace has
+        stamped, is left dead in place rather than returned, and reads as
+        neither live nor free to every walker that reads a slot's first word —
+        `heap`'s occupancy test, the census, and `describe_slot`; a test frees
+        one such slot, walks the block by each of those readers and allocates
+        against the same class without receiving it
       tier: T2 · role: Sage → Critic
-- [ ] S43.2 The close is one-shot from either end
-      done: a wind-down raised on the free path sweeps the rows, replays the
-        withheld returns and returns every block, and the collection's own
-        close afterwards replays nothing a second time and discharges nothing
-        twice; exercised by a test that winds down mid-trace and then drops the
-        window, with the GC byte ledger back at its pre-collection figure and
-        every withheld slot reused exactly once
+- [ ] S43.3 The sweep returns the marked slots
+      done: `clear_touched_rows` returns every marked slot of every block it
+        unstamps through `stdapi::ll_free`, ahead of nulling the block's shadow
+        pointer, and a collection that aborts mid-trace returns them by the
+        same path; tests read every marked slot back on the success path and on
+        the abort path, with the block that emptied entirely retiring to the
+        pool
       tier: T2 · role: Sage → Critic
-- [ ] S43.3 A refusal winds the collection down instead of ending the process
-      done: `cycle::deferred_slot_reuse::grow` has no `std::process::abort()`;
-        a withheld return that neither allocation path can fund winds the
-        collection down, returns its own slot physically and leaves the thread
-        collecting nothing, with the process alive — seen red by the same case
-        against today's abort, which ends the test process
-      tier: T2 · role: Sage → Critic
-- [ ] S43.4 An unwind out of the close strands no withheld return
-      done: a panic raised inside `TraceScratchArena::reset` — the profile that
-        unwinds, since the release build aborts — still replays every withheld
-        return before the chain's blocks go back, and `WithheldReturns`'s doc
-        states which panic its holder survives and which it does not; a test
-        panics inside the reset and reads every withheld slot back
+- [ ] S43.4 The chain and its last resort are deleted
+      done: `cycle::deferred_slot_reuse` holds no record chain, no capacity, no
+        growth and no `std::process::abort()`; the withheld returns' region
+        leaves the workspace, whose prefix falls to the worklist's alone and
+        whose bump rises by 8,320 bytes; `dev/ARCHITECTURE.md`'s reserve row
+        names one borrower again
       tier: T2 · role: Critic
-      note 2026-09-03: raised by the S36.11 Critic's first round and left
-        standing there. `ActiveTrace::drop` runs `arena.reset()` before
-        `close_window` and `replay`, and `WithheldReturns::drop` releases
-        without replaying, so an unwind out of the reset withholds every slot
-        for the life of the process. The holder's own comment names a poisoned
-        `BlockPool` mutex as the panic it exists for, and its recovery path
-        reaches that same mutex.
+      note 2026-09-03: this is what makes the refusal answerable rather than a
+        wind-down. Under starvation a collection still ends itself and returns
+        every block (`dev/DECISIONS.md`, "under memory starvation a collection
+        ends itself and gives back everything"); with no list to grow, the free
+        path has nothing left to ask an allocation path for, so the regime
+        needs no mechanism of its own here.
+- [ ] S43.5 An unwind out of the close strands no dead slot
+      done: a panic raised inside `TraceScratchArena::reset` — the profile that
+        unwinds, since the release build aborts — still returns every marked
+        slot before the arena's blocks go back, and the doc of whatever holds
+        that duty states which panic it survives and which it does not; a test
+        panics inside the reset and reads every marked slot back
+      tier: T2 · role: Critic
+      note 2026-09-03: raised by the S36.11 Critic's first round against the
+        chain, and it survives the chain's deletion — `ActiveTrace::drop` runs
+        `arena.reset()` before the returns are made, so an unwind out of the
+        reset loses them whichever structure holds them.
 
 ## S37 — Maturation and the two class gates
 
