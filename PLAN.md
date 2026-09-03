@@ -2035,6 +2035,24 @@ The test is the block's shadow pointer, one load `ll_free` nearly makes
 already for its kind dispatch — and it is the right test rather than a cheaper
 one, a block with no rows having no row for a new occupant to inherit.
 
+**The sweep nulls before it returns.** Each marked slot goes back through
+`stdapi::ll_free`, which makes that same test; a sweep that returned before
+nulling would meet its own stamp and mark the slot again, and no slot would
+ever return. Nulling first is safe on one thread at that instant: the rows are
+dead there, which is what the token's release means.
+
+**Three populations are withheld today and the mark owes all three.** An entity
+block's slot is one; the other two are a retained block's whole-block return,
+which `ll_free` reaches through `occupant_freed`, and an OS-direct run's unmap
+— each pinned by a test of S36.2 (`a_retained_blocks_last_occupant_waits_for_`
+`the_trace_row`, `a_pooled_large_entity_waits_for_its_header_row`,
+`an_os_direct_large_entity_waits_for_its_header_row`). Neither has a slot's
+first word to write into: a retained occupant's mark goes in its own header
+and the sweep walks the survivor list, and a run's goes in its block header
+with the sweep unmapping. A step that ships the entity-slot half alone returns
+a retained block or a run under a live row, which is the defect S36.2 exists
+to prevent.
+
 - [ ] S43.1 Measure the two populations   *(S40.1's instrument, this question)*
       done: one instrumented collection reports blocks touched and entities
         dying inside the window, on the synthetic load S40.1 defines, so the
@@ -2049,15 +2067,21 @@ one, a block with no rows having no row for a new occupant to inherit.
         one such slot, walks the block by each of those readers and allocates
         against the same class without receiving it
       tier: T2 · role: Sage → Critic
-- [ ] S43.3 The sweep returns the marked slots
-      done: `clear_touched_rows` returns every marked slot of every block it
-        unstamps through `stdapi::ll_free`, ahead of nulling the block's shadow
-        pointer, and a collection that aborts mid-trace returns them by the
-        same path; tests read every marked slot back on the success path and on
-        the abort path, with the block that emptied entirely retiring to the
-        pool
+- [ ] S43.3 The retained occupant and the OS-direct run carry theirs
+      done: a retained block whose last occupant dies under a live row, and an
+        OS-direct run whose entity dies under one, are held by a mark in their
+        own headers rather than by a record; the three S36.2 cases that pin
+        those two returns pass unchanged
       tier: T2 · role: Sage → Critic
-- [ ] S43.4 The chain and its last resort are deleted
+- [ ] S43.4 The sweep returns everything marked
+      done: `clear_touched_rows` nulls a block's shadow pointer and then
+        returns every mark that block holds through `stdapi::ll_free` — slots,
+        the retained block itself, the run — and a collection that aborts
+        mid-trace returns them by the same path; tests read every marked slot
+        back on the success path and on the abort path, with the block that
+        emptied entirely retiring to the pool
+      tier: T2 · role: Sage → Critic
+- [ ] S43.5 The chain and its last resort are deleted
       done: `cycle::deferred_slot_reuse` holds no record chain, no capacity, no
         growth and no `std::process::abort()`; the withheld returns' region
         leaves the workspace, whose payload becomes bump end to end and whose
@@ -2070,7 +2094,7 @@ one, a block with no rows having no row for a new occupant to inherit.
         ends itself and gives back everything"); with no list to grow, the free
         path has nothing left to ask an allocation path for, so the regime
         needs no mechanism of its own here.
-- [ ] S43.5 An unwind out of the close strands no dead slot
+- [ ] S43.6 An unwind out of the close strands no dead slot
       done: a panic raised inside `TraceScratchArena::reset` — the profile that
         unwinds, since the release build aborts — still returns every marked
         slot before the arena's blocks go back, and the doc of whatever holds

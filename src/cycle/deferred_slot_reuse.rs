@@ -362,7 +362,7 @@ impl Drop for ActiveTrace {
 /// returning this one is the reuse the window exists to prevent; dropping the
 /// record loses a physical return, which is refused (`dev/DECISIONS.md`, "an
 /// enrolment cannot fail"). Nothing can report it either: `ll_free` holds no
-/// frame that can fail. **S43.4 deletes this function with the chain it grows**
+/// frame that can fail. **S43.5 deletes this function with the chain it grows**
 /// — a mark on the dead slot needs no capacity, so nothing here asks.
 #[cold]
 fn grow(chain: &DeferredReturnChain) {
