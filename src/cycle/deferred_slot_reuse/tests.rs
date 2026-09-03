@@ -192,7 +192,7 @@ fn a_retained_blocks_last_occupant_waits_for_the_trace_row() {
     assert_eq!(
         deferred_slot_count(),
         2,
-        "the retained survivor and its heap holder both park"
+        "the retained survivor and its heap holder are both withheld"
     );
     assert_eq!(
         unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) },
@@ -363,7 +363,7 @@ fn an_aborted_window_replays_its_returns_with_both_allocation_paths_refusing() {
     let second = unsafe { dead_entity(second) };
 
     let held_before = gc_blocks();
-    let mut window = ActiveTrace::open().expect("the pool funds the trace window");
+    let mut window = ActiveTrace::open().expect("this thread's workspace is in hand");
     unsafe { ensure_row(window.arena(), first, 0) };
     unsafe { crate::memory::stdapi::ll_free(first as *mut u8) };
     unsafe { crate::memory::stdapi::ll_free(second as *mut u8) };
@@ -381,7 +381,11 @@ fn an_aborted_window_replays_its_returns_with_both_allocation_paths_refusing() {
 
     assert_eq!(heap, 0, "the abort path reached the global allocator");
     assert_eq!(deferred_slot_count(), 0);
-    assert_eq!(gc_blocks(), held_before, "the abort gave the chain back");
+    assert_eq!(
+        gc_blocks(),
+        held_before,
+        "the abort drew nothing: two records fit the workspace's own region"
+    );
 
     let reused = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     assert!(
@@ -390,6 +394,61 @@ fn an_aborted_window_replays_its_returns_with_both_allocation_paths_refusing() {
     );
     unsafe { dead_entity(reused) };
     unsafe { crate::memory::stdapi::ll_free(reused) };
+}
+
+/// The same abort with a block under the cursor. The case above withholds two
+/// returns, which the workspace's region holds, so it says nothing about the
+/// blocks a grown chain owes: this one crosses the region first, and then the
+/// abort has a block to give back and a replay that spans two segments.
+#[test]
+fn an_abort_past_the_region_gives_the_chains_block_back() {
+    let _guard = test_guard();
+    let held_before = gc_blocks();
+    let window = ActiveTrace::open().expect("this thread's workspace is in hand");
+
+    // The marker is withheld first and is therefore replayed first, out of the
+    // region rather than out of the block: a replay that walked the block
+    // alone would leave the run mapped.
+    let marker = unsafe { withheld_large_entity() };
+    let mut withheld = Vec::with_capacity(RETURNS_BASE_RECORDS);
+    for _ in 0..RETURNS_BASE_RECORDS {
+        let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+        assert!(!slot.is_null());
+        unsafe { dead_entity(slot) };
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+        withheld.push(slot);
+    }
+
+    assert_eq!(deferred_slot_count(), RETURNS_BASE_RECORDS + 1);
+    assert_eq!(
+        gc_blocks(),
+        held_before + 1,
+        "the record past the region drew the chain's one block"
+    );
+
+    // The abort is a collection that gives up where memory ran out, so the
+    // close runs with both allocation paths refusing: giving a block back may
+    // need no memory.
+    crate::memory::critical::drain_for_test();
+    let oom = force_oom();
+    drop(window);
+    drop(oom);
+
+    assert_eq!(deferred_slot_count(), 0);
+    assert_eq!(gc_blocks(), held_before, "the abort gave the block back");
+    assert!(
+        !crate::memory::large_entity::snapshot().contains(&marker),
+        "the replay skipped the region and read the block alone"
+    );
+
+    let reused = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+    assert!(
+        withheld.contains(&reused),
+        "the abort across two segments lost a slotted return"
+    );
+    unsafe { dead_entity(reused) };
+    unsafe { crate::memory::stdapi::ll_free(reused) };
+    crate::memory::critical::drain_for_test();
 }
 
 /// A thread that has collected once holds its workspace until it exits, and

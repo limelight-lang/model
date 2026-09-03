@@ -163,11 +163,11 @@ teardown they run call back out — which is why `object` names
 | Thread heaps (`ThreadHeaps`: raw + entity) | TLS | `heap` (initialized lazily on its allocation cold paths) | `stdapi` routes frees in; blocks migrate between threads only via the abandoned lists |
 | The mounted arena | per `LLContext` | `context` (mount), `arena` (mechanics) | `barrier` and `buffer` write its logs; `promote` consumes them at reset |
 | Log reserve (two blocks) | per thread | `reserve` | arena log growth draws; the `ll_gc_maybe_collect` poll refills |
-| Critical reserve (eight blocks) | per thread | `critical` | the collection's arena draws after the pool refuses for a block **above its workspace**, which the reserve may never fund, and gives back at its reset; the `ll_gc_maybe_collect` poll refills |
+| Critical reserve (eight blocks) | per thread | `critical` | two borrowers, both after the pool refuses: the collection's arena, for a block **above its workspace**, which the reserve may never fund, giving back at its reset; and the withheld-return chain's growth past the workspace's region, giving back at the window's close. The `ll_gc_maybe_collect` poll refills |
 | Candidate queue base block and segments | one 64 KiB block per thread for the life of the thread, plus its segment chain | `cycle::queue` | `refcount::release_word` writes entries; the `ll_gc_maybe_collect` poll fills the spares and drains the overflow buffer; `memory::gc_metadata` counts the blocks |
-| Collection workspace | one 64 KiB block per thread from its first collection to its exit, its address in the base block's control line | `cycle::queue` lends it, `cycle::arena::TraceScratchArena` bumps in it | drawn through the ordinary allocation path alone and rewound at every trace close; `memory::gc_metadata` counts the block |
+| Collection workspace | one 64 KiB block per thread from its first collection to its exit, its address in the base block's control line; 12,480 bytes of fixed regions at its head — the worklist's 4,160 and the withheld returns' 8,320 — and 52,800 of bump behind them | `cycle::queue` lends it, `cycle::arena::TraceScratchArena` bumps in it | drawn through the ordinary allocation path alone and rewound at every trace close; `memory::gc_metadata` counts the block, and charges the bump region alone |
 | Shadow rows and the collection's bump | the workspace, plus 64 KiB blocks for the length of one collection where one workspace does not hold the rows | `cycle::arena::TraceScratchArena` | `mark`, `scan` and `stack` read and write rows out of it; `memory::gc_metadata` counts the blocks |
-| In-line trace withheld returns | a chain of 64 KiB blocks for the length of one trace, TLS holding one non-owning pointer to its head and no drop glue | `cycle::deferred_slot_reuse::ActiveTrace` | `stdapi::ll_free` appends physical returns while mark or scan may still address a row; the window replays after its owned arena resets; `memory::gc_metadata` counts the blocks |
+| In-line trace withheld returns | the workspace's second fixed region for the first 1,024 records, and 64 KiB blocks past it for the length of one trace; TLS holds one non-owning pointer to the control line inside that region, and there is no drop glue | `cycle::deferred_slot_reuse::ActiveTrace` | `stdapi::ll_free` appends physical returns while mark or scan may still address a row; the window replays after its owned arena resets; `memory::gc_metadata` counts the blocks the growth drew |
 | Immortal region | process-global mutex | `immortal` | `class`, `intern`, `object` (immortal category) |
 | Intern table | process-global mutex, Rust-owned | `intern` | `class` looks names up |
 | Retained-block survivor lists | the block's own header line and the arena's memory; no process-global structure, no lock, one atomic count word per block | `retained` | `promote` places and publishes at reset; the trace and `heap`'s test-only enumerator read the header |
@@ -298,7 +298,8 @@ their blocks are abandoned or returned.
 retained: nothing calls a collection. The pieces exist and stand in this
 order — a non-final decrement registers the entity (`refcount` → `queue`);
 a trace opens its trace scratch arena over the thread's workspace and then
-its window, either refusal being a collection that does not start
+its window inside a region of that workspace, the one refusal left being a
+thread's first collection failing to draw the workspace at all
 (`arena`, `deferred_slot_reuse`);
 `mark` subtracts the edges the heap holds of itself and `scan` colours
 what survives; `validation` re-reads the members on the owning thread before

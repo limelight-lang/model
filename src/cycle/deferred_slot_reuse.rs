@@ -278,9 +278,17 @@ impl Drop for WithheldReturns {
 /// reuse it delayed.
 #[must_use = "dropping the trace window closes the slot-reuse barrier"]
 pub(crate) struct ActiveTrace {
-    /// Declared before the arena, and therefore dropped before it: the records
-    /// this chain replays stand in a region of the workspace, and the arena's
-    /// drop is what hands that workspace back to the thread.
+    /// Declared before the arena, and therefore dropped before it: this
+    /// chain's control line, its base segment and its first 1,024 records all
+    /// stand in a region of the workspace, which the arena's drop hands back
+    /// to the thread.
+    ///
+    /// Defensive rather than load-bearing today, and worth the line for what
+    /// it costs: the drop below replays before either field dies, and
+    /// `queue::return_workspace_base` leaves the block in the thread's own cell
+    /// rather than handing it to the pool, so a reversed order would read
+    /// memory nobody else can have yet. It becomes load-bearing the day that
+    /// call gives the block back.
     returns: WithheldReturns,
     arena: crate::cycle::arena::TraceScratchArena,
     // A window belongs to the TLS state of the thread that opened it. Moving
@@ -404,7 +412,15 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8) -> bool {
     let chain = unsafe { &*control };
     if !chain.records.push(ptr) {
         grow(chain);
-        chain.records.push(ptr);
+        // The same last resort [`grow`] reaches, for the same reason: a record
+        // this call drops is a physical return lost, and no frame above can be
+        // told. The segment a growth opens is empty and holds
+        // [`RECORDS_PER_BLOCK`], so nothing but a defect in the chain gets
+        // here.
+        assert!(
+            chain.records.push(ptr),
+            "the growth opened a segment with no room for the record it was drawn for"
+        );
     }
 
     true

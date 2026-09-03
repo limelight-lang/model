@@ -181,10 +181,12 @@ const _: () = assert!(WORKSPACE_PREFIX_BYTES == 12_480);
 const _: () = assert!(WORKSPACE_BUMP_BYTES == 52_800);
 
 // Every region begins on a line, which the withheld returns' control line
-// needs to be aligned at all: a payload starts `LINE_SIZE` into a 64 KiB-aligned
-// block, so an offset that is a multiple of 64 is 64-aligned.
+// needs to be aligned at all: a payload starts `LINE_SIZE` into a block the
+// pool aligns to `BLOCK_SIZE`, so an offset that is a multiple of 64 is
+// 64-aligned.
 const _: () = assert!(SEGMENT_BYTES % 64 == 0 && RETURNS_BASE_BYTES % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::LINE_SIZE % 64 == 0);
+const _: () = assert!(crate::memory::block_pool::BLOCK_SIZE % 64 == 0);
 
 /// One collection's memory: the thread's workspace for as long as the arena
 /// lives, and the blocks the bump grew into past it, which
@@ -469,9 +471,9 @@ impl TraceScratchArena {
     /// from the moment this returns, and its own `reset` is what says
     /// so.
     pub(crate) fn reset(&mut self) {
-        // Ahead of the sweep, which asserts an empty worklist: an abort is
-        // raised with entities still queued, and every one of them carries a
-        // row pointer into an array this call is about to unstamp.
+        // Ahead of the sweep, which owes an empty worklist: an abort is raised
+        // with entities still queued, and every one of them carries a row
+        // pointer into an array this call is about to unstamp.
         self.worklist.rewind();
         self.clear_touched_rows();
 
@@ -532,7 +534,14 @@ impl TraceScratchArena {
     /// entity, so the pointer is the whole of what a collection leaves in
     /// the heap.
     pub(crate) fn clear_touched_rows(&mut self) {
-        assert!(
+        // The ordered close owes an empty worklist: every entry carries a row
+        // pointer into an array this call unstamps, and an entry surviving the
+        // sweep would name a row the next collection is granting. Checked and
+        // not enforced, and by a `debug_assert` — this module answers a
+        // refusal rather than ending the process, and the release build of a
+        // caller that got the order wrong loses nothing here, the rows staying
+        // where they are until [`reset`](Self::reset) rewinds over them.
+        debug_assert!(
             self.worklist.is_empty(),
             "the worklist is drained before the rows it points into are unstamped"
         );
