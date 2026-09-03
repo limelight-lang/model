@@ -13,8 +13,24 @@ use crate::memory::block_pool::BlockPool;
 use crate::memory::gc_metadata;
 use crate::test_support::allocation_probe;
 
-/// Every root the batch holds, newest first — the walk the trace uses, read
-/// into a vector a test can compare.
+/// The candidate bit of the two chained entities, one set and one down: the
+/// half of the clause a token walk cannot state, since a record answers for a
+/// bit and neither end of the pair may touch one.
+fn assert_bits(set: *mut RcHeader, down: *mut RcHeader) {
+    assert_ne!(
+        unsafe { mutator_flags(set) } & CANDIDATE_BIT,
+        0,
+        "a record crossed the pair and the bit that answers for it went down"
+    );
+    assert_eq!(
+        unsafe { mutator_flags(down) } & CANDIDATE_BIT,
+        0,
+        "a record crossed the pair and a bit went up behind it"
+    );
+}
+
+/// Every root the batch holds, in the walk's own order — newest segment first,
+/// oldest entry within each — read into a vector a test can compare.
 fn roots_of(batch: &InFlightBatch) -> Vec<*mut RcHeader> {
     let mut roots = Vec::new();
     batch.walk_roots(|root| {
@@ -92,8 +108,18 @@ fn every_token_crosses_the_detach_exactly_once() {
     let chained_entity = &raw mut chained;
     assert!(unsafe { !release(chained_entity) });
 
-    // A second entity in the tier below the reserve, because the overflow
-    // buffer is the lane the detach deliberately leaves alone.
+    // A second record in the same lane whose bit is down. The pair is what
+    // makes the bit assertions below able to fail: with one entity the walk
+    // could only catch a clear, and a detach or a restore that set a bit on
+    // every root it passed would keep every token set equal and still be
+    // wrong.
+    let mut bitless = candidate(2);
+    let bitless_entity = &raw mut bitless;
+    assert!(unsafe { !release(bitless_entity) });
+    unsafe { crate::refcount::clear_candidate_bit(bitless_entity) };
+
+    // A third in the tier below the reserve, because the overflow buffer is
+    // the lane the detach deliberately leaves alone.
     let state = owner_state();
     let mut overflowed = candidate(2);
     let overflowed_entity = &raw mut overflowed;
@@ -101,13 +127,11 @@ fn every_token_crosses_the_detach_exactly_once() {
 
     let mut before = Vec::new();
     collect_lane_tokens(&mut before);
-    assert_eq!(before, vec![chained_entity, overflowed_entity]);
-    // The other half of the clause, and the one a token walk cannot state: a
-    // record answers for a bit, so a detach or a restore that cleared or set
-    // one would keep every set below equal and still be wrong. Asserted for
-    // the chained entity alone — the overflowed one was written by the fixture
-    // rather than by the release path, so no bit was ever set for it.
-    assert_ne!(unsafe { mutator_flags(chained_entity) } & CANDIDATE_BIT, 0);
+    assert_eq!(
+        before,
+        vec![chained_entity, bitless_entity, overflowed_entity]
+    );
+    assert_bits(chained_entity, bitless_entity);
 
     let batch = detach_candidates();
     let mut during = Vec::new();
@@ -119,26 +143,23 @@ fn every_token_crosses_the_detach_exactly_once() {
     );
     assert_eq!(
         roots_of(&batch),
-        vec![chained_entity],
-        "and the chain's entry is in the batch, in one lane and not two"
+        vec![chained_entity, bitless_entity],
+        "and both records of the chain are in the batch, in one lane and not two"
     );
-    assert_ne!(
-        unsafe { mutator_flags(chained_entity) } & CANDIDATE_BIT,
-        0,
-        "the record moved lanes and the bit that answers for it stayed put"
-    );
+    assert_bits(chained_entity, bitless_entity);
 
     restore_candidates(batch);
     let mut after = Vec::new();
     collect_lane_tokens(&mut after);
     assert_eq!(after, before, "the set of records is what it was");
-    assert_ne!(unsafe { mutator_flags(chained_entity) } & CANDIDATE_BIT, 0);
+    assert_bits(chained_entity, bitless_entity);
 
     reset();
 }
 
 /// Neither end draws, charges or discharges anything: no global allocation, no
-/// pool request, no cell spent, and neither ledger figure moved. That is what
+/// pool request, no cell spent, and neither the ledger's current figures nor
+/// its high-water ones moved. That is what
 /// a detach of two words can be held to (`dev/DECISIONS.md`, "the detach of a
 /// candidate chain draws no segment").
 #[test]
@@ -156,6 +177,10 @@ fn neither_the_detach_nor_the_restore_asks_for_memory() {
     // registration being a growth by construction, so the stock is read here
     // rather than assumed full.
     let spares_before = spare_count();
+    // The peak is lowered first, because it is process-global and a figure this
+    // pair cannot move is one no assertion can see moved
+    // (`gc_metadata::lower_peak_to_current`).
+    gc_metadata::lower_peak_to_current();
     let stats_before = gc_metadata::stats();
     let _ = allocation_probe::take_allocations();
 
@@ -166,14 +191,7 @@ fn neither_the_detach_nor_the_restore_asks_for_memory() {
         "the detach is two cell swaps"
     );
     assert_eq!(BlockPool::global().blocks_out(), blocks_before);
-    assert_eq!(
-        gc_metadata::stats().current_bytes(),
-        stats_before.current_bytes()
-    );
-    assert_eq!(
-        gc_metadata::stats().current_blocks(),
-        stats_before.current_blocks()
-    );
+    assert_eq!(gc_metadata::stats(), stats_before);
 
     restore_candidates(batch);
     assert_eq!(
@@ -182,14 +200,7 @@ fn neither_the_detach_nor_the_restore_asks_for_memory() {
         "and so is the restore"
     );
     assert_eq!(BlockPool::global().blocks_out(), blocks_before);
-    assert_eq!(
-        gc_metadata::stats().current_bytes(),
-        stats_before.current_bytes()
-    );
-    assert_eq!(
-        gc_metadata::stats().current_blocks(),
-        stats_before.current_blocks()
-    );
+    assert_eq!(gc_metadata::stats(), stats_before);
     assert_eq!(spare_count(), spares_before, "and no cell was spent either");
 
     reset();

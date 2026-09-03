@@ -740,13 +740,17 @@ impl Drop for InFlightBatch {
 /// first, stopping at the first `visit` that answers false. **False** when it
 /// stopped early.
 ///
-/// The one place that reads a chain's entries, and where the bound on them
-/// lives: the head holds the fill stored beside it, every segment behind the
-/// head holds [`SEGMENT_CAPACITY`], and that holds because a segment leaves the
-/// write position only when it is full. Two others rest on the same rule
-/// without reading an entry — [`release_queue_segments`], which discharges one
-/// payload per segment behind the head, and [`append_with_new_segment`], which
-/// asserts it at the growth — so S38.1 ends the rule in three places.
+/// How a chain is bounded, and the walk every reader of more than one entry
+/// goes through: the head holds the fill stored beside it, every segment behind
+/// the head holds [`SEGMENT_CAPACITY`], and that holds because a segment leaves
+/// the write position only when it is full.
+///
+/// Three others rest on the same rule. [`candidate_count`] counts by it,
+/// deliberately without this walk, so that the two readings cross-check;
+/// [`release_queue_segments`] discharges one payload per segment behind the
+/// head; and [`append_with_new_segment`] carries a `debug_assert` of it at the
+/// growth. `write_segment_entry` reads one entry of the head alone, bounded by
+/// the same fill. S38.1 is where the rule ends, in all five places.
 fn walk_chain(
     head: *mut BlockHeader,
     fill: usize,
@@ -820,10 +824,12 @@ pub(crate) fn detach_candidates() -> InFlightBatch {
 /// its registration, its bit uncleared and its entry back in its own lane
 /// (`rfc/model/gc/cycle/questions.md`, Y12 clause 5).
 ///
-/// **The write position must still be empty, and the assertion is in every
-/// build.** Nothing registers a candidate between the detach and here while
-/// nothing but mark and scan runs there: they write no entity, so no decrement
-/// runs under them.
+/// **The write position must still be empty, and the check is in every build
+/// except an unwind.** Nothing registers a candidate between the detach and
+/// here while nothing but mark and scan runs there: they write no entity, so no
+/// decrement runs under them. A refused restore keeps the chain in the batch,
+/// which the process then keeps: the roots are not lost, the memory is, and the
+/// message names the rule that was broken.
 ///
 /// **A teardown does register candidates, so a disposition takes the batch
 /// before the first destructor runs.** The ordinary collection keeps its rows
@@ -833,9 +839,10 @@ pub(crate) fn detach_candidates() -> InFlightBatch {
 /// release registers a candidate, which installs a fresh segment in the empty
 /// write position. Restoring over
 /// that segment would drop it out of the chain with its own roots' bits
-/// standing, which no later decrement can undo, so the assertion refuses it —
-/// and `cycle::deferred_slot_reuse::ActiveTrace::take_batch` is what a
-/// disposition uses instead.
+/// standing, which no later decrement can undo, so the assertion refuses it.
+/// What a disposition needs instead is to take the batch and give its segments
+/// back, and S36.7 builds that pair: neither half is useful alone, a batch
+/// taken out of the window being one nothing can end.
 pub(crate) fn restore_candidates(mut batch: InFlightBatch) {
     if batch.head.is_null() {
         return;
@@ -850,12 +857,20 @@ pub(crate) fn restore_candidates(mut batch: InFlightBatch) {
         "the queue base block left with a batch out"
     );
     let q = unsafe { owner_state_ref(state) };
-    // Checked before the batch is emptied, so a refusal leaves the chain in the
-    // batch rather than in a local this frame is about to drop.
-    assert!(
-        q.write_segment.get().is_null(),
-        "a candidate was registered while a batch was detached"
-    );
+    if !q.write_segment.get().is_null() {
+        // Off an unwind this is the defect the check exists for. On one it
+        // would be the second panic, raised from `ActiveTrace`'s drop glue,
+        // and a panic during a panic ends the process with the first
+        // message lost — the same arm and the same reason as
+        // [`return_workspace_base`]'s. The batch is left holding its chain,
+        // whose segments the process then keeps.
+        assert!(
+            std::thread::panicking(),
+            "a candidate was registered while a batch was detached"
+        );
+        return;
+    }
+
     q.write_segment.set(batch.head);
     q.write_len.set(batch.fill);
     batch.head = std::ptr::null_mut();
@@ -1015,11 +1030,15 @@ pub(crate) fn candidate_count() -> usize {
         return 0;
     }
 
-    let mut count = 0;
-    walk_chain(write_segment, q.write_len.get(), |_| {
-        count += 1;
-        true
-    });
+    // Its own arithmetic rather than a count of what [`walk_chain`] yields:
+    // this is the instrument `collect_lane_tokens` is calibrated against, and
+    // two readings that share a computation cross-check nothing.
+    let mut count = q.write_len.get();
+    let mut segment = unsafe { (*write_segment).next };
+    while !segment.is_null() {
+        count += SEGMENT_CAPACITY;
+        segment = unsafe { (*segment).next };
+    }
 
     count
 }

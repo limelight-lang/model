@@ -8,6 +8,38 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — the restore's refusal is the ordinary teardown, and it yields on an unwind
+
+Owner: S36.12 and S36.7's driver. Supersedes the paragraph "What the restore
+rests on instead of a spare" in "the detach of a candidate chain draws no
+segment", written earlier the same day, which is wrong in both halves.
+
+**A destructor running before the restore is the ordinary path rather than a
+day that may never come.** The collection off the poll keeps its rows through
+the teardown ("the member list is the pressure path's alone"), so the trace
+window is still open while the severing releases the live children of a member
+the exact test found unreachable; each such release registers a candidate and
+installs a fresh segment in the write position the detach emptied. What a
+disposition needs is to take the batch and give its segments back, and neither
+half is useful alone: a batch out of the window is one nothing can end, since
+the restore refuses a refilled lane and the drop refuses a chain. S36.7 builds
+the pair.
+
+**The damage is not silent, and the refusal is not an abort.** The check is in
+every build, so a restore over a refilled lane says which rule it broke. It
+yields on one path: raised from `ActiveTrace`'s drop glue during an unwind it
+would be the second panic, and a panic during a panic ends the process with the
+first message lost, so on an unwind the restore returns instead and the batch
+keeps its chain. The roots are not lost there; the memory is.
+
+**What that costs, stated rather than hidden.** `InFlightBatch`'s drop is
+silent while a panic unwinds, for the same reason, so a batch dropped instead
+of restored during an unwind is unreported — and every root in it then carries
+its candidate bit with no record behind it, which the gate refuses to register
+again for the life of the process. Off an unwind the drop still says so.
+
+---
+
 ## 2026-09-03 — the detach of a candidate chain draws no segment
 
 Owner: S36.12. Ruled by the stage's Sage gate, against the proposal put to it.

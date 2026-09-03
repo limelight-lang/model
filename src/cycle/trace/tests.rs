@@ -80,6 +80,13 @@ fn two_rings() -> TwoRings {
 
 /// Break both rings and free everything, which is the only way out: the
 /// entities hold each other and nothing else does.
+///
+/// **The candidate bit is cleared by hand first.** `release_queue_segments`
+/// drops the records without touching the bits, and `ll_free`'s candidate arm
+/// withholds the slot of anything whose bit still stands, so a teardown that
+/// skipped this would leave both slots and their block out for the life of the
+/// process. Nothing in production clears the bit yet; S36.5 and S39.1 are what
+/// will (`crate::refcount::clear_candidate_bit`).
 fn tear_down(rings: TwoRings) {
     let TwoRings {
         mut arena,
@@ -93,6 +100,7 @@ fn tear_down(rings: TwoRings) {
         store_prop(&mut arena, beta, prop_offset(0), std::ptr::null_mut());
         store_prop(&mut arena, beta, prop_offset(1), std::ptr::null_mut());
         for entity in [alpha, beta] {
+            crate::refcount::clear_candidate_bit(entity as *mut RcHeader);
             assert!(ll_release(entity as *mut RcHeader));
             ll_object_die(entity);
         }

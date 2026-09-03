@@ -102,9 +102,12 @@ pub(crate) enum ScanResult {
 /// still its own — a candidate the queue names, live or dead — and the trace
 /// runs where `cells::trace_cells` may read an entity's cells plainly, on the
 /// owning thread with no mutator running beside it. A root that was torn down
-/// has no met row, so this reads its block and stops; the cells are read only
-/// for an entity the mark met, and the mark meets none at count zero
-/// (`crate::cycle::mark`, "A root at count zero is expanded by nothing").
+/// has no met row, so the dispatch reads the block header, and for a large
+/// entity the header's own flags and for a retained one its count
+/// (`crate::cycle::row`) — all of them the slot's own while a queue entry names
+/// it. Its cells are never read: the mark meets no row at count zero
+/// (`crate::cycle::mark`, "A root at count zero is expanded by nothing"), and
+/// only a met row reaches the expansion.
 pub(crate) unsafe fn scan(arena: &mut TraceScratchArena, root: *mut RcHeader) -> ScanResult {
     if !unsafe { classify_and_schedule_entity(arena, root, false) } {
         return ScanResult::AllocationFailed;
@@ -155,8 +158,8 @@ pub(crate) unsafe fn scan(arena: &mut TraceScratchArena, root: *mut RcHeader) ->
 /// there is what terminates the scan.
 ///
 /// # Safety
-/// As [`scan`], and `entity` is a root or a counted child
-/// `cells::trace_cells` yielded, hence a live entity header.
+/// As [`scan`]: `entity` is a root whose slot is still its own, live or dead,
+/// or a counted child `cells::trace_cells` yielded, which is live.
 unsafe fn classify_and_schedule_entity(
     arena: &mut TraceScratchArena,
     entity: *mut RcHeader,
@@ -193,8 +196,9 @@ unsafe fn classify_and_schedule_entity(
 /// cannot place, or a slot the mark never reached.
 ///
 /// # Safety
-/// `entity` is a live entity header whose block is still this
-/// collection's.
+/// `entity` is an entity header whose slot is still its own and whose block is
+/// still this collection's. A torn-down root reaches here and answers `None`,
+/// its row never having been met.
 #[inline]
 unsafe fn find_initialized_row_for_entity(entity: *mut RcHeader) -> Option<*mut u32> {
     let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(entity) }) else {

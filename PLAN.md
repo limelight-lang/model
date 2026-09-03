@@ -2002,6 +2002,36 @@ stage claiming the frees while building none of them.
         requests as a pair, and the assertion is against `(0, 0)`. Two source
         mutations were run and each was caught by the test that owns it: the
         two phases interleaved per root, and the restore's assertion deleted.
+      Critic 2026-09-03 round 2 (slice a): twelve findings, all taken, and four
+        of them defects round 1's own repairs introduced. `take_batch` was the
+        worst: it hands a disposition a batch with no terminal operation — the
+        restore refuses a lane a destructor refilled and the drop refuses a
+        chain — so it moved the process kill rather than closing it, and it
+        broke the paragraph that argued a thread cannot exit with a batch out.
+        It is withdrawn, and what S36.7 owes is the pair, taking the batch and
+        giving its segments back. Round 1's reordered assertion was
+        observationally a no-op, the batch being taken by value and dropped by
+        the same failing frame either way, and the `panicking()` guard it came
+        with went on the wrong drop: the assertion that fires from drop glue is
+        the restore's, so that is where the yield is now, and what the guard
+        costs — an unreported dropped batch during an unwind — is stated in
+        `dev/DECISIONS.md` rather than left implied. `candidate_count` had been
+        folded onto `walk_chain`, which made the walk's calibration a tautology;
+        it goes back to its own arithmetic, and the comment names all five
+        readers of the rule including `write_segment_entry`, which round 1
+        missed eleven lines from the bottom of the file it was editing. The
+        trace fixture freed neither entity, `release_queue_segments` dropping
+        records without clearing bits and `ll_free`'s candidate arm withholding
+        both slots for the life of the process; it clears them as the
+        `deferred_slot_reuse` suite does. The new candidate-bit assertions could
+        not fail, so the lane now carries a second record whose bit is down and
+        the pair constrains both directions. "Neither ledger figure moved" read
+        the current figures alone; the peak is lowered first and the whole
+        `stats()` compared. `scan`'s two inner contracts still said "a live
+        entity header" under a widened outer one; `roots_of`'s doc still said
+        "newest first"; and `ll_free`'s comment promised a check nobody wrote,
+        which is the arm below it and now says so. The device stops at two
+        rounds.
       handoff: choose and test the commit unit here. A single condemned batch
         is safe under the aggregate exact sum but resurrection in one connected
         part conservatively retains the others; if teardown promises

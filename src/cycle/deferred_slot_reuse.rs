@@ -281,10 +281,15 @@ impl Drop for WithheldReturns {
 /// reuse it delayed.
 #[must_use = "dropping the trace window closes the slot-reuse barrier"]
 pub(crate) struct ActiveTrace {
-    /// The candidate chain this collection detached, while it is still this
-    /// collection's. `None` before [`ActiveTrace::detach_candidates`] and after
-    /// whatever disposition takes it, which puts a restore after the batch is
-    /// gone out of reach rather than merely in the wrong.
+    /// The candidate chain this collection detached, until the window closes.
+    /// `None` before [`ActiveTrace::detach_candidates`].
+    ///
+    /// **There is no way to take it out, and that is deliberate.** A
+    /// disposition that keeps some roots owes two operations at once — taking
+    /// the batch and giving its segments back — and half of that pair is a
+    /// batch nothing can end: `restore_candidates` refuses a lane a destructor
+    /// has refilled and the drop refuses a batch that still holds a chain.
+    /// S36.7 builds the pair with the driver that needs it.
     batch: Option<crate::cycle::queue::InFlightBatch>,
     /// Declared before the arena, and therefore dropped before it: this
     /// chain's control line, its base segment and its first 1,024 records all
@@ -344,23 +349,6 @@ impl ActiveTrace {
             "a trace detaches its candidate chain once"
         );
         self.batch = Some(crate::cycle::queue::detach_candidates());
-    }
-
-    /// Take the detached batch out of this window, leaving the drop nothing to
-    /// restore.
-    ///
-    /// **A disposition that runs user code calls this before the first
-    /// destructor.** The ordinary collection keeps its rows through the
-    /// teardown (`dev/DECISIONS.md`, "the member list is the pressure path's
-    /// alone"), so this window is still open while severed children are
-    /// released; each such release registers a candidate into the write
-    /// position the detach emptied, and a restore after that is refused
-    /// (`crate::cycle::queue::restore_candidates`). The disposition that owns
-    /// the roots from here on is S36.7's driver.
-    ///
-    /// `None` when no batch was detached, or when one already left.
-    pub(crate) fn take_batch(&mut self) -> Option<crate::cycle::queue::InFlightBatch> {
-        self.batch.take()
     }
 
     /// The arena and the detached batch in one answer, because a trace reads

@@ -287,11 +287,15 @@ pub unsafe fn ll_free(ptr: *mut u8) {
             "entity freed at a live refcount {refcount} at {:#x}",
             ptr as usize
         );
-        // The same shape one field up: the cycle collector's candidate buffer
-        // holds raw pointers, so a slot that reaches the free list still
-        // claiming a place in it leaves a root aimed at memory about to be
-        // handed out again. Every teardown entry point has to clear it; this is
-        // where an entry point that forgot to says so.
+        // The same hazard one field up is answered by an arm rather than by a
+        // check here: the candidate queue holds raw pointers, so a slot that
+        // reached the free list while an entry still names it would leave a
+        // root aimed at memory about to be handed out again. What prevents it
+        // is the candidate arm below, which withholds such a slot instead of
+        // freeing it. The bit that arm reads is cleared by the owner at its
+        // exact reading, which S36.5 builds, and at thread exit, which S39.1
+        // does; until then a slot withheld here is withheld for the life of
+        // the process.
     }
 
     // A reset in flight on this thread reads one header word of every
