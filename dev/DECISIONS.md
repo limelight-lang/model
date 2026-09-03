@@ -40,9 +40,21 @@ second one to build. Every draw the collection makes already reads it —
 `TraceScratchArena::grow` answers false on it and the collection aborts, and
 `deferred_slot_reuse::grow` reads the same null.
 
-**What it leaves open:** which step builds the wind-down, and what the refusal
-inside `ll_free` does instead of `std::process::abort()`. That `abort()` stands
-until then, as the last resort it already was.
+**What the refusal does** (Edmond, the same day): a collection that cannot
+finish on the memory it has winds itself down and gives all of it back. The
+refusal inside `ll_free` therefore closes the window where it stands, sweeps
+the rows, replays what is already withheld and lets the slot in hand go
+physically — the rows are gone by then, so nothing addresses it any more.
+Ending the process is not the answer.
+
+**What it costs to build, and no step owns it yet.** The trace's state is
+reachable only from the collection's own frame: `ActiveTrace` owns both the
+arena and the chain, while `defer_reuse_if_tracing` holds nothing but the
+thread-local pointer to the chain's control line. A wind-down raised from the
+free path needs the arena reachable from thread-local state as well, and the
+replay made one-shot, so that the collection's own close finds a window
+already down rather than replaying a second time. The `abort()` in
+`cycle::deferred_slot_reuse::grow` stands until that is built.
 
 ---
 
