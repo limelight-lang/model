@@ -55,13 +55,16 @@
 //! (`dev/DECISIONS.md`, "an enrolment cannot fail") — has no way of arriving
 //! for as long as the region has room.
 //!
-//! Growth past the region is where it arrives, and there it has no answer
-//! left and ends the process, which is the funded class's last resort and the
-//! same one the queue's overflow buffer reaches (`crate::cycle::queue`).
-//! Reached only after [`RETURNS_BASE_RECORDS`] slots have died inside one
-//! trace window while both allocation paths refuse a single block. A thread
-//! exiting with its window still open ends the process for the same reason
-//! ([`dispose_thread_state`]).
+//! Growth past the region is where it arrives, and there it ends the process,
+//! which is the funded class's last resort and the same one the queue's
+//! overflow buffer reaches (`crate::cycle::queue`). Reached only after
+//! [`RETURNS_BASE_RECORDS`] slots have died inside one trace window while both
+//! allocation paths refuse a single block. **The answer that replaces it is
+//! S43.3's**: the shortage is what ends a collection, and a collection that
+//! has ended addresses no row, so the slot in hand goes back physically
+//! (`dev/DECISIONS.md`, "under memory starvation a collection ends itself and
+//! gives back everything"). A thread exiting with its window still open ends
+//! the process for a reason of its own ([`dispose_thread_state`]).
 //!
 //! The block leaving the append position is charged whole. The block still
 //! under the cursor is a documented residue: it never stands in the current
@@ -355,11 +358,12 @@ impl Drop for ActiveTrace {
 
 /// Move the append position into a block of its own, or end the process.
 ///
-/// The refusal has no answer left. The open trace's rows still address every
-/// slot the caller is holding, so returning this one is the reuse the window
-/// exists to prevent; dropping the record loses a physical return, which is
-/// refused (`dev/DECISIONS.md`, "an enrolment cannot fail"). Nothing can report
-/// it either: `ll_free` holds no frame that can fail.
+/// The open trace's rows still address every slot the caller is holding, so
+/// returning this one is the reuse the window exists to prevent; dropping the
+/// record loses a physical return, which is refused (`dev/DECISIONS.md`, "an
+/// enrolment cannot fail"). Nothing can report it either: `ll_free` holds no
+/// frame that can fail. **S43.3 replaces the process death with the
+/// wind-down** — the refusal ends the collection, and the rows go with it.
 #[cold]
 fn grow(chain: &DeferredReturnChain) {
     let (block, from_reserve) = draw_block();

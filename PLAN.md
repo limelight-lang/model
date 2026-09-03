@@ -12,7 +12,7 @@ The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
 Updated: 2026-09-03 · Active: the rest of S36, from S36.9 — the sections after
-S40 are the backlog. S41 closed 2026-09-02 and is not yet deleted: what
+S40 are the backlog. S43 sits between S36 and S37, where it is to be done. S41 closed 2026-09-02 and is not yet deleted: what
 outlives it has to reach the journals first (rule 23.1.3).
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
@@ -93,17 +93,6 @@ the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
 than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
 
-- **whether a thread's first collection may still run when the pool refuses.**
-  Before S36.10 it could: the arena and the withheld-return chain both asked
-  the pool and then the critical reserve, which is the reserve user
-  `rfc/model/memory/critical-reserve.md`, "Collection working memory", exists
-  for. The workspace has the ordinary path alone, so a thread that has never
-  collected now answers `None` under that pressure, and five cases in
-  `cycle::deferred_slot_reuse::tests` state the old claim in their prose while
-  passing on the guard's pre-draw. Raised by the S36.10 Critic's second round;
-  the answer is Edmond's, and the alternative that keeps both his ruling and
-  the guarantee is an arena that opens without a workspace when the draw is
-  refused and owns its blocks for that collection.
 - `memory::reset_window` keeps a vocabulary of its own — `CORPSE_WALKS` and
   `park_large` beside `ResetWindow::escrow` — and both S41 guards exempt the
   two by name, with the reason in the exemption. The words exist now: `rfc`
@@ -1998,6 +1987,58 @@ stage claiming the frees while building none of them.
         collection's consistency window between the final scan decision and
         guard acquisition; encode that boundary in the API so a future caller
         cannot pass a stale condemned list as an in-line proof.
+
+## S43 — The starvation wind-down   *(after S36.7)*
+
+Goal: a collection that cannot finish on the memory it has ends itself and
+gives every block back, rather than ending the process. Memory starvation is
+its own regime and the collector is not wanted in it — each thread frees its
+own memory by counting — and the shortage itself is the signal, which is the
+refusal both allocation paths already answer (`dev/DECISIONS.md`, 2026-09-03,
+"under memory starvation a collection ends itself and gives back everything").
+
+Today one refusal has no answer: the withheld returns' growth past the
+workspace's 1,024-record region calls `std::process::abort()`, because
+`ll_free` holds no frame that can report a refusal and the slot in hand can be
+neither returned nor dropped while the trace addresses its row. The wind-down
+removes the second half of that: a collection that has ended addresses no row,
+so the slot goes back physically.
+
+- [ ] S43.1 The trace's state is reachable from the free path
+      done: `ll_free` reaches this thread's open arena and its withheld-return
+        chain through thread-local state alone, with the `ActiveTrace` still
+        the owner that returns both; a test drives a withheld return that reads
+        the arena's block count without a reference from the collection's frame
+      tier: T2 · role: Sage → Critic
+- [ ] S43.2 The close is one-shot from either end
+      done: a wind-down raised on the free path sweeps the rows, replays the
+        withheld returns and returns every block, and the collection's own
+        close afterwards replays nothing a second time and discharges nothing
+        twice; exercised by a test that winds down mid-trace and then drops the
+        window, with the GC byte ledger back at its pre-collection figure and
+        every withheld slot reused exactly once
+      tier: T2 · role: Sage → Critic
+- [ ] S43.3 A refusal winds the collection down instead of ending the process
+      done: `cycle::deferred_slot_reuse::grow` has no `std::process::abort()`;
+        a withheld return that neither allocation path can fund winds the
+        collection down, returns its own slot physically and leaves the thread
+        collecting nothing, with the process alive — seen red by the same case
+        against today's abort, which ends the test process
+      tier: T2 · role: Sage → Critic
+- [ ] S43.4 An unwind out of the close strands no withheld return
+      done: a panic raised inside `TraceScratchArena::reset` — the profile that
+        unwinds, since the release build aborts — still replays every withheld
+        return before the chain's blocks go back, and `WithheldReturns`'s doc
+        states which panic its holder survives and which it does not; a test
+        panics inside the reset and reads every withheld slot back
+      tier: T2 · role: Critic
+      note 2026-09-03: raised by the S36.11 Critic's first round and left
+        standing there. `ActiveTrace::drop` runs `arena.reset()` before
+        `close_window` and `replay`, and `WithheldReturns::drop` releases
+        without replaying, so an unwind out of the reset withholds every slot
+        for the life of the process. The holder's own comment names a poisoned
+        `BlockPool` mutex as the panic it exists for, and its recovery path
+        reaches that same mutex.
 
 ## S37 — Maturation and the two class gates
 

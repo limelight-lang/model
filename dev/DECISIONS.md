@@ -47,14 +47,21 @@ the rows, replays what is already withheld and lets the slot in hand go
 physically — the rows are gone by then, so nothing addresses it any more.
 Ending the process is not the answer.
 
-**What it costs to build, and no step owns it yet.** The trace's state is
+**What it answers about a thread's first collection.** A thread whose first
+collection cannot draw its workspace answers `None` and collects nothing,
+which the plan carried as an open question from S36.10's Critic round. That is
+the right answer under this ruling: a thread in starvation wants no collector,
+and the one it would have run would have ended itself at the next refusal
+anyway.
+
+**What it costs to build; S43 owns it.** The trace's state is
 reachable only from the collection's own frame: `ActiveTrace` owns both the
 arena and the chain, while `defer_reuse_if_tracing` holds nothing but the
 thread-local pointer to the chain's control line. A wind-down raised from the
 free path needs the arena reachable from thread-local state as well, and the
 replay made one-shot, so that the collection's own close finds a window
 already down rather than replaying a second time. The `abort()` in
-`cycle::deferred_slot_reuse::grow` stands until that is built.
+`cycle::deferred_slot_reuse::grow` stands until S43.3 removes it.
 
 ---
 
