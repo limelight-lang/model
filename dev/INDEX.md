@@ -36,7 +36,7 @@ versions live in `docs/history/`, marked at the top.
   | module | what is there | production caller |
   |---|---|---|
   | `queue` | the per-thread candidate queue, its base block, spares and overflow buffer, and the cell that lends the collection workspace | `refcount::release_word`, `gc`'s poll |
-  | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its records in the workspace's fixed region | `stdapi::ll_free` |
+  | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its records in the workspace's fixed region, and the detached candidate batch a collection traces | `stdapi::ll_free` |
   | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | none until S36.7 |
   | `shadow` | the row: two bits of colour over thirty of working count | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
@@ -44,6 +44,7 @@ versions live in `docs/history/`, marked at the top.
   | `records` | `RecordChain`, the segmented record chain the collection's lists are built on | none |
   | `stack` | the trace worklist, 256-entry segments out of the arena | none |
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
+  | `trace` | both phases over one detached batch, in the order the rows require: every root marks before any root scans | none until S36.7 |
   | `validation` | the owner's exact validation of one component, and the zero-count-member rule | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a
@@ -54,8 +55,12 @@ versions live in `docs/history/`, marked at the top.
   16 320 its rows reserve, which is what the group bitmap bought
   (`dev/BENCHMARKS.md`, 2026-08-27).
 
-  Nothing derives a member list from the potentially unreachable rows, and no step of
-  `PLAN.md` owns that.
+  A member list is derived from the potentially unreachable rows on one
+  path only, and S36.12's slice (b) builds it: the collection an allocation
+  failure started harvests them into a fixed region of the workspace, while
+  the ordinary collection off the poll keeps its rows through the teardown
+  and reads them directly (`dev/DECISIONS.md`, "the member list is the
+  pressure path's alone").
 - The candidate gate: `refcount::CANDIDATE_GATE_MASK` and
   `may_become_a_candidate`,
   read on the non-zero decrement in `release_word`. Five conditions in
