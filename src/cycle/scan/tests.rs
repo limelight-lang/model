@@ -11,6 +11,7 @@
 use super::*;
 use crate::class::ClassBuilder;
 use crate::cycle::mark::{MarkResult, mark};
+use crate::cycle::row::take_edge_dispatches;
 use crate::cycle::stack::TraceStack;
 use crate::cycle::testing::row_color;
 use crate::memory::arena::Arena;
@@ -136,4 +137,48 @@ fn a_ring_no_one_holds_is_colored_potentially_unreachable_whole() {
 
     shadow_arena.reset();
     unsafe { drop_ring(&mut arena, (first, second), &[first, second]) };
+}
+
+/// What one scan of the two-member ring costs in block dispatches: the loop
+/// head resolves the row of every entity it pops, and the classification
+/// that queued that entity resolved the same row to colour it.
+///
+/// Seven, and each one is placed: the root's classification; its pop; the
+/// classification of `second` through the root's edge, which colours it live
+/// on a count of one; that entity's pop; the classification of the root
+/// through its back edge, which raises the root and queues it a second time;
+/// the root's second pop; and the classification of `second` again, which
+/// stops on a colour that is final. Three of the seven are pops, and a pop
+/// resolves a row the push that queued it already held.
+///
+/// The mark stands outside the bracket. It dispatches over the same edges
+/// and needs the row it gets, the count it writes into living there, and it
+/// reads no row at its pop, so the doubled work is the scan's alone.
+#[test]
+fn a_scan_resolves_the_row_of_every_entity_it_pops_a_second_time() {
+    let _g = test_guard();
+    let mut arena = Arena::new();
+    let (first, second) = unsafe { ring(&mut arena, "ScanDispatchNode") };
+
+    let mut shadow_arena = crate::cycle::testing::open_arena();
+    let mut stack = TraceStack::new();
+    assert_eq!(
+        unsafe { mark(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
+        MarkResult::Complete
+    );
+
+    let _ = take_edge_dispatches();
+    assert_eq!(
+        unsafe { scan(&mut shadow_arena, &mut stack, first as *mut RcHeader) },
+        ScanResult::Complete
+    );
+    assert_eq!(
+        take_edge_dispatches(),
+        7,
+        "four classifications and three pops, the pops resolving a row the \
+         classification that queued the entity had already found"
+    );
+
+    shadow_arena.reset();
+    unsafe { drop_ring(&mut arena, (first, second), &[first]) };
 }

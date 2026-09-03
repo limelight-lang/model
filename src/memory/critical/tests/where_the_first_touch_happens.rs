@@ -136,6 +136,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("DEFERRED_RETURNS", false),
         ("DIED", false),
         ("DUE", false),
+        ("EDGE_DISPATCHES", false),
         ("EXIT_GUARD", true),
         ("EXIT_PHASE", false),
         ("FREED", false),

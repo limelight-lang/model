@@ -121,6 +121,8 @@ pub(crate) enum EdgeTarget {
 /// commissioned, and its own flags word readable, which the large arm
 /// depends on.
 pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
+    note_dispatch();
+
     // Through `BlockHeader::of_ptr` rather than a mask of its own: the
     // address-to-block step is an integer-to-pointer cast, which puts
     // Miri into permissive provenance wherever it appears, and the crate
@@ -188,6 +190,35 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
         }
         _ => EdgeTarget::Untracked,
     }
+}
+
+// Dispatches this thread has made through `resolve_edge_target` (tests only).
+//
+// The dispatch is the trace's per-edge cost — a block-kind load, and for a
+// retained block a search of the survivor list — and the worklist entry's
+// shape decides how many of them a scan makes per entity. Nothing collects
+// yet, so the figure that decides the shape is this count and not a duration
+// (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 2).
+//
+// Per thread, because the tests that trace run beside each other.
+#[cfg(test)]
+thread_local! {
+    static EDGE_DISPATCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Add one to `EDGE_DISPATCHES`, and nothing at all without `cfg(test)`.
+#[inline]
+fn note_dispatch() {
+    #[cfg(test)]
+    EDGE_DISPATCHES.with(|count| count.set(count.get() + 1));
+}
+
+/// Dispatches this thread has made since this last answered, which it
+/// leaves at zero. Reading and clearing together, because every caller
+/// prices one traversal and the one before it is another test's.
+#[cfg(test)]
+pub(crate) fn take_edge_dispatches() -> usize {
+    EDGE_DISPATCHES.with(|count| count.replace(0))
 }
 
 #[cfg(test)]
