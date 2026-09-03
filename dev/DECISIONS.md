@@ -8,6 +8,54 @@ never edited or deleted.
 
 ---
 
+## 2026-09-03 — the member list is the pressure path's alone, and the surplus is a second trace
+
+Owner: S36.12 and S36.7's driver. Ruled by Edmond.
+
+**Decided:** what the teardown needs after the trace depends on why the
+collection ran, and the two paths differ.
+
+**The ordinary collection, off the poll, keeps its rows.** The arena is not
+reset before the teardown; guards, weak nulling, destructors, severing and the
+frees all read the shadow rows directly. There is no member list at all — no
+record appended per first-reached entity, no storage surviving the trace
+close, no allocation for either.
+
+**A collection the allocation failure started gives its memory back**, because
+the destructors it is about to run allocate and there is none. The sweep that
+nulls the blocks' shadow pointers is where the condemned entities are
+harvested: one pass over the touched blocks, reading each row's colour and
+writing the unreachable ones into a fixed region of the thread's workspace.
+Then every block goes back, and the teardown runs off that list.
+
+**What does not fit is left to a second trace.** The region's capacity is
+fixed and never grows: the entities past it keep their candidate bits, which
+are cleared only at death, so they stand in the queue for the next trace — and
+under pressure the next trace follows immediately, on the memory the first
+teardown returned. `rfc/model/gc/rc-cycle.md` already licenses this: "Trace
+precision affects cost and latency, not safety: a missed cycle remains
+eligible for a later collection."
+
+**Why not tear down in the middle of the sweep instead.** Freeing a first
+batch to make room and resuming the walk keeps the rows alive while user code
+runs, which costs two things: a slot in a block the walk has not reached
+cannot be returned, so the memory does not come back where it is needed; and
+`rc-cycle.md`'s teardown property — "Between the sever and the free no user
+code runs at all, which makes the property structural instead of
+proof-dependent" — becomes a proof obligation.
+
+**What it answers.** `rfc`'s `dev/ALGORITHM-AUDIT.md` issue A6, the lifetime
+of component membership data after the trace arena is gone, for the
+single-threaded collection: on the ordinary path the arena is not gone, and on
+the pressure path the data is a bounded region of the thread's own workspace.
+Carrying that back to `rfc` is `rfc`'s work.
+
+**What it does not settle:** the region's capacity, and whether the ordinary
+path's held arena is what a collector worker can also do. The first is a
+number S40.1's measurement informs; the second is S38's.
+
+---
+
 ## 2026-09-03 — a collection draws from the manager of the thread it runs on, not of the thread it collects
 
 Owner: S38.1. Ruled by Edmond over a design review's finding.

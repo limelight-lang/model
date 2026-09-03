@@ -1885,10 +1885,17 @@ stage claiming the frees while building none of them.
         per-thread baseline.
 - [ ] S36.12 The in-flight batch and condemned membership   *(before S36.3)*
       done: collection detaches the active candidate chain as one in-flight
-        batch whose bounds travel with it; every first-reached entity appends
-        one manager-backed member record, all roots mark before any root scans,
-        and final colours compact the records while rows are still readable;
-        the resulting storage survives the trace close through commit
+        batch whose bounds travel with it, and all roots mark before any root
+        scans. **The member list is the pressure path's alone** — the ordinary
+        collection off the poll keeps its arena through the teardown and reads
+        the rows directly, appending no record and allocating nothing for one.
+        A collection an allocation failure started harvests its condemned
+        entities in the sweep that nulls the blocks' shadow pointers, into a
+        fixed region of the thread's workspace, and gives every block back
+        before the first destructor runs; what does not fit the region keeps
+        its candidate bit and is the next trace's, which under pressure
+        follows immediately on the memory the teardown returned
+        (`dev/DECISIONS.md`, "the member list is the pressure path's alone")
       done: refusal after detach or after any member append aborts the whole
         trace, sweeps its rows and restores every in-flight token to its source
         lane without allocation. No `CANDIDATE_BIT` bit is left without exactly one
@@ -1899,6 +1906,13 @@ stage claiming the frees while building none of them.
         part conservatively retains the others; if teardown promises
         per-component behaviour, this step must extract components instead of
         silently passing their union to `validation::validate_component`.
+        `rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", puts
+        the guard on every member of every confirmed component before any user
+        code, so no member can start ordinary teardown mid-commit whichever
+        unit is chosen.
+      handoff: the region's capacity is unchosen, and 1,040 addresses is what
+        the withheld returns' 8,320 bytes would leave if S43 frees them. The
+        number that informs it is S40.1's condemned-entities-per-collection.
       handoff: an enrolled death does not clear the bit or retire its record.
         Teardown finishes and physical return waits; only the consumer that
         still owns the record may observe count zero, clear `CANDIDATE_BIT`, return
@@ -1972,7 +1986,14 @@ stage claiming the frees while building none of them.
         the next poll, and shows the collection at it — restaging the
         deferred-fire contract the dying `gc/tests/where_a_collection_may_fire.rs`
         carried
-      tier: T2 · role: —
+      done: the driver takes the two paths apart. Off the poll it holds the
+        arena through the teardown and reads the rows; started by an allocation
+        failure it harvests, returns every block, tears down, and traces again
+        while the queue still holds candidates — a test under a forced refusal
+        collects a population past the harvest region's capacity in two traces
+        and leaves none behind (`dev/DECISIONS.md`, "the member list is the
+        pressure path's alone")
+      tier: T2 · role: Sage → Critic
 - [ ] S36.8 Elide the redundant exact test after an in-line owner trace
       done: when mark and scan run synchronously on the owning mutator at one
         consistent point, a condemned component proceeds directly to the owner
