@@ -123,6 +123,31 @@ pub const DESTRUCTOR_PENDING: u32 = 1 << 13;
 /// `rfc/runtime/object-lifecycle.md`.
 pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 
+/// The slot holds no entity and is not on its block's free list: its
+/// occupant died inside a trace window whose withheld-return chain had no
+/// room for a record, so the death was written here instead
+/// (`PLAN.md` S43.2). What finds it is the sweep of the block's rows,
+/// which `PLAN.md` S43.4 builds; until that step lands a marked slot is
+/// held for the life of the process, and the owning thread is what clears
+/// the bit as it returns the slot.
+///
+/// **The refcount stays zero under it**, which is what a queue reader
+/// depends on (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending
+/// slot reuse"), so the bit is the only thing that separates such a slot
+/// from a free one — a free slot's first eight bytes are a zero count and
+/// whatever flags its last occupant left.
+///
+/// Three writes keep it from going stale: commissioning zeroes every slot
+/// of a block it cuts, [`publish_header`] replaces all eight bytes of a
+/// new occupant's header, and the return clears it. **A fourth window
+/// they do not cover** is a thread that exits holding a marked slot: the
+/// block carries `used` above zero, so `heap`'s abandonment hands it to
+/// the abandoned list and an adopting thread claims it without zeroing a
+/// slot. The mark then stands in a block whose owner never made it, and
+/// what answers that is S43.4's, which is where the sweep and the block
+/// it addresses are decided.
+pub const DEAD_IN_PLACE: u32 = 1 << 15;
+
 /// The entity is a live **escapee**: a request-arena object that one or
 /// more longer-lived containers currently reference
 /// (`rfc/model/memory/arenas.md`, "The dangerous direction"). While set,
@@ -641,7 +666,8 @@ const _: () = assert!(
         | IS_ESCAPEE
         | HAS_WEAK_REFERENCES
         | DESTRUCTOR_PENDING
-        | DESTRUCTOR_RAN)
+        | DESTRUCTOR_RAN
+        | DEAD_IN_PLACE)
         & 0xFFFF_0000
         == 0,
     "a mutator-visible flag above bit 15 would read back as zero, because \
@@ -820,6 +846,89 @@ pub(crate) unsafe fn set_header_refcount(header: *mut RcHeader, value: u32) {
 #[inline]
 pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
     unsafe { (refcount_load(header), flags_load(header)) }
+}
+
+/// What a walker of a slot's first eight bytes finds there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SlotState {
+    /// An entity is in the slot and its count is above zero.
+    Live,
+    /// The occupant died inside a trace window that could not record the
+    /// return, and the slot is neither the allocator's nor an entity's
+    /// until the sweep finds the mark ([`DEAD_IN_PLACE`]).
+    DeadInPlace,
+    /// The allocator may hand the slot out: either it is on the block's
+    /// free list or it stands above the block's bump cursor.
+    Free,
+}
+
+/// Which of the three states `header` is in.
+///
+/// **The one definition of the occupancy test**, and every walker that
+/// reads a slot's first word goes through it: `heap::for_each_entity_slot`
+/// and the census over it, `heap::describe_slot`, and
+/// `retained::is_occupied`, which `register` counts a retained block's
+/// live occupants through. A count above zero answers without the
+/// second load, so a live slot pays what it paid before the third state
+/// existed.
+///
+/// # Safety
+/// `header` addresses a slot of a commissioned entity block, readable at
+/// its first eight bytes.
+#[inline]
+pub(crate) unsafe fn slot_state(header: *const RcHeader) -> SlotState {
+    if unsafe { refcount_load(header) } != 0 {
+        return SlotState::Live;
+    }
+
+    if unsafe { flags_load(header) } & DEAD_IN_PLACE != 0 {
+        return SlotState::DeadInPlace;
+    }
+
+    SlotState::Free
+}
+
+/// Write the mark of [`SlotState::DeadInPlace`] into a slot whose entity
+/// has been torn down.
+///
+/// The caller owns the slot at this instant: the teardown has finished, no
+/// queue entry names it, and it is on no free list, so nothing else reads
+/// or writes these bytes until the return clears the mark.
+///
+/// # Safety
+/// `header` addresses a dead entity slot of this thread's heap whose count
+/// reads zero.
+#[inline]
+pub(crate) unsafe fn mark_dead_in_place(header: *mut RcHeader) {
+    debug_assert_eq!(
+        unsafe { refcount_load(header) },
+        0,
+        "a slot is marked dead only after its teardown has left the count at zero"
+    );
+    unsafe { update_header_flags(header, |flags| flags | DEAD_IN_PLACE) };
+}
+
+/// Take the mark off, which the owning thread does as it returns the slot.
+///
+/// It runs on the owner and never on a collector worker: the mutator half
+/// of the flags word has one writer, and a worker that cleared a bit there
+/// would race the owner's own read-modify-write
+/// (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse",
+/// which refuses the collector the neighbouring clear of the candidate
+/// bit).
+///
+/// # Safety
+/// As [`mark_dead_in_place`].
+#[inline]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the sweep that returns a marked slot is `PLAN.md` S43.4's"
+    )
+)]
+pub(crate) unsafe fn clear_dead_in_place(header: *mut RcHeader) {
+    unsafe { update_header_flags(header, |flags| flags & !DEAD_IN_PLACE) };
 }
 
 /// Rewrite the flags of a **published** header — the write twin of

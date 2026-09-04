@@ -157,7 +157,8 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
                     // the run.
                     debug_assert!(
                         !unsafe { crate::memory::retained::has_survivor_list(block) }
-                            || unsafe { crate::refcount::header_refcount(child) } == 0,
+                            || unsafe { crate::refcount::slot_state(child) }
+                                != crate::refcount::SlotState::Live,
                         "a listed retained block does not name a live occupant"
                     );
                     EdgeTarget::Untracked

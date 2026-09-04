@@ -1017,6 +1017,21 @@ impl Heap {
 
         // Push onto the block's free list: the `next` write lands in the
         // slot the program has just stopped using, already hot in cache.
+        //
+        // A slot still carrying `DEAD_IN_PLACE` would be indistinguishable
+        // from a free one for the next walker, the mark being the only thing
+        // that separates the two. The clear belongs to whoever returns the
+        // slot (`crate::refcount::clear_dead_in_place`), and this is where a
+        // path that forgot it shows up.
+        debug_assert!(
+            unsafe {
+                crate::memory::block_pool::load_block_kind(&raw const (*block).kind)
+                    != crate::memory::block_pool::BLOCK_KIND_ENTITY
+                    || crate::refcount::slot_state(ptr as *const crate::refcount::RcHeader)
+                        != crate::refcount::SlotState::DeadInPlace
+            },
+            "an entity slot reaches the free list with its dead-in-place mark cleared"
+        );
         let slot = ptr as *mut FreeSlot;
         unsafe { (*slot).next = b.free };
         b.free = slot;
@@ -1043,6 +1058,18 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn free_remote(block: *mut HeapBlockHeader, ptr: *mut u8) {
+        // The free list has two entrances and a mark left standing reads as a
+        // free slot at either one, so the owner's check has a twin here
+        // (`crate::refcount::DEAD_IN_PLACE`).
+        debug_assert!(
+            unsafe {
+                crate::memory::block_pool::load_block_kind(&raw const (*block).kind)
+                    != crate::memory::block_pool::BLOCK_KIND_ENTITY
+                    || crate::refcount::slot_state(ptr as *const crate::refcount::RcHeader)
+                        != crate::refcount::SlotState::DeadInPlace
+            },
+            "an entity slot is posted to its block's remote list with its dead-in-place mark cleared"
+        );
         let slot = ptr as *mut FreeSlot;
         // The one field this thread may touch. Everything else in the header
         // belongs to the owner, which is mutating it as we run, so no
@@ -2267,6 +2294,26 @@ pub(crate) unsafe fn block_hold_count(block: *mut u8) -> *const AtomicU64 {
     unsafe { &raw const (*line).holds }
 }
 
+/// Whether this thread's entity heap is the block's owner.
+///
+/// The free path asks it before writing a mark into a dead slot: a block
+/// whose owner is another thread, or none at all, is one this thread's
+/// sweep will never walk, and a mark left there is a slot nobody returns
+/// (`crate::refcount::DEAD_IN_PLACE`). A thread that has never allocated
+/// owns nothing, and the null it reads answers the same way.
+///
+/// # Safety
+/// `block` is the header of a commissioned block.
+pub(crate) unsafe fn block_is_owned_by_this_thread(block: *mut u8) -> bool {
+    let owner = unsafe {
+        (*(block as *mut HeapBlockHeader))
+            .shared
+            .owner
+            .load(Ordering::Relaxed)
+    };
+    !owner.is_null() && owner == thread_entity_heap()
+}
+
 /// The shadow-row pointer of a block, null when no collection holds rows
 /// for it — which is what a collection's first touch of the block reads
 /// to know it owes the block an array (`crate::cycle::arena`).
@@ -2423,6 +2470,9 @@ fn slot_index_of_offset(offset: usize, stride: usize) -> u32 {
 /// Occupancy is exact by construction: commissioning zeroes slot
 /// headers, the factory publishes a header last, and a freed slot keeps
 /// its final refcount-0 header (the free-list link lives in bytes 8–15).
+/// A zero count is therefore two states rather than one, and
+/// `refcount::slot_state` is what tells a free slot from one marked dead
+/// in place; this walk visits neither.
 /// The scan is bounded by each block's bump cursor, so virgin slots are
 /// never read. Blocks of every other kind — arena, large, buffer, raw
 /// heap — are skipped: un-walked memory is a root source, never an
@@ -2463,7 +2513,8 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
                 let (entity, _) =
                     unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
                 let slot = entity as *mut crate::refcount::RcHeader;
-                if unsafe { crate::refcount::header_refcount(slot) } != 0 {
+                if unsafe { crate::refcount::slot_state(slot) } == crate::refcount::SlotState::Live
+                {
                     visit(slot);
                 }
 
@@ -2481,7 +2532,9 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
                 let (list, count) = unsafe { block_survivor_list(block as *mut u8) };
                 for i in 0..count {
                     let slot = unsafe { list.add(i).read() } as *mut crate::refcount::RcHeader;
-                    if unsafe { crate::refcount::header_refcount(slot) } != 0 {
+                    if unsafe { crate::refcount::slot_state(slot) }
+                        == crate::refcount::SlotState::Live
+                    {
                         visit(slot);
                     }
                 }
@@ -2504,7 +2557,8 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
             let base = unsafe { (block as *mut u8).add(LINE_SIZE) };
             for s in 0..bump as usize {
                 let slot = unsafe { base.add(s * class_size) } as *mut crate::refcount::RcHeader;
-                if unsafe { crate::refcount::header_refcount(slot) } != 0 {
+                if unsafe { crate::refcount::slot_state(slot) } == crate::refcount::SlotState::Live
+                {
                     visit(slot);
                 }
             }
@@ -2518,7 +2572,7 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
     for block in crate::memory::large_entity::snapshot() {
         let (entity, _) = unsafe { crate::memory::large_entity::occupant(block as *mut u8) };
         let slot = entity as *mut crate::refcount::RcHeader;
-        if unsafe { crate::refcount::header_refcount(slot) } != 0 {
+        if unsafe { crate::refcount::slot_state(slot) } == crate::refcount::SlotState::Live {
             visit(slot);
         }
     }
@@ -2581,6 +2635,7 @@ pub(crate) fn describe_slot(addr: usize) -> String {
 
     let (refcount, flags) =
         unsafe { crate::refcount::header_pair(addr as *const crate::refcount::RcHeader) };
+    let state = unsafe { crate::refcount::slot_state(addr as *const crate::refcount::RcHeader) };
     let stride = SIZE_CLASSES
         .get(size_class as usize)
         .copied()
@@ -2591,7 +2646,7 @@ pub(crate) fn describe_slot(addr: usize) -> String {
     format!(
         "addr {addr:#x} block {:#x} in_region {in_region} kind {kind} class {size_class} \
          stride {stride} used {used} slots {slots} bump {bump} slot_index {index} \
-         survivor_listed {listed} refcount {refcount} flags {flags:#06x}",
+         survivor_listed {listed} state {state:?} refcount {refcount} flags {flags:#06x}",
         block as usize
     )
 }

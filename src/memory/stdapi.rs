@@ -359,7 +359,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // through this same entry point when the trace closes. Whichever window
     // closes last performs the physical return (`cycle::deferred_slot_reuse`).
     if can_lose_trace_identity(kind)
-        && unsafe { crate::cycle::deferred_slot_reuse::defer_reuse_if_tracing(ptr) }
+        && unsafe { crate::cycle::deferred_slot_reuse::defer_reuse_if_tracing(ptr, kind) }
     {
         return;
     }

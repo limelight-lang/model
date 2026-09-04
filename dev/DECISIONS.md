@@ -8,6 +8,77 @@ never edited or deleted.
 
 ---
 
+## 2026-09-04 — the dead-in-place mark is flags bit 15, and the owner clears it
+
+**Ruled by the Sage** on S43.2's pre-change gate.
+
+**Where the mark lives: bit 15 of the flags word**, in the mutator's half,
+written through `update_header_flags`. The refcount stays zero under it, which
+is what `rfc/model/gc/rc-cycle.md` and the queue reader require, and the
+candidate bit is untouched. Byte 7 was refused: `flags_load` reads two bytes at
++4, so a flag above bit 15 reads back as zero for every mutator path, and the
+`const` assertion that holds every mutator flag below bit 16 would have gained
+an exception — which is how the next flag is lost silently.
+
+**What it costs, named rather than found later:** the mutator's half is now
+full. The next mutator flag needs a re-lay of the kind the crate did once on
+2026-08-26.
+
+**The occupancy test has one definition.** `refcount::slot_state` answers Live,
+DeadInPlace or Free, and a count above zero answers without the second load, so
+a live slot pays what it paid before the third state existed. Every walker of a
+slot's first word goes through it, and a source guard bans the two-way test
+outside `refcount/`. The gate found a fourth reader the step's own criterion had
+missed and the only production one: `memory::retained::is_occupied`, which
+`register` counts live occupants through to decide whether a retained block is
+empty and owed to the pool. A marked survivor read as dead there would send a
+block to the pool with a mark standing on it.
+
+**What keeps the mark from going stale**, three writes, two of them structural:
+commissioning zeroes every slot of a block it cuts, `publish_header` replaces
+all eight bytes of a new occupant's header, and the return clears the bit. The
+free path never writes bytes 0-7, so the free list is the one window a stale
+mark could survive in, and a `debug_assert` at the free-list push is what
+catches a return that forgot the clear.
+
+**Two clauses of the step were struck.**
+
+The trigger was written as "the region full and both allocation paths
+refusing". That is memory starvation, which cannot be produced in the ordinary
+gate, and it contradicts the stage's own promise that the rare path runs on
+every run. **The trigger is the region's capacity alone**, and the mark is taken
+where three conditions hold together: the region is full, the death is an
+entity slot, and the block carries a shadow pointer. The other two populations
+and an unstamped block still take a record, so `grow` survives this step and
+dies at S43.5.
+
+And S43.4's clause had the sweep clearing the per-slot mark. Under S38 the sweep
+runs where the trace token is released, which is not the owning thread, so that
+put a collector worker into a read-modify-write of the mutator's half —
+forbidden in general, and forbidden by name for the neighbouring clear of the
+candidate bit (`rfc/model/gc/rc-cycle.md`: a worker "must not clear the
+candidate bit or return the slot"). **The sweep clears the block-level flag; the
+owner clears the per-slot mark as it returns the slot.**
+
+**The block-level flag is S43.4's**, not this step's, and where it may live is
+constrained already: not the `RowArray`, which dies with the arena at `reset()`
+while the owner returns the slot later; the block's collector line is the home
+that outlives a collection.
+
+**The refusal path's budget.** `defer_reuse_if_tracing`'s success path stays at
+three loads, two branches and two stores. The mark hangs under the failed push,
+behind `#[cold]`, and takes one argument the caller already holds in a register.
+
+**Refused with reasons:** a sentinel in the refcount word, which the queue
+reader's zero forbids; reusing `CANDIDATE_BIT`, which would make a marked slot
+indistinguishable from a queued one and withhold it forever; the free-list link
+at bytes 8-15, which is not the first word and is ambiguous with a link value;
+any bit above 15; a flags-clearing store on the ordinary return path, which
+grows the common path to defend a rare one; and closing the step while a reader
+still uses the two-way test.
+
+---
+
 ## 2026-09-04 — the chain stays and the mark answers its refusal
 
 **Ruled by Edmond**, on S43.1's measurement, in the words "если это было

@@ -249,3 +249,118 @@ fn every_spelling(e: *mut Entity, p: *mut RcHeader) {
         "one line per pattern, and each must match its own: {found:?}"
     );
 }
+
+/// Files that read a count as a number rather than as an occupancy, each
+/// for a reason of its own, and each named rather than swept in by a
+/// pattern.
+///
+/// - `cycle/row.rs` asserts that a child the trace descends into is not at
+///   zero, which is a rule about the edge and not about the slot;
+/// - `cycle/validation.rs` carries the zero-count-member rule, which drops
+///   a whole component and never asks whether a slot is occupied;
+/// - `object.rs` reads the count after a destructor to see whether the
+///   object was resurrected;
+/// - `memory/stdapi.rs` asserts that an entity reaches the free path with
+///   its teardown finished, which is a statement about the count and not
+///   about what the slot holds.
+const COUNTS_AS_A_NUMBER: [&str; 3] = ["cycle/validation.rs", "object.rs", "memory/stdapi.rs"];
+
+/// The lines of `text` that test a slot's occupancy by hand.
+///
+/// The shape is a count compared against zero, which separates two states
+/// where a slot has three: a slot whose occupant died inside a trace window
+/// that could not record the return is neither live nor free
+/// (`PLAN.md` S43.2), and a walker asking the count alone reads it as free.
+///
+/// **What it cannot see is the comparison on its own line**, the count
+/// having been bound to a local first. The walk is line-oriented, as the
+/// direct-read guard above it is, and a reader who splits the two lines is
+/// past both.
+fn hand_rolled_occupancy(text: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+
+    for (number, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+
+        let reads_a_count = line.contains("header_refcount(")
+            || line.contains("entity_refcount(")
+            || line.contains("header_pair(");
+        let against_zero = line.contains("!= 0") || line.contains("== 0") || line.contains("> 0");
+        if reads_a_count && against_zero {
+            found.push((number + 1, line.trim().to_string()));
+        }
+    }
+
+    found
+}
+
+/// A slot's occupancy is asked of `slot_state` and of nothing else.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "reads the crate's sources; `opendir` is unavailable under Miri's isolation, \
+              and the abort takes the whole slice with it"
+)]
+fn a_slots_occupancy_is_asked_through_one_predicate() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(root.as_path(), &mut files);
+    assert!(files.len() > 50, "the source walk found almost nothing");
+
+    let mut offences = Vec::new();
+    for path in &files {
+        let relative = path.strip_prefix(&root).expect("a path under src/");
+        if exempt_file(relative) {
+            continue;
+        }
+
+        let relative_text = relative.to_string_lossy().replace('\\', "/");
+        if COUNTS_AS_A_NUMBER
+            .iter()
+            .any(|allowed| relative_text == *allowed)
+        {
+            continue;
+        }
+
+        let text = fs::read_to_string(path).expect("a source file is readable");
+        for (number, line) in hand_rolled_occupancy(&text) {
+            offences.push(format!("{}:{number}: {line}", path.display()));
+        }
+    }
+
+    assert!(
+        offences.is_empty(),
+        "a slot's occupancy is tested by hand, which reads a slot marked \
+         dead in place as free. Ask `refcount::slot_state`:\n{}",
+        offences.join("\n")
+    );
+}
+
+/// The guard has to see an offence, or it passes by finding nothing.
+#[test]
+fn the_occupancy_guard_sees_the_two_way_test() {
+    let source = "\
+fn walk(slot: *mut RcHeader) {
+    if unsafe { crate::refcount::header_refcount(slot) } != 0 {
+        visit(slot);
+    }
+}
+";
+    let found = hand_rolled_occupancy(source);
+    assert_eq!(found.len(), 1, "the two-way test was not seen: {found:?}");
+    assert!(
+        found[0].1.contains("header_refcount"),
+        "the line reported is the test itself"
+    );
+
+    // The other direction is the dangerous one: a marked slot read as free is
+    // what the third state exists to prevent.
+    let free_test = "    if unsafe { entity_refcount(slot) } == 0 { reuse(slot) }\n";
+    assert_eq!(
+        hand_rolled_occupancy(free_test).len(),
+        1,
+        "the free half of the same test is not seen"
+    );
+}

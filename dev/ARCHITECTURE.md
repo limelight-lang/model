@@ -218,11 +218,17 @@ field is lent to):
   sites test it before calling in;
 - bits 13–14, destructor state (`DESTRUCTOR_PENDING` / `DESTRUCTOR_RAN`)
   — the debt protocol between `object` and the death paths;
-- bit 15, **free**. It carried `STRING_OUT_OF_LINE` until the string's
-  two layouts became the kind codes 8 and 9: a code says the same thing
-  in a field every teardown and trace path already loads, and it says it
-  without a second bit. `string::bytes_are_out_of_line` is the one
-  reader of that distinction now;
+- bit 15, `DEAD_IN_PLACE` — the slot's occupant died inside a trace
+  window whose withheld-return chain had no room for a record, so the
+  death is written here (`PLAN.md` S43.2). What finds it is the sweep of
+  the block's rows, which S43.4 builds; until then a marked slot is held
+  for the life of the process. The count stays zero under it, and the bit is the
+  only thing that tells such a slot from a free one, so
+  `refcount::slot_state` is the one occupancy test and a guard test bans
+  the two-way one. The bit carried `STRING_OUT_OF_LINE` until the
+  string's two layouts became the kind codes 8 and 9, and taking it
+  fills the mutator's half: a further mutator flag needs a re-lay
+  rather than a free position;
 - bits 16–31, **free and asserted free**. `rc-trace` kept a candidate
   index across 15–31 and `rc-walk` an epoch byte at 16–23, and both went
   on 2026-08-26. `refcount::tests::the_header_the_compiler_shares`

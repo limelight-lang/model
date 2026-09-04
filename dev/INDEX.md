@@ -62,6 +62,14 @@ versions live in `docs/history/`, marked at the top.
   the ordinary collection off the poll keeps its rows through the teardown
   and reads them directly (`dev/DECISIONS.md`, "the member list is the
   pressure path's alone").
+- What a slot's first eight bytes read: `refcount::slot_state`, three
+  states over the count and one flag — live, dead in place, free. A slot
+  is dead in place when its occupant died inside a trace window whose
+  withheld-return chain had no room for a record (`refcount::DEAD_IN_PLACE`,
+  `PLAN.md` S43.2); the count still reads zero, so the flag is the only
+  thing that separates such a slot from a free one, and a guard test bans
+  the two-way test outside `refcount`. What returns a marked slot is
+  S43.4's sweep, which is unbuilt.
 - The candidate gate: `refcount::CANDIDATE_GATE_MASK` and
   `may_become_a_candidate`,
   read on the non-zero decrement in `release_word`. Five conditions in

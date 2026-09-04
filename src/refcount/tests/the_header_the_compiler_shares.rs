@@ -49,6 +49,7 @@ fn flags_layout_matches_the_normative_table() {
     assert_eq!(HAS_WEAK_REFERENCES, 1 << 12);
     assert_eq!(DESTRUCTOR_PENDING, 1 << 13);
     assert_eq!(DESTRUCTOR_RAN, 1 << 14);
+    assert_eq!(DEAD_IN_PLACE, 1 << 15, "dead in place: bit 15");
 
     let claimed = MEMORY_CATEGORY_MASK
         | ENTITY_KIND_MASK
@@ -60,7 +61,8 @@ fn flags_layout_matches_the_normative_table() {
         | IS_ESCAPEE
         | HAS_WEAK_REFERENCES
         | DESTRUCTOR_PENDING
-        | DESTRUCTOR_RAN;
+        | DESTRUCTOR_RAN
+        | DEAD_IN_PLACE;
     // The candidate gate reads bits 0-1, 5 and 8-10 as one mask, so a
     // constant landing on any of them would make the gate refuse
     // candidates for a reason the design does not have. The clauses
@@ -70,9 +72,12 @@ fn flags_layout_matches_the_normative_table() {
         MEMORY_CATEGORY_MASK | (1 << 5) | ACYCLIC_GATE | OWNERSHIP_MARK | CANDIDATE_BIT,
         "the gate covers the category, the kind's top bit and the three marks"
     );
-    // Bit 15 came free when the string's layout became a kind code, and
-    // the normative table now calls it free.
-    assert_eq!(claimed & (1 << 15), 0, "bit 15 is free");
+    // Bit 15 came free when the string's layout became a kind code and was
+    // spent on the dead-in-place mark (`PLAN.md` S43.2), which fills the
+    // mutator's half: the next mutator flag needs a re-lay rather than a
+    // free position. `rfc/model/classes.md`'s "Flags layout" is the table
+    // both sides transcribe, and it still calls the bit free.
+    assert_eq!(claimed & 0xFFFF, 0xFFFF, "bits 0-15 are all claimed");
     // Bits 16 and above are unclaimed until S36.6 and S37.1 lay the
     // collector's epoch, maturation age and reserve there. Nothing may
     // drift into them meanwhile, which is what this asserts.

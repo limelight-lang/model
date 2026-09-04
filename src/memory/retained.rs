@@ -275,21 +275,39 @@ pub(crate) unsafe fn release_emptied(block: usize) {
     }
 }
 
-/// The occupancy test both enumerators apply, and the only thing this
-/// module reads through an address: a slot whose refcount is zero holds
-/// no live entity.
+/// Whether a survivor's slot holds a live entity, which `register` counts
+/// through and which is the only thing this module reads through an
+/// address.
 ///
-/// The counter comes through `refcount`'s narrow helper rather than as a
-/// word of its own, because the addresses in a list are promoted
-/// survivors — published GC-heap headers whose byte 6 a collector writes
+/// `heap::for_each_entity_slot` asks the same question of these same
+/// addresses through the same predicate rather than through this
+/// function, so the two answer alike without one calling the other.
+///
+/// The state comes through `refcount`'s predicate rather than as a word of
+/// its own, because the addresses in a list are promoted survivors —
+/// published GC-heap headers whose byte 6 a collector writes
 /// (`dev/DECISIONS.md`, "the header's access width is a correctness
 /// rule"). `heap::for_each_entity_slot` applies this same test to these
-/// same addresses, so the two must read at one width.
+/// same addresses, so the two must read at one width and answer alike.
+///
+/// **A survivor marked dead in place would be counted dead here**, and
+/// `register` would then return a block to the pool with the mark still
+/// standing on it. Nothing produces such a survivor today — the mark is
+/// taken for the slotted population alone — and `PLAN.md` S43.3 is the
+/// step that produces one, so the assertion below is what makes it
+/// arrive as a failure rather than as a returned block.
 ///
 /// # Safety
-/// `address` must be readable.
+/// `address` must be readable at its first eight bytes, which is the count
+/// and the mutator's half of the flags.
 unsafe fn is_occupied(address: usize) -> bool {
-    unsafe { crate::refcount::header_refcount(address as *const crate::refcount::RcHeader) != 0 }
+    let state = unsafe { crate::refcount::slot_state(address as *const crate::refcount::RcHeader) };
+    debug_assert_ne!(
+        state,
+        crate::refcount::SlotState::DeadInPlace,
+        "a retained survivor carries a dead-in-place mark, and this test has no answer for it yet"
+    );
+    state == crate::refcount::SlotState::Live
 }
 
 /// Whether `block` counts a live occupant. A reset in flight asks it about

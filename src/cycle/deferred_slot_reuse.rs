@@ -59,13 +59,18 @@
 //! which is the funded class's last resort and the same one the queue's
 //! overflow buffer reaches (`crate::cycle::queue`). Reached only after
 //! [`RETURNS_BASE_RECORDS`] slots have died inside one trace window while both
-//! allocation paths refuse a single block. **S43 answers that refusal with a
-//! mark rather than with a record**: the fact this chain carries — the address
-//! is dead and not yet on the free list — fits in the dead slot's own first
-//! word, and the sweep that unstamps the block is what returns it, so a
-//! refused append costs a walk of that block's slots instead of the process.
-//! The chain keeps every death the region holds, the walk being dearer than
-//! the append at every design class (`dev/BENCHMARKS.md`, 2026-09-04, S43.1). A thread exiting with its window still open
+//! allocation paths refuse a single block.
+//!
+//! **An entity slot of a block this thread owns and a trace has stamped does
+//! not reach it**: past the region such a death is marked in the slot's own header
+//! ([`crate::refcount::DEAD_IN_PLACE`]), which asks no allocation path and so
+//! cannot be refused. The chain keeps every death the region holds, the walk a
+//! mark costs the sweep being dearer than an append at every design class
+//! (`dev/BENCHMARKS.md`, 2026-09-04, S43.1). Three populations still reach the
+//! growth and the process end behind it, and each leaves with its own step: a
+//! retained block's whole-block return and an OS-direct run, whose marks are
+//! `PLAN.md` S43.3's, and a slot in a block no trace stamped, which S43.5 has
+//! to answer before it can delete the growth. A thread exiting with its window still open
 //! ends the process for a reason of its own ([`dispose_thread_state`]).
 //!
 //! The block leaving the append position is charged whole. The block still
@@ -79,7 +84,7 @@
 use std::cell::Cell;
 
 use crate::cycle::records::{RecordChain, SEGMENT_HEADER_BYTES};
-use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
+use crate::memory::block_pool::{BLOCK_KIND_ENTITY, BLOCK_PAYLOAD, BlockHeader};
 use crate::memory::gc_metadata;
 
 /// The chain of withheld returns, resident in the workspace region it
@@ -419,9 +424,10 @@ impl Drop for ActiveTrace {
 /// returning this one is the reuse the window exists to prevent; dropping the
 /// record loses a physical return, which is refused (`dev/DECISIONS.md`, "an
 /// enrolment cannot fail"). Nothing can report it either: `ll_free` holds no
-/// frame that can fail. **S43.5 deletes this function**: past the region the
-/// death is marked in its own slot, which asks no allocation path, and the
-/// chain stops growing rather than stops existing.
+/// frame that can fail. **S43.5 deletes this function**, and it owes one case
+/// first: a slot dying past a full region in a block no trace stamped is the
+/// last resident of this path once S43.3 has taken the other two populations,
+/// and a mark there is a mark no sweep walks to.
 #[cold]
 fn grow(chain: &DeferredReturnChain) {
     let (block, from_reserve) = draw_block();
@@ -464,8 +470,12 @@ fn grow(chain: &DeferredReturnChain) {
 /// # Safety
 /// `ptr` is a dead entity slot whose teardown has completed and which this call
 /// owns until either the function returns `false` or the window closes.
+/// `kind` is the kind `ptr`'s own block reads, and for `BLOCK_KIND_ENTITY`
+/// `ptr` addresses a slot of that block rather than the block itself — the
+/// mark is a write into the header at `ptr`, and a block base passed under
+/// that kind would land it in the block's own header.
 #[inline]
-pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8) -> bool {
+pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
     let control = DEFERRED_RETURNS.with(Cell::get);
     if control.is_null() {
         return false;
@@ -473,19 +483,65 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8) -> bool {
 
     let chain = unsafe { &*control };
     if !chain.records.push(ptr) {
-        grow(chain);
-        if !chain.records.push(ptr) {
-            // The same last resort [`grow`] reaches, and by the same call
-            // rather than by a panic: a record this call drops is a physical
-            // return lost, and `ll_free`'s caller is `extern "C"`, so an
-            // unwind out of here is outside the protocol on every profile
-            // that unwinds. The segment a growth opens is empty and holds
-            // [`RECORDS_PER_BLOCK`], so only a defect in the chain gets here.
-            std::process::abort();
-        }
+        unsafe { withhold_without_a_record(chain, ptr, kind) };
     }
 
     true
+}
+
+/// Withhold a return the region has no room to record.
+///
+/// Which answer applies is the population's, and only one of them asks an
+/// allocation path:
+///
+/// - **an entity slot of a block this thread owns and a trace has stamped**
+///   carries the fact in its own header
+///   ([`crate::refcount::mark_dead_in_place`]), and the sweep that unstamps
+///   the block is what finds it. Nothing is drawn and nothing can refuse,
+///   which is what takes the process end off this path (`PLAN.md` S43.2).
+///   Ownership is asked beside the stamp because the sweep is the owner's:
+///   a block abandoned by an exited thread, or one this thread freed into
+///   from outside, carries a stamp its own owner's trace wrote, and a mark
+///   there waits for a sweep this thread will never run;
+/// - **everything else** still takes a record. A retained block's
+///   whole-block return and a large entity's run have no slot word to
+///   write into, and their own marks are `PLAN.md` S43.3's; a slot in a
+///   block no trace stamped would carry a mark no sweep would look for,
+///   and the slot would be lost. The block's shadow pointer is the test,
+///   which is the one `ll_free` already makes for its kind dispatch.
+///
+/// A marked slot stays out of the allocator's hands the way a recorded one
+/// does — it is on no free list and below its block's bump cursor — and
+/// what returns it is `PLAN.md` S43.4's sweep, which is unbuilt: until it
+/// lands the mark holds the slot for the life of the process.
+///
+/// # Safety
+/// As [`defer_reuse_if_tracing`], whose refused push this answers.
+#[cold]
+unsafe fn withhold_without_a_record(chain: &DeferredReturnChain, ptr: *mut u8, kind: u32) {
+    if kind == BLOCK_KIND_ENTITY {
+        let block = BlockHeader::of_ptr(ptr) as *mut u8;
+        if unsafe { crate::memory::heap::block_is_owned_by_this_thread(block) }
+            && !unsafe { crate::memory::heap::block_shadow(block) }.is_null()
+        {
+            unsafe {
+                crate::refcount::mark_dead_in_place(ptr as *mut crate::refcount::RcHeader);
+            }
+
+            return;
+        }
+    }
+
+    grow(chain);
+    if !chain.records.push(ptr) {
+        // The same last resort [`grow`] reaches, and by the same call rather
+        // than by a panic: a record this call drops is a physical return
+        // lost, and `ll_free`'s caller is `extern "C"`, so an unwind out of
+        // here is outside the protocol on every profile that unwinds. The
+        // segment a growth opens is empty and holds [`RECORDS_PER_BLOCK`], so
+        // only a defect in the chain gets here.
+        std::process::abort();
+    }
 }
 
 /// Refuse a thread exit that would abandon an open trace window.
