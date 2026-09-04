@@ -8,6 +8,52 @@ never edited or deleted.
 
 ---
 
+## 2026-09-04 — the chain stays and the mark answers its refusal
+
+**Ruled by Edmond**, on S43.1's measurement, in the words "если это было
+доказано - я склоняюсь перед фактом" and, on the form that follows from it,
+"ок иди дальше".
+
+**Decided.** `cycle::deferred_slot_reuse` keeps the eight-byte append for every
+death its workspace region has room for. A death the region cannot hold is
+marked dead in its own slot instead, and the sweep that unstamps the block
+returns it. What that removes is the whole of the stage's motive: the growth
+past the region, the block draw behind it, the critical-reserve draw behind
+that, and the `std::process::abort()` a refusal reaches.
+
+**Why not the mark for every death, which is what S43 proposed.** The sweep
+walks a block's slots where the chain writes eight bytes, and S43.1 priced the
+two: the walk is dearer in cache lines at every design class, breaking even
+needs four deaths for every line it reads, no block holds that many, and on a
+component scattered one member to a block the walk costs about a thousand times
+the chain (`dev/BENCHMARKS.md`, 2026-09-04, S43.1). The walk's cost does not
+move with the death count at all, only with the blocks a trace touched. So it
+is paid where it buys the refusal's deletion — on the refusal — and nowhere
+else.
+
+**What it costs, stated rather than discovered later.** Two paths live in the
+crate where the stage would have left one, and the second runs only when the
+region fills. A path that runs only under starvation is a path nobody tests,
+and this one writes into blocks other occupants share. The answer is the one
+the growth path already uses: the suite fills the region by making
+`RETURNS_BASE_RECORDS` real deaths
+(`the_append_moves_into_a_block_when_the_workspace_region_is_full`), so the
+mark and the sweep run in the ordinary gate.
+
+**What it supersedes.** S43's own goal of 2026-09-03, "the collector holds no
+list of withheld returns at all", and with it S43.5's deletion of the region
+and the 8,320 bytes it would have returned to the workspace's bump. Those bytes
+were also S36.12 slice (b)'s expected budget for its harvest region; that step
+now chooses its capacity on other grounds.
+
+**Refused with it:** ending the collection instead of marking, when the region
+fills. Not on its merits — it was not examined. The ordinary path holds its
+rows through the teardown because those rows are the member list
+(`PLAN.md` S36.12), so an early close needs that list somewhere else, which is
+memory again, and the regime that would need it is the one with none.
+
+---
+
 ## 2026-09-04 — the death count of a synthetic load is a check and not a measurement
 
 **Ruled by the Sage** on S43.1's pre-change gate, over a design that would have

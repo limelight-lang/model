@@ -11,11 +11,11 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-04 · Active: S43, whose S43.1 is closed and whose S43.2 waits
-on Edmond's answer to what that step measured. The rest of S36 stands behind
-it: S36.9's remainder and S36.12's slice (b) each wait on a ruling named in
-their own step. The sections after S40 are the backlog. S43 sits between S36
-and S37, where it is to be done.
+Updated: 2026-09-04 · Active: S43, from S43.2, the stage amended the same day
+to the form Edmond ruled: the chain stays and the mark answers its refusal. The
+rest of S36 stands behind it — S36.9's remainder and S36.12's slice (b) each
+wait on a ruling named in their own step. The sections after S40 are the
+backlog. S43 sits between S36 and S37, where it is to be done.
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
@@ -1658,12 +1658,16 @@ stage claiming the frees while building none of them.
         the guard on every member of every confirmed component before any user
         code, so no member can start ordinary teardown mid-commit whichever
         unit is chosen.
-      handoff: the region's capacity is unchosen, and 1,040 addresses is what
-        the withheld returns' 8,320 bytes would leave if S43 frees them. The
-        number that informs it is S43.1's entities dying inside a window.
-        `cycle::density` counts no death and cannot be differenced into one:
-        `heap::block_occupancy` reads `used`, which drops at a slot's physical
-        return rather than at its teardown.
+      handoff: the region's capacity is unchosen and **its expected budget is
+        gone**. It was to be the 8,320 bytes the withheld returns would have
+        left had S43 deleted their region; S43 no longer deletes it
+        (2026-09-04), the chain staying as the ordinary path with the mark
+        answering its refusal. Nor does S43.1 supply the other input: a
+        synthetic load's death count is the fixture's own and was refused as a
+        measurement. What is left to choose on is the bump's own 56,960 bytes
+        and the pressure path's need, and `cycle::density` counts no death that
+        could narrow it — `heap::block_occupancy` reads `used`, which drops at
+        a slot's physical return rather than at its teardown.
       handoff: an enrolled death does not clear the bit or retire its record.
         Teardown finishes and physical return waits; only the consumer that
         still owns the record may observe count zero, clear `CANDIDATE_BIT`, return
@@ -1765,32 +1769,46 @@ stage claiming the frees while building none of them.
         guard acquisition; encode that boundary in the API so a future caller
         cannot pass a stale condemned list as an in-line proof.
 
-## S43 — The withheld return becomes a mark on the dead slot   *(before S36.7)*
+## S43 — A refused withheld return becomes a mark on the dead slot   *(before S36.7)*
 
-Goal: a slot that dies inside a trace window is marked dead in place and
-returned by the sweep that unstamps its block, so the collector holds no list
-of withheld returns at all. What goes with the list: its capacity, its growth
-past that capacity, its critical-reserve draw, and the
-`std::process::abort()` that answers a refusal `ll_free` has no frame to
-report.
+Goal: the chain keeps every death it has room for, and a death it has no room
+for is marked dead in place and returned by the sweep that unstamps its block.
+What goes: the growth past the workspace's region, the critical-reserve draw
+behind that growth, and the `std::process::abort()` that answers a refusal
+`ll_free` has no frame to report. The region itself, its capacity and the
+ordinary eight-byte append all stay.
 
-Why the list can go (Edmond, 2026-09-03): the fact it carries — this address
-is dead and not yet on the free list — fits in the slot itself. An entity
-block has no occupancy bitmap; occupancy is read from the slot's first word
-(`memory::heap`, "why the bitmap lost"), and a dead slot's word is nobody
-else's. The collector already walks the blocks it stamped, at
+Why the mark answers it (Edmond, 2026-09-03): the fact the chain carries —
+this address is dead and not yet on the free list — fits in the slot itself.
+An entity block has no occupancy bitmap; occupancy is read from the slot's
+first word (`memory::heap`, "why the bitmap lost"), and a dead slot's word is
+nobody else's. The collector already walks the blocks it stamped, at
 `TraceScratchArena::clear_touched_rows`, which is the instant its rows die —
 so the window a mark has to survive is exactly the window the sweep closes.
 
-What it costs instead, taken on 2026-09-04: the sweep walks each touched
-block's slots rather than one pointer per block, and that walk is dearer than
-the chain in cache lines at every design class. It reads one line per slot at a
-stride of 64 bytes and up, where the chain writes eight records to a line, so
-breaking even needs four deaths for every line the walk reads and no block
-holds that many. On a component scattered one member to a block the walk costs
-about a thousand times the chain (`dev/BENCHMARKS.md`, 2026-09-04, S43.1). The
-cost does not move with the death count, only with the blocks a trace touched,
-so the stage stands on what it deletes rather than on what it saves.
+Why the mark does not replace the chain (Edmond, 2026-09-04, on S43.1's
+measurement): the sweep walks a block's slots where the chain writes eight
+bytes, and that walk is dearer in cache lines at every design class. Breaking
+even needs four deaths for every line the walk reads and no block holds that
+many; on a component scattered one member to a block the walk costs about a
+thousand times the chain (`dev/BENCHMARKS.md`, 2026-09-04, S43.1). The cost
+does not move with the death count, only with the blocks a trace touched. So
+the walk pays for what it removes rather than for what it saves, and it runs
+where that trade is worth making: on the refusal, which is rare, and not on
+every collection.
+
+**The ordinary collection pays nothing for this.** No mark taken means no walk
+made: `clear_touched_rows` stays the one store per touched block it is today.
+The sweep walks the slots of a block that holds a mark and of no other, and
+which mechanism carries that — a bit in the row array, a word in the block's
+collector line — is S43.4's to choose.
+
+**The rare path is exercised on every ordinary run.** A path that runs only
+under starvation is a path nobody tests, and this one writes into other
+occupants' blocks. The suite fills the region the way
+`the_append_moves_into_a_block_when_the_workspace_region_is_full` already
+does — by making `RETURNS_BASE_RECORDS` real deaths — so the mark and the
+sweep run in the ordinary gate rather than only when memory is out.
 
 **A mark is taken only where the sweep will find it.** Today every return is
 withheld while a window is open, the block's own state unread; a mark in a
@@ -1862,8 +1880,10 @@ to prevent.
         walk that costs a thousand times the chain on a scattered component is
         his to say, and S43.2 waits on it.
 - [ ] S43.2 The dead slot carries the mark
-      done: a slot freed inside a trace window, in a block the trace has
-        stamped, is left dead in place rather than returned, and reads as
+      done: a slot freed inside a trace window whose chain has no room for its
+        record — the region full and both allocation paths refusing — in a
+        block the trace has stamped, is left dead in place rather than
+        returned, and reads as
         neither live nor free to every walker that reads a slot's first word —
         `heap`'s occupancy test, the census, and `describe_slot` — **while the
         refcount word still reads zero**, which is what the queue reader
@@ -1892,9 +1912,11 @@ to prevent.
         the mark**, and the **owning thread** returns the slot on its own free
         path when it next finds no trace addressing the block — slots, the
         retained block itself, the run — a collection that aborts mid-trace
-        clearing by the same path; tests read every marked slot back on the
-        success path and on the abort path, with the block that emptied
-        entirely retiring to the pool
+        clearing by the same path; **a block holding no mark is not walked**,
+        and a collection that took no mark makes the one store per touched
+        block it makes today, which a test asserts by counting the walk;
+        tests read every marked slot back on the success path and on the abort
+        path, with the block that emptied entirely retiring to the pool
       tier: T2 · role: Sage → Critic
       correction 2026-09-04: the criterion had the sweep itself free through
         `stdapi::ll_free`. The sweep runs where the token is released, and under
@@ -1905,19 +1927,22 @@ to prevent.
         entity's destructor may still be running on the owner. It is Edmond's
         own ruling of 2026-08-25, "the collector-side free is withdrawn; only
         the mutator frees". The sweep clears; the owner returns.
-- [ ] S43.5 The chain and its last resort are deleted
-      done: `cycle::deferred_slot_reuse` holds no record chain, no capacity, no
-        growth and no `std::process::abort()`; the withheld returns' region
-        leaves the workspace, whose payload becomes bump end to end and whose
-        bump rises by 8,320 bytes to the whole 65,280;
-        `dev/ARCHITECTURE.md`'s reserve row names one borrower again
+- [ ] S43.5 The growth, the reserve draw and the last resort are deleted
+      done: `cycle::deferred_slot_reuse` grows past its region by nothing, asks
+        the pool and the critical reserve for nothing, and holds no
+        `std::process::abort()`; the region, its 1,024 records and the
+        eight-byte append stay, and so does the workspace's 8,320-byte prefix;
+        `dev/ARCHITECTURE.md`'s critical-reserve row names one borrower again
+        and its withheld-returns row loses the blocks past the region
       tier: T2 · role: Critic
-      note 2026-09-03: this is what makes the refusal answerable rather than a
-        wind-down. Under starvation a collection still ends itself and returns
-        every block (`dev/DECISIONS.md`, "under memory starvation a collection
-        ends itself and gives back everything"); with no list to grow, the free
-        path has nothing left to ask an allocation path for, so the regime
-        needs no mechanism of its own here.
+      note 2026-09-04: what makes the refusal answerable is the mark, not the
+        deletion of the chain — S43.1 measured the walk that a full deletion
+        would cost every collection and it is dearer than the chain at every
+        design class. Under starvation a collection still ends itself and
+        returns every block (`dev/DECISIONS.md`, "under memory starvation a
+        collection ends itself and gives back everything"); with nothing left
+        to grow, the free path asks an allocation path for nothing, so the
+        regime needs no mechanism of its own here.
 - [ ] S43.6 An unwind out of the close strands no dead slot
       done: a panic raised inside `TraceScratchArena::reset` — the profile that
         unwinds, since the release build aborts — still returns every marked
