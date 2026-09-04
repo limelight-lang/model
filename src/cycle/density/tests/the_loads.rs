@@ -30,11 +30,11 @@ use crate::cycle::row::Population as RowPopulation;
 /// at half occupancy"). A density is a share of a block's slots, and a
 /// block's slots are `65,280 / class`, so the class is an input to every
 /// figure here and a load on one class says nothing about another.
-const DESIGN_CLASSES: [usize; 4] = [32, 64, 128, 256];
+pub(super) const DESIGN_CLASSES: [usize; 4] = [32, 64, 128, 256];
 
 /// Slots a block of `class_bytes` holds: the block payload over the
 /// stride, which is what `heap::collector_block_slots` computes.
-const fn slots_per_block(class_bytes: usize) -> usize {
+pub(super) const fn slots_per_block(class_bytes: usize) -> usize {
     crate::memory::block_pool::BLOCK_PAYLOAD / class_bytes
 }
 
@@ -45,7 +45,7 @@ const COMPONENT_SIZES: [usize; 4] = [2, 16, 256, 381];
 
 /// Collections run over each load. Four is the least a `k` of three
 /// needs; eight leaves room and costs one trace each.
-const COLLECTIONS: usize = 8;
+pub(super) const COLLECTIONS: usize = 8;
 
 /// One load's construction and the reading of each of its collections.
 struct Load {

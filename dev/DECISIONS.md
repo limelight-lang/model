@@ -8,6 +8,65 @@ never edited or deleted.
 
 ---
 
+## 2026-09-04 — the death count of a synthetic load is a check and not a measurement
+
+**Ruled by the Sage** on S43.1's pre-change gate, over a design that would have
+read `deferred_slot_count()` after the fixture's own frees and reported it as
+the population dying inside a trace window.
+
+**Decided.** That number is the harness's input read back, and it is refused in
+that role — the same refusal S40.1's gate made of the suspects re-offer volume
+on a fixed population with a harness-chosen acquittal rate. It stands instead as
+a construction check: the crate's free path withheld exactly the returns the
+fixture made, which fails if a death took another `ll_free` arm, if a candidate
+bit still stood, or if a teardown killed something nobody counted.
+
+What may be reported is what the crate chooses rather than what the fixture
+does: the blocks the trace touched, the walk bounds each carries, the clustering
+of deaths across them, and the break-even death count derived from those.
+
+**The walk has two bounds and both are reported.** `heap::for_each_entity_slot`
+walks `0..bump`, not `0..slots`, and a young block's cursor stands far below its
+slot count — 381 of 2,040 at class 32. The bump bound is what a walk over this
+fixture's population costs; the slot bound is what the same walk costs once the
+block has filled, the cursor never retreating. A single break-even figure
+without the pair would be wrong by 5.4x on the dense arm.
+
+**Two units, and they disagree in direction.** Cache lines and memory
+operations are both reported: the sweep reads one line per slot at a stride of
+64 bytes and up while the chain writes eight records to a line, so the line unit
+puts the chain ahead everywhere; the operation unit puts the sweep ahead
+wherever mortality passes about two fifths of the walked slots. Lines govern the
+conclusion, the chain's writes landing in one hot line against a walk that
+streams cold memory at the class stride.
+
+**The control is the instant before the first free.** S40.1's
+`every_collection_agrees` repeats an unchanged population, and a collection that
+kills its own cannot repeat. So the killing collection is the last of the eight,
+its density is read before any free, and that reading must equal the seven
+before it.
+
+**Refused, with reasons.** A production edit of any kind, a `cfg(test)` counter
+inside `defer_reuse_if_tracing` included, since that function's operation count
+is the baseline the stage is measured against. A timed run, there being nothing
+built to time. Freeing the fillers, or any death set that could carry the chain
+past `RETURNS_BASE_RECORDS`, a growth drawing a manager block and a probe that
+moves the allocator's state not measuring it. Extending the loads to class 16,
+where the plan's four-thousand-word figure comes from: `props_for(16)` is zero
+properties, so a class-16 entity has no property to carry a ring edge and that
+figure stays arithmetic. Averaging across populations or arms, which is S40.1's
+rule unchanged. And closing S43 on this number: the step prices the two sides,
+and if the sweep is dearer the stage is handed back for a decision rather than
+buried under a break-even that was never reachable.
+
+**Populations.** The measurement carries `Population::Slotted` alone. The
+retained block's and the OS-direct run's death sides are S43.2's and S43.3's,
+their sweep lengths being arithmetic — a survivor list, one header word — and
+the chain carrying no population field, so a window mixing two of them cannot
+be split.
+
+---
+
 ## 2026-09-04 — a thread waits for the trace, collects, and then exits
 
 **Ruled by Edmond**, in the words "поток не может выйти если его читает GC

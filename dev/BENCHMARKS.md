@@ -100,6 +100,92 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-04 — S43.1 the sweep's walk against the withheld chain: the chain is cheaper in lines at every design class
+
+**Machine:** dev box, shared with interactive work. **Base:** `7562c9e` plus
+this commit's test-only load. **Not a timing:** neither side is built — S43.2
+writes the mark and S43.4 sweeps it — so every figure is arithmetic over
+counted structure, and the counts come from the crate's own placement of the
+component and from `defer_reuse_if_tracing`'s documented cost.
+
+**What was measured:** the blocks one collection touched, the two bounds a
+per-slot walk of them runs to, and how the deaths cluster across them. The
+death count itself is the fixture's own input, so it is reported as a check
+rather than as a reading: the free path withheld exactly the 381 returns the
+fixture made, on every load (`dev/DECISIONS.md`, "the death count of a
+synthetic load is a check and not a measurement").
+
+**The load:** S40.1's own populations at the median closure size of 381, with
+the eighth collection running the teardown inside its still-open window. The
+seven before it are S40.1's control unchanged, and the killing collection's
+density is read before its first free and equals theirs.
+
+### What the two sides cost, per collection
+
+| arm | class | blocks touched | walk, slot bound | walk, bump bound | lines, slot bound | lines, bump bound |
+| --- | --- | --- | --- | --- | --- | --- |
+| dense | 32 | 1 | 2,040 | 381 | 1,020 | 191 |
+| dense | 64 | 1 | 1,020 | 381 | 1,020 | 381 |
+| dense | 128 | 1 | 510 | 381 | 510 | 381 |
+| dense | 256 | 2 | 510 | 381 | 510 | 381 |
+| sparse | 256 | 381 | 97,155 | 97,155 | 97,155 | 97,155 |
+
+Against all of it, the chain at 381 deaths: **3,048 bytes, 48 lines, written
+once and read back once at the replay — 96 line touches, and 2,286 memory
+operations.**
+
+The two bounds are `0..slots` and `0..bump`, and
+`heap::for_each_entity_slot` walks the second. This fixture's blocks are young,
+so the bump bound is the narrower one everywhere but the sparse arm, whose
+blocks are full of fillers. The cursor never retreats, so the slot bound is
+what the same walk costs once the block has filled.
+
+### Deaths the sweep needs to break even, against the deaths the load can hold
+
+| arm | class | break-even, lines | ceiling | break-even, operations | ceiling |
+| --- | --- | --- | --- | --- | --- |
+| dense | 32 | 4,080 | 2,040 | 816 | 2,040 |
+| dense | 64 | 4,080 | 1,020 | 408 | 1,020 |
+| dense | 128 | 2,040 | 510 | 204 | 510 |
+| dense | 256 | 2,040 | 510 | 204 | 510 |
+| sparse | 256 | 388,620 | 97,155 | 38,862 | 97,155 |
+
+Both columns are at the slot bound; the ceiling is every walked slot dying at
+once. **In the line unit the ceiling is below the break-even on every load**,
+by a factor of two at class 32 and four above it: the sweep reads one line per
+slot at a stride of 64 bytes and up, and the chain writes eight records to a
+line, so the walk needs four deaths per line it reads and a block cannot hold
+that many. In the operation unit the crossing is reachable and this load is
+past it at classes 128 and 256 — 1,401 operations against the chain's 2,286 —
+because a load and a test per slot are cheap next to five operations per
+append.
+
+**The units disagree, and lines govern.** The chain's writes land in one hot
+line; the walk streams a block at the class stride, and what it reads was
+already read by the mark only for the met share — 74.7 % on the dense arm at
+class 128, 0.4 % on the sparse one (`dev/BENCHMARKS.md`, 2026-09-04, S40.1).
+
+### The sparse arm is the finding
+
+381 blocks each holding one death cost the walk 97,155 line reads against the
+chain's 96 line touches, a factor of about a thousand. **The walk's cost does
+not move with the death count at all** — only with the blocks a trace touched —
+so the crossing is decided by the trace's spread rather than by its mortality,
+and a collection over a component scattered one member to a block is where the
+sweep is dearest and the chain cheapest.
+
+### What this does not price
+
+The chain's standing costs, which the sweep has none of: 8,320 bytes of every
+thread's workspace, the growth past that region, its draw on the critical
+reserve, and the `std::process::abort()` that answers a refusal `ll_free`
+cannot report. That is the stage's motive, and it is not a number this run can
+take.
+
+Understated on the chain's side, and it cannot be taken here: the deferred
+drops of a real teardown. The fixture's members carry no external children, so
+no acyclic tail dies behind them.
+
 ## 2026-09-04 — S40.1 the traced-slot density on a synthetic load: 0.1 % to 74.7 % across the design's own size classes
 
 **Machine:** dev box, shared with interactive work. **Base:** `77639b7`,

@@ -11,8 +11,11 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-04 · Active: the rest of S36, from S36.9 — the sections after
-S40 are the backlog. S43 sits between S36 and S37, where it is to be done.
+Updated: 2026-09-04 · Active: S43, whose S43.1 is closed and whose S43.2 waits
+on Edmond's answer to what that step measured. The rest of S36 stands behind
+it: S36.9's remainder and S36.12's slice (b) each wait on a ruling named in
+their own step. The sections after S40 are the backlog. S43 sits between S36
+and S37, where it is to be done.
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
@@ -1779,12 +1782,15 @@ else's. The collector already walks the blocks it stamped, at
 `TraceScratchArena::clear_touched_rows`, which is the instant its rows die —
 so the window a mark has to survive is exactly the window the sweep closes.
 
-What it costs instead, and the number is not taken: the sweep walks each
-touched block's slots rather than one pointer per block. At the smallest size
-class that is about four thousand words to a block, against eight bytes per
-death today. Which is cheaper turns on how many blocks a trace touches against
-how many entities die inside its window, and that is S43.1's measurement,
-taken on S40.1's blocks-touched instrument and a death counter of its own.
+What it costs instead, taken on 2026-09-04: the sweep walks each touched
+block's slots rather than one pointer per block, and that walk is dearer than
+the chain in cache lines at every design class. It reads one line per slot at a
+stride of 64 bytes and up, where the chain writes eight records to a line, so
+breaking even needs four deaths for every line the walk reads and no block
+holds that many. On a component scattered one member to a block the walk costs
+about a thousand times the chain (`dev/BENCHMARKS.md`, 2026-09-04, S43.1). The
+cost does not move with the death count, only with the blocks a trace touched,
+so the stage stands on what it deletes rather than on what it saves.
 
 **A mark is taken only where the sweep will find it.** Today every return is
 withheld while a window is open, the block's own state unread; a mark in a
@@ -1811,12 +1817,50 @@ with the sweep unmapping. A step that ships the entity-slot half alone returns
 a retained block or a run under a live row, which is the defect S36.2 exists
 to prevent.
 
-- [ ] S43.1 Measure the two populations   *(S40.1's instrument, this question)*
+- [x] S43.1 Measure the two populations   *(S40.1's instrument, this question)*
       done: one instrumented collection reports blocks touched and entities
         dying inside the window, on the synthetic load S40.1 defines, so the
         sweep's per-slot walk is priced against the list's per-death append
         before either is built
       tier: T2 · role: Bench
+      Sage 2026-09-04 (pre-change gate): **the death count is the fixture's own
+        input** and is refused as a measurement, standing as a construction
+        check instead — the free path withheld exactly what the fixture freed
+        (`dev/DECISIONS.md`, "the death count of a synthetic load is a check and
+        not a measurement"). What is reported is what the crate chooses: blocks
+        touched, the walk's two bounds, the clustering of deaths, and the
+        break-even derived from them. The walk is bounded by `bump` and not by
+        the slot count, `heap::for_each_entity_slot` running to the cursor, and
+        both bounds are reported because they differ by 5.4x on the dense arm.
+        Two units, because they disagree in direction: lines govern and
+        operations are reported beside them. The control is the instant before
+        the first free, a killing collection having no repeat. The measurement
+        carries `Population::Slotted` alone, the retained and OS-direct death
+        sides being S43.2's and S43.3's. Refused: any production edit, a timed
+        run, a death set that could grow the chain past its region, class 16
+        (`props_for(16)` is zero properties, so no ring can be built there),
+        averaging across arms, and closing the stage on this number.
+      progress 2026-09-04 — `cycle::density::tests::the_death_loads` runs
+        S40.1's own populations at 381 members and lets the eighth collection
+        tear the component down inside its still-open window. **The chain is
+        cheaper in the line unit at every design class, and the sparse arm
+        decides it**: 381 blocks holding one death each cost the walk 97,155
+        line reads against the chain's 96 line touches. The break-even needs
+        four deaths per line the walk reads, and a block cannot hold that many —
+        the ceiling is below the break-even by a factor of two at class 32 and
+        four above it. In the operation unit the crossing is reachable and this
+        load passes it at classes 128 and 256. The walk's cost does not move
+        with the death count at all, only with the blocks a trace touched
+        (`dev/BENCHMARKS.md`, 2026-09-04, S43.1). Test-only: one `cfg(test)`
+        reader of the bump cursor beside `heap::block_occupancy`, no production
+        path edited, 677 tests unchanged and the two loads ignored.
+      handoff: the number does not settle the stage and hands it back. What the
+        sweep buys is not speed but the deletion of a refusal path — 8,320 bytes
+        of every thread's workspace, the growth past that region, its draw on
+        the critical reserve, and the `std::process::abort()` a refusal reaches
+        — and that is Edmond's own reason of 2026-09-03. Whether it is worth a
+        walk that costs a thousand times the chain on a scattered component is
+        his to say, and S43.2 waits on it.
 - [ ] S43.2 The dead slot carries the mark
       done: a slot freed inside a trace window, in a block the trace has
         stamped, is left dead in place rather than returned, and reads as

@@ -221,6 +221,10 @@ fn on_a_fresh_thread<T: Send + 'static>(case: impl FnOnce() -> T + Send + 'stati
 // gate runs this suite about a dozen times per commit.
 mod the_loads;
 
+// The same loads with a teardown inside the trace window, which is what
+// prices the sweep S43 proposes against the chain it would delete.
+mod the_death_loads;
+
 /// Anchor A: a single self-referencing entity in an empty block.
 ///
 /// The share is one row of the block's whole index space, and the group
