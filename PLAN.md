@@ -881,9 +881,10 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         returns a slot; a reader may mark an entry a corpse and pass it on; the
         bit is cleared only by the owner consuming the one token that names a
         dead entity — the drain's corpse rule, or S36.5 commit for an in-flight
-        root — and **never by death itself or at acquittal**, which supersedes
-        Y12 clause 4's
-        "cleared after the root is walked"; a test proves the acquittal case —
+        root — and **never by death itself or at acquittal**, which agrees with
+        Y12 clause 4 as narrowed on 2026-08-26, "cleared by the owner only when
+        the entity reaches zero count", rather than superseding the "cleared
+        after the root is walked" that clause carried before; a test proves the acquittal case —
         ring A↔B with an external X→B that is released after the trace read the
         count — does not lose the ring, and the assertion is that a later
         collection reclaims it, not merely that the bit is still set
@@ -2212,10 +2213,22 @@ to prevent.
       done: a slot freed inside a trace window, in a block the trace has
         stamped, is left dead in place rather than returned, and reads as
         neither live nor free to every walker that reads a slot's first word —
-        `heap`'s occupancy test, the census, and `describe_slot`; a test frees
-        one such slot, walks the block by each of those readers and allocates
-        against the same class without receiving it
+        `heap`'s occupancy test, the census, and `describe_slot` — **while the
+        refcount word still reads zero**, which is what the queue reader
+        depends on; a test frees one such slot, walks the block by each of
+        those readers and allocates against the same class without receiving
+        it, and a second reads the refcount word back as zero
       tier: T2 · role: Sage → Critic
+      handoff: the two readings have to be reconciled where the mark is placed.
+        `rfc/model/gc/rc-cycle.md` says a parked slot "remains readable with
+        count zero and the candidate bit set until the owner removes every
+        outstanding identifier", and the queue reader is specified to read that
+        word first and pass on an entry whose entity reads zero. A mark that
+        makes the first word read as neither live nor free contradicts it, so
+        the mark goes elsewhere in the word — or `rc-cycle.md` states what a
+        trace-parked slot's first word reads. In the crate the two windows are
+        disjoint today (`ll_free` refuses the queue window before reaching the
+        trace window), so nothing bites yet.
 - [ ] S43.3 The retained occupant and the OS-direct run carry theirs
       done: a retained block whose last occupant dies under a live row, and an
         OS-direct run whose entity dies under one, are held by a mark in their
@@ -2223,13 +2236,23 @@ to prevent.
         those two returns pass unchanged
       tier: T2 · role: Sage → Critic
 - [ ] S43.4 The sweep returns everything marked
-      done: `clear_touched_rows` nulls a block's shadow pointer and then
-        returns every mark that block holds through `stdapi::ll_free` — slots,
-        the retained block itself, the run — and a collection that aborts
-        mid-trace returns them by the same path; tests read every marked slot
-        back on the success path and on the abort path, with the block that
-        emptied entirely retiring to the pool
+      done: `clear_touched_rows` nulls a block's shadow pointer and **clears
+        the mark**, and the **owning thread** returns the slot on its own free
+        path when it next finds no trace addressing the block — slots, the
+        retained block itself, the run — a collection that aborts mid-trace
+        clearing by the same path; tests read every marked slot back on the
+        success path and on the abort path, with the block that emptied
+        entirely retiring to the pool
       tier: T2 · role: Sage → Critic
+      correction 2026-09-04: the criterion had the sweep itself free through
+        `stdapi::ll_free`. The sweep runs where the token is released, and under
+        S38's accelerator that is not the owning thread —
+        `rfc/model/gc/rc-cycle.md` refuses exactly that: "A collector worker may
+        label the queue entry as a zero-count entity, but it must not clear the
+        candidate bit or return the slot", the reason being that the old
+        entity's destructor may still be running on the owner. It is Edmond's
+        own ruling of 2026-08-25, "the collector-side free is withdrawn; only
+        the mutator frees". The sweep clears; the owner returns.
 - [ ] S43.5 The chain and its last resort are deleted
       done: `cycle::deferred_slot_reuse` holds no record chain, no capacity, no
         growth and no `std::process::abort()`; the withheld returns' region
@@ -2262,17 +2285,33 @@ subgraph reachable from a median candidate root is 381 of 381 objects, so this
 stage is what makes a trace affordable rather than what tunes it.
 
 - [ ] S37.1 The maturation stamp is an edge-side prune
-      done: mark's descent reads the stamp with one single-byte load; a member
-        whose stamp epoch equals the heap's current epoch (mod 4) and whose age
-        has reached `k` is treated as an **opaque live external and is not
-        descended into**, the same test skipping a mature popped root entirely;
-        a stale-epoch stamp reads as age 0 and is never cleared in place, so the
-        trace writes no stamp; the per-thread-heap collection counter advances
-        the epoch every 64 completed collections and `k = 3`, both named
-        provisional after YRC's only known values, with `k`'s measurement owed
-        at S40.1 and the turnover's at S37.5; `#[cfg(test)]` counters report edges pruned and roots skipped
-        mature per collection
+      done: mark's descent reads the stamp with one single-byte load; an **edge
+        target** whose stamp epoch equals the current epoch (mod 4) and whose
+        age has reached `k` is treated as an **opaque live external and is not
+        descended into**; a **queue root is never pruned**, whatever its stamp,
+        and a red test shows a ring every one of whose members is at the
+        threshold collected at the trace that meets it; a stale-epoch stamp
+        reads as age 0 and is never cleared in place, so the trace writes no
+        stamp; the epoch counter is one process-global full-width word advanced
+        by a collection's commit every 64 collections, read against a
+        full-width per-thread mirror, and `k = 3`, both named provisional after
+        YRC's only known values, with `k` owed a measurement on a real workload
+        and the turnover's owed at S37.5; a `#[cfg(test)]` counter reports edges
+        pruned per collection
       tier: T2 · role: —
+      correction 2026-09-04: the criterion carried "the same test skipping a
+        mature popped root entirely" and a counter of such roots, which
+        `rfc/model/gc/rc-cycle.md` forbids by name and for soundness — "the rule
+        applies only to edge targets, never to queue roots; otherwise a
+        reference cycle at the threshold could be skipped until the epoch
+        changes", repeated in the summary bullet. The step's own handoff already
+        recorded the root-side reading as struck on 2026-08-26 and the criterion
+        kept it. Struck here, before anything was built to it. The counter of
+        skipped roots goes with it: it counted an event that may not happen.
+        The epoch counter's residence is corrected in the same pass —
+        `rfc/dev/DECISIONS.md` closing Y12 clause 8 makes it process-global and
+        full-width against a per-thread mirror, and the full width is what keeps
+        a wrapped stamp from hiding a turnover.
       handoff: the root-side reading — "traced only after it has stayed a
         candidate across `k` collections" — was struck from this step and from
         `rc-cycle.md`'s summary bullet on 2026-08-26. It is not a second
@@ -2289,12 +2328,11 @@ stage is what makes a trace affordable rather than what tunes it.
         epoch and this step prunes a live subgraph permanently and silently.
         The zeroing belongs to S38.0; this step's counters are what would show
         it missing.
-- [ ] S37.4 The suspects buffer and the turnover re-offer
-      done: acquittal never clears the enrolment bit; a proven-live root parks
-        its **one existing token** in the owner's dormant suspects queue, and
-        every suspect is re-offered at the first collection after the heap's
-        epoch advances by detaching the due dormant lane beside the active lane
-        as one composite in-flight batch, never by enrolling or copying the
+- [ ] S37.4 The deferred-candidate buffer and the turnover re-offer
+      done: acquittal never clears the candidate bit; a proven-live root parks
+        its **one existing token** in the owner's dormant lane, and every
+        deferred candidate is re-offered at **the owner's first safepoint poll
+        that finds the epoch counter moved**, never by enrolling or copying the
         entity a second time; red tests prove
         that a matured ring losing its last external reference mid-epoch is
         collected at that re-offer and not before, and that a ring whose mates
@@ -2314,6 +2352,18 @@ stage is what makes a trace affordable rather than what tunes it.
         add a duplicate. Store original enrolled
         roots only — adding every traced live member manufactures tokens, and
         collapsing two roots in one component can miss it after a later split.
+      correction 2026-09-04: the criterion re-offered "at the first collection
+        after the heap's epoch advances", by detaching the dormant lane beside
+        the active one. `rfc/dev/DECISIONS.md`, closing Y12 clause 8, chooses
+        the poll over the collection **by name and with the failure case**: "a
+        thread whose only garbage is a parked ring has an empty queue …
+        waiting for a judgement would wait for ever, which is Y6's permanent
+        miss by another road". The rfc's mechanism there is a splice onto the
+        live queue, one link per segment, in the poll's fixed order — refill,
+        drain, splice. The batch-detach form this step proposed is what the
+        handoff below argues for; it is an amendment `rfc` owes, and until it
+        lands the splice is the contract. The retired word "suspects buffer"
+        goes with it (`rfc/dev/GLOSSARY.md`).
       handoff: current queue segments cannot be spliced after filtering: only
         the live head has a fill bound and every segment behind it is assumed
         full. S36.12's per-batch/per-segment `read` and `used` bounds, or an
@@ -2352,16 +2402,30 @@ stage is what makes a trace affordable rather than what tunes it.
 Goal: a collection runs either in a collector thread or in the mutator, never
 both, and the losing side never deadlocks.
 
-- [ ] S38.0 The collector's reader
-      done: a second `CellReader` impl reads `word` and `ptr` as relaxed atomics
-        and answers nothing else — no storage version and no give-up, because a
-        torn read costs at most a phantom edge or a missed one, and a child
-        mapping to no GC-heap block already ends the descent as an external live
-        reference (`cycle::row::resolve_edge_target`); the collector-thread trace
-        instantiates `trace_cells`
-        with it, and a Miri slice drives it over an object with outside cells
-        and over an array mid-move
+- [ ] S38.0 The collector's reader   *(blocked: `rfc` A1)*
+      done: the collector's `CellReader` implements one of the four resolutions
+        `rfc/dev/ALGORITHM-AUDIT.md` A1 requires — an atomic slot
+        representation, a versioned read for wide values, a write-barrier
+        snapshot, or a stop-at-consistent-point protocol — and states which; the
+        collector-thread trace instantiates `trace_cells` with it, and a Miri
+        slice drives it over an object with outside cells and over an array
+        mid-move
       tier: T2 · role: Critic
+      correction 2026-09-04: the criterion read "no storage version and no
+        give-up, because a torn read costs at most a phantom edge or a missed
+        one". A1 rejects that justification in terms: a wide `ValueBox` is
+        published as two stores, "this cannot be treated as harmless staleness
+        because the resulting pointer need not have been valid at any instant",
+        and "until then, only synchronous owner-side tracing is memory-safe".
+        `rfc/model/gc/rc-cycle.md` repeats it — "This statement assumes a
+        memory-safe protocol for concurrent slot reads; that protocol is
+        currently an open blocker". So the step refused by name one of the four
+        resolutions it is required to pick from. **The step is blocked until A1
+        closes**, and that is a design ruling, not an implementation choice.
+        `rfc/model/layouts.md` licenses relaxed atomics for the header, not for
+        a two-word cell. The same block reaches the cross-thread arms of S38.1
+        and S38.3; the several-collectors-at-once part is licensed separately
+        (`dev/DECISIONS.md`, 2026-08-26) and only the reads are blocked.
       handoff: `RelaxedCells` and its re-check plumbing died at S30.2 because
         they existed for `rc-walk`'s precision. What the accelerator needs is
         strictly smaller, and the `CellReader` trait is the socket it plugs into.
@@ -2377,7 +2441,7 @@ both, and the losing side never deadlocks.
       handoff: the collector thread's birth is this step's to name — startup
         or first pressure — with its floor refusal following it; a mandatory
         floor drawn at first pressure is the worst moment
-        (`rfc/dev/DECISIONS.md`, "the escrow's floor is allocator-issued").
+        (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued").
 - [ ] S38.1 The claim
       done: one flag **per mutator thread**, free or held, taken by CAS and
         released by one store; a waiter blocks on a mutex rather than spinning;
@@ -2431,7 +2495,7 @@ both, and the losing side never deadlocks.
       done: an in-line collection needs no verdict list, no handshake and no
         second phase — it is exact with respect to the counts because the owner
         re-reads its own current fields — and a mutator that cannot allocate
-        while the claim is held in either state waits for the trace to end
+        while the claim is held waits for the trace to end
         rather than preempting; the test's running collection is staged by
         S38.1's harness seizure and reaches the wait through S38.4's path, with
         a `#[cfg(test)]` counter past the wait asserted non-zero, because a test
@@ -2458,15 +2522,31 @@ both, and the losing side never deadlocks.
 
 ## S39 — Thread exit  (carried from S29.2)
 
-- [ ] S39.1 Exit drains its own queue
-      done: `ll_thread_exit` retires its queue before handing the heap over,
-        which for a zero-count entry means reading the refcount, clearing
-        `CANDIDATE_BIT` and returning the deferred slot; and the fate of a **live**
-        enrolled entity at exit is **chosen** — which of collect, hand over or
-        leak, and why — rather than described in a comment, with the test that
-        observes the chosen fate named; a red-first test kills a thread between
-        enrolment and collection
+- [ ] S39.1 Exit waits, collects, and drains its four chains   *(after S36.4)*
+      done: `ll_thread_exit` **waits** while any trace holds rows over this
+        thread's blocks, **collects**, and then retires its chains before
+        handing the heap over — the queue, the overflow buffer, the
+        deferred-candidate buffer and the inbox, all four, which for a
+        zero-count entry means reading the refcount, clearing `CANDIDATE_BIT`
+        and returning the deferred slot; what the collection could not take
+        keeps its bit and is reported as a bounded leak with its cause; a
+        red-first test kills a thread between registration and collection, and
+        a second shows a thread that would have aborted inside an open window
+        waiting instead
       tier: T2 · role: —
+      ruling 2026-09-04 (Edmond): the wait, and collection before exit as the
+        fate of a live registered entity. Recorded with its refused
+        alternatives in `dev/DECISIONS.md`, "a thread waits for the trace,
+        collects, and then exits". The wait replaces the process abort
+        `dispose_thread_state` performs today, and closes the first clause of
+        `rfc`'s A4. **The step moves after S36.4**: its destructors run on a
+        winding-down thread, and an unwind across `ll_thread_exit`'s `extern
+        "C"` boundary ends the process, so the policy for a throwing destructor
+        has to exist first.
+      correction 2026-09-04: the criterion named one chain where
+        `rfc/dev/PLAN.md` names four — "`ll_thread_exit` drains the suspects
+        buffer beside the inbox, the queue and the overflow buffer" — and the
+        leak this step exists to close is not closed by the queue alone.
       handoff: the corpse half arrived from S34.3 on 2026-08-29, which built
         the deferral and the two accessors it needs
         (`refcount::clear_enrolled`, whose `expect(dead_code)` names this step)
@@ -2510,7 +2590,7 @@ Goal: the one number the design still lacks.
         the descent order a prune would have changed; it says nothing about
         recall; a saturated row contributes no in-edge count and is reported
         apart rather than folded in at zero; and the ages are the harness's
-        ledger, bytes 16-19 being reserved and unwritten. The instrument is a
+        ledger, flags bits 16-19 being reserved and unwritten. The instrument is a
         `#[cfg(test)]` walk over the touched list that the collector never
         calls, plus one `note_phase_boundary` in `trace_batch` whose release
         body is empty: zero operations per edge and per entity in a release
@@ -2585,8 +2665,8 @@ Goal: the one number the design still lacks.
         blocks and groups, row bytes reserved and written, distinct row/group
         lines touched, worklist/member/deferred-slot high-water, arena requested,
         granted and abandoned-tail bytes, base hits, overflow draws and
-        returns, suspect deferrals and re-offers, exact passes and probes, retained
-        registry acquisitions, physical GC current/peak blocks by funding role,
+        returns, deferred-candidate deferrals and re-offers, exact passes and probes,
+        physical GC current/peak blocks by funding role,
         and logical current/high-water bytes by workspace consumer
       done: pinned back-to-back runs over component sizes 2, 16, 256 and 381,
         dense and one-entity-per-block, ordinary and retained, record
@@ -2648,24 +2728,41 @@ is built — the generic element write, the strategy tag in the head, the
 measurement.
 
 **Four constants stand on borrowed or invented numbers**: the string-key
-check's reversal threshold, the compaction threshold taken from Zend at
-about 3 %, and the flood ladder's two, `EQUAL_HASH_LIMIT` and
-`CHAIN_LIMIT`. None of the four can be settled on this box —
-`dev/BENCHMARKS.md` puts its noise floor at 1.5–3 %, and every effect in
-question is smaller than that. So this is not a task waiting for someone
-to pick it up: it waits for a machine that can resolve it, and measuring
-here would produce a number indistinguishable from noise and harder to
-retract than to publish.
+check's threshold, the compaction threshold taken from Zend at about 3 %,
+and the flood ladder's two, `EQUAL_HASH_LIMIT` and `CHAIN_LIMIT`. Three of
+the four cannot be settled on this box — `dev/BENCHMARKS.md` puts its noise
+floor at 1.5–3 % and every effect in question is smaller — so they wait for
+a machine that can resolve them, and measuring here would produce a number
+indistinguishable from noise and harder to retract than to publish.
+
+**The string-key one is different and was mis-parked here.**
+`rfc/model/arrays-hashtable.md` names it in advance as a **cancellation
+threshold** of **1.5x**, not a percentage: "if the control-byte index wins
+both lookups by 1.5x or more at N between 56 and 28 672 on string keys of
+realistic length, without its deletion margin worsening, the default
+changes." A 1.5x margin is thirty times the noise floor and is resolvable
+here. It leaves the parked set.
+
+`arrays-hashtable.md`'s own open bullet also carries a second half this
+plan never picked up: whether an escalation raises an operations-visible
+signal.
 
 ## The vocabulary
 
-The crate's identifiers and test file names follow the glossary
-`rfc/dev/PLAN.md` S9 builds; nothing here is renamed before S9.1 rules on it.
-Two words are already marked for rename. Counted in this crate on 2026-08-29,
-after commit 8208815: `door` at 110 occurrences in the code and 80 in the
-documents, `escrow` at 88 and 34.
-`ResetWindow::escrow` in `src/memory/reset_window.rs` names deferred count
-corrections rather than the queue's overflow buffer and takes a different name.
+**The rename happened.** S41 closed 2026-09-02 against
+`rfc/dev/GLOSSARY.md`, whose deprecated table holds 46 rows and whose writing
+rule names six metaphors rather than the two this section used to carry.
+`ResetWindow::escrow` took its ratified name there. Counted at `f1ad00f`:
+`door` 5 in the code and 320 in the documents, `escrow` 45 and 79 — the five
+`door`s are inside the guard that retires the word, and every count in the
+documents is a record of the rename rather than a use.
+
+What remains is the standing net, not a task: three guards in
+`src/cycle/tests/` fail on a retired identifier, a retired word in a comment,
+or a metaphor outside a citation, and their failure messages name
+`dev/CYCLE-TERMINOLOGY-AUDIT.md` and `dev/PROJECT-TERMINOLOGY-AUDIT.md` as the
+tables to read. `rfc`'s own S9.1 is still open in that repository's plan and
+carries the remaining cross-repository work.
 
 ## Beside the hashtable: the memory categories
 
@@ -2706,18 +2803,20 @@ own checkbox.
   generation, and the generic path stays
   `ll_object_new(ctx, class, category)`. `clone`, `deep_clone`,
   `thread_clone` and `thread_move` are reserved for the multi-threading
-  future. "Only the GC reads `traced_runs` as data" holds once generated
+  future. `rfc/runtime/object-lifecycle.md`'s "Only the GC reads layout as
+  data, through `traced_runs`" holds once generated
   disposes replace the stand-in. `rfc/runtime/object-lifecycle.md`.
 - [ ] **A7, no zeroing by default.** `ll_object_new` zero-fills the whole
   body unconditionally; which slots need a defined initial state is the
   factory's to decide (`rfc/BACKLOG.md`, deferred optimizations).
 - [ ] **`Lazy` (code 1) and `Box` (code 10) have no producer.**
   `ll_entity_die`'s switch serves five; Box waits on the FFI surface and
-  Lazy on the compiler, and each reaches a `debug_assert!` meanwhile.
+  Lazy on the compiler. Only Box reaches the `debug_assert!` meanwhile:
+  `ll_entity_die` already routes `OBJECT | LAZY` to `ll_object_die`.
   `Lazy` nevertheless answers yes to `EntityKind::closes_a_ring`, on the
   argument recorded in `dev/DECISIONS.md`, "a kind's ring classification is
   written at its declaration, before a factory stamps it". `StringDynamic`
-  (code 9) is not carried here: `string::reserve` stamps it whenever the
+  (code 9) is not carried here: `string::publish_uninit` stamps it whenever the
   placement is out of line, so the kind has a producer.
 - [ ] **The threshold arming policy and the collector-thread accelerator.**
   What is left of the old escalation ladder after S38.4 builds the entry gate
@@ -2729,13 +2828,16 @@ own checkbox.
   collector thread would shorten — until then the in-line collection at a
   failed allocation is the whole trigger, and that is the design in force
   rather than a stopgap (Y14, amended 2026-08-26).
-- [ ] **The birth count and the unique-owner policy**
-  (designed 2026-08-17 in the old collector's document, sections "The birth
-  count" and "Unique ownership"; S30.5 moves the text into `rc-cycle`'s
-  documents or it goes with the file) — gated on a Phase D measurement of
-  the share of dynamic publications with compiler-provable targets; the
-  move rule (copy, barrier, or a never-moved proof) is the open design
-  question.
+- [ ] **The birth count and the unique-owner policy** — **the text went with
+  the file** on 2026-08-26 and no section landed in `rc-cycle.md` or
+  `cycle/questions.md`; it is on `archive/pre-rc-cycle`. What is left in the
+  active tree are two composition stubs still citing it,
+  `rfc/model/gc/pure-destructors.md`'s "With unique ownership" and "With the
+  birth count". The move rule — copy, barrier, or a never-moved proof — is
+  **not** the open question it was: the ruling of 2026-08-23 put "what can the
+  compiler prove" outside `rfc`'s scope by name and left the move rule "owed a
+  home outside these documents". Still gated on a Phase D measurement of the
+  share of dynamic publications with compiler-provable targets.
 - [ ] **Per-structure GC memory, behind a feature.** Which structure holds
   collection's logical bytes — shadow rows, the trace worklist, a component's
   member list, deferred slots, deferred drops, suspects — is not carried in a
@@ -2758,26 +2860,23 @@ own checkbox.
   throughout, so it is a source to re-read rather than a conclusion to
   carry.
 - [ ] **The horizon's borrow elision** (Edmond's algorithm, 2026-08-18,
-  named `proof-horizon` until 2026-08-20) — closed, and no pre-D step can
-  change that status: the scan is kill-only, the census is undated, every
-  verification artifact needs the compiler. Pre-D work is instrument
-  preparation: the graded corpus scan, the census channel list owed to
-  `dev/DECISIONS.md` before the census is specified, the summary-language
-  question. Three Critic rounds, the granularity ruling of 2026-08-18
-  (`dev/DECISIONS.md`), Edmond's corpus names and his
-  family-borrow-analysis and summary-language rulings, and the five
-  questions the 2026-08-20 case book opened — the weak cell's uncounted
-  edge, promotion in the arena and immortal categories, raise sites in the
-  placement rule, the COW-unique intersection, and runtime entries read as
-  calls — were all written in documents S30.5 deletes. The arguments that
-  outlive them move where S30.5 names; the rest is at
-  `archive/pre-rc-cycle`.
+  named `proof-horizon` until 2026-08-20) — **the documents are gone and the
+  work with them**. `gc-horizon.md`, `gc-horizon-cases/`, `gc-horizon-v2/`,
+  `rc-walk.md`, `rc-walk-model.md` and `walk/compiler-proofs.md` were deleted
+  on 2026-08-26 and are on `archive/pre-rc-cycle`; the ruling that took them
+  says why — the proof logic left `rfc`'s scope on 2026-08-23 and nothing in
+  force cites it. So the pre-D instrument work this item scheduled — the
+  graded corpus scan, the census channel list, the summary-language question —
+  has no document to serve and no owner. What outlived the deletion is named
+  in that ruling and is where it says; the algorithm itself is Edmond's and is
+  on the branch. Kept as one line so the name is findable, not as a task.
 - [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2
   transition waits on one — `dev/DECISIONS.md`, 2026-08-13, which also
   says what to confirm against `arrays.md` before opening it.
-- [ ] **The rest of the language runtime**, listed in `rfc/BACKLOG.md`:
+- [ ] **The rest of the language runtime.** Seven are in `rfc/BACKLOG.md`:
   exceptions, actors, closures, enums, generators and fibers, resources,
-  generics, stdlib, I/O.
+  generics. Two are not, and exist only as a three-line placeholder each —
+  `rfc/stdlib/README.md` and `rfc/io/README.md`.
 - [ ] **Phase D, the vertical slice** — hello-world through the whole
   stack, PHP to IR to executable, on the simplest memory setup. It
   validates the central bet, that the compiler can prove escape,
@@ -2796,7 +2895,7 @@ deleted with its steps; the decisions it leaves are in `dev/DECISIONS.md`
 in `dev/INDEX.md`. What it did not do is below.
 
 - [ ] **A gate flake, measured 2026-09-03 and pre-existing.** The case that
-  reached the gate is fixed and measured; four cases that cannot take the
+  reached the gate is fixed and measured; five cases that cannot take the
   same fix are named below and stay open.
   `promote::tests::where_a_survivor_list_is_placed::`
   `lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains`
@@ -2828,15 +2927,14 @@ in `dev/INDEX.md`. What it did not do is below.
   `a_thread_nothing_will_tear_down_is_not_funded` reads the same figure into
   `base_blocks_before` and `segments_before` and asserts both, so the segment
   claim its name makes has no reading behind it.
-- [ ] **`docs/performance-case-decompositions.md` cites the deleted
-  `rc-walk.md` at five sites** — "The narrow mutator", "What the mutator
-  pays", "One demand on codegen", "Both ride the death branch of
-  `ll_release`", "Deferred physical release". The document decomposes the
-  retain/release pair, the counted publish and the death branch, which
-  still exist, against contract sentences of a design that does not; whether
-  it moves to `docs/history/` under a superseded banner or is re-cited
-  against `rc-cycle.md` is a reading of the document, not a rename. Found
-  by S41.11's checker, 2026-09-01.
+- [ ] **`docs/performance-case-decompositions.md`'s five citations point into
+  a deleted file on a branch**, and whether that form is acceptable is the
+  question left. The document carries its superseded banner and every one of
+  the five names `archive/pre-rc-cycle` explicitly, so a reader is not misled;
+  what `dev/tools/citations.py` cannot do is follow a citation onto a branch,
+  which is why the five stand in its twelve known residues. Either the checker
+  learns the branch form or the five lose their section names. Found by
+  S41.11's checker, 2026-09-01; the banner landed the same day.
 - [ ] **A test that reads a file or spawns a process carries no guard
   requiring its `cfg_attr(miri, ignore)`.** The convention has been broken
   twice — `cycle::` on 2026-09-01 and `memory::` on 2026-09-02 — and each
@@ -2847,7 +2945,7 @@ in `dev/INDEX.md`. What it did not do is below.
   test function's extent, since the crate has no parser
   (`dev/POSTMORTEM.md`, 2026-09-02).
 - [ ] **The ladder's refusal has nowhere to go.**
-  `InsertOutcome::RefusedByLadder` is answered inside the crate — a null
+  `InsertOutcome::AdmissionDenied` is answered inside the crate — a null
   from `ll_cow_separate`, a `false` from `element::set` — because the
   crate has no error channel. `rfc/model/maps.md`, "Rung three,
   refusal", says the runtime raises it as a catchable error, and that
@@ -2867,7 +2965,8 @@ in `dev/INDEX.md`. What it did not do is below.
   strings work rather than the table's.
 - [ ] **Doc links that point at private items.** Public documentation
   links `pub(crate)` and private names — `Table::empty` to
-  `Table::reseed`, `InsertOutcome::RefusedByLadder` to `CHAIN_LIMIT` —
+  `Table::reseed`, `InsertOutcome::AdmissionDenied` to `CHAIN_LIMIT` and to
+  `EQUAL_HASH_LIMIT` —
   which `rustdoc` warns about unless private items are documented too.
   Crate-wide practice rather than one site, so it is a ruling and not a
   fix: either the links stay and `--document-private-items` becomes how
@@ -2915,7 +3014,8 @@ Memory manager, still open:
   reaches its owner a batch late, so peak RSS rises by the batch, which
   is a real change of behaviour in a runtime whose ordinary free is
   immediate. A thread exiting with a staged batch must flush it or leak
-  it; `deferred_free::dispose` is the existing shape for that.
+  it; the thread-exit flush is the existing shape for that, and it lives on
+  `archive/pre-rc-cycle` — `deferred_free.rs` went with `rc-walk`.
 
   Removing the atomic entirely means a per-thread-pair SPSC ring
   (`ck_ring`), which costs memory per pair. That is the trade snmalloc
@@ -2940,9 +3040,9 @@ think with, not decisions: none of it is measured here, and each entry
 names what would have to be measured first.
 
 - [ ] **Reallocate in place when the class does not change.**
-  `stdapi::ll_realloc` allocates, copies and frees on every call, so 40
-  bytes to 48 costs a block, a `memcpy` and a free to move inside one
-  48-byte slot. `stdapi::ll_usable_size` already reads the class size out
+  `stdapi::ll_realloc` refuses an entity first and then allocates, copies
+  and frees on every remaining call, so 40 bytes to 48 costs a block, a
+  `memcpy` and a free to move inside one 48-byte slot. `stdapi::ll_usable_size` already reads the class size out
   of the block header, so the test is one comparison on a path that is
   cold anyway. rpmalloc also declines to move a huge block that shrinks
   by less than half, and overallocates to 1.375x on a small growth so
@@ -2950,8 +3050,9 @@ names what would have to be measured first.
   step (`rpmalloc.c:2402`, `2413`, `2429`).
   **What comes first:** a harness. `rptest` in `benches/standard.rs`
   frees and allocates rather than reallocating, so this path has no
-  measurement at all, and nothing in the runtime calls it either — it
-  serves the raw C surface.
+  measurement at all. Nothing calls it in a running program either, but
+  only because the allocator is not installed: `GlobalAlloc::realloc` calls
+  it, and the `#[global_allocator]` install is still owed.
 
 - [ ] **Size classes for the band between 8 KiB and one block.** Classes
   stop at `heap::MAX_SMALL` and everything above takes a whole 64 KiB
@@ -2983,9 +3084,13 @@ names what would have to be measured first.
   writes eight bytes into every slot of an entity block unconditionally —
   up to 4080 stores at the 16-byte class, and at a 16-byte stride that
   dirties every line of the 64 KiB block. The invariant is narrower than
-  the pass: the walker reads only slots below `bump` and tests one field.
-  Two sources of the same knowledge exist and neither is used. A region
-  taken with `alloc_zeroed` instead of `alloc` is untouched kernel
+  the pass: the walker reads only slots below `bump` and tests one field —
+  and that walker is `for_each_entity_slot`, which no production path calls
+  since `rc-walk` went. One source of the knowledge is already paid for: a
+  region is a fresh OS mapping and arrives zeroed. What is open is carrying
+  the flag across recycling, since a block recycles through the pool and may
+  have served at another stride. A region taken from the OS is untouched
+  kernel
   memory. A block returned empty from an entity heap already satisfies
   the invariant, because `FreeSlot` preserves the dead entity's final
   header and an entity dies at refcount 0. What breaks it is a block that
@@ -2993,7 +3098,9 @@ names what would have to be measured first.
   different stride, so the flag has to name the stride it holds for.
   **What comes first:** the case that shows the cost. Amortised over the
   steady-state benchmarks it is small, refill running about 0.00003 times
-  per allocation; the workload to measure is a growing one, where the
+  per allocation — a figure from `dev/RESEARCH.md` that `dev/BENCHMARKS.md`
+  never took, so it is a reading rather than a measurement; the workload to
+  measure is a growing one, where the
   pass is one extra store per object created.
 
 - [ ] **Return memory to the OS, and cache huge mappings** — the

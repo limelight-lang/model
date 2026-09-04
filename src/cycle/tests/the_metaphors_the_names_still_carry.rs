@@ -32,9 +32,9 @@ use std::path::{Path, PathBuf};
 /// more often than it is a leftover.
 ///
 /// `door` is the glossary's context-sensitive word, retired site by site
-/// against its closed list (`dev/design/door-sites.md`); the replacement
-/// depends on the operation, so no single ratified name stands beside it in
-/// the sibling guard's table.
+/// rather than by one ratified name: the replacement depends on the
+/// operation, so no single name stands beside it in the sibling guard's
+/// table (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Glossary check").
 pub(super) const METAPHORS: [&str; 14] = [
     "condemn", "acquit", "corpse", "judg", "park", "escrow", "floor", "climb", "enrol", "discount",
     "ladder", "rung", "trigger", "door",

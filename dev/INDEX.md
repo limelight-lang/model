@@ -737,10 +737,6 @@ arena's own memory rather than a per-thread chain of manager blocks
 arena's own memory, and the process registry goes"). Kept as the record
 of what was considered; the code is S36.9 (e).
 
-`dev/design/door-sites.md` — every `door` site in `src/` at `019618d`,
-143 rows, each classified against the glossary's closed list with its
-replacement, the fifteen that fit no class listed first with the reason,
-and one site awaiting a ruling. The input S41.7's rename reads.
 
 `dev/tools/citations.py` — the heading-level citation check, pass 1 of
 `dev/WORKFLOW.md`'s "Checks a grep cannot make": prints every cited

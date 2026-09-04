@@ -8,6 +8,87 @@ never edited or deleted.
 
 ---
 
+## 2026-09-04 — a thread waits for the trace, collects, and then exits
+
+**Ruled by Edmond**, in the words "поток не может выйти если его читает GC
+коллектор. в таком случае он должен подождать GC", and on the fate of what it
+leaves: "все три варианта не противоречат друг другу. какой из них
+реализовать — вопрос эффективности простоты кода".
+
+**Decided, in two parts.**
+
+**The ordering.** A thread does not exit while any trace holds rows over its
+blocks — its own open window or a collector worker's. It waits. Waiting is
+bounded for the reason a mutator's wait under memory pressure is bounded: a
+trace runs no user code, takes no user lock, and releases the token before
+destructors (`rfc/model/gc/rc-cycle.md`, "Check collection eligibility before
+waiting").
+
+**The fate of a live registered entity.** The exiting thread **collects before
+it goes**. Order at exit: wait for the trace, collect, retire the queue, hand
+the heap over — the collection first because the queue is its root set. What the
+collection could not take — a component whose destructor threw, or one a
+refusal ended — keeps its candidate bit and is a bounded leak, recorded as such
+rather than described in a comment.
+
+**Why this of the three.** Edmond's criterion is efficiency and simplicity of
+code, and the three do not contradict each other. Collecting before exit is one
+call into a driver that exists by then, needs no new structure, and costs one
+collection bounded by the thread's own live set — the collection that would have
+happened anyway had the thread lived longer.
+
+**What it replaces.** Exit inside an open window aborts the process today:
+`cycle::deferred_slot_reuse::dispose_thread_state` refuses, and `ll_thread_exit`
+is `extern "C"` with no caller to refuse to (`cycle::mod`). The wait replaces
+the abort.
+
+**What it closes in `rfc`.** The first clause of `dev/ALGORITHM-AUDIT.md` A4,
+"order abandonment and adoption against the old owner's trace token", which the
+Sage of 2026-08-29 proposed and which stood unruled in `rfc/dev/PLAN.md` S8.9.
+
+**The cost, named because it is not free.** The destructors run on a thread that
+is winding down, and an unwind across `ll_thread_exit`'s `extern "C"` boundary
+ends the process. **S39.1 therefore cannot precede S36.4**, which is where a
+throwing destructor gets its policy.
+
+**Refused for now: handing the estate to a collector worker**, which would make
+that worker the component's owning mutator and satisfy "only the owning mutator
+validates and reclaims" (`rfc/model/gc/rc-cycle.md`) by transfer. It costs an
+estate structure, ownership transfer of blocks, queue entries and candidate
+bits, a rule for when a worker picks one up, and user code — allocating,
+throwing, blocking — on the collector thread. It also leaves the
+single-threaded runtime leaking, there being no worker to take the estate. It
+is revisited at S38, against a measured residue of what collection-before-exit
+could not take.
+
+**Refused: the leak alone.** Free in code and paid in memory for the life of the
+process; a pool thread that runs one life per task loses a ring per task that
+made one.
+
+## 2026-09-04 — the chunked row form's revisit condition is met
+
+**Decided:** the alternative row form is under review again, and S40.2 is a live
+question rather than a recorded refusal.
+
+**Why:** the ruling of 2026-08-27 ("the shadow arena asks the pool first and the
+critical reserve second") closes with "The chunked form stays the recorded
+alternative and is revisited only if a measured traced density lands below
+29 %; **no such measurement exists**." One exists as of today
+(`dev/BENCHMARKS.md`, 2026-09-04): of ten synthetic loads over the design's own
+size classes, four land below the crossing — 0.1 %, 0.4 %, 12.5 % and 18.7 %.
+
+**What the review has to weigh, one measured figure a side.** For the flat
+array: 717 MiB against the chunked form's 762 on a full trace, and an
+unquantified further dependent load on every edge. Against it: a sparse trace's
+manager draws, which that comparison never took — 381 members one per block at
+class 256 makes the flat form ask the memory manager for six blocks where the
+chunked form asks for none, and every draw is a point at which the collection
+can be refused.
+
+**What is not evidence in it:** the rfc's 2.6 ns against 10.4 ns a lookup. That
+compares the flat array with an open-addressed hash, which is a third form.
+
+
 ## 2026-09-04 — a traced-slot density is not one number, and no synthetic load supplies it
 
 **The decision:** the row form's crossing is not read off a single measured
