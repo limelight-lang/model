@@ -93,6 +93,10 @@ pub(crate) mod mark;
     )
 )]
 pub(crate) mod deferred_slot_reuse;
+// The traced-slot and traced-group reading a measurement takes off the
+// touched list after a trace. Test builds only.
+#[cfg(test)]
+pub(crate) mod density;
 pub(crate) mod queue;
 // The record chain the collection's lists are built on.
 pub(crate) mod records;

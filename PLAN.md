@@ -1909,8 +1909,8 @@ stage claiming the frees while building none of them.
         measurement that passed it read the bump during the trace and did not
         count the region's own bytes, taken at the arena's open. What survives
         the revert: `cycle::records::RecordChain` and the arena's ownership of
-        the worklist. What may still be worth taking, once S40.1 has the median
-        trace depth, is a region *smaller* than a segment — at 64 entries it
+        the worklist. What may still be worth taking, once S40.3 has the
+        worklist high-water, is a region *smaller* than a segment — at 64 entries it
         costs the bump 1,088 bytes and leaves 64,192 for rows against the
         61,168 a segment leaves (`dev/DECISIONS.md`, "the worklist's fixed
         region is retracted").
@@ -1951,7 +1951,7 @@ stage claiming the frees while building none of them.
         user code runs between the detach and the restore" as an argument and
         as a check. And the step splits: slice (a) is the detach, the restore
         and the two-phase loop; slice (b) is the pressure path's harvest, which
-        waits because its region capacity waits for S40.1. The instrument owed
+        waits because its region capacity waits for S43.1. The instrument owed
         before the first edit is a walk over every lane, `candidate_count`
         answering one of two and the clause being about entities rather than
         counts.
@@ -2048,7 +2048,10 @@ stage claiming the frees while building none of them.
         unit is chosen.
       handoff: the region's capacity is unchosen, and 1,040 addresses is what
         the withheld returns' 8,320 bytes would leave if S43 frees them. The
-        number that informs it is S40.1's condemned-entities-per-collection.
+        number that informs it is S43.1's entities dying inside a window.
+        `cycle::density` counts no death and cannot be differenced into one:
+        `heap::block_occupancy` reads `used`, which drops at a slot's physical
+        return rather than at its teardown.
       handoff: an enrolled death does not clear the bit or retire its record.
         Teardown finishes and physical return waits; only the consumer that
         still owns the record may observe count zero, clear `CANDIDATE_BIT`, return
@@ -2171,7 +2174,8 @@ What it costs instead, and the number is not taken: the sweep walks each
 touched block's slots rather than one pointer per block. At the smallest size
 class that is about four thousand words to a block, against eight bytes per
 death today. Which is cheaper turns on how many blocks a trace touches against
-how many entities die inside its window, and that is S40.1's measurement.
+how many entities die inside its window, and that is S43.1's measurement,
+taken on S40.1's blocks-touched instrument and a death counter of its own.
 
 **A mark is taken only where the sweep will find it.** Today every return is
 withheld while a window is open, the block's own state unread; a mark in a
@@ -2265,8 +2269,8 @@ stage is what makes a trace affordable rather than what tunes it.
         a stale-epoch stamp reads as age 0 and is never cleared in place, so the
         trace writes no stamp; the per-thread-heap collection counter advances
         the epoch every 64 completed collections and `k = 3`, both named
-        provisional after YRC's only known values, with the measurement owed at
-        S40.1; `#[cfg(test)]` counters report edges pruned and roots skipped
+        provisional after YRC's only known values, with `k`'s measurement owed
+        at S40.1 and the turnover's at S37.5; `#[cfg(test)]` counters report edges pruned and roots skipped
         mature per collection
       tier: T2 · role: —
       handoff: the root-side reading — "traced only after it has stayed a
@@ -2317,6 +2321,18 @@ stage is what makes a trace affordable rather than what tunes it.
         prerequisite. Tests count one token across active + in-flight + dormant
         after repeated decrements, acquittals, partial segments, abort and
         turnover; a dormant corpse keeps identity until its consumer retires it.
+- [ ] S37.5 The turnover constant, against a corpus   *(after S37.4)*
+      done: the suspects re-offer volume is measured at the epoch turnover on a
+        corpus, and S37.1's 64-collection turnover is replaced by a number or
+        recorded as confirmed with its measurement; a synthetic reading is
+        refused and the entry says so
+      tier: T2 · role: Bench
+      handoff: split out of S40.1 by the Sage of 2026-09-04. The re-offer
+        volume is the count of roots acquitted inside one epoch that are still
+        enrolled at the turnover, and on a synthetic population the harness
+        chooses the acquittal rate, so the number is its own input read back.
+        The step needs S37.4's buffer and a corpus, and the corpus is
+        Phase-D-blocked in the same way S40.1's corpus arm is.
 - [ ] S37.2 The acyclic gate
       done: the factory stamps bit 8 from the class's own answer — waits on
         `rfc` `model/classes.md` declaring a target per pointer slot
@@ -2474,10 +2490,80 @@ Goal: the one number the design still lacks.
         named — occupied slots or all slots, which differ by two at the design's
         assumed half occupancy — and with the instrument checked against a
         synthetic block whose traced share is fixed by construction; the same
-        instrumented run records the pruned-edge share and the suspects re-offer
-        volume at `k` of 1, 2 and 3, which is what settles S37.1's two
-        provisional constants
-      tier: T2 · role: Bench
+        instrumented run records the pruned-edge share at `k` of 1, 2 and 3,
+        which is what settles S37.1's first provisional constant
+      tier: T2 · role: Bench → Sage → Critic
+      Sage 2026-09-04 (pre-change gate): the step splits by the kind of number
+        rather than by the mechanism. **The pruned-edge share is taken today by
+        simulation**, and the simulation is honest: an entity's age is the
+        scan's own verdict across `n >= k + 2` collections, kept in the
+        harness's own side table, and the internal in-edges the trace found are
+        `refcount - shadow::count`, readable after the trace because mark and
+        scan write into no entity. **The suspects re-offer volume is refused**
+        on a synthetic load at any depth of instrumentation: on a fixed
+        population with a harness-chosen acquittal rate that number is the
+        harness's own input read back. It goes to S37.5 with the corpus as a
+        stated prerequisite, and S37.1's 64-collection turnover stays
+        provisional there while `k` is settled here. What the simulation may
+        not claim, stated beside its numbers: it bounds edges from above and
+        the saving from below, the subtree an edge alone reached depending on
+        the descent order a prune would have changed; it says nothing about
+        recall; a saturated row contributes no in-edge count and is reported
+        apart rather than folded in at zero; and the ages are the harness's
+        ledger, bytes 16-19 being reserved and unwritten. The instrument is a
+        `#[cfg(test)]` walk over the touched list that the collector never
+        calls, plus one `note_phase_boundary` in `trace_batch` whose release
+        body is empty: zero operations per edge and per entity in a release
+        build, one thread-local read and one store per trace in a test build.
+        The walk bounds at `row_count` and never at the group rounding, reads a
+        row only where its group bit stands, and meets no row. Both
+        denominators are reported per population and never averaged across
+        them: all slots is `RowArray::row_count`, occupied is
+        `BlockPrivate::used` for `Slotted` and the `holds` word's low half for
+        `Retained`, and a large entity is 1 by construction and marked
+        arithmetic. Groups met are recorded beside rows met, the chunked form's
+        directory being one entry per group of eight. Calibration is four
+        anchors and a negative one; the load is S40.3's own population, sizes
+        2, 16, 256 and 381, dense and one-entity-per-block, ordinary and
+        retained; eight collections per load are recorded per collection rather
+        than totalled, the first being the one that draws the workspace.
+        Refused with reasons: counters inside `mark` and `scan` (they buy
+        nothing the final row state lacks and would make `written_bytes` and
+        `take_edge_dispatches` unreadable against their baselines), a
+        `cfg(test)` per-edge callback (an indirect call per edge in the build
+        Miri walks), a feature (a second leg on the commit gate for a
+        measurement that runs once), an unconditional instrument (it would
+        falsify the claim that an abandoned trace writes nothing), a
+        `cfg(test)` field on `TraceScratchArena`, the workspace or `RowArray`
+        (four `const` assertions and four `dev/BENCHMARKS.md` entries pin those
+        layouts), the collector line as an entity block's occupancy source (it
+        carries none; the low half of `holds` is the retained block's),
+        `for_each_entity_slot` as a denominator (a process-wide walk the
+        control arm would not pay, kept for one second opinion in the
+        calibration), repeats of a deterministic count, and any timed run.
+        Taken whole.
+      progress 2026-09-04 — the traced-slot instrument, and the range over the
+        design's own size classes. `cycle::density` walks the touched list after
+        a trace and before the arena's reset, reporting per block the index
+        space, the occupancy, the rows met, the saturated rows among them and
+        the groups met — kept apart by population and never averaged, an entity
+        block's occupancy coming from `BlockPrivate::used` and a retained
+        block's from the low half of its `holds` word. The traced path gains
+        nothing in a release build; a test build gains one thread-local read
+        and one store per trace, at `trace_batch`'s phase boundary, which is
+        the only place the mark's own resolution count can be read.
+        **The measured range is 0.1 % to 74.7 % over classes 32/64/128/256**,
+        and the design's 29 % crossing lies inside it: one component of 381
+        members — the corpus's median closure — allocated back to back reads
+        18.7 % at class 32 and 37.4 % at class 64, with nothing about the
+        collector changed between the two. The two inputs that decide the
+        figure are the size class and the allocation interleaving, and the
+        collector supplies neither, so **the synthetic arm cannot settle
+        S40.2** (`dev/BENCHMARKS.md`, 2026-09-04). Ten calibration cases, seven
+        source mutations each caught by the case that owns it, and the walk
+        itself makes 0 allocations, 0 pool requests and moves no `gc_metadata`
+        figure. This does not close S40.1: the pruned-edge share at `k` of 1, 2
+        and 3 remains, and the corpus arm stays Phase-D-blocked.
       handoff: the corpus arm needs a driver over `ll-model`'s own heap. The
         recorded corpus instruments read PHP's heap, which has no blocks and no
         slots, so this arm is Phase-D-blocked in the same way S37.2 is blocked
@@ -2516,11 +2602,30 @@ Goal: the one number the design still lacks.
         and not the sparse-row cost. S40.2 changes representation only from
         these data.
 - [ ] S40.2 Decide chunks or not
-      done: below 29 % density the chunked form replaces the flat array and the
-        measurement is quoted in the decision, with its denominator; above it
-        the flat array stands and the alternative is recorded as refused with
-        its number
-      tier: T2 · role: —
+      done: the decision and its reason are in `dev/DECISIONS.md`, quoting a
+        number on each side with its denominator — the full-trace write volume
+        the rfc measured, and the manager draws a sparse trace costs each
+        form — and the refused form is recorded with the range over which it
+        would have won
+      tier: T2 · role: Sage
+      handoff: **narrower than it was, and still open.**
+        `rfc/model/gc/rc-cycle.md` decides the flat array, and exactly one of
+        its figures bears on chunks: 717 MiB against the chunked form's 762 on
+        a full trace, plus an unquantified further dependent load per edge. Its
+        2.6 ns against 10.4 ns compares the flat array with an open-addressed
+        hash, which is a third form this step does not decide between. Against
+        the flat array stands the figure 2026-09-04 measured and that
+        comparison never took: a sparse trace's manager draws. A 381-member
+        component one per block at class 256 makes the flat form ask for six
+        blocks where the chunked form asks for none, and each draw is a point
+        at which the collection can be refused. One measured figure a side, and
+        the per-edge load neither.
+      handoff: the density is not the input it was taken for. Over the design's
+        own classes one component of 381 members reads 18.7 % at class 32 and
+        37.4 % at class 64 (`dev/BENCHMARKS.md`, 2026-09-04), so the 29 %
+        crossing sits between two adjacent classes of the same component. The
+        class and the allocation interleaving decide it, the collector supplies
+        neither, and a single number for "the density" does not exist.
 
 ---
 

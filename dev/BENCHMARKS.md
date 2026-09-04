@@ -100,6 +100,192 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-04 — S40.1 the traced-slot density on a synthetic load: 0.1 % to 74.7 % across the design's own size classes
+
+**Machine:** dev box, shared with interactive work. **Base:** `77639b7`,
+`rustc 1.96.0`. **Not a corpus reading:** a corpus arm needs a driver over this
+crate's heap and is blocked with Phase D.
+
+**What was measured:** the share of a touched block's slots one trace meets,
+read off the touched list after the trace and before the arena's reset
+(`cycle::density`). Both denominators are reported — the block's index space,
+which is what the flat row array reserves rows for, and its occupancy, which is
+what the heap holds. The three populations are kept apart and never averaged.
+
+**The load:** the component sizes S40.3 fixes — 2, 16, 256 and 381 — over the
+four size classes the design's crossing is computed for, 32/64/128/256. Each
+component is one ring through property 0, every member registered by a
+non-final release. Eight collections per load, and every figure the control compares held across
+all eight.
+
+### The dense arm: the component's members allocated back to back
+
+| class | slots a block | members | blocks | slots | met | met/slots | met/occupied |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 32 | 2,040 | 2 | 1 | 2,040 | 2 | 0.1 % | 100 % |
+| 32 | 2,040 | 16 | 1 | 2,040 | 16 | 0.8 % | 100 % |
+| 32 | 2,040 | 256 | 1 | 2,040 | 256 | 12.5 % | 100 % |
+| 32 | 2,040 | 381 | 1 | 2,040 | 381 | **18.7 %** | 100 % |
+| 64 | 1,020 | 256 | 1 | 1,020 | 256 | 25.1 % | 100 % |
+| 64 | 1,020 | 381 | 1 | 1,020 | 381 | **37.4 %** | 100 % |
+| 128 | 510 | 256 | 1 | 510 | 256 | 50.2 % | 100 % |
+| 128 | 510 | 381 | 1 | 510 | 381 | **74.7 %** | 100 % |
+| 256 | 255 | 256 | 2 | 510 | 256 | 50.2 % | 100 % |
+| 256 | 255 | 381 | 2 | 510 | 381 | **74.7 %** | 100 % |
+
+The 2- and 16-member rows of classes 64, 128 and 256 are omitted here and are in
+the run's output; they read 0.2 %/1.6 %, 0.4 %/3.1 % and 0.8 %/6.3 %.
+
+### The sparse arm: one member per block, class 256
+
+| members | blocks | slots | occupied | met | met/slots | met/occupied | blocks the arena drew |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 2 | 510 | 510 | 2 | 0.4 % | 0.4 % | 0 |
+| 16 | 16 | 4,080 | 4,080 | 16 | 0.4 % | 0.4 % | 0 |
+| 256 | 256 | 65,280 | 65,280 | 256 | 0.4 % | 0.4 % | **4** |
+| 381 | 381 | 97,155 | 97,155 | 381 | 0.4 % | 0.4 % | **6** |
+
+Taken on class 256 because one member per block costs `slots − 1` fillers, and
+the narrower classes would cost thousands of entities each. **Every dense load
+of every class drew nothing**: its arrays fit the 56,960-byte bump of the
+workspace the thread already holds.
+
+### What the flat form costs on a sparse trace, and it had not been priced
+
+The last column is the figure the row-form decision was missing. The flat array
+reserves `bytes_for(index space)` for a block whatever share of it the trace
+meets — 1,052 bytes for a 255-slot block — so 381 touched blocks reserve
+400,812 bytes against a resident workspace bump of 56,960, and the arena asks
+the memory manager for six blocks. A chunked form reserving a directory and the
+groups actually met would ask for none: 381 blocks × (24-byte prologue + a
+two-byte directory entry for each of 32 groups + one 32-byte group of eight
+rows) is 381 × 120 = 45,720 bytes, inside the same bump. The directory width is
+the rfc's ("rows in groups of eight behind a two-byte directory entry per
+group"); a form carrying the flat array's own 4-byte bitmap instead would be
+381 × 60 = 22,860, and both fit.
+
+Six blocks is 384 KiB, which is not the cost that matters. **Each draw is a
+refusal point**: `TraceScratchArena::alloc` can be told no, and a refused block
+ends the collection (`cycle::mod`). On this trace the flat form therefore carries six chances to abandon a
+collection where the chunked form carries none — and the chunked form carries
+none only because 45,720 bytes fit one bump, so a sparse trace over about 470
+blocks would put it over too. What is general is the direction: the flat form
+reaches the manager at a block count the chunked form reaches only much later.
+The rfc's comparison never priced this at all, comparing full-heap traces where
+both forms draw.
+
+This does not decide S40.2 on its own. Against it stands the rfc's 717 MiB for
+the flat array against the chunked form's 762 on a full trace, plus "a further
+dependent load on every edge" that the rfc leaves unquantified. **The rfc's
+2.6 ns against 10.4 ns a lookup is not evidence here**: it compares the flat
+array with an open-addressed hash, which is a third form and not the one S40.2
+decides between. So the chunked side now has one measured figure and the flat
+side one, and the per-edge load neither.
+
+### The retained arm: survivors of an arena reset, reached through one heap holder
+
+| members | retained blocks | index space | occupied | met | groups | groups met |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2 | 1 | 2 | 2 | 2 | 1 | 1 |
+| 16 | 1 | 16 | 16 | 16 | 2 | 2 |
+| 256 | 2 | 256 | 256 | 256 | 33 | 33 |
+| 381 | 2 | 381 | 381 | 381 | 48 | 48 |
+
+A retained block's index space is the survivor list the reset wrote once, and
+its occupancy is a count word every occupant's death lowers, so the two agree
+here only because no survivor of these blocks has died. **The share met of it is not fixed**: this
+fixture makes every survivor a component member, and a retained block holding
+one traced survivor among fourteen untraced ones reads what a fifteen-slot
+entity block would. The gated case
+`a_retained_block_reports_its_survivor_list_and_the_share_met_of_it` builds that
+shape and reads two of four. The holder's own entity block is touched beside
+them: one row met of 1,020, one group of 128.
+
+### What decides the density, and why this arm cannot settle S40.2
+
+The design's crossing is 29 %, `1 − 1/√2` (`rfc/model/gc/rc-cycle.md`). One
+component of 381 members — the corpus's median closure — allocated back to back
+with nothing between reads **18.7 % at class 32 and 37.4 % at class 64**. The
+crossing lies between two adjacent size classes of the same component, and
+nothing about the collector moved: the class fixes the denominator, because a
+block holds `65,280 / class` slots.
+
+Two inputs decide the figure and the collector supplies neither:
+
+- **the size class**, which is the shape of the application's objects;
+- **the allocation interleaving**, which is how much other work runs between two
+  members of one component. The sparse arm's 0.4 % is `1/255` by construction —
+  the fixture put one member in each block — and is the arm's floor rather than
+  a reading of anything the collector chose.
+
+So the run's range is 0.1 % to 74.7 % over the design's own classes — the floor
+being a two-member component of class 32, not the sparse arm — the crossing is
+inside it, and **which side a real workload falls on is a fact about that
+workload**. The structural least is lower still: one member in a 2,040-slot
+block is 0.05 %. The corpus arm is what answers it.
+
+### Edges, and the control
+
+| figure | value | how |
+| --- | --- | --- |
+| mark-phase row resolutions, 381 members | 762 | `cycle::row::take_dispatches_in_mark_phase`, recorded at `trace_batch`'s phase boundary. **Row resolutions and not edges**: `mark` resolves every root as well as every counted child, so a 381-member ring traced from 381 roots answers 762 for 381 edges |
+| whole-trace row resolutions, 381 members | 1,524 | `take_edge_dispatches`; the scan resolves the same rows the mark did |
+| saturated rows, every load | 0 | no fixture reaches a refcount of `2^30 − 1`; the gated case `a_saturated_row_is_met_and_counted_apart` meets one through `ensure_row` instead |
+| collections per load that agreed | 8 of 8 | every load, the retained arm included, compares each collection's density and both resolution counts against the first's |
+
+**The control, translated out of the clock.** A count has no noise, so the
+repeat of an identical binary is replaced by the repeat of an identical
+population: each load is traced eight times in one process and the density and both
+resolution counts must match the first. The row array's *address* is
+deliberately outside that comparison, and so is the arena's block count on the
+retained arm — a load that bumps past the workspace draws its arrays from blocks
+the arena took this collection, so the address moves while every figure holds.
+
+**The construction's own draws are outside the reading.** Building the
+population allocates entities, refills the heap and commissions every block the
+trace later touches. The bracket covers the walk alone, and the collection's own
+draws are S36.11's figures; a bracket opened around the construction as well would have
+charged the heap's own refill to the walk.
+
+### What the instrument cost
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| heap allocations and pool requests, the walk | — | 0 and 0 | `allocation_probe` around `density::totals` alone |
+| `gc_metadata::thread_stats()` across the walk | — | unchanged | the peak lowered to current first, then the whole four-figure reading compared |
+| row resolutions, a scan of a two-member ring | 4 | 4 | `cycle::scan`'s own test, unchanged and passing |
+| bytes a block's first touch writes | 121 | 121 | `cycle::arena`'s own test, unchanged and passing |
+| `.tbss`, release bench binary | 528 | 528 | `readelf -SW` on `lifecycle`, each arm built in its own target directory. The instrument is `cfg(test)` and no release artifact carries it |
+| `.tbss`, test binary | 528 | 536 | the same method. The eight bytes are `DISPATCHES_AT_PHASE_BOUNDARY`, one `Cell<usize>`, which the census at `memory::critical`'s tests now declares |
+| `cargo build --release` warnings | 0 | 0 | the module is `cfg(test)`, so this arm compiles none of it; the test build's warning count is 0 as well |
+| Miri over `cycle::`, two threads | 134 passed, 9 ignored, 463 s | 144 passed, 12 ignored, 512 s | the ten calibration cases and the three ignored loads account for the whole difference. The Critic's second round moved `cycle::density`, and that slice ran again on the repaired tree: 10 passed, 0 failed, 3 ignored, 70 s |
+| `cargo test --lib` | 667 passed, 3 ignored | 677 passed, 6 ignored | ten calibration cases added to the suite, three loads ignored in it |
+
+**No timed run.** `ll_gc_collect_cycles` returns zero until S36.7, so no path a
+benchmark could drive reaches a trace; a wall-clock figure here would time the
+allocator and read as the collector's.
+
+### The instrument was calibrated before it was believed
+
+Ten gated cases, each fixing an answer by construction: one traced slot; eight
+traced slots consecutive (one group) and one per group (eight); a wholly traced
+block, the only reading where the two denominators coincide; a class of 255
+slots, whose array reserves 256 rows, which is the only case that sees a walk
+bounded at the rounding; a second collection whose row array stands on the
+first's bytes, with that address equality asserted rather than assumed; a
+populated block no root reaches; a saturated row; a retained block met in part;
+a large entity, whose row is a block header word and whose array carries no
+rows; and the walk's own cost.
+
+Seven source mutations were run and each was caught by the case that owns it:
+the index space reported as the array's rounding, the group bit ignored, every
+group reported as met, the untouched colour counted as a meeting, the saturated
+count hard-coded to zero, a large entity's index space taken from its (empty)
+array, and a retained block's occupancy answered as zero. The group bit's
+mutation survived the first six cases — a fresh thread's arena reads zero, so
+the guard's absence is invisible there — and the second-collection case was
+added for it.
+
 ## 2026-09-03 — S36.11 the withheld returns' region: a thread's second collection draws nothing
 
 **Machine:** dev box, shared with interactive work. **Base:** `8c76475`,

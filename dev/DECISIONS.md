@@ -8,6 +8,41 @@ never edited or deleted.
 
 ---
 
+## 2026-09-04 — a traced-slot density is not one number, and no synthetic load supplies it
+
+**The decision:** the row form's crossing is not read off a single measured
+density, because no single density exists. Two inputs fix it and the collector
+supplies neither — the size class, which sets a block's slot count at
+`65,280 / class`, and how much other allocation runs between two members of one
+component. Measured 2026-09-04 (`dev/BENCHMARKS.md`): one component of 381
+members, the corpus's median closure, allocated back to back reads 18.7 % of its
+blocks' slots at class 32 and 37.4 % at class 64, so the design's 29 % crossing
+sits between two adjacent classes of the same graph.
+
+**What follows for S40.2.** It stays open and its evidence is one measured
+figure a side: the rfc's 717 MiB for the flat array against the chunked form's
+762 on a full trace, and the manager draws a sparse trace costs each — a
+381-member component one per block at class 256 makes the flat form ask the
+memory manager for six blocks where the chunked form asks for none, and every
+draw is a point at which the collection can be refused. The rfc's 2.6 ns against
+10.4 ns a lookup is **not** evidence in that decision: it compares the flat
+array with an open-addressed hash, a third form.
+
+**What was refused:** closing S40.2 by adopting the rfc's decision unchanged.
+The rfc compares full-heap traces, where every form draws from the manager, and
+so never priced the refusal surface a sparse trace gives the flat form.
+
+**The reading of the instrument.** `cycle::density` is a `#[cfg(test)]` walk
+over the touched list, taken after a trace and before the arena's reset; the
+traced path gains nothing in a release build. Both denominators are reported per
+population and **never averaged across populations** — a retained block's index
+space is a survivor list with no free position, and a large entity's is one row
+by construction, so an average would move the figure without measuring anything.
+
+**Why it is not wasted work.** The walk answers blocks touched per collection,
+which S36.12 slice (b) and S43.1 need and the row form does not.
+
+
 ## 2026-09-03 — the test-facing reading of the GC ledger is per thread
 
 Owner: the gate flake of the same day (`dev/POSTMORTEM.md`, "an exact

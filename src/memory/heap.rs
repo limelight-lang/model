@@ -2339,6 +2339,26 @@ pub(crate) unsafe fn collector_block_slots(block: *mut u8) -> u32 {
     (BLOCK_PAYLOAD / SIZE_CLASSES[class]) as u32
 }
 
+/// How many of an entity block's slots are occupied, which is the second
+/// denominator of a traced-slot density (`PLAN.md` S40.1).
+///
+/// `used` and no census of the slots themselves. The two differ, and the
+/// difference is the point: `used` drops at a slot's physical return, so a
+/// slot whose entity is torn down while a trace withholds its return is
+/// occupied here and dead to a refcount walk (`rfc/model/gc/rc-cycle.md`,
+/// "Zero-count entities pending slot reuse"). A density taken against
+/// `used` therefore counts the slots the allocator cannot hand out, which
+/// is what the row array reserves rows for.
+///
+/// # Safety
+/// `block` is the header of a commissioned `BLOCK_KIND_ENTITY` block, read
+/// on the thread that owns it — `private` is the owner's half of the
+/// header, and an allocation borrows it as `&mut`.
+#[cfg(test)]
+pub(crate) unsafe fn block_occupancy(block: *mut u8) -> u32 {
+    unsafe { (*(block as *mut HeapBlockHeader)).private.used }
+}
+
 /// The reciprocal a block of this `stride` carries in its collector
 /// line: `2^32 / stride + 1`.
 ///

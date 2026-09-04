@@ -221,5 +221,41 @@ pub(crate) fn take_edge_dispatches() -> usize {
     EDGE_DISPATCHES.with(|count| count.replace(0))
 }
 
+// What `EDGE_DISPATCHES` stood at when the mark of the current trace
+// ended (tests only). Both phases dispatch over the same edges, so the
+// total alone cannot say how many one phase made.
+#[cfg(test)]
+thread_local! {
+    static DISPATCHES_AT_PHASE_BOUNDARY: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Record where the dispatch count stood between a trace's two phases,
+/// and do nothing at all without `cfg(test)`.
+///
+/// Called by `crate::cycle::trace::trace_batch` and by nothing else: the
+/// boundary is a property of a whole trace, and a caller running the
+/// phases itself has no boundary to record.
+#[inline]
+pub(crate) fn note_phase_boundary() {
+    #[cfg(test)]
+    DISPATCHES_AT_PHASE_BOUNDARY.with(|at| at.set(EDGE_DISPATCHES.with(std::cell::Cell::get)));
+}
+
+/// Dispatches the last completed mark phase made, counting from the
+/// [`take_edge_dispatches`] before it, which this leaves at zero.
+///
+/// **Row resolutions and not edges.** `mark` resolves every root through
+/// [`resolve_edge_target`] as well as every counted child, so a ring of
+/// `n` members traced from `n` roots answers `2n` and not `n`. An edge
+/// count is this less the roots the batch offered.
+///
+/// Zero when no mark has completed since the last reading, which is why
+/// this clears: a trace the mark refused writes no boundary, and reading
+/// a cell nobody cleared would answer the previous trace's.
+#[cfg(test)]
+pub(crate) fn take_dispatches_in_mark_phase() -> usize {
+    DISPATCHES_AT_PHASE_BOUNDARY.with(|at| at.replace(0))
+}
+
 #[cfg(test)]
 mod tests;

@@ -69,6 +69,12 @@ pub(crate) unsafe fn trace_batch(
         return TraceOutcome::AllocationFailed;
     }
 
+    // Between the phases and only here: both dispatch over the same
+    // edges, so a measurement that wants the mark's own count has no
+    // other place to read it (`crate::cycle::row::note_phase_boundary`).
+    // The body is empty without `cfg(test)`.
+    crate::cycle::row::note_phase_boundary();
+
     let scanned = batch.walk_roots(|root| unsafe { scan(arena, root) } == ScanResult::Complete);
     if !scanned {
         return TraceOutcome::AllocationFailed;

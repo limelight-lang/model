@@ -311,6 +311,25 @@ pub(crate) unsafe fn has_live_occupants(block: usize) -> bool {
     word & OCCUPANTS != 0
 }
 
+/// How many live occupants `block` counts, which is the second
+/// denominator of a traced-slot density (`PLAN.md` S40.1).
+///
+/// The low half of the same word [`has_live_occupants`] tests, and a
+/// different number from [`occupant_count`]: the survivor list is the
+/// index space the reset wrote once and the count word is what is alive
+/// in it now, so the two separate at the first death inside a retained
+/// block.
+///
+/// # Safety
+/// As [`count_word`].
+#[cfg(test)]
+pub(crate) unsafe fn live_occupant_count(block: usize) -> u32 {
+    // Relaxed, as `has_live_occupants` loads it: the value is the whole
+    // answer and nothing is read behind it.
+    let word = unsafe { (*count_word(block)).load(Ordering::Relaxed) };
+    (word & OCCUPANTS) as u32
+}
+
 /// Whether nothing holds `block`: no live occupant, no pinned payload, no
 /// list of another block, no count of the reset's own. What the reset's
 /// return of an emptied block asserts before releasing it.

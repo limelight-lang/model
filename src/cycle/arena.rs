@@ -634,6 +634,19 @@ impl TraceScratchArena {
         true
     }
 
+    /// The newest array of the touched list, or null while no block has
+    /// been touched. Every array names the next, so this is the whole
+    /// list.
+    ///
+    /// Handed out so that `crate::cycle::density` can read the rows a
+    /// trace left without a second copy of the list's shape. It is a
+    /// borrow of the arena's own memory and stays valid until
+    /// [`clear_touched_rows`](Self::clear_touched_rows) runs.
+    #[cfg(test)]
+    pub(crate) fn touched_head(&self) -> *mut RowArray {
+        self.touched
+    }
+
     /// Blocks enrolled for the sweep. Tests only, and the instrument for
     /// a defect nothing else reports: a block enrolled twice is swept
     /// twice, which is the same store again, so only the length of the

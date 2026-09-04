@@ -415,5 +415,33 @@ const fn group_bytes(row_count: u32) -> usize {
     (padded(row_count) / GROUP as usize).div_ceil(u8::BITS as usize)
 }
 
+/// Groups the array reserves for `row_count` rows, which is the
+/// denominator of a group density.
+///
+/// It counts the group the rounding adds: at 255 rows the last group
+/// carries seven slots and one reserved row, and the trace meets that
+/// group through the seven.
+#[cfg(test)]
+pub(crate) const fn group_count(row_count: u32) -> u32 {
+    (padded(row_count) / GROUP as usize) as u32
+}
+
+/// Groups of `array` the trace zeroed, counted off the bitmap.
+///
+/// A popcount over [`group_bytes`] is exact rather than approximate: the
+/// bitmap is zeroed whole at [`init`], so the bits past the last group of
+/// a partial byte stay clear for the collection's life.
+///
+/// # Safety
+/// `array` is an initialised array.
+#[cfg(test)]
+pub(crate) unsafe fn groups_met(array: *mut RowArray) -> u32 {
+    let row_count = unsafe { (*array).row_count };
+    let bitmap = unsafe { groups(array) };
+    (0..group_bytes(row_count))
+        .map(|byte| unsafe { *bitmap.add(byte) }.count_ones())
+        .sum()
+}
+
 #[cfg(test)]
 mod tests;
