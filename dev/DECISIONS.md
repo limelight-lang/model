@@ -638,6 +638,26 @@ null for its whole life.
 
 ---
 
+## 2026-09-02 — the crate's vocabulary follows `rfc/dev/GLOSSARY.md`, and an uncovered term is a gap rather than a local ruling
+
+**Decided:** the glossary of the `rfc` repository is the authority for every
+name the crate uses, and the two terminology audits in `dev/` are drafts
+against it that lose where it moves. A term the glossary does not cover is
+recorded as a gap for `rfc`'s own vocabulary stage, and the crate waits rather
+than naming it.
+
+**Why:** a crate that names what the specification has not puts two
+vocabularies in one project and makes the specification follow the code. Four
+gaps were opened on 2026-09-01 and answered by `rfc` on 2026-09-02, which is
+what let the second half of the rename land at all.
+
+**Cost:** a rename can stand blocked on another repository. The block is
+visible, the guard's exemption carrying the reason, and an exemption whose
+reason is "the glossary is silent" goes stale the day the glossary speaks
+(`dev/POSTMORTEM.md`, 2026-09-02).
+
+---
+
 ## 2026-09-02 — the reset places every survivor list before it reads any count, publishes in two instants, and returns an empty block through an arm of its own
 
 Owner: S36.9 slice (e), executing the Sage's rulings of 2026-09-02 as ruled;
@@ -729,6 +749,75 @@ charge is the only one of the three that keeps that bound.
 **What pins it:** `memory::gc_metadata::tests::`
 `a_block_crossing_publishes_the_bump_it_abandons`, which is the one case that
 fails when the workspace's payload reaches neither figure.
+
+---
+
+## 2026-09-01 — a crate-wide rename is guarded against a named debt list, and a second guard refuses a stale entry
+
+**Decided:** the guard that holds a retired identifier out of the crate reads a
+list of the files that still offend, `STILL_TO_MIGRATE`, rather than the whole
+crate at once. A retired name outside the list fails; a file leaves the list in
+the commit that renames it; and a second test fails on a file that has stopped
+offending.
+
+**Why:** a guard carrying the whole mapping is red from the moment it is
+written until the last rename lands, and the per-commit gate of
+`dev/WORKFLOW.md` forbids that. The second guard is what keeps the first
+honest: without it an entry left behind exempts a clean file for ever, which is
+the failure mode of every allowlist.
+
+**Cost:** the list is prose inside a test, so it is only as true as its last
+edit. Both guards were seen firing before the list was trusted.
+
+---
+
+## 2026-09-01 — the vocabulary is held by three guards, one per surface
+
+**Decided:** identifiers, names and prose are three surfaces and each has its
+own reading. Identifiers are whole tokens with comments cut. File names and
+declarations are case-insensitive substrings, which is the only reading that
+sees a retired word inside `condemned_from`. Comment text is read with quoted
+spans spared and the quote state carried across line boundaries.
+
+**Why:** no one reading covers the three. A word retired on one surface
+survives on the other two, so an empty debt list on the identifier guard
+measures identifiers and nothing else.
+
+**What stays uncovered, named rather than implied:** prose in files the
+identifier guard does not reach, and a retired word inside a string that is not
+a citation. Neither has a guard today.
+
+---
+
+## 2026-09-01 — a store function is an entry point, not a store-barrier form
+
+**Decided:** classifying the crate's sites against the glossary's closed list —
+allocation path, entry point, mailbox, channel, store-barrier form —
+`element::set` is an **entry point**. A store function is the caller's way in;
+*store-barrier form* names the shapes a barrier takes, not the functions that
+reach one.
+
+**Why:** the site had been called "the public door", and the metaphor made the
+two indistinguishable. The glossary defines neither precisely, which is `rfc`'s
+own vocabulary stage to close.
+
+**Where the classification went:** `dev/design/door-sites.md` carried all 143
+rows and was deleted on 2026-09-04 with the word it censused. This entry is
+what survives it.
+
+---
+
+## 2026-09-01 — a phase number is qualified by its protocol, and `__destruct` is not a *pre*-anything
+
+**Decided:** three protocols number their phases from one — the object
+teardown's, the arena reset's and cycle finalization's — so every comment
+carrying a phase number says whose numbering it means. `run_pre_destructor`
+became `run_user_destructor`.
+
+**Why:** a bare "phase 2" names three different instants, and a reader who
+picks the wrong one reads a correct comment wrongly. The user destructor is a
+phase of the teardown rather than a step before it, and the false name had
+reached twelve prose sites before it was caught.
 
 ---
 

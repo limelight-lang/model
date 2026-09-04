@@ -100,6 +100,50 @@ round asked for. A single round would have closed the step with all three
 standing.
 
 
+## 2026-09-02 — a review finding is a class, and repairing its examples leaves the class standing
+
+**What happened.** Three Critic rounds inside one stage found their
+predecessor's repairs incomplete in the same way. Round 1 reported the retired
+sense of *overflow* at named lines; the repair changed those lines, and round 2
+found fourteen more in the same already-migrated files, with two more of
+*enrolment* beside them. The shape repeated on the retired sense of *refused*,
+which a second round found standing in five files nobody had opened, and again
+on a heading restoration where the pass fixed what it could see and a Critic
+found nine more.
+
+**Why it was possible.** A finding is written as a citation, because a citation
+is how it is proved. It is read as a work item, because a work item is the
+cheapest thing to close. Nothing in the loop turns the one into the other, and
+the guard that would have turned it is, in each of these cases, the guard whose
+absence the finding reports.
+
+**The rule.** A finding naming a word or a construct is closed by a search for
+that word or construct over the whole surface the finding names, and the repair
+records what the search found and what it fixed. A repair whose only evidence
+is the reviewer's line numbers is not closed.
+
+---
+
+## 2026-09-02 — four guard exemptions kept a reason the specification had already retired
+
+**What happened.** Two metaphor guards exempt four names in
+`memory::reset_window`, each row carrying its reason: the glossary had no word
+for them. `rfc` gave all four a word on 2026-09-02, and the four reasons went
+on saying the opposite until a Critic round read them. No test failed.
+
+**Why it was possible.** An exemption's reason is prose inside a passing test,
+so nothing fails when it goes false, and the event that falsifies it happens in
+another repository.
+
+**The rule.** An exemption whose reason is "the authority is silent" names the
+authority and the commit it was read at, so a re-read has something to compare
+against. Where the authority is `rfc`, the exemptions are re-read whenever the
+glossary moves, and the same sweep covers `PLAN.md`'s own clauses
+(`dev/DECISIONS.md`, "an uncovered term is a gap rather than a local
+ruling").
+
+---
+
 ## 2026-09-02 — the rule that a source-reading test carries `cfg_attr(miri, ignore)` had no guard, so a second file kept the trap
 
 **What happened.** S36.9's owed Miri run took `weak::` (19 passed), `cycle::`
@@ -169,6 +213,47 @@ exactly one sequence, and on that sequence it was a second panic behind a first.
 exit sequence reaches, ask what raises it and what frame it lands in. If the
 frame is `extern "C"`, the assertion buys an abort rather than a report, and
 the invariant has to be kept by a destructor instead.
+
+---
+
+## 2026-09-01 — the guard that sized a rename counted a homonym's owner as an offender
+
+**What happened.** The retired-identifier guard was written, seen red, and its
+reading — 992 sites over 50 files — was recorded as the size of the work. Three
+of the next thirteen files then left the debt list with no rename at all:
+`replenish` is the reserve's word and the critical cache's as well as the
+queue's, and the guard scored every caller of the two innocent ones. The
+recorded figure overstated the debt and had already been quoted.
+
+**Why it was not caught.** The guard was validated by being seen red, which
+proves that it fires, not that everything it fires on is an offence. A guard
+with a scope needs a negative control — a site it must *not* report — and only
+the positive one was run.
+
+**The rule.** A guard carrying a scoped or excepted row is seen green on a site
+inside the exception before its count is quoted as a measurement, and a count
+published from an unvalidated guard is restated when the guard is corrected.
+
+---
+
+## 2026-09-01 — a `done:` clause covered two documents its guard could not read
+
+**What happened.** A step's clause promised that `dev/INDEX.md` and
+`dev/ARCHITECTURE.md` name what the code names. Its guard reads the crate's
+file names and declarations and reads no `dev/` document at all. About ten
+retired words stood in the two maps, found the next day, and a whole step was
+raised to do what the closed step had claimed. A second miss came from the same
+gap in a different direction: `ENROLMENT_GATE_MASK` stood at two sites the
+whole-word guard could not see through the underscore.
+
+**Why it was not caught.** The step closed green, because everything the guard
+reads was clean. A clause naming a surface wider than its guard is not
+falsifiable by the gate that closes it.
+
+**The rule.** A `done:` clause names, for each surface it claims, the guard or
+the command that reads it. Where no guard exists, the clause says so and the
+surface is checked by a stated command whose output is recorded, or the clause
+drops the surface.
 
 ---
 
@@ -695,6 +780,14 @@ neither guard transfers to a test whose subject dies inside the reset.
 in the same run, by an observable of its own:
 `buffer_arena::REFUSALS`, read before and after and asserted as an exact
 delta. A proxy that the refusal *could* have happened is not that proof.
+
+**Which flag reaches which storage** (added 2026-09-01, after the same
+family cost a second test). `block_pool::force_oom` is a coin flip for a
+table of the collected heap, whose storage comes from the buffer arena's
+long-lived side, so a test forcing a refusal there uses
+`FORCE_REFUSE_LONGLIVED` and reads `REFUSALS`. Until that day `REFUSALS`
+had no reader at all, which is why the rule above could be met on paper
+and missed in practice.
 
 ## 2026-08-13 — a harness that measures a configuration the design does not use
 

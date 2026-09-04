@@ -10,12 +10,11 @@
 //! run code.
 //!
 //! **The unit is the identifier, not the word.** A line's trailing comment is
-//! cut before the scan: prose is `PLAN.md` S41.6's, which classifies every
-//! remaining occurrence as a citation, unrelated English or a defect, and a
-//! guard that also owned prose would refuse `live` in the sense the RFC
-//! glossary makes canonical. What stays checked inside a line of code is the
-//! string literals, because an assertion message names the state it asserts
-//! over and S41.5 renames those with the code.
+//! cut before the scan: prose belongs to
+//! [`super::the_metaphors_the_comments_still_carry`], and a guard that owned
+//! both would refuse `live` in the sense the RFC glossary makes canonical.
+//! What stays checked inside a line of code is the string literals, because an
+//! assertion message names the state it asserts over.
 //!
 //! **A document citation is exempt**, and it is the one exemption. Active
 //! prose that cites a superseded heading keeps the heading exactly and adds
@@ -82,7 +81,7 @@ const RETIRED: [(&str, &str, Where); 91] = [
     ("enrolled_count", "candidate_count", Where::Anywhere),
     // The gate the bit is read through, and the three functions that read
     // it. The audit ratified the bit and the verb; these four follow from
-    // that ruling and are recorded in its table under S41.3.
+    // that ruling and are recorded in its table.
     (
         "ENROLMENT_GATE_MASK",
         "CANDIDATE_GATE_MASK",
@@ -197,7 +196,7 @@ const RETIRED: [(&str, &str, Where); 91] = [
     ("PARKED", "DEFERRED_RETURNS", Where::Anywhere),
     ("park_if_active", "defer_reuse_if_tracing", Where::Anywhere),
     ("parked_count", "deferred_slot_count", Where::Anywhere),
-    // The hash table's collision defense, S41.8's
+    // The hash table's collision defense
     // (`dev/PROJECT-TERMINOLOGY-AUDIT.md`, section 5). Scoped, because all
     // three words are ordinary English elsewhere — `trigger` in `cycle`,
     // `hash`, `memory`, `promote` and `refcount`, and the other two in the
@@ -212,15 +211,16 @@ const RETIRED: [(&str, &str, Where); 91] = [
     ),
     // Exact validation, whose judicial words are the audit's first rule.
     // `Refused` went with the rest of the audit's refusal words: inside
-    // `cycle` the only refusal is the allocation's, and S41.7 owns the ones
-    // outside it. The module's own old name carries no row — `--exact` is
-    // libtest's flag, and `exact` is ordinary English everywhere else.
+    // `cycle` the only refusal is the allocation's, and the ones outside it
+    // are the project audit's. The module's own old name carries no row —
+    // `--exact` is libtest's flag, and `exact` is ordinary English everywhere
+    // else.
     ("Refused", "AllocationFailed", Where::Under("cycle")),
-    // S41.7's two outcomes. Storage a carry left in its source block is a
-    // *pinned payload*, and a thread that never obtained a ring is *never
-    // journaled*. The carry takes three rows because the outcome is declared
-    // in `cells`, decided in `promote` and produced by the test hook in
-    // `test_support`; the fourth file that names the type,
+    // Two outcomes of the project audit. Storage a carry left in its source
+    // block is a *pinned payload*, and a thread that never obtained a ring is
+    // *never journaled*. The carry takes three rows because the outcome is
+    // declared in `cells`, decided in `promote` and produced by the test hook
+    // in `test_support`; the fourth file that names the type,
     // `class/tests/what_a_subclass_inherits.rs`, answers `Nothing` and needs
     // no row.
     //
@@ -279,16 +279,17 @@ const RETIRED: [(&str, &str, Where); 91] = [
     ),
 ];
 
-/// The files that still carry a retired name, and the whole of the debt S41
-/// pays. A file left this list in the commit that renamed it, and the guard
-/// refuses a retired name in every file that is not on it.
+/// The files that still carry a retired name. A file left this list in the
+/// commit that renamed it, and the guard refuses a retired name in every file
+/// that is not on it.
 ///
-/// **Empty since S41.4, and that measures less than it looks.** What it says
-/// is that no retired identifier stands in code. It says nothing about the
-/// three surfaces this guard does not read: a source file's own name, a name
-/// that merely contains a retired word, and every comment, whose text is cut
-/// before the scan. The first two are `the_metaphors_the_names_still_carry`'s
-/// since S41.5; comment text is S41.6's and has no guard yet.
+/// **Empty, and that measures less than it looks.** What it says is that no
+/// retired identifier stands in code. It says nothing about the three surfaces
+/// this guard does not read: a source file's own name, a name that merely
+/// contains a retired word, and every comment, whose text is cut before the
+/// scan. The first two are [`super::the_metaphors_the_names_still_carry`]'s,
+/// and comment text is
+/// [`super::the_metaphors_the_comments_still_carry`]'s.
 ///
 /// A second test below refuses a file that has stopped offending, so a rename
 /// cannot leave its entry behind and quietly exempt the file from then on.
@@ -537,7 +538,7 @@ fn the_debt_list_names_only_files_that_still_offend() {
 
     assert!(
         stale.is_empty(),
-        "the debt list of `PLAN.md` S41 is out of date:\n{}",
+        "the debt list above is out of date:\n{}",
         stale.join("\n")
     );
 }
@@ -644,8 +645,8 @@ fn the_arena_keeps_a_ratified_name_of_its_own_for_enrol() {
     assert_eq!(elsewhere[0].2, "register_candidate");
 }
 
-/// A comment is prose and belongs to the S41.6 pass; a message inside code is
-/// an assertion over state and is renamed with the state.
+/// A comment is prose and belongs to the comment guard; a message inside code
+/// is an assertion over state and is renamed with the state.
 #[test]
 fn the_guard_reads_code_and_leaves_prose_alone() {
     let source = "\

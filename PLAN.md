@@ -11,17 +11,15 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-03 · Active: the rest of S36, from S36.9 — the sections after
+Updated: 2026-09-04 · Active: the rest of S36, from S36.9 — the sections after
 S40 are the backlog. S43 sits between S36 and S37, where it is to be done.
-S41 closed 2026-09-02 and is not yet deleted: what outlives it has to reach
-the journals first (rule 23.1.3).
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S33, and
-S35. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S33, S35,
+S41 and S42. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -83,8 +81,10 @@ than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
 
 - `memory::reset_window` keeps a vocabulary of its own — `CORPSE_WALKS` and
-  `park_large` beside `ResetWindow::escrow` — and both S41 guards exempt the
-  two by name, with the reason in the exemption. The words exist now: `rfc`
+  `park_large` beside `ResetWindow::escrow` — and
+  `cycle::tests::the_metaphors_the_names_still_carry` and
+  `..._the_comments_still_carry` exempt the two by name, with the reason in
+  the exemption. The words exist now: `rfc`
   S9.1 named `escrow` the *deferred increment* list, `credits` the deferred
   decrement one, `park_large` a *deferred free*, the window's `corpse` a
   *torn-down entity* and the sweep-list `enrol` an *attachment to the touched
@@ -94,398 +94,6 @@ guard lowers it on the unwind as well as on the return.
 
 ---
 
-## S41 — The cycle vocabulary   *(before the rest of S36)*
-
-Goal: every identifier and comment in `src/cycle` and its direct callers names
-the state or the operation it denotes, and the crate agrees with the RFC
-glossary rather than with metaphors that entered through a commit subject and
-spread by agreement with the text already written.
-
-Ordered by Edmond on 2026-09-01. Two audits stand behind it and neither is
-repeated here: `dev/CYCLE-TERMINOLOGY-AUDIT.md` carries the `cycle` mapping,
-the comment standard and the documentation boundary, and
-`dev/PROJECT-TERMINOLOGY-AUDIT.md` carries the groups outside `cycle` and the
-migration order across both repositories. Both are drafts against
-`rfc/dev/GLOSSARY.md`, which wins on conflict. The `rfc` documents' own rename
-stays with that repository's plan, under "The vocabulary" — the question
-graph, the lifecycle documents, the hash-table design, the `zero-abstraction`
-filename migration and `heap-design.md`'s status defect are all over there.
-What this stage takes is the crate half of both audits.
-
-Two things the project audit names are already owned and stay out: renaming
-`MemoryCategory::LongLived`, which the backlog's "Rename the memory
-categories" holds and which waits on region ownership, and redrawing
-`docs/architecture.md`, which is S40.0.
-
-**The stage runs before the rest of S36** so that S36.9's remaining slices and
-S36.10 onward are written in the names that survive rather than renamed after
-them. **Every commit here is rename and comment only**: layout, allocation,
-synchronization and algorithm stay where they are, and a structural change the
-audit happens to name — `cycle::deferred_slot_reuse`'s `Box<Vec<_>>` is the one — belongs
-to the step that owns it.
-
-- [x] S41.1 Decide: the mapping is synchronized with the RFC glossary
-      done: every row of the audit's tables carries a verdict against
-        `rfc/dev/GLOSSARY.md` — kept, amended to the glossary's word, or raised
-        as a gap the glossary has to answer — and each verdict is recorded in
-        the audit itself; a term the glossary does not cover is named rather
-        than settled here
-      tier: T2 · role: Sage
-      Sage 2026-09-01: five rows amended against the draft — `escrowed_count`
-        to the production `overflow_len`, the module `parking` to
-        `deferred_slot_reuse`, `TraceWindow` to `ActiveTrace` because
-        `TraceGuard` would collide with the canonical *guard reference*, the
-        `memory-manager door` bullet to the glossary's closed list, and
-        `group_is_met`'s reason to the row-initialization bitmap. Four
-        outcomes have no glossary entry and stay gaps for `rfc` S9.1. Applied
-        to both audits and verified against `src/` before recording. Final.
-      handoff: the ratified mapping is the tables of
-        `dev/CYCLE-TERMINOLOGY-AUDIT.md`, whose new "Glossary check" section
-        carries the amendments, the four gaps and two identifier groups no
-        table covered — the `colour` functions and the row-initialization
-        bitmap's accessors. `door`, `escrow` and `floor` are defined by the
-        glossary now, so the rename steps apply those entries rather than
-        wait for them.
-- [x] S41.2 The retired-identifier test, seen failing first
-      done: a source audit over `src/` fails on any identifier the ratified
-        mapping retires, allowing a string that quotes a document heading
-        verbatim; it is seen red on this tree before the first rename and green
-        after each one
-      tier: T2 · role: —
-      handoff: `cycle::tests::the_words_the_crate_retired` carries the ratified
-        mapping as 72 entries, each scoped `Anywhere`, `Under` a subtree, or
-        `Except` the subtrees owning a homonym — `replenish` is the reserve's
-        and the critical cache's as well as the queue's. It reads identifiers
-        and cuts a line's comment first, so prose stays S41.6's, and it drops a
-        string literal naming a `.md` file, which is the citation exemption.
-      handoff: **the guard stands over a shrinking debt list, not over the
-        whole crate at once.** `STILL_TO_MIGRATE` names the 50 files that still
-        offend; a retired name in any file outside it fails, a file leaves the
-        list in the commit that renames it, and a second test refuses a file
-        that has stopped offending, so the entry cannot be left behind to
-        exempt it. This is the one departure from the `done:` clause above, and
-        it is what lets every commit of the stage stay green: the clause's
-        "green after each one" and `dev/WORKFLOW.md`'s per-commit gate cannot
-        both hold while one test carries the whole mapping. Seen red before the
-        list existed — 992 sites over those 50 files — and both guards were
-        seen firing, on a file taken off the list and on a clean one put on it.
-- [x] S41.3 The candidate queue and the manager boundary
-      done: `src/cycle/queue.rs` and `src/memory/gc_metadata.rs` carry the
-        ratified names, the module contract states the three storage paths the
-        audit names, and no metaphor from the audit's list survives in either;
-        the gate is green and no existing test changed an assertion to get
-        there
-      tier: T2 · role: Critic
-      Critic 2026-09-01 round 1: sixteen findings, all vocabulary and comments
-        — the mechanical rename-only check found no behaviour change. The
-        load-bearing ones: `SPARE_SEGMENTS`'s doc kept "overflow" in the
-        retired sense, three test messages described a different event than
-        their assertion, `owes` and `stands on` survived the metaphor sweep,
-        and the four `refcount` names decided in this session were in no table
-        and in no guard row. All taken.
-      Critic 2026-09-01 round 2: the round-1 fixes were applied to the lines
-        quoted rather than to the classes they stood for — fourteen more
-        old-sense uses of *overflow* and two more of *enrolment* in the same
-        migrated files, and one fix that made its message false ("every
-        allocation path but the base block refused", when that tier asks no
-        allocation path). Also: the audit's Status line still claimed every
-        row was ratified, and nothing tested the two `enrol` rows. All taken.
-      handoff: the queue is `queue_base`/`overflow_*`/`write_segment`/
-        `spare_count` and registration is `register_candidate`; the `enrol`
-        family in `refcount` moved with it, and the four names that took —
-        `CANDIDATE_GATE_MASK`, `may_become_a_candidate`,
-        `is_registered_candidate`, `clear_candidate_bit` — are the audit's new
-        "Candidate registration in `refcount`" section, marked as derived
-        under this step rather than ratified under S41.1.
-      handoff: `STILL_TO_MIGRATE` is 37 files, down from 50. Three of the
-        thirteen left it without a rename: S41.2's guard counted
-        `critical::replenish` and `reserve::replenish` at their callers as
-        offences, which they are not, so its recorded 992 sites over 50 files
-        overstates the debt. The guard now reads the `::` before a retired
-        name and spares the owning module's own call, and `enrol` is two rows
-        — `cycle/arena`'s is `allocate_and_attach_row_array`, which is what
-        S41.4 has to apply there.
-- [x] S41.4 Row resolution, the trace scratch, mark, scan, the stack, deferred reuse and validation
-      done: `row`, `arena`, `shadow`, `mark`, `scan`, `stack`, `parking` and
-        `exact` carry the ratified names, module by module with a compile at
-        each boundary; `parking` becomes `deferred_slot_reuse` and `exact`
-        becomes `validation`, and neither module changes what it does
-      tier: T2 · role: Critic
-      Critic 2026-09-01: the code half is complete and rename-only — the
-        mechanical check found no difference beyond `rustfmt`'s line breaks.
-        Every defect was in a comment or a string, and the two scripts that
-        did that half caused them: three tokens carry two ratified names each
-        (`Met`, `Condemned`, `Row`) and the rename took one, which put
-        `RowLookup` where `Color::Unclassified` belonged in the scan's own
-        doc; four string literals took an identifier where an English word
-        stood; eleven doc comments still named an item the tree no longer
-        declares. Taken, with the three ambiguous rows of the guard rewritten
-        to name both senses in the failure message.
-      handoff: `parking` and `exact` are gone as paths — `src/cycle/
-        deferred_slot_reuse.rs` and `src/cycle/validation.rs`, with their test
-        directories. `STILL_TO_MIGRATE` is empty from here, and that measures
-        less than it looks: the guard reads identifiers with comments cut, so
-        a file name, a name that merely contains a retired word
-        (`condemned_from`, `met_first`) and every comment are outside it.
-      handoff: the row-initialization bitmap's accessors (`groups`,
-        `group_bit`, `group_bytes`) still have no ratified name, and the
-        arena's `slots` parameter keeps its name on purpose: it counts the
-        block's slots, which is what `RowArray::row_count` is derived from
-        rather than what it holds.
-- [x] S41.5 The tests and the current maps
-      done: no test file name, test name or helper uses a retired term,
-        measured by a guard of its own that reads the crate's **file names and
-        item names** for the audit's metaphor list — condemn, acquit, corpse,
-        judge, park, escrow, floor, climb, enrol, discount — as case-insensitive
-        substrings, which is the axis `Where` cannot express and the reason the
-        whole-token guard sees neither `condemned_from` nor
-        `what_the_guard_discount_answers.rs`. An assertion message stays the
-        whole-token guard's, which already reads string literals, and the
-        `STILL_TO_MIGRATE` half of this clause is spent: S41.4 emptied the list.
-        `dev/INDEX.md` and `dev/ARCHITECTURE.md` name what the code names;
-        the historical records the audit lists as out of scope are untouched,
-        and an active citation of an old heading keeps the heading exactly with
-        the current name outside the quotation
-      tier: T1 · role: —
-      handoff: the second guard is
-        `cycle::tests::the_metaphors_the_names_still_carry`, ten metaphors read
-        as case-insensitive substrings over file names and declarations. It
-        found 37 declarations and 6 file names; four names stay by exemption,
-        each carrying its reason — the sibling guard's own test that names the
-        token it is about, `memory::reset_window`'s `CORPSE_WALKS` and
-        `park_large`, which wait on the glossary, and the hash table's
-        `climbs_its_own_ladder`, which is S41.8's.
-      handoff: `dev/INDEX.md` and `dev/ARCHITECTURE.md` name what the code
-        names, and so do the open half of `PLAN.md` and its backlog. The dated
-        records inside closed steps keep their vocabulary: they describe the
-        day they were written, which is what the audit's documentation
-        boundary asks.
-- [x] S41.6 The comments, the residue and the gate
-      done: every module header of `cycle` states purpose, ownership and
-        lifetime, allocation and failure behaviour, ordering invariants and its
-        design references; every remaining occurrence of a retired word is
-        classified as a historical citation, unrelated English or a defect, and
-        the defects are gone — measured over **comment text**, which no guard
-        of this stage reads today, by S41.5's metaphor list run over comments
-        with each survivor carrying either the document heading it quotes or a
-        line naming why the word is not a metaphor there (`door` is not on the
-        list until S41.7 classifies its sites); the full gate passes and a
-        Critic has read the pass for terminology, for the safety contracts it
-        had to preserve, and for an accidental change of meaning
-      tier: T2 · role: Critic
-      Critic 2026-09-01 round 2: five of the round-1 repairs were wrong or
-        incomplete — a re-wrap cut the head off `scan.rs`'s ordering sentence,
-        two headers claimed an exclusivity the queue's own aborts contradict,
-        two comments were repaired into tautologies, and the wrap-aware
-        citation rule could swallow a whole comment block behind one stray
-        quote. Taken: the guard now reports an unbalanced quote rather than
-        reading past it, reads `let (a, b)` destructuring, and states which
-        surfaces no keyword can reach.
-      Critic 2026-09-01: the word-level rewrite broke what a word-level
-        rewrite breaks. Nine quoted headings were rewritten inside the
-        quotation — every one of them a citation that wraps across two lines,
-        which the first restoration pass could not see; three `# Safety`
-        headings were re-wrapped into their own contracts; about eighteen
-        sentences no longer parsed or no longer meant what they had; two
-        module headers claimed what the code contradicts, one of them the
-        `Box<Vec<_>>` this stage deliberately does not fix; and the new guard's
-        citation rule was per line, so it could not see two of the survivors it
-        exists to find. All taken.
-      handoff: the third guard is
-        `cycle::tests::the_metaphors_the_comments_still_carry`, the same ten
-        metaphors over comment text. A quoted span is a citation and is spared,
-        **and the quote state carries across lines**; seven exemptions name a
-        subtree, a word and the reason, and the reasons are the reset window's
-        window, the promote side of it, and the sweep-list sense of *enrolment*
-        that `cycle/arena` keeps until the glossary answers.
-      handoff: the second guard now reads `let` bindings too, which is where
-        `condemned`, `judged` and `corpse` were still standing under comments
-        that no longer said any of it. 239 comments were rewritten; the words
-        that survive are citations, ordinary English (`noise floor` became
-        *measurement noise*, the arithmetic `floor` a *lower bound*) or one of
-        the seven exemptions.
-
-- [x] S41.7 Allocation outcomes, and the `door` sites by semantic class
-      done: an allocation failure, an unsupported placement, an admission
-        denial, a carry that left storage in its source block and an
-        unobserved journal thread each carry a name of their own —
-        `InsertOutcome`, `Placement`, `ExternalCarry`, `OutsideCarry` and the
-        journal `Window` among them — and every `door` site is classified as
-        an allocation path, an entry point, a mailbox, a channel or a
-        store-barrier form, which is the glossary's closed list, with an OS
-        resource named exactly instead; the difference between
-        a memory failure and a result a caller can act on survives every
-        rename, which a test asserts rather than a reading
-      tier: T2 · role: Critic
-      handoff: 76 sites over those five types, counted 2026-09-01 with `grep
-        -rn` over `src/`. `InsertOutcome`'s two rows landed early, with S41.8,
-        which shares an enum with them; what is left here is `Placement`, the
-        two outcomes the glossary does not name, the journal's `Window` and
-        the `door` classification.
-      handoff: the `door` classification is done, by session L2 on
-        2026-09-01 — `dev/design/door-sites.md`, 143 rows at `019618d`
-        (140 occurrences by `grep -rnoi 'door' src/ | wc -l` and 3 file
-        names; the 86 above was the whole-word singular line count at
-        `27ffbf3`): allocation path 73, entry point 55, none of the five 14,
-        mailbox, channel and store-barrier form 0. One ruling taken here:
-        `element::set`, "the public door", is an entry point — a store
-        function is the caller's way in, and *store-barrier form* names the
-        forms a barrier takes, not the functions that reach it; the glossary
-        line still defines neither, which is S9.1's. What is left of the
-        step's unblocked half is the rename itself, run from the document;
-        it also moves the `PLAN.md` lead-in `os.rs:136` quotes.
-      handoff: the rename landed 2026-09-01, L2 — `c4a59a6` over 54 files,
-        `door` in `src/` from 140 occurrences to the 3 the name guard's own
-        entry carries, and `9ed63ae` for `Placement::Unsupported` with the
-        distinction test.
-      handoff: the blocked half landed 2026-09-02, once `rfc` S9.1 named both
-        outcomes at `9ca669c`. `ExternalCarry::Pinned`, `OutsideCarry::Pinned`
-        and `Window::NeverJournaled`, and with the journal's answer the state
-        that carries it — the `NEVER_JOURNALED` sentinel,
-        `Registry::never_journaled` and `Mark::never_journaled`: one state,
-        and now one word for it. The guard grew seven rows, 84 to 91, scoped
-        to the four subtrees that own the two outcomes; the lowercase pair
-        costs a journal test the right to print the kept sense in an assertion
-        message, which nothing in `src/journal/` does today, and the escape is
-        to narrow the row rather than to drop it.
-      handoff: **the word `refused` stays where it names an allocation
-        failure**, which is the one sense `rfc/dev/GLOSSARY.md` keeps of the
-        seven. What moved is the outcome: a carry the arena refused leaves a
-        pinned payload, and a thread the allocator refused a ring is
-        never-journaled. The prose followed in five files the identifier guard
-        cannot reach — `array/entity.rs`, `array/table/tests/`
-        `where_the_storage_comes_from.rs`, `array/entity/tests/`
-        `nesting_worked_through_a_list.rs`, `memory/buffer_arena.rs` and
-        `dev/INDEX.md` — found by the second Critic round rather than by a
-        guard, and no guard covers them now either.
-      handoff: the `done:` clause's "a test asserts rather than a reading" is
-        held by five tests, one per outcome, named in
-        `dev/PROJECT-TERMINOLOGY-AUDIT.md` §1. The journal takes three of
-        them, because its answer has two causes and only one is a memory
-        failure: `a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring`
-        reaches `NeverJournaled` with no allocation asked for at all.
-      Critic 2026-09-02, first round: seven findings, all executed. The two
-        that mattered were a guard row that would have condemned the kept
-        sense inside `journal`, and an added journal assertion that could not
-        fail for its stated reason — `LOST` moves on the `CLOSED` arm alone,
-        so the thread it watched had no path to it. The assertion was deleted
-        rather than repaired: `a_never_journaled_threads_later_records_are_`
-        `not_counted_as_losses` already held that claim.
-      Critic 2026-09-02, second round: eight findings against the first
-        round's repairs, all executed. Two reversed a first-round decision —
-        the deleted guard rows went back, because a whole revert of a field
-        compiles and nothing else stood over `Registry::never_journaled`, and
-        the comment written to justify deleting them argued from three
-        examples the guard is defined not to see. The round also found the
-        retired sense still standing in five files nobody had opened, and
-        four exemption reasons in the two metaphor guards that still said the
-        glossary was silent about the reset window, which `9ca669c` ended.
-- [x] S41.8 The hash table's collision defence
-      done: the metaphor is gone from `src/array/` and its tests — collision-
-        defence state, a chain-length threshold, an equal-hash threshold, a
-        salted rebuild, a keyed-hash escalation and a terminal admission
-        denial name what each was; the admission denial stays a result the
-        caller can catch and does not become an allocation failure, which is
-        the one distinction the rename can destroy silently
-      tier: T2 · role: Critic
-      handoff: `ladder`, `rung` and `trigger` were 176 occurrences in `src/`,
-        counted 2026-09-01; the design half is `rfc`'s.
-      Critic 2026-09-01 round 2: the citations are clean this time, checked by
-        occurrence count over every file. What it found instead: the new test
-        forced its refusal through `block_pool::force_oom`, which the crate's
-        own notes call a coin flip for a `GcHeap` table — its storage comes
-        from the buffer arena's long-lived side — so it now uses
-        `FORCE_REFUSE_LONGLIVED` and proves the refusal through `REFUSALS`,
-        which had no reader until now. Also taken: `trigger` had no guard on
-        the surface four in five of its occurrences lived on, and is in the
-        metaphor list with five exemptions; the `rung` row's replacement named
-        nothing; and the `WORKFLOW.md` figure I "corrected" invented a cause.
-      Critic 2026-09-01: no logic moved, and the added test is not vacuous —
-        but two quoted headings were rewritten inside the quotation again,
-        both of them wrapping onto a second line, which is the defect
-        `dev/POSTMORTEM.md` had just been given an entry for. The checker that
-        cleared the previous step compared citations by membership, so a
-        heading damaged at one site and intact at another read as unchanged;
-        it counts occurrences now. Also taken: two broken intra-doc links,
-        `stage` used for four different things, a dead exemption the step was
-        meant to retire, and a `>=` that could not catch an insert a refusal
-        left behind.
-      handoff: the vocabulary is the audit's six names — collision-defense
-        state, the chain-length and equal-hash thresholds, the salted rebuild,
-        the keyed-hash escalation and the terminal admission denial, in US
-        spelling as rule 6 asks. Both guards carry the three words: the
-        identifier guard scopes them `Under("array")`, which reads code and
-        string literals, and the metaphor guards read the file names and the
-        prose, where four in five of the `trigger` occurrences stood.
-      handoff: `InsertOutcome::RefusedForMemory` became `AllocationFailed`
-        here rather than in S41.7, because four match arms carry it beside the
-        denial and half a rename inside one `|` reads as two vocabularies.
-        S41.7 keeps `Placement`, the two glossary gaps, the journal `Window`
-        and the `door` classification — 86 `door` sites and 17 `Refused`
-        variants as of this commit.
-- [x] S41.9 The lifecycle, ownership and platform words in the crate's prose
-      done: `death`, `destructor`, `teardown`, `dispose`, `drop` and
-        `reclamation` each name one of the five phases the project audit
-        separates, and no comment presents them as one ordering; `native`
-        resolves to machine code, standard PHP, the machine stack or foreign
-        code at each of its sites; `owner` in a cross-module contract says
-        which owner it means
-      tier: T1 · role: —
-      handoff: `native` was 14 occurrences in `src/` when this step was
-        written and 2 when it ran — the earlier steps' rewrites took the rest.
-        Both were the machine stack and say so now.
-      handoff: the phase numbering is the defect the lifecycle half came down
-        to. Three protocols number their phases from one — the object
-        teardown's, the arena reset's and cycle finalization's — and each
-        module now says whose numbering it means. `run_pre_destructor` is
-        `run_user_destructor`: the audit rules that `__destruct` is not a
-        *pre*-anything, and the name had spread to twelve prose sites.
-      handoff: `owner` was qualified where a cross-module contract carries it —
-        the containing entity in `barrier` and `array::table`, the owning
-        thread in `block_pool` and `heap`, the holding entity in
-        `buffer_arena`. A local `owner` whose type says what it is stays
-        short, which is what the audit asks.
-- [x] S41.10 The two maps say what the code says
-      done: `dev/INDEX.md` and `dev/ARCHITECTURE.md` carry none of the
-        audit's retired words as their own prose — `ladder`, `rung`,
-        `trigger`, `corpse`, `condemn`, `parked`, `ENROLLED` among them — each
-        replaced by the name the crate's code took for it, and a quoted
-        heading or journal title keeps its old word inside the quotation;
-        a grep over the two files for the retired words returns citations only
-      tier: T1 · role: —
-      note: S41.5's done clause promised the two maps and left about ten
-        sites; found on 2026-09-01, ordered by Edmond the same day as a
-        background job for a cheap agent
-      handoff: done 2026-09-01 by a sonnet subagent in a worktree, checked
-        here and amended once (`triggers` → `escalates to`). Two dead
-        identifiers went with it, `ENROLMENT_GATE_MASK` at two sites, which
-        the whole-word guard could not see through the underscore. What stays
-        is citations, `memory::reset_window`'s own words at three sites, and
-        two mentions of the deleted collector's parked lists, which no live
-        name replaces.
-- [x] S41.11 Every cited heading exists in the document it names
-      done: for every citation of the form `` `rfc/…md` `` or `` `docs/…md` ``
-        followed by a quoted heading or bold lead-in, in `src/`, `benches/`,
-        `docs/`, `dev/INDEX.md`, `dev/ARCHITECTURE.md` and `dev/WORKFLOW.md`,
-        the quoted text is found in the named file — repointed to the section
-        the fact moved to where the `rfc` rewrite of 2026-08-30 renamed it
-        (`55786e4`, `a2310c1`, `0075ef3`), and the check itself is written
-        down as pass 1's heading-level form in `dev/WORKFLOW.md`, so a
-        renamed heading is found by a command rather than by a reader
-      tier: T1 · role: —
-      note: found by the S42 Code Reviewer on 2026-09-01 — `rc-cycle.md` has
-        no "Cycle teardown" (10 files cite it), no "Death while enrolled"
-        (7 files), no "Who judges, and what a trace is worth"; pass 1 tests
-        only that the file exists. Dated journals are records and stay.
-      handoff: done 2026-09-01 by a sonnet subagent and finished here: 379
-        citations, 73 misses before, 12 after — 51 repointed by the agent
-        over 30 files (`rc-cycle.md` alone had seven renamed sections), ten
-        by hand here (two `heap-slot-allocation.md` headings never carried
-        the word `Fix`, four journal titles quoted by paraphrase or case, two
-        `arrays.md` quotes, one bare `INDEX.md` path, one `performance-case`
-        lead-in). The checker is `dev/tools/citations.py` and `WORKFLOW.md`
-        pass 1 names it with the twelve known residues; the five real ones
-        are the backlog's `performance-case-decompositions.md` line.
 ## S34 — The root queue, enrolment and parking
 
 Goal: candidates reach the collector without the mutator paying for a data
@@ -2749,7 +2357,7 @@ signal.
 
 ## The vocabulary
 
-**The rename happened.** S41 closed 2026-09-02 against
+**The rename happened**, closed 2026-09-02 against
 `rfc/dev/GLOSSARY.md`, whose deprecated table holds 46 rows and whose writing
 rule names six metaphors rather than the two this section used to carry.
 `ResetWindow::escrow` took its ratified name there. Counted at `f1ad00f`:
@@ -2763,6 +2371,30 @@ or a metaphor outside a citation, and their failure messages name
 `dev/CYCLE-TERMINOLOGY-AUDIT.md` and `dev/PROJECT-TERMINOLOGY-AUDIT.md` as the
 tables to read. `rfc`'s own S9.1 is still open in that repository's plan and
 carries the remaining cross-repository work.
+
+Two residues have no owner, and both are named here rather than in a step:
+
+- **The row-initialization bitmap's accessors have no ratified name.**
+  `groups`, `group_bit` and `group_bytes` are described in
+  `dev/CYCLE-TERMINOLOGY-AUDIT.md` and were never put to the glossary, so the
+  crate is naming them for itself, which the rule against that forbids
+  (`dev/DECISIONS.md`, "an uncovered term is a gap rather than a local
+  ruling").
+- **The comment guard reads fourteen words of a ninety-one-row mapping.** It
+  walks the whole crate, so the gap is the list and not the reach: `refused`
+  is not among the fourteen, which is why five files carried its retired sense
+  until a Critic round found it by reading. The same gap leaves 65 comment
+  occurrences of `colour` standing against the audit's US-spelling rule, one
+  of them directly above `shadow::color`.
+- **Neither metaphor guard refuses a stale exemption.** The identifier guard
+  has a test that fails on a file which has stopped offending; the name and
+  comment guards have none, so the day an exempted name is renamed its
+  exemption goes on exempting whatever is spelled that way next.
+- **`cycle::deferred_slot_reuse` outgrew its name.** `ActiveTrace` lives
+  there and owns the scratch arena, takes the detached candidate chain and
+  hands out rows, while the module header still describes the slot-return
+  window alone. The name was right for the module of 2026-09-01; a reader
+  looking for where a collection begins does not open it now.
 
 ## Beside the hashtable: the memory categories
 
@@ -2934,7 +2566,7 @@ in `dev/INDEX.md`. What it did not do is below.
   what `dev/tools/citations.py` cannot do is follow a citation onto a branch,
   which is why the five stand in its twelve known residues. Either the checker
   learns the branch form or the five lose their section names. Found by
-  S41.11's checker, 2026-09-01; the banner landed the same day.
+  `dev/tools/citations.py`, 2026-09-01; the banner landed the same day.
 - [ ] **A test that reads a file or spawns a process carries no guard
   requiring its `cfg_attr(miri, ignore)`.** The convention has been broken
   twice — `cycle::` on 2026-09-01 and `memory::` on 2026-09-02 — and each

@@ -1,10 +1,12 @@
 //! Every metaphor left in a comment is a citation of a document heading or
 //! an exemption with a reason, and this reads the comments to say so.
 //!
-//! The third surface of `PLAN.md` S41. The first guard reads identifiers with
+//! The third of the three surfaces. The first guard reads identifiers with
 //! comments cut; the second reads file and declaration names; prose was left
 //! to a reading, and a reading is what let `RowLookup` stand for a colour in
-//! the scan's own doc through two Critic rounds. This one measures it.
+//! the scan's own doc through two Critic rounds. This one measures it
+//! (`dev/DECISIONS.md`, "the vocabulary is held by three guards, one per
+//! surface").
 //!
 //! **A quoted span is a citation and is spared.** Active prose that cites a
 //! superseded heading keeps the heading exactly and adds the current name
@@ -97,9 +99,11 @@ const SELF: [&str; 3] = [
 /// The comment text of `line`, or `None` where the line is code.
 ///
 /// The `//` that opens a comment is found outside string literals, so a path
-/// written inside a message is not read as one. This is the complement of the
-/// sibling guard's `code_of`: between them they read every byte of a line
-/// once.
+/// written inside a message is not read as one. It is the near-complement of
+/// the sibling guard's `code_of`, and not the exact one: this reader tracks
+/// backslash escapes and that one deliberately does not, so a line whose
+/// string literal contains an escaped quote is cut in two different places and
+/// the span between them is read by neither.
 fn comment_of(line: &str) -> Option<&str> {
     let bytes: Vec<char> = line.chars().collect();
     let mut in_string = false;

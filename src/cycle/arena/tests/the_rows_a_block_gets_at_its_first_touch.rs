@@ -388,7 +388,7 @@ fn a_refusal_on_the_second_block_leaves_the_first_intact() {
 
 /// A block held for a payload and nothing else has a count word and no
 /// survivor list, so an edge into it cannot be placed. The trace keeps the
-/// referent alive instead of guessing a row: `RowLookup::Unplaced` is the same
+/// referent alive instead of guessing a row: `RowLookup::Untracked` is the same
 /// conservative answer `row::resolve_edge_target` gives an address the list
 /// does not name.
 #[test]

@@ -317,8 +317,8 @@ re-run after any deletion of a module, a document or a feature:
    every `` `…md`, "…" `` pair out of `src/`, `benches/`, `docs/`,
    `dev/INDEX.md` and `dev/ARCHITECTURE.md`, resolves `rfc/…` against the
    sibling repository, and prints each citation whose quoted text is not in
-   the named file. On 2026-09-01 it reported 379 citations and 12 misses
-   after S41.11: five in `docs/performance-case-decompositions.md` naming the
+   the named file. On 2026-09-01 it reported 379 citations and 12 misses:
+   five in `docs/performance-case-decompositions.md` naming the
    deleted `rc-walk.md` (a backlog line owns them), one split path in
    `memory/critical.rs` and one `routing.rs` sentence that is not a heading
    (both read correctly), and five string literals inside the two guard
@@ -426,8 +426,8 @@ has no core to spare while it runs, and a per-step run spends that on the same
 code several times.
 
 **A change that adds no `unsafe` and no pointer arithmetic needs no run at
-all** — a rename, a comment pass, an edit confined to tests. S41 closed
-without one.
+all** — a rename, a comment pass, an edit confined to tests. The vocabulary
+stage of 2026-09-02 closed without one.
 
 ```
 MIRIFLAGS="-Zmiri-ignore-leaks" cargo +nightly miri test \

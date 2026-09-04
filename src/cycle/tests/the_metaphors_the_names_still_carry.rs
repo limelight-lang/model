@@ -8,8 +8,9 @@
 //! sibling cannot express: the name a source file carries, and the name a
 //! declaration carries.
 //!
-//! **A comment is not read here either.** Prose is `PLAN.md` S41.6's, which
-//! classifies every survivor as a citation, unrelated English or a defect.
+//! **A comment is not read here either.** Prose belongs to
+//! [`super::the_metaphors_the_comments_still_carry`], which classifies every
+//! survivor as a citation, unrelated English or a defect.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,7 +20,7 @@ use std::path::{Path, PathBuf};
 /// `judg` rather than `judge`, so that `judging` and the US `judgment` are
 /// read too; the others inflect without losing their stem.
 ///
-/// The last three are the hash table's collision defense, retired by S41.8.
+/// The last three are the hash table's collision defense.
 /// `trigger` costs exemptions — it is ordinary English in `cycle`, `hash`,
 /// `memory`, `promote` and `refcount` — and it is here anyway: the audit
 /// retires it as the name of a threshold, four in five of its `src/array/`

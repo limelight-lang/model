@@ -742,6 +742,19 @@ of what was considered; the code is S36.9 (e).
 `dev/WORKFLOW.md`'s "Checks a grep cannot make": prints every cited
 heading the named document no longer carries.
 
+`dev/CYCLE-TERMINOLOGY-AUDIT.md` and `dev/PROJECT-TERMINOLOGY-AUDIT.md` —
+the two mapping tables the vocabulary rests on, the first for `cycle`
+and the second for the groups outside it. Three guards in
+`src/cycle/tests/` name them in their failure messages, so a reader
+sent here by a red test is reading one of these:
+`the_words_the_crate_retired` reads identifiers with comments cut,
+`the_metaphors_the_names_still_carry` reads file names and declarations
+as case-insensitive substrings, and
+`the_metaphors_the_comments_still_carry` reads comment text with quoted
+spans spared. Why the three are three, and what they still do not
+cover, is `dev/DECISIONS.md`, "the vocabulary is held by three guards,
+one per surface".
+
 `dev/CYCLE-COLLECTOR-REVIEW.md` — the 2026-09-01 read-only review of
 `src/cycle/` with Edmond's ruling per finding: arena tail waste, the
 scan's double row lookup, the retained registry lock, and three T1
@@ -763,6 +776,11 @@ what each tool can and cannot see here.
 
 `dev/WORKFLOW.md` — branches, commits, the required verification
 sequence, test rules, Miri invocation.
+
+Names follow `rfc/dev/GLOSSARY.md`, and the two audits above are drafts
+against it that lose where it moves. A term the glossary does not cover
+is raised there rather than settled here: `dev/DECISIONS.md`, "an
+uncovered term is a gap rather than a local ruling".
 
 A comment that says a capability is absent names the `PLAN.md` step that
 builds it, and the commit deleting that stage sweeps the number out of
