@@ -908,8 +908,10 @@ pub(crate) unsafe fn slot_state(header: *const RcHeader) -> SlotState {
 ///
 /// # Safety
 /// `header` addresses a dead entity whose count reads zero, in memory a trace
-/// has stamped and whose sweep this thread will run
-/// (`crate::cycle::deferred_slot_reuse::can_carry_the_mark`).
+/// has stamped, and the window that marks it returns it at its close —
+/// through the block's place on that window's list, or through the window's
+/// stack of foreign slots
+/// (`crate::cycle::deferred_slot_reuse`, `classify_past_the_region`).
 #[inline]
 pub(crate) unsafe fn mark_dead_in_place(header: *mut RcHeader) {
     debug_assert_eq!(
@@ -920,18 +922,23 @@ pub(crate) unsafe fn mark_dead_in_place(header: *mut RcHeader) {
     unsafe { update_header_flags(header, |flags| flags | DEAD_IN_PLACE) };
 }
 
-/// Take the mark off, which whoever returns the memory does as it returns it:
-/// the block's owner for a size-class slot, and for a retained survivor or a
-/// large entity the thread whose trace holds the rows, neither having an owner
-/// (`dev/DECISIONS.md`, "the stamp is the whole condition where the return is
-/// not the owner's").
+/// Take the mark off, which the thread whose window took it does as it makes
+/// the return the mark deferred — the block's owner where the window listed
+/// the block, and the marking thread itself where it stacked the slot in a
+/// block another thread owns, or where the return is a retained survivor's or
+/// a large entity's and has no owner at all (`dev/DECISIONS.md`, "a death the
+/// collection never met is returned at once, and a foreign slot is stacked").
 ///
-/// It never runs on a collector worker: the mutator half
-/// of the flags word has one writer, and a worker that cleared a bit there
-/// would race the owner's own read-modify-write
-/// (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse",
-/// which refuses the collector the neighbouring clear of the candidate
-/// bit).
+/// **One thread writes this half of the flags word of one dead slot**, and it
+/// is the thread whose window marked it. The word is written by load and
+/// store rather than by a read-modify-write, so a second writer loses one of
+/// the two; what keeps the marking thread alone with the slot is that the
+/// slot reached no free list, so the block's owner has no reason to touch it,
+/// and that at most one window is open in the process (`PLAN.md`, S38's
+/// token). It never runs on a collector worker, which
+/// `rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse"
+/// refuses the neighbouring clear of the candidate bit for the same
+/// reason.
 ///
 /// # Safety
 /// As [`mark_dead_in_place`].

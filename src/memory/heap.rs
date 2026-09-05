@@ -126,6 +126,15 @@ struct FreeSlot {
     next: *mut FreeSlot,
 }
 
+/// Offset of the word a free slot links through, and therefore of the eight
+/// bytes of a slot that carry nothing an occupant or a walker reads: the
+/// return overwrites them.
+///
+/// `crate::cycle::deferred_slot_reuse` stacks a dead-in-place slot of a
+/// foreign block through this same word, which it may do because the slot has
+/// not reached this list yet. Move the link and that stack moves with it.
+pub(crate) const FREE_LIST_LINK_OFFSET: usize = std::mem::offset_of!(FreeSlot, next);
+
 /// Blocks whose owning thread died while they still held live objects,
 /// per size class, chained through `owned_next`.
 ///
@@ -817,13 +826,20 @@ impl Heap {
         };
 
         probe_count!(ADOPTED);
-        // A block carrying a dead-in-place mark cannot reach here: the mark
-        // lives inside one trace window, the window's close returns it, and a
+        // A block on a marking window's list cannot reach here: the list
+        // lives inside one trace window, the window's close walks it, and a
         // thread cannot exit inside a window
         // (`crate::cycle::deferred_slot_reuse::dispose_thread_state`). The
         // adoption is where the ordering would fail visibly — the new owner
         // never made the mark, its `used` never reaches zero, and the block
         // is counted as holding a live slot the exited thread owed.
+        //
+        // A marked slot of a block its marking thread did not own does reach
+        // an adopting thread, and is sound here: that window stacked the slot
+        // rather than listing the block, and its close returns the slot
+        // through `ll_free` — onto this block's own remote stack while the
+        // block is still a stranger's, and by the ordinary owner path once
+        // this adoption has made it the marking thread's.
         debug_assert!(
             self.block_kind != BLOCK_KIND_ENTITY
                 || unsafe { &*marked_link(block as *mut u8) }
@@ -938,7 +954,7 @@ impl Heap {
                 // abandoned list.
                 self.collect_remote_locked(block);
                 // The twin of the guard in `adopt`, at the other end of the
-                // same ordering: the mark a window took is returned at that
+                // same ordering: the list a window built is walked at that
                 // window's close, and this thread cannot be exiting inside one.
                 debug_assert!(
                     self.block_kind != BLOCK_KIND_ENTITY

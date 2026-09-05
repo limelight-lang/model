@@ -252,11 +252,21 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// every other address either enumerator holds, a run's memory can be
 /// **unmapped**: [`free`] returns it to the operating system. Three things
 /// together make the read sound — the registry entry is removed strictly
-/// before the unmap, a free during a collection withholds instead of
-/// running, and a collection does not begin reading a thread's blocks
+/// before the unmap, a free of a run this collection has met withholds
+/// instead of running, and a collection does not begin reading a thread's blocks
 /// until that thread has entered it. The owner-side withholding is S36.2's;
 /// S38.1/S38.3 must make the claim and withholding owner-addressable before a
 /// worker may rely on all three (`PLAN.md`).
+///
+/// **The middle condition covers a met run alone, and nothing here covers an
+/// unmet one.** `PLAN.md` S43.5 unmaps a run whose own row reads
+/// `Color::Untouched` while a collection is open, on the ground that no row
+/// of that collection names it; what the third condition answers is *whose*
+/// blocks a collection reads, not whether an enumerator that took its
+/// snapshot before the registry removal may still dereference the address.
+/// The gap is one thread's own, so a quiescent mutator closes it today; a
+/// worker reading another thread's runs waits on S38.3 for it as for the
+/// rest.
 ///
 /// **A visitor must not free a run while walking this list.** The
 /// addresses are a snapshot, so a run freed during the walk leaves

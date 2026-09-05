@@ -205,10 +205,10 @@ impl<T: Copy> RecordChain<T> {
         let current = self.current.get();
         // The link this overwrites would otherwise be the only path to a
         // segment an earlier crossing left above the current one: the chain
-        // would answer every push and pop correctly and hand that segment to
-        // nobody at `take_segments_past_base`, which is a leaked region and a
-        // charge with no discharge. A chain that pops owes
-        // [`advance_to_kept`](Self::advance_to_kept) before it comes here.
+        // would answer every push and pop correctly while its owner had no
+        // way left to reach that segment, which is a leaked region. A chain
+        // that pops owes [`advance_to_kept`](Self::advance_to_kept) before it
+        // comes here.
         debug_assert!(
             unsafe { (*current).next.get() }.is_null(),
             "a segment already stands above the one being extended"
@@ -256,51 +256,10 @@ impl<T: Copy> RecordChain<T> {
         count
     }
 
-    /// Records in the segment the chain is filling.
-    pub(crate) fn records_in_append_segment(&self) -> usize {
-        let records = unsafe { Segment::records::<T>(self.current.get()) };
-        (self.cursor.get() as usize - records as usize) / size_of::<T>()
-    }
-
-    /// Whether the chain is still filling the base segment, which is the one
-    /// segment its owner did not attach.
-    pub(crate) fn appends_into_base(&self) -> bool {
-        self.current.get() == self.base
-    }
-
-    /// Hand every segment past the base to `take`, oldest first, by the
-    /// address of its region, and leave the chain empty over its base.
-    ///
-    /// The owner is the one that knows what a region is — a block to release,
-    /// or bump the arena rewinds — so this reports them rather than freeing
-    /// them. Re-entrant: a second call finds the chain on its base and hands
-    /// out nothing.
-    pub(crate) fn take_segments_past_base(&self, mut take: impl FnMut(*mut u8)) {
-        let mut segment = unsafe { (*self.base).next.get() };
-        self.rewind();
-
-        while !segment.is_null() {
-            let next = unsafe { (*segment).next.get() };
-            take(segment as *mut u8);
-            segment = next;
-        }
-    }
-
     /// Whether the chain holds no record.
     pub(crate) fn is_empty(&self) -> bool {
         self.current.get() == self.base
             && self.cursor.get() == unsafe { Segment::records::<T>(self.base) }
-    }
-
-    /// Empty the chain and forget every segment past the base, which the owner
-    /// owes the instant those segments' memory goes back.
-    ///
-    /// Nothing is freed here and nothing can be: every region is the owner's.
-    /// What this undoes is the chain's own belief that it has segments to
-    /// advance into.
-    pub(crate) fn rewind(&self) {
-        unsafe { (*self.base).next.set(std::ptr::null_mut()) };
-        self.open(self.base);
     }
 
     /// Make `segment` the append position, empty.

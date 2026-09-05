@@ -7,6 +7,54 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-05 — an abandoned block of a class another case fills is a fixture, not a leftover
+
+**What happened.** S43.5's new case
+`cycle::deferred_slot_reuse::tests::a_panic_in_the_close_leaves_no_stacked_mark_standing`
+spawned a thread, had it allocate one entity of the 64-byte class and exit
+holding it, and then stranded that slot deliberately — the unwind's leak
+`PLAN.md` S43.6 owns. The block therefore stayed on the abandoned list with a
+live occupant. From then on
+`memory::stdapi::tests::the_slot_a_queue_entry_names::`
+`a_block_emptied_around_a_withheld_zero_count_member_reaches_the_pool_at_the_return`
+failed 5 runs in 10 of `cargo test --lib`, and every run of
+`--test-threads=1`, on a tree whose own module was green in 39 of 39. The
+suite before the step failed 0 in 10 of the same command.
+
+**Why it was possible.** That case fills two blocks of the 64-byte class and
+watches the second, because `Heap::retire_empty` keeps the first emptied block
+of a class as that class's one spare. An abandoned block of the same class is
+adopted by the fill's first refill, so the fill spanned a block that already
+held an occupant and the block it watched became the spare rather than the
+pool's. Nothing in either case names the other: the shared state is the
+entity heap's per-class spare and the abandoned list, and `test_guard`
+serialises access to them without resetting them.
+
+**Why it was not caught.** The module's own 39 cases passed, and so did the
+first full run — the failure needs the two cases in one process and the order
+that puts the abandoned block before the fill, which `--test-threads=1` gives
+and a parallel run gives half the time. A single green full run was read as
+the suite's answer; the measurement that settled it was ten runs before the
+change and ten after.
+
+**What changed.** The case borrows a size class of its own, and returns the
+stranded slot after its assertions so the class is left as it was found.
+
+**The rule the crate works to, and where its edge is.** A case may leave a
+block abandoned; what it may not leave is a slot nobody will ever return,
+because that slot holds the block's `used` above zero for the life of the
+process and the first thread to adopt the block inherits an occupant it never
+allocated. A slot returned across threads is different in exactly the way that
+matters: the free sits on the block's own stack until an adopter collects it,
+and the block then empties on schedule. Two cases in
+`cycle::deferred_slot_reuse` leave abandoned blocks for that reason and neither
+was ever the flake. So: a case that strands a slot borrows a size class of its
+own and says so, and the per-class spare and the abandoned list are read as
+shared fixtures — `block_pool::test_guard` serialises them rather than
+restoring them.
+
+---
+
 ## 2026-09-03 — an exact assertion cannot be made against a process-global ledger
 
 **What happened.** `promote::tests::where_a_survivor_list_is_placed::`

@@ -60,7 +60,7 @@ enum Where {
 /// `ACTIVE` and `PARKED` were one state in two declarations, and the state is
 /// one pointer — a chain head whose null says the window is shut
 /// (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Deferred slot reuse").
-const RETIRED: [(&str, &str, Where); 91] = [
+const RETIRED: [(&str, &str, Where); 92] = [
     // Candidate registration, whose callers are spread over four modules.
     // `ShadowArena::enrol` is the homonym: the audit maps that one to the
     // allocation it performs, and the glossary's *candidate registration* is
@@ -258,6 +258,15 @@ const RETIRED: [(&str, &str, Where); 91] = [
     (
         "dispose",
         "dispose_thread_state",
+        Where::Under("cycle/deferred_slot_reuse"),
+    ),
+    // The classifier answers how a death past the region is withheld, and one
+    // of its three answers is no withholding at all. The retired name reads
+    // as a permission and sends a reader looking for a population the module
+    // does not have (`PLAN.md`, S43.5).
+    (
+        "can_carry_the_mark",
+        "classify_past_the_region",
         Where::Under("cycle/deferred_slot_reuse"),
     ),
     ("Judged", "ValidationResult", Where::Anywhere),

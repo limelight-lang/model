@@ -29,9 +29,9 @@
 //! thread's workspace**, laid out behind the worklist's
 //! ([`crate::cycle::arena`]), so a window opens on memory the thread already
 //! holds and the ordinary collection withholds every return it has without
-//! asking the memory manager for anything. Past that region the chain takes
-//! 64 KiB manager blocks, stamped `BLOCK_KIND_GC_METADATA` for as long as
-//! they are held and returned at the window's close.
+//! asking the memory manager for anything. The region is all the memory this
+//! module ever holds: a death the region has no room for is answered in the
+//! dying entity's own memory rather than out of a new block.
 //!
 //! The chain's control line is the first 64 bytes of that region, and
 //! thread-local storage holds one non-owning pointer to it: **null is the
@@ -47,53 +47,52 @@
 //!
 //! # What a refusal costs, and where it is answered
 //!
-//! **A window's open asks no allocation path**, the workspace being the one
-//! block it stands on and the [`ActiveTrace`] having drawn that already. So
-//! the refusal a draw at the first withheld return would meet — holding a
+//! **No path of this module asks an allocation path**, so no path of it can
+//! be refused. A window's open stands on the workspace region the
+//! [`ActiveTrace`] has already drawn; a death the region can record costs one
+//! append; and a death past the region is answered out of memory the dying
+//! entity itself occupies. The refusal a draw here would meet — holding a
 //! slot whose rows are live, where returning it is the reuse this module
 //! prevents and dropping it loses a physical return, which is refused
-//! (`dev/DECISIONS.md`, "an enrolment cannot fail") — has no way of arriving
-//! for as long as the region has room.
+//! (`dev/DECISIONS.md`, "an enrolment cannot fail") — therefore has no way of
+//! arriving.
 //!
-//! Growth past the region is where it arrives, and there it ends the process,
-//! which is the funded class's last resort and the same one the queue's
-//! overflow buffer reaches (`crate::cycle::queue`). Reached only after
-//! [`RETURNS_BASE_RECORDS`] slots have died inside one trace window while both
-//! allocation paths refuse a single block.
+//! Past the region the state of the dying slot's block decides which of three
+//! answers it takes ([`classify_past_the_region`]):
 //!
-//! **A death in memory a trace has stamped does not reach it**: past the
-//! region such a death is marked in the entity's own header
-//! ([`crate::refcount::DEAD_IN_PLACE`]) and its block is linked into the
-//! window's list of marked blocks, which asks no allocation path and so
-//! cannot be refused. The close walks that list and returns every marked
-//! slot ([`WithheldReturns::return_marked`]). The chain keeps every death
-//! the region holds, the per-slot walk a mark costs the close being dearer
-//! than an append at every design class (`dev/BENCHMARKS.md`, 2026-09-04,
-//! S43.1), which is why the mark answers the refusal rather than replacing
-//! the chain. What still reaches the growth and
-//! the process end behind it is a death in memory no trace stamped, and the
-//! reset's whole-block sentinel, which has no header of its own to carry a
-//! mark; `PLAN.md` S43.5 has to answer both before it can delete the growth. A
-//! thread exiting with its window still open ends the process for a reason of
-//! its own ([`dispose_thread_state`]).
+//! - **no row of this collection addresses the block** — the return proceeds
+//!   physically and this window owes nothing. What the window prevents is a
+//!   new occupant inheriting a row that has been met, and a block this
+//!   collection never touched holds no such row;
+//! - **a row does, and the block is this thread's to walk** — the slot takes
+//!   the mark ([`crate::refcount::DEAD_IN_PLACE`]) and its block goes on the
+//!   window's list of marked blocks, which the close walks slot by slot
+//!   ([`WithheldReturns::return_marked`]);
+//! - **a row does, and the block is another thread's** — the slot takes the
+//!   mark and goes on the window's stack of foreign slots, threaded through
+//!   the dead slots themselves ([`WithheldReturns::return_foreign`]). Its
+//!   block is not walked: the bump cursor bounding such a walk is the owner's
+//!   to move, and reading a slot the owner is publishing races that store.
 //!
-//! The block leaving the append position is charged whole. The block still
-//! under the cursor is a documented residue: it never stands in the current
-//! figure, and the close enters it in the high-water one together with the
-//! trace arena's own residue, which is the instant the two are in use at once
-//! (`crate::memory::gc_metadata`). The workspace's own region enters neither
-//! figure, being memory the thread holds whether or not a collection is
-//! running (`crate::cycle::arena::TraceScratchArena::residue`).
+//! The chain keeps every death the region has room for, the per-slot walk a
+//! mark costs the close being dearer than an append at every design class
+//! (`dev/BENCHMARKS.md`, 2026-09-04, S43.1); that is why the mark answers a
+//! full region rather than replacing the chain. A thread exiting with its
+//! window still open ends the process, which is the one process end this
+//! module holds and has a reason of its own ([`dispose_thread_state`]).
+//!
+//! The workspace's region enters no byte figure, being memory the thread
+//! holds whether or not a collection is running
+//! (`crate::cycle::arena::TraceScratchArena::residue`), and past it the module
+//! holds no manager memory to enter. So it moves the manager's ledger by
+//! nothing (`crate::memory::gc_metadata`).
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use crate::cycle::records::{RecordChain, SEGMENT_HEADER_BYTES};
 use crate::cycle::shadow::{self, Color};
-use crate::memory::block_pool::{
-    BLOCK_KIND_ENTITY, BLOCK_KIND_RETAINED, BLOCK_PAYLOAD, BlockHeader,
-};
-use crate::memory::gc_metadata;
+use crate::memory::block_pool::{BLOCK_KIND_ENTITY, BLOCK_KIND_RETAINED, BlockHeader};
 
 /// The chain of withheld returns, resident in the workspace region it
 /// describes.
@@ -106,17 +105,8 @@ use crate::memory::gc_metadata;
 /// and an append writes no line the replay walk reads before it.
 #[repr(C, align(64))]
 struct DeferredReturnChain {
-    /// The records themselves, over the workspace's region and the blocks the
-    /// growth attached past it.
+    /// The records themselves, over the workspace's one region.
     records: RecordChain<*mut u8>,
-    /// Blocks of this chain drawn through the reserve allocation path, and
-    /// therefore how many go back to the reserve rather than to the pool. Which
-    /// ones is not recorded: a block is a block, and the count is what restores
-    /// the reserve's size.
-    from_reserve: Cell<usize>,
-    /// Bytes of this chain already charged to the manager's ledger, so that the
-    /// close discharges exactly what was charged.
-    published: Cell<usize>,
     /// Newest block of the list of blocks holding a mark, or null while this
     /// window has taken none. Every block on it names the next through one
     /// word of its own header and the last names itself, so a block's
@@ -125,6 +115,12 @@ struct DeferredReturnChain {
     /// A `Cell` beside the atomic links, and for the same reason the chain
     /// is one: the head has one writer, the thread whose window is open.
     marked: Cell<*mut u8>,
+    /// Newest marked slot of a block this thread does not own, or null while
+    /// this window has stacked none. Each names the next through
+    /// [`foreign_link`] and the oldest names null, a stack rather than a list
+    /// because a slot is pushed once and no word of it has to answer
+    /// "stacked?".
+    foreign: Cell<*mut u8>,
 }
 
 const _: () = assert!(size_of::<DeferredReturnChain>() == 64);
@@ -132,9 +128,9 @@ const _: () = assert!(align_of::<DeferredReturnChain>() == 64);
 
 /// Records the workspace's own region for withheld returns holds.
 ///
-/// The capacity the Sage gate fixed, and the record count past which a
-/// growth — and therefore a refusal that ends the process — becomes reachable
-/// at all (`PLAN.md`, S36.11).
+/// The capacity the Sage gate fixed, and the record count past which a death
+/// is marked, stacked or returned on its block's own state rather than
+/// recorded (`PLAN.md`, S36.11, [`classify_past_the_region`]).
 pub(crate) const RETURNS_BASE_RECORDS: usize = 1_024;
 
 /// Bytes that region takes out of the workspace: the control line, the base
@@ -142,15 +138,6 @@ pub(crate) const RETURNS_BASE_RECORDS: usize = 1_024;
 pub(crate) const RETURNS_BASE_BYTES: usize = size_of::<DeferredReturnChain>()
     + SEGMENT_HEADER_BYTES
     + RETURNS_BASE_RECORDS * size_of::<*mut u8>();
-
-/// Records one block the growth attaches holds.
-///
-/// The block's payload less the segment's header line, in eight-byte records.
-/// The figure is the candidate queue's overflow capacity for the same reason.
-const RECORDS_PER_BLOCK: usize = (BLOCK_PAYLOAD - SEGMENT_HEADER_BYTES) / size_of::<*mut u8>();
-
-const _: () =
-    assert!(RECORDS_PER_BLOCK * size_of::<*mut u8>() + SEGMENT_HEADER_BYTES == BLOCK_PAYLOAD);
 
 thread_local! {
     /// The control line of this thread's withheld returns while its trace
@@ -160,40 +147,12 @@ thread_local! {
         const { Cell::new(std::ptr::null_mut()) };
 }
 
-/// Bytes of the segment the chain is filling that stand in the byte ledger.
-///
-/// The workspace's region enters neither figure, so a chain that has not grown
-/// answers zero; a block the growth attached counts its header line and the
-/// records written behind it
-/// (`crate::memory::gc_metadata::GcMemoryStats::current_bytes_in_use`).
-#[inline]
-fn ledger_bytes(chain: &DeferredReturnChain) -> usize {
-    if chain.records.appends_into_base() {
-        return 0;
-    }
-
-    SEGMENT_HEADER_BYTES + chain.records.records_in_append_segment() * size_of::<*mut u8>()
-}
-
-/// One block for the chain, the ordinary pool first and the critical reserve
-/// second, with the flag saying which allocation path answered. A null block
-/// means both refused, and then the flag is meaningless.
-fn draw_block() -> (*mut BlockHeader, bool) {
-    let pooled = gc_metadata::acquire();
-    if !pooled.is_null() {
-        return (pooled, false);
-    }
-
-    (gc_metadata::adopt(crate::memory::critical::draw()), true)
-}
-
 /// The chain a trace's withheld returns are written into, and the owner that
-/// gives its blocks back.
+/// clears what an unwind leaves standing.
 ///
 /// A holder of its own rather than a field the enclosing drop unwinds by hand:
-/// `BlockPool::put` panics on a poisoned mutex, and a release left to the end
-/// of [`ActiveTrace::drop`] would be skipped by an unwind out of the replay,
-/// stranding 64 KiB blocks and their ledger entry for the life of the process.
+/// an unwind out of the replay would otherwise skip the clearing below, and a
+/// mark or a stacked slot that outlives its window is one no window returns.
 /// [`crate::cycle::arena::TraceScratchArena`] is re-entrant for the same
 /// reason.
 struct WithheldReturns {
@@ -220,9 +179,8 @@ impl WithheldReturns {
         // `DeferredReturnChain` that was never constructed.
         unsafe {
             (&raw mut (*control).records).write(RecordChain::over(records, RETURNS_BASE_RECORDS));
-            (&raw mut (*control).from_reserve).write(Cell::new(0));
-            (&raw mut (*control).published).write(Cell::new(0));
             (&raw mut (*control).marked).write(Cell::new(std::ptr::null_mut()));
+            (&raw mut (*control).foreign).write(Cell::new(std::ptr::null_mut()));
         }
 
         Self { control }
@@ -230,11 +188,6 @@ impl WithheldReturns {
 
     fn chain(&self) -> &DeferredReturnChain {
         unsafe { &*self.control }
-    }
-
-    /// Bytes of the segment under the cursor, which no growth has charged.
-    fn residue(&self) -> usize {
-        ledger_bytes(self.chain())
     }
 
     /// Take this thread's window down.
@@ -270,15 +223,19 @@ impl WithheldReturns {
     /// Take the newest listed block off the list, or **None** when nothing
     /// is listed.
     ///
-    /// The head moves before the block is touched, and that order is the
-    /// whole of what a panic inside a disposal costs: the blocks behind the
-    /// one being disposed of are still named by the head, so the drop's own
+    /// The head moves before the block is touched, so the blocks behind the
+    /// one being disposed of are still named by the head and the drop's own
     /// pass finds them. A walk that took the head whole would leave them
     /// listed with nothing naming them, and a listed block refuses every
     /// later mark of itself (`dev/POSTMORTEM.md`, "a repair moved ownership
     /// into a `Drop` and left the state that names it behind": a clearing
     /// written twice in two places is a clearing that will be true in one of
     /// them).
+    ///
+    /// **What that order costs is the block under the walk**: a panic inside
+    /// the disposal of one of its slots leaves the marks the walk had not
+    /// reached standing, named by nothing, and the drop's pass cannot find
+    /// them either. `PLAN.md` S43.6 owns that half.
     fn take_marked_block(&self) -> Option<(*mut u8, u32)> {
         let block = self.chain().marked.get();
         if block.is_null() {
@@ -308,9 +265,15 @@ impl WithheldReturns {
     /// Return every slot a mark holds, newest block first.
     ///
     /// Called where [`replay`](Self::replay) is called and under the same
-    /// closed window. The two lists never claim one slot: a marked slot took
-    /// no record, and a recorded one reads free by the time this walk could
-    /// reach it.
+    /// closed window, **after** [`return_foreign`](Self::return_foreign). A
+    /// record and a mark never name one slot, a death taking one or the
+    /// other; a mark and a stacked slot can, and the order is what separates
+    /// them. A block foreign when one of its slots was stacked can be this
+    /// thread's by the time the next slot of it dies — `Heap::adopt` runs on
+    /// the ordinary refill path, inside the window — and that slot lists the
+    /// block. The stack walk runs first, so every stacked slot reads free by
+    /// the time this walk reaches its block, and the block cannot retire
+    /// under the walk either: the mark that listed it is a hold of its own.
     ///
     /// **A block leaves the list before its slots are returned**, because the
     /// return that spends its last hold gives the block to the pool and its
@@ -333,6 +296,12 @@ impl WithheldReturns {
     /// case `crate::refcount::DEAD_IN_PLACE` says cannot arise and the two
     /// guards in `crate::memory::heap` assert.
     ///
+    /// **This reaches the blocks still listed and no others.** A panic raised
+    /// inside a disposal leaves the block that walk had taken off the list
+    /// carrying whatever marks it had not reached, which is
+    /// [`take_marked_block`](Self::take_marked_block)'s note and `PLAN.md`
+    /// S43.6's.
+    ///
     /// What is left is a slot on no free list, below its block's cursor and
     /// counted in the block's occupancy: a leak of the same shape and the
     /// same size as the records the same unwind loses, and `PLAN.md` S43.6's
@@ -344,6 +313,70 @@ impl WithheldReturns {
     fn abandon_marked(&self) {
         while let Some((block, kind)) = self.take_marked_block() {
             unsafe { dispose_marks_of(block, kind, Disposition::Abandon) };
+        }
+    }
+
+    /// Take the newest stacked slot off the stack, or **None** when nothing
+    /// is stacked.
+    ///
+    /// The head moves before the slot is disposed of, for the reason
+    /// [`take_marked_block`](Self::take_marked_block) moves it first: a panic
+    /// inside a disposal leaves the slots below it still named by the head,
+    /// so the drop's own pass finds them.
+    fn take_foreign_slot(&self) -> Option<*mut u8> {
+        let slot = self.chain().foreign.get();
+        if slot.is_null() {
+            return None;
+        }
+
+        // Safety: a stacked slot is one this window marked and nothing has
+        // returned. The owner never heard of the death, so the slot is on no
+        // free list, stands below its block's cursor and is still counted in
+        // the block's `used` — which is what keeps the block out of the pool
+        // and these bytes readable (`crate::memory::heap::Heap::free`). That
+        // holds whether or not this thread has adopted the block since:
+        // adoption moves the owner word and no slot's state.
+        self.chain()
+            .foreign
+            .set(unsafe { foreign_link(slot).read() });
+        Some(slot)
+    }
+
+    /// Return every stacked slot through `ll_free`, newest first.
+    ///
+    /// Called under the same closed window as
+    /// [`return_marked`](Self::return_marked) and before it, which is the
+    /// order that keeps one slot out of both walks. The walk itself reads no
+    /// word of any block: each return goes through `ll_free`, which posts
+    /// onto the block's own stack of cross-thread frees while the block is
+    /// still another thread's, and takes the ordinary owner path once this
+    /// thread has adopted it.
+    fn return_foreign(&self) {
+        while let Some(slot) = self.take_foreign_slot() {
+            note_slot_visited();
+            unsafe { dispose_of(slot, Disposition::Return) };
+        }
+    }
+
+    /// Clear the mark of every stacked slot and return none of the memory.
+    ///
+    /// The unwind's half of [`return_foreign`](Self::return_foreign), and
+    /// what it leaves is what [`abandon_marked`](Self::abandon_marked)
+    /// leaves, in a block of another thread: a slot on no free list, below
+    /// its block's cursor and counted in a `used` its owner will never see
+    /// decremented. `PLAN.md` S43.6 owns both.
+    ///
+    /// **It runs before the block walk for symmetry rather than for
+    /// soundness.** The close's order is load-bearing because the block walk
+    /// returns memory, and a stacked slot returned as an ordinary marked one
+    /// puts a free-list link where the stack's own link stood; an abandoning
+    /// walk returns nothing, so neither order can move a link the other
+    /// reads. A change that gave this path memory back would make the order
+    /// load-bearing here too.
+    fn abandon_foreign(&self) {
+        while let Some(slot) = self.take_foreign_slot() {
+            note_slot_visited();
+            unsafe { dispose_of(slot, Disposition::Abandon) };
         }
     }
 }
@@ -358,9 +391,12 @@ enum Disposition {
     Abandon,
 }
 
-// Slots the marked walk has read on this thread. What it is for is the
-// claim that an ordinary collection pays nothing for the mark: a walk that
-// reads no slot is one no block was listed for.
+// Slots the close's three walks have read on this thread: the block walk's
+// stride, the retained block's survivor list, and the stack of foreign slots.
+// What it is for is the claim that an ordinary collection pays nothing for
+// the mark — a close that reads no slot is one that took no mark of either
+// kind — so the stacked half counts here too, and a reading of one says a
+// mark was taken rather than that a block was listed.
 #[cfg(test)]
 thread_local! {
     static MARKED_SLOTS_VISITED: Cell<usize> = const { Cell::new(0) };
@@ -411,6 +447,31 @@ unsafe fn list_marked_block(chain: &DeferredReturnChain, block: *mut u8, kind: u
     let next = if head.is_null() { block } else { head };
     link.store(next, Ordering::Release);
     chain.marked.set(block);
+}
+
+/// The word a stacked slot names the next one through: the eight bytes a free
+/// slot links through (`crate::memory::heap::FREE_LIST_LINK_OFFSET`), which
+/// hold nothing while the slot is dead and which the return overwrites.
+///
+/// Plain rather than atomic: the stack has one writer and one reader, the
+/// thread whose window is open, and the owner of the block never reads these
+/// bytes until it receives the return.
+///
+/// # Safety
+/// `slot` is a dead entity slot of at least the free list's two words.
+#[inline]
+unsafe fn foreign_link(slot: *mut u8) -> *mut *mut u8 {
+    unsafe { slot.add(crate::memory::heap::FREE_LIST_LINK_OFFSET) as *mut *mut u8 }
+}
+
+/// Put `slot` on this window's stack of marked slots in blocks this thread
+/// does not own.
+///
+/// # Safety
+/// As [`foreign_link`], and `chain` is this thread's open window.
+unsafe fn stack_foreign_slot(chain: &DeferredReturnChain, slot: *mut u8) {
+    unsafe { foreign_link(slot).write(chain.foreign.get()) };
+    chain.foreign.set(slot);
 }
 
 /// Dispose of every dead-in-place slot of one listed block: `Return` frees
@@ -507,7 +568,7 @@ unsafe fn dispose_marks_of(block: *mut u8, kind: u32, disposition: Disposition) 
             }
         }
         // A kind with no arm is a block this walk cannot read the slots of,
-        // and `can_carry_the_mark` admits none such.
+        // and `classify_past_the_region` lists none such.
         _ => debug_assert!(false, "a kind with no arm reached the marked walk"),
     }
 }
@@ -541,30 +602,14 @@ unsafe fn dispose_of(slot: *mut u8, disposition: Disposition) {
 }
 
 impl Drop for WithheldReturns {
-    /// Give back every block the growth attached, what the reserve lent
-    /// through the reserve allocation path and the rest to the pool. The
-    /// workspace's own region is the arena's and stays where it is.
-    ///
-    /// The reserve is served first for the reason the trace arena serves it
-    /// first: the retry that follows an abort wants an allocation path that
-    /// serves.
+    /// Take the window down and leave no mark standing, which is all this
+    /// chain owns: its records and its control line stand in the workspace
+    /// region the arena hands back, and no path of this module holds memory
+    /// of the manager's.
     fn drop(&mut self) {
         self.close_window();
+        self.abandon_foreign();
         self.abandon_marked();
-
-        let chain = self.chain();
-        gc_metadata::discharge(chain.published.replace(0));
-        let mut owed_to_reserve = chain.from_reserve.replace(0);
-
-        chain.records.take_segments_past_base(|segment| {
-            let block = BlockHeader::of_ptr(segment);
-            if owed_to_reserve > 0 {
-                owed_to_reserve -= 1;
-                gc_metadata::release_to_critical(block);
-            } else {
-                gc_metadata::release(block);
-            }
-        });
     }
 }
 
@@ -672,9 +717,8 @@ impl ActiveTrace {
     /// which is what makes the close order above enforceable by the type.
     ///
     /// **The collection does not reset it.** The close does, in an order this
-    /// module owns, and it reads the arena's residue beforehand to enter it in
-    /// the ledger beside its own — an arena reset by its caller enters that
-    /// residue separately and loses the one instant the two stand together.
+    /// module owns: the reset nulls every row, and only then may a withheld
+    /// return be replayed into memory the allocator can hand out again.
     pub(crate) fn arena(&mut self) -> &mut crate::cycle::arena::TraceScratchArena {
         &mut self.arena
     }
@@ -691,73 +735,37 @@ impl Drop for ActiveTrace {
             crate::cycle::queue::restore_candidates(batch);
         }
 
-        // Both of this collection's residues stand together here and nowhere
-        // else: the arena's reset enters its own alone, and the high-water
-        // figure takes the larger of two marks rather than their sum, so a
-        // mark left to that call would miss a collection that held rows and
-        // withheld returns at once.
-        gc_metadata::mark_peak(self.arena.residue() + self.returns.residue());
-
         // First and unconditionally: after the window falls, a physical
         // return may recommission the block whose shadow pointer this sweep
-        // must null.
+        // must null. The reset enters its own residue in the high-water
+        // figure as it rewinds (`crate::cycle::arena::TraceScratchArena`),
+        // and this window has no residue to stand beside it.
         self.arena.reset();
 
         self.returns.close_window();
         self.returns.replay();
+        self.returns.return_foreign();
         self.returns.return_marked();
     }
 }
 
-/// Move the append position into a block of its own, or end the process.
+/// Refuse a physical return while the current trace can still address the
+/// slot, recording the return for the window's close, and answer whether the
+/// return was refused.
 ///
-/// The open trace's rows still address every slot the caller is holding, so
-/// returning this one is the reuse the window exists to prevent; dropping the
-/// record loses a physical return, which is refused (`dev/DECISIONS.md`, "an
-/// enrolment cannot fail"). Nothing can report it either: `ll_free` holds no
-/// frame that can fail. **S43.5 deletes this function**, and it owes two cases
-/// first: a death past a full region in memory this thread's trace has not
-/// stamped, which [`can_carry_the_mark`] refuses, and the reset's whole-block
-/// sentinel, which addresses a block header and so has no entity header to
-/// mark.
-#[cold]
-fn grow(chain: &DeferredReturnChain) {
-    let (block, from_reserve) = draw_block();
-    if block.is_null() {
-        std::process::abort();
-    }
-
-    // The segment the cursor is leaving is full by construction, so what it
-    // holds is exact here — nothing for the workspace's region, and a whole
-    // payload for a block. Charged after both allocation paths have answered:
-    // a refusal leaves the chain where it stands.
-    let filled = ledger_bytes(chain);
-    chain.published.set(chain.published.get() + filled);
-    gc_metadata::charge(filled);
-
-    unsafe {
-        chain
-            .records
-            .extend(BlockHeader::payload_start(block), RECORDS_PER_BLOCK)
-    };
-
-    if from_reserve {
-        chain.from_reserve.set(chain.from_reserve.get() + 1);
-    }
-}
-
-/// Refuse a physical return while the current trace can still address
-/// the slot, recording the return for the window's close.
+/// **False is a return the caller must make physically**, which is either a
+/// thread with no window open or a death past the region in memory this
+/// collection never touched ([`classify_past_the_region`]).
 ///
 /// Called only after the queue-entry window has refused the same return. A
 /// replay that still finds `CANDIDATE_BIT` stops before here, because the
 /// queue entry itself remains the record.
 ///
 /// With no window open the whole cost is one thread-local load and one branch.
-/// With one open and room in the append segment: three loads — the thread-local
+/// With one open and room in the region: three loads — the thread-local
 /// control line, the cursor and the limit — two branches and two stores, with
-/// no atomic, no allocator call and no pool call. The pool is asked in
-/// [`grow`] alone, and the second push below it runs on that path only.
+/// no atomic, no allocator call and no pool call. Past the region the block's
+/// own state is read, which is the cold tail below.
 ///
 /// # Safety
 /// `ptr` is a dead entity slot whose teardown has completed and which this call
@@ -774,40 +782,61 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
     }
 
     let chain = unsafe { &*control };
-    if !chain.records.push(ptr) {
-        unsafe { withhold_without_a_record(chain, ptr, kind) };
+    if chain.records.push(ptr) {
+        return true;
     }
 
-    true
+    unsafe { withhold_without_a_record(chain, ptr, kind) }
 }
 
-/// Whether a mark in the entity's own header is one this window's close
-/// will return, which is what separates the deaths this module answers with
-/// a mark from the deaths it still records.
+/// How a death past the region is withheld, or that it needs no withholding
+/// at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PastTheRegion {
+    /// No row of this collection addresses the slot, so the caller returns it
+    /// physically and this window owes nothing.
+    ReturnNow,
+    /// The slot takes the mark and its block goes on the window's list, which
+    /// the close walks slot by slot.
+    MarkAndListBlock,
+    /// The slot takes the mark and goes on the window's stack of foreign
+    /// slots, the block belonging to another thread.
+    MarkAndStack,
+}
+
+/// Which of [`PastTheRegion`]'s three answers a death takes, read off the
+/// state of the block it stands in.
 ///
-/// The stamp is the half every population shares: rows over the memory mean
-/// this thread's collection is walking it, so the block is one this thread
-/// will still be holding at its own close, which is where the marked slots
-/// are returned ([`WithheldReturns::return_marked`]). The stamp is not what
-/// finds the mark — the window's list is — and
+/// **The stamp decides whether the death has to be withheld at all.** Rows
+/// over the memory mean this collection has met the block, so a slot returned
+/// there could be handed out again under a row that names it; a block this
+/// collection never touched carries no row for any occupant, and its slots
+/// are the ones the allocator has been handing out all through the trace
+/// anyway. The stamp is not what *finds* a mark — the window's list and stack
+/// are — and
 /// [`crate::cycle::arena::TraceScratchArena::clear_touched_rows`] reads no
-/// header for it. Where the stamp is written, and what else has to hold,
-/// differs by population:
+/// header for it.
 ///
-/// - **an entity slot** is asked whose block it is as well. The return is
-///   the owner's — its free list and its `used` — so a slot marked in a
-///   block this thread does not own is one this window's walk cannot
-///   return;
-/// - **a retained survivor** asks the stamp alone, its return being an
-///   atomic decrement any thread may perform
-///   ([`crate::memory::retained::occupant_freed`]). The reset's whole-block
-///   sentinel is refused here instead: it addresses the block header rather
-///   than an entity, so there is no header of its own to mark;
+/// **The owner decides how a withheld death is found again**, and only the
+/// slotted population is asked:
+///
+/// - **an entity slot** in a block this thread owns is marked and its block
+///   listed, the close walking the block by stride. A slot in a block another
+///   thread owns is marked and stacked instead: such a walk is bounded by a
+///   bump cursor its owner moves, and a slot read across that store is read
+///   through a race ([`crate::memory::heap::entity_block_slots`]);
+/// - **a retained survivor** is marked and its block listed, its return being
+///   an atomic decrement any thread may perform
+///   ([`crate::memory::retained::occupant_freed`]) and its walk bounded by a
+///   published survivor list rather than by a cursor. The reset's whole-block
+///   sentinel is separated here: it addresses the block header rather than an
+///   entity, so there is no header of its own to mark;
 /// - **a large entity**, pooled or OS-direct, carries its one row in its own
 ///   block header, so that row's colour is the stamp
-///   ([`crate::memory::large_entity::shadow_row`]). Its header is not a
-///   `HeapBlockHeader`, and neither the shadow pointer nor the owner word
-///   an entity block carries exists at those offsets to be read.
+///   ([`crate::memory::large_entity::shadow_row`]) and the block holds the
+///   one occupant the close reads. Its header is not a `HeapBlockHeader`, and
+///   neither the shadow pointer nor the owner word an entity block carries
+///   exists at those offsets to be read.
 ///
 /// Why the retained and large populations are not asked for an owner, and
 /// what that leaves open: `dev/DECISIONS.md`, "the stamp is the whole
@@ -815,42 +844,75 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
 ///
 /// # Safety
 /// As [`defer_reuse_if_tracing`].
-unsafe fn can_carry_the_mark(ptr: *mut u8, kind: u32) -> bool {
+unsafe fn classify_past_the_region(ptr: *mut u8, kind: u32) -> PastTheRegion {
     let block = BlockHeader::of_ptr(ptr) as *mut u8;
 
     // Asked rather than listed, because the two large kinds grow together or
     // not at all (`crate::memory::large_entity::is_large_entity`).
     if crate::memory::large_entity::is_large_entity(kind) {
         let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
-        return shadow::color(row) != Color::Untouched;
+        if shadow::color(row) == Color::Untouched {
+            return PastTheRegion::ReturnNow;
+        }
+
+        return PastTheRegion::MarkAndListBlock;
     }
 
-    // A kind with no arm refuses rather than falls through: the set that
+    // A kind with no arm returns rather than falls through: the set that
     // reaches here is `stdapi::can_lose_trace_identity`'s, and a kind added
     // there without an arm here would otherwise be marked on the strength of
     // a shadow pointer read at an offset that may be another module's.
     match kind {
         BLOCK_KIND_ENTITY => {
-            !unsafe { crate::memory::heap::block_shadow(block) }.is_null()
-                && unsafe { crate::memory::heap::block_is_owned_by_this_thread(block) }
+            if unsafe { crate::memory::heap::block_shadow(block) }.is_null() {
+                return PastTheRegion::ReturnNow;
+            }
+
+            if unsafe { crate::memory::heap::block_is_owned_by_this_thread(block) } {
+                PastTheRegion::MarkAndListBlock
+            } else {
+                PastTheRegion::MarkAndStack
+            }
         }
         BLOCK_KIND_RETAINED => {
-            ptr != block && !unsafe { crate::memory::heap::block_shadow(block) }.is_null()
+            // The reset's whole-block sentinel, and it needs no withholding:
+            // `promote::retain_block` clears the collector line before it
+            // publishes the kind, and between that and the sentinel free the
+            // thread is inside `promote::arena_reset_full`, which runs no
+            // trace step. A window open around that reset finished its mark
+            // before the teardown that drives it, and a window opened inside
+            // it by a destructor closed with the destructor's frame — so
+            // either way no row of this thread's addresses the block.
+            if ptr == block {
+                debug_assert!(
+                    unsafe { crate::memory::heap::block_shadow(block) }.is_null(),
+                    "the reset's whole-block sentinel reached a stamped block"
+                );
+                return PastTheRegion::ReturnNow;
+            }
+
+            if unsafe { crate::memory::heap::block_shadow(block) }.is_null() {
+                return PastTheRegion::ReturnNow;
+            }
+
+            PastTheRegion::MarkAndListBlock
         }
-        _ => false,
+        _ => {
+            debug_assert!(false, "a kind with no arm reached the classifier");
+            PastTheRegion::ReturnNow
+        }
     }
 }
 
-/// Withhold a return the region has no room to record.
+/// Withhold a return the region has no room to record, and answer whether it
+/// was withheld at all.
 ///
-/// A death [`can_carry_the_mark`] admits carries the fact in the entity's own
-/// header ([`crate::refcount::mark_dead_in_place`]) and puts its block on
-/// this window's list ([`list_marked_block`]), which the close walks.
-/// Nothing is drawn and nothing can refuse, which is what takes the process
-/// end off that path (`PLAN.md` S43.2, S43.3). Every other death still takes
-/// a record, and what is left there is a death in memory no trace stamped,
-/// plus the reset's whole-block sentinel — the two `PLAN.md` S43.5 has to
-/// answer before it can delete the growth.
+/// A death [`classify_past_the_region`] withholds carries the fact in the
+/// entity's own header ([`crate::refcount::mark_dead_in_place`]) and goes on
+/// this window's list of blocks ([`list_marked_block`]) or its stack of
+/// foreign slots ([`stack_foreign_slot`]), both of which the close walks.
+/// Nothing is drawn and nothing can refuse, which is what takes every process
+/// end off this path (`PLAN.md` S43.2, S43.3, S43.5).
 ///
 /// A marked slot stays out of the allocator's hands the way a recorded one
 /// does — it is on no free list and below its block's bump cursor — and a
@@ -860,26 +922,20 @@ unsafe fn can_carry_the_mark(ptr: *mut u8, kind: u32) -> bool {
 /// # Safety
 /// As [`defer_reuse_if_tracing`], whose refused push this answers.
 #[cold]
-unsafe fn withhold_without_a_record(chain: &DeferredReturnChain, ptr: *mut u8, kind: u32) {
-    if unsafe { can_carry_the_mark(ptr, kind) } {
-        unsafe {
-            crate::refcount::mark_dead_in_place(ptr as *mut crate::refcount::RcHeader);
-            list_marked_block(chain, BlockHeader::of_ptr(ptr) as *mut u8, kind);
-        }
-
-        return;
+unsafe fn withhold_without_a_record(chain: &DeferredReturnChain, ptr: *mut u8, kind: u32) -> bool {
+    let placement = unsafe { classify_past_the_region(ptr, kind) };
+    if placement == PastTheRegion::ReturnNow {
+        return false;
     }
 
-    grow(chain);
-    if !chain.records.push(ptr) {
-        // The same last resort [`grow`] reaches, and by the same call rather
-        // than by a panic: a record this call drops is a physical return
-        // lost, and `ll_free`'s caller is `extern "C"`, so an unwind out of
-        // here is outside the protocol on every profile that unwinds. The
-        // segment a growth opens is empty and holds [`RECORDS_PER_BLOCK`], so
-        // only a defect in the chain gets here.
-        std::process::abort();
+    unsafe { crate::refcount::mark_dead_in_place(ptr as *mut crate::refcount::RcHeader) };
+    if placement == PastTheRegion::MarkAndStack {
+        unsafe { stack_foreign_slot(chain, ptr) };
+    } else {
+        unsafe { list_marked_block(chain, BlockHeader::of_ptr(ptr) as *mut u8, kind) };
     }
+
+    true
 }
 
 /// Refuse a thread exit that would abandon an open trace window.

@@ -11,8 +11,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-05 · Active: S43, from S43.5, S43.4 having given the marks a
-reader: the marker lists the block, the window's close walks the list. The
+Updated: 2026-09-05 · Active: S43, from S43.6, S43.5 having taken the growth
+out: past its region the module draws nothing, a death in memory the
+collection never met is returned at once, and a marked slot of another
+thread's block is stacked rather than listing its block. The
 stage keeps the form Edmond ruled on 2026-09-04: the chain stays and the mark
 answers its refusal. The
 rest of S36 stands behind it — S36.9's remainder and S36.12's slice (b) each
@@ -2250,14 +2252,113 @@ to prevent.
         And the rfc's three corrections of S43.3 stand, joined by
         `rc-cycle.md`'s "the sweep that nulls the block's shadow pointer is
         what finds it": what finds a mark is the marking window's own list.
-- [ ] S43.5 The growth, the reserve draw and the last resort are deleted
+- [x] S43.5 The growth, the reserve draw and the last resort are deleted
       done: `cycle::deferred_slot_reuse` grows past its region by nothing, asks
         the pool and the critical reserve for nothing, and holds no
         `std::process::abort()`; the region, its 1,024 records and the
         eight-byte append stay, and so does the workspace's 8,320-byte prefix;
-        `dev/ARCHITECTURE.md`'s critical-reserve row names one borrower again
-        and its withheld-returns row loses the blocks past the region
+        past the region a death is marked, stacked or returned on its block's
+        own state, none of the three asks an allocation path, and the reset's
+        whole-block sentinel is returned at once;
+        `dev/ARCHITECTURE.md`'s critical-reserve row names the arena and the
+        candidate queue and loses the chain, and its withheld-returns row loses
+        the blocks past the region
       tier: T2 · role: Critic
+      Sage 2026-09-05 (pre-change gate): the growth goes for every population,
+        and the deletion rests on two rulings rather than one. A death in
+        memory this collection never met is **returned at once** — a null
+        shadow pointer says no row names any slot of the block, so there is no
+        met row for a new occupant to inherit; that covers the unstamped
+        slotted, retained and large populations and the reset's whole-block
+        sentinel, whose block `promote::retain_block` unstamps before it
+        publishes the kind. A stamped slot of a block **another thread owns**
+        is marked and **stacked** through the word a free list links by,
+        rather than listing its block: a block walk is bounded by a cursor its
+        owner moves. Narrowing the step to the reserve draw and the abort was
+        refused — the foreign block is S38.1's moved graph rather than a
+        corner. Recorded in `dev/DECISIONS.md`, "a death the collection never
+        met is returned at once, and a foreign slot is stacked". Also struck
+        one clause of this step's own criterion: the critical reserve keeps
+        two borrowers, the arena and the candidate queue, so the row could not
+        name one. Final.
+      Critic 2026-09-05 round 1: nine findings, seven taken. **A block
+        adopted inside the window is listed after a slot of it was stacked**,
+        and the close then freed that slot twice — `Heap::adopt` runs on the
+        ordinary refill path, so ownership moves under an open window. Fixed
+        by walking the stack before the list, and by
+        `a_block_adopted_after_a_slot_of_it_was_stacked_returns_each_slot_once`,
+        which is red without the order. Three comments and one journal
+        paragraph stated the invariant that failed; corrected. The sentinel
+        case passed with its arm deleted, and now stands beside a stamped
+        block and says what it cannot separate. Three citations named deleted
+        functions; the high-water assertion could not fail and now carries the
+        arena's residue. **Not taken:** that
+        `a_stamped_block_this_thread_does_not_own_is_marked_and_stacked`
+        reintroduces the postmortem's banned fixture — its slot is returned
+        onto the block's own stack and an adopter drains it, which is the
+        difference the measurement shows, 0 failures in 10 runs before and
+        after. And that a panic inside `dispose_marks_of` strands the marks of
+        the block under the walk — real, pre-existing since S43.4, and S43.6's
+        (recorded in its block).
+      Critic 2026-09-05 round 2: eight findings, all taken, none of them a
+        defect reachable today. The first is the premise widening in the note
+        below — a block walk cannot separate its own window's marks from a
+        foreign window's, which round 1's reordering cannot reach, one window
+        being open at a time. `refcount::clear_dead_in_place` still named the
+        block's owner as the clearer and grounded the one-writer rule on it;
+        rewritten, with the writer named. `dev/ARCHITECTURE.md` said such a
+        block is walked by nobody but its owner (it is walked by its owner,
+        which is the point) and still gave the module blocks at thread exit;
+        both corrected. The visited-slot probe counts three walks and its
+        comment claimed one. `abandon_foreign`'s order is symmetry rather than
+        soundness, and says so. `large_entity::occupant`'s three-part argument
+        lost the strength of its middle clause, and now names what no clause
+        covers. And
+        `a_stamped_block_this_thread_does_not_own_is_marked_and_stacked`
+        asserted the mark and never the return: it now fills its own class to
+        capacity and adopts the block back, which the `Abandon` mutation
+        colours.
+      note 2026-09-05 (Critic round 2, a record rather than a repair): the
+        slotted arm has joined the one-window premise, and two earlier lines
+        say otherwise — S43.3's Critic round 1 ("the slotted arm is outside
+        this, ownership standing beside its stamp") and S43.4's Sage line,
+        which names only the retained and large words as depending on it.
+        `DEAD_IN_PLACE` carries no owner, so a block walk cannot separate its
+        own window's marks from a foreign window's, and a thread that stacks a
+        slot of a stranger's block depends on that stranger not walking the
+        block meanwhile. Unreachable today — `ActiveTrace::open` asserts one
+        window per thread and no second collection exists — and S38's token is
+        what closes it. Recorded in `dev/DECISIONS.md`, "a death the collection
+        never met is returned at once, and a foreign slot is stacked", and
+        under S38 below.
+      handoff: the module draws nothing at all now — `grow`, `draw_block`, the
+        two aborts, the reserve and ledger bookkeeping and `RecordChain`'s
+        `take_segments_past_base`, `appends_into_base`,
+        `records_in_append_segment` and `rewind` are gone, this module having
+        been their only caller. Past the region `classify_past_the_region`
+        answers `ReturnNow`, `MarkAndListBlock` or `MarkAndStack`; the stack is
+        threaded through the dead slots at `heap::FREE_LIST_LINK_OFFSET`, and
+        `ActiveTrace::drop` walks it before the block list, which is Critic
+        round 1's finding. Verified at this
+        step: `cargo +1.94 fmt --check` clean, 704 tests five times at one
+        thread and three times at four, release build, `cargo bench --no-run`,
+        `LL_HASH_SEED=1` with `hash-folding` at 704 and the two arms listing
+        the same tests with the one documented difference, three
+        `debug-journal` runs at 708, `python3 dev/tools/citations.py` reading
+        426 with the same
+        twelve residues. Miri covered all 40 cases of the module on this tree,
+        clean, run one or two at a time: the box's `Committed_AS` stands above
+        its `CommitLimit` today and a whole-module run is killed part way,
+        which is a condition of the box rather than of the run — a
+        39-case run of the same module took 130 s on Miri's clock earlier in
+        the day. Ten mutations were run and each coloured the case
+        that admits its arm. Two tests went with their subject —
+        `a_growth_the_pool_refuses_draws_the_reserve_and_gives_it_back` and
+        `the_high_water_figure_holds_both_residues_of_one_collection`, the
+        second because the window has no residue left to stand beside the
+        arena's. The step also cost a trap: a new case left an abandoned block
+        of a class another case fills, and that case then failed 5 runs in 10
+        (`dev/POSTMORTEM.md`, 2026-09-05).
       handoff (Critic round 1 on S43.2, widened by S43.3's Sage gate): two
         cases have to be answered before this deletion is possible, and they
         are what is left on the growth path now that S43.3 has taken the marks.
@@ -2297,6 +2398,18 @@ to prevent.
         slot before the arena's blocks go back, and the doc of whatever holds
         that duty states which panic it survives and which it does not; a test
         panics inside the reset and reads every marked slot back
+      note 2026-09-05 (S43.5's Critic round 1): a panic inside
+        `dispose_marks_of` strands the marks of the block under the walk. The
+        walk takes the block off the list before touching it, so the marks it
+        had not reached are named by nothing and `abandon_marked` cannot find
+        them either; the retained arm also leaves its `retained::pin` unspent
+        on that path. Pre-existing since S43.4 and this step's to close.
+      note 2026-09-05 (S43.5): "every marked slot" is now two lists rather than
+        one — the blocks the window listed and the slots it stacked, the second
+        being slots of blocks other threads own, whose leak
+        `a_panic_in_the_close_leaves_no_stacked_mark_standing` shows and whose
+        return that case makes by hand so the class it borrows is left as it
+        was found.
       tier: T2 · role: Critic
       note 2026-09-03: raised by the S36.11 Critic's first round against the
         chain, and it survives the chain's deletion — `ActiveTrace::drop` runs
@@ -2426,6 +2539,19 @@ stage is what makes a trace affordable rather than what tunes it.
 
 Goal: a collection runs either in a collector thread or in the mutator, never
 both, and the losing side never deadlocks.
+
+**What the token has to cover, as of 2026-09-05.** Three clauses have gathered
+on the premise that one window is open in the process at a time, and every one
+of them is a correctness clause rather than a performance one. A block's
+`marked_link` word, which two windows splicing at once would put on two lists
+(S43.4). A block's shadow pointer, which the free path reads past the region to
+decide whether a death has to be withheld at all: a stale null returns a slot
+under another window's rows (S43.5). And `DEAD_IN_PLACE` itself, which carries
+no owner — a block walk cannot separate its own window's marks from a foreign
+window's, so a thread that stacks a slot of a stranger's block depends on that
+stranger not walking the block meanwhile (S43.5, its Critic round 2). All three
+are unreachable while `ActiveTrace::open`'s per-thread assert is the only
+window there is.
 
 - [ ] S38.0 The collector's reader   *(blocked: `rfc` A1)*
       done: the collector's `CellReader` implements one of the four resolutions
@@ -2943,6 +3069,36 @@ deleted with its steps; the decisions it leaves are in `dev/DECISIONS.md`
 (2026-08-17 and 2026-08-18), the traps in `dev/POSTMORTEM.md` and the map
 in `dev/INDEX.md`. What it did not do is below.
 
+- [ ] **The rfc's account of the dead-in-place mark, five paragraphs behind
+  the code.** S43.2 through S43.5 built the mark, its list and the three
+  answers a death past the region takes; the specification still describes
+  the state S43.2 left. `rfc/model/classes.md`'s flags row 15 states the
+  slotted condition — "a block this thread owns" — for every header and names
+  the shadow pointer's nulling as what finds the mark, which a large entity
+  has no shadow pointer for. `rfc/model/gc/rc-cycle.md` carries the same two
+  halves in "A death past that region is marked in the dead slot rather than
+  recorded" and "A mark is taken only where the sweep will find it"; the
+  paragraph after them reads "their marks are owed rather than specified"
+  with a reason that is wrong, a retained occupant's mark landing in the
+  survivor's own header rather than in the word the emptiness count reads;
+  and "the sweep that nulls the block's shadow pointer is what finds it"
+  names a mechanism S43.4 replaced with the window's list. S43.5 adds two
+  more: "A death the mark cannot take still takes a record" has no such
+  population left, and the record-and-grow path it describes is deleted.
+  Edmond ruled the order on 2026-09-05 — the code first, the specification
+  after — so what is left is to carry them, which is the `rfc` repository's
+  work and needs his authorisation before it starts.
+- [ ] **Whether the stack of foreign slots should displace the region chain.**
+  S43.5 built it for one population: a marked slot of a block another thread
+  owns is threaded through the dead slots themselves, at the offset a free
+  list links by. The same form would serve every population — one load and
+  two stores into a line the teardown has already touched, no region, no
+  block walk and no records — and would retire the 8,320-byte workspace
+  prefix with them. What S43.1 measured was the per-slot sweep against the
+  chain, not this, so the question is a measurement rather than an argument
+  (`dev/DECISIONS.md`, "a death the collection never met is returned at once,
+  and a foreign slot is stacked", the last paragraph). Raised by the Sage on
+  S43.5's gate and left to Edmond.
 - [ ] **A gate flake, measured 2026-09-03 and pre-existing.** The case that
   reached the gate is fixed and measured; five cases that cannot take the
   same fix are named below and stay open.

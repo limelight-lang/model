@@ -301,7 +301,8 @@ pub(crate) unsafe fn release_emptied(block: usize) {
 /// `register` would then return a block to the pool with the mark still
 /// standing on it. No such survivor can reach this call, and the ordering
 /// is what says so: a mark is taken only where a trace has stamped the
-/// block (`crate::cycle::deferred_slot_reuse::can_carry_the_mark`), while
+/// block (`crate::cycle::deferred_slot_reuse`,
+/// `classify_past_the_region`), while
 /// this call runs at retention, over a collector line `promote::retain_block`
 /// has just zeroed and before any trace can address the block. The
 /// assertion below is the guard of that ordering.

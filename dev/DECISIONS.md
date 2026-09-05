@@ -8,6 +8,95 @@ never edited or deleted.
 
 ---
 
+## 2026-09-05 — a death the collection never met is returned at once, and a foreign slot is stacked
+
+**Ruled by the Sage** on S43.5's pre-change gate.
+
+**Decided:** past its region the withheld-return chain draws nothing, and the
+state of the dying slot's block decides which of three answers the death takes.
+
+- **No row of this collection addresses the block** — the return proceeds
+  physically and the window owes nothing. That covers a slotted death whose
+  block carries no shadow pointer, a retained survivor of such a block, a
+  large entity whose own row reads `Untouched`, and the reset's whole-block
+  sentinel, whose block `promote::retain_block` unstamps before it publishes
+  the kind.
+- **A row does, and the block is this thread's** — the slot takes the mark and
+  its block goes on the window's list, which is S43.4 unchanged.
+- **A row does, and the block is another thread's** — the slot takes the mark
+  and goes on a stack threaded through the dead slots themselves, at the
+  offset `heap::FreeSlot` links through. The block is not listed.
+
+**Deleted with it:** `grow`, `draw_block`, both `std::process::abort()`s, the
+chain's reserve and ledger bookkeeping, and `RecordChain`'s
+`take_segments_past_base`, `appends_into_base`, `records_in_append_segment`
+and `rewind`, which this module was the only caller of.
+
+**Why a return is safe where the collection never met the block.** The window
+exists to stop a new occupant inheriting a row that has been met. A block's
+shadow pointer is written when the collection first touches the block and
+nulled by `clear_touched_rows` at the close, so a null pointer says that no
+row of this collection names any slot of the block — and the allocator has
+been handing out slots of such blocks all through the trace. Recording those
+deaths protected nothing, and it was what kept the growth reachable.
+
+**Why the foreign slot is stacked rather than listed.**
+`heap::entity_block_slots` reads the owner's bump cursor without
+synchronisation, so a walk that acted on what it found there would read the
+first word of a slot the owner is publishing: the mixed-size access against
+`publish_header`'s store that `refcount::flags_load` names as undefined. The
+stack costs one store into a slot already hot from the teardown, and the close
+returns each stacked slot through `ll_free`, which posts onto the block's own
+stack of cross-thread frees.
+
+**What holds such a slot until then:** the owner never received the free, so
+its `used` still counts the slot and the block cannot reach the pool.
+`heap::adopt` and `abandon_all` go on asserting that no *listed* block reaches
+them; a marked slot of a foreign block does reach an adopting thread, and the
+marking window's close returns it through `ll_free` either way — onto the
+block's own stack of cross-thread frees while it is a stranger's, and by the
+ordinary owner path once this thread has adopted it.
+
+**Ownership moves inside a window, and the close's order is what answers it.**
+`Heap::adopt` runs on the ordinary refill path, so a block foreign when one of
+its slots was stacked can be this thread's when the next slot of it dies, and
+that slot lists the block. The stack is therefore walked **before** the list:
+every stacked slot reads free by the time the block walk reaches it, and the
+block cannot retire under that walk, the mark that listed it being a hold of
+its own. Walking the list first frees the stacked slot as an ordinary marked
+one and then reads a free-list link where the stack wrote its own, which walks
+the block's free list back into the allocator — the Critic's first round found
+it, and `a_block_adopted_after_a_slot_of_it_was_stacked_returns_each_slot_once`
+is red without the order.
+
+**Refused:** keeping the growth for the deaths a mark could not take and
+narrowing the step to the reserve draw and the abort. A slot in a block
+another thread owns is a designed case rather than a corner — S38.1's moved
+graph lives in the source thread's blocks and is freed by the destination — so
+the growth would have stayed for the population that reaches it most.
+
+**What the one-window premise now carries**, in two directions rather than
+one. The shadow pointer the free path reads past the region has to be written
+by this thread's collection alone: a stale null cost a record before this step
+and returns a slot under another window's rows after it. And **the slotted arm
+has joined the premise**, which it was outside until now. `DEAD_IN_PLACE`
+carries no owner, so a block walk cannot tell its own window's mark from
+another's; a thread that marks a slot in a stranger's block therefore depends
+on that stranger's own window not walking the block meanwhile. That reverses
+what S43.2 and S43.3 recorded — "a mark in another thread's block waits for a
+sweep that never runs", and "the slotted arm is outside this, ownership
+standing beside its stamp" — and it means all three populations now rest on
+the premise rather than two. S38's token is what closes it, and S38.3 is where
+it is paid.
+
+**Open, and Edmond's:** the stack of foreign slots would serve every
+population and could displace the region chain — one load and two stores into
+a line the teardown has already touched, no region and no walk. S43.1 measured
+the per-slot sweep against the chain rather than this form, so the question
+needs a measurement of its own.
+
+---
+
 ## 2026-09-05 — the marker links the block, and the window's close walks the list
 
 **Ruled by the Sage** on S43.4's pre-change gate.

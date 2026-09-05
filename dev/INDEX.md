@@ -65,16 +65,22 @@ versions live in `docs/history/`, marked at the top.
 - What a slot's first eight bytes read: `refcount::slot_state`, three
   states over the count and one flag — live, dead in place, free. An entity
   is dead in place when it died inside a trace window whose withheld-return
-  chain had no room for a record (`refcount::DEAD_IN_PLACE`, `PLAN.md` S43.2
-  and S43.3); the count still reads zero, so the flag is the only thing that
+  chain had no room for a record, in memory that collection has met
+  (`refcount::DEAD_IN_PLACE`, `PLAN.md` S43.2, S43.3 and S43.5); the count
+  still reads zero, so the flag is the only thing that
   separates such a header from an unoccupied one, and a guard test bans the
   two-way test outside `refcount`. Three headers carry it — a size-class
-  slot, a retained survivor and a large entity's own header — and which
-  deaths may take it rather than a record is
-  `cycle::deferred_slot_reuse::can_carry_the_mark`. What returns marked
+  slot, a retained survivor and a large entity's own header — and how a death
+  past the region is answered is
+  `cycle::deferred_slot_reuse::classify_past_the_region`: returned where the
+  collection never met the block, marked with its block listed where it did
+  and the block is this thread's, marked and stacked where the block is
+  another thread's. What returns marked
   memory is the window's close, which walks the list the marker linked each
   block into — one atomic word per block header, `heap::marked_link` and
-  `large_entity::marked_link`, headed in the withheld returns' control line.
+  `large_entity::marked_link`, headed in the withheld returns' control line —
+  and then the stack of foreign slots threaded through the dead slots
+  themselves at `heap::FREE_LIST_LINK_OFFSET`.
 - The candidate gate: `refcount::CANDIDATE_GATE_MASK` and
   `may_become_a_candidate`,
   read on the non-zero decrement in `release_word`. Five conditions in

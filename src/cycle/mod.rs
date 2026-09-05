@@ -30,7 +30,7 @@
 //! [`arena`] holds the blocks a single trace bumps into past that workspace
 //! and the worklist [`stack`] draws its segments from that bump,
 //! [`deferred_slot_reuse`] opens its chain over the workspace's fixed region
-//! and holds the blocks a growth past it draws, and the rows [`shadow`], [`mark`] and
+//! and holds nothing else, and the rows [`shadow`], [`mark`] and
 //! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`
 //! own no memory at all — they are arithmetic over memory somebody else holds,
 //! and [`validation`] reads the heap rather than a row.
@@ -52,11 +52,11 @@
 //! thread the runtime never registered, where the same refusal aborts because
 //! there is no caller left to report it to. Past both stands the overflow
 //! buffer's own bound, which aborts when it fills. Past the workspace's own
-//! region for withheld returns stands [`deferred_slot_reuse`]'s growth, which
-//! aborts for the reason the overflow buffer does: it is holding a slot it may
-//! neither return nor drop, and `ll_free` has no frame to report a refusal
-//! through. Thread
-//! exit inside an open window aborts there too, `ll_thread_exit` being
+//! region for withheld returns nothing is drawn at all: a death the region
+//! cannot record is answered in the dying entity's memory, or returned at
+//! once where no row of the collection names it
+//! ([`deferred_slot_reuse`], `classify_past_the_region`). Thread
+//! exit inside an open window aborts, `ll_thread_exit` being
 //! `extern "C"` and having no caller to refuse to.
 //!
 //! The ordering the whole module rests on is one sentence: **the rows die at
