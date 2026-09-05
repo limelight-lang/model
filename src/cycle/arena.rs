@@ -187,6 +187,53 @@ const _: () = assert!(RETURNS_BASE_BYTES % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::LINE_SIZE % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::BLOCK_SIZE % 64 == 0);
 
+// Whether the next reset on this thread raises where the hand-back does.
+//
+// Fault injection, tests only. The reset's own panic sites are an underflowed
+// ledger and a poisoned pool mutex, and a test can produce neither without
+// taking every test after it down with the poison — so the case that reads a
+// marked slot back after such a panic has no other way of being staged
+// (`crate::cycle::deferred_slot_reuse::ActiveTrace`, the close's order).
+#[cfg(test)]
+thread_local! {
+    static PANIC_IN_RESET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Arm the injection for **one** reset of this thread, and disarm it when this
+/// guard dies — including on the unwind the injected panic itself raises, so
+/// nothing of it reaches the next test on the thread.
+///
+/// The reset it interrupts is left half-done, which is the state a poisoned
+/// hand-back leaves: the rows are swept and the blocks are still the arena's.
+/// [`TraceScratchArena::drop`] runs the reset again and gives them back.
+#[cfg(test)]
+pub(crate) struct InjectedResetFailure;
+
+#[cfg(test)]
+impl InjectedResetFailure {
+    pub(crate) fn arm() -> Self {
+        PANIC_IN_RESET.with(|armed| armed.set(true));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for InjectedResetFailure {
+    fn drop(&mut self) {
+        PANIC_IN_RESET.with(|armed| armed.set(false));
+    }
+}
+
+/// Raise the armed failure and disarm it, and do nothing at all without
+/// `cfg(test)`.
+#[inline]
+fn fire_injected_reset_failure() {
+    #[cfg(test)]
+    if PANIC_IN_RESET.with(|armed| armed.replace(false)) {
+        panic!("the injected reset failure");
+    }
+}
+
 /// One collection's memory: the thread's workspace for as long as the arena
 /// lives, and the blocks the bump grew into past it, which
 /// [`TraceScratchArena::reset`] returns.
@@ -271,9 +318,10 @@ impl TraceScratchArena {
     /// over: [`RETURNS_BASE_BYTES`] bytes at the head of the payload.
     ///
     /// The chain is not this arena's: its records are read by a replay that
-    /// runs after [`reset`](Self::reset), so what the arena guarantees is the
-    /// region's address and that the workspace stays lent until the arena
-    /// drops — which is after the window's chain has died
+    /// runs after [`sweep_rows`](Self::sweep_rows) and before
+    /// [`reset`](Self::reset), so what the arena guarantees is the region's
+    /// address and that the workspace stays lent until the arena drops —
+    /// which is after the window's chain has died
     /// (`crate::cycle::deferred_slot_reuse::ActiveTrace`).
     pub(crate) fn withheld_returns_region(&self) -> *mut u8 {
         BlockHeader::payload_start(self.base.block())
@@ -447,6 +495,26 @@ impl TraceScratchArena {
         array
     }
 
+    /// End this collection's claim on the heap and give no block back: drain
+    /// the worklist, then null the shadow-row pointer of every block the
+    /// collection stamped.
+    ///
+    /// **This is what a withheld return waits for**, and the whole of it. A
+    /// slot handed back while a row still names it is one the allocator can
+    /// give to an occupant that inherits the row, which is the reuse the trace
+    /// window exists to prevent; the blocks the arena itself holds name no
+    /// slot and go back after the returns
+    /// (`crate::cycle::deferred_slot_reuse::ActiveTrace`).
+    ///
+    /// Idempotent, over a rewound worklist and an emptied touched list.
+    pub(crate) fn sweep_rows(&mut self) {
+        // Ahead of the sweep, which owes an empty worklist: an abort is raised
+        // with entities still queued, and every one of them carries a row
+        // pointer into an array this call is about to unstamp.
+        self.worklist.rewind();
+        self.clear_touched_rows();
+    }
+
     /// End the collection's hold on memory: give every block back, the
     /// reserve first, having swept anything
     /// [`clear_touched_rows`](Self::clear_touched_rows) has not.
@@ -466,12 +534,14 @@ impl TraceScratchArena {
     /// segments from this arena names memory the pool has taken back
     /// from the moment this returns, and its own `reset` is what says
     /// so.
+    ///
+    /// **A withheld return waits for [`sweep_rows`](Self::sweep_rows) and not
+    /// for this call**, which is the split
+    /// `crate::cycle::deferred_slot_reuse::ActiveTrace`'s drop makes: what a
+    /// return may not outrun is the unstamping, and the blocks below are the
+    /// arena's own.
     pub(crate) fn reset(&mut self) {
-        // Ahead of the sweep, which owes an empty worklist: an abort is raised
-        // with entities still queued, and every one of them carries a row
-        // pointer into an array this call is about to unstamp.
-        self.worklist.rewind();
-        self.clear_touched_rows();
+        self.sweep_rows();
 
         // The block still under the bump has no further grant coming, and it
         // is being released in the same breath — rewound if it is the
@@ -501,6 +571,9 @@ impl TraceScratchArena {
             unsafe { BlockHeader::payload_start(self.base.block()).add(WORKSPACE_PREFIX_BYTES) };
         self.left = WORKSPACE_BUMP_BYTES;
         self.open_capacity = WORKSPACE_BUMP_BYTES;
+
+        fire_injected_reset_failure();
+
         while !self.blocks.is_null() {
             let block = self.blocks;
             self.blocks = unsafe { (*block).next };

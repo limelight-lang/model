@@ -11,10 +11,11 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-05 · Active: S43, from S43.6, S43.5 having taken the growth
-out: past its region the module draws nothing, a death in memory the
-collection never met is returned at once, and a marked slot of another
-thread's block is stacked rather than listing its block. The
+Updated: 2026-09-05 · Active: S43, all six steps closed and the stage awaiting
+its Code Reviewer. Past its region the module draws nothing, a death in memory
+the collection never met is returned at once, a marked slot of another thread's
+block is stacked rather than listing its block, and an unwind out of the close
+returns every mark it can reach rather than abandoning it. The
 stage keeps the form Edmond ruled on 2026-09-04: the chain stays and the mark
 answers its refusal. The
 rest of S36 stands behind it — S36.9's remainder and S36.12's slice (b) each
@@ -2392,7 +2393,7 @@ to prevent.
         collection ends itself and gives back everything"); with nothing left
         to grow, the free path asks an allocation path for nothing, so the
         regime needs no mechanism of its own here.
-- [ ] S43.6 An unwind out of the close strands no dead slot
+- [x] S43.6 An unwind out of the close strands no dead slot
       done: a panic raised inside `TraceScratchArena::reset` — the profile that
         unwinds, since the release build aborts — still returns every marked
         slot before the arena's blocks go back, and the doc of whatever holds
@@ -2415,6 +2416,105 @@ to prevent.
         chain, and it survives the chain's deletion — `ActiveTrace::drop` runs
         `arena.reset()` before the returns are made, so an unwind out of the
         reset loses them whichever structure holds them.
+      Sage 2026-09-05 (pre-change gate): **the drop splits the reset.**
+        `TraceScratchArena::sweep_rows` holds the worklist rewind and the row
+        sweep, `reset` calls it, and the close runs sweep → returns → reset:
+        what a return may not outrun is the unstamping, and the arena's own
+        blocks name no slot. The unwind's disposition is a `swept` flag in the
+        control line rather than an inference from the raising frame, and it
+        fails toward today's behaviour. The block under a walk is named by a
+        second word, `walking`, and its kind is re-loaded rather than stored.
+        The retained arm's pin becomes a guard that spends the hold and makes
+        the emptied block's sentinel return in its `Drop`. Recorded in
+        `dev/DECISIONS.md`, "the close sweeps the rows, returns, and gives the
+        arena's blocks back last". Refused: a re-replay of the records from the
+        drop, `RecordChain::walk` starting at the base; reordering
+        `ActiveTrace`'s fields; a raw pointer from the chain to the arena; a
+        `std::thread::panicking()` branch anywhere; a return under
+        `swept == false`; unlinking a block after its walk; storing the kind
+        beside `walking`; and any edit to `defer_reuse_if_tracing`,
+        `withhold_without_a_record`, `classify_past_the_region` or
+        `RecordChain`. Final.
+      Sage 2026-09-05 (follow-up on the gate's point 5): a **second**
+        `cfg(test)` injection is admitted, in `dispose_of` between the clear of
+        the mark and the return, under `Disposition::Return` alone — the lever
+        the module's other panic cases use cannot reach a marked slot, because
+        `refcount::slot_state` answers `Live` from the count before it reads
+        the flags and the walk skips a slot whose count was raised. Refused
+        with it: staging the case through an underflowed retained count, whose
+        fixture is corrupt before the walk starts, and closing the step with
+        the mid-block resume and the guard's release untested. Final.
+      progress 2026-09-05 — the close is sweep → `rows_are_gone` → replay →
+        `return_foreign` → `return_marked` → reset, and `WithheldReturns::drop`
+        reads `swept` to choose between returning the marks and abandoning
+        them. `dispose_walking` finishes the walk a panic left inside a block;
+        each arm of `dispose_marks_of` names its own block after it has read
+        what it needs of the block and before its first disposal, so a walk
+        that raises in those reads leaves the word null and the drop's pass
+        does not repeat the failure inside an unwind. `RetainedWalkHold` spends
+        the pin and returns an emptied block in its `Drop`. Five cases, three
+        new and two rewritten from asserting the leak to asserting the return,
+        each seen red on the mutation that admits its arm: the criterion's own
+        on the pre-change order, the two rewritten ones on `swept` forced
+        false, the entity walk on a stubbed `dispose_walking`, the retained
+        walk on an emptied guard.
+      Critic 2026-09-05 round 1: eight findings, all taken. The load-bearing
+        one was a defect the repair itself introduced: `dispose_walking`
+        re-enters a walk from the top, so a panic in the reads at the head of
+        an arm — the retained survivor list's assertion, the entity arm's size
+        class index — would be repeated inside the unwinding drop, where a
+        second panic aborts. Fixed by moving the naming out of
+        `take_marked_block` and into the arms. Also taken: the retained case
+        chose its raising survivor with a predicate that answers the same for
+        both, which the other pair order turns into a second free;
+        `a_panic_in_the_close_leaves_no_stacked_mark_standing` walked away from
+        1,023 records of a class four other cases fill;
+        `withheld_returns_region`'s doc still put the replay after the reset;
+        the drop's doc claimed "every" mark; `cycle/mod.rs` still said
+        reset-before-replay; and two cases assumed a keeper shared the victim's
+        block without asserting it.
+      Critic 2026-09-05 round 2: eight findings, all taken, none reachable
+        today. The first three are the repair's own prose: `walking`'s field
+        doc still defined the protocol the repair replaced, `dispose_marks_of`
+        stated the nulling half and not the naming rule that carries the
+        soundness, and the drop's enumeration had no bucket for a block
+        unlinked and never named, whose whole mark set is lost. The fourth is
+        code: the `debug_assert` round 1 asked for at the end of
+        `dispose_walking` can only execute inside an unwinding drop, where it
+        would abort rather than report, and it is gone with its reason.
+        `abandon_marked`'s leading `dispose_walking` is symmetry and reaches
+        nothing, and says so; the rule that no call between a naming and the
+        first disposal may raise now carries a note back from
+        `refcount::slot_state`, `heap::block_occupancy` and `retained::pin`;
+        and a dead `let _ = chain;` and a run-together comment pair went. The
+        device stops at two rounds.
+      miri 2026-09-05 — `cycle::deferred_slot_reuse`, all 43 cases of the
+        module, clean: 12, 9, 11 and 11 in four foreground slices, 154.42 s on
+        Miri's clock in total. Sliced because a background run is killed part
+        way by this box's overcommit watchdog and a foreground one is capped at
+        ten minutes; 43 is every `#[test]` of the module, which is what proves
+        the four slices covered it.
+      handoff: the close is `sweep_rows` → `rows_are_gone` → `close_window` →
+        `replay` → `return_foreign` → `return_marked` → `reset`, and
+        `WithheldReturns::drop` reads `swept` to choose its disposition. Two
+        `cfg(test)` injections stage the two panics no other lever reaches,
+        `arena::InjectedResetFailure` and
+        `deferred_slot_reuse::InjectedDisposalFailure`; both are one-shot and
+        both are listed in the thread-local census
+        (`memory::critical::tests::where_the_first_touch_happens`), which is
+        where a third would be caught. **What no panic recovers** is stated in
+        `WithheldReturns::drop`'s doc and is three shapes: the interrupted
+        return, the records behind a raising replay, and every mark of a block
+        whose walk raised in the reads at the head of its arm — the last is the
+        price of not sending the drop's pass back through the failure that
+        raised. Verified at this step: `cargo +1.94 fmt --check` clean, 707
+        tests at one thread and three times at four, `hash-folding` 707, three
+        `debug-journal` runs at 711, release build, `cargo bench --no-run`,
+        `python3 dev/tools/citations.py` reading 428 with the same twelve
+        residues, and 0 failures in 10 runs at one thread and 10 at the default
+        width. Five cases were seen red on the mutation that admits each arm.
+        The step also cost a trap: the recurrence recorded under
+        `dev/POSTMORTEM.md`, 2026-09-05.
 
 ## S37 — Maturation and the two class gates
 

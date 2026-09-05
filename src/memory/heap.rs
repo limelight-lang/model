@@ -2509,7 +2509,10 @@ pub(crate) unsafe fn collector_block_slots(block: *mut u8) -> u32 {
 /// The walk that returns dead-in-place marks reads it for a second reason:
 /// a block down to one occupant is one the next return retires, and the
 /// walk owes that reading **before** the return rather than after
-/// (`crate::cycle::deferred_slot_reuse`).
+/// (`crate::cycle::deferred_slot_reuse`). That walk is one a panic can
+/// resume, so a panic site added here would be repeated inside an unwind,
+/// where a second panic aborts — **change this, change
+/// `cycle::deferred_slot_reuse::dispose_marks_of` too**.
 ///
 /// # Safety
 /// `block` is the header of a commissioned `BLOCK_KIND_ENTITY` block, read

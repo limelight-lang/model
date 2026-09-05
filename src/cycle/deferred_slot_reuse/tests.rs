@@ -1717,38 +1717,65 @@ fn an_aborted_window_returns_a_marked_large_entity() {
     );
 }
 
-/// A panic inside the close leaves no block listed and no mark standing.
+/// A panic inside the close leaves no block listed and no mark standing, and
+/// makes the return the mark deferred.
+///
+/// The panic is staged inside the replay, which the ordered close runs after
+/// the row sweep. So this collection's rows are gone by the time the unwind
+/// reaches the chain's drop, and the marked slot goes back through the
+/// owner's free list rather than being abandoned — which is the disposition
+/// `DeferredReturnChain::swept` decides.
 ///
 /// What the unwind may not leave behind is a block whose link word still
 /// names a list nothing heads: membership is that word against null, so such
 /// a block would refuse every later mark of itself, and a mark left standing
-/// on it would reach an adopting thread through abandonment. The memory
-/// itself is not returned here and leaks with the records the same unwind
-/// loses (`PLAN.md` S43.6).
+/// on it would reach an adopting thread through abandonment.
 ///
-/// The panic is staged inside the replay by the assertion that guards a
-/// live free: a recorded slot whose refcount is raised while the window is
-/// open is one `ll_free` refuses in a test build.
+/// The panic is staged by the assertion that guards a live free: a recorded
+/// slot whose refcount is raised while the window is open is one `ll_free`
+/// refuses in a test build. That record is the one return the unwind cannot
+/// make, and the case gives it back by hand.
+///
+/// A live entity keeps the victim's block off the pool, so the block's own
+/// words can be read after the unwind.
 #[test]
 fn a_panic_in_the_close_leaves_no_block_listed() {
     let _guard = test_guard();
 
+    let keeper = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE * 3) };
+    assert!(!keeper.is_null());
+    let keeper = unsafe { live_entity(keeper, 1) };
     let victim = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE * 3) };
     let recorded = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
     assert!(!victim.is_null() && !recorded.is_null());
     let victim = unsafe { live_entity(victim, 1) };
     let recorded = unsafe { dead_entity(recorded) };
     let block = (victim as usize & !crate::memory::block_pool::BLOCK_MASK) as *mut u8;
+    assert_eq!(
+        (keeper as usize & !crate::memory::block_pool::BLOCK_MASK) as *mut u8,
+        block,
+        "the keeper stands in the victim's own block, which is what keeps that \
+         block off the pool once the victim goes back"
+    );
+    let occupied_before = unsafe { crate::memory::heap::block_occupancy(block) };
 
     let mut window = ActiveTrace::open().expect("the pool funds the trace window");
     unsafe { ensure_row(window.arena(), victim, 1) };
     unsafe { crate::memory::stdapi::ll_free(recorded as *mut u8) };
 
+    // Held, because the replay stops at the first of these records and the
+    // rest are the memory that unwind loses. A case that walked away from
+    // them would leave its blocks abandoned full, and the next case to fill
+    // this class would adopt one as its first block (`dev/POSTMORTEM.md`,
+    // "an abandoned block of a class another case fills is a fixture, not a
+    // leftover").
+    let mut lost = Vec::with_capacity(RETURNS_BASE_RECORDS);
     for _ in 0..RETURNS_BASE_RECORDS - 1 {
         let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
         assert!(!slot.is_null());
         unsafe { dead_entity(slot) };
         unsafe { crate::memory::stdapi::ll_free(slot) };
+        lost.push(slot as usize);
     }
 
     unsafe { crate::refcount::set_header_refcount(victim, 0) };
@@ -1779,10 +1806,23 @@ fn a_panic_in_the_close_leaves_no_block_listed() {
         crate::refcount::SlotState::Free,
         "and took the mark off, so no mark reaches an adopting thread"
     );
+    assert_eq!(
+        unsafe { crate::memory::heap::block_occupancy(block) },
+        occupied_before - 1,
+        "and made the return the mark deferred, through the owner's `used`"
+    );
 
-    // The slot is on no free list and its block counts it, which is the leak
-    // S43.6 owns; the recorded slot the panic came from is left as it stands.
+    // The records the unwind lost are returned here, the first of them being
+    // the one whose refusal raised: none of them reached a free list, so this
+    // is their first return rather than a second.
     unsafe { crate::refcount::set_header_refcount(recorded, 0) };
+    unsafe { crate::memory::stdapi::ll_free(recorded as *mut u8) };
+    for slot in lost {
+        unsafe { crate::memory::stdapi::ll_free(slot as *mut u8) };
+    }
+
+    unsafe { crate::refcount::set_header_refcount(keeper, 0) };
+    unsafe { crate::memory::stdapi::ll_free(keeper as *mut u8) };
 }
 
 /// A collection that took no mark walks no slot at its close, which is the
@@ -2215,35 +2255,54 @@ fn the_close_returns_a_marked_slot_to_a_live_owner() {
 }
 
 /// The unwind's half for a stacked slot: the drop clears its mark as it
-/// clears a listed block's, so no mark reaches the thread that adopts the
-/// block next. The memory itself is not returned and leaks with the records
-/// the same unwind loses (`PLAN.md` S43.6).
+/// clears a listed block's, and makes the return through the block's own
+/// stack of cross-thread frees.
 ///
 /// The panic is staged where `a_panic_in_the_close_leaves_no_block_listed`
 /// stages it: a recorded slot whose refcount is raised while the window is
-/// open is one `ll_free` refuses in a test build.
+/// open is one `ll_free` refuses in a test build. The sweep has run by then,
+/// so the disposition is the returning one.
+///
+/// The block is filled to capacity and its class is this case's own, so the
+/// adoption at the end has nowhere to draw from but the frees the drop
+/// posted — which is what says the return was made rather than dropped, and
+/// which leaves the class as the case found it.
 #[test]
 fn a_panic_in_the_close_leaves_no_stacked_mark_standing() {
+    const CLASS: usize = ENTITY_SIZE * 7;
+
     let _guard = test_guard();
 
-    // The entity outlives its thread, which is the cheapest block this
-    // thread does not own (`a_stamped_block_this_thread_does_not_own_is_marked_and_stacked`).
-    // Its size class is this case's own: the block stays abandoned with a
-    // live occupant until the return below, and a case that fills the same
-    // class would adopt it and count its blocks against a different fill.
-    let foreign = std::thread::spawn(|| {
+    // The entities outlive their thread: `ll_thread_exit` puts a block with a
+    // live occupant on the abandoned list rather than back in the pool.
+    let held = std::thread::spawn(|| {
         assert!(
             crate::memory::heap::ll_thread_init(),
             "the pool served the second thread"
         );
-        let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE * 3) };
-        assert!(!slot.is_null());
-        let header = unsafe { live_entity(slot, 1) };
+        let first = unsafe { crate::memory::heap::entity_alloc(CLASS) };
+        assert!(!first.is_null());
+        let block = crate::memory::block_pool::BlockHeader::of_ptr(first) as *mut u8;
+        let capacity = unsafe { crate::memory::heap::collector_block_slots(block) } as usize;
+        let mut held = vec![unsafe { live_entity(first, 1) } as usize];
+        for _ in 1..capacity {
+            let slot = unsafe { crate::memory::heap::entity_alloc(CLASS) };
+            assert!(!slot.is_null());
+            assert_eq!(
+                crate::memory::block_pool::BlockHeader::of_ptr(slot) as *mut u8,
+                block,
+                "the class opened a second block before the first was full"
+            );
+            held.push(unsafe { live_entity(slot, 1) } as usize);
+        }
+
         crate::memory::heap::ll_thread_exit();
-        header as usize
+        held
     })
     .join()
-    .expect("the second thread finished") as *mut RcHeader;
+    .expect("the second thread finished");
+
+    let foreign = held[held.len() / 2] as *mut RcHeader;
 
     let recorded = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE * 2) };
     assert!(!recorded.is_null());
@@ -2254,12 +2313,19 @@ fn a_panic_in_the_close_leaves_no_stacked_mark_standing() {
     unsafe { crate::memory::stdapi::ll_free(recorded as *mut u8) };
 
     // The fill takes the recorded slot's class rather than the foreign
-    // block's: a refill of that block's class would adopt it.
+    // block's: a refill of that block's class would adopt it. Held, because
+    // the replay stops at the first of these records and the rest are the
+    // memory that unwind loses — a case that walked away from them would
+    // leave its blocks abandoned full, and the next case to fill this class
+    // would adopt one as its first block (`dev/POSTMORTEM.md`, "an abandoned
+    // block of a class another case fills is a fixture, not a leftover").
+    let mut lost = Vec::with_capacity(RETURNS_BASE_RECORDS);
     for _ in 0..RETURNS_BASE_RECORDS - 1 {
         let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE * 2) };
         assert!(!slot.is_null());
         unsafe { dead_entity(slot) };
         unsafe { crate::memory::stdapi::ll_free(slot) };
+        lost.push(slot as usize);
     }
 
     unsafe { crate::refcount::set_header_refcount(foreign, 0) };
@@ -2284,12 +2350,36 @@ fn a_panic_in_the_close_leaves_no_stacked_mark_standing() {
         "the unwind took the mark off, so no mark reaches an adopting thread"
     );
 
-    // The slot the unwind stranded is `PLAN.md` S43.6's leak, and it is
-    // returned here so that the class this case borrowed is left as it was
-    // found: with no window open the return proceeds, posting onto the
-    // block's own stack of cross-thread frees.
-    unsafe { crate::memory::stdapi::ll_free(foreign as *mut u8) };
+    // The return itself: the block is full, so the adoption below has nothing
+    // to serve from but the cross-thread frees the drop posted onto it
+    // (`crate::memory::heap::Heap::alloc_block_full`). An unwind that cleared
+    // the mark and returned nothing leaves this drawing a fresh block.
+    let served = unsafe { crate::memory::heap::entity_alloc(CLASS) };
+    assert_eq!(
+        served, foreign as *mut u8,
+        "the unwind cleared the mark without making the return it deferred"
+    );
+
+    unsafe { dead_entity(served) };
+    unsafe { crate::memory::stdapi::ll_free(served) };
+    for slot in held {
+        let slot = slot as *mut RcHeader;
+        if slot == foreign {
+            continue;
+        }
+
+        unsafe { crate::refcount::set_header_refcount(slot, 0) };
+        unsafe { crate::memory::stdapi::ll_free(slot as *mut u8) };
+    }
+
+    // The records the unwind lost are returned here, the first of them being
+    // the one whose refusal raised: none of them reached a free list, so this
+    // is their first return rather than a second.
     unsafe { crate::refcount::set_header_refcount(recorded, 0) };
+    unsafe { crate::memory::stdapi::ll_free(recorded as *mut u8) };
+    for slot in lost {
+        unsafe { crate::memory::stdapi::ll_free(slot as *mut u8) };
+    }
 }
 
 /// The reset's whole-block sentinel — a return whose address is the block
@@ -2542,4 +2632,255 @@ fn a_block_adopted_after_a_slot_of_it_was_stacked_returns_each_slot_once() {
 
     unsafe { crate::refcount::set_header_refcount(keeper, 0) };
     unsafe { crate::memory::stdapi::ll_free(keeper as *mut u8) };
+}
+
+/// A panic raised inside the arena's hand-back of its own blocks finds every
+/// marked slot already returned.
+///
+/// This is the panic the close is built to survive, and the order is what
+/// survives it: the sweep runs first, then the returns, and only then does the
+/// arena give its blocks back. A close that gave them back first would reach
+/// the chain's drop with the rows still standing, and the marks would be
+/// abandoned rather than returned — which is the disposition
+/// `DeferredReturnChain::swept` decides.
+///
+/// The panic is injected, the reset's own sites being an underflowed ledger
+/// and a poisoned pool mutex: a test can raise neither without taking the
+/// tests after it down with it (`crate::cycle::arena::InjectedResetFailure`).
+///
+/// A live entity keeps the victim's block off the pool, so the block's own
+/// words can be read after the unwind.
+#[test]
+fn a_panic_in_the_reset_returns_every_marked_slot() {
+    let _guard = test_guard();
+    let held_before = gc_blocks();
+
+    let keeper = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE * 3) };
+    assert!(!keeper.is_null());
+    let keeper = unsafe { live_entity(keeper, 1) };
+    let victim = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE * 3) };
+    assert!(!victim.is_null());
+    let victim = unsafe { live_entity(victim, 1) };
+    let block = (victim as usize & !crate::memory::block_pool::BLOCK_MASK) as *mut u8;
+    assert_eq!(
+        (keeper as usize & !crate::memory::block_pool::BLOCK_MASK) as *mut u8,
+        block,
+        "the keeper stands in the victim's own block, which is what keeps that \
+         block off the pool once the victim goes back"
+    );
+
+    let mut window = ActiveTrace::open().expect("the pool funds the trace window");
+    unsafe { ensure_row(window.arena(), victim, 1) };
+
+    for _ in 0..RETURNS_BASE_RECORDS {
+        let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+        assert!(!slot.is_null());
+        unsafe { dead_entity(slot) };
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+    }
+
+    let occupied_before = unsafe { crate::memory::heap::block_occupancy(block) };
+    unsafe { crate::refcount::set_header_refcount(victim, 0) };
+    unsafe { crate::memory::stdapi::ll_free(victim as *mut u8) };
+    assert_eq!(
+        unsafe { crate::refcount::slot_state(victim) },
+        crate::refcount::SlotState::DeadInPlace,
+        "the death was marked rather than recorded"
+    );
+
+    let armed = crate::cycle::arena::InjectedResetFailure::arm();
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop(window);
+    }));
+    assert!(refused.is_err(), "the reset was expected to raise");
+    drop(armed);
+
+    assert_eq!(
+        unsafe { crate::refcount::slot_state(victim) },
+        crate::refcount::SlotState::Free,
+        "the return was made before the blocks went back"
+    );
+    assert_eq!(
+        unsafe { crate::memory::heap::block_occupancy(block) },
+        occupied_before - 1,
+        "through the owner's `used`, as an ordered close does"
+    );
+    assert_eq!(
+        gc_blocks(),
+        held_before,
+        "and the arena's own blocks went back at its drop, the reset the panic \
+         interrupted being idempotent"
+    );
+
+    unsafe { crate::refcount::set_header_refcount(keeper, 0) };
+    unsafe { crate::memory::stdapi::ll_free(keeper as *mut u8) };
+}
+
+/// A panic inside the walk of one entity block returns the marks that walk had
+/// not reached.
+///
+/// The walk takes its block off the list before it touches a slot, so between
+/// those two instants the block is named by `DeferredReturnChain::walking` and
+/// by nothing else; without that word the marks below the raising one would be
+/// named by nothing, and `WithheldReturns::drop` could not find them either.
+///
+/// The panic is injected at the first of the block's two marked slots. The
+/// lever the other panic cases use cannot reach a marked slot at all —
+/// `is_marked` reads the count before the flags, so a slot whose count was
+/// raised is skipped rather than raised on — and the injection stands where
+/// `ll_free`'s own refusal would leave the walk: the mark already off, the
+/// return not made (`InjectedDisposalFailure`).
+///
+/// That first slot is the panic's own leak and the case returns it by hand,
+/// with no window open, so the class is left as it was found.
+#[test]
+fn a_panic_inside_a_block_walk_returns_the_marks_below_it() {
+    let _guard = test_guard();
+
+    let keeper = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE * 3) };
+    assert!(!keeper.is_null());
+    let keeper = unsafe { live_entity(keeper, 1) };
+    let first = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE * 3) };
+    let second = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE * 3) };
+    assert!(!first.is_null() && !second.is_null());
+    assert!(first < second, "the walk reads the block by rising address");
+    let first = unsafe { live_entity(first, 1) };
+    let second = unsafe { live_entity(second, 1) };
+    let block = (first as usize & !crate::memory::block_pool::BLOCK_MASK) as *mut u8;
+    assert_eq!(
+        (second as usize & !crate::memory::block_pool::BLOCK_MASK) as *mut u8,
+        block,
+        "both marks stand in one block, which is what makes this one walk"
+    );
+
+    let mut window = ActiveTrace::open().expect("the pool funds the trace window");
+    unsafe { ensure_row(window.arena(), first, 1) };
+
+    for _ in 0..RETURNS_BASE_RECORDS {
+        let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+        assert!(!slot.is_null());
+        unsafe { dead_entity(slot) };
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+    }
+
+    let occupied_before = unsafe { crate::memory::heap::block_occupancy(block) };
+    for entity in [first, second] {
+        unsafe { crate::refcount::set_header_refcount(entity, 0) };
+        unsafe { crate::memory::stdapi::ll_free(entity as *mut u8) };
+        assert_eq!(
+            unsafe { crate::refcount::slot_state(entity) },
+            crate::refcount::SlotState::DeadInPlace,
+            "both deaths were marked rather than recorded"
+        );
+    }
+
+    // The replay returns its records through `ll_free` rather than through a
+    // disposal, so the first disposal of the close is the block walk's first
+    // mark.
+    let armed = InjectedDisposalFailure::arm(1);
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop(window);
+    }));
+    assert!(refused.is_err(), "the walk was expected to raise");
+    drop(armed);
+
+    assert_eq!(
+        unsafe { crate::refcount::slot_state(second) },
+        crate::refcount::SlotState::Free,
+        "the mark below the raising one was returned by the drop's own pass"
+    );
+    assert_eq!(
+        unsafe { crate::memory::heap::block_occupancy(block) },
+        occupied_before - 1,
+        "one return was made, and the raising slot's is the one it could not make"
+    );
+
+    unsafe { crate::memory::stdapi::ll_free(first as *mut u8) };
+    unsafe { crate::refcount::set_header_refcount(keeper, 0) };
+    unsafe { crate::memory::stdapi::ll_free(keeper as *mut u8) };
+}
+
+/// A panic inside the walk of a retained block returns the marks below it and
+/// spends the hold that walk took.
+///
+/// The hold is what keeps the block standing while the walk reads its survivor
+/// list, and an unwind that left it standing would keep the block off the pool
+/// for the life of the process. Nothing reads the hold directly here: the
+/// block reaches the pool only when its last occupant dies, so a hold left
+/// standing shows as a block that never goes home.
+#[test]
+fn a_panic_inside_a_retained_walk_spends_the_hold_it_took() {
+    let _guard = test_guard();
+    let (_arena, holders, survivors, block) = unsafe { retained_survivor_pair() };
+    let held_before = gc_blocks();
+
+    let mut window = ActiveTrace::open().expect("the pool funds the trace window");
+    for survivor in survivors {
+        unsafe { ensure_row(window.arena(), survivor, 1) };
+    }
+
+    for _ in 0..RETURNS_BASE_RECORDS {
+        let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+        assert!(!slot.is_null());
+        unsafe { dead_entity(slot) };
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+    }
+
+    // The holders take no row, so their own slots stand in a block this
+    // collection never met and their deaths are returned at once. That leaves
+    // the retained block the one block this window lists, and the walk's first
+    // disposal the one the injection names.
+    for holder in holders {
+        unsafe {
+            assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+            ll_object_die(holder);
+        }
+    }
+
+    for survivor in survivors {
+        assert_eq!(
+            unsafe { crate::refcount::slot_state(survivor) },
+            crate::refcount::SlotState::DeadInPlace,
+            "both deaths were marked rather than recorded"
+        );
+    }
+
+    let armed = InjectedDisposalFailure::arm(1);
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop(window);
+    }));
+    assert!(refused.is_err(), "the walk was expected to raise");
+    drop(armed);
+
+    // The walk reads the survivor list, which `promote::register` sorts
+    // ascending, so the injection's first disposal is the lower-addressed
+    // survivor. Asserted rather than assumed: with the pair the other way
+    // round the return below would be a second free of an occupant the drop's
+    // pass already gave back.
+    assert!(
+        survivors[0] < survivors[1],
+        "the walk reaches the survivors by rising address"
+    );
+    let raised = survivors[0];
+    assert_eq!(
+        unsafe { crate::memory::retained::live_occupant_count(block as usize) },
+        1,
+        "the mark below the raising one was returned by the drop's own pass"
+    );
+    assert_eq!(
+        unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) },
+        BLOCK_KIND_RETAINED,
+        "and the block stands, the raising survivor still being an occupant"
+    );
+
+    // The raising survivor is the panic's own leak, and its return is what
+    // empties the block — which a hold the unwind failed to spend would
+    // prevent.
+    unsafe { crate::memory::stdapi::ll_free(raised as *mut u8) };
+    assert_eq!(
+        unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) },
+        BLOCK_KIND_FREE,
+        "the unwind spent the hold its walk took"
+    );
+    assert_eq!(gc_blocks(), held_before, "and drew nothing to do any of it");
 }

@@ -40,6 +40,17 @@ change and ten after.
 **What changed.** The case borrows a size class of its own, and returns the
 stranded slot after its assertions so the class is left as it was found.
 
+**It recurred inside S43.6, and this is what the second reading added.** The
+strand does not need a spawned thread: `block_pool::test_guard` releases the
+test's own heap as it dies, so a case that leaves 1,024 withheld records
+unreturned abandons the blocks holding them, full. The next case to fill that
+class from a fresh thread adopts one as its **first** block and finds it at
+capacity — measured at 1,020 occupants against the 1 a pool block gives, which
+is why the fill's own assertion reported a second block rather than a dirty
+first one. The remedy that generalises is the entry's own: the case holds the
+records it strands and returns them by hand after its assertions, none of them
+having reached a free list.
+
 **The rule the crate works to, and where its edge is.** A case may leave a
 block abandoned; what it may not leave is a slot nobody will ever return,
 because that slot holds the block's `used` above zero for the life of the

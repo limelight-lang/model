@@ -66,7 +66,7 @@
 //! the slot returns all run after it, untokened — which is why
 //! [`validation`] re-reads the heap instead.
 
-// `ActiveTrace` owns the `TraceScratchArena`, fixing reset-before-replay even
+// `ActiveTrace` owns the `TraceScratchArena`, fixing sweep-before-replay even
 // before the production collection opens one in S36.7.
 pub(crate) mod arena;
 // The validation over a component the scan proposed, and dead until the

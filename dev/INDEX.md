@@ -413,7 +413,7 @@ versions live in `docs/history/`, marked at the top.
   reads the block is withheld, and for a run that is soundness rather than
   economy — its memory is unmapped at the free while a trace may still
   address it. `cycle::deferred_slot_reuse` defers that return and owns the
-  arena-before-replay order (`PLAN.md` S36.2).
+  sweep-before-replay order (`PLAN.md` S36.2).
   The doors
   above it are
   `heap::entity_alloc` past `MAX_SMALL` and `Arena::alloc_entity` past
@@ -613,8 +613,8 @@ before a slot, a retained block or a large run goes back: an entity whose
 header still carries `CANDIDATE_BIT` waits with no record kept, the queue entry
 being the record; an open trace sends the return to
 `cycle::deferred_slot_reuse::ActiveTrace`, which replays it after its trace
-scratch arena has
-reset. The two close in either order.
+scratch arena has swept its rows and before that arena gives its own blocks
+back. The two close in either order.
 
 Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's
 out-of-line body lives: a string's payload and an array's table storage.

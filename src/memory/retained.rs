@@ -160,6 +160,12 @@ pub(crate) unsafe fn register(block: usize, occupants: &[usize], destination: *m
 /// because one block can hold the payloads and lists of several others and
 /// each is spent on its own.
 ///
+/// **Change this, change `cycle::deferred_slot_reuse::dispose_marks_of` too:**
+/// that walk takes its count between naming the block it can be resumed
+/// inside and its first disposal, and a panic site added here would be
+/// repeated by the resumed walk inside an unwind, where a second panic
+/// aborts.
+///
 /// # Safety
 /// As [`count_word`].
 pub(crate) unsafe fn pin(block: usize) {

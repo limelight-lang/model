@@ -145,6 +145,8 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("LATE_CELL", false),
         ("MARKED_SLOTS_VISITED", false),
         ("OWNER_STATE", false),
+        ("PANIC_AT_DISPOSAL", false),
+        ("PANIC_IN_RESET", false),
         ("POOL_REQUESTS", false),
         ("PREMISE_CELL_WALKS", false),
         ("RESERVE", true),

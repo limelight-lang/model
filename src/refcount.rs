@@ -882,6 +882,11 @@ pub(crate) enum SlotState {
 /// second load, so a live slot pays what it paid before the third state
 /// existed.
 ///
+/// **Change this, change `cycle::deferred_slot_reuse::dispose_marks_of` too:**
+/// this call stands inside a walk that a panic can resume, and a panic site
+/// added here would be repeated by the resumed walk inside an unwind, where a
+/// second panic aborts. The walk names the calls it needs kept quiet.
+///
 /// # Safety
 /// `header` addresses a slot of a commissioned entity block, readable at
 /// its first eight bytes.

@@ -8,6 +8,53 @@ never edited or deleted.
 
 ---
 
+## 2026-09-05 — the close sweeps the rows, returns, and gives the arena's blocks back last
+
+**Ruled by the Sage** on S43.6's pre-change gate.
+
+**Decided:** `ActiveTrace`'s drop splits `TraceScratchArena::reset` in two.
+`sweep_rows` — the worklist rewind and the row sweep — runs first; the replay
+and the two mark walks follow; the arena's own blocks go back after them, in
+the `reset` that now calls `sweep_rows` itself and stays idempotent.
+
+**Why the halves separate.** A return may not outrun the sweep: a slot handed
+back while a row still names it is the reuse the window exists to prevent. The
+arena's blocks are the other case — they name no slot of anyone's, so nothing
+waits on them, and giving them back last is what leaves every return already
+made when a panic in that hand-back sends the frame into the drops. Before
+this the two ran in one call, so an unwind out of `reset` reached the chain's
+drop with the rows still standing and the marks could only be abandoned.
+
+**The unwind's disposition is read, not inferred.** `DeferredReturnChain`
+carries a `swept` flag, set the instant `sweep_rows` returns, and
+`WithheldReturns::drop` returns the marks when it is set and abandons them
+when it is not. Inferring the state from which frame the unwind came out of
+would put the same fact in two places, and the flag fails toward the older
+behaviour: unset means abandon.
+
+**What no panic recovers**, and the doc of the drop states it: the return it
+interrupted, the records behind a raising replay — `RecordChain::walk` starts
+at the base and has no resumption point — and every mark of a block whose walk
+raised in the reads at the head of its arm, before that arm named the block.
+
+**Why a walk names its block late.** The block under a walk is named by one
+word of the control line, `walking`, because the walk takes the block off the
+list before it touches a slot and nothing else would name it. A resumed walk
+repeats everything the raising walk ran before its first disposal, so the
+naming stands after the arm's own reads: named earlier, a block whose
+head-read raised would send the drop's pass through that same failure inside
+an unwind, where a second panic aborts.
+
+**Two fault injections were admitted, and no third**, both `cfg(test)` and
+one-shot: one in `reset` before the block hand-back, one in `dispose_of`
+between the clear of the mark and the return. The second exists because the
+lever every other panic case in the module uses cannot reach a marked slot —
+those cases raise `ll_free`'s refusal of a live free, and `refcount::slot_state`
+answers `Live` from the count before it reads the flags, so a slot armed that
+way is skipped by the walk rather than raised on.
+
+---
+
 ## 2026-09-05 — a death the collection never met is returned at once, and a foreign slot is stacked
 
 **Ruled by the Sage** on S43.5's pre-change gate.
