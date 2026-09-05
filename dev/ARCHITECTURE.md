@@ -163,7 +163,7 @@ teardown they run call back out — which is why `object` names
 | Thread heaps (`ThreadHeaps`: raw + entity) | TLS | `heap` (initialized lazily on its allocation cold paths) | `stdapi` routes frees in; blocks migrate between threads only via the abandoned lists |
 | The mounted arena | per `LLContext` | `context` (mount), `arena` (mechanics) | `barrier` and `buffer` write its logs; `promote` consumes them at reset |
 | Log reserve (two blocks) | per thread | `reserve` | arena log growth draws; the `ll_gc_maybe_collect` poll refills |
-| Critical reserve (eight blocks) | per thread | `critical` | two borrowers: the collection's arena, for a block **above its workspace**, which the reserve may never fund, drawn after the pool refuses and given back at its reset; and the candidate queue, for a segment when both its spare cells are empty, which asks no pool first. The withheld-return chain left this row with `PLAN.md` S43.5: past its region it draws nothing at all. The `ll_gc_maybe_collect` poll refills |
+| Critical reserve (eight blocks) | per thread | `critical` | two borrowers: the collection's arena, for a block **above its workspace**, which the reserve may never fund, drawn after the pool refuses and given back at its reset; and the candidate queue, for a segment when both its spare cells are empty, which asks no pool first. The withheld-return chain is not a borrower: past its region it draws nothing at all. The `ll_gc_maybe_collect` poll refills |
 | Candidate queue base block and segments | one 64 KiB block per thread for the life of the thread, plus its segment chain | `cycle::queue` | `refcount::release_word` writes entries; the `ll_gc_maybe_collect` poll fills the spares and drains the overflow buffer; `memory::gc_metadata` counts the blocks |
 | Collection workspace | one 64 KiB block per thread from its first collection to its exit, its address in the base block's control line; 8,320 bytes of fixed region at its head, the withheld returns', and 56,960 of bump behind it | `cycle::queue` lends it, `cycle::arena::TraceScratchArena` bumps in it | drawn through the ordinary allocation path alone and rewound at every trace close; `memory::gc_metadata` counts the block, and charges the bump region alone |
 | Shadow rows and the collection's bump | the workspace, plus 64 KiB blocks for the length of one collection where one workspace does not hold the rows | `cycle::arena::TraceScratchArena` | `mark`, `scan` and `stack` read and write rows out of it; `memory::gc_metadata` counts the blocks |
@@ -220,8 +220,7 @@ field is lent to):
   — the debt protocol between `object` and the death paths;
 - bit 15, `DEAD_IN_PLACE` — the entity died inside a trace window whose
   withheld-return chain had no room for a record, in memory that window's
-  collection has met, so the death is written here (`PLAN.md` S43.2, S43.3,
-  S43.5). Three headers carry it: a size-class slot,
+  collection has met, so the death is written here. Three headers carry it: a size-class slot,
   a retained survivor and a large entity's own header. What finds it is the
   marking window's own list: the marker links each marked block through one
   atomic word of its header — the collector line for a slotted and a retained

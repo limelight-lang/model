@@ -1,5 +1,5 @@
 //! What a trace's sweep would walk against what its deaths would record
-//! (`PLAN.md` S43.1).
+//! (`dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld chain").
 //!
 //! Ignored in the ordinary suite and run by hand:
 //!
@@ -34,7 +34,7 @@
 //!
 //! **"The sweep" below is the design that was priced, not the walk that was
 //! built**: a walk of every touched block's slots at every collection. What
-//! S43.4 built walks the blocks one refusal listed, and an ordinary
+//! the crate builds walks the blocks one refusal listed, and an ordinary
 //! collection reads no slot at all.
 //!
 //! Two units are reported because they disagree in direction:
@@ -99,8 +99,8 @@ const RECORD_BYTES: usize = size_of::<*mut u8>();
 /// first word and the test on it.
 const SWEEP_OPERATIONS_PER_SLOT: usize = 2;
 
-/// The store S43.2 puts in a dead slot's own first word, which is what the
-/// sweep design pays per death.
+/// The store the mark puts in a dead slot's own first word
+/// (`refcount::DEAD_IN_PLACE`), which is what the sweep design pays per death.
 const MARK_OPERATIONS_PER_DEATH: usize = 1;
 
 /// Memory operations one append makes with a window open and room in the

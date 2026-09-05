@@ -96,7 +96,9 @@ fn a_slotted_load(class_bytes: usize, members: usize, fillers_between: usize) ->
 ///
 /// Every collection is printed on its own line rather than averaged: the
 /// first draws the thread's workspace and the rest do not, and that
-/// asymmetry is what S36.12 slice (b) and S43.1 ask about.
+/// asymmetry is what S36.12 slice (b) asks about, and what
+/// `dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld chain"
+/// reports one line at a time.
 fn report(load: &Load) {
     println!(
         "\n== class {} ({} slots a block), {} members, {} fillers between ==",

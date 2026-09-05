@@ -66,7 +66,7 @@ versions live in `docs/history/`, marked at the top.
   states over the count and one flag — live, dead in place, free. An entity
   is dead in place when it died inside a trace window whose withheld-return
   chain had no room for a record, in memory that collection has met
-  (`refcount::DEAD_IN_PLACE`, `PLAN.md` S43.2, S43.3 and S43.5); the count
+  (`refcount::DEAD_IN_PLACE`); the count
   still reads zero, so the flag is the only thing that
   separates such a header from an unoccupied one, and a guard test bans the
   two-way test outside `refcount`. Three headers carry it — a size-class

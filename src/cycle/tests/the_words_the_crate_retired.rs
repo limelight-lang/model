@@ -263,7 +263,7 @@ const RETIRED: [(&str, &str, Where); 92] = [
     // The classifier answers how a death past the region is withheld, and one
     // of its three answers is no withholding at all. The retired name reads
     // as a permission and sends a reader looking for a population the module
-    // does not have (`PLAN.md`, S43.5).
+    // does not have.
     (
         "can_carry_the_mark",
         "classify_past_the_region",
