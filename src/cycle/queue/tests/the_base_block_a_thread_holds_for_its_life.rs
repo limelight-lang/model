@@ -16,7 +16,7 @@
 use super::*;
 
 use crate::memory::block_pool::{BLOCK_KIND_GC_METADATA, BlockPool, force_oom, load_block_kind};
-use crate::memory::gc_metadata::stats;
+use crate::memory::gc_metadata::{stats, thread_stats};
 use std::sync::atomic::Ordering;
 
 /// The kind stamped on a block, which the collector reads for every
@@ -243,20 +243,32 @@ fn a_threads_whole_life_gives_every_block_back() {
 /// never sees again. `FORCE_GUARD_UNARMED` is how that state is entered
 /// on demand; it names the guard and nothing else, so the pool, the heap
 /// and the reserves answer normally throughout.
+///
+/// **The claim is read on the thread itself.** A process figure taken on
+/// either side of the child's life says the two readings balance without
+/// saying the blocks between them were this thread's; `thread_stats` answers
+/// what this thread took and gave back and nothing else, so a current figure
+/// of zero is exact rather than a difference two other threads could have
+/// produced between them.
+///
+/// The peak is what separates "given back" from "never drawn", and it is
+/// exact at three: the base block and both spare segments, which is every
+/// draw `ll_thread_init` makes through `gc_metadata` before it asks whether
+/// the teardown will run. Three in the `debug-journal` build as well,
+/// measured rather than argued from what the journal reaches.
 #[test]
 fn a_thread_nothing_will_tear_down_is_not_funded() {
     let _g = test_guard();
     let pool = BlockPool::global();
     let before = pool.blocks_out();
-    let base_blocks_before = stats().current_blocks();
-    let segments_before = stats().current_blocks();
+    let blocks_before = stats().current_blocks();
 
-    let started = std::thread::spawn(|| {
+    let (started, drawn_there) = std::thread::spawn(|| {
         crate::memory::heap::FORCE_GUARD_UNARMED.store(true, Ordering::Relaxed);
         let started = crate::memory::heap::ll_thread_init();
         crate::memory::heap::FORCE_GUARD_UNARMED.store(false, Ordering::Relaxed);
         assert!(queue_base().is_null(), "and it holds no base block");
-        started
+        (started, thread_stats())
     })
     .join()
     .unwrap();
@@ -266,6 +278,20 @@ fn a_thread_nothing_will_tear_down_is_not_funded() {
         pool.blocks_out() <= before,
         "and left nothing out of the pool"
     );
-    assert_eq!(stats().current_blocks(), base_blocks_before);
-    assert_eq!(stats().current_blocks(), segments_before);
+    assert_eq!(stats().current_blocks(), blocks_before);
+    assert_eq!(
+        drawn_there.peak_blocks(),
+        1 + SPARE_SEGMENTS,
+        "the base block and both spare segments were drawn"
+    );
+    assert_eq!(
+        drawn_there.current_blocks(),
+        0,
+        "and every one of them went back"
+    );
+    assert_eq!(
+        drawn_there.current_bytes_in_use(),
+        0,
+        "as did the bytes the control line took"
+    );
 }

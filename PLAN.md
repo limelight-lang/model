@@ -2520,11 +2520,13 @@ in `dev/INDEX.md`. What it did not do is below.
   a third thread draws GC memory in that window; none was seen to fail in the
   500 runs. What would close them is a reading of a named thread's figures
   that outlives the thread, which is a structure rather than a patch — worth
-  its cost only if one of them is seen to fail. One of the five carries a
-  defect of its own, found in the same review and older than it:
-  `a_thread_nothing_will_tear_down_is_not_funded` reads the same figure into
-  `base_blocks_before` and `segments_before` and asserts both, so the segment
-  claim its name makes has no reading behind it.
+  its cost only if one of them is seen to fail. The defect one of the five
+  carried is closed: `a_thread_nothing_will_tear_down_is_not_funded` read the
+  same process figure into two variables and asserted both, so its segment
+  claim had no reading behind it, and it now reads `gc_metadata::thread_stats`
+  on the child thread itself — the peak exactly at the base block and both
+  spare segments, in both builds, and both current figures at zero. Seen red
+  on a build whose `ll_thread_init` refills no spares.
 - [ ] **`docs/performance-case-decompositions.md`'s five citations point into
   a deleted file on a branch**, and whether that form is acceptable is the
   question left. The document carries its superseded banner and every one of
