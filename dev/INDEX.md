@@ -545,7 +545,12 @@ versions live in `docs/history/`, marked at the top.
   is the class three modules build on, and `prop_offset` the offset its
   `store_prop` takes — and what one family of modules needs is beside
   those modules: `src/array/testing.rs`, and `src/cycle/testing.rs` for
-  the two readers that say what the trace left in a shadow row. The two `loom` models are outside this layout
+  the two readers that say what the trace left in a shadow row.
+  `src/test_support/tests.rs` holds the one rule that is about the suite
+  rather than about a module: a test reading a file or spawning a process
+  carries `#[cfg_attr(miri, ignore = "…")]`, without which Miri stops at it
+  and runs nothing after it (`dev/WORKFLOW.md`, "Tests").
+  The two `loom` models are outside this layout
   and stay so: each is a hand-written copy of a protocol rather than a
   group of tests over a module, and each is compiled only under
   `--cfg loom`.

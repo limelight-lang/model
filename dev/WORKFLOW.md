@@ -411,6 +411,14 @@ does not merely skip itself — every test after it in the run is never
 executed, and the run reports a failure whose cause looks like the
 subject rather than the harness (`dev/POSTMORTEM.md`, 2026-09-01).
 
+Since 2026-09-05 a guard holds the rule rather than the reader:
+`test_support::tests::`
+`a_test_that_reaches_outside_the_process_is_ignored_under_miri` reads the
+crate's sources, follows each test's calls inside its own file, and names
+every test that reaches one of the file or process calls without the
+attribute. How it decides a function's extent, and what it cannot see, is
+`dev/DECISIONS.md`, "a test function's extent is the column-zero brace".
+
 ## Miri
 
 Miri is the only tool that can see the formal-UB class of defect here;

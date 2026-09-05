@@ -8,6 +8,39 @@ never edited or deleted.
 
 ---
 
+## 2026-09-05 — a test function's extent is the column-zero brace
+
+**Decided:** the guard that requires `#[cfg_attr(miri, ignore = "…")]` of a
+test reading a file or spawning a process reads each source file as lines and
+takes a function to run from a declaration at column zero to the first later
+line that is exactly `}`. The crate has no parser, and the question of how a
+test's extent is recognised was what the work waited on.
+
+**Why that rule holds here.** Every one of the crate's `#[test]` attributes
+stands at column zero, so rustfmt closes the item it marks with a brace at
+column zero, and a body line can never be one. The premise is asserted rather
+than assumed: an indented `#[test]` fails the guard with a message naming its
+line, so the failure mode of the extent rule is a report rather than a silent
+skip.
+
+**Refused: brace counting.** It reads string literals and character literals
+as code, so an unbalanced brace inside a message would swallow the rest of a
+file, and the failure would be a test the guard stops seeing — the same
+invisible loss the guard exists to end. It also buys nothing here, no test
+being nested.
+
+**What the guard reaches:** a call in the test's own body, and a call in any
+function of the same file the test reaches through other functions of that
+file, to a fixpoint. That is the shape the six source-reading guard files
+have. A read two modules away is outside it, and so is one behind a trait
+object or a macro.
+
+**Where it lives:** `src/test_support/tests.rs`, because the rule is about the
+test suite rather than about any module's contract. Miri's own inability to
+run it is the reason it carries the attribute it demands.
+
+---
+
 ## 2026-09-05 — the close sweeps the rows, returns, and gives the arena's blocks back last
 
 **Ruled by the Sage** on S43.6's pre-change gate.

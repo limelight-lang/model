@@ -14,6 +14,8 @@ use crate::value::{Tag, Value};
 pub(crate) mod allocation_probe;
 pub(crate) mod outside_block;
 
+mod tests;
+
 /// What the buffer arena hands out for `capacity` **in critical pressure
 /// mode**, where an allocation searches the free lists of the owned chain
 /// instead of bumping. A chunk a test is following coming back that way is

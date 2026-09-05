@@ -2529,15 +2529,6 @@ in `dev/INDEX.md`. What it did not do is below.
   which is why the five stand in its twelve known residues. Either the checker
   learns the branch form or the five lose their section names. Found by
   `dev/tools/citations.py`, 2026-09-01; the banner landed the same day.
-- [ ] **A test that reads a file or spawns a process carries no guard
-  requiring its `cfg_attr(miri, ignore)`.** The convention has been broken
-  twice — `cycle::` on 2026-09-01 and `memory::` on 2026-09-02 — and each
-  time it left a whole Miri slice unrun while `cargo test` stayed green. A
-  guard reads each `#[test]` function's body for `read_dir`, `current_exe`,
-  `File::open` and `read_to_string` and asks for the attribute above it. The
-  work is one test; what it needs first is a decision on how it recognises a
-  test function's extent, since the crate has no parser
-  (`dev/POSTMORTEM.md`, 2026-09-02).
 - [ ] **The ladder's refusal has nowhere to go.**
   `InsertOutcome::AdmissionDenied` is answered inside the crate — a null
   from `ll_cow_separate`, a `false` from `element::set` — because the
