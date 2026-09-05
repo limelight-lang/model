@@ -16,7 +16,7 @@
 //! block's slots for the same reason.
 
 use std::sync::Mutex;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicPtr, AtomicU32};
 
 use crate::memory::block_pool::{
     BLOCK_KIND_ENTITY_LARGE, BLOCK_KIND_ENTITY_LARGE_RUN, BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader,
@@ -53,7 +53,23 @@ pub(crate) struct LargeEntityHeader {
     /// by the kind's release store, and the trace token is what keeps
     /// two collectors off it.
     row: u32,
+    /// The next block of the marking window's list, or this block itself at
+    /// the list's end; **null while the entity carries no dead-in-place
+    /// mark** (`crate::cycle::deferred_slot_reuse`). Atomic where `row` is
+    /// plain, and for the reason its twin on a heap block's collector line
+    /// is: what crosses threads is the null a walk leaves behind, which the
+    /// next window's marker reads to decide whether the block is listed
+    /// (`crate::memory::heap::marked_link`).
+    ///
+    /// In this header rather than beside the entity, so that the walk reads
+    /// the line the marker already read the row's colour from.
+    marked_next: AtomicPtr<u8>,
 }
+
+const _: () = assert!(
+    size_of::<LargeEntityHeader>() <= LINE_SIZE,
+    "the header shares the line the entity starts after"
+);
 
 /// True for the two kinds this module owns. Callers that dispatch on a
 /// block kind ask this rather than listing both, because the pair is
@@ -75,6 +91,17 @@ pub(crate) fn is_large_entity(kind: u32) -> bool {
 /// kind.
 pub(crate) unsafe fn shadow_row(block: *mut u8) -> *mut u32 {
     unsafe { &raw mut (*(block as *mut LargeEntityHeader)).row }
+}
+
+/// The word that lists this block among those holding a dead-in-place mark,
+/// the twin of [`crate::memory::heap::marked_link`] for the two large kinds
+/// and read through the same call site.
+///
+/// # Safety
+/// `block` must be the header of a live large-entity block, of either kind,
+/// for as long as the returned pointer is used.
+pub(crate) unsafe fn marked_link(block: *mut u8) -> *const AtomicPtr<u8> {
+    unsafe { &raw const (*(block as *const LargeEntityHeader)).marked_next }
 }
 
 /// Allocate one entity of `size` bytes in a block-aligned allocation of
@@ -152,6 +179,7 @@ unsafe fn commission(block: *mut u8, size: usize, run_bytes: usize, kind: u32) -
         (&raw mut (*header).prev).write(std::ptr::null_mut());
         (&raw mut (*header).next).write(std::ptr::null_mut());
         (&raw mut (*header).row).write(0);
+        (&raw mut (*header).marked_next).write(AtomicPtr::new(std::ptr::null_mut()));
         let entity = block.add(LINE_SIZE);
         (entity as *mut u64).write(0);
         store_block_kind(&raw const (*header).kind, kind);
@@ -168,8 +196,8 @@ unsafe fn commission(block: *mut u8, size: usize, run_bytes: usize, kind: u32) -
 /// entity is dead, and `kind` is the kind read from it.
 pub(crate) unsafe fn free(block: *mut u8, kind: u32) {
     // A block returned under a standing `DEAD_IN_PLACE` goes to the pool or
-    // to the operating system while a sweep is still owed the mark, and the
-    // sweep would then hand the same memory back a second time. The clear
+    // to the operating system while a walk is still owed the mark, and that
+    // walk would then hand the same memory back a second time. The clear
     // belongs to whoever returns it (`crate::refcount::clear_dead_in_place`),
     // and this is where a path that forgot it shows up.
     debug_assert_ne!(

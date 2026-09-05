@@ -346,7 +346,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // freed inside the reset, so it joins the vector below: no later
     // death is left to report it.
     for block in pinned {
-        if unsafe { crate::memory::retained::reset_pin_released(block) } {
+        if unsafe { crate::memory::retained::hold_released(block) } {
             emptied.push(block);
         }
     }

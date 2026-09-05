@@ -426,23 +426,25 @@ unsafe fn ll_free_large(ptr: *mut u8, block: *mut u8, kind: u32) {
         crate::memory::block_pool::BLOCK_KIND_RETAINED => {
             let block = block as usize;
             if ptr as usize == block {
-                // The reset returning a block nothing holds: every
-                // survivor died inside it, or the payload it was pinned
-                // for did (`promote::arena_reset_full`). Nothing is
+                // A block nothing holds any more, returned by the reset
+                // when every survivor died inside it or the payload it was
+                // pinned for did (`promote::arena_reset_full`), or by the
+                // walk that returned the last mark it carried
+                // (`crate::cycle::deferred_slot_reuse`). Nothing is
                 // counted down — the count word already reads zero, and
                 // a decrement from zero would underflow into the
                 // payload half — so the block goes home as it stands.
                 debug_assert!(
                     unsafe { crate::memory::retained::holds_nothing(block) },
-                    "the reset returned a retained block something still holds"
+                    "a retained block was returned while something still holds it"
                 );
                 unsafe { crate::memory::retained::release_emptied(block) };
                 return;
             }
 
             // A survivor still carrying `DEAD_IN_PLACE` would take the
-            // decrement below and keep the mark, so the sweep would find it
-            // and hand the same survivor back a second time. The clear
+            // decrement below and keep the mark, so the next window's walk
+            // would find it and hand the same survivor back a second time. The clear
             // belongs to whoever returns the memory
             // (`crate::refcount::clear_dead_in_place`), and this is where a
             // path that forgot it shows up.

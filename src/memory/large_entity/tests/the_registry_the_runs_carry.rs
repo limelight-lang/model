@@ -21,7 +21,8 @@ fn the_header_the_registry_threads_itself_through() {
     assert_eq!(offset_of!(LargeEntityHeader, prev), 24);
     assert_eq!(offset_of!(LargeEntityHeader, next), 32);
     assert_eq!(offset_of!(LargeEntityHeader, row), 40);
-    assert_eq!(size_of::<LargeEntityHeader>(), 48);
+    assert_eq!(offset_of!(LargeEntityHeader, marked_next), 48);
+    assert_eq!(size_of::<LargeEntityHeader>(), 56);
     assert!(
         size_of::<LargeEntityHeader>() <= LINE_SIZE,
         "the entity starts at +LINE_SIZE and the header may not reach it"

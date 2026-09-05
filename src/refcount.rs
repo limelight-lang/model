@@ -126,12 +126,14 @@ pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 /// The entity is torn down and its memory has gone back nowhere: it died
 /// inside a trace window whose withheld-return chain had no room for a
 /// record, so the death was written here instead (`PLAN.md` S43.2, S43.3).
-/// What finds it is the sweep of the rows over that memory, which `PLAN.md`
-/// S43.4 builds; until that step lands the memory is held for the life of
-/// the process, and whoever returns the memory is what clears the bit — its
-/// block's owner for a slot, and the thread whose trace holds the rows for
-/// the other two, which have no owner (`dev/DECISIONS.md`, "the stamp is the
-/// whole condition where the return is not the owner's").
+/// What finds it is the window's own list: the marker links each block it
+/// marks through one word of that block's header, and the close walks the
+/// list and returns every marked slot
+/// (`crate::cycle::deferred_slot_reuse`). Whoever returns the memory is
+/// what clears the bit — its block's owner for a slot, and the thread whose
+/// trace holds the rows for the other two, which have no owner
+/// (`dev/DECISIONS.md`, "the stamp is the whole condition where the return
+/// is not the owner's").
 ///
 /// **Three headers carry it**, and what each one holds back differs: a
 /// size-class slot, which is on no free list and below its block's bump
@@ -148,13 +150,12 @@ pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 /// Three writes keep it from going stale: commissioning zeroes the headers
 /// of the memory it cuts, whether that is every slot of a size-class block
 /// or the one entity of a large one, [`publish_header`] replaces all eight
-/// bytes of a new occupant's header, and the return clears it. **A fourth window
-/// they do not cover** is a thread that exits holding a marked slot: the
-/// block carries `used` above zero, so `heap`'s abandonment hands it to
-/// the abandoned list and an adopting thread claims it without zeroing a
-/// slot. The mark then stands in a block whose owner never made it, and
-/// what answers that is S43.4's, which is where the sweep and the block
-/// it addresses are decided.
+/// bytes of a new occupant's header, and the return clears it. **A mark
+/// never outlives the window that took it**, which is what keeps a thread
+/// exit and an adoption out of this list: the close returns every mark, and
+/// a thread cannot exit inside a window
+/// (`crate::cycle::deferred_slot_reuse::dispose_thread_state`). Abandonment
+/// and adoption assert the ordering rather than answer it.
 pub const DEAD_IN_PLACE: u32 = 1 << 15;
 
 /// The entity is a live **escapee**: a request-arena object that one or
@@ -864,7 +865,7 @@ pub(crate) enum SlotState {
     Live,
     /// The occupant died inside a trace window that could not record the
     /// return, and the slot is neither the allocator's nor an entity's
-    /// until the sweep finds the mark ([`DEAD_IN_PLACE`]).
+    /// until that window's close returns it ([`DEAD_IN_PLACE`]).
     DeadInPlace,
     /// The allocator may hand the slot out: either it is on the block's
     /// free list or it stands above the block's bump cursor.
@@ -935,13 +936,6 @@ pub(crate) unsafe fn mark_dead_in_place(header: *mut RcHeader) {
 /// # Safety
 /// As [`mark_dead_in_place`].
 #[inline]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the sweep that returns a marked slot is `PLAN.md` S43.4's"
-    )
-)]
 pub(crate) unsafe fn clear_dead_in_place(header: *mut RcHeader) {
     unsafe { update_header_flags(header, |flags| flags & !DEAD_IN_PLACE) };
 }

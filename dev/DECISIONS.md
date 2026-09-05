@@ -8,6 +8,53 @@ never edited or deleted.
 
 ---
 
+## 2026-09-05 — the marker links the block, and the window's close walks the list
+
+**Ruled by the Sage** on S43.4's pre-change gate.
+
+**Decided:** a block whose slot takes a dead-in-place mark is linked into a
+list of its own — one atomic word of the block's header, the collector line
+for a slotted and a retained block and the header line for a large one, null
+meaning no mark and the last block naming itself — headed in the withheld
+returns' control line. The window's close walks that list after the replay
+and returns every marked slot through `stdapi::ll_free` with the mark cleared
+first. `TraceScratchArena::clear_touched_rows` is not edited.
+
+**Struck with it:** the S43.2 gate's "the sweep clears the block-level flag",
+and S43.4's own criterion where it had `clear_touched_rows` clear the mark.
+
+**Why:** a word the sweep clears is a word the owner cannot find afterwards,
+and a word the sweep reads is a load per touched block on every ordinary
+collection — the cost the stage promised not to pay. Under S38 the sweep runs
+where the token is released, which is not the owning thread, and a collector
+worker may touch nothing the owner reads to decide a return (Edmond,
+2026-08-25, "only the mutator frees"). The touched list cannot carry the
+marked blocks either: it dies at `reset()`, and the return runs after it.
+
+**What the list buys beyond that:** the mark no longer outlives the window
+that took it, so the thread that exits holding a marked slot — the case
+S43.2's Critic round 1 left open — cannot arise, `dispose_thread_state`
+refusing an exit inside a window. `heap`'s abandonment and adoption assert
+that ordering instead of answering it.
+
+**The walk of a block ends at the return that can retire it.** A block leaves
+circulation at the return of its last hold, and its header is then the next
+owner's to write, so the walk reads the next link and nulls the block's word
+before any return. For an entity block the stop is a reading of `used == 1`
+before the return, which holds because `used` has one writer and it is this
+thread. A retained block's count is spent by whichever thread frees, so no
+reading of it survives the return that follows: there the walk takes a hold
+of its own (`retained::pin`) for as long as it reads the block, and the
+release of that hold is what decides the emptiness and returns the block.
+
+**Premise it depends on:** one trace window open per process. The retained
+and the large word are exposed without it — two windows could each read the
+other's stamp and link one block through one word — which is the exposure
+S43.3 recorded and S38's token closes. The slotted arm stands outside it,
+ownership standing beside its stamp.
+
+---
+
 ## 2026-09-05 — the stamp is the whole condition where the return is not the owner's
 
 **Ruled by the Sage** on S43.3's pre-change gate.

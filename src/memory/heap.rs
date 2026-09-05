@@ -302,6 +302,24 @@ struct BlockCollector {
     /// The length of `survivors`, which is a retained block's index space.
     /// Published by the release store of `survivors`.
     survivor_count: AtomicU32,
+    /// The next block of the marking window's list, or this block itself at
+    /// the list's end; **null while the block holds no dead-in-place mark**,
+    /// which is the whole membership test
+    /// (`crate::cycle::deferred_slot_reuse`). Written by the thread that
+    /// takes the first mark in the block and nulled by the walk that returns
+    /// it, both inside one trace window.
+    ///
+    /// Atomic for what crosses threads here, which is the **null** a walk
+    /// leaves behind: the next window to mark a slot in this block may run
+    /// on another thread, and it reads this word to decide whether the block
+    /// is already listed. The link and the null are a release store against
+    /// that acquire load. Within one window the marker and the walker are
+    /// the same thread, so the load-then-store that lists a block is not a
+    /// read-modify-write and does not need to be one — what makes that safe
+    /// is the one-window premise S38's token will enforce
+    /// (`dev/DECISIONS.md`, "the marker links the block, and the window's
+    /// close walks the list").
+    marked_next: AtomicPtr<u8>,
 }
 
 /// Where a block's collector line begins: immediately past the header,
@@ -799,6 +817,20 @@ impl Heap {
         };
 
         probe_count!(ADOPTED);
+        // A block carrying a dead-in-place mark cannot reach here: the mark
+        // lives inside one trace window, the window's close returns it, and a
+        // thread cannot exit inside a window
+        // (`crate::cycle::deferred_slot_reuse::dispose_thread_state`). The
+        // adoption is where the ordering would fail visibly — the new owner
+        // never made the mark, its `used` never reaches zero, and the block
+        // is counted as holding a live slot the exited thread owed.
+        debug_assert!(
+            self.block_kind != BLOCK_KIND_ENTITY
+                || unsafe { &*marked_link(block as *mut u8) }
+                    .load(Ordering::Relaxed)
+                    .is_null(),
+            "an adopted block is still listed on a marking window its owner never closed"
+        );
         // Through the raw pointer, like `own`/`link`/`retire_empty`. Holding
         // a `&mut` to the header across `self.own` would alias it: `own`
         // writes these very fields through `block`, which invalidates any
@@ -905,6 +937,16 @@ impl Heap {
                 // and an empty block is worth more to the pool than to the
                 // abandoned list.
                 self.collect_remote_locked(block);
+                // The twin of the guard in `adopt`, at the other end of the
+                // same ordering: the mark a window took is returned at that
+                // window's close, and this thread cannot be exiting inside one.
+                debug_assert!(
+                    self.block_kind != BLOCK_KIND_ENTITY
+                        || unsafe { &*marked_link(block as *mut u8) }
+                            .load(Ordering::Relaxed)
+                            .is_null(),
+                    "a block abandoned at thread exit is still listed on a marking window"
+                );
                 unsafe {
                     (*block)
                         .shared
@@ -1297,6 +1339,7 @@ impl Heap {
                 (&raw mut (*line).reciprocal).write(AtomicU32::new(reciprocal_for(class_size)));
                 (&raw mut (*line).size_class).write(AtomicU32::new(ci as u32));
                 (&raw mut (*line).shadow).write(AtomicPtr::new(std::ptr::null_mut()));
+                (&raw mut (*line).marked_next).write(AtomicPtr::new(std::ptr::null_mut()));
             }
 
             crate::memory::block_pool::store_block_kind(&raw const (*block).kind, self.block_kind);
@@ -2237,6 +2280,9 @@ pub(crate) unsafe fn clear_collector_line(block: *mut u8) {
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         (*line).holds.store(0, Ordering::Relaxed);
         (*line).survivor_count.store(0, Ordering::Relaxed);
+        (*line)
+            .marked_next
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
     }
 }
 
@@ -2296,9 +2342,9 @@ pub(crate) unsafe fn block_hold_count(block: *mut u8) -> *const AtomicU64 {
 
 /// Whether this thread's entity heap is the block's owner.
 ///
-/// The free path asks it before writing a mark into a dead slot: a block
-/// whose owner is another thread, or none at all, is one this thread's
-/// sweep will never walk, and a mark left there is a slot nobody returns
+/// The free path asks it before writing a mark into a dead slot: a slot's
+/// return is its owner's free list and `used`, so a mark in a block this
+/// thread does not own is one no close of this thread's can make good
 /// (`crate::refcount::DEAD_IN_PLACE`). A thread that has never allocated
 /// owns nothing, and the null it reads answers the same way.
 ///
@@ -2323,6 +2369,53 @@ pub(crate) unsafe fn block_is_owned_by_this_thread(block: *mut u8) -> bool {
 pub(crate) unsafe fn block_shadow(block: *mut u8) -> *mut u8 {
     let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
     unsafe { (*line).shadow.load(Ordering::Acquire) }
+}
+
+/// The word that lists a block among those holding a dead-in-place mark:
+/// null while it holds none, and otherwise the next block of the marking
+/// window's list, or the block itself at the list's end
+/// (`crate::cycle::deferred_slot_reuse`).
+///
+/// The pointer is to the word rather than to its value, because the two
+/// populations that keep it in a heap block and the two that keep it in a
+/// large-entity header are walked through one call site
+/// (`crate::memory::large_entity::marked_link`).
+///
+/// # Safety
+/// As [`clear_block_shadow`], for as long as the returned pointer is used.
+pub(crate) unsafe fn marked_link(block: *mut u8) -> *const AtomicPtr<u8> {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { &raw const (*line).marked_next }
+}
+
+/// The slots of one entity block as a walk needs them: the first slot, the
+/// stride between two, and the number the block's bump cursor has reached,
+/// which is the bound a per-slot walk runs to
+/// ([`for_each_entity_slot`] walks every block by the same three).
+///
+/// **The cursor is read without synchronisation**, so a caller that is not
+/// the block's owner reads a value the owner may be moving. A census takes
+/// that knowingly, one slot short or one slot long being a census of the
+/// instant it ran ([`for_each_entity_slot`]); a caller that acts on a slot
+/// it finds — the walk that returns dead-in-place marks — must be the owner,
+/// and that is its own condition rather than this function's.
+///
+/// # Safety
+/// `block` is the header of a live `BLOCK_KIND_ENTITY` block.
+pub(crate) unsafe fn entity_block_slots(block: *mut u8) -> (*mut u8, usize, usize) {
+    let header = block as *mut HeapBlockHeader;
+    let (size_class, bump) = unsafe {
+        (
+            (*header).size_class.load(Ordering::Relaxed),
+            (*header).private.bump,
+        )
+    };
+
+    (
+        unsafe { block.add(LINE_SIZE) },
+        SIZE_CLASSES[size_class as usize],
+        bump as usize,
+    )
 }
 
 /// Stamp a block's shadow-row pointer. **The caller owes the enrolment
@@ -2397,25 +2490,29 @@ pub(crate) unsafe fn collector_block_slots(block: *mut u8) -> u32 {
 /// `used` therefore counts the slots the allocator cannot hand out, which
 /// is what the row array reserves rows for.
 ///
+/// The walk that returns dead-in-place marks reads it for a second reason:
+/// a block down to one occupant is one the next return retires, and the
+/// walk owes that reading **before** the return rather than after
+/// (`crate::cycle::deferred_slot_reuse`).
+///
 /// # Safety
 /// `block` is the header of a commissioned `BLOCK_KIND_ENTITY` block, read
 /// on the thread that owns it — `private` is the owner's half of the
 /// header, and an allocation borrows it as `&mut`.
-#[cfg(test)]
 pub(crate) unsafe fn block_occupancy(block: *mut u8) -> u32 {
     unsafe { (*(block as *mut HeapBlockHeader)).private.used }
 }
 
 /// How far an entity block's bump cursor has reached, which is the bound a
 /// per-slot walk of that block runs to ([`for_each_entity_slot`]) and
-/// therefore the length of the sweep `PLAN.md` S43.1 prices against a
-/// per-death record.
+/// therefore the length of the per-slot walk `PLAN.md` S43.1 prices
+/// against a per-death record.
 ///
 /// The cursor never retreats: a freed slot goes on the block's free list and
 /// is handed out from there, so a block that has once filled reads its whole
 /// slot count here. The gap between this bound and
 /// [`collector_block_slots`] therefore measures how young a block is rather
-/// than a saving a sweep could count on, and both bounds are reported.
+/// than a saving the walk could count on, and both bounds are reported.
 ///
 /// # Safety
 /// As [`block_occupancy`].
@@ -2546,16 +2643,8 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
                 continue;
             }
 
-            let (size_class, bump) = unsafe {
-                (
-                    (*block).size_class.load(Ordering::Relaxed),
-                    (*block).private.bump,
-                )
-            };
-
-            let class_size = SIZE_CLASSES[size_class as usize];
-            let base = unsafe { (block as *mut u8).add(LINE_SIZE) };
-            for s in 0..bump as usize {
+            let (base, class_size, bump) = unsafe { entity_block_slots(block as *mut u8) };
+            for s in 0..bump {
                 let slot = unsafe { base.add(s * class_size) } as *mut crate::refcount::RcHeader;
                 if unsafe { crate::refcount::slot_state(slot) } == crate::refcount::SlotState::Live
                 {

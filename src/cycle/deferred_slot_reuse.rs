@@ -63,10 +63,14 @@
 //!
 //! **A death in memory a trace has stamped does not reach it**: past the
 //! region such a death is marked in the entity's own header
-//! ([`crate::refcount::DEAD_IN_PLACE`]), which asks no allocation path and so
-//! cannot be refused. The chain keeps every death the region holds, the walk a
-//! mark costs the sweep being dearer than an append at every design class
-//! (`dev/BENCHMARKS.md`, 2026-09-04, S43.1). What still reaches the growth and
+//! ([`crate::refcount::DEAD_IN_PLACE`]) and its block is linked into the
+//! window's list of marked blocks, which asks no allocation path and so
+//! cannot be refused. The close walks that list and returns every marked
+//! slot ([`WithheldReturns::return_marked`]). The chain keeps every death
+//! the region holds, the per-slot walk a mark costs the close being dearer
+//! than an append at every design class (`dev/BENCHMARKS.md`, 2026-09-04,
+//! S43.1), which is why the mark answers the refusal rather than replacing
+//! the chain. What still reaches the growth and
 //! the process end behind it is a death in memory no trace stamped, and the
 //! reset's whole-block sentinel, which has no header of its own to carry a
 //! mark; `PLAN.md` S43.5 has to answer both before it can delete the growth. A
@@ -82,6 +86,7 @@
 //! running (`crate::cycle::arena::TraceScratchArena::residue`).
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use crate::cycle::records::{RecordChain, SEGMENT_HEADER_BYTES};
 use crate::cycle::shadow::{self, Color};
@@ -112,6 +117,14 @@ struct DeferredReturnChain {
     /// Bytes of this chain already charged to the manager's ledger, so that the
     /// close discharges exactly what was charged.
     published: Cell<usize>,
+    /// Newest block of the list of blocks holding a mark, or null while this
+    /// window has taken none. Every block on it names the next through one
+    /// word of its own header and the last names itself, so a block's
+    /// membership is that word alone ([`marked_link`]).
+    ///
+    /// A `Cell` beside the atomic links, and for the same reason the chain
+    /// is one: the head has one writer, the thread whose window is open.
+    marked: Cell<*mut u8>,
 }
 
 const _: () = assert!(size_of::<DeferredReturnChain>() == 64);
@@ -209,6 +222,7 @@ impl WithheldReturns {
             (&raw mut (*control).records).write(RecordChain::over(records, RETURNS_BASE_RECORDS));
             (&raw mut (*control).from_reserve).write(Cell::new(0));
             (&raw mut (*control).published).write(Cell::new(0));
+            (&raw mut (*control).marked).write(Cell::new(std::ptr::null_mut()));
         }
 
         Self { control }
@@ -252,6 +266,278 @@ impl WithheldReturns {
             unsafe { crate::memory::stdapi::ll_free(slot) };
         });
     }
+
+    /// Take the newest listed block off the list, or **None** when nothing
+    /// is listed.
+    ///
+    /// The head moves before the block is touched, and that order is the
+    /// whole of what a panic inside a disposal costs: the blocks behind the
+    /// one being disposed of are still named by the head, so the drop's own
+    /// pass finds them. A walk that took the head whole would leave them
+    /// listed with nothing naming them, and a listed block refuses every
+    /// later mark of itself (`dev/POSTMORTEM.md`, "a repair moved ownership
+    /// into a `Drop` and left the state that names it behind": a clearing
+    /// written twice in two places is a clearing that will be true in one of
+    /// them).
+    fn take_marked_block(&self) -> Option<(*mut u8, u32)> {
+        let block = self.chain().marked.get();
+        if block.is_null() {
+            return None;
+        }
+
+        // Safety: a listed block is one this window marked a slot in, and no
+        // return has retired it — the replay may have returned other slots
+        // of it, but every marked slot is itself a hold, through `used`, the
+        // occupant count, or the one entity a large block carries.
+        let kind = unsafe { crate::memory::block_pool::load_block_kind(block as *const AtomicU32) };
+        let link = unsafe { &*marked_link(block, kind) };
+        let next = link.load(Ordering::Acquire);
+        link.store(std::ptr::null_mut(), Ordering::Release);
+
+        // The last block names itself, which is what keeps "listed" a test
+        // of one word against null.
+        self.chain().marked.set(if next == block {
+            std::ptr::null_mut()
+        } else {
+            next
+        });
+
+        Some((block, kind))
+    }
+
+    /// Return every slot a mark holds, newest block first.
+    ///
+    /// Called where [`replay`](Self::replay) is called and under the same
+    /// closed window. The two lists never claim one slot: a marked slot took
+    /// no record, and a recorded one reads free by the time this walk could
+    /// reach it.
+    ///
+    /// **A block leaves the list before its slots are returned**, because the
+    /// return that spends its last hold gives the block to the pool and its
+    /// header to the next owner.
+    fn return_marked(&self) {
+        while let Some((block, kind)) = self.take_marked_block() {
+            unsafe { dispose_marks_of(block, kind, Disposition::Return) };
+        }
+    }
+
+    /// Clear every mark still listed and return none of the memory.
+    ///
+    /// The unwind's half of [`return_marked`](Self::return_marked): a panic
+    /// out of the replay, or out of the walk itself, reaches
+    /// [`Drop`](WithheldReturns::drop) with blocks still listed, and both
+    /// halves of what they carry have to go. The link, because a listed
+    /// block refuses every later mark of itself and no window could ever
+    /// return those slots. The mark, because a mark that outlives its window
+    /// is a slot an exiting thread hands to an adopting one, which is the
+    /// case `crate::refcount::DEAD_IN_PLACE` says cannot arise and the two
+    /// guards in `crate::memory::heap` assert.
+    ///
+    /// What is left is a slot on no free list, below its block's cursor and
+    /// counted in the block's occupancy: a leak of the same shape and the
+    /// same size as the records the same unwind loses, and `PLAN.md` S43.6's
+    /// subject. **The memory is not returned here**, and the reason is the
+    /// order this runs in: an unwind out of `TraceScratchArena::reset` gets
+    /// here with rows still standing over these blocks, so a slot handed
+    /// back now is one a new occupant could take under a live row — the
+    /// reuse the whole window exists to prevent.
+    fn abandon_marked(&self) {
+        while let Some((block, kind)) = self.take_marked_block() {
+            unsafe { dispose_marks_of(block, kind, Disposition::Abandon) };
+        }
+    }
+}
+
+/// What the walk does with a mark it finds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    /// Clear the mark and make the return it deferred, which is the close.
+    Return,
+    /// Clear the mark and return nothing, which is the unwind
+    /// ([`WithheldReturns::abandon_marked`]).
+    Abandon,
+}
+
+// Slots the marked walk has read on this thread. What it is for is the
+// claim that an ordinary collection pays nothing for the mark: a walk that
+// reads no slot is one no block was listed for.
+#[cfg(test)]
+thread_local! {
+    static MARKED_SLOTS_VISITED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Count one slot the marked walk read, and nothing at all without
+/// `cfg(test)`: the three walks call it either way.
+#[inline]
+fn note_slot_visited() {
+    #[cfg(test)]
+    MARKED_SLOTS_VISITED.with(|visited| visited.set(visited.get() + 1));
+}
+
+/// What the probe holds for this thread, zeroed by the read.
+#[cfg(test)]
+pub(crate) fn take_marked_slots_visited() -> usize {
+    MARKED_SLOTS_VISITED.with(|visited| visited.replace(0))
+}
+
+/// The word that says whether a block is on the marking window's list, in
+/// the header the block's kind gives it: the collector line of a heap block,
+/// and the first line of a large-entity block, which is a header of its own
+/// with no collector line at that offset.
+///
+/// # Safety
+/// `block` is the header of a live block whose kind is `kind`, for as long
+/// as the returned pointer is used.
+unsafe fn marked_link(block: *mut u8, kind: u32) -> *const AtomicPtr<u8> {
+    if crate::memory::large_entity::is_large_entity(kind) {
+        return unsafe { crate::memory::large_entity::marked_link(block) };
+    }
+
+    unsafe { crate::memory::heap::marked_link(block) }
+}
+
+/// Put `block` on this window's list of blocks holding a mark, unless an
+/// earlier mark of the same window already did.
+///
+/// # Safety
+/// As [`marked_link`], and `chain` is this thread's open window.
+unsafe fn list_marked_block(chain: &DeferredReturnChain, block: *mut u8, kind: u32) {
+    let link = unsafe { &*marked_link(block, kind) };
+    if !link.load(Ordering::Relaxed).is_null() {
+        return;
+    }
+
+    let head = chain.marked.get();
+    let next = if head.is_null() { block } else { head };
+    link.store(next, Ordering::Release);
+    chain.marked.set(block);
+}
+
+/// Dispose of every dead-in-place slot of one listed block: `Return` frees
+/// it through `stdapi::ll_free`, which is the funnel the replay uses — the
+/// queue window, the reset's arms and the kind dispatch all get their say a
+/// second time — and `Abandon` only takes the mark off.
+///
+/// **A returning walk of a block ends at the return that can retire it**,
+/// which is the return of its last hold: past that instant the block may be
+/// the pool's and its slots another owner's. Every marked slot is one hold,
+/// so a block down to its last one holds no mark this walk has not seen. An
+/// abandoning walk retires nothing and needs no such stop.
+///
+/// # Safety
+/// `block` is a block this window listed, its kind is `kind`, and the caller
+/// has taken it off the list.
+unsafe fn dispose_marks_of(block: *mut u8, kind: u32, disposition: Disposition) {
+    if crate::memory::large_entity::is_large_entity(kind) {
+        let (entity, _) = unsafe { crate::memory::large_entity::occupant(block) };
+        note_slot_visited();
+        // Asked here as in the two arms below, though one statement both
+        // marks this entity and lists its block: an arm that frees whatever
+        // it is handed would free a live entity the day a block is listed
+        // for another reason.
+        if unsafe { is_marked(entity) } {
+            unsafe { dispose_of(entity, disposition) };
+        }
+
+        return;
+    }
+
+    match kind {
+        BLOCK_KIND_ENTITY => {
+            let (first, stride, slots) = unsafe { crate::memory::heap::entity_block_slots(block) };
+            for index in 0..slots {
+                let slot = unsafe { first.add(index * stride) };
+                note_slot_visited();
+                if !unsafe { is_marked(slot) } {
+                    continue;
+                }
+
+                // `used` has one writer, the owner, which is this thread: a
+                // cross-thread free posts to `remote_free` and moves nothing
+                // here (`crate::memory::heap::Heap::free`). So a reading of
+                // one taken before the return still holds at the return, and
+                // the block that reaches zero by it is the pool's — nothing
+                // of it may be read afterwards. The retained arm below,
+                // whose count any thread may spend, holds a pin instead.
+                let last = disposition == Disposition::Return
+                    && unsafe { crate::memory::heap::block_occupancy(block) } == 1;
+                unsafe { dispose_of(slot, disposition) };
+                if last {
+                    return;
+                }
+            }
+        }
+        BLOCK_KIND_RETAINED => {
+            // Non-null by construction: a listless block has no index space,
+            // so no row can address it and no stamp can stand on it
+            // (`crate::memory::retained`, `crate::cycle::row`).
+            let (list, count) = unsafe { crate::memory::heap::block_survivor_list(block) };
+            debug_assert!(
+                !list.is_null(),
+                "a retained block with no survivor list carried a mark"
+            );
+
+            // **A returning walk holds the block itself while it reads it**,
+            // and the hold stands from here to the release below, so a panic
+            // in the list read above leaks none. A retained block's count is
+            // spent by whichever thread frees, so a reading of it taken
+            // before a return can be spent by another thread between the two
+            // and the block would go to the pool under the walk. The hold
+            // answers that: no return inside the walk can empty the block,
+            // and the release below decides the emptiness on this thread,
+            // after the last read.
+            let returning = disposition == Disposition::Return;
+            if returning {
+                unsafe { crate::memory::retained::pin(block as usize) };
+            }
+
+            for index in 0..count {
+                let survivor = unsafe { list.add(index).read() } as *mut u8;
+                note_slot_visited();
+                if unsafe { is_marked(survivor) } {
+                    unsafe { dispose_of(survivor, disposition) };
+                }
+            }
+
+            // The sentinel return of an emptied retained block, which is the
+            // form `ll_free` answers off the count word: the hold above was
+            // the last thing holding it.
+            if returning && unsafe { crate::memory::retained::hold_released(block as usize) } {
+                unsafe { crate::memory::stdapi::ll_free(block) };
+            }
+        }
+        // A kind with no arm is a block this walk cannot read the slots of,
+        // and `can_carry_the_mark` admits none such.
+        _ => debug_assert!(false, "a kind with no arm reached the marked walk"),
+    }
+}
+
+/// Whether the entity at `slot` is one this walk owes a return.
+///
+/// # Safety
+/// `slot` addresses a published entity header, or a slot of an entity block
+/// at or below its bump cursor.
+unsafe fn is_marked(slot: *mut u8) -> bool {
+    let state = unsafe { crate::refcount::slot_state(slot as *const crate::refcount::RcHeader) };
+    state == crate::refcount::SlotState::DeadInPlace
+}
+
+/// Take the mark off, and make the return it deferred where the disposition
+/// is [`Disposition::Return`].
+///
+/// The clear comes first because the return reads the same word: a slot that
+/// reached its free list marked would be handed out as an occupant, and a
+/// retained survivor or a large entity would be found by a later window's
+/// walk and handed back twice.
+///
+/// # Safety
+/// `slot` is a dead-in-place entity whose block this walk has taken off the
+/// list.
+unsafe fn dispose_of(slot: *mut u8, disposition: Disposition) {
+    unsafe { crate::refcount::clear_dead_in_place(slot as *mut crate::refcount::RcHeader) };
+    if disposition == Disposition::Return {
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+    }
 }
 
 impl Drop for WithheldReturns {
@@ -264,6 +550,7 @@ impl Drop for WithheldReturns {
     /// serves.
     fn drop(&mut self) {
         self.close_window();
+        self.abandon_marked();
 
         let chain = self.chain();
         gc_metadata::discharge(chain.published.replace(0));
@@ -397,8 +684,8 @@ impl Drop for ActiveTrace {
     fn drop(&mut self) {
         // First, and before the rows die: a batch still here was disposed of by
         // nothing, so every root in it keeps its registration and its records go
-        // back to the lane they came out of. It depends on neither the sweep nor
-        // the replay, and `ll_free`'s candidate arm reads the entity's bit rather
+        // back to the lane they came out of. It depends on neither the row
+        // sweep nor the returns below it, and `ll_free`'s candidate arm reads the entity's bit rather
         // than the lane its record stands in.
         if let Some(batch) = self.batch.take() {
             crate::cycle::queue::restore_candidates(batch);
@@ -418,6 +705,7 @@ impl Drop for ActiveTrace {
 
         self.returns.close_window();
         self.returns.replay();
+        self.returns.return_marked();
     }
 }
 
@@ -428,9 +716,10 @@ impl Drop for ActiveTrace {
 /// record loses a physical return, which is refused (`dev/DECISIONS.md`, "an
 /// enrolment cannot fail"). Nothing can report it either: `ll_free` holds no
 /// frame that can fail. **S43.5 deletes this function**, and it owes two cases
-/// first: a death past a full region in memory no trace stamped, where a mark
-/// is one no sweep walks to, and the reset's whole-block sentinel, which
-/// addresses a block header and so has no entity header to mark.
+/// first: a death past a full region in memory this thread's trace has not
+/// stamped, which [`can_carry_the_mark`] refuses, and the reset's whole-block
+/// sentinel, which addresses a block header and so has no entity header to
+/// mark.
 #[cold]
 fn grow(chain: &DeferredReturnChain) {
     let (block, from_reserve) = draw_block();
@@ -492,22 +781,23 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
     true
 }
 
-/// Whether a mark in the entity's own header is one a sweep will reach,
-/// which is what separates the deaths this module answers with a mark from
-/// the deaths it still records.
+/// Whether a mark in the entity's own header is one this window's close
+/// will return, which is what separates the deaths this module answers with
+/// a mark from the deaths it still records.
 ///
 /// The stamp is the half every population shares: rows over the memory mean
-/// a collection is walking it, and the memory a collection walks is the
-/// memory a sweep of its touched list can reach — which is what `PLAN.md`
-/// S43.4 builds, the walk today making one store per touched block and
-/// reading no header
-/// ([`crate::cycle::arena::TraceScratchArena::clear_touched_rows`]). Where
-/// that stamp is written, and what else has to hold, differs by population:
+/// this thread's collection is walking it, so the block is one this thread
+/// will still be holding at its own close, which is where the marked slots
+/// are returned ([`WithheldReturns::return_marked`]). The stamp is not what
+/// finds the mark — the window's list is — and
+/// [`crate::cycle::arena::TraceScratchArena::clear_touched_rows`] reads no
+/// header for it. Where the stamp is written, and what else has to hold,
+/// differs by population:
 ///
 /// - **an entity slot** is asked whose block it is as well. The return is
 ///   the owner's — its free list and its `used` — so a slot marked in a
-///   block this thread does not own waits for a sweep this thread never
-///   runs;
+///   block this thread does not own is one this window's walk cannot
+///   return;
 /// - **a retained survivor** asks the stamp alone, its return being an
 ///   atomic decrement any thread may perform
 ///   ([`crate::memory::retained::occupant_freed`]). The reset's whole-block
@@ -554,20 +844,18 @@ unsafe fn can_carry_the_mark(ptr: *mut u8, kind: u32) -> bool {
 /// Withhold a return the region has no room to record.
 ///
 /// A death [`can_carry_the_mark`] admits carries the fact in the entity's own
-/// header ([`crate::refcount::mark_dead_in_place`]), and what will find it is
-/// the sweep `PLAN.md` S43.4 builds over the memory the same trace stamped.
+/// header ([`crate::refcount::mark_dead_in_place`]) and puts its block on
+/// this window's list ([`list_marked_block`]), which the close walks.
 /// Nothing is drawn and nothing can refuse, which is what takes the process
-/// end off that path (`PLAN.md` S43.2, S43.3). Every other death still takes a record, and what is left
-/// there is a death in memory no trace stamped, plus the reset's whole-block
-/// sentinel — the two `PLAN.md` S43.5 has to answer before it can delete the
-/// growth.
+/// end off that path (`PLAN.md` S43.2, S43.3). Every other death still takes
+/// a record, and what is left there is a death in memory no trace stamped,
+/// plus the reset's whole-block sentinel — the two `PLAN.md` S43.5 has to
+/// answer before it can delete the growth.
 ///
 /// A marked slot stays out of the allocator's hands the way a recorded one
 /// does — it is on no free list and below its block's bump cursor — and a
 /// marked survivor keeps its block's occupant count above zero, so the block
-/// is not the pool's either. What returns them is `PLAN.md` S43.4's sweep,
-/// which is unbuilt: until it lands a mark holds the memory for the life of
-/// the process.
+/// is not the pool's either. Both hold until the close, and no longer.
 ///
 /// # Safety
 /// As [`defer_reuse_if_tracing`], whose refused push this answers.
@@ -576,6 +864,7 @@ unsafe fn withhold_without_a_record(chain: &DeferredReturnChain, ptr: *mut u8, k
     if unsafe { can_carry_the_mark(ptr, kind) } {
         unsafe {
             crate::refcount::mark_dead_in_place(ptr as *mut crate::refcount::RcHeader);
+            list_marked_block(chain, BlockHeader::of_ptr(ptr) as *mut u8, kind);
         }
 
         return;

@@ -27,10 +27,17 @@
 //!
 //! # The two prices, and they are counted rather than timed
 //!
-//! Neither side exists yet — S43.2 writes the mark and S43.4 sweeps it — so
-//! there is nothing to time, and every figure below is arithmetic over
-//! counted structure. Two units are reported because they disagree in
-//! direction:
+//! Neither side existed when the reading was taken, on 2026-09-04, so there
+//! was nothing to time and every figure below is arithmetic over counted
+//! structure. What the reading decided is what the crate built after it: the
+//! chain stays and the walk runs on the refusal alone.
+//!
+//! **"The sweep" below is the design that was priced, not the walk that was
+//! built**: a walk of every touched block's slots at every collection. What
+//! S43.4 built walks the blocks one refusal listed, and an ordinary
+//! collection reads no slot at all.
+//!
+//! Two units are reported because they disagree in direction:
 //!
 //! - **cache lines.** The sweep reads one word per walked slot, and at a
 //!   stride under 64 bytes that walk reads the block through. The chain

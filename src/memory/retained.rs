@@ -61,7 +61,7 @@
 //!
 //! The reset holds one payload count of its own per block it pins, from
 //! the refusal until it has finished establishing occupant counts, and
-//! spends it through [`reset_pin_released`]. Why the count exists, and
+//! spends it through [`hold_released`]. Why the count exists, and
 //! why its release leaves the list standing: `dev/DECISIONS.md`, "the
 //! reset holds a pin of its own, and releases it after the index is
 //! real".
@@ -151,11 +151,14 @@ pub(crate) unsafe fn register(block: usize, occupants: &[usize], destination: *m
 /// block waits for their free as it waits for a live occupant's death
 /// (module doc); the survivor list of another block, placed in this one
 /// by the reset and spent when that block returns
-/// ([`release_emptied`]); or the reset's own count over the window in
+/// ([`release_emptied`]); the reset's own count over the window in
 /// which it has not yet established occupant counts
-/// ([`reset_pin_released`]). Counted rather than flagged, because one
-/// block can hold the payloads and lists of several others and each is
-/// spent on its own.
+/// ([`hold_released`]); or the count a walk of the block's survivor list
+/// keeps while it reads it, so that no free of another thread's can put the
+/// block in the pool under the walk
+/// (`crate::cycle::deferred_slot_reuse`). Counted rather than flagged,
+/// because one block can hold the payloads and lists of several others and
+/// each is spent on its own.
 ///
 /// # Safety
 /// As [`count_word`].
@@ -208,21 +211,25 @@ pub(crate) unsafe fn payload_freed(block: usize) -> bool {
     }
 }
 
-/// Release the count the reset held on `block` past the last moment an
-/// occupant count could still be established for it ([`pin`], module
-/// doc). **True** when nothing else holds the block, and the list is
-/// then left standing rather than dropped, as [`register`] leaves it —
-/// the caller returns the block through `ll_free(block)`, which answers
-/// off the count word.
+/// Spend one hold of `block` ([`pin`]). **True** when nothing else holds
+/// the block, and the list is then left standing rather than dropped, as
+/// [`register`] leaves it — the caller returns the block through
+/// `ll_free(block)`, which answers off the count word.
+///
+/// Two callers hold for a window rather than for a thing: the reset, over
+/// the span in which an occupant count cannot yet be established for the
+/// block (module doc), and the walk that returns dead-in-place marks, over
+/// the span in which it reads the block's survivor list
+/// (`crate::cycle::deferred_slot_reuse`).
 ///
 /// A zero low half here means nothing counted holds the block, which
 /// covers a block whose occupants all died inside the reset and one that
 /// never held an occupant at all.
 ///
 /// # Safety
-/// As [`count_word`], and the reset must hold a count on the block.
+/// As [`count_word`], and the caller must hold a count on the block.
 #[must_use = "true means the block is empty and the caller owes it to the pool"]
-pub(crate) unsafe fn reset_pin_released(block: usize) -> bool {
+pub(crate) unsafe fn hold_released(block: usize) -> bool {
     unsafe { spend_hold(block, "the reset released a pin it never took") }
 }
 
@@ -253,7 +260,7 @@ unsafe fn spend_hold(block: usize, what: &str) -> bool {
 /// # Safety
 /// `block` is a retained block whose count word reads zero in both
 /// halves: [`occupant_freed`], [`payload_freed`] or
-/// [`reset_pin_released`] has just answered true for it, or [`register`]
+/// [`hold_released`] has just answered true for it, or [`register`]
 /// did and the reset is returning it through its sentinel.
 pub(crate) unsafe fn release_emptied(block: usize) {
     let (list, _) = unsafe { block_survivor_list(block as *mut u8) };

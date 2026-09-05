@@ -11,10 +11,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-05 · Active: S43, from S43.4, S43.3 having taken the marks of
-the retained survivor and of both large-entity forms. The stage keeps the form
-Edmond ruled on 2026-09-04: the chain stays and the mark answers its refusal.
-The
+Updated: 2026-09-05 · Active: S43, from S43.5, S43.4 having given the marks a
+reader: the marker lists the block, the window's close walks the list. The
+stage keeps the form Edmond ruled on 2026-09-04: the chain stays and the mark
+answers its refusal. The
 rest of S36 stands behind it — S36.9's remainder and S36.12's slice (b) each
 wait on a ruling named in their own step. The sections after S40 are the
 backlog. S43 sits between S36 and S37, where it is to be done.
@@ -2074,17 +2074,85 @@ to prevent.
         than specified", with a reason that is wrong: a retained occupant's
         mark lands in the survivor's own header and not in the word the
         emptiness count reads.
-- [ ] S43.4 The sweep returns everything marked
-      done: `clear_touched_rows` nulls a block's shadow pointer and **clears
-        the mark**, and the **owning thread** returns the slot on its own free
-        path when it next finds no trace addressing the block — slots, the
-        retained block itself, the run — a collection that aborts mid-trace
-        clearing by the same path; **a block holding no mark is not walked**,
-        and a collection that took no mark makes the one store per touched
-        block it makes today, which a test asserts by counting the walk;
-        tests read every marked slot back on the success path and on the abort
-        path, with the block that emptied entirely retiring to the pool
+- [x] S43.4 The sweep returns everything marked
+      done: the marker links every block it marks into a list of its own —
+        one atomic word of the block's header, the collector line for a
+        slotted and a retained block and the header line for a large one,
+        null meaning no mark, the head standing in the chain's control
+        line — and the closing thread walks that list after the replay,
+        returning every marked slot through `stdapi::ll_free` with its mark
+        cleared first: a slotted one through the owner's free list and
+        `used`, a retained one through `occupant_freed`, a large one through
+        `large_entity::free`. The block's word is nulled **before** any
+        return of its slots, a returned block being the pool's and
+        unreadable afterwards; what keeps the walk off a block the return
+        retires is a reading of `used` for an entity block, whose one writer
+        is the walking thread, and a hold of the walk's own for a retained
+        block, whose count any thread may spend. A panic anywhere in the
+        close leaves no block listed and no mark standing. `clear_touched_rows` is
+        unchanged and **a block holding no mark is not walked**, a
+        `cfg(test)` count of the slots the walk visited reading zero for a
+        collection that took no mark; the drop order stays restore, peak,
+        reset, close, replay, marked walk, and an abort takes the same drop.
+        Tests read the return back on the success path and on the abort path
+        in each population, in the form that population has one — the slot's
+        own state for an entity slot, whose block the case keeps alive, and
+        the block's return for a retained survivor and for a large entity,
+        whose memory is gone at the instant the return is made; a block that
+        empties entirely retires to the pool; and neither the mark nor its
+        return draws a block or enters a byte
       tier: T2 · role: Sage → Critic
+      Sage 2026-09-05 (pre-change gate): **the marker links the block, the
+        closing thread walks the list, and the sweep is not edited.** Two
+        clauses struck with it — the correction's "the sweep clears the
+        block-level flag" and the criterion's "`clear_touched_rows` clears
+        the mark": a word the sweep clears is one the owner cannot find
+        afterwards, a word the sweep reads is a load per touched block on
+        the ordinary collection, and under S38 the sweep's thread is a
+        worker, which may touch nothing the owner reads to decide a return.
+        The touched list cannot carry the marked blocks either, dying at
+        `reset()` where the return runs after it. **The homes**: an
+        `AtomicPtr` on `BlockCollector` for the slotted and the retained
+        block, which is the line `can_carry_the_mark` has just loaded and
+        the one line a non-owner writes; a word behind `LargeEntityHeader::row`
+        for both large kinds, sharing the line the marker read the colour
+        from; the head in `DeferredReturnChain`, 48 of its 64 bytes used, so
+        `RETURNS_BASE_BYTES` and the workspace prefix stand. Commissioning
+        writes the word null in all three, a stale non-null reading as
+        already listed and losing every later mark of that block. **The
+        exit case cannot arise** and is answered by an assertion rather than
+        by a branch: a mark now lives from the refused push to the same
+        window's close on the same thread, and `dispose_thread_state`
+        refuses an exit inside a window, so `abandon_all` and `adopt` guard
+        the ordering instead. **The walk's order inside a block** is the
+        Sage's own finding: a block leaves circulation at the return of its
+        last hold and the walk may read nothing of it after that, so the
+        next link is read and the word nulled before any return, and the
+        walk ends at the return it has read to be the last — `used == 1` for
+        a slotted block, one occupant and no hold for a retained one. The
+        baseline the step would erase: 698 tests listed, S43.1's table read
+        by name from `cycle::density::tests::the_death_loads`, the three
+        allocation guards of the window, and `defer_reuse_if_tracing`'s
+        three loads, two branches and two stores, which this step does not
+        edit. Premise assumed: one window open process-wide, which the
+        retained and the large word depend on and S38's token will enforce.
+        Refused: any edit to `clear_touched_rows` or a load of the block
+        word in it; a call to `ll_free`, `occupant_freed`, `release_emptied`,
+        `large_entity::free` or `clear_dead_in_place` from the sweep or from
+        any collector worker; a return before `arena.reset()` or before
+        `close_window()`; a read of a block after the return that can retire
+        it; a return of marked slots on `Heap::free`, `Heap::alloc` or
+        `defer_reuse_if_tracing`'s success path; the marked blocks kept in
+        the `RowArray`, the touched list, the arena bump, a drawn manager
+        block or any allocator-owning container; a second `thread_local!`;
+        a plain block word; the word in `BlockPrivate`, `BlockLinks`,
+        `LargeEntityHeader::_pad`, `row`, `prev` or `next`; a flag beside
+        the link; a `used` or `holds` decrement at the mark;
+        `for_each_entity_slot` or a region scan to find marks; a bitmap; any
+        change to `can_carry_the_mark`, `ll_free`'s arm order,
+        `RETURNS_BASE_RECORDS` or the prefix constants; marking the
+        sentinel; editing the three S36.2 tests; closing with
+        `clear_dead_in_place` still under `expect(dead_code)`.
       correction 2026-09-04 (S43.2's gate): the sweep clears the block-level
         flag and the shadow pointer; **the per-slot mark is cleared by the
         owner** as it returns the slot. Under S38 the sweep runs where the
@@ -2117,6 +2185,71 @@ to prevent.
         entity's destructor may still be running on the owner. It is Edmond's
         own ruling of 2026-08-25, "the collector-side free is withdrawn; only
         the mutator frees". The sweep clears; the owner returns.
+      progress 2026-09-05 — the mark has a reader. `heap::marked_link` and
+        `large_entity::marked_link` are one atomic word per block header,
+        `list_marked_block` puts a block on the window's list at the mark, and
+        `WithheldReturns::return_marked` walks that list after the replay,
+        returning every marked slot through `stdapi::ll_free` with the mark
+        cleared first. `dispose_marks_of` is the one walk of a block: an entity
+        block by stride to its bump cursor, ending at the return that reads
+        `used == 1`; a retained block over its survivor list under a hold of
+        the walk's own, whose release returns the block; a large block at its
+        one occupant. `clear_touched_rows` is not edited, and a collection that
+        took no mark reads no slot — a `cfg(test)` counter asserts that in both
+        directions. `clear_dead_in_place` loses its `expect(dead_code)`,
+        commissioning writes the new word null in all three populations, and
+        `Heap::adopt` and `abandon_all` assert that no block reaches them
+        listed. Eleven tests, each seen red first or red on the flip that
+        admits its arm: 701 at one thread, 705 with `debug-journal`.
+      Critic 2026-09-05 round 1: eight findings, six taken in code and two
+        refused with their reason. The load-bearing one was a race — the
+        retained arm decided "this return retires the block" by a relaxed
+        reading of a count any thread may spend, so a free between the reading
+        and the return left the walk reading a block already in the pool. The
+        reading is gone; the walk holds the block instead. Also taken: an
+        unwind out of the replay left a block listed for the life of the
+        process, which refuses every later mark of it; the large arm freed
+        without asking whether the entity was marked; a safety note claimed no
+        return of the block had been made where the replay may have made many;
+        the word's doc offered atomicity against a race a load-then-store
+        cannot answer; and the abort case differed from the success case by a
+        flag alone. Refused: rewriting `dev/BENCHMARKS.md`, a dated reading
+        rather than a description of the build, and folding the header-size
+        assertion into one place, the compile-time one and the test one
+        costing nothing apart.
+      Critic 2026-09-05 round 2: nine findings, all taken, and the first was in
+        round 1's own repair. **`return_marked` took the whole list head at
+        entry**, so a panic inside a disposal left every block behind it listed
+        with nothing naming them — the shape `dev/POSTMORTEM.md` recorded for
+        this module on 2026-09-01, one function earlier. The head now moves one
+        block at a time, and the drop's own pass clears the link **and the
+        mark** of whatever is left, so no mark outlives its window and the two
+        guards keep their reason. Also taken: the decision entry cited a
+        function the same change had deleted; `entity_block_slots` stated an
+        owner condition the census that calls it does not meet; the hold was
+        released on no panic path, and three contracts it now shares named one
+        caller; the retained case read a slot back through a block it had not
+        kept alive; and the criterion asked for a read-back the two
+        block-owning populations cannot give. Five tests were added for them,
+        among them the first in this stage that drives an unwind out of the
+        close — which `dev/POSTMORTEM.md` had recorded as a gap nothing closed.
+        The device stops at two rounds.
+      miri 2026-09-05 — `cycle::deferred_slot_reuse` at two threads: 37 passed,
+        0 failed, 0 ignored, 121.26 s on Miri's clock. 37 is every `#[test]` of
+        the module, which is what proves the run alive. It earned its place
+        here rather than at the block's close: the first run refused a new test
+        helper that held an `LLContext` across a second `&mut` to the same
+        arena, which every ordinary run passed.
+      handoff: three things go on from here. **The unwind still loses the
+        memory**: a panic in the close now leaves no block listed and no mark
+        standing, but the slots it abandons leak exactly as that unwind's
+        records do, and S43.6 owns both halves. **The one-window premise now
+        carries the link word as well as the mark** — two windows racing
+        `list_marked_block` would splice one block into two lists, the load and
+        the store not being one operation — and S38's token is what closes it.
+        And the rfc's three corrections of S43.3 stand, joined by
+        `rc-cycle.md`'s "the sweep that nulls the block's shadow pointer is
+        what finds it": what finds a mark is the marking window's own list.
 - [ ] S43.5 The growth, the reserve draw and the last resort are deleted
       done: `cycle::deferred_slot_reuse` grows past its region by nothing, asks
         the pool and the critical reserve for nothing, and holds no
@@ -2143,6 +2276,13 @@ to prevent.
         `promote::retain_block` zeroing the shadow pointer before the kind is
         published, so no ordering makes it markable and the answer has to be
         one of the two above.
+      note 2026-09-05 (S43.4's gate, as a record): the stamp is no longer what
+        finds a mark. The walk reads the list the marker linked the block
+        into, so an unstamped block could carry a mark and still be found,
+        and the first of the two ways out above — a record per block rather
+        than per slot — is not the only one left. What the stamp still
+        decides is whose window the block belongs to, which is
+        `can_carry_the_mark`'s condition and stays as S43.3 built it.
       note 2026-09-04: what makes the refusal answerable is the mark, not the
         deletion of the chain — S43.1 measured the walk that a full deletion
         would cost every collection and it is dearer than the chain at every

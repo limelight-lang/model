@@ -222,8 +222,11 @@ field is lent to):
   withheld-return chain had no room for a record, so the death is written
   here (`PLAN.md` S43.2, S43.3). Three headers carry it: a size-class slot,
   a retained survivor and a large entity's own header. What finds it is the
-  sweep of the rows over that memory, which S43.4 builds; until then marked
-  memory is held for the life of the process. The count stays zero under it,
+  marking window's own list: the marker links each marked block through one
+  atomic word of its header — the collector line for a slotted and a retained
+  block, the header line for a large one — and the window's close walks the
+  list and returns every marked slot, so no mark outlives the window that
+  took it. The count stays zero under it,
   and the bit is the only thing that tells such a header from an unoccupied
   one, so `refcount::slot_state` is the one occupancy test and a guard test
   bans the two-way one. The bit carried `STRING_OUT_OF_LINE` until the

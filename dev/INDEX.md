@@ -72,7 +72,9 @@ versions live in `docs/history/`, marked at the top.
   slot, a retained survivor and a large entity's own header — and which
   deaths may take it rather than a record is
   `cycle::deferred_slot_reuse::can_carry_the_mark`. What returns marked
-  memory is S43.4's sweep, which is unbuilt.
+  memory is the window's close, which walks the list the marker linked each
+  block into — one atomic word per block header, `heap::marked_link` and
+  `large_entity::marked_link`, headed in the withheld returns' control line.
 - The candidate gate: `refcount::CANDIDATE_GATE_MASK` and
   `may_become_a_candidate`,
   read on the non-zero decrement in `release_word`. Five conditions in
