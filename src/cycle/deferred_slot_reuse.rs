@@ -67,19 +67,20 @@
 //! - **a row does, and the block is this thread's to walk** — the slot takes
 //!   the mark ([`crate::refcount::DEAD_IN_PLACE`]) and its block goes on the
 //!   window's list of marked blocks, which the close walks slot by slot
-//!   ([`WithheldReturns::return_marked`]);
+//!   ([`WithheldReturns::dispose_marked`]);
 //! - **a row does, and the block is another thread's** — the slot takes the
 //!   mark and goes on the window's stack of foreign slots, threaded through
-//!   the dead slots themselves ([`WithheldReturns::return_foreign`]). Its
+//!   the dead slots themselves ([`WithheldReturns::dispose_foreign`]). Its
 //!   block is not walked: the bump cursor bounding such a walk is the owner's
 //!   to move, and reading a slot the owner is publishing races that store.
 //!
 //! The chain keeps every death the region has room for, the per-slot walk a
 //! mark costs the close being dearer than an append at every design class
-//! (`dev/BENCHMARKS.md`, 2026-09-04, S43.1); that is why the mark answers a
-//! full region rather than replacing the chain. A thread exiting with its
-//! window still open ends the process, which is the one process end this
-//! module holds and has a reason of its own ([`dispose_thread_state`]).
+//! (`dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld
+//! chain"); that is why the mark answers a full region rather than replacing
+//! the chain. A thread exiting with its window still open ends the process,
+//! which is the one process end this module holds and has a reason of its own
+//! ([`dispose_thread_state`]).
 //!
 //! The workspace's region enters no byte figure, being memory the thread
 //! holds whether or not a collection is running
@@ -335,63 +336,46 @@ impl WithheldReturns {
         // unwinding, where a firing assertion aborts instead of reporting.
     }
 
-    /// Return every slot a mark holds, newest block first.
+    /// Dispose of every mark this window listed a block for, newest block
+    /// first: `Return` makes the return each mark deferred, `Abandon` takes
+    /// the marks off and gives no memory back.
     ///
-    /// Called where [`replay`](Self::replay) is called and under the same
-    /// closed window, **after** [`return_foreign`](Self::return_foreign). A
-    /// record and a mark never name one slot, a death taking one or the
-    /// other; a mark and a stacked slot can, and the order is what separates
-    /// them. A block foreign when one of its slots was stacked can be this
-    /// thread's by the time the next slot of it dies — `Heap::adopt` runs on
-    /// the ordinary refill path, inside the window — and that slot lists the
-    /// block. The stack walk runs first, so every stacked slot reads free by
-    /// the time this walk reaches its block, and the block cannot retire
-    /// under the walk either: the mark that listed it is a hold of its own.
+    /// Called where [`replay`](Self::replay) is called, under the same closed
+    /// window, and **after** [`dispose_foreign`](Self::dispose_foreign) — the
+    /// order that separates the one slot both structures can name. A record
+    /// and a mark never name one slot, a death taking one or the other; a
+    /// mark and a stacked slot can. A block foreign when one of its slots was
+    /// stacked can be this thread's by the time the next slot of it dies
+    /// (`Heap::adopt` runs on the ordinary refill path, inside the window),
+    /// and that slot lists the block. The stack walk runs first, so every
+    /// stacked slot reads free by the time this walk reaches its block, and
+    /// the block cannot retire under the walk either: the mark that listed it
+    /// is a hold of its own.
     ///
     /// **A block leaves the list before its slots are returned**, because the
     /// return that spends its last hold gives the block to the pool and its
     /// header to the next owner.
-    fn return_marked(&self) {
-        self.dispose_walking(Disposition::Return);
-        while let Some((block, kind)) = self.take_marked_block() {
-            unsafe { dispose_marks_of(self.chain(), block, kind, Disposition::Return) };
-            debug_assert!(
-                self.chain().walking.get().is_null(),
-                "a walk that ran to its end left its block named"
-            );
-        }
-    }
-
-    /// Clear every mark still listed and return none of the memory.
     ///
-    /// The unwind's half of [`return_marked`](Self::return_marked): a panic
-    /// out of the replay, or out of the walk itself, reaches
-    /// [`Drop`](WithheldReturns::drop) with blocks still listed, and both
-    /// halves of what they carry have to go. The link, because a listed
-    /// block refuses every later mark of itself and no window could ever
+    /// **`Abandon` is what an unwind before the sweep takes**, and both halves
+    /// of what a listed block carries have to go there. The link, because a
+    /// listed block refuses every later mark of itself and no window could
     /// return those slots. The mark, because a mark that outlives its window
-    /// is a slot an exiting thread hands to an adopting one, which is the
-    /// case `crate::refcount::DEAD_IN_PLACE` says cannot arise and the two
-    /// guards in `crate::memory::heap` assert.
+    /// is a slot an exiting thread hands to an adopting one, which is the case
+    /// `crate::refcount::DEAD_IN_PLACE` says cannot arise and the two guards
+    /// in `crate::memory::heap` assert. **The memory stays out of
+    /// circulation** on that path: [`DeferredReturnChain::swept`] read false,
+    /// so this collection's rows still stand over these blocks and a slot
+    /// handed back would be one a new occupant could take under a row that
+    /// names it.
     ///
-    /// **The leading [`dispose_walking`](Self::dispose_walking) is symmetry
-    /// rather than soundness**, and reaches nothing: a walk is named only
-    /// under the returning disposition, and an abandoning disposal cannot
-    /// raise, being a clear of one flag bit. So no unwind arrives here with a
-    /// block under a walk.
-    ///
-    /// **The memory is not returned here**, and the reason is when this path
-    /// runs: [`DeferredReturnChain::swept`] reads false, so this collection's
-    /// rows still stand over these blocks and a slot handed back now is one a
-    /// new occupant could take under a row that names it — the reuse the whole
-    /// window exists to prevent. What is left behind is a slot on no free
-    /// list, below its block's cursor and counted in the block's occupancy: a
-    /// leak of the same shape and the same size as the records the same
-    /// unwind loses.
-    fn abandon_marked(&self) {
-        self.dispose_walking(Disposition::Abandon);
+    /// **The leading [`dispose_walking`](Self::dispose_walking) reaches
+    /// nothing under `Abandon`**, and stands there for symmetry: a walk is
+    /// named only under the returning disposition, and an abandoning disposal
+    /// cannot raise, being a clear of one flag bit.
+    fn dispose_marked(&self, disposition: Disposition) {
+        self.dispose_walking(disposition);
         while let Some((block, kind)) = self.take_marked_block() {
-            unsafe { dispose_marks_of(self.chain(), block, kind, Disposition::Abandon) };
+            unsafe { dispose_marks_of(self.chain(), block, kind, disposition) };
             debug_assert!(
                 self.chain().walking.get().is_null(),
                 "a walk that ran to its end left its block named"
@@ -425,39 +409,29 @@ impl WithheldReturns {
         Some(slot)
     }
 
-    /// Return every stacked slot through `ll_free`, newest first.
+    /// Dispose of every slot this window stacked, newest first: `Return`
+    /// makes the return through `ll_free`, `Abandon` takes the mark off and
+    /// gives no memory back.
     ///
     /// Called under the same closed window as
-    /// [`return_marked`](Self::return_marked) and before it, which is the
+    /// [`dispose_marked`](Self::dispose_marked) and before it, which is the
     /// order that keeps one slot out of both walks. The walk itself reads no
-    /// word of any block: each return goes through `ll_free`, which posts
-    /// onto the block's own stack of cross-thread frees while the block is
-    /// still another thread's, and takes the ordinary owner path once this
-    /// thread has adopted it.
-    fn return_foreign(&self) {
-        while let Some(slot) = self.take_foreign_slot() {
-            note_slot_visited();
-            unsafe { dispose_of(slot, Disposition::Return) };
-        }
-    }
-
-    /// Clear the mark of every stacked slot and return none of the memory.
+    /// word of any block: each return goes through `ll_free`, which posts onto
+    /// the block's own stack of cross-thread frees while the block is still
+    /// another thread's, and takes the ordinary owner path once this thread
+    /// has adopted it.
     ///
-    /// The disposition of an unwind that reached the chain before the rows
-    /// were swept, and what it leaves is what
-    /// [`abandon_marked`](Self::abandon_marked) leaves, in a block of another
+    /// **The order matters wherever memory goes back**, because a stacked slot
+    /// returned as an ordinary marked one puts a free-list link where the
+    /// stack's own link stood; under `Abandon` nothing goes back, so neither
+    /// order could move a link the other reads. What `Abandon` leaves is what
+    /// [`dispose_marked`](Self::dispose_marked) leaves, in a block of another
     /// thread: a slot on no free list, below its block's cursor and counted in
     /// a `used` its owner will never see decremented.
-    ///
-    /// **It runs before the block walk for symmetry rather than for
-    /// soundness.** The order is load-bearing wherever memory goes back,
-    /// because a stacked slot returned as an ordinary marked one puts a
-    /// free-list link where the stack's own link stood; an abandoning walk
-    /// returns nothing, so neither order can move a link the other reads.
-    fn abandon_foreign(&self) {
+    fn dispose_foreign(&self, disposition: Disposition) {
         while let Some(slot) = self.take_foreign_slot() {
             note_slot_visited();
-            unsafe { dispose_of(slot, Disposition::Abandon) };
+            unsafe { dispose_of(slot, disposition) };
         }
     }
 }
@@ -467,8 +441,8 @@ impl WithheldReturns {
 enum Disposition {
     /// Clear the mark and make the return it deferred, which is the close.
     Return,
-    /// Clear the mark and return nothing, which is the unwind
-    /// ([`WithheldReturns::abandon_marked`]).
+    /// Clear the mark and return nothing, which is the unwind that reached
+    /// the chain before the rows were swept ([`WithheldReturns::drop`]).
     Abandon,
 }
 
@@ -483,8 +457,8 @@ thread_local! {
     static MARKED_SLOTS_VISITED: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Count one slot the marked walk read, and nothing at all without
-/// `cfg(test)`: the three walks call it either way.
+/// Count one slot a close's walk read, and nothing at all without
+/// `cfg(test)`: all three walks call it either way.
 #[inline]
 fn note_slot_visited() {
     #[cfg(test)]
@@ -520,7 +494,12 @@ unsafe fn marked_link(block: *mut u8, kind: u32) -> *const AtomicPtr<u8> {
 /// As [`marked_link`], and `chain` is this thread's open window.
 unsafe fn list_marked_block(chain: &DeferredReturnChain, block: *mut u8, kind: u32) {
     let link = unsafe { &*marked_link(block, kind) };
-    if !link.load(Ordering::Relaxed).is_null() {
+
+    // Acquire against the release store a walk's unlisting makes: the window
+    // that listed this block before may have run on another thread, and this
+    // load is what has to see the null it left
+    // (`crate::memory::heap::BlockCollector::marked_next`).
+    if !link.load(Ordering::Acquire).is_null() {
         return;
     }
 
@@ -620,14 +599,14 @@ unsafe fn dispose_marks_of(
 
     match kind {
         BLOCK_KIND_ENTITY => {
-            let (first, stride, slots) = unsafe { crate::memory::heap::entity_block_slots(block) };
+            let (first, stride, bump) = unsafe { crate::memory::heap::entity_block_slots(block) };
 
             // Named after the block has been read and not before: a walk that
             // raised in the reading above would send the drop's own pass
             // through the same reading, inside an unwind, where a second
             // panic aborts ([`WithheldReturns::dispose_walking`]).
             chain.walking.set(block);
-            for index in 0..slots {
+            for index in 0..bump {
                 let slot = unsafe { first.add(index * stride) };
                 note_slot_visited();
                 if !unsafe { is_marked(slot) } {
@@ -877,13 +856,14 @@ impl Drop for WithheldReturns {
     /// ordered close would not have made and reach no assertion it failed.
     fn drop(&mut self) {
         self.close_window();
-        if self.chain().swept.get() {
-            self.return_foreign();
-            self.return_marked();
+        let disposition = if self.chain().swept.get() {
+            Disposition::Return
         } else {
-            self.abandon_foreign();
-            self.abandon_marked();
-        }
+            Disposition::Abandon
+        };
+
+        self.dispose_foreign(disposition);
+        self.dispose_marked(disposition);
     }
 }
 
@@ -1005,22 +985,22 @@ impl Drop for ActiveTrace {
         // First, and before the rows die: a batch still here was disposed of by
         // nothing, so every root in it keeps its registration and its records go
         // back to the lane they came out of. It depends on neither the row
-        // sweep nor the returns below it, and `ll_free`'s candidate arm reads the entity's bit rather
-        // than the lane its record stands in.
+        // sweep nor the returns below it, and `ll_free`'s candidate arm reads
+        // the entity's bit rather than the lane its record stands in.
         if let Some(batch) = self.batch.take() {
             crate::cycle::queue::restore_candidates(batch);
         }
 
-        // First and unconditionally: after the window falls, a physical
-        // return may recommission the block whose shadow pointer this sweep
-        // must null.
+        // Ahead of the window's fall, and taken whether or not anything was
+        // withheld: after the window falls, a physical return may recommission
+        // the block whose shadow pointer this sweep must null.
         self.arena.sweep_rows();
         self.returns.rows_are_gone();
 
         self.returns.close_window();
         self.returns.replay();
-        self.returns.return_foreign();
-        self.returns.return_marked();
+        self.returns.dispose_foreign(Disposition::Return);
+        self.returns.dispose_marked(Disposition::Return);
 
         // The arena's own blocks name no slot, so they go back after the
         // returns rather than before them — which is what leaves every return
@@ -1195,8 +1175,8 @@ unsafe fn classify_past_the_region(ptr: *mut u8, kind: u32) -> PastTheRegion {
 /// entity's own header ([`crate::refcount::mark_dead_in_place`]) and goes on
 /// this window's list of blocks ([`list_marked_block`]) or its stack of
 /// foreign slots ([`stack_foreign_slot`]), both of which the close walks.
-/// Nothing is drawn and nothing can refuse, which is what takes every process
-/// end off this path (`PLAN.md` S43.2, S43.3, S43.5).
+/// Nothing is drawn and nothing can refuse, which is what leaves this path
+/// with no process end on it at all.
 ///
 /// A marked slot stays out of the allocator's hands the way a recorded one
 /// does — it is on no free list and below its block's bump cursor — and a

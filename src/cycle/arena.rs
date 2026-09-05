@@ -541,6 +541,11 @@ impl TraceScratchArena {
     /// return may not outrun is the unstamping, and the blocks below are the
     /// arena's own.
     pub(crate) fn reset(&mut self) {
+        // Kept here although the ordered close has swept already, because the
+        // other caller is [`Drop`] and it has not: an unwind reaches this from
+        // anywhere in a collection. Over a rewound worklist and an emptied
+        // touched list the second pass reads two null heads and stores
+        // nothing.
         self.sweep_rows();
 
         // The block still under the bump has no further grant coming, and it

@@ -125,7 +125,7 @@ pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 
 /// The entity is torn down and its memory has gone back nowhere: it died
 /// inside a trace window whose withheld-return chain had no room for a
-/// record, so the death was written here instead (`PLAN.md` S43.2, S43.3).
+/// record, so the death was written here instead.
 /// What finds it is the window's own list: the marker links each block it
 /// marks through one word of that block's header, and the close walks the
 /// list and returns every marked slot
@@ -876,11 +876,11 @@ pub(crate) enum SlotState {
 ///
 /// **The one definition of the occupancy test**, and every walker that
 /// reads a slot's first word goes through it: `heap::for_each_entity_slot`
-/// and the census over it, `heap::describe_slot`, and
-/// `retained::is_occupied`, which `register` counts a retained block's
-/// live occupants through. A count above zero answers without the
-/// second load, so a live slot pays what it paid before the third state
-/// existed.
+/// and the census over it, `heap::describe_slot`, `retained::is_occupied`,
+/// which `register` counts a retained block's live occupants through, and
+/// the walk that returns the marks
+/// (`cycle::deferred_slot_reuse::is_marked`). A count above zero answers
+/// without the second load, so a live slot is settled by one load.
 ///
 /// **Change this, change `cycle::deferred_slot_reuse::dispose_marks_of` too:**
 /// this call stands inside a walk that a panic can resume, and a panic site

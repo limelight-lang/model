@@ -1,5 +1,5 @@
 //! What a walker of a slot's first eight bytes reads, and in which order
-//! the two halves are asked (`PLAN.md` S43.2).
+//! the two halves are asked ([`crate::refcount::slot_state`]).
 
 use super::*;
 
@@ -15,8 +15,8 @@ fn header(count: u32) -> RcHeader {
 
 /// A count above zero answers before the flags are read at all.
 ///
-/// This is what keeps a live slot at the one load it paid before the third
-/// state existed, and it is the order rather than the answer: a header
+/// This is what keeps a live slot at one load, and it is the order rather
+/// than the answer: a header
 /// carrying a stale mark under a live count reads live, and a walk that
 /// asked the flags first would skip an entity.
 #[test]

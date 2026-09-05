@@ -254,8 +254,6 @@ fn every_spelling(e: *mut Entity, p: *mut RcHeader) {
 /// for a reason of its own, and each named rather than swept in by a
 /// pattern.
 ///
-/// - `cycle/row.rs` asserts that a child the trace descends into is not at
-///   zero, which is a rule about the edge and not about the slot;
 /// - `cycle/validation.rs` carries the zero-count-member rule, which drops
 ///   a whole component and never asks whether a slot is occupied;
 /// - `object.rs` reads the count after a destructor to see whether the
@@ -270,7 +268,8 @@ const COUNTS_AS_A_NUMBER: [&str; 3] = ["cycle/validation.rs", "object.rs", "memo
 /// The shape is a count compared against zero, which separates two states
 /// where a slot has three: a slot whose occupant died inside a trace window
 /// that could not record the return is neither live nor free
-/// (`PLAN.md` S43.2), and a walker asking the count alone reads it as free.
+/// ([`crate::refcount::DEAD_IN_PLACE`]), and a walker asking the count alone
+/// reads it as free.
 ///
 /// **What it cannot see is the comparison on its own line**, the count
 /// having been bound to a local first. The walk is line-oriented, as the

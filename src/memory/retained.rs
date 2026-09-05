@@ -236,7 +236,7 @@ pub(crate) unsafe fn payload_freed(block: usize) -> bool {
 /// As [`count_word`], and the caller must hold a count on the block.
 #[must_use = "true means the block is empty and the caller owes it to the pool"]
 pub(crate) unsafe fn hold_released(block: usize) -> bool {
-    unsafe { spend_hold(block, "the reset released a pin it never took") }
+    unsafe { spend_hold(block, "a hold was released on a block that counted none") }
 }
 
 /// Spend one count of the high half. The one of the release functions

@@ -2524,8 +2524,9 @@ pub(crate) unsafe fn block_occupancy(block: *mut u8) -> u32 {
 
 /// How far an entity block's bump cursor has reached, which is the bound a
 /// per-slot walk of that block runs to ([`for_each_entity_slot`]) and
-/// therefore the length of the per-slot walk `PLAN.md` S43.1 prices
-/// against a per-death record.
+/// therefore the length priced against a per-death record
+/// (`dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld
+/// chain").
 ///
 /// The cursor never retreats: a freed slot goes on the block's free list and
 /// is handed out from there, so a block that has once filled reads its whole

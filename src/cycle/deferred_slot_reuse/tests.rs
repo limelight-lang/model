@@ -795,10 +795,10 @@ fn a_windows_open_and_close_leave_the_critical_reserve_untouched() {
 /// marked in the slot itself: no block is drawn, no record is made, and the
 /// slot reads as neither live nor free.
 ///
-/// This is the path that replaces the process end, and it is reached here
-/// with the pool healthy — the region's capacity is the whole trigger
-/// (`PLAN.md` S43.2, and `dev/DECISIONS.md`, "the chain stays and the mark
-/// answers its refusal").
+/// This is the path a refusal takes, with no process end anywhere on it, and
+/// it is reached here with the pool healthy — the region's capacity is the
+/// whole trigger (`dev/DECISIONS.md`, "the chain stays and the mark answers
+/// its refusal").
 ///
 /// **The mark is read by no census**, the three states collapsing to two
 /// wherever a walk asks only whether a slot is live. `slot_state` and
@@ -1826,9 +1826,9 @@ fn a_panic_in_the_close_leaves_no_block_listed() {
 }
 
 /// A collection that took no mark walks no slot at its close, which is the
-/// whole of what this step costs an ordinary collection: the list is empty,
-/// so no block is read and `clear_touched_rows` keeps the one store per
-/// touched block it makes without it.
+/// whole of what the mark costs an ordinary collection: the list is empty, so
+/// no block is read and `clear_touched_rows` stays one store per touched
+/// block.
 #[test]
 fn a_collection_that_took_no_mark_walks_no_slot() {
     let _guard = test_guard();
@@ -2398,8 +2398,8 @@ fn a_panic_in_the_close_leaves_no_stacked_mark_standing() {
 /// **What no case here separates** is the `ptr == block` arm from the
 /// unstamped arm below it: both answer `ReturnNow`, and the state that would
 /// tell them apart — a sentinel whose block this collection stamped — is the
-/// one the Sage's ruling says cannot arise (`PLAN.md`, S43.5). The
-/// `debug_assert!` in that arm is what would report it.
+/// one the paragraph above says cannot arise. The `debug_assert!` in that arm
+/// is what would report it.
 #[test]
 fn the_whole_block_sentinel_past_the_region_is_returned_at_once() {
     let _guard = test_guard();
